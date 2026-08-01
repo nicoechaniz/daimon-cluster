@@ -210,13 +210,15 @@ def test_transfer_network_partition_during_restore_rolls_back(
 
     log = adapter.mutation_log
     assert ("create_instance", NEW) in log   # the target existed...
+    assert ("start", NEW) in log             # ...was started after the
+                                             # fence (live-drill order)...
     assert ("delete", NEW) in log            # ...and rollback destroyed it
-    assert not any(c == ("start", NEW) for c in log)  # never started
+    assert log.index(("start", NEW)) < log.index(("delete", NEW))
     assert load_spec_raw(cfg.instances_dir, NEW) is None  # spec deleted
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "parked"
 
-    # the fence was never taken (partition hit BEFORE the CAS step) —
-    # the source's lease is intact at epoch 0
+    # the fence WAS taken (epoch 1) before the partition — rollback must
+    # restore the pre-renew lease EXACTLY (epoch back to 0)
     st = leases.LeaseStore(state_dir).status(DAIMON_ID)
     assert st["last_epoch"] == 0
     assert st["expired"] is False

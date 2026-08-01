@@ -47,8 +47,8 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #27 lease registry | done (merged f8cf871) | CAS+fencing+TTL, 36 tests; clusterd GET /v1/leases |
 | #26 usability drill | pending (needs human operator) | depends on #25 |
 | #28 handoff park | done (merged d0c9312) | park --handoff ceremony, signed manifest, resumable; 227 tests |
-| #29 transfer/wake/rollback | next | depends on #28 |
-| #30 handoff failure-injection | pending | depends on #29 |
+| #29 transfer/wake/rollback | done (merged 4800e39; impl in b6c499c) | 14 tests: call order, CAS rollback, tamper refusal, resume; 241 tests |
+| #30 handoff failure-injection | next | depends on #29 |
 | #31 ceremonies doc | done (merged d0c9312) | ceremonies.md v0.2, approval pending governance |
 
 ## Next action

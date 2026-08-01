@@ -879,7 +879,13 @@ def test_dashboard_confirm_typed_name_rejection_on_destructive(server):
 
 
 def test_dashboard_confirm_double_click_one_execution(server):
-    """double-click on confirm results in exactly ONE adapter mutation."""
+    """double-click on confirm results in exactly ONE adapter mutation.
+
+    The JS mints the human turn at PREPARE time and reuses it on every
+    confirm click of that banner — so both clicks of one intent carry
+    the SAME turn and clusterctl's idempotency store dedupes them.
+    A NEW prepare is a NEW intent and executes again (drill #26:
+    independent intents must never replay a cached result)."""
     srv, ad, _ = server
     ad.mutation_log.clear()
 
@@ -887,31 +893,28 @@ def test_dashboard_confirm_double_click_one_execution(server):
                                  {"operation": "stop", "target": NAME})
     assert status == 200
 
-    # First confirm
-    status, _, result1 = _post_json(srv, "/v1/dashboard/confirm", {
-        "operation": "stop",
-        "target": NAME,
-        "plan": plan,
-        "human_turn_id": "turn-dc-1",
-    })
-    # May need start first since stop on stopped is fine
-    # Let's just verify the mutation happened
-    assert status == 200
-    assert result1["ok"] is True
-
-    # Second confirm (same plan, different turn id) — HTTP reconstructs the
-    # plan fresh (``used`` is local-object state; clusterd's idempotency
-    # store prevents double-execution at the server level).
-    status2, _, result2 = _post_json(srv, "/v1/dashboard/confirm", {
-        "operation": "stop",
-        "target": NAME,
-        "plan": plan,
-        "human_turn_id": "turn-dc-2",
-    })
-    assert status2 == 200  # clusterd returns idempotent-replay, not refused
-    # Exactly one adapter mutation.
+    # Two clicks on the SAME banner → same turn (as the JS sends it)
+    for _ in range(2):
+        status, _, result = _post_json(srv, "/v1/dashboard/confirm", {
+            "operation": "stop", "target": NAME,
+            "plan": plan, "human_turn_id": "turn-banner-1",
+        })
+        assert status == 200
     stop_count = sum(1 for c in ad.mutation_log if c[0] == "stop")
     assert stop_count == 1
+
+    # A NEW prepare + confirm is a NEW intent → executes again
+    status, _, plan2 = _post_json(srv, "/v1/dashboard/prepare",
+                                  {"operation": "stop", "target": NAME})
+    assert status == 200
+    status, _, result2 = _post_json(srv, "/v1/dashboard/confirm", {
+        "operation": "stop", "target": NAME,
+        "plan": plan2, "human_turn_id": "turn-banner-2",
+    })
+    assert status == 200
+    assert result2["ok"] is True
+    stop_count = sum(1 for c in ad.mutation_log if c[0] == "stop")
+    assert stop_count == 2
 
 
 def test_dashboard_prepare_invalid_operation(server):

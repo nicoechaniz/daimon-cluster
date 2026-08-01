@@ -214,11 +214,16 @@ def test_happy_path_park_and_wake(server, mclient):
                                ("exec_unpark", NAME)]
 
 
-def test_idempotency_key_is_deterministic_per_plan():
+def test_idempotency_key_binds_plan_and_turn():
+    """The key dedupes a retried confirm of ONE intent (same plan+turn)
+    but never collapses INDEPENDENT intents (drill #26 finding: nico's
+    dashboard stop replayed the steward's hours-old cached result)."""
     plan = mutations.propose_stop(NAME)
     h1 = mutations._mutation_headers(plan, "turn-x")
     h2 = mutations._mutation_headers(plan, "turn-y")
-    assert h1["Idempotency-Key"] == h2["Idempotency-Key"]
+    h3 = mutations._mutation_headers(plan, "turn-x")
+    assert h1["Idempotency-Key"] != h2["Idempotency-Key"]
+    assert h1["Idempotency-Key"] == h3["Idempotency-Key"]
     assert h1["Idempotency-Key"].startswith("steward-")
 
 

@@ -543,7 +543,15 @@ def dashboard_prepare(deps: Deps, ctx: RequestContext, route=None,
     }[operation]
 
     try:
-        plan = _propose(target)
+        # The dashboard's own bearer token authorizes the mutation call —
+        # propose_destroy talks to clusterd for its challenge; a bare
+        # MutationClient would read the steward's token FILE, which does
+        # not exist on the host (FileNotFoundError, drill #26 finding).
+        if operation == "destroy":
+            mc = mutations.MutationClient(token_override=ctx.scope_token)
+            plan = _propose(target, client=mc)
+        else:
+            plan = _propose(target)
     except ValueError as exc:
         return _error(400, str(exc), operation, target, ctx.request_id)
     except Exception as exc:
@@ -727,7 +735,7 @@ input:focus{outline:none;border-color:var(--accent)}
 
   <!-- Backups -->
   <div class="card" id="backups-card">
-    <div class="section-header"><h2>Backup Age</h2></div>
+    <div class="section-header"><h2>Snapshots (per-daimon)</h2></div>
     <div id="backups-content" hx-get="/v1/backups" hx-trigger="load, every 30s"
          hx-swap="innerHTML" hx-target="#backups-content"
          hx-on::after-request="renderBackups(event)">
@@ -941,6 +949,7 @@ function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').
 
 // ── Dashboard mutation: prepare → confirm two-phase flow ──────────
 var _pendingPlans={};
+var _pendingTurns={};
 
 function dashPrepare(target,operation){
   var payload={operation:operation,target:target};
@@ -962,6 +971,11 @@ function dashPrepare(target,operation){
       return;
     }
     _pendingPlans[target]=result.data;
+    // The human turn is minted at PREPARE time: it identifies THIS
+    // displayed intent. Every confirm click on this banner reuses it,
+    // so a double-click dedupes server-side (idempotency key binds
+    // digest+turn), while a NEW prepare is a NEW intent and executes.
+    _pendingTurns[target]=String(Date.now());
     dashRenderBanner(target,result.data);
   })
   .catch(function(e){
@@ -1009,7 +1023,8 @@ function dashConfirm(target){
   var plan=_pendingPlans[target];
   if(!plan)return;
   var resultEl=document.getElementById('confirm-result-'+target);
-  var body={operation:plan.operation,target:plan.target,plan:plan,human_turn_id:String(Date.now())};
+  var body={operation:plan.operation,target:plan.target,plan:plan,
+            human_turn_id:_pendingTurns[target]||String(Date.now())};
   if(plan.destructive){
     body.typed_name=document.getElementById('typed-name-'+target).value;
   }

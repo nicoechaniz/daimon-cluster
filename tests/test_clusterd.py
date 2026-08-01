@@ -718,67 +718,27 @@ def test_audit_redaction(server):
 # --------------------------------------------------------------------------
 
 def test_dashboard_returns_html_200(server):
-    """GET /v1/dashboard returns HTML with auth required."""
+    """GET /v1/dashboard serves the public app shell (no auth for the HTML;
+    every DATA route stays auth-gated — the shell carries no data)."""
     srv, _, _ = server
 
-    # Without token: 401.
-    status_noauth, _, body_noauth = _get(srv, "/v1/dashboard", auth=False)
-    assert status_noauth == 401
-    assert body_noauth["error"] == "unauthorized"
+    # Without token: 200 HTML shell (browser navigations send no
+    # Authorization header; the JS token prompt happens client-side).
+    status_noauth, hdrs_noauth, body_noauth = _req(
+        srv, "GET", "/v1/dashboard", auth=False)
+    assert status_noauth == 200
+    assert "text/html" in hdrs_noauth.get("Content-Type", "")
+    assert "htmx" in body_noauth
+    assert "sessionStorage" in body_noauth
+    # The shell must not embed any fleet data (names, states, audit rows).
+    assert "daimon-x" not in body_noauth
+    assert "\"instances\"" not in body_noauth
 
-    # With read-scoped token: 200 HTML.
+    # With read-scoped token: same 200 HTML.
     status, hdrs, body = _req(srv, "GET", "/v1/dashboard")
     assert status == 200
     assert "text/html" in hdrs.get("Content-Type", "")
-    assert "htmx" in body
-    assert "sessionStorage" in body
     assert "<!DOCTYPE html>" in body
-
-    # Read-only token (read scope, no mutate) should still work —
-    # dashboard is a read route.
-    from clusterd import auth as clusterd_auth
-    from clusterd.server import make_server
-    from clusterd import handlers
-    state_dir = srv.deps.state_dir
-    _, ro_token = clusterd_auth.create_token(
-        state_dir, actor="reader", scopes=["read"], owner="*",
-        ttl_days=1)
-    deps_ro = handlers.Deps(config_path=srv.deps.config_path,
-                             state_dir=str(state_dir),
-                             adapter_factory=srv.deps.adapter_factory)
-    srv_ro = make_server(deps_ro, "127.0.0.1", 0)
-    srv_ro.test_token = ro_token
-    import threading
-    t_ro = threading.Thread(target=srv_ro.serve_forever, daemon=True)
-    t_ro.start()
-    try:
-        status_ro, _, body_ro = _req(srv_ro, "GET", "/v1/dashboard")
-    finally:
-        srv_ro.shutdown()
-        srv_ro.server_close()
-        t_ro.join(timeout=5)
-    assert status_ro == 200
-    assert "htmx" in body_ro
-
-    # Mutate-scoped token without read scope: 403.
-    _, mw_token = clusterd_auth.create_token(
-        state_dir, actor="writer", scopes=["mutate"], owner="*",
-        ttl_days=1)
-    deps_mw = handlers.Deps(config_path=srv.deps.config_path,
-                             state_dir=str(state_dir),
-                             adapter_factory=srv.deps.adapter_factory)
-    srv_mw = make_server(deps_mw, "127.0.0.1", 0)
-    srv_mw.test_token = mw_token
-    t_mw = threading.Thread(target=srv_mw.serve_forever, daemon=True)
-    t_mw.start()
-    try:
-        status_mw, _, body_mw = _get(srv_mw, "/v1/dashboard")
-    finally:
-        srv_mw.shutdown()
-        srv_mw.server_close()
-        t_mw.join(timeout=5)
-    assert status_mw == 403
-    assert "insufficient-scope" in body_mw.get("error", "")
 
 
 def test_dashboard_html_contains_required_elements(server):

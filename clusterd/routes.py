@@ -243,10 +243,15 @@ ROUTES: list[Route] = [
         method="GET",
         path="/v1/dashboard",
         operation_id="getDashboard",
-        summary="HTMX fleet dashboard (single-page app; same auth as the API)",
+        summary="HTMX fleet dashboard shell (public static app; ALL data "
+                "fetches go through the auth-gated read routes — the shell "
+                "itself carries no data)",
         handler="dashboard",
         scope="fleet:read",
         clusterctl="thin client of GET /v1/{instances,health,backups,audit}",
+        required_scope=None,  # public shell: a browser navigation sends no
+                             # Authorization header; the JS prompts for the
+                             # token and attaches it to every HTMX data call
     ),
     Route(
         method="GET",

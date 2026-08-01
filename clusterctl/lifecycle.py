@@ -481,7 +481,15 @@ def dispatch(args, cfg, adapter) -> int:
                 return park_mod.cmd_park(args, cfg, adapter)
             return cmd_parkwake(args, cfg, adapter, args.command)
         if args.command == "wake":
+            if getattr(args, "handoff", False):
+                # Lazy import: transfer imports helpers from this module.
+                from . import transfer as transfer_mod
+                return transfer_mod.cmd_wake(args, cfg, adapter)
             return cmd_parkwake(args, cfg, adapter, args.command)
+        if args.command == "transfer":
+            # Lazy import: transfer imports helpers from this module.
+            from . import transfer as transfer_mod
+            return transfer_mod.cmd_transfer(args, cfg, adapter)
         if args.command == "logs":
             return cmd_logs(args, cfg, adapter)
         if args.command == "destroy-plan":

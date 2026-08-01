@@ -132,6 +132,17 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="park a pre-M7 instance without an active "
                              "lease (recorded explicitly in the manifest)")
     _mutation("wake", "wake a parked daimon (SIGCONT hermes, issue #23)")
+    p_wake = sub.choices["wake"]
+    p_wake.add_argument("--handoff", action="store_true",
+                        help="run the M7 handoff wake ceremony (verified "
+                             "checkpoint re-entry + new fence, issue #29) "
+                             "instead of the writer-resume wake")
+    p_transfer = _mutation(
+        "transfer",
+        "same-host identity relocation (issue #29): parked source -> new "
+        "container with verified checkpoint + new fence")
+    p_transfer.add_argument("--to", required=True, dest="to",
+                            help="new instance name for the relocated identity")
 
     p_logs = sub.add_parser("logs", help="fetch instance logs (bounded, secrets redacted)")
     p_logs.add_argument("name", help="instance name")
@@ -249,7 +260,7 @@ def run(argv=None, adapter=None) -> int:
 
         if args.command in ("create", "start", "stop", "restart", "logs",
                             "destroy-plan", "provision", "snapshot",
-                            "park", "wake"):
+                            "park", "wake", "transfer"):
             ad = adapter if adapter is not None else _adapter_for(cfg)
             return lifecycle.dispatch(args, cfg, ad)
 

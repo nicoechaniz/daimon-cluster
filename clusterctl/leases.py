@@ -292,6 +292,34 @@ class LeaseStore:
                      daimon_id, epoch, ttl)
         return lease
 
+    def get(self, daimon_id: str) -> dict | None:
+        """Return the raw lease dict for ``daimon_id`` (or None).
+
+        Read-only snapshot — used by transfer (#29) to capture the
+        pre-renew fence so a rollback can restore it exactly.
+        """
+        return self._read_lease(daimon_id)
+
+    def restore(self, daimon_id: str, lease: dict) -> None:
+        """Write back a previously captured lease snapshot (rollback).
+
+        Only succeeds when the snapshot carries a valid signature —
+        a forged or corrupted snapshot is refused. Used by transfer
+        rollback (#29) to return the fence to its pre-renew epoch.
+        """
+        if not isinstance(lease, dict) or lease.get("schema") != LEASE_SCHEMA:
+            raise InvalidSignature(
+                f"cannot restore {daimon_id!r}: snapshot is not a lease/v1 record")
+        if lease.get("daimon_id") != daimon_id:
+            raise InvalidSignature(
+                f"cannot restore {daimon_id!r}: snapshot daimon_id mismatch")
+        if not self._verify(lease):
+            raise InvalidSignature(
+                f"cannot restore {daimon_id!r}: snapshot carries an "
+                f"invalid signature")
+        self._write_lease(daimon_id, lease)
+        logger.info("lease restored: %s epoch=%s", daimon_id, lease.get("epoch"))
+
     def release(self, daimon_id: str) -> None:
         """Destroy the lease file for ``daimon_id``.
 

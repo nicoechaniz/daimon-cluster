@@ -62,6 +62,11 @@ STATE_PENDING = "provisioned-pending-activation"
 STATE_FAILED = "creation-failed"
 STATE_ACTIVE_PENDING = "active-pending-directory"
 
+# Announcement recorded in the result + audit detail (never broadcast by
+# clusterctl itself): provisioning creates a NEW incarnation, unlike
+# wake/transfer (#29) which relocate the SAME identity.
+ANNOUNCEMENT_CREATION = "incarnation-creation"
+
 # Per-kind default target paths (design §4); kind "file" (or unknown
 # kinds) must carry an explicit ``target`` in the manifest item.
 KIND_TARGETS = {
@@ -350,6 +355,7 @@ def cmd_provision_prepare(args, cfg, adapter) -> int:
             "token_ttl_s": TOKEN_TTL_S,
             "directory_entry": directory_entry,
             "seed_staged": len(seed["staged"]) if seed else 0,
+            "announcement": ANNOUNCEMENT_CREATION,
             "idempotency_key": _idem_key(args),
         }
         _record_idempotency(args, cfg, operation, name, store, result)
@@ -358,7 +364,8 @@ def cmd_provision_prepare(args, cfg, adapter) -> int:
                    "key_fingerprint": fingerprint,
                    "requested_by": args.requested_by,
                    "sponsor": args.sponsor,
-                   "seed_staged": result["seed_staged"], **stale})
+                   "seed_staged": result["seed_staged"],
+                   "announcement": ANNOUNCEMENT_CREATION, **stale})
         _emit(args, result,
               f"provisioned {name} (state {STATE_PENDING}); confirmation "
               f"token {token} (ttl {TOKEN_TTL_S}s) — HALT until "

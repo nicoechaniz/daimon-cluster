@@ -31,6 +31,7 @@ class Route:
     mutation: bool = False
     required_scope: str | None = "read"  # None -> public (health only)
     confirmation_required: bool = False  # destructive class (design §2)
+    query_params: tuple = ()             # OpenAPI query parameter dicts
 
     @property
     def public(self) -> bool:
@@ -91,6 +92,26 @@ ROUTES: list[Route] = [
         scope="fleet:read",
         clusterctl="reads state_dir/backups/*/ newest .json (same files "
                    "clusterctl snapshot create writes)",
+    ),
+    Route(
+        method="GET",
+        path="/v1/instances/{name}/logs",
+        operation_id="getInstanceLogs",
+        summary="Bounded, secret-redacted instance logs (steward window, "
+                "issue #22)",
+        handler="logs",
+        scope="fleet:read",
+        clusterctl="clusterctl logs <name> --lines <n> --json",
+        query_params=({
+            "name": "lines",
+            "in": "query",
+            "required": False,
+            "description": "Max log lines returned (bounded; clusterctl "
+                           "clamps to its own max). Redaction is applied "
+                           "by clusterctl before any bytes leave the host.",
+            "schema": {"type": "integer", "default": 100, "minimum": 1,
+                       "maximum": 1000},
+        },),
     ),
     Route(
         method="POST",

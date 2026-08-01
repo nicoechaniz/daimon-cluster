@@ -55,6 +55,8 @@ def _operation(route) -> dict:
             "required": True,
             "schema": {"type": "string"},
         })
+    for query_param in route.query_params:
+        parameters.append(dict(query_param))
     if route.idempotency_required:
         parameters.append({
             "name": "Idempotency-Key",

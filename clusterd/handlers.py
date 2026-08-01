@@ -25,12 +25,14 @@ import contextlib
 import dataclasses
 import io
 import json
+import re
 import threading
 import time
 from pathlib import Path
 
 from clusterctl import audit
 from clusterctl import cli
+from clusterctl import lifecycle
 from clusterctl.config import load_config
 
 from . import __version__
@@ -44,6 +46,10 @@ EXIT_TO_HTTP = {0: 200, 2: 400, 3: 404, 6: 409, 10: 500}
 
 HEALTH_SCHEMA = "clusterd-health/v1"
 BACKUP_SUMMARY_SCHEMA = "clusterd-backup-summary/v1"
+
+# Instance names as clusterctl specs allow them (defense in depth for the
+# logs route — the steward validates too, but the daemon never trusts).
+INSTANCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
 
 # verify_chain is a full-log scan; cache per state_dir for 30s so the
 # public health probe stays cheap (issue #19).
@@ -240,6 +246,30 @@ def get_instance(deps: Deps, ctx: RequestContext, name: str,
     return _run_cli(deps, ctx, ["status", name, "--json"])
 
 
+def logs(deps: Deps, ctx: RequestContext, name: str, query=None,
+         **params) -> Response:
+    """GET /v1/instances/{name}/logs?lines=N — bounded, redacted (issue #22).
+
+    Pure delegation to ``clusterctl logs``: the bounded read and the
+    secret redaction both live in clusterctl.lifecycle.cmd_logs; this
+    handler only validates the name and binds the lines parameter.
+    """
+    if not INSTANCE_NAME_RE.fullmatch(name):
+        return _error(400, f"invalid instance name {name!r}",
+                      "logs", name, ctx.request_id)
+    raw = (query or {}).get("lines", [None])[0]
+    if raw is None:
+        n = lifecycle.LOGS_DEFAULT_LINES
+    else:
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            return _error(400, f"invalid lines parameter {raw!r}",
+                          "logs", name, ctx.request_id)
+    n = max(1, min(n, lifecycle.LOGS_MAX_LINES))
+    return _run_cli(deps, ctx, ["logs", name, "--lines", str(n), "--json"])
+
+
 def power(deps: Deps, ctx: RequestContext, name: str, route=None,
           **params) -> Response:
     """POST /v1/instances/{name}/start|stop|restart.
@@ -306,6 +336,7 @@ HANDLERS = {
     "openapi_yaml": openapi_yaml,
     "list_instances": list_instances,
     "get_instance": get_instance,
+    "logs": logs,
     "power": power,
     "destroy": destroy,
     "list_backups": list_backups,

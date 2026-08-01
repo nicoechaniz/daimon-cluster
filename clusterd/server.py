@@ -32,7 +32,7 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from clusterctl import audit
 from clusterctl.config import load_config
@@ -201,7 +201,9 @@ class ClusterdHandler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method: str) -> None:
         ctx = self._context()
-        path = urlsplit(self.path).path
+        split = urlsplit(self.path)
+        path = split.path
+        query = parse_qs(split.query)
         try:
             route, params = routes.match(method, path)
         except routes.MethodNotAllowed:
@@ -226,7 +228,8 @@ class ClusterdHandler(BaseHTTPRequestHandler):
             return
         handler = handlers.HANDLERS[route.handler]
         try:
-            resp = handler(self.server.deps, ctx, route=route, **params)
+            resp = handler(self.server.deps, ctx, route=route, query=query,
+                           **params)
         except Exception as exc:  # pragma: no cover - defensive
             resp = handlers.Response(500, {
                 "error": f"clusterd internal error: {exc!r}",

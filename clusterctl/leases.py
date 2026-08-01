@@ -8,6 +8,9 @@ conforming to ``lease/v1``:
 - ``fingerprint``: SHA256 fingerprint of the pubkey
 - ``epoch``: monotonic unsigned integer (0 on acquire, increments on renew)
 - ``created_ms``: epoch milliseconds UTC of the most recent mutation
+- ``acquired_ms``: epoch milliseconds UTC of the ORIGINAL acquisition;
+  preserved across renews (epochs reset to 0 on re-acquire, so handoff
+  fencing binds the checkpoint manifest to THIS field — issue #30)
 - ``ttl_s``: lease duration in seconds
 - ``signature``: canonical(lease minus signature) signed by the identity key
 - ``renewer``: ``"self"`` | ``"steward"`` | ``"human"``
@@ -231,20 +234,22 @@ class LeaseStore:
                 f"lease for {daimon_id!r} is held (epoch={existing.get('epoch')}, "
                 f"renewer={existing.get('renewer')}); release or wait for expiry"
             )
+        now = now_ms()
         lease = {
             "schema": self.LEASE_SCHEMA,
             "daimon_id": daimon_id,
             "identity_pubkey": pubkey,
             "fingerprint": fingerprint,
             "epoch": 0,
-            "created_ms": now_ms(),
+            "created_ms": now,
+            "acquired_ms": now,
             "ttl_s": ttl_s,
             "renewer": renewer,
         }
         lease["signature"] = self._sign(lease)
         self._write_lease(daimon_id, lease)
         logger.info("lease acquired: %s epoch=0 ttl=%ds renewer=%s",
-                     daimon_id, ttl_s, renewer)
+                    daimon_id, ttl_s, renewer)
         return lease
 
     def renew(
@@ -283,6 +288,10 @@ class LeaseStore:
             "fingerprint": existing["fingerprint"],
             "epoch": epoch,
             "created_ms": now_ms(),
+            # acquisition timestamp survives renews (legacy leases fall
+            # back to their original created_ms)
+            "acquired_ms": existing.get("acquired_ms",
+                                        existing["created_ms"]),
             "ttl_s": ttl,
             "renewer": existing["renewer"],
         }
@@ -355,6 +364,7 @@ class LeaseStore:
                 "expired": True,
                 "renewer": None,
                 "last_epoch": None,
+                "acquired_ms": None,
             }
         created = lease.get("created_ms", 0)
         ttl_s = lease.get("ttl_s", 0)
@@ -368,6 +378,7 @@ class LeaseStore:
             "expired": expired,
             "renewer": lease.get("renewer"),
             "last_epoch": lease.get("epoch"),
+            "acquired_ms": lease.get("acquired_ms", lease.get("created_ms")),
         }
 
     def list_all(self) -> list[dict]:

@@ -231,9 +231,37 @@ def _restore_state_files(cfg, park_name: str, target: str, spec: dict,
             f"mkdir -p {shlex.quote(base)} && "
             f"echo {shlex.quote(b64)} | base64 -d > {shlex.quote(target_path)}"
         )
-        adapter.exec(target, ["sh", "-c", script])
+        try:
+            adapter.exec(target, ["sh", "-c", script])
+        except Exception as exc:  # network partition, container dead...
+            raise TransferError(
+                f"state restore into {target!r} failed at {fname}: {exc}",
+                {"file": fname}) from exc
         restored[fname] = digest
     return restored
+
+
+def _check_stale_acquisition(manifest: dict, lease: dict | None,
+                             daimon_id: str) -> None:
+    """Refuse when the lease on disk belongs to a NEWER acquisition than
+    the one the checkpoint manifest was bound to (issue #30).
+
+    Epochs reset to 0 when a new holder re-acquires after expiry, so the
+    epoch check alone cannot detect the two-holders race — the manifest
+    also records ``lease_acquired_ms`` and the lease preserves
+    ``acquired_ms`` across renews. Manifests written before this field
+    existed (``None``) fall back to the epoch-only check.
+    """
+    manifest_acq = manifest.get("lease_acquired_ms")
+    if manifest_acq is None or lease is None:
+        return
+    current_acq = lease.get("acquired_ms", lease.get("created_ms"))
+    if current_acq != manifest_acq:
+        raise TransferRefused(
+            f"stale fence for {daimon_id!r}: the manifest is bound to "
+            f"lease acquisition {manifest_acq} but the current lease was "
+            f"acquired at {current_acq} — another holder re-acquired the "
+            f"identity after this checkpoint; refusing")
 
 
 def _acquire_fence(store: leases.LeaseStore, daimon_id: str) -> dict:
@@ -360,6 +388,10 @@ def run_wake(
                         f"{fence_epoch} but the lease is epoch "
                         f"{st['last_epoch']} — another holder renewed "
                         f"first; refusing to wake")
+                # epochs reset on re-acquire — also bind to the lease
+                # acquisition recorded in the manifest (issue #30)
+                _check_stale_acquisition(manifest, store.get(daimon_id),
+                                         daimon_id)
         _done("verify-manifest")
 
         # 2. restore-files — inverse of park step 5; sha256 verified
@@ -644,6 +676,10 @@ def run_transfer(
                     "checkpoint manifest hash verification failed: "
                     + "; ".join(problems),
                     {"problems": problems})
+        # stale-holder gate (issue #30): refuse when the identity was
+        # re-acquired after this checkpoint. A MISSING lease is left to
+        # the fence step (CAS failure → TransferError + rollback).
+        _check_stale_acquisition(manifest, store.get(daimon_id), daimon_id)
         volume_name = str(spec.get("volume") or f"{name}-durable")
         image_version = spec.get("image_version")
         _done("verify-manifest",

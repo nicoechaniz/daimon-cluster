@@ -48,7 +48,7 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #26 usability drill | pending (needs human operator) | depends on #25 |
 | #28 handoff park | done (merged d0c9312) | park --handoff ceremony, signed manifest, resumable; 227 tests |
 | #29 transfer/wake/rollback | done (merged 4800e39; impl in b6c499c) | 14 tests: call order, CAS rollback, tamper refusal, resume; 241 tests |
-| #30 handoff failure-injection | next | depends on #29 |
+| #30 handoff failure-injection | done (merged 466009c) | 16-scenario matrix, 7 gap tests, 2 real bugs fixed (two-holders race, partition-during-restore); 248 tests; live drill pending |
 | #31 ceremonies doc | done (merged d0c9312) | ceremonies.md v0.2, approval pending governance |
 
 ## Next action

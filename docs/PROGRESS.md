@@ -31,8 +31,8 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #11 lifecycle mutations | done (3baadae, merged c0040ad) | clusterctl/lifecycle.py+audit+idempotency+locks, 28 tests, live cycle verified |
 | #12 provisioning | done (merged 0587848) | clusterctl/provision.py, tests 40 pass, live cycle verified (key custody, seed staging, confirm, expiry fail-closed) |
 | #13 pilot | pending (needs volunteer + provider creds) | #12 infra ready |
-| #14 quiesced snapshots | design ready | docs/design/quiesced-snapshots.md |
-| #15 backups | design ready, restic installed | docs/design/backup-targets.md (A=legion SFTP; paid options parked for Nicolás) |
+| #14 quiesced snapshots | implementing (delegated deleg_ae2451ba) | docs/design/quiesced-snapshots.md |
+| #15 backups | restic installed; SFTP keypair generated; legion target A requested via bridge | docs/design/backup-targets.md |
 | #17-#20 (M4 clusterd) | design ready | docs/design/clusterd.md |
 | #27-#30 (M7 leases) | design ready | docs/design/lease-registry.md (ADR D1 fulfilled) |
 

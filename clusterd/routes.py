@@ -162,6 +162,43 @@ ROUTES: list[Route] = [
         required_scope="mutate",
         confirmation_required=True,
     ),
+    Route(
+        method="POST",
+        path="/v1/instances/{name}/snapshot",
+        operation_id="snapshotInstance",
+        summary="Quiesced snapshot: park writers, checkpoint DBs, capture, "
+                "verify, write backup manifest (issue #23)",
+        handler="snapshot",
+        scope="backup:write",
+        clusterctl="clusterctl snapshot create <name> "
+                   "--idempotency-key <key> --json",
+        mutation=True,
+        required_scope="mutate",
+    ),
+    Route(
+        method="POST",
+        path="/v1/instances/{name}/park",
+        operation_id="parkInstance",
+        summary="Park a daimon's writers (SIGSTOP hermes; issue #23)",
+        handler="park_wake",
+        scope="lifecycle:write",
+        clusterctl="clusterctl park <name> --idempotency-key <key> --json",
+        idempotency_required=True,
+        mutation=True,
+        required_scope="mutate",
+    ),
+    Route(
+        method="POST",
+        path="/v1/instances/{name}/wake",
+        operation_id="wakeInstance",
+        summary="Wake a parked daimon (SIGCONT hermes; issue #23)",
+        handler="park_wake",
+        scope="lifecycle:write",
+        clusterctl="clusterctl wake <name> --idempotency-key <key> --json",
+        idempotency_required=True,
+        mutation=True,
+        required_scope="mutate",
+    ),
     # Lease routes (issue #27 milestone): add Route entries here, e.g.
     #   GET  /v1/leases            -> clusterctl lease list --json
     #   POST /v1/leases/{identity}/park  (idempotency_required, mutation)

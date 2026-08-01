@@ -156,7 +156,16 @@ class ClusterdHandler(BaseHTTPRequestHandler):
 
         # 4. unattended steward denial (403) — v1 mechanism; M5 lands
         #    the real presence flow (see clusterd.confirm docstring).
-        if route.mutation and confirm.steward_requires_attendance(record["actor"]):
+        #    Challenge-only requests on confirmation-gated routes are
+        #    PREPARATION, not execution: an unattended steward may obtain
+        #    a challenge (it mutates nothing — execution still requires
+        #    X-Attended AND the single-use digest-bound token).
+        challenge_only = (
+            getattr(route, "confirmation_required", False)
+            and self.headers.get("X-Confirm-Token") is None
+        )
+        if route.mutation and not challenge_only and \
+                confirm.steward_requires_attendance(record["actor"]):
             if (self.headers.get("X-Attended") or "").lower() != \
                     confirm.ATTENDED_HEADER_VALUE:
                 return ctx, self._deny(ctx, route, path, 403,

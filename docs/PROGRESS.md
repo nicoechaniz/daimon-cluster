@@ -33,21 +33,25 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #13 pilot | pending (needs volunteer + provider creds) | #12 infra ready |
 | #14 quiesced snapshots | done (merged 3b8ae44) | clusterctl/snapshot.py, 49 tests, live cycle verified |
 | #16 restore drill | drill 1 PASS (merged 1928976) | docs/verification/restore-drill-1.md; restic-class drill pending #15 |
-| #15 backups | restic installed; SFTP keypair generated; legion target A requested via bridge | docs/design/backup-targets.md |
+| #15 backups | restic init blocked: legion sshd not on anyVPN (connection refused) — reported | password + keypair ready, script fail-closed |
 | #17 clusterd API | done (merged fe02f39) | clusterd/, 72 tests, live verified (health/instances/restart/replay via HTTP); OpenAPI doc committed |
 | #18 auth/confirmations | done (merged e884312) | clusterd/auth.py+confirm.py, 82 tests, live battery 8/8 (401/403/revocation/challenge/steward) |
 | #19 audit hash-chain | done (merged 52f76a6) | seq+prev_sha256+HWM, reconcile, health audit_chain_ok; 91 tests; live verified on real log |
 | #20 clusterd deploy | done (merged 21b3d79) | systemd hardened, /opt deploy, socket-direct (no setuid), loopback-only, reboot rows in drill |
 | M4 gate | code complete (#17-#20); formal gate open until #13 pilot (issue #17 dep) + restart drill | all four live-verified |
+| #21 steward identity | done (merged 1274c04) | multi-bind (loopback+bridge), container live, scoped tokens, invariants verified from inside, custody runbook |
+| #22 steward read tools | next | bridge socket live |
+| #23 steward mutation tools | pending | X-Attended + confirmations exist |
 | #27-#30 (M7 leases) | design ready | docs/design/lease-registry.md (ADR D1 fulfilled) |
 
 ## Next action
 
-1. #11 lifecycle (delegated deleg_a4c85144): on completion review + run
-   suite + live create/delete cycle on throwaway container + commit.
-2. Push coordination: legion fetches main (requests #1-#5 sent).
-3. Restart drill: docs/runbooks/host-restart-drill.md — awaits Nicolás.
-4. #12 provisioning implementation (design ready) → #13 pilot.
+1. #22 steward read-only tools (cluster_list/health/logs/backups as
+   mechanical maps of clusterd read routes).
+2. #15 restic init when the legion fixes sshd on anyVPN.
+3. #23 gated mutation tools → M5 gate (also needs restart drill).
+4. Push coordination: legion fetches main (requests #1-#14 sent; #6-#9,
+   #13 confirmed pushed).
 
 ## Key decisions this stretch
 

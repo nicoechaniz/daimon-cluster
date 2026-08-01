@@ -1,0 +1,7 @@
+# clusterctl v0.1.0 configuration (issue #10).
+schema: clusterctl-config/v1
+host_id: daimonmatrix
+incus_project: default
+managed_prefix: ""
+profile: tribe-agent
+state_dir: /var/lib/daimon-cluster

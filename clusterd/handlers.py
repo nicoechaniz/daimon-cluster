@@ -38,6 +38,7 @@ from clusterctl import lifecycle
 from clusterctl.config import load_config
 
 from . import __version__
+import steward_tools.mutations as mutations
 
 # clusterctl.cli.run prints JSON to stdout/stderr; capture is
 # process-global, so serialize invocations (ThreadingHTTPServer serves
@@ -102,6 +103,7 @@ class Deps:
     config_path: str
     state_dir: str | None = None
     adapter_factory: object | None = None  # callable () -> Adapter, or None=live
+    clusterd_base_url: str = "http://127.0.0.1:8785"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -456,6 +458,26 @@ def audit_tail(deps: Deps, ctx: RequestContext, query=None, **params) -> Respons
     return Response(200, result)
 
 
+def list_leases(deps: Deps, ctx: RequestContext, **params) -> Response:
+    """GET /v1/leases — list all non-expired daimon presence leases.
+
+    Reads the same ``state_dir/leases/*.json`` files written by
+    ``clusterctl.leases.LeaseStore``. Returns a list of status dicts
+    filtered to non-expired entries (lease files may exist on disk
+    past expiry until garbage-collected — the API filters them out).
+    """
+    from clusterctl.leases import LeaseStore
+
+    state_dir = deps.state_dir
+    if state_dir is None:
+        state_dir = load_config(deps.config_path).state_dir
+    store = LeaseStore(state_dir)
+    all_leases = store.list_all()
+    # Filter to non-expired leases.
+    non_expired = [st for st in all_leases if not st.get("expired", True)]
+    return Response(200, non_expired)
+
+
 def dashboard(deps: Deps, ctx: RequestContext, **params) -> Response:
     """GET /v1/dashboard — HTMX fleet dashboard (single-page app).
 
@@ -478,6 +500,139 @@ def destroy(deps: Deps, ctx: RequestContext, name: str, route=None,
     """
     return _error(501, "destroy confirmed; execution is a later milestone",
                   "destroy", name, ctx.request_id)
+
+
+def dashboard_prepare(deps: Deps, ctx: RequestContext, route=None,
+                      query=None, _body=None, **params) -> Response:
+    """POST /v1/dashboard/prepare — propose a mutation, return plan JSON.
+
+    Reads operation + target from JSON body, calls the appropriate
+    steward_tools.mutations.propose_<op>, returns the MutationPlan as JSON.
+    NO mutation occurs. For restore: checks instance state first (409 if running).
+    """
+    body = _body or {}
+    operation = str(body.get("operation", "")).strip()
+    target = str(body.get("target", "")).strip()
+
+    if not operation or not target:
+        return _error(400, "operation and target are required",
+                      operation or "?", target or "?", ctx.request_id)
+
+    valid_ops = {"start", "stop", "restart", "snapshot", "destroy", "restore"}
+    if operation not in valid_ops:
+        return _error(400, f"unknown operation {operation!r}",
+                      operation, target, ctx.request_id)
+
+    # restore pre-condition: instance must not be running
+    if operation == "restore":
+        resp = get_instance(deps, ctx, target)
+        if resp.status == 200 and isinstance(resp.body, dict):
+            state = str(resp.body.get("state", "")).lower()
+            if state == "running":
+                return _error(409,
+                              "instance must be stopped before restore",
+                              operation, target, ctx.request_id)
+
+    _propose = {
+        "start": mutations.propose_start,
+        "stop": mutations.propose_stop,
+        "restart": mutations.propose_restart,
+        "snapshot": mutations.propose_snapshot,
+        "destroy": mutations.propose_destroy,
+        "restore": mutations.propose_restore,
+    }[operation]
+
+    try:
+        plan = _propose(target)
+    except ValueError as exc:
+        return _error(400, str(exc), operation, target, ctx.request_id)
+    except Exception as exc:
+        return _error(502, f"clusterd internal: {exc!r}", operation,
+                      target, ctx.request_id)
+
+    plan_dict = dataclasses.asdict(plan)
+    return Response(200, plan_dict)
+
+
+def _plan_from_json(plan_json: dict) -> mutations.MutationPlan:
+    """Reconstruct a MutationPlan from its JSON dict representation."""
+    return mutations.MutationPlan(
+        operation=plan_json.get("operation", ""),
+        target=plan_json.get("target", ""),
+        impact=plan_json.get("impact", ""),
+        destructive=plan_json.get("destructive", False),
+        action_digest=plan_json.get("action_digest", ""),
+        created_ms=plan_json.get("created_ms", 0),
+        ttl_s=plan_json.get("ttl_s", mutations.PLAN_TTL_S),
+        challenge_token=plan_json.get("challenge_token"),
+        display_text=plan_json.get("display_text", ""),
+        actor=plan_json.get("actor", mutations.PLAN_ACTOR),
+        args=dict(plan_json.get("args") or {}),
+        used=plan_json.get("used", False),
+    )
+
+
+def dashboard_confirm(deps: Deps, ctx: RequestContext, route=None,
+                      query=None, _body=None, **params) -> Response:
+    """POST /v1/dashboard/confirm — execute a previously proposed plan.
+
+    Reconstructs the MutationPlan from the JSON body, validates typed-name
+    for destructive operations, then calls confirm_plan with the dashboard's
+    bearer token as the mutation auth. Returns the result dict inline.
+    """
+    body = _body or {}
+    operation = str(body.get("operation", "")).strip()
+    target = str(body.get("target", "")).strip()
+    plan_json = body.get("plan") or {}
+    human_turn_id = str(body.get("human_turn_id", str(int(time.time()))))
+
+    if not plan_json:
+        return _error(400, "plan is required (field 'plan' missing)",
+                      operation or "?", target or "?", ctx.request_id)
+
+    plan = _plan_from_json(plan_json)
+
+    # Destroy: server-side typed-name validation (defense in depth —
+    # client-side also validates, but we never trust the client).
+    if plan.operation == "destroy":
+        typed_name = str(body.get("typed_name", "")).strip()
+        if not typed_name or typed_name != plan.target:
+            return Response(400, {
+                "schema": mutations.RESULT_SCHEMA,
+                "ok": False,
+                "operation": operation,
+                "target": target,
+                "refused": "typed-name-mismatch",
+                "error": "typed_name must EXACTLY match the target (case-sensitive)",
+            })
+    else:
+        typed_name = None
+
+    # Use the dashboard's bearer token for the mutation call.
+    mc = mutations.MutationClient(token_override=ctx.scope_token)
+    result = mutations.confirm_plan(
+        plan, human_turn_id=human_turn_id,
+        typed_name=typed_name, client=mc,
+    )
+
+    if result.get("ok"):
+        return Response(200, result)
+    elif result.get("refused"):
+        return Response(400, result)
+    else:
+        return Response(500, result)
+
+
+def restore_instance(deps: Deps, ctx: RequestContext, name: str,
+                     route=None, **params) -> Response:
+    """POST /v1/instances/{name}/restore — placeholder.
+
+    Execution (snapshot-to-instance restore) is a later milestone.
+    The pre-condition check (instance must be stopped) runs in the
+    dashboard_prepare route.
+    """
+    return _error(501, "restore confirmed; execution is a later milestone",
+                  "restore", name, ctx.request_id)
 
 
 _DASHBOARD_HTML = r"""<!DOCTYPE html>
@@ -718,6 +873,16 @@ function renderFleet(event){
         h+=capBar(cpuPct,'CPU');h+=capBar(memPct,'MEM');h+=capBar(diskPct,'Disk');
         h+='</div>';
       }
+      h+='<div id="confirm-'+escHtml(d.name)+'" style="margin-top:6px"></div>';
+      h+='<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">';
+      var st=d.state?d.state.toLowerCase():'';
+      if(st!=='running')h+='<button class="btn btn-sm" onclick="dashPrepare(\''+escHtml(d.name)+'\',\'start\')">\u25b6 Start</button>';
+      if(st==='running')h+='<button class="btn btn-sm" onclick="dashPrepare(\''+escHtml(d.name)+'\',\'stop\')">\u23f9 Stop</button>';
+      if(st==='running')h+='<button class="btn btn-sm" onclick="dashPrepare(\''+escHtml(d.name)+'\',\'restart\')">\u21bb Restart</button>';
+      h+='<button class="btn btn-sm" onclick="dashPrepare(\''+escHtml(d.name)+'\',\'snapshot\')">\ud83d\udcf8 Backup</button>';
+      h+='<button class="btn btn-sm" style="border-color:var(--bad);color:var(--bad)" onclick="dashPrepare(\''+escHtml(d.name)+'\',\'destroy\')">\ud83d\uddd1 Destroy</button>';
+      if(st==='stopped')h+='<button class="btn btn-sm" onclick="dashPrepare(\''+escHtml(d.name)+'\',\'restore\')">\u267b Restore</button>';
+      h+='</div>';
       h+='</div>';
     });
     el.innerHTML=h;
@@ -774,6 +939,107 @@ function renderActivity(event){
 
 function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 
+// ── Dashboard mutation: prepare → confirm two-phase flow ──────────
+var _pendingPlans={};
+
+function dashPrepare(target,operation){
+  var payload={operation:operation,target:target};
+  var bannerEl=document.getElementById('confirm-'+target);
+  bannerEl.innerHTML='<span class="muted">Preparing...</span>';
+  fetch('/v1/dashboard/prepare',{
+    method:'POST',
+    headers:{'Authorization':'Bearer '+getToken(),'Content-Type':'application/json'},
+    body:JSON.stringify(payload)
+  })
+  .then(function(r){return r.json().then(function(d){return{status:r.status,data:d}})})
+  .then(function(result){
+    if(result.status===409){
+      bannerEl.innerHTML='<div class="alert">'+escHtml(result.data.error||'Conflict')+'</div>';
+      return;
+    }
+    if(result.status!==200){
+      bannerEl.innerHTML='<div class="alert" style="border-color:var(--bad);color:var(--bad)">'+escHtml(result.data.error||'Error '+result.status)+'</div>';
+      return;
+    }
+    _pendingPlans[target]=result.data;
+    dashRenderBanner(target,result.data);
+  })
+  .catch(function(e){
+    bannerEl.innerHTML='<div class="alert" style="border-color:var(--bad);color:var(--bad)">'+escHtml(e.message)+'</div>';
+  });
+}
+
+function dashRenderBanner(target,plan){
+  var el=document.getElementById('confirm-'+target);
+  var destructive=plan.destructive;
+  var digest=plan.action_digest||'';
+  var h='<div style="background:var(--bg);border:1px solid '+(destructive?'var(--bad)':'var(--accent)')+';border-radius:6px;padding:10px;margin-top:6px">';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+  h+='<strong style="font-size:0.85rem">'+escHtml(plan.operation)+' '+escHtml(plan.target)+'</strong>';
+  if(destructive)h+='<span class="badge badge-bad">DESTRUCTIVE</span>';
+  h+='</div>';
+  h+='<div class="muted" style="margin-bottom:6px">'+escHtml(plan.impact)+'</div>';
+  h+='<div style="font-size:0.72rem;color:var(--muted);margin-bottom:6px">';
+  h+='digest: <code>'+escHtml(digest.substring(0,12))+'\u2026</code> \u00b7 ';
+  h+='expires: '+plan.ttl_s+'s';
+  h+='</div>';
+  if(destructive){
+    h+='<input type="text" id="typed-name-'+escHtml(target)+'" placeholder="Type \''+escHtml(plan.target)+'\' to confirm" ';
+    h+='oninput="dashCheckTypedName(\''+escHtml(target)+'\')" ';
+    h+='style="margin-bottom:6px;font-size:0.85rem">';
+  }
+  h+='<div style="display:flex;gap:6px">';
+  var disabled=destructive?' disabled':'';
+  h+='<button class="btn btn-sm" style="background:var(--ok);color:#000;border-color:var(--ok)" id="confirm-btn-'+escHtml(target)+'"'+disabled+' onclick="dashConfirm(\''+escHtml(target)+'\')">Confirm</button>';
+  h+='<button class="btn btn-sm" onclick="dashCancel(\''+escHtml(target)+'\')">Cancel</button>';
+  h+='</div>';
+  h+='<div id="confirm-result-'+escHtml(target)+'" style="margin-top:6px"></div>';
+  h+='</div>';
+  el.innerHTML=h;
+}
+
+function dashCheckTypedName(target){
+  var input=document.getElementById('typed-name-'+target);
+  var btn=document.getElementById('confirm-btn-'+target);
+  var plan=_pendingPlans[target];
+  btn.disabled=!input||input.value!==(plan?plan.target:'');
+}
+
+function dashConfirm(target){
+  var plan=_pendingPlans[target];
+  if(!plan)return;
+  var resultEl=document.getElementById('confirm-result-'+target);
+  var body={operation:plan.operation,target:plan.target,plan:plan,human_turn_id:String(Date.now())};
+  if(plan.destructive){
+    body.typed_name=document.getElementById('typed-name-'+target).value;
+  }
+  fetch('/v1/dashboard/confirm',{
+    method:'POST',
+    headers:{'Authorization':'Bearer '+getToken(),'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  })
+  .then(function(r){return r.json().then(function(d){return{status:r.status,data:d}})})
+  .then(function(result){
+    if(result.data.ok){
+      resultEl.innerHTML='<div style="color:var(--ok);font-weight:600;font-size:0.85rem">\u2713 '+escHtml(plan.operation)+' '+escHtml(plan.target)+' \u2014 success</div>';
+    }else if(result.data.refused){
+      resultEl.innerHTML='<div style="color:var(--degraded);font-weight:600;font-size:0.85rem">\u26a0 '+escHtml(result.data.refused||'refused')+': '+escHtml(result.data.error||'')+'</div>';
+    }else{
+      resultEl.innerHTML='<div style="color:var(--bad);font-weight:600;font-size:0.85rem">\u2717 Error: '+escHtml(result.data.error||'unknown')+'</div>';
+    }
+    delete _pendingPlans[target];
+  })
+  .catch(function(e){
+    resultEl.innerHTML='<div style="color:var(--bad);font-weight:600;font-size:0.85rem">\u2717 '+escHtml(e.message)+'</div>';
+  });
+}
+
+function dashCancel(target){
+  var el=document.getElementById('confirm-'+target);
+  el.innerHTML='';
+  delete _pendingPlans[target];
+}
+
 // Filter button logic
 document.addEventListener('click',function(ev){
   if(!ev.target.classList.contains('filter-btn'))return;
@@ -806,4 +1072,8 @@ HANDLERS = {
     "list_backups": list_backups,
     "audit_tail": audit_tail,
     "dashboard": dashboard,
+    "list_leases": list_leases,
+    "dashboard_prepare": dashboard_prepare,
+    "dashboard_confirm": dashboard_confirm,
+    "restore_instance": restore_instance,
 }

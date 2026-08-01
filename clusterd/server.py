@@ -213,6 +213,15 @@ class ClusterdHandler(BaseHTTPRequestHandler):
         split = urlsplit(self.path)
         path = split.path
         query = parse_qs(split.query)
+        # Read POST body for dashboard mutation routes.
+        _body: dict = {}
+        if method == "POST":
+            cl = int(self.headers.get("Content-Length", 0))
+            if 0 < cl < 65536:
+                try:
+                    _body = json.loads(self.rfile.read(cl))
+                except (json.JSONDecodeError, Exception):
+                    pass
         try:
             route, params = routes.match(method, path)
         except routes.MethodNotAllowed:
@@ -238,7 +247,7 @@ class ClusterdHandler(BaseHTTPRequestHandler):
         handler = handlers.HANDLERS[route.handler]
         try:
             resp = handler(self.server.deps, ctx, route=route, query=query,
-                           **params)
+                           _body=_body, **params)
         except Exception as exc:  # pragma: no cover - defensive
             resp = handlers.Response(500, {
                 "error": f"clusterd internal error: {exc!r}",

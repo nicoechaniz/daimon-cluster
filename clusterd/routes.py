@@ -248,11 +248,50 @@ ROUTES: list[Route] = [
         scope="fleet:read",
         clusterctl="thin client of GET /v1/{instances,health,backups,audit}",
     ),
-    # Lease routes (issue #27 milestone): add Route entries here, e.g.
-    #   GET  /v1/leases            -> clusterctl lease list --json
+    Route(
+        method="GET",
+        path="/v1/leases",
+        operation_id="listLeases",
+        summary="List all non-expired daimon presence leases (CAS fencing + TTL)",
+        handler="list_leases",
+        scope="fleet:read",
+        clusterctl="reads state_dir/leases/*.json (same files LeaseStore writes)",
+    ),
+    # Future lease mutation routes (issue #28):
+    #   POST /v1/leases/acquire  (steward mutation, idempotency_required)
     #   POST /v1/leases/{identity}/park  (idempotency_required, mutation)
     #   POST /v1/leases/{identity}/wake  (idempotency_required, mutation)
-    # plus matching handlers — server + OpenAPI pick them up for free.
+    Route(
+        method="POST",
+        path="/v1/dashboard/prepare",
+        operation_id="prepareDashboardMutation",
+        summary="Phase 1: propose a dashboard mutation, returns plan JSON (no mutation)",
+        handler="dashboard_prepare",
+        scope="dashboard:prepare",
+        clusterctl="n/a (local plan proposal; calls steward_tools.mutations.propose_<op>)",
+    ),
+    Route(
+        method="POST",
+        path="/v1/dashboard/confirm",
+        operation_id="confirmDashboardMutation",
+        summary="Phase 2: execute a dashboard-prepared mutation plan (idempotent via digest-derived key)",
+        handler="dashboard_confirm",
+        scope="dashboard:confirm",
+        clusterctl="n/a (execution; calls steward_tools.mutations.confirm_plan)",
+        mutation=True,
+        required_scope="mutate",
+    ),
+    Route(
+        method="POST",
+        path="/v1/instances/{name}/restore",
+        operation_id="restoreInstance",
+        summary="Restore an instance from its most recent backup (placeholder; execution is a later milestone)",
+        handler="restore_instance",
+        scope="restore:write",
+        clusterctl="clusterctl restore <name> (placeholder; future milestone)",
+        mutation=True,
+        required_scope="mutate",
+    ),
 ]
 
 

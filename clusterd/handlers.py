@@ -286,6 +286,39 @@ def power(deps: Deps, ctx: RequestContext, name: str, route=None,
                                 "--json"])
 
 
+def snapshot(deps: Deps, ctx: RequestContext, name: str, route=None,
+             **params) -> Response:
+    """POST /v1/instances/{name}/snapshot — quiesced snapshot (issue #23).
+
+    Pure delegation to ``clusterctl snapshot create``: the quiesce
+    (park+checkpoint), capture, verify and manifest write all live in
+    ``clusterctl.snapshot``. The CLI requires an idempotency key, so one
+    is generated from the request id when the caller did not send an
+    Idempotency-Key header (the steward's gated flow always sends one).
+    """
+    key = ctx.idempotency_key or f"clusterd-{ctx.request_id}"
+    return _run_cli(deps, ctx, ["snapshot", "create", name,
+                                "--idempotency-key", key, "--json"])
+
+
+def park_wake(deps: Deps, ctx: RequestContext, name: str, route=None,
+              **params) -> Response:
+    """POST /v1/instances/{name}/park|wake (issue #23).
+
+    Delegates to the thin ``clusterctl park|wake`` commands, which apply
+    the full lifecycle contract (admission, idempotency, lock, audit)
+    around adapter.exec_quiesce_park / exec_unpark. Same shape as
+    ``power``: Idempotency-Key required, dedupe is clusterctl's store.
+    """
+    operation = route.path.rsplit("/", 1)[-1]
+    if not ctx.idempotency_key:
+        return _error(400, "Idempotency-Key header is required",
+                      operation, name, ctx.request_id)
+    return _run_cli(deps, ctx, [operation, name,
+                                "--idempotency-key", ctx.idempotency_key,
+                                "--json"])
+
+
 def list_backups(deps: Deps, ctx: RequestContext, **params) -> Response:
     """Newest cluster-backup-manifest/v1 per daimon.
 
@@ -338,6 +371,8 @@ HANDLERS = {
     "get_instance": get_instance,
     "logs": logs,
     "power": power,
+    "snapshot": snapshot,
+    "park_wake": park_wake,
     "destroy": destroy,
     "list_backups": list_backups,
 }

@@ -111,6 +111,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_stop.add_argument("--timeout", type=int, default=lifecycle.STOP_DEFAULT_TIMEOUT,
                         help="graceful stop timeout in seconds (default: %(default)s)")
     _mutation("restart", "restart a declared (running) instance")
+    _mutation("park", "park a declared daimon's writers (SIGSTOP hermes, issue #23)")
+    _mutation("wake", "wake a parked daimon (SIGCONT hermes, issue #23)")
 
     p_logs = sub.add_parser("logs", help="fetch instance logs (bounded, secrets redacted)")
     p_logs.add_argument("name", help="instance name")
@@ -227,7 +229,8 @@ def run(argv=None, adapter=None) -> int:
         cfg = _resolve_config(args)
 
         if args.command in ("create", "start", "stop", "restart", "logs",
-                            "destroy-plan", "provision", "snapshot"):
+                            "destroy-plan", "provision", "snapshot",
+                            "park", "wake"):
             ad = adapter if adapter is not None else _adapter_for(cfg)
             return lifecycle.dispatch(args, cfg, ad)
 

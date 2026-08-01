@@ -139,8 +139,14 @@ def test_package_has_no_shell_or_mutation_constructs():
         src = path.read_text(encoding="utf-8")
         assert "subprocess" not in src, f"{path.name}: shell construct"
         assert "os.system" not in src, f"{path.name}: shell construct"
+    # The READ path stays read-only by construction: client.py and
+    # tools.py contain no mutation-verb method strings (GET only).
+    # mutations.py (issue #23) legitimately issues mutation requests —
+    # its gate is covered by tests/test_steward_mutations.py.
+    for name in ("client.py", "tools.py", "__init__.py"):
+        src = (PACKAGE_DIR / name).read_text(encoding="utf-8")
         assert not re.search(r"\b(POST|PUT|DELETE)\b", src), \
-            f"{path.name}: mutation-verb method string (GET only)"
+            f"{name}: mutation-verb method string (read path is GET only)"
 
 
 # --------------------------------------------------------------------------

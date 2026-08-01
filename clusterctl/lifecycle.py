@@ -303,6 +303,63 @@ def cmd_power(args, cfg, adapter, operation: str) -> int:
 
 
 # --------------------------------------------------------------------------
+# park / wake (issue #23) — quiesce primitives as first-class mutations
+# --------------------------------------------------------------------------
+
+PARK_QUIESCE_TIMEOUT_S = 30
+
+
+def cmd_parkwake(args, cfg, adapter, operation: str) -> int:
+    """``park`` freezes the daimon's writers (SIGSTOP hermes); ``wake``
+    resumes them (SIGCONT). Same admission/idempotency/lock/audit contract
+    as every other lifecycle mutation; the adapter only executes."""
+    name = args.name
+    store = idempotency.load_store(cfg.state_dir)
+    rc = _check_idempotency(args, cfg, operation, name, store)
+    if rc is not None:
+        return rc
+
+    specs = load_specs(cfg.instances_dir)
+    if name not in specs:
+        return _fail(args, cfg, operation, name,
+                     f"instance {name!r} is not declared", EXIT_NOT_FOUND)
+
+    lock_ctx = _lock_or_fail(args, cfg, operation, name)
+    if isinstance(lock_ctx, int):
+        return lock_ctx
+    with lock_ctx as acquired:
+        stale = _stale_detail(acquired)
+        try:
+            if operation == "park":
+                ok = bool(adapter.exec_quiesce_park(
+                    name, PARK_QUIESCE_TIMEOUT_S))
+            else:  # wake
+                ok = bool(adapter.exec_unpark(name))
+        except Exception as exc:
+            return _fail(args, cfg, operation, name,
+                         f"{operation} failed: {exc}", EXIT_INTERNAL,
+                         audit_result="error", detail=stale)
+        if not ok:
+            return _fail(args, cfg, operation, name,
+                         f"{operation} failed: daimon did not quiesce"
+                         if operation == "park" else
+                         f"{operation} failed: daimon did not resume",
+                         EXIT_INTERNAL, audit_result="error", detail=stale)
+
+        state = "parked" if operation == "park" else "running"
+        result = {
+            "operation": operation,
+            "name": name,
+            "result": "ok",
+            "state": state,
+            "idempotency_key": _idem_key(args),
+        }
+        _record_idempotency(args, cfg, operation, name, store, result)
+        _audit_ok(args, cfg, operation, name, {"state": state, **stale})
+        _emit(args, result, f"{operation} {name}: ok (state {state})")
+        return EXIT_OK
+
+# --------------------------------------------------------------------------
 # logs
 # --------------------------------------------------------------------------
 
@@ -417,6 +474,8 @@ def dispatch(args, cfg, adapter) -> int:
             return cmd_create(args, cfg, adapter)
         if args.command in ("start", "stop", "restart"):
             return cmd_power(args, cfg, adapter, args.command)
+        if args.command in ("park", "wake"):
+            return cmd_parkwake(args, cfg, adapter, args.command)
         if args.command == "logs":
             return cmd_logs(args, cfg, adapter)
         if args.command == "destroy-plan":

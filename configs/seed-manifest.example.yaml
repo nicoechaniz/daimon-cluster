@@ -1,0 +1,30 @@
+# Example seed manifest (seed-manifest/v1) for provisioning (#12).
+#
+# A seed is CURATED: the human behind the daimon approves this list during
+# the onboarding ceremony. Never seed credentials, provider configs,
+# session histories, or bridge private keys.
+#
+# kinds:
+#   file      — a local file, sha256-verified BEFORE staging into the container
+#   git-repo  — a repository ref staged by clone (public or state-repo)
+#   skill-ref — a reference to a curated skill bundle version (provenance only;
+#               the actual bytes ship inside tribe-base image versions)
+#
+# Every staged item lands with a provenance record at
+# /home/agent/.hermes/agent-memory/state/SEED-PROVENANCE inside the container.
+schema: seed-manifest/v1
+daimon: example@daimonmatrix
+curated_by: nico
+curated_ms: 1754054400000
+items:
+  - kind: file
+    source: configs/example-seed-note.md   # path relative to repo root
+    sha256: "99ec8de469acb89fcef6584ac2f886e4177c51e18ae2808a1f76e9bbdbfa41be"
+    target: /home/agent/.hermes/agent-memory/state/SEED-NOTE.md
+  # - kind: git-repo
+  #   source: https://github.com/nicoechaniz/example-state.git
+  #   ref: "abc1234"
+  #   target: /home/agent/state-repo
+  # - kind: skill-ref
+  #   source: tribe-skills/communication-tools
+  #   ref: "v2026-08-01"

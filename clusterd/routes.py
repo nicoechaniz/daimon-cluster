@@ -199,6 +199,55 @@ ROUTES: list[Route] = [
         mutation=True,
         required_scope="mutate",
     ),
+    Route(
+        method="GET",
+        path="/v1/audit",
+        operation_id="listAuditEvents",
+        summary="Tail of the tamper-evident audit log filtered by query params",
+        handler="audit_tail",
+        scope="fleet:read",
+        clusterctl="reads audit.jsonl directly (same file clusterctl appends to)",
+        query_params=(
+            {
+                "name": "limit",
+                "in": "query",
+                "required": False,
+                "description": "Max events returned (bounded; default 50, max 200)",
+                "schema": {"type": "integer", "default": 50, "minimum": 1,
+                           "maximum": 200},
+            },
+            {
+                "name": "actor",
+                "in": "query",
+                "required": False,
+                "description": "Filter by actor (exact match)",
+                "schema": {"type": "string"},
+            },
+            {
+                "name": "target",
+                "in": "query",
+                "required": False,
+                "description": "Filter by target (exact match)",
+                "schema": {"type": "string"},
+            },
+            {
+                "name": "action",
+                "in": "query",
+                "required": False,
+                "description": "Filter by action (exact match)",
+                "schema": {"type": "string"},
+            },
+        ),
+    ),
+    Route(
+        method="GET",
+        path="/v1/dashboard",
+        operation_id="getDashboard",
+        summary="HTMX fleet dashboard (single-page app; same auth as the API)",
+        handler="dashboard",
+        scope="fleet:read",
+        clusterctl="thin client of GET /v1/{instances,health,backups,audit}",
+    ),
     # Lease routes (issue #27 milestone): add Route entries here, e.g.
     #   GET  /v1/leases            -> clusterctl lease list --json
     #   POST /v1/leases/{identity}/park  (idempotency_required, mutation)

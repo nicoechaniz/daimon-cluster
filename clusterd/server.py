@@ -104,6 +104,9 @@ class ClusterdHandler(BaseHTTPRequestHandler):
                 target=path,
                 result="denied",
                 detail={"reason": reason, "request_id": ctx.request_id},
+                idempotency_key=ctx.idempotency_key,
+                request_id=ctx.request_id,
+                action_digest=ctx.action_digest,
             )
         except OSError:
             pass  # fail-closed for mutations is issue #19's audit work
@@ -179,12 +182,16 @@ class ClusterdHandler(BaseHTTPRequestHandler):
                 body["request_id"] = ctx.request_id
                 return ctx, handlers.Response(409, body)
             try:
-                confirm.consume_challenge(
+                challenge = confirm.consume_challenge(
                     srv.state_dir, token, operation=operation, target=name,
                     actor=record["actor"], args=args)
             except confirm.ConfirmationError as exc:
                 return ctx, self._deny(ctx, route, path, 409,
                                        "confirmation-required", exc.reason)
+            # The consumed digest flows into the mutation's audit event
+            # (issue #19): the event proves WHICH confirmed action ran.
+            ctx = dataclasses.replace(
+                ctx, action_digest=challenge.get("action_digest"))
 
         return ctx, None
 

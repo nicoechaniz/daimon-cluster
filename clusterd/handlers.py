@@ -26,8 +26,10 @@ import dataclasses
 import io
 import json
 import threading
+import time
 from pathlib import Path
 
+from clusterctl import audit
 from clusterctl import cli
 from clusterctl.config import load_config
 
@@ -42,6 +44,47 @@ EXIT_TO_HTTP = {0: 200, 2: 400, 3: 404, 6: 409, 10: 500}
 
 HEALTH_SCHEMA = "clusterd-health/v1"
 BACKUP_SUMMARY_SCHEMA = "clusterd-backup-summary/v1"
+
+# verify_chain is a full-log scan; cache per state_dir for 30s so the
+# public health probe stays cheap (issue #19).
+_AUDIT_CHAIN_CACHE_TTL_S = 30.0
+_audit_chain_cache: dict[str, tuple[float, bool]] = {}
+
+
+def _audit_chain_ok(state_dir: str) -> bool:
+    now = time.monotonic()
+    cached = _audit_chain_cache.get(state_dir)
+    if cached and now - cached[0] < _AUDIT_CHAIN_CACHE_TTL_S:
+        return cached[1]
+    try:
+        ok = bool(audit.verify_chain(state_dir)["ok"])
+    except Exception:
+        ok = False  # an unreadable audit log is NOT a healthy one
+    _audit_chain_cache[state_dir] = (now, ok)
+    return ok
+
+
+def _mirror_state(state_dir: str) -> str:
+    """"not-configured" | "ok" | "failing" (design §4 mirror placeholder).
+
+    The v1 mirror is a directory stub (``state_dir/mirror/``); issue #15
+    replaces it with real off-host targets. Configured-but-unwritable
+    (or a recorded mirror error from the last append) is "failing" —
+    health degrades WITHOUT dropping local events: audit.append_event
+    never raises on mirror failure, it only records ``mirror-last-error``.
+    """
+    mirror_dir = Path(state_dir) / audit.MIRROR_DIR
+    if not mirror_dir.is_dir():
+        return "not-configured"
+    if (Path(state_dir) / audit.MIRROR_ERROR_FILE).exists():
+        return "failing"
+    try:
+        probe = mirror_dir / ".probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError:
+        return "failing"
+    return "ok"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -69,6 +112,7 @@ class RequestContext:
     scope_token: str | None
     idempotency_key: str | None = None
     token_record: dict | None = None
+    action_digest: str | None = None  # consumed confirmation digest (#19)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -105,6 +149,9 @@ def _run_cli(deps: Deps, ctx: RequestContext, argv: list[str]) -> Response:
     if deps.state_dir is not None:
         full_argv += ["--state-dir", deps.state_dir]
     full_argv += ["--actor", ctx.actor]
+    full_argv += ["--request-id", ctx.request_id]
+    if ctx.action_digest:
+        full_argv += ["--action-digest", ctx.action_digest]
     full_argv += argv
 
     out_buf, err_buf = io.StringIO(), io.StringIO()
@@ -157,11 +204,25 @@ def health(deps: Deps, ctx: RequestContext, **params) -> Response:
         reachable = code == 0
     except Exception:
         reachable = False
+    state_dir = deps.state_dir
+    if state_dir is None:
+        try:
+            state_dir = load_config(deps.config_path).state_dir
+        except Exception:
+            state_dir = None
+    chain_ok = _audit_chain_ok(state_dir) if state_dir else False
+    mirror = _mirror_state(state_dir) if state_dir else "failing"
+    # A broken audit chain or a configured-but-failing mirror degrades
+    # health; local events are NEVER dropped for a mirror failure
+    # (design §4 — the local log is the source of truth).
+    healthy = reachable and chain_ok and mirror != "failing"
     return Response(200, {
         "schema": HEALTH_SCHEMA,
-        "status": "ok" if reachable else "degraded",
+        "status": "ok" if healthy else "degraded",
         "version": __version__,
         "clusterctl_reachable": reachable,
+        "audit_chain_ok": chain_ok,
+        "mirror_state": mirror,
     })
 
 

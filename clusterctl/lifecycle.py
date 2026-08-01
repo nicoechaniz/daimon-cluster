@@ -60,6 +60,12 @@ def _actor(args) -> str:
 def _idem_key(args) -> str | None:
     return getattr(args, "idempotency_key", None)
 
+def _request_id(args) -> str | None:
+    return getattr(args, "request_id", None)
+
+def _action_digest(args) -> str | None:
+    return getattr(args, "action_digest", None)
+
 
 def _emit(args, payload: dict, human: str) -> None:
     if getattr(args, "json", False):
@@ -83,6 +89,8 @@ def _fail(args, cfg, action: str, target: str, message: str, code: int,
         result=audit_result,
         detail=det,
         idempotency_key=_idem_key(args),
+        request_id=_request_id(args),
+        action_digest=_action_digest(args),
     )
     if getattr(args, "json", False):
         payload = {"error": message, "action": action, "target": target}
@@ -104,6 +112,8 @@ def _audit_ok(args, cfg, action: str, target: str, detail: dict | None = None) -
         result="ok",
         detail=detail or {},
         idempotency_key=_idem_key(args),
+        request_id=_request_id(args),
+        action_digest=_action_digest(args),
     )
 
 

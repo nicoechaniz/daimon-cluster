@@ -1,6 +1,15 @@
 # Provisioning flow: governed identity, bridge keys, curated seed (issue #12 design)
 
-Status: design v0.1 (2026-08-01), implementation lands in clusterctl #12.
+### Live-verified image facts (2026-08-01, checked on iso-a)
+
+- `ssh-keygen` IS present in tribe-base (ed25519 generation works).
+- `python3-cryptography` is NOT present → key generation uses the
+  ssh-keygen path (OpenSSH ed25519 format, which the v1 bridge accepts).
+- `/home/agent` does NOT exist in the image: tribe-base v1 runs the agent
+  workload as root inside the isolated container. `provision prepare`
+  creates `/home/agent` (mkdir -p, mode 0750) as the key/seed home. A
+  dedicated unprivileged user inside containers is a hardening upgrade
+  for a later image version — recorded here, not blocking the pilot.
 Inputs: ADR-001 (D3 one state repo per daimon, D6 anyVPN, onboarding D8),
 contracts (#4), tribe-agent profile + volume layout (#8), tribe bridge v1
 protocol (tribe-bridge repo docs/v1-cutover.md).

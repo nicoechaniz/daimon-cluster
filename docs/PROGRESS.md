@@ -34,7 +34,10 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #14 quiesced snapshots | done (merged 3b8ae44) | clusterctl/snapshot.py, 49 tests, live cycle verified |
 | #16 restore drill | drill 1 PASS (merged 1928976) | docs/verification/restore-drill-1.md; restic-class drill pending #15 |
 | #15 backups | restic installed; SFTP keypair generated; legion target A requested via bridge | docs/design/backup-targets.md |
-| #17-#20 (M4 clusterd) | design ready | docs/design/clusterd.md |
+| #17 clusterd API | implementing (delegated deleg_157008c0) | docs/design/clusterd.md; gate note: issue declares dep on #13 — code proceeds, M4 gate stays open until pilot |
+| #18 auth/confirmations | pending | design §2 ready |
+| #19 audit hash-chain | pending | design §3 ready |
+| #20 clusterd deploy | pending | design §4 ready; restart drill input |
 | #27-#30 (M7 leases) | design ready | docs/design/lease-registry.md (ADR D1 fulfilled) |
 
 ## Next action

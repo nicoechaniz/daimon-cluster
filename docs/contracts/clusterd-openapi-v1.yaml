@@ -218,14 +218,14 @@ paths:
         '500':
           description: internal error (CLI exit 10)
           content: *id004
-  /v1/instances/{name}/start:
-    post:
-      operationId: startInstance
-      summary: Start a declared instance
-      description: "Delegates to `clusterctl start <name> --idempotency-key <key>\
-        \ --json` \u2014 the same code path as the CLI; clusterd adds no business\
-        \ logic.\n\nRequired bearer scope: `mutate` \u2014 enforced (issue #18). Owner-scoped\
-        \ tokens may only touch daimons whose spec created_by matches the owner."
+  /v1/instances/{name}/logs:
+    get:
+      operationId: getInstanceLogs
+      summary: 'Bounded, secret-redacted instance logs (steward window, issue #22)'
+      description: "Delegates to `clusterctl logs <name> --lines <n> --json` \u2014\
+        \ the same code path as the CLI; clusterd adds no business logic.\n\nRequired\
+        \ bearer scope: `read` \u2014 enforced (issue #18). Owner-scoped tokens may\
+        \ only touch daimons whose spec created_by matches the owner."
       parameters:
       - name: X-Request-Id
         in: header
@@ -246,34 +246,16 @@ paths:
         required: true
         schema:
           type: string
-      - name: Idempotency-Key
-        in: header
-        required: true
-        description: 'uuid. Retry with the same key replays the cached clusterctl
-          result (idempotent-replay: true); reuse for a different operation/target
-          is a 409 conflict. Dedupe is clusterctl''s own idempotency store.'
-        schema:
-          type: string
-          format: uuid
-      - name: X-Attended
-        in: header
+      - name: lines
+        in: query
         required: false
-        description: Human presence marker REQUIRED for tokens whose actor is steward@*
-          (v1 unattended-steward denial; real presence flow lands in M5). Missing
-          -> 403 unattended-steward-denied.
+        description: Max log lines returned (bounded; clusterctl clamps to its own
+          max). Redaction is applied by clusterctl before any bytes leave the host.
         schema:
-          type: string
-          enum:
-          - 'true'
-      - name: X-Confirm
-        in: header
-        required: false
-        description: '''none'' executes non-destructive mutations (start/stop/restart)
-          directly. Destructive-class routes ALWAYS require a confirmation token regardless.'
-        schema:
-          type: string
-          enum:
-          - none
+          type: integer
+          default: 100
+          minimum: 1
+          maximum: 1000
       security:
       - bearerAuth: []
       responses:
@@ -289,29 +271,19 @@ paths:
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
           content: *id005
-        '400':
-          description: missing Idempotency-Key
-          content: *id005
         '404':
           description: not found (CLI exit 3)
-          content: *id005
-        '409':
-          description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
-          content: *id005
-        '429':
-          description: 'mutation rate limit: 60 mutations/minute per token (sliding
-            window)'
           content: *id005
         '500':
           description: internal error (CLI exit 10)
           content: *id005
-  /v1/instances/{name}/stop:
+  /v1/instances/{name}/start:
     post:
-      operationId: stopInstance
-      summary: Stop a declared instance
-      description: "Delegates to `clusterctl stop <name> --idempotency-key <key> --json`\
-        \ \u2014 the same code path as the CLI; clusterd adds no business logic.\n\
-        \nRequired bearer scope: `mutate` \u2014 enforced (issue #18). Owner-scoped\
+      operationId: startInstance
+      summary: Start a declared instance
+      description: "Delegates to `clusterctl start <name> --idempotency-key <key>\
+        \ --json` \u2014 the same code path as the CLI; clusterd adds no business\
+        \ logic.\n\nRequired bearer scope: `mutate` \u2014 enforced (issue #18). Owner-scoped\
         \ tokens may only touch daimons whose spec created_by matches the owner."
       parameters:
       - name: X-Request-Id
@@ -392,13 +364,13 @@ paths:
         '500':
           description: internal error (CLI exit 10)
           content: *id006
-  /v1/instances/{name}/restart:
+  /v1/instances/{name}/stop:
     post:
-      operationId: restartInstance
-      summary: Restart a declared (running) instance
-      description: "Delegates to `clusterctl restart <name> --idempotency-key <key>\
-        \ --json` \u2014 the same code path as the CLI; clusterd adds no business\
-        \ logic.\n\nRequired bearer scope: `mutate` \u2014 enforced (issue #18). Owner-scoped\
+      operationId: stopInstance
+      summary: Stop a declared instance
+      description: "Delegates to `clusterctl stop <name> --idempotency-key <key> --json`\
+        \ \u2014 the same code path as the CLI; clusterd adds no business logic.\n\
+        \nRequired bearer scope: `mutate` \u2014 enforced (issue #18). Owner-scoped\
         \ tokens may only touch daimons whose spec created_by matches the owner."
       parameters:
       - name: X-Request-Id
@@ -479,6 +451,93 @@ paths:
         '500':
           description: internal error (CLI exit 10)
           content: *id007
+  /v1/instances/{name}/restart:
+    post:
+      operationId: restartInstance
+      summary: Restart a declared (running) instance
+      description: "Delegates to `clusterctl restart <name> --idempotency-key <key>\
+        \ --json` \u2014 the same code path as the CLI; clusterd adds no business\
+        \ logic.\n\nRequired bearer scope: `mutate` \u2014 enforced (issue #18). Owner-scoped\
+        \ tokens may only touch daimons whose spec created_by matches the owner."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: 'Actor recorded in clusterctl audit events (default: anonymous).'
+        schema:
+          type: string
+          default: anonymous
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        required: true
+        description: 'uuid. Retry with the same key replays the cached clusterctl
+          result (idempotent-replay: true); reuse for a different operation/target
+          is a 409 conflict. Dedupe is clusterctl''s own idempotency store.'
+        schema:
+          type: string
+          format: uuid
+      - name: X-Attended
+        in: header
+        required: false
+        description: Human presence marker REQUIRED for tokens whose actor is steward@*
+          (v1 unattended-steward denial; real presence flow lands in M5). Missing
+          -> 403 unattended-steward-denied.
+        schema:
+          type: string
+          enum:
+          - 'true'
+      - name: X-Confirm
+        in: header
+        required: false
+        description: '''none'' executes non-destructive mutations (start/stop/restart)
+          directly. Destructive-class routes ALWAYS require a confirmation token regardless.'
+        schema:
+          type: string
+          enum:
+          - none
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id008
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id008
+        '400':
+          description: missing Idempotency-Key
+          content: *id008
+        '404':
+          description: not found (CLI exit 3)
+          content: *id008
+        '409':
+          description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
+          content: *id008
+        '429':
+          description: 'mutation rate limit: 60 mutations/minute per token (sliding
+            window)'
+          content: *id008
+        '500':
+          description: internal error (CLI exit 10)
+          content: *id008
   /v1/instances/{name}/destroy:
     post:
       operationId: destroyInstance
@@ -542,17 +601,17 @@ paths:
           description: clusterctl result JSON (exit 0)
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: &id008
+          content: &id009
             application/json:
-              schema: &id009
+              schema: &id010
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
-          content: *id008
+          content: *id009
         '404':
           description: not found (CLI exit 3)
-          content: *id008
+          content: *id009
         '409':
           description: 'confirmation required: body is a confirmation/v1 challenge
             (first POST) or a rejection (expired/reused/altered-digest/wrong-actor/wrong-target
@@ -562,17 +621,17 @@ paths:
               schema:
                 oneOf:
                 - $ref: '#/components/schemas/ConfirmationChallenge'
-                - *id009
+                - *id010
         '429':
           description: 'mutation rate limit: 60 mutations/minute per token (sliding
             window)'
-          content: *id008
+          content: *id009
         '501':
           description: confirmation validated; destroy execution is a later milestone
-          content: *id008
+          content: *id009
         '500':
           description: internal error (CLI exit 10)
-          content: *id008
+          content: *id009
 components:
   schemas:
     ErrorEnvelope:

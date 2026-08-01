@@ -40,8 +40,8 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #20 clusterd deploy | done (merged 21b3d79) | systemd hardened, /opt deploy, socket-direct (no setuid), loopback-only, reboot rows in drill |
 | M4 gate | code complete (#17-#20); formal gate open until #13 pilot (issue #17 dep) + restart drill | all four live-verified |
 | #21 steward identity | done (merged 1274c04) | multi-bind (loopback+bridge), container live, scoped tokens, invariants verified from inside, custody runbook |
-| #22 steward read tools | next | bridge socket live |
-| #23 steward mutation tools | pending | X-Attended + confirmations exist |
+| #22 steward read tools | done (merged 7b2cf47) | 124 tests; live-verified from inside steward container (4/4 tools) |
+| #23 steward mutation tools | next | X-Attended + confirmations exist |
 | #27-#30 (M7 leases) | design ready | docs/design/lease-registry.md (ADR D1 fulfilled) |
 
 ## Next action

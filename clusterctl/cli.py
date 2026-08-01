@@ -1,15 +1,20 @@
 """clusterctl command-line interface.
 
-Commands: ``list [--json]``, ``status <name> [--json]``, ``config-show [--json]``.
+Read commands (side-effect free): ``list``, ``status <name>``,
+``config-show`` — all with ``[--json]``.
 
-Exit codes (clusterctl v0.1.0):
+Lifecycle mutations (issue #11): ``create``, ``start``, ``stop``,
+``restart``, ``logs``, ``destroy-plan``. Mutations write to the state
+dir (spec, idempotency store, locks, audit log) and apply admission,
+idempotency, locking, and audit contracts — see
+``clusterctl.lifecycle``.
+
+Exit codes:
     0  success
     2  usage error (argparse)
-    3  not found (``status`` of an unknown instance name)
-    6  conflict (reserved; unused at this milestone)
+    3  not found (unknown/undeclared instance name)
+    6  conflict (duplicate name, idempotency-key reuse, lock held)
     10 internal error (config/spec/incus failures, bugs)
-
-Read commands are strictly side-effect free.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from pathlib import Path
 
 import yaml
 
+from . import audit, lifecycle
 from .adapters import IncusAdapter, IncusError
 from .config import Config, ConfigError, load_config
 from .inventory import SpecError, find_record, load_specs, reconcile
@@ -36,7 +42,7 @@ DEFAULT_CONFIG_PATH = Path("configs/clusterctl.yaml")
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="clusterctl",
-        description="daimon-cluster fleet state CLI (read-only at v0.1.0)",
+        description="daimon-cluster fleet state CLI",
     )
     parser.add_argument(
         "--config",
@@ -47,6 +53,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--state-dir",
         default=None,
         help="override state_dir from the config (used by tests)",
+    )
+    parser.add_argument(
+        "--actor",
+        default="clusterctl-cli",
+        help="actor recorded in audit events (default: %(default)s)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -59,6 +70,41 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_cfg = sub.add_parser("config-show", help="show the resolved clusterctl config")
     p_cfg.add_argument("--json", action="store_true", help="emit config as JSON")
+
+    def _mutation(name, help_text):
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("name", help="instance name")
+        p.add_argument("--idempotency-key", default=None,
+                       help="uuid; retry with the same key replays the cached result")
+        p.add_argument("--json", action="store_true", help="emit JSON")
+        return p
+
+    p_create = sub.add_parser("create", help="declare and create a new instance (stopped)")
+    p_create.add_argument("name", help="instance name")
+    p_create.add_argument("--species", required=True, help="species tag recorded in the spec")
+    p_create.add_argument("--image", default=lifecycle.DEFAULT_IMAGE,
+                          help="image alias (default: %(default)s)")
+    p_create.add_argument("--idempotency-key", required=True,
+                          help="uuid; retry with the same key replays the cached result")
+    p_create.add_argument("--json", action="store_true", help="emit JSON")
+
+    _mutation("start", "start a declared instance")
+    p_stop = _mutation("stop", "stop a declared instance")
+    p_stop.add_argument("--timeout", type=int, default=lifecycle.STOP_DEFAULT_TIMEOUT,
+                        help="graceful stop timeout in seconds (default: %(default)s)")
+    _mutation("restart", "restart a declared (running) instance")
+
+    p_logs = sub.add_parser("logs", help="fetch instance logs (bounded, secrets redacted)")
+    p_logs.add_argument("name", help="instance name")
+    p_logs.add_argument("--lines", type=int, default=lifecycle.LOGS_DEFAULT_LINES,
+                        help=f"max lines (default: %(default)s, max {lifecycle.LOGS_MAX_LINES})")
+    p_logs.add_argument("--json", action="store_true", help="emit JSON")
+
+    p_dp = sub.add_parser("destroy-plan", help="print the destroy plan for an instance (plan only)")
+    p_dp.add_argument("name", help="instance name")
+    p_dp.add_argument("--delete-volumes", action="store_true",
+                      help="include volume deletion in the plan")
+    p_dp.add_argument("--json", action="store_true", help="emit JSON")
     return parser
 
 
@@ -114,7 +160,12 @@ def _render_table(records: list[dict]) -> str:
 
 def _reconcile(cfg: Config) -> list[dict]:
     specs = load_specs(cfg.instances_dir)
-    return reconcile(specs, _adapter_for(cfg), cfg.host_id)
+    records = reconcile(specs, _adapter_for(cfg), cfg.host_id)
+    # Enrich with the last audit event per instance (read-only; the audit
+    # log is append-only, reading it is side-effect free).
+    for rec in records:
+        rec["last_audit_event"] = audit.last_event_for(cfg.state_dir, rec["name"])
+    return records
 
 
 def run(argv=None, adapter=None) -> int:
@@ -122,6 +173,11 @@ def run(argv=None, adapter=None) -> int:
     args = _build_parser().parse_args(argv)
     try:
         cfg = _resolve_config(args)
+
+        if args.command in ("create", "start", "stop", "restart", "logs", "destroy-plan"):
+            ad = adapter if adapter is not None else _adapter_for(cfg)
+            return lifecycle.dispatch(args, cfg, ad)
+
         if args.command == "config-show":
             data = {
                 "schema": "clusterctl-config/v1",
@@ -140,6 +196,8 @@ def run(argv=None, adapter=None) -> int:
         if adapter is not None:
             specs = load_specs(cfg.instances_dir)
             records = reconcile(specs, adapter, cfg.host_id)
+            for rec in records:
+                rec["last_audit_event"] = audit.last_event_for(cfg.state_dir, rec["name"])
         else:
             records = _reconcile(cfg)
 

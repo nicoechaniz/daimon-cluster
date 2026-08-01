@@ -1,0 +1,19 @@
+name: tribe-agent
+description: daimon-cluster agent container profile (ADR-001 D6/D7, threat model B4/B5)
+config:
+  limits.cpu: "1"
+  limits.memory: 1536MiB
+  limits.memory.swap: "false"
+  security.nesting: "false"
+  raw.lxc: |
+    lxc.cgroup2.devices.deny = c 10:200 rwm
+devices:
+  root:
+    path: /
+    pool: default
+    type: disk
+    size: 8GiB
+  eth0:
+    name: eth0
+    network: incusbr0
+    type: nic

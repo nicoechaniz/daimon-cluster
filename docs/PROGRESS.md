@@ -46,7 +46,10 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #25 dashboard actions | done (merged f8cf871) | two-phase HTTP, typed-name, restore pre-condition; 206 tests |
 | #27 lease registry | done (merged f8cf871) | CAS+fencing+TTL, 36 tests; clusterd GET /v1/leases |
 | #26 usability drill | pending (needs human operator) | depends on #25 |
-| #27-#30 (M7 leases) | design ready | docs/design/lease-registry.md (ADR D1 fulfilled) |
+| #28 handoff park | done (merged d0c9312) | park --handoff ceremony, signed manifest, resumable; 227 tests |
+| #29 transfer/wake/rollback | next | depends on #28 |
+| #30 handoff failure-injection | pending | depends on #29 |
+| #31 ceremonies doc | done (merged d0c9312) | ceremonies.md v0.2, approval pending governance |
 
 ## Next action
 

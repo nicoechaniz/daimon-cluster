@@ -57,15 +57,18 @@ class Deps:
 class RequestContext:
     """Per-request envelope (design §1).
 
-    ``scope_token`` is the parsed bearer token. It is attached here for
-    audit and future enforcement but is NOT enforced — auth is issue
-    #18. See docs/design/clusterd.md §3.
+    ``scope_token`` is the raw bearer token as sent (used ONLY for
+    resolution, never logged). After auth enforcement (#18) ``actor``
+    is the authenticated token actor and ``token_record`` carries the
+    validated auth-token/v1 record (minus nothing — it never contains
+    raw token material).
     """
 
     request_id: str
     actor: str
     scope_token: str | None
     idempotency_key: str | None = None
+    token_record: dict | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -224,11 +227,25 @@ def list_backups(deps: Deps, ctx: RequestContext, **params) -> Response:
     return Response(200, entries)
 
 
+def destroy(deps: Deps, ctx: RequestContext, name: str, route=None,
+            **params) -> Response:
+    """POST /v1/instances/{name}/destroy — destructive-class placeholder.
+
+    The confirmation machinery (challenge issue/validate/consume) runs
+    in server middleware BEFORE this handler; reaching here means a
+    valid single-use confirmation was consumed. Execution (archive-first
+    destroy, #8 §3) is a later milestone.
+    """
+    return _error(501, "destroy confirmed; execution is a later milestone",
+                  "destroy", name, ctx.request_id)
+
+
 HANDLERS = {
     "health": health,
     "openapi_yaml": openapi_yaml,
     "list_instances": list_instances,
     "get_instance": get_instance,
     "power": power,
+    "destroy": destroy,
     "list_backups": list_backups,
 }

@@ -14,9 +14,8 @@ paths:
       operationId: getHealth
       summary: clusterd liveness + clusterctl reachability
       description: "Delegates to `config load + list (reachability probe)` \u2014\
-        \ the same code path as the CLI; clusterd adds no business logic.\n\nIntended\
-        \ scope: `none` \u2014 bearer scopes are parsed and attached to the request\
-        \ context but NOT enforced until issue #18 (design \xA73)."
+        \ the same code path as the CLI; clusterd adds no business logic.\n\nRequired\
+        \ bearer scope: `None` (route is public)"
       parameters:
       - name: X-Request-Id
         in: header
@@ -32,8 +31,7 @@ paths:
         schema:
           type: string
           default: anonymous
-      security:
-      - bearerAuth: []
+      security: []
       responses:
         '200':
           description: clusterctl result JSON (exit 0)
@@ -48,9 +46,9 @@ paths:
       operationId: getOpenapi
       summary: OpenAPI 3.0 document generated from the route table
       description: "Delegates to `n/a (generated from clusterd.routes)` \u2014 the\
-        \ same code path as the CLI; clusterd adds no business logic.\n\nIntended\
-        \ scope: `none` \u2014 bearer scopes are parsed and attached to the request\
-        \ context but NOT enforced until issue #18 (design \xA73)."
+        \ same code path as the CLI; clusterd adds no business logic.\n\nRequired\
+        \ bearer scope: `read` \u2014 enforced (issue #18). Owner-scoped tokens may\
+        \ only touch daimons whose spec created_by matches the owner."
       parameters:
       - name: X-Request-Id
         in: header
@@ -71,20 +69,27 @@ paths:
       responses:
         '200':
           description: clusterctl result JSON (exit 0)
-        '500':
-          description: internal error (CLI exit 10)
-          content:
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id001
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id001
+        '500':
+          description: internal error (CLI exit 10)
+          content: *id001
   /v1/instances:
     get:
       operationId: listInstances
       summary: List all instances with reconciled state
       description: "Delegates to `clusterctl list --json` \u2014 the same code path\
-        \ as the CLI; clusterd adds no business logic.\n\nIntended scope: `fleet:read`\
-        \ \u2014 bearer scopes are parsed and attached to the request context but\
-        \ NOT enforced until issue #18 (design \xA73)."
+        \ as the CLI; clusterd adds no business logic.\n\nRequired bearer scope: `read`\
+        \ \u2014 enforced (issue #18). Owner-scoped tokens may only touch daimons\
+        \ whose spec created_by matches the owner."
       parameters:
       - name: X-Request-Id
         in: header
@@ -105,20 +110,27 @@ paths:
       responses:
         '200':
           description: clusterctl result JSON (exit 0)
-        '500':
-          description: internal error (CLI exit 10)
-          content:
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id002
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id002
+        '500':
+          description: internal error (CLI exit 10)
+          content: *id002
   /v1/instances/{name}:
     get:
       operationId: getInstance
       summary: One instance's reconciled status (404 mirrors CLI exit 3)
       description: "Delegates to `clusterctl status <name> --json` \u2014 the same\
-        \ code path as the CLI; clusterd adds no business logic.\n\nIntended scope:\
-        \ `fleet:read` \u2014 bearer scopes are parsed and attached to the request\
-        \ context but NOT enforced until issue #18 (design \xA73)."
+        \ code path as the CLI; clusterd adds no business logic.\n\nRequired bearer\
+        \ scope: `read` \u2014 enforced (issue #18). Owner-scoped tokens may only\
+        \ touch daimons whose spec created_by matches the owner."
       parameters:
       - name: X-Request-Id
         in: header
@@ -144,26 +156,31 @@ paths:
       responses:
         '200':
           description: clusterctl result JSON (exit 0)
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id003
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id003
         '404':
           description: not found (CLI exit 3)
-          content:
-            application/json:
-              schema: &id001
-                $ref: '#/components/schemas/ErrorEnvelope'
+          content: *id003
         '500':
           description: internal error (CLI exit 10)
-          content:
-            application/json:
-              schema: *id001
+          content: *id003
   /v1/backups:
     get:
       operationId: listBackups
       summary: Latest cluster-backup-manifest/v1 summary per daimon
       description: "Delegates to `reads state_dir/backups/*/ newest .json (same files\
         \ clusterctl snapshot create writes)` \u2014 the same code path as the CLI;\
-        \ clusterd adds no business logic.\n\nIntended scope: `fleet:read` \u2014\
-        \ bearer scopes are parsed and attached to the request context but NOT enforced\
-        \ until issue #18 (design \xA73)."
+        \ clusterd adds no business logic.\n\nRequired bearer scope: `read` \u2014\
+        \ enforced (issue #18). Owner-scoped tokens may only touch daimons whose spec\
+        \ created_by matches the owner."
       parameters:
       - name: X-Request-Id
         in: header
@@ -184,21 +201,27 @@ paths:
       responses:
         '200':
           description: clusterctl result JSON (exit 0)
-        '500':
-          description: internal error (CLI exit 10)
-          content:
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id004
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id004
+        '500':
+          description: internal error (CLI exit 10)
+          content: *id004
   /v1/instances/{name}/start:
     post:
       operationId: startInstance
       summary: Start a declared instance
       description: "Delegates to `clusterctl start <name> --idempotency-key <key>\
         \ --json` \u2014 the same code path as the CLI; clusterd adds no business\
-        \ logic.\n\nIntended scope: `lifecycle:write` \u2014 bearer scopes are parsed\
-        \ and attached to the request context but NOT enforced until issue #18 (design\
-        \ \xA73)."
+        \ logic.\n\nRequired bearer scope: `mutate` \u2014 enforced (issue #18). Owner-scoped\
+        \ tokens may only touch daimons whose spec created_by matches the owner."
       parameters:
       - name: X-Request-Id
         in: header
@@ -228,40 +251,64 @@ paths:
         schema:
           type: string
           format: uuid
+      - name: X-Attended
+        in: header
+        required: false
+        description: Human presence marker REQUIRED for tokens whose actor is steward@*
+          (v1 unattended-steward denial; real presence flow lands in M5). Missing
+          -> 403 unattended-steward-denied.
+        schema:
+          type: string
+          enum:
+          - 'true'
+      - name: X-Confirm
+        in: header
+        required: false
+        description: '''none'' executes non-destructive mutations (start/stop/restart)
+          directly. Destructive-class routes ALWAYS require a confirmation token regardless.'
+        schema:
+          type: string
+          enum:
+          - none
       security:
       - bearerAuth: []
       responses:
         '200':
           description: clusterctl result JSON (exit 0)
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id005
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id005
         '400':
           description: missing Idempotency-Key
-          content:
-            application/json:
-              schema: &id002
-                $ref: '#/components/schemas/ErrorEnvelope'
+          content: *id005
         '404':
           description: not found (CLI exit 3)
-          content:
-            application/json:
-              schema: *id002
+          content: *id005
         '409':
           description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
-          content:
-            application/json:
-              schema: *id002
+          content: *id005
+        '429':
+          description: 'mutation rate limit: 60 mutations/minute per token (sliding
+            window)'
+          content: *id005
         '500':
           description: internal error (CLI exit 10)
-          content:
-            application/json:
-              schema: *id002
+          content: *id005
   /v1/instances/{name}/stop:
     post:
       operationId: stopInstance
       summary: Stop a declared instance
       description: "Delegates to `clusterctl stop <name> --idempotency-key <key> --json`\
         \ \u2014 the same code path as the CLI; clusterd adds no business logic.\n\
-        \nIntended scope: `lifecycle:write` \u2014 bearer scopes are parsed and attached\
-        \ to the request context but NOT enforced until issue #18 (design \xA73)."
+        \nRequired bearer scope: `mutate` \u2014 enforced (issue #18). Owner-scoped\
+        \ tokens may only touch daimons whose spec created_by matches the owner."
       parameters:
       - name: X-Request-Id
         in: header
@@ -291,41 +338,64 @@ paths:
         schema:
           type: string
           format: uuid
+      - name: X-Attended
+        in: header
+        required: false
+        description: Human presence marker REQUIRED for tokens whose actor is steward@*
+          (v1 unattended-steward denial; real presence flow lands in M5). Missing
+          -> 403 unattended-steward-denied.
+        schema:
+          type: string
+          enum:
+          - 'true'
+      - name: X-Confirm
+        in: header
+        required: false
+        description: '''none'' executes non-destructive mutations (start/stop/restart)
+          directly. Destructive-class routes ALWAYS require a confirmation token regardless.'
+        schema:
+          type: string
+          enum:
+          - none
       security:
       - bearerAuth: []
       responses:
         '200':
           description: clusterctl result JSON (exit 0)
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id006
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id006
         '400':
           description: missing Idempotency-Key
-          content:
-            application/json:
-              schema: &id003
-                $ref: '#/components/schemas/ErrorEnvelope'
+          content: *id006
         '404':
           description: not found (CLI exit 3)
-          content:
-            application/json:
-              schema: *id003
+          content: *id006
         '409':
           description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
-          content:
-            application/json:
-              schema: *id003
+          content: *id006
+        '429':
+          description: 'mutation rate limit: 60 mutations/minute per token (sliding
+            window)'
+          content: *id006
         '500':
           description: internal error (CLI exit 10)
-          content:
-            application/json:
-              schema: *id003
+          content: *id006
   /v1/instances/{name}/restart:
     post:
       operationId: restartInstance
       summary: Restart a declared (running) instance
       description: "Delegates to `clusterctl restart <name> --idempotency-key <key>\
         \ --json` \u2014 the same code path as the CLI; clusterd adds no business\
-        \ logic.\n\nIntended scope: `lifecycle:write` \u2014 bearer scopes are parsed\
-        \ and attached to the request context but NOT enforced until issue #18 (design\
-        \ \xA73)."
+        \ logic.\n\nRequired bearer scope: `mutate` \u2014 enforced (issue #18). Owner-scoped\
+        \ tokens may only touch daimons whose spec created_by matches the owner."
       parameters:
       - name: X-Request-Id
         in: header
@@ -355,32 +425,150 @@ paths:
         schema:
           type: string
           format: uuid
+      - name: X-Attended
+        in: header
+        required: false
+        description: Human presence marker REQUIRED for tokens whose actor is steward@*
+          (v1 unattended-steward denial; real presence flow lands in M5). Missing
+          -> 403 unattended-steward-denied.
+        schema:
+          type: string
+          enum:
+          - 'true'
+      - name: X-Confirm
+        in: header
+        required: false
+        description: '''none'' executes non-destructive mutations (start/stop/restart)
+          directly. Destructive-class routes ALWAYS require a confirmation token regardless.'
+        schema:
+          type: string
+          enum:
+          - none
       security:
       - bearerAuth: []
       responses:
         '200':
           description: clusterctl result JSON (exit 0)
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id007
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id007
         '400':
           description: missing Idempotency-Key
-          content:
-            application/json:
-              schema: &id004
-                $ref: '#/components/schemas/ErrorEnvelope'
+          content: *id007
         '404':
           description: not found (CLI exit 3)
-          content:
-            application/json:
-              schema: *id004
+          content: *id007
         '409':
           description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
-          content:
-            application/json:
-              schema: *id004
+          content: *id007
+        '429':
+          description: 'mutation rate limit: 60 mutations/minute per token (sliding
+            window)'
+          content: *id007
         '500':
           description: internal error (CLI exit 10)
+          content: *id007
+  /v1/instances/{name}/destroy:
+    post:
+      operationId: destroyInstance
+      summary: "Destroy an instance (destructive: two-step prepare/confirm; execution\
+        \ is a later milestone \u2014 501 after validation)"
+      description: "Delegates to `clusterctl destroy <name> (archive-first; future\
+        \ milestone)` \u2014 the same code path as the CLI; clusterd adds no business\
+        \ logic.\n\nRequired bearer scope: `mutate` \u2014 enforced (issue #18). Owner-scoped\
+        \ tokens may only touch daimons whose spec created_by matches the owner."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: 'Actor recorded in clusterctl audit events (default: anonymous).'
+        schema:
+          type: string
+          default: anonymous
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Attended
+        in: header
+        required: false
+        description: Human presence marker REQUIRED for tokens whose actor is steward@*
+          (v1 unattended-steward denial; real presence flow lands in M5). Missing
+          -> 403 unattended-steward-denied.
+        schema:
+          type: string
+          enum:
+          - 'true'
+      - name: X-Confirm
+        in: header
+        required: false
+        description: '''none'' executes non-destructive mutations (start/stop/restart)
+          directly. Destructive-class routes ALWAYS require a confirmation token regardless.'
+        schema:
+          type: string
+          enum:
+          - none
+      - name: X-Confirm-Token
+        in: header
+        required: false
+        description: 'Single-use confirmation/v1 token from the 409 challenge. Validated
+          against the action digest (operation+target+actor+args): expired/reused/altered/wrong-actor/wrong-target
+          -> 409.'
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id008
+            application/json:
+              schema: &id009
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id008
+        '404':
+          description: not found (CLI exit 3)
+          content: *id008
+        '409':
+          description: 'confirmation required: body is a confirmation/v1 challenge
+            (first POST) or a rejection (expired/reused/altered-digest/wrong-actor/wrong-target
+            token)'
           content:
             application/json:
-              schema: *id004
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ConfirmationChallenge'
+                - *id009
+        '429':
+          description: 'mutation rate limit: 60 mutations/minute per token (sliding
+            window)'
+          content: *id008
+        '501':
+          description: confirmation validated; destroy execution is a later milestone
+          content: *id008
+        '500':
+          description: internal error (CLI exit 10)
+          content: *id008
 components:
   schemas:
     ErrorEnvelope:
@@ -400,9 +588,47 @@ components:
         request_id:
           type: string
           format: uuid
+    ConfirmationChallenge:
+      type: object
+      required:
+      - schema
+      - token
+      - operation
+      - target
+      - actor
+      - action_digest
+      - created_ms
+      - ttl_s
+      properties:
+        schema:
+          type: string
+          enum:
+          - confirmation/v1
+        token:
+          type: string
+          description: single-use; send back as X-Confirm-Token
+        operation:
+          type: string
+        target:
+          type: string
+        actor:
+          type: string
+        action_digest:
+          type: string
+          description: "sha256 of canonical JSON {operation,target,actor,args} \u2014\
+            \ binds the confirmation to exactly that action"
+        created_ms:
+          type: integer
+        ttl_s:
+          type: integer
+          default: 900
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-      description: "Scoped bearer token (design \xA73). PLACEHOLDER: tokens are parsed\
-        \ and attached to the request context but NOT enforced until issue #18."
+      description: "Scoped bearer token, format dcd_<uuid4hex> (issue #18, design\
+        \ \xA72/\xA73). ENFORCED: tokens are sha256-hashed at rest in state_dir/auth/tokens.json\
+        \ (auth-token/v1); manage via `scripts/clusterd --token-create | --token-revoke\
+        \ | --token-list`. Scopes: read, mutate. Owner-scoped tokens may only touch\
+        \ their own daimons. Revocation takes effect without restart. Every route\
+        \ except GET /v1/health requires a token (default-deny)."

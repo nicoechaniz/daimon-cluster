@@ -5,18 +5,37 @@ to handlers (``clusterd.handlers``). Default bind 127.0.0.1:8785 —
 production binds the anyVPN interface (design §1), never public.
 
 Envelope (design §1): every response carries X-Request-Id (echoed or
-generated uuid4); X-Actor defaults to "anonymous"; the bearer token is
-parsed into the request context but NOT enforced (issue #18).
+generated uuid4). Auth is ENFORCED (issue #18, design §2/§3) in
+``_enforce`` before any handler runs:
+
+- default-deny: every route except GET /v1/health requires a valid
+  bearer token (missing/unknown/expired/revoked -> 401);
+- scope check per route (read/mutate -> 403);
+- owner check: non-``*`` owners may only touch daimons whose spec
+  ``created_by`` matches (-> 403 "not your daimon");
+- unattended steward denial: ``steward@*`` actors need
+  ``X-Attended: true`` on mutations (-> 403, v1 mechanism; real
+  presence flow lands in M5);
+- per-token sliding-window rate limit: 60 mutations/minute -> 429;
+- destructive-class routes require a consumed confirmation challenge
+  (``clusterd.confirm``) — otherwise 409 with the challenge JSON.
+
+Every denial appends an ``audit-event/v1`` (result "denied") with the
+actor, request_id and reason — NEVER any token material.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-from . import __version__, handlers, routes
+from clusterctl import audit
+from clusterctl.config import load_config
+
+from . import __version__, auth, confirm, handlers, routes
 
 DEFAULT_BIND = "127.0.0.1"
 DEFAULT_PORT = 8785
@@ -43,11 +62,10 @@ class ClusterdHandler(BaseHTTPRequestHandler):
     def _context(self) -> handlers.RequestContext:
         request_id = self.headers.get("X-Request-Id") or str(uuid.uuid4())
         actor = self.headers.get("X-Actor") or "anonymous"
-        # Bearer token is PARSED and attached but NOT enforced (#18).
         token = None
-        auth = self.headers.get("Authorization") or ""
-        if auth.lower().startswith("bearer "):
-            token = auth[len("bearer "):].strip() or None
+        auth_header = self.headers.get("Authorization") or ""
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[len("bearer "):].strip() or None
         return handlers.RequestContext(
             request_id=request_id,
             actor=actor,
@@ -67,6 +85,108 @@ class ClusterdHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    # -- auth enforcement (issue #18) ----------------------------------
+
+    def _deny(self, ctx: handlers.RequestContext, route, path: str,
+              status: int, error: str, reason: str,
+              extra: dict | None = None) -> handlers.Response:
+        """Structured denial + security audit event.
+
+        The audit detail carries actor + request_id + reason only —
+        NEVER the bearer token, not even a prefix.
+        """
+        try:
+            audit.append_event(
+                self.server.state_dir,
+                actor=ctx.actor,
+                action=route.operation_id,
+                target=path,
+                result="denied",
+                detail={"reason": reason, "request_id": ctx.request_id},
+            )
+        except OSError:
+            pass  # fail-closed for mutations is issue #19's audit work
+        body = {
+            "error": error,
+            "action": route.operation_id,
+            "target": path,
+            "request_id": ctx.request_id,
+        }
+        if extra:
+            body.update(extra)
+        return handlers.Response(status, body)
+
+    def _enforce(self, ctx: handlers.RequestContext, route,
+                 params: dict, path: str):
+        """Return (ctx, None) when allowed, else (ctx, denial Response)."""
+        if route.public:
+            return ctx, None
+        srv = self.server
+
+        # 1. bearer resolution + validity (401) -------------------------
+        record, reason = auth.authenticate(srv.token_store, ctx.scope_token)
+        if record is None:
+            return ctx, self._deny(ctx, route, path, 401,
+                                   "unauthorized", reason)
+        # The token's actor is authoritative; X-Actor is advisory only.
+        ctx = dataclasses.replace(ctx, actor=record["actor"],
+                                  token_record=record)
+
+        # 2. scope check (403) ------------------------------------------
+        if not auth.has_scope(record, route.required_scope):
+            return ctx, self._deny(ctx, route, path, 403,
+                                   "insufficient-scope",
+                                   f"missing-scope:{route.required_scope}")
+
+        # 3. owner check (403) ------------------------------------------
+        owner = record.get("owner") or "*"
+        name = params.get("name")
+        if owner != "*" and name is not None:
+            spec_owner = auth.instance_owner(srv.state_dir, name)
+            if spec_owner is not None and spec_owner != owner:
+                return ctx, self._deny(ctx, route, path, 403,
+                                       "not your daimon",
+                                       "owner-mismatch")
+
+        # 4. unattended steward denial (403) — v1 mechanism; M5 lands
+        #    the real presence flow (see clusterd.confirm docstring).
+        if route.mutation and confirm.steward_requires_attendance(record["actor"]):
+            if (self.headers.get("X-Attended") or "").lower() != \
+                    confirm.ATTENDED_HEADER_VALUE:
+                return ctx, self._deny(ctx, route, path, 403,
+                                       "unattended-steward-denied",
+                                       "steward-missing-x-attended")
+
+        # 5. per-token mutation rate limit (429) ------------------------
+        if route.mutation:
+            if not srv.rate_limiter.allow(record["token_id"]):
+                return ctx, self._deny(ctx, route, path, 429,
+                                       "rate-limited", "mutation-rate-limit")
+
+        # 6. destructive-class prepare/confirm (409) --------------------
+        if route.confirmation_required:
+            operation = route.path.rsplit("/", 1)[-1]
+            args = {}
+            token = self.headers.get("X-Confirm-Token")
+            if not token:
+                challenge = confirm.issue_challenge(
+                    srv.state_dir, operation=operation, target=name,
+                    actor=record["actor"], args=args)
+                body = {k: challenge[k] for k in (
+                    "schema", "token", "operation", "target", "actor",
+                    "action_digest", "created_ms", "ttl_s")}
+                body["request_id"] = ctx.request_id
+                return ctx, handlers.Response(409, body)
+            try:
+                confirm.consume_challenge(
+                    srv.state_dir, token, operation=operation, target=name,
+                    actor=record["actor"], args=args)
+            except confirm.ConfirmationError as exc:
+                return ctx, self._deny(ctx, route, path, 409,
+                                       "confirmation-required", exc.reason)
+
+        return ctx, None
 
     # -- dispatch ------------------------------------------------------
 
@@ -91,6 +211,10 @@ class ClusterdHandler(BaseHTTPRequestHandler):
                 "request_id": ctx.request_id,
             }))
             return
+        ctx, denial = self._enforce(ctx, route, params, path)
+        if denial is not None:
+            self._respond(ctx, denial)
+            return
         handler = handlers.HANDLERS[route.handler]
         try:
             resp = handler(self.server.deps, ctx, route=route, **params)
@@ -111,6 +235,13 @@ class ClusterdServer(ThreadingHTTPServer):
     def __init__(self, bind: str, port: int, deps: handlers.Deps):
         super().__init__((bind, port), ClusterdHandler)
         self.deps = deps
+        state_dir = deps.state_dir
+        if state_dir is None:
+            state_dir = load_config(deps.config_path).state_dir
+        self.state_dir = state_dir
+        # mtime-checked store: revocation takes effect WITHOUT restart.
+        self.token_store = auth.TokenStore(state_dir)
+        self.rate_limiter = auth.RateLimiter()
 
 
 def make_server(deps: handlers.Deps, bind: str = DEFAULT_BIND,

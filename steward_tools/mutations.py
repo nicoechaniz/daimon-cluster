@@ -108,6 +108,8 @@ _OPERATIONS: dict[str, tuple[str, bool]] = {
     "destroy": ("DESTRUCTIVE: destroys the instance after a consumed "
                 "confirmation challenge (archive-first execution lands "
                 "in a later milestone)", True),
+    "restore": ("restores the instance from its most recent backup "
+                "(instance must be stopped first)", False),
 }
 
 
@@ -190,14 +192,20 @@ class MutationClient:
     mutation route shapes exist — no arbitrary paths.
     """
 
-    def __init__(self, token_path: str = DEFAULT_MUTATE_TOKEN_PATH):
-        base = os.environ.get("CLUSTERD_URL", DEFAULT_BASE_URL).rstrip("/")
+    def __init__(self, token_path: str = DEFAULT_MUTATE_TOKEN_PATH,
+                 token_override: str | None = None,
+                 base_url: str | None = None):
+        base = (base_url or
+                os.environ.get("CLUSTERD_URL", DEFAULT_BASE_URL)).rstrip("/")
         self._base_url = base
         self._token_path = token_path
+        self._token_override = token_override
         self._opener = urllib.request.build_opener(
             _SameOriginRedirectHandler())
 
     def _token(self) -> str:
+        if self._token_override is not None:
+            return self._token_override
         return Path(self._token_path).read_text(encoding="utf-8").strip()
 
     def _post(self, path: str, headers: dict) -> tuple[int, object, dict]:
@@ -293,6 +301,10 @@ def propose_park(name: str) -> MutationPlan:
 
 def propose_wake(name: str) -> MutationPlan:
     return _propose("wake", name)
+
+
+def propose_restore(name: str) -> MutationPlan:
+    return _propose("restore", name)
 
 
 def propose_destroy(name: str,

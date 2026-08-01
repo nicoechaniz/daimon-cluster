@@ -9,6 +9,7 @@ equivalent payload (name/state/result fields).
 import contextlib
 import io
 import json
+import os
 import threading
 import urllib.error
 import urllib.request
@@ -64,9 +65,16 @@ def server(state_dir):
                          adapter_factory=lambda: ad)
     srv = make_server(deps, "127.0.0.1", 0)
     srv.test_token = raw_token
+    # Let MutationClients inside the dashboard flow find the correct port
+    old_url = os.environ.get("CLUSTERD_URL")
+    os.environ["CLUSTERD_URL"] = f"http://127.0.0.1:{srv.server_address[1]}"
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
     yield srv, ad, state_dir
+    if old_url is None:
+        os.environ.pop("CLUSTERD_URL", None)
+    else:
+        os.environ["CLUSTERD_URL"] = old_url
     srv.shutdown()
     srv.server_close()
     thread.join(timeout=5)
@@ -95,6 +103,24 @@ def _get(server, path, headers=None, auth=True):
 def _post(server, path, headers=None, auth=True):
     status, hdrs, body = _req(server, "POST", path, headers, auth=auth)
     return status, hdrs, json.loads(body)
+
+
+def _post_json(server, path, body_dict, headers=None, auth=True):
+    """POST with JSON body to clusterd."""
+    url = f"http://127.0.0.1:{server.server_address[1]}{path}"
+    headers = dict(headers or {})
+    headers.setdefault("Content-Type", "application/json")
+    if auth and "Authorization" not in headers and \
+            getattr(server, "test_token", None):
+        headers["Authorization"] = f"Bearer {server.test_token}"
+    data = json.dumps(body_dict).encode("utf-8")
+    req = urllib.request.Request(url, method="POST", data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = resp.read().decode("utf-8")
+            return resp.status, dict(resp.headers), json.loads(body)
+    except urllib.error.HTTPError as exc:
+        return exc.code, dict(exc.headers), json.loads(exc.read().decode("utf-8"))
 
 
 def _cli(state_dir, *argv, adapter=None):
@@ -777,6 +803,246 @@ def test_dashboard_html_contains_required_elements(server):
     assert "retry-link" in body
     # CDN script source.
     assert "unpkg.com" in body
+
+
+
+# --------------------------------------------------------------------------
+# dashboard lifecycle + backup actions (issue #25)
+# --------------------------------------------------------------------------
+
+def test_dashboard_prepare_returns_plan_without_mutating(server):
+    """prepare returns plan JSON without any adapter mutations."""
+    srv, ad, _ = server
+    ad.mutation_log.clear()
+
+    status, _, body = _post_json(srv, "/v1/dashboard/prepare",
+                                 {"operation": "start", "target": NAME})
+    assert status == 200
+    assert body["schema"] == "steward-mutation-plan/v1"
+    assert body["operation"] == "start"
+    assert body["target"] == NAME
+    assert body["destructive"] is False
+    assert body["action_digest"]
+    assert body["created_ms"]
+    assert body["ttl_s"]
+    # PREPARE NEVER mutates.
+    assert ad.mutation_log == []
+
+
+def test_dashboard_prepare_restore_on_running_409(server):
+    """restore proposal on a running instance → 409 pre-condition."""
+    srv, ad, state_dir = server
+    ad._instances = [{"name": NAME, "state": "running", "image_version": "tribe-base/2026-08-01.1",
+                      "budgets": {}, "uptime_s": 600}]
+    # Verify the adapter change took effect before the handler runs
+    from clusterd.handlers import get_instance, Deps, RequestContext
+    ctx = RequestContext(request_id="rid", actor=srv.test_token or "tester",
+                         scope_token=srv.test_token)
+    stat_resp = get_instance(srv.deps, ctx, NAME)
+    assert stat_resp.body.get("state") == "running", \
+        f"pre-check: expected running, got {stat_resp.body}"
+    status, _, body = _post_json(srv, "/v1/dashboard/prepare",
+                                 {"operation": "restore", "target": NAME})
+    assert status == 409, f"expected 409, got {status}: {body}"
+    assert "stopped before restore" in body.get("error", "")
+
+
+def test_dashboard_prepare_restore_on_stopped_ok(server):
+    """restore proposal on a stopped instance returns a valid plan."""
+    srv, ad, _ = server
+    status, _, body = _post_json(srv, "/v1/dashboard/prepare",
+                                 {"operation": "restore", "target": NAME})
+    assert status == 200
+    assert body["operation"] == "restore"
+    assert body["destructive"] is False
+
+
+def test_dashboard_confirm_executes_and_idempotent_replay(server):
+    """confirm executes the mutation; replay of same plan returns same result."""
+    srv, ad, _ = server
+
+    # Phase 1: prepare
+    status, _, plan = _post_json(srv, "/v1/dashboard/prepare",
+                                 {"operation": "start", "target": NAME})
+    assert status == 200
+
+    # Phase 2: confirm
+    status, _, result = _post_json(srv, "/v1/dashboard/confirm", {
+        "operation": "start",
+        "target": NAME,
+        "plan": plan,
+        "human_turn_id": "turn-1",
+    })
+    assert status == 200
+    assert result["ok"] is True
+    assert result["operation"] == "start"
+    assert [c[0] for c in ad.mutation_log] == ["start"]
+
+    # Phase 3: replay — same plan JSON, different HTTP request, same
+    # Idempotency-Key (digest-derived). clusterd's idempotency store
+    # returns the original result; exactly ONE adapter mutation.
+    status, _, result2 = _post_json(srv, "/v1/dashboard/confirm", {
+        "operation": "start",
+        "target": NAME,
+        "plan": plan,
+        "human_turn_id": "turn-1",
+    })
+    assert status == 200 and result2["ok"] is True
+    assert [c[0] for c in ad.mutation_log] == ["start"]  # still just one
+
+
+def test_dashboard_confirm_typed_name_rejection_on_destructive(server):
+    """typed-name validation on destructive plans: missing / wrong case rejected."""
+    srv, ad, _ = server
+    ad.mutation_log.clear()
+    # Synthetic destructive plan (destroy prepare needs clusterd challenge
+    # roundtrip not available in this fake fixture — test the handler check directly)
+    plan = {
+        "schema": "steward-mutation-plan/v1", "operation": "destroy",
+        "target": NAME, "impact": "destruction", "destructive": True,
+        "action_digest": "a" * 64, "created_ms": 999999999999999999999,
+        "ttl_s": 120, "challenge_token": None,
+        "display_text": "...", "actor": "steward@daimonmatrix",
+        "args": {}, "used": False,
+    }
+    # missing typed_name
+    status, _, r = _post_json(srv, "/v1/dashboard/confirm",
+        {"operation": "destroy", "target": NAME, "plan": plan,
+         "human_turn_id": "turn-dn"})
+    assert status == 400 and r.get("refused") == "typed-name-mismatch"
+    # wrong case
+    status, _, r = _post_json(srv, "/v1/dashboard/confirm",
+        {"operation": "destroy", "target": NAME, "plan": plan,
+         "human_turn_id": "turn-dn", "typed_name": "Daimon-X"})
+    assert status == 400 and r.get("refused") == "typed-name-mismatch"
+    assert ad.mutation_log == []  # never reached the adapter
+
+
+def test_dashboard_confirm_double_click_one_execution(server):
+    """double-click on confirm results in exactly ONE adapter mutation."""
+    srv, ad, _ = server
+    ad.mutation_log.clear()
+
+    status, _, plan = _post_json(srv, "/v1/dashboard/prepare",
+                                 {"operation": "stop", "target": NAME})
+    assert status == 200
+
+    # First confirm
+    status, _, result1 = _post_json(srv, "/v1/dashboard/confirm", {
+        "operation": "stop",
+        "target": NAME,
+        "plan": plan,
+        "human_turn_id": "turn-dc-1",
+    })
+    # May need start first since stop on stopped is fine
+    # Let's just verify the mutation happened
+    assert status == 200
+    assert result1["ok"] is True
+
+    # Second confirm (same plan, different turn id) — HTTP reconstructs the
+    # plan fresh (``used`` is local-object state; clusterd's idempotency
+    # store prevents double-execution at the server level).
+    status2, _, result2 = _post_json(srv, "/v1/dashboard/confirm", {
+        "operation": "stop",
+        "target": NAME,
+        "plan": plan,
+        "human_turn_id": "turn-dc-2",
+    })
+    assert status2 == 200  # clusterd returns idempotent-replay, not refused
+    # Exactly one adapter mutation.
+    stop_count = sum(1 for c in ad.mutation_log if c[0] == "stop")
+    assert stop_count == 1
+
+
+def test_dashboard_prepare_invalid_operation(server):
+    """prepare with unknown operation returns 400."""
+    srv, _, _ = server
+    status, _, body = _post_json(srv, "/v1/dashboard/prepare",
+                                 {"operation": "fly", "target": NAME})
+    assert status == 400
+    assert "unknown operation" in body["error"]
+
+
+def test_dashboard_prepare_missing_fields(server):
+    """prepare without operation or target returns 400."""
+    srv, _, _ = server
+
+    status, _, body = _post_json(srv, "/v1/dashboard/prepare", {})
+    assert status == 400
+    assert "required" in body["error"]
+
+    status, _, body = _post_json(srv, "/v1/dashboard/prepare",
+                                 {"operation": "start"})
+    assert status == 400
+    assert "required" in body["error"]
+
+
+def test_dashboard_confirm_no_plan(server):
+    """confirm without plan field returns 400."""
+    srv, _, _ = server
+    status, _, body = _post_json(srv, "/v1/dashboard/confirm",
+                                 {"operation": "start", "target": NAME})
+    assert status == 400
+    assert "plan" in body["error"]
+
+
+def test_dashboard_prepare_requires_auth(server):
+    """prepare route requires bearer auth (not public)."""
+    srv, _, _ = server
+    status, _, body = _post_json(srv, "/v1/dashboard/prepare",
+                                 {"operation": "start", "target": NAME},
+                                 auth=False)
+    assert status == 401
+
+
+def test_dashboard_confirm_requires_mutate_scope(server):
+    """confirm route requires mutate scope."""
+    srv, _, state_dir = server
+    from clusterd import auth as clusterd_auth
+    from clusterd.server import make_server
+    from clusterd import handlers as _h
+
+    # Create a read-only token.
+    _, ro_token = clusterd_auth.create_token(
+        state_dir, actor="reader", scopes=["read"], owner="*",
+        ttl_days=1)
+
+    plan_payload = {"operation": "start", "target": NAME}
+    # Use the default server (mutate-scoped) for prepare.
+    status, _, plan = _post_json(srv, "/v1/dashboard/prepare", plan_payload)
+    assert status == 200
+
+    # Spin up a read-only server.
+    deps_ro = _h.Deps(config_path=srv.deps.config_path,
+                       state_dir=str(state_dir),
+                       adapter_factory=srv.deps.adapter_factory)
+    srv_ro = make_server(deps_ro, "127.0.0.1", 0)
+    srv_ro.test_token = ro_token
+    import threading
+    t_ro = threading.Thread(target=srv_ro.serve_forever, daemon=True)
+    t_ro.start()
+    try:
+        status_ro, _, body = _post_json(srv_ro, "/v1/dashboard/confirm", {
+            "operation": "start",
+            "target": NAME,
+            "plan": plan,
+            "human_turn_id": "turn-scope",
+        })
+    finally:
+        srv_ro.shutdown()
+        srv_ro.server_close()
+        t_ro.join(timeout=5)
+
+    assert status_ro == 403
+    assert "insufficient-scope" in body.get("error", "")
+
+
+def test_restore_instance_route_returns_501(server):
+    """POST /v1/instances/{name}/restore returns 501 placeholder."""
+    srv, _, _ = server
+    status, _, body = _post(srv, f"/v1/instances/{NAME}/restore")
+    assert status == 501
+    assert "later milestone" in body["error"]
 
 
 def test_handlers_use_no_shell():

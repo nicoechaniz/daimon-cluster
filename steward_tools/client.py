@@ -78,8 +78,10 @@ class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
 class ClusterdClient:
     """Read-only window into ONE clusterd base URL, fixed at construction."""
 
-    def __init__(self, token_path: str = DEFAULT_TOKEN_PATH):
-        base = os.environ.get("CLUSTERD_URL", DEFAULT_BASE_URL).rstrip("/")
+    def __init__(self, token_path: str = DEFAULT_TOKEN_PATH,
+                 base_url: str | None = None):
+        base = (base_url or
+                os.environ.get("CLUSTERD_URL", DEFAULT_BASE_URL)).rstrip("/")
         parsed = urlsplit(base)
         if parsed.scheme != "http" or not parsed.netloc:
             raise ValueError(f"invalid clusterd base URL: {base!r}")

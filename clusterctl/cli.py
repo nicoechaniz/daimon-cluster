@@ -111,7 +111,26 @@ def _build_parser() -> argparse.ArgumentParser:
     p_stop.add_argument("--timeout", type=int, default=lifecycle.STOP_DEFAULT_TIMEOUT,
                         help="graceful stop timeout in seconds (default: %(default)s)")
     _mutation("restart", "restart a declared (running) instance")
-    _mutation("park", "park a declared daimon's writers (SIGSTOP hermes, issue #23)")
+    p_park = _mutation(
+        "park",
+        "park a declared daimon's writers (SIGSTOP hermes, issue #23); "
+        "with --handoff, full verified checkpoint manifest ceremony "
+        "(issue #28)")
+    p_park.add_argument("--handoff", action="store_true",
+                        help="run the M7 handoff park ceremony (checkpoint "
+                             "manifest + lease transition) instead of the "
+                             "writer-quiesce park")
+    p_park.add_argument("--abandon-critical", action="store_true",
+                        dest="abandon_critical",
+                        help="human abandonment of critical jobs; recorded "
+                             "in the manifest with the actor — never silent")
+    p_park.add_argument("--force-outbox", action="store_true",
+                        dest="force_outbox",
+                        help="override a non-empty bridge outbox (refused "
+                             "by default, fail-closed)")
+    p_park.add_argument("--no-lease", action="store_true", dest="no_lease",
+                        help="park a pre-M7 instance without an active "
+                             "lease (recorded explicitly in the manifest)")
     _mutation("wake", "wake a parked daimon (SIGCONT hermes, issue #23)")
 
     p_logs = sub.add_parser("logs", help="fetch instance logs (bounded, secrets redacted)")

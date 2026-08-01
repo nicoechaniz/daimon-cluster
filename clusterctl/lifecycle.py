@@ -474,7 +474,13 @@ def dispatch(args, cfg, adapter) -> int:
             return cmd_create(args, cfg, adapter)
         if args.command in ("start", "stop", "restart"):
             return cmd_power(args, cfg, adapter, args.command)
-        if args.command in ("park", "wake"):
+        if args.command == "park":
+            if getattr(args, "handoff", False):
+                # Lazy import: park imports helpers from this module.
+                from . import park as park_mod
+                return park_mod.cmd_park(args, cfg, adapter)
+            return cmd_parkwake(args, cfg, adapter, args.command)
+        if args.command == "wake":
             return cmd_parkwake(args, cfg, adapter, args.command)
         if args.command == "logs":
             return cmd_logs(args, cfg, adapter)

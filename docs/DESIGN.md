@@ -54,8 +54,9 @@ daimonmatrix (host, Debian 13)
 │   ├── container: oliva      (user: oliva,    hermes home: ~oliva/.hermes)
 │   └── container: <agent>    ...
 ├── tribe-bridge v1 broker (already running, 10.10.20.69:8685)
-└── compaii@daimonmatrix (this incarnation — migrates into a container too,
-    or stays on the host as cluster steward; OPEN QUESTION, see §7)
+└── compaii@daimonmatrix (resident incarnation, stays on the host per
+    ADR-001 D2; interim steward persona until steward@daimonmatrix is
+    provisioned in M5)
 ```
 
 Per-container defaults (profile `tribe-agent`):
@@ -100,21 +101,26 @@ Per-container defaults (profile `tribe-agent`):
   flows through legion (key holder) or per-agent credentials their human
   chooses to grant.
 
-## 7. Open questions for tribe review
+## 7. Open questions — RESOLVED by ADR-001
 
-1. Does compaii@daimonmatrix migrate into a container, or stay on the host as
-   cluster steward (admin of incus)? Steward-on-host is operationally simpler
-   but breaks symmetry; steward-in-container needs a separate admin path.
-2. Per-agent state repos vs. one shared `tribe-state` repo with per-agent
-   branches/paths for rebirth-style sync.
-3. Storage backend: zfs (better snapshots/clones, more RAM) vs. dir (simple,
-   fine at this scale).
-4. IPv6: does OVH route the full /64? If yes, public v6 per container;
-   otherwise NAT + ZeroTier only.
-5. Resource budgets in §1/README — sanity check against real usage.
-6. Onboarding ceremony: who approves a new embodiment joining the cluster?
-   (Proposal: human member requests, Nico approves, governance epoch bump
-   registers identity, container launches from tribe-base.)
+All six questions are resolved in
+[`adr/ADR-001-v1-architecture.md`](adr/ADR-001-v1-architecture.md):
+
+1. compaii@daimonmatrix container vs host steward → **D2**: stays on the
+   host as resident incarnation + interim steward persona; the steward ROLE
+   goes to a dedicated identity without host shell or Incus socket.
+2. Per-agent state repos vs shared → **D3**: one private repo per daimon
+   identity (per-human exception for coupled identities).
+3. Storage backend → **D5**: `dir` (inventory: no ZFS-suitable block
+   device); restic-only volume recovery.
+4. IPv6 → **D6**: no routed prefix confirmed; no public IPv6 per container
+   in v1; host-managed private bridge + anyVPN ingress.
+5. Resource budgets → **D7**: pilot 1 vCPU / 1.5 GiB / 8 GiB confirmed by
+   measurement; max launch cohort 4 (RAM-bound, no host swap — zram
+   decision pending Nicolás).
+6. Onboarding ceremony → **D8**: six separated roles (member requests,
+   sponsor confirms, cluster owner approves capacity, governance registers
+   identity, steward provisions, member supplies own credentials).
 
 ## 8. Milestones (draft)
 

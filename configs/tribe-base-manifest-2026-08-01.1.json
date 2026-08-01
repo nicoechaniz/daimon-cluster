@@ -1,0 +1,15 @@
+{
+  "schema": "tribe-base-manifest/v1",
+  "version": "2026-08-01.1",
+  "fingerprint": "578b190dda865dad8e25896df23e51c42119d4fa9291590668f3d58c1ac3be7d",
+  "pins": {
+    "debian_base": "images:debian/13",
+    "hermes_commit": "0db191291",
+    "hmk_commit": "892998c",
+    "tribe_commit": "e025688"
+  },
+  "dpkg_manifest": "configs/tribe-base-dpkg-2026-08-01.1.txt",
+  "pip_manifest": "configs/tribe-base-pip-2026-08-01.1.txt",
+  "built_by": "compaii@daimonmatrix",
+  "built_ms": 1785565208657
+}

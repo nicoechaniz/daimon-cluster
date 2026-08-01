@@ -11,14 +11,17 @@ Status: IMPLEMENTED on daimonmatrix (2026-08-01). Profile source:
 | limits.memory | 1536MiB | ADR-001 D7; measured headroom (inventory §5) |
 | limits.memory.swap | false | ADR-001 D7: per-daimon swap dropped; zram is host-level |
 | security.nesting | false | least privilege; Hermes needs no nesting |
-| raw.lxc cgroup deny | `c 10:200 rwm` (tun) | ADR-001 D6: no usable TUN by default |
+| raw.lxc cgroup device allowlist | std LXC set minus tun (`c 1:3,1:5,1:7,1:8,1:9,5:0,5:1,5:2,136:*`) | ADR-001 D6: no usable TUN by default. NOTE: a raw deny entry silently REPLACES the default device allowlist and breaks /dev/null — an explicit allowlist excluding tun is the correct form (learned live). |
 | root disk | pool default, size 8GiB | ADR-001 D7 (see §4 caveat) |
 | eth0 | incusbr0 | M1 foundation (#6) |
 
-Verified live (test containers `test-vol`/`test-vol2`, since deleted):
+Verified live (test containers `test-vol`/`test-vol2`/`img-verify2`, since deleted):
 
-- tun: `ip tuntap add` → `Operation not permitted` (cgroup deny effective;
-  default container WAS able — finding confirmed and fixed at profile level).
+- tun: `ip tuntap add` → `Operation not permitted` (allowlist excludes
+  `c 10:200`; default container WAS able — finding confirmed and fixed at
+  profile level). First attempt with a raw `devices.deny` entry broke
+  `/dev/null` (raw entries replace the default allowlist) — corrected to
+  the explicit allowlist and re-verified.
 - memory: `/proc/meminfo` inside shows 1,572,864 kB = 1.5 GiB.
 - unprivileged: uid_map 0→1000000 (inherited from M1 foundation).
 - Exceptions (per ADR D6): a daimon needing usable TUN (own anyVPN

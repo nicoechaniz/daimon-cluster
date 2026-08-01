@@ -14,7 +14,10 @@ Group=clusterd
 WorkingDirectory=/opt/daimon-cluster
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PYTHONPATH=/opt/daimon-cluster
-ExecStart=/opt/daimon-cluster/venv/bin/python -m clusterd --bind 127.0.0.1:8785
+# Two private binds (issue #21): loopback for host ops + the incus bridge
+# gateway for the steward container. Neither is a public interface —
+# clusterd must NEVER bind 0.0.0.0 / a routable address.
+ExecStart=/opt/daimon-cluster/venv/bin/python -m clusterd --bind 127.0.0.1:8785 --bind 10.105.93.1:8785
 Restart=on-failure
 RestartSec=3
 

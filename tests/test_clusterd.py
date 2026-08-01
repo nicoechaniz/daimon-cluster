@@ -35,13 +35,13 @@ def state_dir(tmp_path):
     return tmp_path / "state"
 
 
-def _declare(state_dir, name=NAME):
+def _declare(state_dir, name=NAME, image_version="tribe-base/2026-08-01.1"):
     inst_dir = state_dir / "instances"
     inst_dir.mkdir(parents=True, exist_ok=True)
     (inst_dir / f"{name}.yaml").write_text(yaml.safe_dump({
         "schema": "instance-spec/v1",
         "name": name,
-        "image_version": "tribe-base/2026-08-01.1",
+        "image_version": image_version,
     }), encoding="utf-8")
 
 
@@ -434,6 +434,100 @@ def test_bearer_token_enforced(server):
     assert status_auth == 200
     status_health, _, _ = _get(srv, "/v1/health", auth=False)
     assert status_health == 200
+
+
+# --------------------------------------------------------------------------
+# multi-bind (issue #21)
+# --------------------------------------------------------------------------
+
+@pytest.fixture()
+def two_bind_server(state_dir):
+    """serve()-style: two ClusterdServers on ephemeral ports sharing ONE
+    Deps, ONE token store and ONE rate limiter (make_servers, as serve())."""
+    from clusterd.server import make_servers
+    # Declared image matches the adapter's actual ("v1") so the power
+    # state — not drift — is what the status record reports.
+    _declare(state_dir, image_version="v1")
+    ad = _adapter()
+    _, raw_token = clusterd_auth.create_token(
+        state_dir, actor="tester", scopes=["read", "mutate"], owner="*",
+        ttl_days=1)
+    deps = handlers.Deps(config_path=CONFIG_PATH, state_dir=str(state_dir),
+                         adapter_factory=lambda: ad)
+    srv_a, srv_b = make_servers(deps, [("127.0.0.1", 0), ("127.0.0.1", 0)])
+    assert srv_a.server_address[1] != srv_b.server_address[1]
+    # Shared service pieces — one state_dir, one store, one limiter.
+    assert srv_a.deps is srv_b.deps
+    assert srv_a.state_dir == srv_b.state_dir == str(state_dir)
+    assert srv_a.token_store is srv_b.token_store
+    assert srv_a.rate_limiter is srv_b.rate_limiter
+    for srv in (srv_a, srv_b):
+        srv.test_token = raw_token
+    threads = [threading.Thread(target=s.serve_forever, daemon=True)
+               for s in (srv_a, srv_b)]
+    for t in threads:
+        t.start()
+    yield srv_a, srv_b, ad, state_dir
+    for s in (srv_a, srv_b):
+        s.shutdown()
+        s.server_close()
+    for t in threads:
+        t.join(timeout=5)
+
+
+def test_two_bind_health_on_both(two_bind_server):
+    srv_a, srv_b, _, _ = two_bind_server
+    for srv in (srv_a, srv_b):
+        status, _, body = _get(srv, "/v1/health", auth=False)
+        assert status == 200
+        assert body["schema"] == "clusterd-health/v1"
+        assert body["status"] == "ok"
+
+
+def test_two_bind_equivalent_reads(two_bind_server):
+    srv_a, srv_b, _, _ = two_bind_server
+    status_a, _, body_a = _get(srv_a, "/v1/instances")
+    status_b, _, body_b = _get(srv_b, "/v1/instances")
+    assert status_a == status_b == 200
+    assert [(r["name"], r["state"]) for r in body_a] == \
+           [(r["name"], r["state"]) for r in body_b]
+
+
+def test_two_bind_token_works_on_both(two_bind_server):
+    srv_a, srv_b, _, _ = two_bind_server
+    for srv in (srv_a, srv_b):
+        status, _, body = _get(srv, "/v1/instances", auth=False)
+        assert status == 401  # default-deny, same on both sockets
+        status, _, body = _get(srv, f"/v1/instances/{NAME}")
+        assert status == 200
+        assert body["name"] == NAME
+
+
+def test_two_bind_mutation_via_a_visible_via_b(two_bind_server):
+    srv_a, srv_b, ad, _ = two_bind_server
+    status, _, before = _get(srv_b, f"/v1/instances/{NAME}")
+    assert status == 200
+    assert before["state"] == "stopped"
+    # Mutate via socket A...
+    status, _, body = _post(srv_a, f"/v1/instances/{NAME}/start",
+                            headers={"Idempotency-Key": UUID1})
+    assert status == 200
+    assert body["state"] == "running"
+    # ...is visible via socket B (shared state): the record changed, and
+    # both sockets report the SAME post-mutation record.
+    status, _, body_b = _get(srv_b, f"/v1/instances/{NAME}")
+    status, _, body_a = _get(srv_a, f"/v1/instances/{NAME}")
+    assert status == 200
+    assert body_b["state"] != "stopped"
+    assert body_b["state"] == body_a["state"]
+    assert ad._instances[0]["state"] == "running"
+    # And the idempotency store is shared: replay on B dedupes — exactly
+    # ONE adapter mutation reached the backing service.
+    status, _, body = _post(srv_b, f"/v1/instances/{NAME}/start",
+                            headers={"Idempotency-Key": UUID1})
+    assert status == 200
+    assert body["idempotent-replay"] is True
+    assert [c[0] for c in ad.mutation_log] == ["start"]
 
 
 def test_handlers_use_no_shell():

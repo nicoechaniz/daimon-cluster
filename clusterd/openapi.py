@@ -192,7 +192,13 @@ def build_openapi() -> dict:
                 "3->404, 6->409, 10->500."
             ),
         },
-        "servers": [{"url": "http://127.0.0.1:8785"}],
+        "servers": [
+            {"url": "http://127.0.0.1:8785",
+             "description": "loopback (host ops)"},
+            {"url": "http://10.105.93.1:8785",
+             "description": "incus bridge gateway (steward container; "
+                            "private only, never a public bind)"},
+        ],
         "paths": paths,
         "components": {
             "schemas": {

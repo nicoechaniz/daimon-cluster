@@ -1,7 +1,11 @@
 """clusterd entry point: ``python -m clusterd`` / ``scripts/clusterd``.
 
 Options:
-    --bind HOST:PORT   listen address (default 127.0.0.1:8785)
+    --bind HOST:PORT   listen address; REPEATABLE for multi-bind
+                       (issue #21, e.g. --bind 127.0.0.1:8785
+                       --bind 10.105.93.1:8785). All binds share one
+                       state_dir, one token store, one rate limiter.
+                       (default 127.0.0.1:8785)
     --config PATH      clusterctl-config/v1 YAML (default configs/clusterctl.yaml)
     --state-dir PATH   override clusterctl state_dir (tests)
     --dump-openapi [PATH]  write the generated OpenAPI doc and exit
@@ -50,8 +54,11 @@ def main(argv=None) -> int:
         prog="clusterd",
         description="thin HTTP API over clusterctl (issue #17)",
     )
-    parser.add_argument("--bind", default=f"{server.DEFAULT_BIND}:{server.DEFAULT_PORT}",
-                        help="listen address HOST:PORT (default: %(default)s)")
+    parser.add_argument("--bind", action="append", type=_parse_bind,
+                        default=None, metavar="HOST:PORT",
+                        help=f"listen address; repeatable for multi-bind "
+                             f"(issue #21); default "
+                             f"{server.DEFAULT_BIND}:{server.DEFAULT_PORT}")
     parser.add_argument("--config", default="configs/clusterctl.yaml",
                         help="clusterctl-config/v1 YAML (default: %(default)s)")
     parser.add_argument("--state-dir", default=None,
@@ -124,9 +131,9 @@ def main(argv=None) -> int:
         print(json.dumps(auth.list_tokens(state_dir), indent=2, sort_keys=True))
         return 0
 
-    bind, port = _parse_bind(args.bind)
+    binds = args.bind or [(server.DEFAULT_BIND, server.DEFAULT_PORT)]
     deps = handlers.Deps(config_path=args.config, state_dir=args.state_dir)
-    server.serve(deps, bind, port)
+    server.serve(deps, binds)
     return 0
 
 

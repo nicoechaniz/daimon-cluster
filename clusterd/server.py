@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -239,7 +241,9 @@ class ClusterdServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, bind: str, port: int, deps: handlers.Deps):
+    def __init__(self, bind: str, port: int, deps: handlers.Deps,
+                 token_store: auth.TokenStore | None = None,
+                 rate_limiter: auth.RateLimiter | None = None):
         super().__init__((bind, port), ClusterdHandler)
         self.deps = deps
         state_dir = deps.state_dir
@@ -247,8 +251,11 @@ class ClusterdServer(ThreadingHTTPServer):
             state_dir = load_config(deps.config_path).state_dir
         self.state_dir = state_dir
         # mtime-checked store: revocation takes effect WITHOUT restart.
-        self.token_store = auth.TokenStore(state_dir)
-        self.rate_limiter = auth.RateLimiter()
+        # Multi-bind deployments (issue #21) pass SHARED store + limiter:
+        # two sockets, one service — a token created/revoked on either
+        # bind is honored by both, and mutation rate limits are global.
+        self.token_store = token_store or auth.TokenStore(state_dir)
+        self.rate_limiter = rate_limiter or auth.RateLimiter()
 
 
 def make_server(deps: handlers.Deps, bind: str = DEFAULT_BIND,
@@ -256,14 +263,42 @@ def make_server(deps: handlers.Deps, bind: str = DEFAULT_BIND,
     return ClusterdServer(bind, port, deps)
 
 
-def serve(deps: handlers.Deps, bind: str = DEFAULT_BIND,
-          port: int = DEFAULT_PORT) -> None:  # pragma: no cover - manual
-    server = make_server(deps, bind, port)
-    host, actual_port = server.server_address[:2]
-    print(f"clusterd {__version__} listening on http://{host}:{actual_port}")
+def make_servers(deps: handlers.Deps,
+                 binds: list[tuple[str, int]]) -> list[ClusterdServer]:
+    """One ClusterdServer per bind, sharing ONE token store and ONE rate
+    limiter (same service, several sockets — issue #21)."""
+    state_dir = deps.state_dir or load_config(deps.config_path).state_dir
+    token_store = auth.TokenStore(state_dir)
+    rate_limiter = auth.RateLimiter()
+    return [ClusterdServer(host, port, deps,
+                           token_store=token_store,
+                           rate_limiter=rate_limiter)
+            for host, port in binds]
+
+
+def serve(deps: handlers.Deps,
+          binds: list[tuple[str, int]] | None = None) -> None:
+    """Bind every address in ``binds`` (default 127.0.0.1:8785), each in
+    its own daemon thread; block until KeyboardInterrupt, then shut all
+    servers down."""
+    if not binds:
+        binds = [(DEFAULT_BIND, DEFAULT_PORT)]
+    servers = make_servers(deps, binds)
+    threads = []
+    for srv in servers:
+        host, actual_port = srv.server_address[:2]
+        print(f"clusterd {__version__} listening on http://{host}:{actual_port}")
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        threads.append(thread)
     try:
-        server.serve_forever()
+        while any(t.is_alive() for t in threads):
+            time.sleep(0.2)
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
+        for srv in servers:
+            srv.shutdown()
+            srv.server_close()
+        for t in threads:
+            t.join(timeout=5)

@@ -43,7 +43,8 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #22 steward read tools | done (merged 7b2cf47) | 124 tests; live-verified from inside steward container (4/4 tools) |
 | #23 steward mutation tools | done (merged 0c8fcc0) | two-phase plans, adversarial suite 26 tests, live-verified from steward; M5 code complete |
 | #24 fleet dashboard | done (merged 3229123) | HTMX dark-theme, /v1/audit+owner-scoped, /v1/dashboard; auto-refresh 30s; 158 tests |
-| #25 dashboard actions | next | depends on #24 |
+| #25 dashboard actions | done (merged f8cf871) | two-phase HTTP, typed-name, restore pre-condition; 206 tests |
+| #27 lease registry | done (merged f8cf871) | CAS+fencing+TTL, 36 tests; clusterd GET /v1/leases |
 | #26 usability drill | pending (needs human operator) | depends on #25 |
 | #27-#30 (M7 leases) | design ready | docs/design/lease-registry.md (ADR D1 fulfilled) |
 

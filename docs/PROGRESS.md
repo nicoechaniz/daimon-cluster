@@ -32,8 +32,9 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #12 provisioning | design ready | docs/design/provisioning-flow.md |
 | #13 pilot | pending (needs volunteer + provider creds) | — |
 | #14 quiesced snapshots | design ready | docs/design/quiesced-snapshots.md |
-| #15 #16 (M3 backups/drills) | pending | #14 design covers #16 drill shape |
+| #15 backups | design ready, restic installed | docs/design/backup-targets.md (A=legion SFTP; paid options parked for Nicolás) |
 | #17-#20 (M4 clusterd) | design ready | docs/design/clusterd.md |
+| #27-#30 (M7 leases) | design ready | docs/design/lease-registry.md (ADR D1 fulfilled) |
 
 ## Next action
 

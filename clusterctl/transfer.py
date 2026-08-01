@@ -99,9 +99,9 @@ ANNOUNCEMENT_CREATION = "incarnation-creation"  # used by provision
 
 WAKE_STEPS = (
     "verify-manifest",
-    "restore-files",
     "fence",
     "start",
+    "restore-files",
     "record",
 )
 
@@ -109,9 +109,9 @@ TRANSFER_STEPS = (
     "verify-manifest",
     "target-spec",
     "target-create",
-    "restore-files",
     "fence",
     "start",
+    "restore-files",
     "record",
 )
 
@@ -394,17 +394,7 @@ def run_wake(
                                          daimon_id)
         _done("verify-manifest")
 
-        # 2. restore-files — inverse of park step 5; sha256 verified
-        #    BEFORE writing; restored shas recorded.
-        if "restore-files" not in completed:
-            restored = _restore_state_files(cfg, name, name, spec,
-                                            manifest, adapter)
-            record["restored_files"] = restored
-            _done("restore-files", restored_files=restored)
-        else:
-            _done("restore-files")
-
-        # 3. fence — epoch+1 CAS. Refuses if a newer fence exists.
+        # 2. fence — epoch+1 CAS. Refuses if a newer fence exists.
         if "fence" not in completed:
             renewed = _acquire_fence(store, daimon_id)
             record["fence_epoch"] = renewed["epoch"]
@@ -412,16 +402,30 @@ def run_wake(
         else:
             _done("fence")
 
-        # 4. start — spec parked → waking → active, container start via
-        #    the adapter (audited by the caller, like every mutation).
+        # 3. start — spec parked → waking; the container must be RUNNING
+        #    for the restore below (incus exec — live drill 1 caught the
+        #    original restore-before-start order failing on real incus).
         if "start" not in completed:
             update_spec(cfg.instances_dir, name, {"status": "waking"})
             try:
                 adapter.start(name)
             except Exception as exc:
                 raise TransferError(f"wake start failed: {exc}") from exc
-            update_spec(cfg.instances_dir, name, {"status": "active"})
         _done("start")
+
+        # 4. restore-files — inverse of park step 5; sha256 verified
+        #    BEFORE writing; restored shas recorded. On success the spec
+        #    becomes active.
+        if "restore-files" not in completed:
+            restored = _restore_state_files(cfg, name, name, spec,
+                                            manifest, adapter)
+            record["restored_files"] = restored
+            _done("restore-files", restored_files=restored)
+        else:
+            _done("restore-files")
+        if load_spec_raw(cfg.instances_dir, name).get(
+                "status") != "active":
+            update_spec(cfg.instances_dir, name, {"status": "active"})
 
         # 5. record — finalize the signed wake record.
         record["status"] = "ok"
@@ -433,12 +437,15 @@ def run_wake(
         record["status"] = "failed"
         record["error"] = str(exc)
         _atomic_write(record_path, _sign(record, signer))
-        # The lease stays parked, the container stays stopped, the spec
-        # rolls back to parked. Best effort — never mask the failure.
+        # The lease stays parked and the spec rolls back to parked. If
+        # the start step ran, best-effort stop the container so the
+        # convergent state is "both parked" (resumable via a later wake).
         try:
             update_spec(cfg.instances_dir, name, {"status": "parked"})
+            if "start" in completed:
+                adapter.stop(name)
         except Exception:  # pragma: no cover - defensive
-            logger.exception("wake spec rollback failed for %s", name)
+            logger.exception("wake rollback failed for %s", name)
         raise
 
     return {
@@ -721,18 +728,13 @@ def run_transfer(
                     f"target container create failed: {exc}") from exc
         _done("target-create", target_created=True)
 
-        # d. restore-files — sha256 verified per file BEFORE writing.
-        if "restore-files" not in completed:
-            target_spec = load_spec_raw(cfg.instances_dir, new_name) or {}
-            restored = _restore_state_files(cfg, name, new_name,
-                                            target_spec, manifest, adapter)
-            _done("restore-files", restored_files=restored)
-        else:
-            _done("restore-files")
-
-        # e. fence — NEW fence for the daimon identity (CAS epoch+1).
+        # d. fence — NEW fence for the daimon identity (CAS epoch+1).
         #    The pre-renew lease is snapshotted so rollback can restore
-        #    it exactly. CAS failure → rollback.
+        #    it exactly. CAS failure → rollback. The fence runs BEFORE
+        #    start: the target must not become reachable before the new
+        #    fence is held (live drill 1: restoring into a STOPPED
+        #    container is impossible — incus exec requires running — so
+        #    restore moved after start, and start after the fence).
         if not outputs.get("fence_acquired"):
             prev_lease = store.get(daimon_id)
             try:
@@ -748,8 +750,10 @@ def run_transfer(
         else:
             _done("fence")
 
-        # f. start — target spec transferring → waking → active; start
-        #    the target container ONLY after the fence is held.
+        # e. start — target spec transferring → waking; start the target
+        #    container ONLY after the fence is held (before this step the
+        #    target is network-unreachable; the spec goes active only
+        #    after the restore below succeeds).
         if "start" not in completed:
             update_spec(cfg.instances_dir, new_name, {"status": "waking"})
             try:
@@ -757,10 +761,23 @@ def run_transfer(
             except Exception as exc:
                 raise TransferError(
                     f"target start failed: {exc}") from exc
-            update_spec(cfg.instances_dir, new_name, {"status": "active"})
-            # The old source spec is kept for audit, marked transferred.
-            update_spec(cfg.instances_dir, name, {"status": "transferred"})
         _done("start")
+
+        # f. restore-files — sha256 verified per file BEFORE writing.
+        #    Requires a RUNNING target (incus exec); on success the
+        #    target becomes active and the source is marked transferred
+        #    (kept for audit — destroy is a separate human decision).
+        if "restore-files" not in completed:
+            target_spec = load_spec_raw(cfg.instances_dir, new_name) or {}
+            restored = _restore_state_files(cfg, name, new_name,
+                                            target_spec, manifest, adapter)
+            _done("restore-files", restored_files=restored)
+        else:
+            _done("restore-files")
+        if load_spec_raw(cfg.instances_dir, new_name).get(
+                "status") != "active":
+            update_spec(cfg.instances_dir, new_name, {"status": "active"})
+            update_spec(cfg.instances_dir, name, {"status": "transferred"})
 
         # g. record — signed transfer-record/v1.
         fence_epoch = outputs.get("fence_epoch")

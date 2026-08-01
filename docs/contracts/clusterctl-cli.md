@@ -140,6 +140,40 @@ checksum mismatch — all before any effect). Any post-creation failure
 triggers full reversal (stop+delete container, delete volume, spec marked
 `creation-failed`) and exits 10.
 
+## Snapshot (issue #14; design: `docs/design/quiesced-snapshots.md` §2)
+
+```
+clusterctl snapshot create <name> [--timeout-s 30] \
+    --idempotency-key <uuid> [--json]
+```
+
+Captures a **quiesced** local snapshot of a declared daimon. Order is
+fail-closed at every step:
+
+1. admission (declared instance, per-instance lock, idempotency key)
+2. quiesce park — `pkill -STOP -f hermes` inside the container
+3. quiesce verify — `wal_checkpoint(TRUNCATE)` + `integrity_check` on
+   every `library.db` under `/home/agent/.hermes/agent-memory`
+4. capture — `incus snapshot create <name> snap-<created_ms>`
+5. unpark — ALWAYS, before any manifest write
+6. snapshot verify — snap present in `incus snapshot list`
+7. manifest written to
+   `<state_dir>/backups/<name>/<created_ms>-<snap>.json`
+   (`cluster-backup-manifest/v1`: `name`, `snap_name`, `created_ms`,
+   `image_version`, `quiesce {parked, sqlite_ok, checkpoint_files}`,
+   `verified_readable: true`, `retention_class: "local-quiesced"`,
+   `rpo_class: "pre-mutation"`)
+8. retention — prune `snap-*` snapshots beyond the newest 3 verified;
+   the newest verified is never deleted; non-`snap-*` snapshots are
+   never touched
+
+Any failure in steps 2–6 exits 10 with an audit `error` event, attempts
+unpark, and writes **no** manifest (design §3: never mark an unverified
+capture usable; failed-verification snapshots are deleted aggressively).
+Undeclared name exits 3; idempotency-key conflict / held lock exits 6.
+Audit detail carries the snap name, a quiesce summary, and the manifest
+path — never file contents.
+
 ## Invocation
 
 `scripts/clusterctl` is a thin wrapper that execs the repo venv

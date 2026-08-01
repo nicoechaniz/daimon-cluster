@@ -151,6 +151,42 @@ class Adapter(abc.ABC):
         """Best-effort removal of ``<name>-home`` (used during reversal)."""
         return None
 
+    # ------------------------------------------------------------------
+    # Quiesced snapshot primitives (issue #14)
+    # ------------------------------------------------------------------
+
+    def exec_quiesce_park(self, name: str, timeout_s: int) -> bool:
+        """Park the daimon's writers (SIGSTOP hermes). True = parked."""
+        raise NotImplementedError
+
+    def exec_quiesce_verify(self, name: str) -> dict:
+        """Checkpoint + integrity-check DBs in-container.
+
+        Returns ``{"checkpoint_files": [paths], "sqlite_ok": bool}``.
+        """
+        raise NotImplementedError
+
+    def exec_unpark(self, name: str) -> bool:
+        """Resume the daimon (SIGCONT hermes). Best effort."""
+        raise NotImplementedError
+
+    def incus_snapshot_create(self, name: str, snap_name: str) -> None:
+        raise NotImplementedError
+
+    def incus_snapshot_verify(self, name: str, snap_name: str) -> bool:
+        """True when the snapshot exists and is readable."""
+        raise NotImplementedError
+
+    def incus_snapshot_list(self, name: str) -> list[str]:
+        raise NotImplementedError
+
+    def incus_snapshot_delete(self, name: str, snap_name: str) -> None:
+        raise NotImplementedError
+
+    def manifest_written(self, name: str, manifest_path: str) -> None:
+        """Hook called after a backup manifest is durably written (no-op)."""
+        return None
+
 
 DEFAULT_FAKE_PUBKEY = (
     "ssh-ed25519 "
@@ -176,6 +212,10 @@ class FakeAdapter(Adapter):
         fail_create: bool = False,
         fail_volume: bool = False,
         exec_pubkey: str | None = None,
+        fail_quiesce: bool = False,
+        fail_verify: bool = False,
+        fail_capture: bool = False,
+        quiesce_files: list | None = None,
     ):
         self._instances = list(instances or [])
         self._profile_budgets = dict(profile_budgets_map or {})
@@ -185,6 +225,13 @@ class FakeAdapter(Adapter):
         self.fail_volume = fail_volume
         # Canned public material returned for `cat .../identity.pub`.
         self._exec_pubkey = exec_pubkey or DEFAULT_FAKE_PUBKEY
+        # Quiesced-snapshot failure simulation (issue #14).
+        self.fail_quiesce = fail_quiesce
+        self.fail_verify = fail_verify
+        self.fail_capture = fail_capture
+        self._quiesce_files = list(quiesce_files) if quiesce_files is not None else [
+            "/home/agent/.hermes/agent-memory/library.db",
+        ]
         self.mutation_log: list[tuple] = []
 
     def list_instances(self) -> list[dict]:
@@ -276,6 +323,56 @@ class FakeAdapter(Adapter):
 
     def delete_volume(self, name: str) -> None:
         self.mutation_log.append(("delete_volume", name))
+
+    # -- quiesced snapshots (issue #14) ----------------------------------
+
+    def _snapshots(self, name: str) -> list:
+        inst = self._require(name)
+        return inst.setdefault("snapshots", [])
+
+    def exec_quiesce_park(self, name: str, timeout_s: int = 30) -> bool:
+        self.mutation_log.append(("exec_quiesce_park", name, timeout_s))
+        self._require(name)
+        return not self.fail_quiesce
+
+    def exec_quiesce_verify(self, name: str) -> dict:
+        self.mutation_log.append(("exec_quiesce_verify", name))
+        self._require(name)
+        return {
+            "checkpoint_files": list(self._quiesce_files),
+            "sqlite_ok": not self.fail_verify,
+        }
+
+    def exec_unpark(self, name: str) -> bool:
+        self.mutation_log.append(("exec_unpark", name))
+        self._require(name)
+        return True
+
+    def incus_snapshot_create(self, name: str, snap_name: str) -> None:
+        self.mutation_log.append(("incus_snapshot_create", name, snap_name))
+        snaps = self._snapshots(name)
+        if self.fail_capture:
+            raise RuntimeError(f"simulated snapshot capture failure for {name!r}")
+        if snap_name in snaps:
+            raise ValueError(f"snapshot {snap_name!r} already exists on {name!r}")
+        snaps.append(snap_name)
+
+    def incus_snapshot_verify(self, name: str, snap_name: str) -> bool:
+        self.mutation_log.append(("incus_snapshot_verify", name, snap_name))
+        return snap_name in self._snapshots(name)
+
+    def incus_snapshot_list(self, name: str) -> list:
+        self.mutation_log.append(("incus_snapshot_list", name))
+        return list(self._snapshots(name))
+
+    def incus_snapshot_delete(self, name: str, snap_name: str) -> None:
+        self.mutation_log.append(("incus_snapshot_delete", name, snap_name))
+        snaps = self._snapshots(name)
+        if snap_name in snaps:
+            snaps.remove(snap_name)
+
+    def manifest_written(self, name: str, manifest_path: str) -> None:
+        self.mutation_log.append(("manifest_write", name, manifest_path))
 
 
 class IncusError(Exception):
@@ -497,6 +594,89 @@ class IncusAdapter(Adapter):
         except IncusError as exc:
             if "already exists" not in str(exc):
                 raise
+
+    # ------------------------------------------------------------------
+    # Quiesced snapshot primitives (issue #14)
+    # ------------------------------------------------------------------
+
+    def _exec_rc(self, name: str, argv: list[str]) -> tuple[int, str]:
+        """Run a command inside the instance; return (rc, stdout).
+
+        Unlike ``exec`` this does not raise on non-zero rc — pkill uses
+        rc 1 for "no processes matched", which is a valid quiesce state.
+        """
+        cmd = ["incus", "exec"]
+        if self.project:
+            cmd += ["--project", self.project]
+        cmd += [name, "--", *[str(a) for a in argv]]
+        env = dict(os.environ)
+        if "/usr/sbin" not in env.get("PATH", "").split(":"):
+            env["PATH"] = env.get("PATH", "") + ":/usr/sbin"
+        proc = subprocess.run(["sudo", *cmd], capture_output=True, text=True, env=env)
+        return proc.returncode, proc.stdout
+
+    def exec_quiesce_park(self, name: str, timeout_s: int = 30) -> bool:
+        """SIGSTOP all hermes processes. rc 0 = parked; rc 1 = no hermes
+        processes = parked-clean (fresh daimon); other rc = failure."""
+        rc, _ = self._exec_rc(name, ["pkill", "-STOP", "-f", "hermes"])
+        return rc in (0, 1)
+
+    def exec_quiesce_verify(self, name: str) -> dict:
+        """Checkpoint + integrity-check every library.db in-container.
+
+        Missing files = empty checkpoint list (valid: fresh daimon).
+        """
+        script = (
+            "DIR=/home/agent/.hermes/agent-memory; "
+            "FILES=$(find \"$DIR\" \\( -name '*.sqlite*' -o -name 'library.db*' \\) "
+            "2>/dev/null || true); "
+            "echo '__FILES__'; echo \"$FILES\"; echo '__CHECK__'; "
+            "OK=ok; "
+            "for db in $(find \"$DIR\" -name 'library.db' 2>/dev/null); do "
+            "OUT=$(sqlite3 \"$db\" 'PRAGMA wal_checkpoint(TRUNCATE); "
+            "PRAGMA integrity_check;' 2>&1) || OK=fail; "
+            "echo \"$OUT\" | grep -q '^ok$' || OK=fail; "
+            "done; "
+            "echo \"__RESULT__$OK\""
+        )
+        rc, out = self._exec_rc(name, ["sh", "-c", script])
+        files: list[str] = []
+        sqlite_ok = False
+        section = None
+        for line in out.splitlines():
+            if line == "__FILES__":
+                section = "files"
+                continue
+            if line == "__CHECK__":
+                section = "check"
+                continue
+            if line.startswith("__RESULT__"):
+                sqlite_ok = line.removeprefix("__RESULT__").strip() == "ok"
+                continue
+            if section == "files" and line.strip():
+                files.append(line.strip())
+        if rc != 0:
+            sqlite_ok = False
+        return {"checkpoint_files": files, "sqlite_ok": sqlite_ok}
+
+    def exec_unpark(self, name: str) -> bool:
+        """SIGCONT all hermes processes. Best effort; rc 0/1 both fine."""
+        rc, _ = self._exec_rc(name, ["pkill", "-CONT", "-f", "hermes"])
+        return rc in (0, 1)
+
+    def incus_snapshot_create(self, name: str, snap_name: str) -> None:
+        self._incus("snapshot", "create", name, snap_name)
+
+    def incus_snapshot_list(self, name: str) -> list[str]:
+        raw = json.loads(self._incus("snapshot", "list", name, "--format", "json"))
+        return [e.get("name", "") for e in raw if e.get("name")]
+
+    def incus_snapshot_verify(self, name: str, snap_name: str) -> bool:
+        """Verified-readable = the snapshot exists in `incus snapshot list`."""
+        return snap_name in self.incus_snapshot_list(name)
+
+    def incus_snapshot_delete(self, name: str, snap_name: str) -> None:
+        self._incus("snapshot", "delete", name, snap_name)
 
     def delete_volume(self, name: str) -> None:
         try:

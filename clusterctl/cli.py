@@ -127,6 +127,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="consume a provision-activate token (directory activation is governance's act)")
     p_conf.add_argument("--token", required=True, help="token emitted by provision prepare")
     p_conf.add_argument("--json", action="store_true", help="emit JSON")
+
+    p_snap = sub.add_parser("snapshot", help="quiesced snapshots (issue #14)")
+    snap_sub = p_snap.add_subparsers(dest="snapshot_command", required=True)
+    p_sc = snap_sub.add_parser(
+        "create",
+        help="quiesce (park+checkpoint), capture, verify, then write backup manifest")
+    p_sc.add_argument("name", help="instance (daimon) name")
+    p_sc.add_argument("--timeout-s", type=int, default=30, dest="timeout_s",
+                      help="quiesce timeout in seconds (default: %(default)s)")
+    p_sc.add_argument("--idempotency-key", required=True,
+                      help="uuid; retry with the same key replays the cached result")
+    p_sc.add_argument("--json", action="store_true", help="emit JSON")
     return parser
 
 
@@ -197,7 +209,7 @@ def run(argv=None, adapter=None) -> int:
         cfg = _resolve_config(args)
 
         if args.command in ("create", "start", "stop", "restart", "logs",
-                            "destroy-plan", "provision"):
+                            "destroy-plan", "provision", "snapshot"):
             ad = adapter if adapter is not None else _adapter_for(cfg)
             return lifecycle.dispatch(args, cfg, ad)
 

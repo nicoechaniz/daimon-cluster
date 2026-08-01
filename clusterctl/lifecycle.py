@@ -418,6 +418,11 @@ def dispatch(args, cfg, adapter) -> int:
                 return provision.cmd_provision_prepare(args, cfg, adapter)
             if getattr(args, "provision_command", None) == "confirm":
                 return provision.cmd_provision_confirm(args, cfg, adapter)
+        if args.command == "snapshot":
+            # Lazy import: snapshot imports helpers from this module.
+            from . import snapshot
+            if getattr(args, "snapshot_command", None) == "create":
+                return snapshot.cmd_snapshot_create(args, cfg, adapter)
     except locks.LockConflict as exc:
         return _fail(
             args, cfg, args.command, getattr(args, "name", "?"), str(exc),

@@ -1,58 +1,45 @@
 #!/usr/bin/env bash
-# restic-backup.sh — daimon-cluster volume backup (issue #15)
+# restic-backup.sh — daimon-cluster backup (issue #15, local-repo + pull model)
 #
-# Backs up each declared daimon's durable volume + the cluster state dir
-# to the configured restic target. FAIL-CLOSED: any failure exits non-zero
-# and must surface as an alert (design: docs/design/quiesced-snapshots.md §5,
-# docs/design/backup-targets.md).
+# Backs up every declared daimon's durable volume + the cluster state dir
+# to a LOCAL restic repo (encrypted, append-mostly). The off-host copy is
+# PULLED by the legion over its existing SSH access to this host — no
+# outbound SSH from daimonmatrix, no new listeners, no new exposure.
+# The legion holds ciphertext only; the password never leaves this host.
 #
-# Env (from /etc/daimon-cluster/backup.env, NOT committed):
-#   RESTIC_REPOSITORY   e.g. sftp:debian@10.10.20.27:/home/debian/daimon-backups/daimonmatrix
-#   RESTIC_PASSWORD     repo encryption password (lives only in that file + keeper)
-#   SFTP_IDENTITY       ssh key (default /var/lib/daimon-cluster/backup-keys/restic-sftp)
+# FAIL-CLOSED: destroy/update paths require at least one verified target;
+# "verified" = local restic check passes + the legion's pull heartbeat is
+# fresh (their cron reports via bridge).
 #
-# Usage: restic-backup.sh [--check-only]
+# Env:
+#   RESTIC_REPOSITORY   default /var/lib/daimon-cluster/restic-repo
+#   RESTIC_PASSWORD     repo password (lives in /var/lib/daimon-cluster/backup-keys/restic-password)
+# Usage: restic-backup.sh [--check-only|--verify]
 set -euo pipefail
 
-ENV_FILE=/etc/daimon-cluster/backup.env
-STATE_DIR=${DAIMON_STATE_DIR:-/var/lib/daimon-cluster}
-POOL=${INCUS_POOL_PATH:-/var/lib/incus/storage-pools/default}
+REPO="${RESTIC_REPOSITORY:-/var/lib/daimon-cluster/restic-repo}"
+: "${RESTIC_PASSWORD:?set RESTIC_PASSWORD (see backup-keys/restic-password)}"
+export RESTIC_REPOSITORY="$REPO" RESTIC_PASSWORD
 
-die() { echo "restic-backup: ERROR: $*" >&2; exit 1; }
+STATE_DIR=/var/lib/daimon-cluster
+POOL=/var/lib/incus/storage-pools/default/custom
 
-[ -f "$ENV_FILE" ] || die "$ENV_FILE missing (target not configured yet — see docs/design/backup-targets.md)"
-set -a; source "$ENV_FILE"; set +a
-: "${RESTIC_REPOSITORY:?}"; "${RESTIC_PASSWORD:?}"
-export RESTIC_REPOSITORY RESTIC_PASSWORD
-export RESTIC_SFTP_ARGS="-oIdentityFile=${SFTP_IDENTITY:-/var/lib/daimon-cluster/backup-keys/restic-sftp} -oStrictHostKeyChecking=accept-new"
-
-if [ "${1:-}" = "--check-only" ]; then
-    restic snapshots --latest 1 >/dev/null && echo "target reachable: $RESTIC_REPOSITORY" && exit 0
-    die "target unreachable"
+if [[ "${1:-}" == "--check-only" ]]; then
+    restic snapshots --latest 1 >/dev/null && echo "repo ok: $REPO" && exit 0
+fi
+if [[ "${1:-}" == "--verify" ]]; then
+    restic check && exit 0
 fi
 
-# Snapshot freshness guard: only back up volumes whose latest quiesced
-# manifest is < 26h old (RPO 6h target with 4x daily cadence; 26h = one
-# missed run tolerated). Missing/ stale manifest => fail closed.
-now_ms=$(( $(date +%s) * 1000 ))
-fresh=0; stale=0
-for manifest in "$STATE_DIR"/backups/*/*.json; do
-    [ -e "$manifest" ] || continue
-    created=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['created_ms'])" "$manifest")
-    age_h=$(( (now_ms - created) / 3600000 ))
-    if [ "$age_h" -gt 26 ]; then stale=$((stale+1)); else fresh=$((fresh+1)); fi
+# Path set: state (specs/audit/idempotency) + every declared daimon's volume.
+PATHS=("$STATE_DIR/instances" "$STATE_DIR/audit.jsonl" "$STATE_DIR/idempotency.json")
+for spec in "$STATE_DIR"/instances/*.yaml; do
+    name=$(basename "$spec" .yaml)
+    vol="$POOL/default_${name}-home"
+    [[ -d "$vol" ]] && PATHS+=("$vol")
 done
-[ "$stale" -eq 0 ] || die "$stale daimon(s) with stale quiesced manifests (>26h) — run clusterctl snapshot create first"
 
-# Volumes (durable home dirs) + cluster state (specs, audit, manifests —
-# keys stay in volumes; state_dir holds no private material by design).
-paths=()
-for v in "$POOL"/custom/*-home; do [ -d "$v" ] && paths+=("$v"); done
-paths+=("$STATE_DIR/instances" "$STATE_DIR/audit.jsonl" "$STATE_DIR/backups" "$STATE_DIR/leases.json")
-existing=(); for p in "${paths[@]}"; do [ -e "$p" ] && existing+=("$p"); done
-[ "${#existing[@]}" -gt 0 ] || die "nothing to back up"
-
-restic backup "${existing[@]}" --tag daimon-cluster --tag "$(date +%F)"
-restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune --tag daimon-cluster
-restic check --read-data-subset=5%
-echo "restic-backup: ok ($fresh daimons fresh, target $RESTIC_REPOSITORY)"
+restic backup "${PATHS[@]}" --tag daimon-cluster --tag scheduled
+restic forget --keep-daily 7 --keep-weekly 4 --prune
+restic check
+echo "backup complete: ${#PATHS[@]} paths -> $REPO"

@@ -36,8 +36,8 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #15 backups | restic installed; SFTP keypair generated; legion target A requested via bridge | docs/design/backup-targets.md |
 | #17 clusterd API | done (merged fe02f39) | clusterd/, 72 tests, live verified (health/instances/restart/replay via HTTP); OpenAPI doc committed |
 | #18 auth/confirmations | done (merged e884312) | clusterd/auth.py+confirm.py, 82 tests, live battery 8/8 (401/403/revocation/challenge/steward) |
-| #19 audit hash-chain | next | design §3 ready |
-| #20 clusterd deploy | pending | design §4 ready; restart drill input |
+| #19 audit hash-chain | done (merged 52f76a6) | seq+prev_sha256+HWM, reconcile, health audit_chain_ok; 91 tests; live verified on real log |
+| #20 clusterd deploy | next | design §4 ready; restart drill input |
 | #27-#30 (M7 leases) | design ready | docs/design/lease-registry.md (ADR D1 fulfilled) |
 
 ## Next action

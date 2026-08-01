@@ -33,14 +33,17 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 
 ## Next action
 
-1. Push coordination: legion fetches local main (tip 32bc4fa) and pushes;
-   paste issue-comment texts (sent in bridge DMs).
-2. Ask Nicolás for a host restart window to run the staged drill (closes #9
-   fully). Note: agent-side restart command is hardline-blocked — the drill
-   needs a human terminal anyway.
-3. M2: #10 seed/provision flow design → #11 clusterctl provisioning commands
-   → #12 first daimon container (dry-run identity) → #13 update runbook →
-   #14 acceptance.
+1. #10 clusterctl (list/status/inventory): delegated to subagent
+   (deleg_747eed71) with full spec — on completion: review, run pytest
+   suite incl. live incus fixture, commit on branch issue-10-clusterctl.
+2. Push coordination: legion fetches local main and pushes; paste
+   issue-comment texts (bridge DMs sent, requests #1-#4).
+3. Restart drill: runbook staged at docs/runbooks/host-restart-drill.md —
+   awaits Nicolás's window (human terminal; agent-side command blocked).
+4. M2 continues: #11 lifecycle mutations (after #10) → #12 provisioning
+   (design ready at docs/design/provisioning-flow.md) → #13 pilot
+   (needs volunteer + their provider credentials).
+5. M3 design seeded: docs/design/quiesced-snapshots.md (#14 input).
 
 ## Key decisions this stretch
 

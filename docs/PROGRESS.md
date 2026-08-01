@@ -32,7 +32,7 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #12 provisioning | done (merged 0587848) | clusterctl/provision.py, tests 40 pass, live cycle verified (key custody, seed staging, confirm, expiry fail-closed) |
 | #13 pilot | pending (needs volunteer + provider creds) | #12 infra ready |
 | #14 quiesced snapshots | done (merged 3b8ae44) | clusterctl/snapshot.py, 49 tests, live cycle verified |
-| #16 restore drill | next (needs only throwaway container) | drill per docs/design/quiesced-snapshots.md §4 |
+| #16 restore drill | drill 1 PASS (merged 1928976) | docs/verification/restore-drill-1.md; restic-class drill pending #15 |
 | #15 backups | restic installed; SFTP keypair generated; legion target A requested via bridge | docs/design/backup-targets.md |
 | #17-#20 (M4 clusterd) | design ready | docs/design/clusterd.md |
 | #27-#30 (M7 leases) | design ready | docs/design/lease-registry.md (ADR D1 fulfilled) |

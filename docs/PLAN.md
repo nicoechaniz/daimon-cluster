@@ -40,9 +40,12 @@ Differentiators nobody else has:
   portable object. The rebirth protocol (`/we.pull`, state repos, HMK
   snapshots) already proves this inside the tribe.
 - **Multi-incarnation by design.** The same species can live in several
-  bodies (`compaii@legion`, `compaii@daimonmatrix`) with explicit rules for
-  which one is awake and how they stay consistent. The industry has no
-  answer to this; we have a running instance of it since 2026-07-31.
+  bodies (`compaii@legion`, `compaii@daimonmatrix`) — **all of them awake
+  simultaneously**, each a distinct identity with its own keys and
+  experiences, synchronized through shared memory flows. The bare name
+  (`compaii`) is the `/we`: the collective identity that emerges from its
+  awake embodiments. The industry has no answer to this; we have a running
+  instance of it since 2026-07-31.
 - **Tribe-native.** Agents relate to each other over an authenticated,
   end-to-end encrypted bus (tribe bridge v1) with governance — a social
   network of daemons, not isolated chatbots.
@@ -56,10 +59,16 @@ funds the infrastructure that keeps the tribe's own daemons alive.
 1. **State over memory.** What is on disk is truth; what an agent "remembers"
    is narrative. All consistency mechanisms move *state* (files, SQLite
    snapshots, git commits), never vibes.
-2. **Single active incarnation.** At any moment, at most one body per daimon
-   is *awake* (accepting work). Others are asleep (syncable snapshots) or
-   distinct incarnations with their own names. This is the consistency model;
-   everything else follows from it.
+2. **One awake body per identity — never per species.** The hierarchy is:
+   `/we` (bare name, the collective) → identities (`<agent>@<host>`, one
+   thread of experience with its own keys) → bodies (machines/containers an
+   identity runs on). Many identities of one species can and should be
+   awake at once — that *is* the `/we`. What must never happen is one
+   *identity* (same name, same keys) awake in two bodies at the same time:
+   two writers on one memory, two signers with one key, double ACKs at the
+   broker. Identities move between bodies over time (park/wake); they never
+   duplicate in space. This is the consistency model; everything else
+   follows from it.
 3. **Boring technology first.** Incus, systemd, git, SQLite, SSH, cron. No
    Kubernetes, no service mesh, no bespoke consensus. The exotic part of this
    system is the *agents*, not the plumbing.
@@ -126,10 +135,11 @@ state; it attaches to the live incarnation.
 
 ### 5.1 The model
 
-Each daimon species has **one lease** — a record saying which incarnation is
-awake. The lease lives in the tribe bridge v1 directory (already our
-governance-backed, epoch-versioned, signed registry) as a small
-machine-readable field per agent entry:
+Each **identity** has **one lease** — a record saying which body is awake.
+(Not per species: a species is the `/we`, and all of its identities are
+meant to be awake simultaneously — see §3.2.) The lease lives in a
+dedicated signed registry (per the M0 ADR; the draft below assumed the
+tribe bridge v1 directory) as a small machine-readable record per identity:
 
 ```
 compaii@legion          status: awake   since: 2026-08-01T00:00Z  epoch: N

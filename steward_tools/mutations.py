@@ -245,9 +245,13 @@ def _mutation_headers(plan: MutationPlan, human_turn_id: str) -> dict:
     headers = {
         "X-Attended": "true",
         "X-Human-Turn": str(human_turn_id),
-        # Deterministic per plan: a retried confirm of the same action
-        # dedupes in clusterctl's own idempotency store.
-        "Idempotency-Key": f"steward-{plan.action_digest[:32]}",
+        # Per plan AND per intent: the digest alone made independent
+        # intents collide (nico's dashboard stop replayed the steward's
+        # hours-old cached result — found in the #26 drill). The human
+        # turn separates intents; a retried confirm of the SAME intent
+        # still dedupes (and the single-use challenge guards replays).
+        "Idempotency-Key": (
+            f"steward-{plan.action_digest[:24]}-{human_turn_id}"),
     }
     if plan.destructive and plan.challenge_token:
         headers["X-Confirm-Token"] = plan.challenge_token

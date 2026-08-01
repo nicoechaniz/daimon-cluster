@@ -27,23 +27,21 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #7 tribe-base image | done | scripts/build-tribe-base.sh + configs/tribe-base-manifest-2026-08-01.1.json (def64fa); reproducibility + secret scan + boot smoke verified |
 | #8 profile+volumes | done | docs/design/tribe-agent-profile-and-volumes.md (6682e61 + allowlist fix in def64fa) |
 | #9 acceptance tests | done minus restart drill | docs/verification/m1-acceptance-tests.md (32bc4fa); drill staged, awaits Nicolás's restart window |
-| #10 #11 #12 #13 #14 (M2 provisioning) | next | — |
-| #15 #16 (M3 backups) | pending | — |
-| #17-#33 (M4-M8) | pending | — |
+| #10 clusterctl list/status | done (85b0b79, merged 32e626c) | clusterctl/, tests (16 pass incl. live fixture), docs/contracts/clusterctl-cli.md; live reconciliation cycle verified |
+| #11 lifecycle mutations | in progress (delegated deleg_a4c85144) | — |
+| #12 provisioning | design ready | docs/design/provisioning-flow.md |
+| #13 pilot | pending (needs volunteer + provider creds) | — |
+| #14 quiesced snapshots | design ready | docs/design/quiesced-snapshots.md |
+| #15 #16 (M3 backups/drills) | pending | #14 design covers #16 drill shape |
+| #17-#20 (M4 clusterd) | design ready | docs/design/clusterd.md |
 
 ## Next action
 
-1. #10 clusterctl (list/status/inventory): delegated to subagent
-   (deleg_747eed71) with full spec — on completion: review, run pytest
-   suite incl. live incus fixture, commit on branch issue-10-clusterctl.
-2. Push coordination: legion fetches local main and pushes; paste
-   issue-comment texts (bridge DMs sent, requests #1-#4).
-3. Restart drill: runbook staged at docs/runbooks/host-restart-drill.md —
-   awaits Nicolás's window (human terminal; agent-side command blocked).
-4. M2 continues: #11 lifecycle mutations (after #10) → #12 provisioning
-   (design ready at docs/design/provisioning-flow.md) → #13 pilot
-   (needs volunteer + their provider credentials).
-5. M3 design seeded: docs/design/quiesced-snapshots.md (#14 input).
+1. #11 lifecycle (delegated deleg_a4c85144): on completion review + run
+   suite + live create/delete cycle on throwaway container + commit.
+2. Push coordination: legion fetches main (requests #1-#5 sent).
+3. Restart drill: docs/runbooks/host-restart-drill.md — awaits Nicolás.
+4. #12 provisioning implementation (design ready) → #13 pilot.
 
 ## Key decisions this stretch
 

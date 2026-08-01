@@ -225,12 +225,18 @@ class FakeAdapter(Adapter):
         fail_capture: bool = False,
         quiesce_files: list | None = None,
         volumes: list | None = None,
+        exec_handler=None,
     ):
         self._instances = list(instances or [])
         self._volumes = set(volumes or [])
         self._profile_budgets = dict(profile_budgets_map or {})
         self._image_aliases = dict(image_aliases or {})
         self._log_lines = {k: list(v) for k, v in (log_lines or {}).items()}
+        # Optional callable (name, argv) -> str | None. Returning a string
+        # answers the exec; returning None falls through to the canned
+        # defaults. Used by park tests to script in-container git/cat
+        # behaviour (issue #28).
+        self.exec_handler = exec_handler
         self.fail_create = fail_create
         self.fail_volume = fail_volume
         # Canned public material returned for `cat .../identity.pub`.
@@ -319,6 +325,10 @@ class FakeAdapter(Adapter):
     def exec(self, name: str, argv: list[str]) -> str:
         self.mutation_log.append(("exec", name, list(argv)))
         self._require(name)
+        if self.exec_handler is not None:
+            answered = self.exec_handler(name, list(argv))
+            if answered is not None:
+                return answered
         # Only the public-material read-back is answered; everything else
         # is recorded as a no-op (key generation, seed staging, etc.).
         if len(argv) == 2 and argv[0] == "cat" and argv[1].endswith("identity.pub"):

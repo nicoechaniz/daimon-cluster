@@ -175,6 +175,37 @@ def reconcile(specs: dict[str, InstanceSpec], adapter: Adapter, host_id: str) ->
     return records
 
 
+def load_spec_raw(instances_dir: str | Path, name: str) -> dict | None:
+    """Load one spec as the raw YAML mapping (all fields, not just the
+    dataclass subset). Returns None when the instance is not declared."""
+    path = Path(instances_dir) / f"{name}.yaml"
+    if not path.is_file():
+        return None
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise SpecError(f"invalid YAML in spec {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise SpecError(f"spec {path} must be a YAML mapping")
+    if raw.get("schema") != SPEC_SCHEMA:
+        raise SpecError(f"spec {path}: schema must be {SPEC_SCHEMA!r}")
+    return raw
+
+
+def update_spec(instances_dir: str | Path, name: str, updates: dict) -> dict:
+    """The spec-store write API: merge ``updates`` into the declared spec
+    and persist. Callers (park, lifecycle) MUST go through here instead of
+    writing YAML directly so spec writes stay schema-checked and in one
+    place. Returns the updated raw mapping."""
+    raw = load_spec_raw(instances_dir, name)
+    if raw is None:
+        raise SpecError(f"instance {name!r} is not declared")
+    raw.update(updates)
+    path = Path(instances_dir) / f"{name}.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    return raw
+
+
 def find_record(records: list[dict], name: str) -> dict | None:
     for rec in records:
         if rec["name"] == name:

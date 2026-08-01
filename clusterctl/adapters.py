@@ -127,6 +127,14 @@ class Adapter(abc.ABC):
         """Return up to ``max_lines`` most recent log lines."""
         raise NotImplementedError
 
+    def list_volumes(self) -> list[str]:
+        """Names of custom storage volumes in the default pool (read-only).
+
+        Used by ``clusterctl reconcile`` (issue #19) to detect custom
+        volumes without a matching spec. Default: unknown (empty list).
+        """
+        return []
+
     def resolve_image(self, image_alias: str) -> str:
         """Resolve a moving alias (e.g. tribe-base/latest) to a versioned one."""
         return image_alias
@@ -216,8 +224,10 @@ class FakeAdapter(Adapter):
         fail_verify: bool = False,
         fail_capture: bool = False,
         quiesce_files: list | None = None,
+        volumes: list | None = None,
     ):
         self._instances = list(instances or [])
+        self._volumes = set(volumes or [])
         self._profile_budgets = dict(profile_budgets_map or {})
         self._image_aliases = dict(image_aliases or {})
         self._log_lines = {k: list(v) for k, v in (log_lines or {}).items()}
@@ -320,9 +330,14 @@ class FakeAdapter(Adapter):
         self._require(name)
         if self.fail_volume:
             raise RuntimeError(f"simulated volume attach failure for {name!r}")
+        self._volumes.add(f"{name}-home")
 
     def delete_volume(self, name: str) -> None:
         self.mutation_log.append(("delete_volume", name))
+        self._volumes.discard(f"{name}-home")
+
+    def list_volumes(self) -> list[str]:
+        return sorted(self._volumes)
 
     # -- quiesced snapshots (issue #14) ----------------------------------
 
@@ -687,3 +702,12 @@ class IncusAdapter(Adapter):
             self._incus("storage", "volume", "delete", "default", f"{name}-home")
         except IncusError:
             pass  # best-effort cleanup during reversal
+
+    def list_volumes(self) -> list[str]:
+        """Names of ``custom`` volumes in the ``default`` pool (read-only)."""
+        raw = json.loads(self._incus(
+            "storage", "volume", "list", "default", "--format", "json"))
+        return sorted(
+            e.get("name", "") for e in raw
+            if e.get("type") == "custom" and e.get("name")
+        )

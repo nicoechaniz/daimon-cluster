@@ -59,6 +59,18 @@ def _build_parser() -> argparse.ArgumentParser:
         default="clusterctl-cli",
         help="actor recorded in audit events (default: %(default)s)",
     )
+    parser.add_argument(
+        "--request-id",
+        default=None,
+        help="caller request id recorded in audit events (clusterd "
+             "X-Request-Id passthrough, issue #19)",
+    )
+    parser.add_argument(
+        "--action-digest",
+        default=None,
+        help="confirmation action digest recorded in audit events "
+             "(clusterd cluster-confirmation/v1 passthrough, issue #19)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_list = sub.add_parser("list", help="list all instances with reconciled state")
@@ -70,6 +82,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_cfg = sub.add_parser("config-show", help="show the resolved clusterctl config")
     p_cfg.add_argument("--json", action="store_true", help="emit config as JSON")
+
+    p_rec = sub.add_parser(
+        "reconcile",
+        help="cross-check audit trail vs specs vs incus (read-only, issue #19)")
+    p_rec.add_argument("--json", action="store_true",
+                       help="emit the clusterctl-reconcile-report/v1 JSON")
 
     def _mutation(name, help_text):
         p = sub.add_parser(name, help=help_text)
@@ -212,6 +230,18 @@ def run(argv=None, adapter=None) -> int:
                             "destroy-plan", "provision", "snapshot"):
             ad = adapter if adapter is not None else _adapter_for(cfg)
             return lifecycle.dispatch(args, cfg, ad)
+
+        if args.command == "reconcile":
+            # Read-only three-source cross-check (issue #19). Exit 0
+            # always: discrepancies are data in the findings array.
+            from .reconcile import render_human, run_reconcile
+            ad = adapter if adapter is not None else _adapter_for(cfg)
+            report = run_reconcile(cfg, ad)
+            if args.json:
+                print(json.dumps(report, indent=2))
+            else:
+                print(render_human(report))
+            return EXIT_OK
 
         if args.command == "config-show":
             data = {

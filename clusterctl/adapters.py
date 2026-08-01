@@ -1,8 +1,10 @@
-"""Adapters that report *actual* instance state.
+"""Adapters that report *actual* instance state and execute lifecycle mutations.
 
-The abstract ``Adapter`` protocol has a single read method,
-``list_instances() -> list[dict]``. Implementations must be read-only:
-no incus mutations, no writes.
+Read path: ``list_instances() -> list[dict]`` (strictly side-effect free).
+Mutation path (issue #11): ``create_instance``, ``start``, ``stop``,
+``restart``, ``delete``, ``logs`` — these change incus (or FakeAdapter
+in-memory) state. All business rules (admission, idempotency, locking,
+audit) live in ``clusterctl.lifecycle``; adapters only execute.
 
 Normalized instance dict keys (adapters may add more; consumers ignore
 unknown fields per the forward-compatibility rule):
@@ -22,6 +24,8 @@ import os
 import re
 import subprocess
 from datetime import datetime, timezone
+
+import yaml
 
 _SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]+)?\s*$")
 _SIZE_UNITS_BYTES = {
@@ -85,23 +89,145 @@ def _parse_info_timestamp(text: str, label: str) -> datetime | None:
 
 
 class Adapter(abc.ABC):
-    """Abstract read-only source of actual instance state."""
+    """Abstract source of actual instance state + lifecycle executor."""
 
     @abc.abstractmethod
     def list_instances(self) -> list[dict]:
         """Return normalized actual-state dicts for managed instances."""
         raise NotImplementedError
 
+    # ------------------------------------------------------------------
+    # Lifecycle mutations (issue #11). Adapters only execute; all policy
+    # (admission, idempotency, locking, audit) lives in clusterctl.lifecycle.
+    # ------------------------------------------------------------------
+
+    @abc.abstractmethod
+    def create_instance(self, name: str, image_alias: str, profile: str) -> None:
+        """Create (but do not start) an instance from an image alias."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def start(self, name: str) -> None:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def stop(self, name: str, timeout: int) -> None:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def restart(self, name: str) -> None:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def delete(self, name: str) -> None:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def logs(self, name: str, max_lines: int) -> str:
+        """Return up to ``max_lines`` most recent log lines."""
+        raise NotImplementedError
+
+    def resolve_image(self, image_alias: str) -> str:
+        """Resolve a moving alias (e.g. tribe-base/latest) to a versioned one."""
+        return image_alias
+
+    def profile_budgets(self, profile: str) -> dict:
+        """Budgets (cpu/memory_mib/disk_gib) granted by an incus profile."""
+        return {}
+
 
 class FakeAdapter(Adapter):
-    """In-memory adapter driven by test fixtures."""
+    """In-memory adapter driven by test fixtures.
 
-    def __init__(self, instances: list[dict] | None = None):
+    ``fail_create=True`` makes ``create_instance`` add the instance and
+    then raise, simulating a mid-create failure so tests can exercise
+    the reversal path. ``mutation_log`` records every mutation call.
+    """
+
+    def __init__(
+        self,
+        instances: list[dict] | None = None,
+        profile_budgets_map: dict | None = None,
+        image_aliases: dict | None = None,
+        log_lines: dict | None = None,
+        fail_create: bool = False,
+    ):
         self._instances = list(instances or [])
+        self._profile_budgets = dict(profile_budgets_map or {})
+        self._image_aliases = dict(image_aliases or {})
+        self._log_lines = {k: list(v) for k, v in (log_lines or {}).items()}
+        self.fail_create = fail_create
+        self.mutation_log: list[tuple] = []
 
     def list_instances(self) -> list[dict]:
         # Defensive copy so callers can mutate freely.
         return [dict(inst, budgets=dict(inst.get("budgets") or {})) for inst in self._instances]
+
+    # -- mutations ------------------------------------------------------
+
+    def _find(self, name: str) -> dict | None:
+        for inst in self._instances:
+            if inst["name"] == name:
+                return inst
+        return None
+
+    def _require(self, name: str) -> dict:
+        inst = self._find(name)
+        if inst is None:
+            raise ValueError(f"unknown instance {name!r}")
+        return inst
+
+    def create_instance(self, name: str, image_alias: str, profile: str) -> None:
+        self.mutation_log.append(("create_instance", name))
+        if self._find(name) is not None:
+            raise ValueError(f"instance {name!r} already exists")
+        self._instances.append(
+            {
+                "name": name,
+                "state": "stopped",
+                "image_version": image_alias,
+                "budgets": dict(self._profile_budgets.get(profile) or {}),
+                "uptime_s": None,
+            }
+        )
+        if self.fail_create:
+            raise RuntimeError(f"simulated mid-create failure for {name!r}")
+
+    def start(self, name: str) -> None:
+        self.mutation_log.append(("start", name))
+        inst = self._require(name)
+        inst["state"] = "running"
+        inst["uptime_s"] = 0
+
+    def stop(self, name: str, timeout: int = 30) -> None:
+        self.mutation_log.append(("stop", name))
+        inst = self._require(name)
+        inst["state"] = "stopped"
+        inst["uptime_s"] = None
+
+    def restart(self, name: str) -> None:
+        self.mutation_log.append(("restart", name))
+        inst = self._require(name)
+        if inst.get("state") != "running":
+            raise ValueError(f"instance {name!r} is not running")
+        inst["uptime_s"] = 0
+
+    def delete(self, name: str) -> None:
+        self.mutation_log.append(("delete", name))
+        inst = self._require(name)
+        self._instances.remove(inst)
+
+    def logs(self, name: str, max_lines: int) -> str:
+        self.mutation_log.append(("logs", name))
+        self._require(name)
+        lines = self._log_lines.get(name, [])
+        return "\n".join(lines[-max_lines:]) if max_lines else ""
+
+    def resolve_image(self, image_alias: str) -> str:
+        return self._image_aliases.get(image_alias, image_alias)
+
+    def profile_budgets(self, profile: str) -> dict:
+        return dict(self._profile_budgets.get(profile) or {})
 
 
 class IncusError(Exception):
@@ -233,4 +359,54 @@ class IncusAdapter(Adapter):
             "uptime_s": uptime_s,
             "profiles": list(entry.get("profiles") or []),
             "config_show": config_show,
+        }
+
+    # ------------------------------------------------------------------
+    # Lifecycle mutations (issue #11)
+    # ------------------------------------------------------------------
+
+    def create_instance(self, name: str, image_alias: str, profile: str) -> None:
+        # `incus init` creates the container stopped; `clusterctl start`
+        # performs the start transition explicitly.
+        self._incus("init", image_alias, name, "--profile", profile)
+
+    def start(self, name: str) -> None:
+        self._incus("start", name)
+
+    def stop(self, name: str, timeout: int = 30) -> None:
+        self._incus("stop", name, "--timeout", str(timeout))
+
+    def restart(self, name: str) -> None:
+        self._incus("restart", name)
+
+    def delete(self, name: str) -> None:
+        self._incus("delete", name, "--force")
+
+    def logs(self, name: str, max_lines: int) -> str:
+        out = self._incus("console", name, "--show-log")
+        lines = out.splitlines()
+        return "\n".join(lines[-max_lines:]) if max_lines else ""
+
+    def resolve_image(self, image_alias: str) -> str:
+        """Resolve a moving alias to the versioned alias of the same image."""
+        try:
+            images = json.loads(self._incus("image", "list", "--format", "json"))
+        except Exception:
+            return image_alias
+        for img in images:
+            aliases = [a.get("name", "") for a in (img.get("aliases") or [])]
+            if image_alias in aliases:
+                versioned = [a for a in aliases if a and a != image_alias]
+                return sorted(versioned, key=len)[0] if versioned else image_alias
+        return image_alias
+
+    def profile_budgets(self, profile: str) -> dict:
+        """Budgets granted by an incus profile (limits + root disk size)."""
+        raw = yaml.safe_load(self._incus("profile", "show", profile)) or {}
+        config = raw.get("config") or {}
+        memory_bytes = _parse_size_bytes(config.get("limits.memory"))
+        return {
+            "cpu": _parse_cpu(config.get("limits.cpu")),
+            "memory_mib": (memory_bytes // (1024**2)) if memory_bytes is not None else None,
+            "disk_gib": _root_disk_gib(raw.get("devices") or {}),
         }

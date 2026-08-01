@@ -1,0 +1,408 @@
+openapi: 3.0.3
+info:
+  title: clusterd
+  version: 0.1.0
+  description: "Thin HTTP API over clusterctl (issue #17; design: docs/design/clusterd.md).\
+    \ Every route adapts a clusterctl.cli.run invocation or reads state files clusterctl\
+    \ writes \u2014 no business logic is duplicated. Errors mirror clusterctl exit\
+    \ codes: 0->200, 2->400, 3->404, 6->409, 10->500."
+servers:
+- url: http://127.0.0.1:8785
+paths:
+  /v1/health:
+    get:
+      operationId: getHealth
+      summary: clusterd liveness + clusterctl reachability
+      description: "Delegates to `config load + list (reachability probe)` \u2014\
+        \ the same code path as the CLI; clusterd adds no business logic.\n\nIntended\
+        \ scope: `none` \u2014 bearer scopes are parsed and attached to the request\
+        \ context but NOT enforced until issue #18 (design \xA73)."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: 'Actor recorded in clusterctl audit events (default: anonymous).'
+        schema:
+          type: string
+          default: anonymous
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '500':
+          description: internal error (CLI exit 10)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /v1/openapi.yaml:
+    get:
+      operationId: getOpenapi
+      summary: OpenAPI 3.0 document generated from the route table
+      description: "Delegates to `n/a (generated from clusterd.routes)` \u2014 the\
+        \ same code path as the CLI; clusterd adds no business logic.\n\nIntended\
+        \ scope: `none` \u2014 bearer scopes are parsed and attached to the request\
+        \ context but NOT enforced until issue #18 (design \xA73)."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: 'Actor recorded in clusterctl audit events (default: anonymous).'
+        schema:
+          type: string
+          default: anonymous
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '500':
+          description: internal error (CLI exit 10)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /v1/instances:
+    get:
+      operationId: listInstances
+      summary: List all instances with reconciled state
+      description: "Delegates to `clusterctl list --json` \u2014 the same code path\
+        \ as the CLI; clusterd adds no business logic.\n\nIntended scope: `fleet:read`\
+        \ \u2014 bearer scopes are parsed and attached to the request context but\
+        \ NOT enforced until issue #18 (design \xA73)."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: 'Actor recorded in clusterctl audit events (default: anonymous).'
+        schema:
+          type: string
+          default: anonymous
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '500':
+          description: internal error (CLI exit 10)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /v1/instances/{name}:
+    get:
+      operationId: getInstance
+      summary: One instance's reconciled status (404 mirrors CLI exit 3)
+      description: "Delegates to `clusterctl status <name> --json` \u2014 the same\
+        \ code path as the CLI; clusterd adds no business logic.\n\nIntended scope:\
+        \ `fleet:read` \u2014 bearer scopes are parsed and attached to the request\
+        \ context but NOT enforced until issue #18 (design \xA73)."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: 'Actor recorded in clusterctl audit events (default: anonymous).'
+        schema:
+          type: string
+          default: anonymous
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '404':
+          description: not found (CLI exit 3)
+          content:
+            application/json:
+              schema: &id001
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: internal error (CLI exit 10)
+          content:
+            application/json:
+              schema: *id001
+  /v1/backups:
+    get:
+      operationId: listBackups
+      summary: Latest cluster-backup-manifest/v1 summary per daimon
+      description: "Delegates to `reads state_dir/backups/*/ newest .json (same files\
+        \ clusterctl snapshot create writes)` \u2014 the same code path as the CLI;\
+        \ clusterd adds no business logic.\n\nIntended scope: `fleet:read` \u2014\
+        \ bearer scopes are parsed and attached to the request context but NOT enforced\
+        \ until issue #18 (design \xA73)."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: 'Actor recorded in clusterctl audit events (default: anonymous).'
+        schema:
+          type: string
+          default: anonymous
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '500':
+          description: internal error (CLI exit 10)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /v1/instances/{name}/start:
+    post:
+      operationId: startInstance
+      summary: Start a declared instance
+      description: "Delegates to `clusterctl start <name> --idempotency-key <key>\
+        \ --json` \u2014 the same code path as the CLI; clusterd adds no business\
+        \ logic.\n\nIntended scope: `lifecycle:write` \u2014 bearer scopes are parsed\
+        \ and attached to the request context but NOT enforced until issue #18 (design\
+        \ \xA73)."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: 'Actor recorded in clusterctl audit events (default: anonymous).'
+        schema:
+          type: string
+          default: anonymous
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        required: true
+        description: 'uuid. Retry with the same key replays the cached clusterctl
+          result (idempotent-replay: true); reuse for a different operation/target
+          is a 409 conflict. Dedupe is clusterctl''s own idempotency store.'
+        schema:
+          type: string
+          format: uuid
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '400':
+          description: missing Idempotency-Key
+          content:
+            application/json:
+              schema: &id002
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: not found (CLI exit 3)
+          content:
+            application/json:
+              schema: *id002
+        '409':
+          description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
+          content:
+            application/json:
+              schema: *id002
+        '500':
+          description: internal error (CLI exit 10)
+          content:
+            application/json:
+              schema: *id002
+  /v1/instances/{name}/stop:
+    post:
+      operationId: stopInstance
+      summary: Stop a declared instance
+      description: "Delegates to `clusterctl stop <name> --idempotency-key <key> --json`\
+        \ \u2014 the same code path as the CLI; clusterd adds no business logic.\n\
+        \nIntended scope: `lifecycle:write` \u2014 bearer scopes are parsed and attached\
+        \ to the request context but NOT enforced until issue #18 (design \xA73)."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: 'Actor recorded in clusterctl audit events (default: anonymous).'
+        schema:
+          type: string
+          default: anonymous
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        required: true
+        description: 'uuid. Retry with the same key replays the cached clusterctl
+          result (idempotent-replay: true); reuse for a different operation/target
+          is a 409 conflict. Dedupe is clusterctl''s own idempotency store.'
+        schema:
+          type: string
+          format: uuid
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '400':
+          description: missing Idempotency-Key
+          content:
+            application/json:
+              schema: &id003
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: not found (CLI exit 3)
+          content:
+            application/json:
+              schema: *id003
+        '409':
+          description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
+          content:
+            application/json:
+              schema: *id003
+        '500':
+          description: internal error (CLI exit 10)
+          content:
+            application/json:
+              schema: *id003
+  /v1/instances/{name}/restart:
+    post:
+      operationId: restartInstance
+      summary: Restart a declared (running) instance
+      description: "Delegates to `clusterctl restart <name> --idempotency-key <key>\
+        \ --json` \u2014 the same code path as the CLI; clusterd adds no business\
+        \ logic.\n\nIntended scope: `lifecycle:write` \u2014 bearer scopes are parsed\
+        \ and attached to the request context but NOT enforced until issue #18 (design\
+        \ \xA73)."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: 'Actor recorded in clusterctl audit events (default: anonymous).'
+        schema:
+          type: string
+          default: anonymous
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        required: true
+        description: 'uuid. Retry with the same key replays the cached clusterctl
+          result (idempotent-replay: true); reuse for a different operation/target
+          is a 409 conflict. Dedupe is clusterctl''s own idempotency store.'
+        schema:
+          type: string
+          format: uuid
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '400':
+          description: missing Idempotency-Key
+          content:
+            application/json:
+              schema: &id004
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: not found (CLI exit 3)
+          content:
+            application/json:
+              schema: *id004
+        '409':
+          description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
+          content:
+            application/json:
+              schema: *id004
+        '500':
+          description: internal error (CLI exit 10)
+          content:
+            application/json:
+              schema: *id004
+components:
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required:
+      - error
+      - action
+      - target
+      - request_id
+      properties:
+        error:
+          type: string
+        action:
+          type: string
+        target:
+          type: string
+        request_id:
+          type: string
+          format: uuid
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "Scoped bearer token (design \xA73). PLACEHOLDER: tokens are parsed\
+        \ and attached to the request context but NOT enforced until issue #18."

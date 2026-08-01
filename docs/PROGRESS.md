@@ -28,8 +28,8 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #8 profile+volumes | done | docs/design/tribe-agent-profile-and-volumes.md (6682e61 + allowlist fix in def64fa) |
 | #9 acceptance tests | done minus restart drill | docs/verification/m1-acceptance-tests.md (32bc4fa); drill staged, awaits Nicolás's restart window |
 | #10 clusterctl list/status | done (85b0b79, merged 32e626c) | clusterctl/, tests (16 pass incl. live fixture), docs/contracts/clusterctl-cli.md; live reconciliation cycle verified |
-| #11 lifecycle mutations | in progress (delegated deleg_a4c85144) | — |
-| #12 provisioning | design ready | docs/design/provisioning-flow.md |
+| #11 lifecycle mutations | done (3baadae, merged c0040ad) | clusterctl/lifecycle.py+audit+idempotency+locks, 28 tests, live cycle verified |
+| #12 provisioning | design ready; implementation next | docs/design/provisioning-flow.md |
 | #13 pilot | pending (needs volunteer + provider creds) | — |
 | #14 quiesced snapshots | design ready | docs/design/quiesced-snapshots.md |
 | #15 backups | design ready, restic installed | docs/design/backup-targets.md (A=legion SFTP; paid options parked for Nicolás) |

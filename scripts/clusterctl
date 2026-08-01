@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# clusterctl wrapper — runs the repo venv interpreter against the repo package.
+set -euo pipefail
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_DIR"
+exec "$REPO_DIR/.venv/bin/python" -m clusterctl.cli "$@"

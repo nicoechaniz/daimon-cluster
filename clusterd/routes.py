@@ -6,9 +6,10 @@ table. Adding a route (e.g. lease routes in a later milestone) means
 adding one ``Route`` entry here plus one handler function in
 ``clusterd.handlers`` — server and OpenAPI pick it up automatically.
 
-``scope`` and the bearer token are PARSED and attached to the request
-context but NOT enforced yet — that is issue #18 (design §3). The
-values here are placeholders declaring the intended scope per route.
+``required_scope`` is ENFORCED (issue #18): every route except
+GET /v1/health requires a valid bearer token with the declared scope
+(``read`` | ``mutate``); owner and confirmation checks are declared
+here too and enforced in ``clusterd.server``.
 """
 
 from __future__ import annotations
@@ -24,10 +25,16 @@ class Route:
     operation_id: str
     summary: str
     handler: str                # function name in clusterd.handlers
-    scope: str                  # intended scope (#18, not enforced yet)
+    scope: str                  # design-§2 scope label (documentation)
     clusterctl: str             # CLI equivalent ("same code path")
     idempotency_required: bool = False
     mutation: bool = False
+    required_scope: str | None = "read"  # None -> public (health only)
+    confirmation_required: bool = False  # destructive class (design §2)
+
+    @property
+    def public(self) -> bool:
+        return self.required_scope is None
 
     def regex(self) -> re.Pattern:
         pattern = re.sub(r"\{(\w+)\}", r"(?P<\1>[^/]+)", self.path)
@@ -46,6 +53,7 @@ ROUTES: list[Route] = [
         handler="health",
         scope="none",
         clusterctl="config load + list (reachability probe)",
+        required_scope=None,  # public-but-boring (design §1)
     ),
     Route(
         method="GET",
@@ -94,6 +102,7 @@ ROUTES: list[Route] = [
         clusterctl="clusterctl start <name> --idempotency-key <key> --json",
         idempotency_required=True,
         mutation=True,
+        required_scope="mutate",
     ),
     Route(
         method="POST",
@@ -105,6 +114,7 @@ ROUTES: list[Route] = [
         clusterctl="clusterctl stop <name> --idempotency-key <key> --json",
         idempotency_required=True,
         mutation=True,
+        required_scope="mutate",
     ),
     Route(
         method="POST",
@@ -116,6 +126,20 @@ ROUTES: list[Route] = [
         clusterctl="clusterctl restart <name> --idempotency-key <key> --json",
         idempotency_required=True,
         mutation=True,
+        required_scope="mutate",
+    ),
+    Route(
+        method="POST",
+        path="/v1/instances/{name}/destroy",
+        operation_id="destroyInstance",
+        summary="Destroy an instance (destructive: two-step prepare/confirm; "
+                "execution is a later milestone — 501 after validation)",
+        handler="destroy",
+        scope="destroy:write",
+        clusterctl="clusterctl destroy <name> (archive-first; future milestone)",
+        mutation=True,
+        required_scope="mutate",
+        confirmation_required=True,
     ),
     # Lease routes (issue #27 milestone): add Route entries here, e.g.
     #   GET  /v1/leases            -> clusterctl lease list --json

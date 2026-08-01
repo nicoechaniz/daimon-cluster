@@ -19,6 +19,7 @@ import yaml
 import clusterd
 from clusterctl.adapters import FakeAdapter
 from clusterctl.cli import run as cli_run
+from clusterd import auth as clusterd_auth
 from clusterd import handlers
 from clusterd.server import make_server
 
@@ -53,12 +54,16 @@ def _adapter(instances=None):
 
 @pytest.fixture()
 def server(state_dir):
-    """FakeAdapter-backed clusterd on an ephemeral port."""
+    """FakeAdapter-backed clusterd on an ephemeral port (wildcard token)."""
     _declare(state_dir)
     ad = _adapter()
+    _, raw_token = clusterd_auth.create_token(
+        state_dir, actor="tester", scopes=["read", "mutate"], owner="*",
+        ttl_days=1)
     deps = handlers.Deps(config_path=CONFIG_PATH, state_dir=str(state_dir),
                          adapter_factory=lambda: ad)
     srv = make_server(deps, "127.0.0.1", 0)
+    srv.test_token = raw_token
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
     yield srv, ad, state_dir
@@ -67,9 +72,13 @@ def server(state_dir):
     thread.join(timeout=5)
 
 
-def _req(server, method, path, headers=None):
+def _req(server, method, path, headers=None, auth=True):
     url = f"http://127.0.0.1:{server.server_address[1]}{path}"
-    req = urllib.request.Request(url, method=method, headers=headers or {})
+    headers = dict(headers or {})
+    if auth and "Authorization" not in headers and \
+            getattr(server, "test_token", None):
+        headers["Authorization"] = f"Bearer {server.test_token}"
+    req = urllib.request.Request(url, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             body = resp.read().decode("utf-8")
@@ -78,13 +87,13 @@ def _req(server, method, path, headers=None):
         return exc.code, dict(exc.headers), exc.read().decode("utf-8")
 
 
-def _get(server, path, headers=None):
-    status, hdrs, body = _req(server, "GET", path, headers)
+def _get(server, path, headers=None, auth=True):
+    status, hdrs, body = _req(server, "GET", path, headers, auth=auth)
     return status, hdrs, json.loads(body)
 
 
-def _post(server, path, headers=None):
-    status, hdrs, body = _req(server, "POST", path, headers)
+def _post(server, path, headers=None, auth=True):
+    status, hdrs, body = _req(server, "POST", path, headers, auth=auth)
     return status, hdrs, json.loads(body)
 
 
@@ -224,9 +233,13 @@ def test_power_matches_cli(tmp_path, operation, expected_state):
     assert code == 0
     cli_result = json.loads(out)
 
+    _, raw_token = clusterd_auth.create_token(
+        http_dir, actor="tester", scopes=["read", "mutate"], owner="*",
+        ttl_days=1)
     deps = handlers.Deps(config_path=CONFIG_PATH, state_dir=str(http_dir),
                          adapter_factory=lambda: http_ad)
     srv = make_server(deps, "127.0.0.1", 0)
+    srv.test_token = raw_token
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
     try:
@@ -297,15 +310,18 @@ def test_idempotency_conflict_mirrors_exit_6(server):
     assert "request_id" in body
 
 
-def test_actor_header_flows_to_audit(server):
+def test_token_actor_is_authoritative_for_audit(server):
+    """With auth enforced (#18), the authenticated token actor — not the
+    spoofable X-Actor header — flows to clusterctl audit events."""
     srv, _, state_dir = server
     status, _, _ = _post(srv, f"/v1/instances/{NAME}/start",
                          headers={"Idempotency-Key": UUID1,
-                                  "X-Actor": "agent:steward@daimonmatrix"})
+                                  "X-Actor": "agent:spoofed"})
     assert status == 200
     events = [json.loads(l)
               for l in (state_dir / "audit.jsonl").read_text().splitlines()]
-    assert any(e["actor"] == "agent:steward@daimonmatrix" for e in events)
+    assert any(e["actor"] == "tester" for e in events)
+    assert not any(e["actor"] == "agent:spoofed" for e in events)
 
 
 def test_request_id_echoed(server):
@@ -374,7 +390,7 @@ def test_openapi_yaml_parses_and_contains_all_routes(server):
     start_op = doc["paths"]["/v1/instances/{name}/start"]["post"]
     idem = [p for p in start_op["parameters"] if p["name"] == "Idempotency-Key"]
     assert idem and idem[0]["required"] is True
-    # Bearer placeholder present but documented as not-yet-enforced.
+    # Bearer scheme documented (enforced since #18).
     assert "bearerAuth" in doc["components"]["securitySchemes"]
 
 
@@ -407,15 +423,17 @@ def test_method_not_allowed(server):
     assert body["request_id"]
 
 
-def test_bearer_token_parsed_not_enforced(server):
-    """Auth is #18: a request with no token still succeeds; a request
-    with a token succeeds identically (parsed, attached, not enforced)."""
+def test_bearer_token_enforced(server):
+    """Auth is #18 and now ENFORCED: default-deny without a token (401);
+    the fixture wildcard token succeeds; health stays public."""
     srv, _, _ = server
-    status_noauth, _, _ = _get(srv, "/v1/instances")
-    status_auth, _, _ = _get(srv, "/v1/instances",
-                             headers={"Authorization": "Bearer test-token"})
-    assert status_noauth == 200
+    status_noauth, _, body = _get(srv, "/v1/instances", auth=False)
+    assert status_noauth == 401
+    assert body["error"] == "unauthorized"
+    status_auth, _, _ = _get(srv, "/v1/instances")
     assert status_auth == 200
+    status_health, _, _ = _get(srv, "/v1/health", auth=False)
+    assert status_health == 200
 
 
 def test_handlers_use_no_shell():

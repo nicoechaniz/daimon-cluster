@@ -411,6 +411,13 @@ def dispatch(args, cfg, adapter) -> int:
             return cmd_logs(args, cfg, adapter)
         if args.command == "destroy-plan":
             return cmd_destroy_plan(args, cfg, adapter)
+        if args.command == "provision":
+            # Lazy import: provision imports helpers from this module.
+            from . import provision
+            if getattr(args, "provision_command", None) == "prepare":
+                return provision.cmd_provision_prepare(args, cfg, adapter)
+            if getattr(args, "provision_command", None) == "confirm":
+                return provision.cmd_provision_confirm(args, cfg, adapter)
     except locks.LockConflict as exc:
         return _fail(
             args, cfg, args.command, getattr(args, "name", "?"), str(exc),

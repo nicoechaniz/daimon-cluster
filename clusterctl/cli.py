@@ -105,6 +105,28 @@ def _build_parser() -> argparse.ArgumentParser:
     p_dp.add_argument("--delete-volumes", action="store_true",
                       help="include volume deletion in the plan")
     p_dp.add_argument("--json", action="store_true", help="emit JSON")
+
+    p_prov = sub.add_parser("provision", help="governed provisioning (issue #12)")
+    prov_sub = p_prov.add_subparsers(dest="provision_command", required=True)
+    p_prep = prov_sub.add_parser(
+        "prepare",
+        help="create container+volume+identity, emit confirmation token, then HALT")
+    p_prep.add_argument("name", help="instance (daimon) name")
+    p_prep.add_argument("--species", required=True, help="species tag recorded in the spec")
+    p_prep.add_argument("--requested-by", required=True, dest="requested_by",
+                        help="human requesting the provisioning (ADR D8)")
+    p_prep.add_argument("--sponsor", required=True,
+                        help="human sponsor; must differ from --requested-by")
+    p_prep.add_argument("--seed-manifest", default=None, dest="seed_manifest",
+                        help="optional seed-manifest/v1 YAML to stage")
+    p_prep.add_argument("--idempotency-key", required=True,
+                        help="uuid; retry with the same key replays the cached result")
+    p_prep.add_argument("--json", action="store_true", help="emit JSON")
+    p_conf = prov_sub.add_parser(
+        "confirm",
+        help="consume a provision-activate token (directory activation is governance's act)")
+    p_conf.add_argument("--token", required=True, help="token emitted by provision prepare")
+    p_conf.add_argument("--json", action="store_true", help="emit JSON")
     return parser
 
 
@@ -174,7 +196,8 @@ def run(argv=None, adapter=None) -> int:
     try:
         cfg = _resolve_config(args)
 
-        if args.command in ("create", "start", "stop", "restart", "logs", "destroy-plan"):
+        if args.command in ("create", "start", "stop", "restart", "logs",
+                            "destroy-plan", "provision"):
             ad = adapter if adapter is not None else _adapter_for(cfg)
             return lifecycle.dispatch(args, cfg, ad)
 

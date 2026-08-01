@@ -530,6 +530,255 @@ def test_two_bind_mutation_via_a_visible_via_b(two_bind_server):
     assert [c[0] for c in ad.mutation_log] == ["start"]
 
 
+# --------------------------------------------------------------------------
+# audit route (issue #24)
+# --------------------------------------------------------------------------
+
+def test_audit_returns_json_list(server):
+    """GET /v1/audit returns a JSON list of audit events."""
+    srv, _, state_dir = server
+    # Append a few audit events.
+    from clusterctl.audit import append_event
+    append_event(state_dir, actor="tester", action="start",
+                 target="daimon-x", result="ok",
+                 request_id="req-1")
+    append_event(state_dir, actor="tester", action="stop",
+                 target="daimon-x", result="ok",
+                 request_id="req-2")
+
+    status, _, body = _get(srv, "/v1/audit")
+    assert status == 200
+    assert isinstance(body, list)
+    assert len(body) >= 2
+    for event in body:
+        assert event["schema"] == "audit-event/v1"
+        assert "event_id" in event
+        assert "ts_ms" in event
+        assert "actor" in event
+        assert "action" in event
+        assert "target" in event
+        assert "result" in event
+
+
+def test_audit_filtered_by_params(server):
+    """GET /v1/audit filters by actor, target, and action query params."""
+    srv, _, state_dir = server
+    from clusterctl.audit import append_event
+    append_event(state_dir, actor="tester", action="start",
+                 target="daimon-x", result="ok")
+    append_event(state_dir, actor="other", action="stop",
+                 target="daimon-x", result="ok")
+    append_event(state_dir, actor="tester", action="restart",
+                 target="daimon-y", result="ok")
+
+    # Filter by actor.
+    status, _, body = _get(srv, "/v1/audit?actor=tester")
+    assert status == 200
+    assert all(e["actor"] == "tester" for e in body)
+
+    # Filter by action.
+    status, _, body = _get(srv, "/v1/audit?action=stop")
+    assert status == 200
+    assert all(e["action"] == "stop" for e in body)
+
+    # Filter by target.
+    status, _, body = _get(srv, "/v1/audit?target=daimon-y")
+    assert status == 200
+    assert all(e.get("target") == "daimon-y" for e in body)
+
+    # Combined filter.
+    status, _, body = _get(srv, "/v1/audit?actor=tester&action=restart")
+    assert status == 200
+    assert all(e["actor"] == "tester" and e["action"] == "restart"
+               for e in body)
+
+    # Limit.
+    status, _, body = _get(srv, "/v1/audit?limit=1")
+    assert status == 200
+    assert len(body) == 1
+
+
+def test_audit_owner_scoped(server):
+    """Owner-scoped tokens only see events about their own daimons."""
+    srv, _, state_dir = server
+    # Declare two instances with different owners.
+    from clusterd import auth as clusterd_auth
+    inst_dir = state_dir / "instances"
+    inst_dir.mkdir(parents=True, exist_ok=True)
+    (inst_dir / "alice-daimon.yaml").write_text(yaml.safe_dump({
+        "schema": "instance-spec/v1",
+        "name": "alice-daimon",
+        "image_version": "v1",
+        "created_by": "alice",
+    }), encoding="utf-8")
+    (inst_dir / "bob-daimon.yaml").write_text(yaml.safe_dump({
+        "schema": "instance-spec/v1",
+        "name": "bob-daimon",
+        "image_version": "v1",
+        "created_by": "bob",
+    }), encoding="utf-8")
+
+    from clusterctl.audit import append_event
+    append_event(state_dir, actor="alice", action="start",
+                 target="alice-daimon", result="ok")
+    append_event(state_dir, actor="bob", action="start",
+                 target="bob-daimon", result="ok")
+
+    # Create an alice-scoped token and a fresh server with it.
+    _, alice_token = clusterd_auth.create_token(
+        state_dir, actor="alice", scopes=["read"], owner="alice",
+        ttl_days=1)
+    from clusterd.server import make_server
+    from clusterd import handlers
+    deps_alice = handlers.Deps(config_path=srv.deps.config_path,
+                               state_dir=str(state_dir),
+                               adapter_factory=srv.deps.adapter_factory)
+    srv2 = make_server(deps_alice, "127.0.0.1", 0)
+    srv2.test_token = alice_token
+    import threading
+    t2 = threading.Thread(target=srv2.serve_forever, daemon=True)
+    t2.start()
+    try:
+        status, _, body = _get(srv2, "/v1/audit")
+    finally:
+        srv2.shutdown()
+        srv2.server_close()
+        t2.join(timeout=5)
+
+    assert status == 200
+    # Alice should only see her own daimon's events.
+    assert len(body) >= 1
+    for event in body:
+        assert event["target"] == "alice-daimon", \
+            f"alice must not see {event['target']}"
+
+
+def test_audit_redaction(server):
+    """Audit route redacts secret patterns in event fields."""
+    srv, _, state_dir = server
+    # Write a fake audit line with a secret directly into the log.
+    audit_file = state_dir / "audit.jsonl"
+    import json as _json, time as _time, uuid as _uuid
+    event = {
+        "schema": "audit-event/v1",
+        "event_id": str(_uuid.uuid4()),
+        "ts_ms": int(_time.time() * 1000),
+        "actor": "tester",
+        "action": "start",
+        "target": "daimon-x",
+        "result": "ok",
+        "detail": {"note": "token=sk-abcd1234 PRIVATE KEY exposed"},
+        "idempotency_key": None,
+        "request_id": "req-1",
+    }
+    audit_file.write_text(_json.dumps(event) + "\n", encoding="utf-8")
+
+    status, _, body = _get(srv, "/v1/audit")
+    assert status == 200
+    assert len(body) >= 1
+    # The detail field must be redacted.
+    found = [e for e in body if e.get("request_id") == "req-1"]
+    assert found, "redaction test event not found"
+    detail = found[0].get("detail", {})
+    detail_str = _json.dumps(detail)
+    assert "[REDACTED]" in detail_str, \
+        f"detail should contain [REDACTED], got: {detail_str}"
+    assert "PRIVATE KEY" not in detail_str, \
+        f"'PRIVATE KEY' must not appear in response"
+
+
+# --------------------------------------------------------------------------
+# dashboard route (issue #24)
+# --------------------------------------------------------------------------
+
+def test_dashboard_returns_html_200(server):
+    """GET /v1/dashboard returns HTML with auth required."""
+    srv, _, _ = server
+
+    # Without token: 401.
+    status_noauth, _, body_noauth = _get(srv, "/v1/dashboard", auth=False)
+    assert status_noauth == 401
+    assert body_noauth["error"] == "unauthorized"
+
+    # With read-scoped token: 200 HTML.
+    status, hdrs, body = _req(srv, "GET", "/v1/dashboard")
+    assert status == 200
+    assert "text/html" in hdrs.get("Content-Type", "")
+    assert "htmx" in body
+    assert "sessionStorage" in body
+    assert "<!DOCTYPE html>" in body
+
+    # Read-only token (read scope, no mutate) should still work —
+    # dashboard is a read route.
+    from clusterd import auth as clusterd_auth
+    from clusterd.server import make_server
+    from clusterd import handlers
+    state_dir = srv.deps.state_dir
+    _, ro_token = clusterd_auth.create_token(
+        state_dir, actor="reader", scopes=["read"], owner="*",
+        ttl_days=1)
+    deps_ro = handlers.Deps(config_path=srv.deps.config_path,
+                             state_dir=str(state_dir),
+                             adapter_factory=srv.deps.adapter_factory)
+    srv_ro = make_server(deps_ro, "127.0.0.1", 0)
+    srv_ro.test_token = ro_token
+    import threading
+    t_ro = threading.Thread(target=srv_ro.serve_forever, daemon=True)
+    t_ro.start()
+    try:
+        status_ro, _, body_ro = _req(srv_ro, "GET", "/v1/dashboard")
+    finally:
+        srv_ro.shutdown()
+        srv_ro.server_close()
+        t_ro.join(timeout=5)
+    assert status_ro == 200
+    assert "htmx" in body_ro
+
+    # Mutate-scoped token without read scope: 403.
+    _, mw_token = clusterd_auth.create_token(
+        state_dir, actor="writer", scopes=["mutate"], owner="*",
+        ttl_days=1)
+    deps_mw = handlers.Deps(config_path=srv.deps.config_path,
+                             state_dir=str(state_dir),
+                             adapter_factory=srv.deps.adapter_factory)
+    srv_mw = make_server(deps_mw, "127.0.0.1", 0)
+    srv_mw.test_token = mw_token
+    t_mw = threading.Thread(target=srv_mw.serve_forever, daemon=True)
+    t_mw.start()
+    try:
+        status_mw, _, body_mw = _get(srv_mw, "/v1/dashboard")
+    finally:
+        srv_mw.shutdown()
+        srv_mw.server_close()
+        t_mw.join(timeout=5)
+    assert status_mw == 403
+    assert "insufficient-scope" in body_mw.get("error", "")
+
+
+def test_dashboard_html_contains_required_elements(server):
+    """Dashboard HTML sanity check: htmx CDN, token input, sessionStorage."""
+    srv, _, _ = server
+    status, _, body = _req(srv, "GET", "/v1/dashboard")
+    assert status == 200
+    # HTMX script tag.
+    assert "htmx.org" in body
+    # Token input field.
+    assert "token-input" in body
+    # Session storage usage.
+    assert "sessionStorage" in body
+    # Auth prompt div.
+    assert "auth-prompt" in body
+    # Dashboard sections.
+    assert "health-content" in body
+    assert "fleet-content" in body
+    assert "backups-content" in body
+    assert "activity-content" in body
+    # Retry link pattern for degraded/no-data state.
+    assert "retry-link" in body
+    # CDN script source.
+    assert "unpkg.com" in body
+
+
 def test_handlers_use_no_shell():
     """Guard: handlers delegate via clusterctl's Python API, never via
     a shell — raw user text must never reach subprocess/os.system."""

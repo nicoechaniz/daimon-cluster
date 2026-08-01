@@ -41,6 +41,9 @@ Run in order; every line should match the OK column:
 | broker | `curl -s http://127.0.0.1:8685/v1/health` → JSON with build_commit | ✓ |
 | broker via anyVPN | `curl -s http://10.10.20.69:8685/v1/health` → same | ✓ |
 | tribe link | send + receive a v1 DM with compaii@legion | ✓ |
+| clusterd | `systemctl is-active clusterd` → active; `curl -s http://127.0.0.1:8785/v1/health` → `"status":"ok"`, `audit_chain_ok:true` | ✓ |
+| clusterd loopback-only | `ss -tlnp \| grep 8785` → 127.0.0.1 only, nothing on public IPs | ✓ |
+| clusterd auth + state | authenticated `GET /v1/instances` (token at /var/lib/daimon-cluster/.nico-token) → iso-a/iso-b JSON; `clusterctl reconcile --json` findings == pre-reboot set (idempotency/audit survived) | ✓ |
 
 ## 3. Close
 

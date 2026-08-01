@@ -422,15 +422,21 @@ class IncusAdapter(Adapter):
 
     @staticmethod
     def _sudo_runner(argv: list[str]) -> str:
+        """Run an incus command, preferring direct socket access.
+
+        Service accounts (e.g. the ``clusterd`` user, group incus-admin)
+        reach the incus socket directly — no setuid sudo path, compatible
+        with NoNewPrivileges=true. Accounts without the group fall back
+        to sudo (interactive operator shells).
+        """
         env = dict(os.environ)
         if "/usr/sbin" not in env.get("PATH", "").split(":"):
             env["PATH"] = env.get("PATH", "") + ":/usr/sbin"
-        proc = subprocess.run(
-            ["sudo", *argv],
-            capture_output=True,
-            text=True,
-            env=env,
-        )
+        proc = subprocess.run(argv, capture_output=True, text=True, env=env)
+        if proc.returncode != 0 and (
+                "permissions" in proc.stderr or "unix.socket" in proc.stderr):
+            proc = subprocess.run(
+                ["sudo", *argv], capture_output=True, text=True, env=env)
         if proc.returncode != 0:
             raise IncusError(
                 f"{' '.join(argv)} failed (rc={proc.returncode}): {proc.stderr.strip()}"

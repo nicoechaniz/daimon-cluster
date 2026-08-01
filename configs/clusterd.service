@@ -1,0 +1,40 @@
+# clusterd.service — daimon-cluster control plane (issue #20, design §5)
+# Install: sudo cp configs/clusterd.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# Requires: system user `clusterd`; sudoers rule scoped to /usr/sbin/incus;
+#           state dir /var/lib/daimon-cluster owned by clusterd.
+[Unit]
+Description=daimon-cluster control plane (thin API over clusterctl)
+After=incus.service zerotier-one.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clusterd
+Group=clusterd
+WorkingDirectory=/opt/daimon-cluster
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONPATH=/opt/daimon-cluster
+ExecStart=/opt/daimon-cluster/venv/bin/python -m clusterd --bind 127.0.0.1:8785
+Restart=on-failure
+RestartSec=3
+
+# Hardening (design §5: least privilege)
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/daimon-cluster
+ReadWritePaths=/var/lib/daimon-cluster
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryMax=256M
+TasksMax=64
+LimitNOFILE=1024
+
+# sudo for incus needs a tty-free rule; sudoers.d/clusterd scopes it to
+# /usr/sbin/incus only (no shell, no other command).
+
+[Install]
+WantedBy=multi-user.target

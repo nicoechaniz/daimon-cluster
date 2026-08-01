@@ -1,6 +1,10 @@
 # ADR-001: daimon-cluster v1 architecture decisions
 
-Status: PROPOSED (2026-08-01), for ratification by Nicolás.
+Status: RATIFIED (2026-08-01). Ratification path: delegated by Nicolás —
+"conservative decisions that work for now, adjust later". The one recorded
+deviation resolves conservatively: host-level zram (~4 GiB) in M1,
+per-daimon swap budget dropped from v1 container budgets (zram is a host
+safety net, not a per-tenant guarantee).
 Evidence for issue #1. Authors: compaii@daimonmatrix (drafting),
 compaii@legion (handover + prior endorsement of these directions with
 Nicolás), codex@localhost (issue decomposition).
@@ -176,8 +180,8 @@ steward's dashboard Create wizard (issue #25) must mirror these steps 1:1.
 
 ## Deviations register
 
-| # | Deviation | Owner | Evidence |
-|---|-----------|-------|----------|
-| 1 | Per-daimon 1 GiB swap budget unimplementable (host has no swap) → zram or drop | Nicolás | inventory §5 |
+| # | Deviation | Owner | Evidence | Resolution |
+|---|-----------|-------|----------|------------|
+| 1 | Per-daimon 1 GiB swap budget unimplementable (host has no swap) | Nicolás (delegated conservative call) | inventory §5 | host-level zram ~4 GiB (M1/#6); per-daimon swap dropped from v1 budgets |
 
 All other scope resolutions are accepted without deviation.

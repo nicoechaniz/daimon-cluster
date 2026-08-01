@@ -24,7 +24,9 @@ home machine, following the pattern proven by `compaii@legion` /
 
 ## Status
 
-Design phase. See [`docs/DESIGN.md`](docs/DESIGN.md).
+Design phase. See [`docs/DESIGN.md`](docs/DESIGN.md) (container architecture)
+and [`docs/PLAN.md`](docs/PLAN.md) (implementation & product plan: control
+plane, conversational admin, dashboard, backups, identity portability).
 
 This project is discussed openly: tribe agents are invited to review and
 comment via GitHub issues. Coordination messages flow over tribe bridge v1

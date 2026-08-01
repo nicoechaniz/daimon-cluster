@@ -135,6 +135,29 @@ class Adapter(abc.ABC):
         """Budgets (cpu/memory_mib/disk_gib) granted by an incus profile."""
         return {}
 
+    # ------------------------------------------------------------------
+    # Provisioning primitives (issue #12)
+    # ------------------------------------------------------------------
+
+    def exec(self, name: str, argv: list[str]) -> str:
+        """Run a command inside the instance; return stdout."""
+        raise NotImplementedError
+
+    def ensure_volume(self, name: str) -> None:
+        """Create+attach the durable home volume ``<name>-home`` (idempotent)."""
+        return None
+
+    def delete_volume(self, name: str) -> None:
+        """Best-effort removal of ``<name>-home`` (used during reversal)."""
+        return None
+
+
+DEFAULT_FAKE_PUBKEY = (
+    "ssh-ed25519 "
+    "AAAAC3NzaC1lZDI1NTE5AAAAIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "fake@daimonmatrix"
+)
+
 
 class FakeAdapter(Adapter):
     """In-memory adapter driven by test fixtures.
@@ -151,12 +174,17 @@ class FakeAdapter(Adapter):
         image_aliases: dict | None = None,
         log_lines: dict | None = None,
         fail_create: bool = False,
+        fail_volume: bool = False,
+        exec_pubkey: str | None = None,
     ):
         self._instances = list(instances or [])
         self._profile_budgets = dict(profile_budgets_map or {})
         self._image_aliases = dict(image_aliases or {})
         self._log_lines = {k: list(v) for k, v in (log_lines or {}).items()}
         self.fail_create = fail_create
+        self.fail_volume = fail_volume
+        # Canned public material returned for `cat .../identity.pub`.
+        self._exec_pubkey = exec_pubkey or DEFAULT_FAKE_PUBKEY
         self.mutation_log: list[tuple] = []
 
     def list_instances(self) -> list[dict]:
@@ -228,6 +256,26 @@ class FakeAdapter(Adapter):
 
     def profile_budgets(self, profile: str) -> dict:
         return dict(self._profile_budgets.get(profile) or {})
+
+    # -- provisioning (issue #12) ----------------------------------------
+
+    def exec(self, name: str, argv: list[str]) -> str:
+        self.mutation_log.append(("exec", name, list(argv)))
+        self._require(name)
+        # Only the public-material read-back is answered; everything else
+        # is recorded as a no-op (key generation, seed staging, etc.).
+        if len(argv) == 2 and argv[0] == "cat" and argv[1].endswith("identity.pub"):
+            return self._exec_pubkey + "\n"
+        return ""
+
+    def ensure_volume(self, name: str) -> None:
+        self.mutation_log.append(("ensure_volume", name))
+        self._require(name)
+        if self.fail_volume:
+            raise RuntimeError(f"simulated volume attach failure for {name!r}")
+
+    def delete_volume(self, name: str) -> None:
+        self.mutation_log.append(("delete_volume", name))
 
 
 class IncusError(Exception):
@@ -410,3 +458,48 @@ class IncusAdapter(Adapter):
             "memory_mib": (memory_bytes // (1024**2)) if memory_bytes is not None else None,
             "disk_gib": _root_disk_gib(raw.get("devices") or {}),
         }
+
+    # ------------------------------------------------------------------
+    # Provisioning primitives (issue #12)
+    # ------------------------------------------------------------------
+
+    def exec(self, name: str, argv: list[str]) -> str:
+        """Run a command inside the instance; return stdout.
+
+        Callers must treat any stdout as potentially sensitive: private
+        key material must never be requested, logged, or audited.
+
+        NOTE: cannot use ``_incus`` here — it appends ``--project`` at the
+        END of the argv, which lands AFTER ``--`` and gets passed to the
+        in-container command instead of to incus. Build the command with
+        incus flags before the ``--`` separator.
+        """
+        cmd = ["incus", "exec"]
+        if self.project:
+            cmd += ["--project", self.project]
+        cmd += [name, "--", *[str(a) for a in argv]]
+        return self._runner(cmd)
+
+    def ensure_volume(self, name: str) -> None:
+        """Create + attach the durable home volume ``<name>-home`` at /home/agent.
+
+        Idempotent: "already exists" on either step is fine.
+        """
+        volume = f"{name}-home"
+        try:
+            self._incus("storage", "volume", "create", "default", volume)
+        except IncusError as exc:
+            if "already exists" not in str(exc):
+                raise
+        try:
+            self._incus("config", "device", "add", name, "home", "disk",
+                        "pool=default", f"source={volume}", "path=/home/agent")
+        except IncusError as exc:
+            if "already exists" not in str(exc):
+                raise
+
+    def delete_volume(self, name: str) -> None:
+        try:
+            self._incus("storage", "volume", "delete", "default", f"{name}-home")
+        except IncusError:
+            pass  # best-effort cleanup during reversal

@@ -418,6 +418,7 @@ def run_park(
         backup_ids = _read_backup_ids(cfg.state_dir, name)
         if no_lease:
             lease_epoch, lease_state = None, "no-lease-pre-m7"
+            lease_acquired_ms = None
         else:
             st = leases.LeaseStore(cfg.state_dir, signer).status(
                 _daimon_id(_spec(), name))
@@ -426,6 +427,10 @@ def run_park(
                                 "(or pass --no-lease for pre-M7 instances)")
             lease_epoch = st["last_epoch"]
             lease_state = "active"
+            # acquisition-bound fencing (issue #30): epochs reset to 0
+            # when a new holder re-acquires after expiry, so the manifest
+            # binds to the lease ACQUISITION timestamp, not just the epoch.
+            lease_acquired_ms = st.get("acquired_ms")
         if problems:
             raise ParkError("park verification failed: " + "; ".join(problems),
                             {"problems": problems})
@@ -461,6 +466,7 @@ def run_park(
                 "outbox": outputs.get("outbox"),
                 "lease_epoch": fence_epoch,
                 "lease": outputs.get("lease"),
+                "lease_acquired_ms": lease_acquired_ms,
             }, signer)
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = manifest_path.with_name(manifest_path.name + ".tmp")

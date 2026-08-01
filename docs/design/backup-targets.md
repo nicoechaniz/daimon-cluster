@@ -1,5 +1,26 @@
 # Backup targets strategy (issue #15 design input)
 
+UPDATE 2026-08-01 — model inverted (Nico's call): the legion's sshd
+stays closed by design. The encrypted restic repo lives LOCAL on
+daimonmatrix; the legion PULLS its off-host copy over its existing ssh
+access to this host. No new listeners, no outbound ssh from
+daimonmatrix, password never leaves the host.
+
+## Live architecture (2026-08-01)
+
+- Local repo: `/var/lib/daimon-cluster/restic-repo` (restic 0.18.0,
+  encrypted; password at backup-keys/restic-password, 0600 root).
+- Daily: systemd timer `restic-backup.timer` (04:17 + jitter) →
+  `scripts/restic-backup.sh`: state (specs/audit/idempotency) + every
+  declared daimon's durable volume; forget 7d/4w; check after each run.
+  Fail-closed --check-only/--verify modes gate destroy/update paths.
+- Off-host copy: legion cron rsync -a --delete of the repo dir
+  (append-mostly → cheap) + heartbeat via bridge. Legion holds
+  ciphertext only. Fleet-phase targets (OVH S3 / Hetzner paid, second
+  tribe host) stay parked for Nicolás.
+- Verified 2026-08-01: init, backups, check clean, restore
+  byte-identical.
+
 Status: design v0.1 (2026-08-01). restic 0.18.0 installed on daimonmatrix.
 Inputs: PLAN §7 (RPO 6h, daily restic, two independent targets), threat
 model B8, #14 quiesce design (snapshots and restic share one manifest).

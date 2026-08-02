@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 
 DEFAULT_BASE_URL = "http://10.105.93.1:8785"
 DEFAULT_TOKEN_PATH = "/home/agent/.clusterd/read-token"
-TIMEOUT_S = 5.0
+TIMEOUT_S = 60.0
 
 # Instance names as clusterctl specs allow them; validated here AND in
 # clusterd's handler (the daemon never trusts the caller).

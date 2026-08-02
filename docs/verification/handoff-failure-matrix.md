@@ -1,5 +1,14 @@
 # Handoff failure-injection matrix (issue #30)
 
+Terminology note (M10 reconciliation): this matrix originally exercised the
+pre-rectification `LeaseStore` API and therefore retains historical test names
+and a few fixture descriptions using “lease”. The current implementation
+interprets those artifacts exclusively as `resource-fence/v1` compatibility
+surfaces. They serialize writers to one concrete resource; they do not elect a
+unique embodiment or make simultaneous embodiments an identity failure.
+Identity-exclusion scenarios are retired. The recoverability and stale-writer
+claims below remain applicable to resource fencing.
+
 Every failure injected into the park → transfer/wake handoff converges to
 one of three documented recoverable states:
 

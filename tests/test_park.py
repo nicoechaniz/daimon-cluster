@@ -178,6 +178,39 @@ def test_happy_path_all_steps(state_dir, cfg, adapter, lease, capsys):
     assert ps["failed_step"] is None
 
 
+def test_handoff_park_replay_requires_current_terminal_effect(
+    state_dir, adapter, lease, capsys,
+):
+    _write_spec(state_dir)
+    key = "33333333-3333-3333-3333-333333333333"
+    code, _ = _cli(
+        state_dir, "park", "--handoff", NAME,
+        "--idempotency-key", key, "--json", adapter=adapter,
+    )
+    assert code == 0
+    capsys.readouterr()
+
+    code, _ = _cli(
+        state_dir, "park", "--handoff", NAME,
+        "--idempotency-key", key, "--json", adapter=adapter,
+    )
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["effect-truth"] == "verified"
+
+    # A later fence generation invalidates the terminal receipt. The completed
+    # park journal is not blindly re-entered because it could return the same
+    # stale manifest; this retry fails closed pending an explicit repair path.
+    renewed = leases.LeaseStore(state_dir).renew(DAIMON_ID, "")
+    assert renewed["epoch"] == lease["epoch"] + 1
+    code, _ = _cli(
+        state_dir, "park", "--handoff", NAME,
+        "--idempotency-key", key, "--json", adapter=adapter,
+    )
+    assert code == 10
+    captured = capsys.readouterr()
+    assert "not safely convergent" in captured.err
+
+
 # ---------------------------------------------------------------------------
 # resume from every interruption point
 # ---------------------------------------------------------------------------

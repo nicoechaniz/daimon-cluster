@@ -488,7 +488,7 @@ def run_wake(
 def cmd_wake(args, cfg, adapter) -> int:
     name, operation = args.name, "wake"
     store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store)
+    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
     if rc is not None:
         return rc
 
@@ -877,7 +877,7 @@ def run_transfer(
 def cmd_transfer(args, cfg, adapter) -> int:
     name, new_name, operation = args.name, args.to, "transfer"
     store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store)
+    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
     if rc is not None:
         return rc
 

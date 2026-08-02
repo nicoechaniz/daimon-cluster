@@ -189,6 +189,25 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sc.add_argument("--idempotency-key", required=True,
                       help="uuid; retry with the same key replays the cached result")
     p_sc.add_argument("--json", action="store_true", help="emit JSON")
+
+    p_we = sub.add_parser("wesync", help="/we.sync v1 (M10-R4): weave embodiments of a being")
+    we_sub = p_we.add_subparsers(dest="wesync_command", required=True)
+    p_ws = we_sub.add_parser("status", help="census + chain verification + peers + merge state")
+    p_ws.add_argument("being", help="being root (e.g. compaii)")
+    p_wr = we_sub.add_parser("record", help="record an experience lived by an embodiment")
+    p_wr.add_argument("being")
+    p_wr.add_argument("--origin", required=True, help="embodiment that lived it")
+    p_wr.add_argument("--kind", required=True, help="experience kind (observation, skill, ...)")
+    p_wr.add_argument("--payload", required=True, help="JSON object payload")
+    p_we_e = we_sub.add_parser("export", help="print a sync bundle (JSON) to stdout")
+    p_we_e.add_argument("being")
+    p_we_e.add_argument("--from", required=True, dest="from_emb",
+                        help="the exporting embodiment")
+    p_we_e.add_argument("--peer", help="known peer: export only what they have not seen")
+    p_wi = we_sub.add_parser("import", help="import a sync bundle (file or stdin)")
+    p_wi.add_argument("--file", help="bundle JSON path (default: stdin)")
+    p_wi.add_argument("--dry-run", action="store_true", dest="dry_run",
+                      help="preview only, no mutation")
     return parser
 
 
@@ -264,6 +283,9 @@ def run(argv=None, adapter=None) -> int:
             ad = adapter if adapter is not None else _adapter_for(cfg)
             return lifecycle.dispatch(args, cfg, ad)
 
+        if args.command == "wesync":
+            return _run_wesync(args, cfg)
+
         if args.command == "reconcile":
             # Read-only three-source cross-check (issue #19). Exit 0
             # always: discrepancies are data in the findings array.
@@ -325,6 +347,62 @@ def run(argv=None, adapter=None) -> int:
     except Exception as exc:  # pragma: no cover - defensive
         print(f"clusterctl: internal error: {exc!r}", file=sys.stderr)
         return EXIT_INTERNAL
+
+
+def _run_wesync(args, cfg: Config) -> int:
+    """Dispatch for `clusterctl wesync` (M10-R4). No adapter needed —
+    the weave lives in the state_dir, not in containers."""
+    from .wesync import WeSync, WeSyncError
+
+    engine = WeSync(cfg.state_dir)
+    try:
+        if args.wesync_command == "status":
+            chain = engine.registry.verify_chain(args.being)
+            data = {
+                "being_root": args.being,
+                "chain": chain,
+                "embodiments": engine.registry.list_all(args.being),
+                "experiences": len(engine.experiences(args.being)),
+                "peers": {p.name[:-5]: engine.peer_cursors(args.being, p.name[:-5])
+                          for p in engine._peers_dir(args.being).glob("*.json")}
+                if engine._peers_dir(args.being).exists() else {},
+                "merge_state": engine.merge_state(args.being),
+            }
+            print(json.dumps(data, indent=2))
+            return EXIT_OK if chain["ok"] else EXIT_INTERNAL
+
+        if args.wesync_command == "record":
+            try:
+                payload = json.loads(args.payload)
+            except json.JSONDecodeError as exc:
+                print(f"clusterctl: --payload is not JSON: {exc}", file=sys.stderr)
+                return EXIT_INTERNAL
+            entry = engine.record_experience(
+                args.being, args.origin, args.kind, payload,
+                actor=getattr(args, "actor", "clusterctl-cli"))
+            print(json.dumps(entry, indent=2))
+            return EXIT_OK
+
+        if args.wesync_command == "export":
+            cursors = (engine.peer_cursors(args.being, args.peer)
+                       if args.peer else None)
+            bundle = engine.export_bundle(args.being, args.from_emb, cursors)
+            print(json.dumps(bundle, indent=2))
+            return EXIT_OK
+
+        # import
+        raw = (open(args.file).read() if args.file else sys.stdin.read())
+        bundle = json.loads(raw)
+        if args.dry_run:
+            print(json.dumps(engine.preview_import(bundle), indent=2))
+            return EXIT_OK
+        report = engine.import_bundle(
+            bundle, actor=getattr(args, "actor", "clusterctl-cli"))
+        print(json.dumps(report, indent=2))
+        return EXIT_OK
+    except WeSyncError as exc:
+        print(f"clusterctl: wesync refused: {exc}", file=sys.stderr)
+        return EXIT_CONFLICT
 
 
 def main() -> None:

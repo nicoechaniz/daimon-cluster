@@ -156,3 +156,9 @@ No R cards created in the Project yet.
   (DM-023/DM-070) stay canonical.
 - Nicolás GO: the R-series proceeds to implementation. No further
   ontology coordination with codex — the repos are the contract.
+
+### M10-R1 done (a4a3c31)
+
+Canonical ontology landed: docs/design/ontology.md — /me, /we, /we.sync,
+embodiment, chain of existence, sync cursor, effect-truth idempotency,
+embodiment registry, lifecycle verbs, purged vocabulary, old→new mapping.

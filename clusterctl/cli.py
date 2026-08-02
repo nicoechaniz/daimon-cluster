@@ -118,7 +118,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "(issue #28)")
     p_park.add_argument("--handoff", action="store_true",
                         help="run the M7 handoff park ceremony (checkpoint "
-                             "manifest + lease transition) instead of the "
+                             "manifest + registry transition) instead of the "
                              "writer-quiesce park")
     p_park.add_argument("--abandon-critical", action="store_true",
                         dest="abandon_critical",
@@ -128,9 +128,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         dest="force_outbox",
                         help="override a non-empty bridge outbox (refused "
                              "by default, fail-closed)")
-    p_park.add_argument("--no-lease", action="store_true", dest="no_lease",
-                        help="park a pre-M7 instance without an active "
-                             "lease (recorded explicitly in the manifest)")
+    p_park.add_argument("--no-registry", action="store_true", dest="no_registry",
+                        help="park a pre-M10 instance without an embodiment "
+                             "registry row (recorded explicitly in the manifest)")
     _mutation("wake", "wake a parked daimon (SIGCONT hermes, issue #23)")
     p_wake = sub.choices["wake"]
     p_wake.add_argument("--handoff", action="store_true",

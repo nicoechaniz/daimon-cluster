@@ -1,9 +1,10 @@
-"""Park with verified checkpoint manifest (issue #28).
+"""Park with verified checkpoint manifest (issue #28, M10-R2).
 
-``clusterctl park <name>`` produces a complete, immutable handoff point
-before a daimon relinquishes its lease. Fail-closed per stage, ordered,
-idempotent — resumable via a ``park-state/v1`` file at
-``state_dir/park/<name>.json``.
+``clusterctl park <name>`` produces a complete, immutable checkpoint of
+one embodiment's body (docs/design/ontology.md: park is a LIFECYCLE
+operation — it powers a body down safely; the being is never "in" only
+one place). Fail-closed per stage, ordered, idempotent — resumable via
+a ``park-state/v1`` file at ``state_dir/park/<name>.json``.
 
 Sequence:
 
@@ -25,17 +26,21 @@ Sequence:
      REDACT_PATTERNS — any match refuses (fail-closed)
   7. verification — recompute every recorded hash, sqlite integrity must
      be ok, commit sha must resolve via git rev-parse, backup ids listed,
-     active lease required (or explicit ``--no-lease``)
-  8. lease transition + manifest — spec status parking → parked ONLY after
+     embodiment registered awake in the census (or explicit
+     ``--no-registry``)
+  8. registry transition + manifest — the census records awake → parked
+     (append at cursor+1) and spec status parking → parked ONLY after
      all verifications pass; signed ``checkpoint-manifest/v1`` written to
-     ``state_dir/park/<name>/manifest-<fence_epoch>.json``
+     ``state_dir/park/<name>/manifest-<cursor>.json``
   9. stop — the container is stopped only after the manifest is written
      and verified
 
 Interruption at any step: the park-state file records completed steps and
 their outputs; re-running park resumes — idempotent steps check their
-outputs before redoing. Any failure rolls the spec status back to its
-pre-park value (default ``active``); the lease is never touched.
+outputs before redoing. A fully completed previous cycle (the embodiment
+woke again) starts a NEW cycle from clean state. Any failure rolls the
+spec status back to its pre-park value (default ``active``); the census
+is never touched by a failed park.
 
 Exit codes (clusterctl.cli contract): 0 ok, 3 undeclared, 6 conflict
 (refusals: outbox non-empty, secrets, lock), 10 internal (verification
@@ -50,7 +55,8 @@ import logging
 import os
 from pathlib import Path
 
-from . import audit, idempotency, leases
+from . import audit, idempotency, registry as registry_mod
+from .signing import FakeSigner, Signer, _canonical, InvalidSignature
 from .inventory import load_spec_raw, load_specs, update_spec
 from .lifecycle import (
     EXIT_CONFLICT,  # noqa: F401  (re-exported for callers/tests)
@@ -157,15 +163,15 @@ def _save_state(cfg, name: str, state: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def sign_manifest(manifest: dict, signer: leases.Signer) -> dict:
+def sign_manifest(manifest: dict, signer: Signer) -> dict:
     """Return a copy of ``manifest`` with a signature over the canonical
     record (manifest minus ``signature``)."""
     signed = dict(manifest)
-    signed["signature"] = signer.sign(leases._canonical(manifest))
+    signed["signature"] = signer.sign(_canonical(manifest))
     return signed
 
 
-def verify_manifest(manifest: dict, signer: leases.Signer) -> bool:
+def verify_manifest(manifest: dict, signer: Signer) -> bool:
     """True when ``manifest`` carries a valid signature over its canonical
     body. Unsigned or tampered manifests are rejected."""
     sig = manifest.get("signature")
@@ -173,15 +179,15 @@ def verify_manifest(manifest: dict, signer: leases.Signer) -> bool:
         return False
     if manifest.get("schema") != MANIFEST_SCHEMA:
         return False
-    return signer.verify(leases._canonical(manifest), sig, "")
+    return signer.verify(_canonical(manifest), sig, "")
 
 
-def load_manifest(path: str | Path, signer: leases.Signer) -> dict:
+def load_manifest(path: str | Path, signer: Signer) -> dict:
     """Load and verify a checkpoint manifest file. Raises
-    ``leases.InvalidSignature`` when unsigned or tampered."""
+    ``InvalidSignature`` when unsigned or tampered."""
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     if not verify_manifest(raw, signer):
-        raise leases.InvalidSignature(
+        raise InvalidSignature(
             f"checkpoint manifest {path} is unsigned or tampered")
     return raw
 
@@ -193,6 +199,17 @@ def load_manifest(path: str | Path, signer: leases.Signer) -> dict:
 
 def _daimon_id(spec: dict, name: str) -> str:
     return str(spec.get("daimon_id") or name)
+
+
+def _being_root(spec: dict, name: str) -> str:
+    """The being this embodiment belongs to (ontology.md). Explicit
+    ``being_root`` in the spec wins; otherwise the part before ``@`` of
+    the embodiment name, else the name itself."""
+    root = spec.get("being_root")
+    if root:
+        return str(root)
+    ident = _daimon_id(spec, name)
+    return ident.split("@", 1)[0] if "@" in ident else ident
 
 
 def _read_backup_ids(state_dir, name: str):
@@ -244,8 +261,8 @@ def run_park(
     actor: str,
     abandon_critical: bool = False,
     force_outbox: bool = False,
-    no_lease: bool = False,
-    signer: leases.Signer | None = None,
+    no_registry: bool = False,
+    signer: Signer | None = None,
     stop_timeout: int = STOP_TIMEOUT_S,
     on_step=None,
 ) -> dict:
@@ -261,7 +278,7 @@ def run_park(
     (verification/internal failure, exit 10); both roll the spec status
     back to its pre-park value.
     """
-    signer = signer or leases.FakeSigner()
+    signer = signer or FakeSigner()
     state = _load_state(cfg, name)
     outputs = state.setdefault("outputs", {})
     completed = state.setdefault("completed", [])
@@ -290,6 +307,12 @@ def run_park(
         elif status == "parked" and "manifest" in completed:
             pass  # fully parked already — idempotent no-op
         else:
+            if "stop" in completed:
+                # A fully completed previous cycle (the embodiment woke
+                # again since): start a NEW park cycle from clean state,
+                # or every step would skip against stale outputs.
+                state["completed"] = completed = []
+                state["outputs"] = outputs = {}
             state["previous_status"] = status or "active"
             update_spec(cfg.instances_dir, name, {"status": "parking"})
         _done("spec-parking")
@@ -416,31 +439,39 @@ def run_park(
             if current != outputs["state_commit"]:
                 problems.append("state repo commit sha does not resolve")
         backup_ids = _read_backup_ids(cfg.state_dir, name)
-        if no_lease:
-            lease_epoch, lease_state = None, "no-lease-pre-m7"
-            lease_acquired_ms = None
+        if no_registry:
+            reg_cursor, reg_state = None, "no-registry"
+        elif "registry_cursor" in outputs:
+            # resume: the census check already passed for this run; the
+            # persisted cursor is the one the manifest binds to.
+            reg_cursor = outputs["registry_cursor"]
+            reg_state = outputs.get("registry", "awake")
         else:
-            st = leases.LeaseStore(cfg.state_dir, signer).status(
-                _daimon_id(_spec(), name))
-            if not st["present"] or st["expired"]:
-                problems.append("no active lease held by the daimon "
-                                "(or pass --no-lease for pre-M7 instances)")
-            lease_epoch = st["last_epoch"]
-            lease_state = "active"
-            # acquisition-bound fencing (issue #30): epochs reset to 0
-            # when a new holder re-acquires after expiry, so the manifest
-            # binds to the lease ACQUISITION timestamp, not just the epoch.
-            lease_acquired_ms = st.get("acquired_ms")
+            # Census check (ontology.md): the embodiment must be registered
+            # as awake before parking — the registry records where the being
+            # lives; it never excludes, it only needs to KNOW. A row already
+            # parked by THIS run ("manifest" in completed) is the resume
+            # path, not a contradiction.
+            reg = registry_mod.EmbodimentRegistry(cfg.state_dir, signer)
+            row = reg.find(_daimon_id(_spec(), name))
+            if row is None or (row.get("state") != "awake" and not (
+                    row.get("state") == "parked" and "manifest" in completed)):
+                problems.append("embodiment not registered as awake "
+                                "(or pass --no-registry for pre-M10 instances)")
+                reg_cursor, reg_state = None, "unregistered"
+            else:
+                reg_cursor = row["cursor"]
+                reg_state = "awake"
         if problems:
             raise ParkError("park verification failed: " + "; ".join(problems),
                             {"problems": problems})
-        _done("verify", backup_ids=backup_ids, lease_epoch=lease_epoch,
-              lease=lease_state)
+        _done("verify", backup_ids=backup_ids, registry_cursor=reg_cursor,
+              registry=reg_state)
 
-        # 8. lease transition parking → parked, then signed manifest.
-        fence_epoch = outputs.get("lease_epoch")
+        # 8. registry transition awake → parked, then signed manifest.
+        cursor = outputs.get("registry_cursor")
         manifest_path = (_park_dir(cfg, name) / name
-                         / f"manifest-{fence_epoch if fence_epoch is not None else 'nolease'}.json")
+                         / f"manifest-{cursor if cursor is not None else 'noregistry'}.json")
         if not (manifest_path.is_file() and "manifest" in completed):
             update_spec(cfg.instances_dir, name, {"status": "parked"})
             steps_record = []
@@ -453,7 +484,9 @@ def run_park(
             manifest = sign_manifest({
                 "schema": MANIFEST_SCHEMA,
                 "name": name,
-                "fence_epoch": fence_epoch,
+                "cursor": cursor,
+                "being_root": _being_root(_spec(), name),
+                "embodiment": _daimon_id(_spec(), name),
                 "actor": actor,
                 "created_ms": audit.now_ms(),
                 "steps": steps_record,
@@ -464,9 +497,8 @@ def run_park(
                 "critical_jobs": outputs.get("critical_jobs"),
                 "critical_jobs_actor": outputs.get("critical_jobs_actor"),
                 "outbox": outputs.get("outbox"),
-                "lease_epoch": fence_epoch,
-                "lease": outputs.get("lease"),
-                "lease_acquired_ms": lease_acquired_ms,
+                "registry": outputs.get("registry"),
+                "registry_cursor": cursor,
             }, signer)
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = manifest_path.with_name(manifest_path.name + ".tmp")
@@ -475,6 +507,10 @@ def run_park(
             os.replace(tmp, manifest_path)
             # Read back and verify before declaring the handoff immutable.
             load_manifest(manifest_path, signer)
+            if not no_registry:
+                registry_mod.EmbodimentRegistry(cfg.state_dir, signer).set_state(
+                    _being_root(_spec(), name), _daimon_id(_spec(), name),
+                    "parked", manifest=str(manifest_path), actor=actor)
         _done("manifest", manifest_path=str(manifest_path))
 
         # 9. stop — only after the manifest is written and verified.
@@ -537,7 +573,7 @@ def cmd_park(args, cfg, adapter) -> int:
                 actor=_actor(args),
                 abandon_critical=bool(getattr(args, "abandon_critical", False)),
                 force_outbox=bool(getattr(args, "force_outbox", False)),
-                no_lease=bool(getattr(args, "no_lease", False)),
+                no_registry=bool(getattr(args, "no_registry", False)),
                 stop_timeout=int(getattr(args, "timeout", STOP_TIMEOUT_S)),
             )
         except ParkRefused as exc:
@@ -555,12 +591,12 @@ def cmd_park(args, cfg, adapter) -> int:
             "manifest": result["manifest"],
             "critical_jobs": result["checkpoint"].get("critical_jobs"),
             "outbox": result["checkpoint"].get("outbox"),
-            "lease_epoch": result["checkpoint"].get("lease_epoch"),
+            "registry_cursor": result["checkpoint"].get("registry_cursor"),
             **stale,
         })
         _emit(args, result,
               f"parked {name}: checkpoint manifest {result['manifest']} "
-              f"(lease_epoch {result['checkpoint'].get('lease_epoch')}, "
+              f"(cursor {result['checkpoint'].get('registry_cursor')}, "
               f"critical_jobs {result['checkpoint'].get('critical_jobs')}, "
               f"container stopped)")
         return EXIT_OK

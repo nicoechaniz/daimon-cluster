@@ -1,52 +1,60 @@
-"""Same-host transfer + handoff wake (issue #29).
+"""Same-host transfer + handoff wake (issue #29, M10-R2).
 
-The second half of the M7 handoff protocol (park is #28). v1 scope is
+The second half of the handoff protocol (park is #28). v1 scope is
 SAME-HOST transfer: the target is a new container on this cluster.
 Cross-host transfer needs the directory API — out of scope.
+
+Ontology (docs/design/ontology.md): these are LIFECYCLE operations on
+bodies, never identity ceremonies. The embodiment registry is a census:
+transitions append at cursor+1 and the cursor never goes down.
 
 ``clusterctl wake --handoff <name>`` — re-entry on the SAME body after
 a local handoff park:
 
-  1. load + verify the checkpoint manifest (signature; fence epoch must
-     match the daimon's lease history — a newer lease epoch means
-     someone else took the identity, refuse)
-  2. restore state files back into the container (inverse of park step
+  1. load + verify the checkpoint manifest (signature; the registry's
+     parked record must still point at THIS manifest — a newer
+     transition means the census moved past this checkpoint, refuse)
+  2. register the awake transition at cursor+1 (ordering, never
+     exclusion) — recorded BEFORE the body becomes reachable
+  3. restore state files back into the container (inverse of park step
      5), sha256 of each file verified BEFORE writing, restored shas
      recorded in the wake record
-  3. acquire a NEW fence via ``LeaseStore.renew`` (epoch+1 CAS)
   4. spec status parked → waking → active; container start
-  5. signed ``wake-record/v1`` at ``state_dir/park/<name>/wake-<epoch>.json``
+  5. signed ``wake-record/v1`` at ``state_dir/park/<name>/wake-<cursor>.json``
 
-On ANY failure the lease stays parked, the container stays stopped, the
-spec rolls back to ``parked``, and the wake record (status ``failed``)
-makes the run resumable like park.
+On ANY failure the registry records the embodiment parked again (append
+at cursor+1), the container stays stopped, the spec rolls back to
+``parked``, and the wake record (status ``failed``) makes the run
+resumable like park.
 
-``clusterctl transfer <name> --to <new-name>`` — same-host identity
+``clusterctl transfer <name> --to <new-name>`` — same-host embodiment
 relocation. Pre-conditions: source spec status ``parked`` AND a
 verified checkpoint manifest exists (else exit 6 with guidance to run
 ``park --handoff`` first). Steps (resumable via ``transfer-state/v1``):
 
-  a. verify manifest signature + hashes again (provenance gate)
+  a. verify manifest signature + hashes again (provenance gate) +
+     checkpoint freshness against the census
   b. create the target spec (copy of source, status ``transferring``,
      same image_version/budgets, SAME durable volume name — identity
      keys travel WITH the volume, never through git; ``volume: moved``)
   c. create the target container STOPPED (never reachable before
-     verification + fence)
-  d. restore state files into the target, sha256 verified per file
-  e. acquire a NEW fence via ``LeaseStore.renew`` (CAS epoch+1)
+     verification + census transition)
+  d. register the embodiment's relocation (same embodiment, new body)
+     at cursor+1 — BEFORE start
+  e. restore state files into the target, sha256 verified per file
   f. target spec transferring → waking → active; start the target
   g. signed ``transfer-record/v1`` at
-     ``state_dir/transfer/<name>-to-<new-name>-<epoch>.json``
+     ``state_dir/transfer/<name>-to-<new-name>-<cursor>.json``
   h. audit event ``transfer`` with action_digest bound to the manifest
      hash
 
 ROLLBACK: any failure after (c) destroys the target container, deletes
-the target spec, and restores the pre-renew fence (only if this run
-acquired it). The source stays parked with its lease intact — the
-operator resumes with ``wake --handoff`` on the source. Rollback is
-idempotent and recorded in the transfer-state file. On success the old
-source spec is marked ``transferred`` (kept for audit; destroy is a
-separate human decision).
+the target spec, and appends a rolled-back record for the embodiment
+(never a restore — history keeps both the attempt and the rollback).
+The source stays parked — the operator resumes with ``wake --handoff``
+on the source. Rollback is idempotent and recorded in the
+transfer-state file. On success the old source spec is marked
+``transferred`` (kept for audit; destroy is a separate human decision).
 
 Announcements distinguish ``same-identity-relocation`` (wake/transfer)
 from ``incarnation-creation`` (provision). The field is recorded in
@@ -67,7 +75,8 @@ import os
 import shlex
 from pathlib import Path
 
-from . import audit, idempotency, leases, park
+from . import audit, idempotency, park, registry as registry_mod
+from .signing import FakeSigner, Signer, _canonical, InvalidSignature
 from .inventory import load_spec_raw, load_specs, update_spec
 from .lifecycle import (
     EXIT_CONFLICT,  # noqa: F401  (re-exported for callers/tests)
@@ -99,7 +108,7 @@ ANNOUNCEMENT_CREATION = "incarnation-creation"  # used by provision
 
 WAKE_STEPS = (
     "verify-manifest",
-    "fence",
+    "register",
     "start",
     "restore-files",
     "record",
@@ -109,7 +118,7 @@ TRANSFER_STEPS = (
     "verify-manifest",
     "target-spec",
     "target-create",
-    "fence",
+    "register",
     "start",
     "restore-files",
     "record",
@@ -145,30 +154,31 @@ def _daimon_id(spec: dict, name: str) -> str:
 
 
 def _latest_manifest_path(cfg, name: str) -> Path | None:
-    """Newest checkpoint manifest for ``name`` (by fence_epoch), or None."""
+    """Newest checkpoint manifest for ``name`` (by chain cursor; legacy
+    ``fence_epoch`` manifests are read as cursors), or None."""
     d = park._park_dir(cfg, name) / name
     if not d.is_dir():
         return None
-    best, best_epoch = None, -2
+    best, best_cursor = None, -2
     for path in sorted(d.glob("manifest-*.json")):
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        epoch = raw.get("fence_epoch")
-        key = -1 if epoch is None else int(epoch)
-        if key > best_epoch:
-            best, best_epoch = path, key
+        cursor = raw.get("cursor", raw.get("fence_epoch"))
+        key = -1 if cursor is None else int(cursor)
+        if key > best_cursor:
+            best, best_cursor = path, key
     return best
 
 
 def _manifest_hash(manifest: dict) -> str:
-    return hashlib.sha256(leases._canonical(manifest)).hexdigest()
+    return hashlib.sha256(_canonical(manifest)).hexdigest()
 
 
-def _sign(record: dict, signer: leases.Signer) -> dict:
+def _sign(record: dict, signer: Signer) -> dict:
     signed = dict(record)
-    signed["signature"] = signer.sign(leases._canonical(record))
+    signed["signature"] = signer.sign(_canonical(record))
     return signed
 
 
@@ -241,38 +251,41 @@ def _restore_state_files(cfg, park_name: str, target: str, spec: dict,
     return restored
 
 
-def _check_stale_acquisition(manifest: dict, lease: dict | None,
-                             daimon_id: str) -> None:
-    """Refuse when the lease on disk belongs to a NEWER acquisition than
-    the one the checkpoint manifest was bound to (issue #30).
+def _check_checkpoint_freshness(manifest: dict, row: dict | None,
+                                embodiment: str,
+                                manifest_path: Path) -> None:
+    """Refuse when the census has moved past this checkpoint.
 
-    Epochs reset to 0 when a new holder re-acquires after expiry, so the
-    epoch check alone cannot detect the two-holders race — the manifest
-    also records ``lease_acquired_ms`` and the lease preserves
-    ``acquired_ms`` across renews. Manifests written before this field
-    existed (``None``) fall back to the epoch-only check.
+    Freshness, never exclusion (ontology.md): waking or transferring from
+    a checkpoint is only safe when the registry's parked record for the
+    embodiment still points at THIS manifest. If a newer transition was
+    registered after the checkpoint, restoring from it would regress the
+    census — refuse as a stale checkpoint.
     """
-    manifest_acq = manifest.get("lease_acquired_ms")
-    if manifest_acq is None or lease is None:
-        return
-    current_acq = lease.get("acquired_ms", lease.get("created_ms"))
-    if current_acq != manifest_acq:
+    if row is None:
+        return  # unregistered (pre-M10 / --no-registry parks): the wake
+        # path's own census registration will record whatever happens.
+    if row.get("state") != "parked":
         raise TransferRefused(
-            f"stale fence for {daimon_id!r}: the manifest is bound to "
-            f"lease acquisition {manifest_acq} but the current lease was "
-            f"acquired at {current_acq} — another holder re-acquired the "
-            f"identity after this checkpoint; refusing")
+            f"embodiment {embodiment!r} is not parked in the registry "
+            f"(state {row.get('state')!r}); refusing to wake from a "
+            f"checkpoint the census has moved past")
+    recorded = row.get("manifest")
+    if recorded and recorded != str(manifest_path):
+        raise TransferRefused(
+            f"stale checkpoint for {embodiment!r}: the registry's parked "
+            f"record points at {recorded} but wake was given "
+            f"{manifest_path} — a newer park superseded this checkpoint")
 
 
-def _acquire_fence(store: leases.LeaseStore, daimon_id: str) -> dict:
-    """Renew the daimon's lease (epoch+1 CAS). Refuses when the lease is
-    gone or expired — someone else took (or lost) the identity."""
-    renewed = store.renew(daimon_id, "")
-    if renewed is None:
-        raise TransferRefused(
-            f"fence CAS failed for {daimon_id!r}: no active lease to "
-            f"renew — another holder may have taken the identity")
-    return renewed
+def _register_transition(reg: registry_mod.EmbodimentRegistry,
+                         being_root: str, embodiment: str, body: str,
+                         state: str, manifest: str | None,
+                         actor: str) -> dict:
+    """Append the embodiment transition at cursor+1 (ordering, never
+    exclusion — the cursor never goes down)."""
+    return reg.register(being_root, embodiment, body, state,
+                        manifest=manifest, actor=actor)
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +312,7 @@ def _load_wake_record(cfg, name: str, epoch: int, actor: str,
         "schema": WAKE_RECORD_SCHEMA,
         "name": name,
         "manifest_path": str(manifest_path),
-        "fence_epoch": None,
+        "cursor": None,
         "restored_files": {},
         "announcement": ANNOUNCEMENT_RELOCATION,
         "actor": actor,
@@ -317,17 +330,18 @@ def run_wake(
     adapter,
     *,
     actor: str,
-    signer: leases.Signer | None = None,
+    signer: Signer | None = None,
     on_step=None,
 ) -> dict:
     """Re-entry on the SAME body after a local handoff park.
 
     Resumable via the wake record (completed steps skip). Raises
     ``TransferRefused`` (exit 6) or ``TransferError`` (exit 10); on any
-    failure the lease stays parked, the container stays stopped, the
-    spec rolls back to ``parked`` and the failure is recorded.
+    failure the registry records the embodiment parked again (append at
+    cursor+1 — the cursor never goes down), the container stays stopped,
+    the spec rolls back to ``parked`` and the failure is recorded.
     """
-    signer = signer or leases.FakeSigner()
+    signer = signer or FakeSigner()
     spec = load_spec_raw(cfg.instances_dir, name)
     if spec is None:
         raise TransferError(f"instance {name!r} is not declared")
@@ -344,19 +358,20 @@ def run_wake(
             f"`park --handoff {name}` first")
     try:
         manifest = park.load_manifest(manifest_path, signer)
-    except leases.InvalidSignature as exc:
+    except InvalidSignature as exc:
         raise TransferRefused(str(exc)) from exc
-    fence_epoch = manifest.get("fence_epoch")
-    if fence_epoch is None:
+    cursor = manifest.get("cursor", manifest.get("fence_epoch"))
+    if cursor is None:
         raise TransferRefused(
-            f"manifest for {name!r} was parked with --no-lease; "
-            f"handoff wake requires a leased checkpoint")
-    intended_epoch = int(fence_epoch) + 1
+            f"manifest for {name!r} was parked with --no-registry; "
+            f"handoff wake requires a registered checkpoint")
+    intended_cursor = int(cursor) + 1
 
-    daimon_id = _daimon_id(spec, name)
-    store = leases.LeaseStore(cfg.state_dir, signer)
-    record = _load_wake_record(cfg, name, intended_epoch, actor, manifest_path)
-    record_path = _wake_record_path(cfg, name, intended_epoch)
+    embodiment = _daimon_id(spec, name)
+    being_root = park._being_root(spec, name)
+    reg = registry_mod.EmbodimentRegistry(cfg.state_dir, signer)
+    record = _load_wake_record(cfg, name, intended_cursor, actor, manifest_path)
+    record_path = _wake_record_path(cfg, name, intended_cursor)
     outputs = record.setdefault("outputs", {})
     completed = record.setdefault("completed", [])
 
@@ -371,36 +386,28 @@ def run_wake(
 
     try:
         # 1. verify-manifest — signature already verified by load_manifest;
-        #    the fence epoch must match the daimon's lease history (a newer
-        #    lease epoch means another holder renewed first). On resume
-        #    after the fence step this check is skipped: this run IS the
-        #    newer holder.
+        #    the checkpoint must still be the registry's parked record for
+        #    this embodiment (freshness — a newer transition means the
+        #    census moved past this checkpoint). On resume after the
+        #    register step this check is skipped: this run IS the newer
+        #    transition.
         if "verify-manifest" not in completed:
-            if "fence" not in completed:
-                st = store.status(daimon_id)
-                if not st["present"] or st["expired"]:
-                    raise TransferRefused(
-                        f"no active lease for {daimon_id!r}; cannot "
-                        f"acquire a new fence")
-                if st["last_epoch"] != fence_epoch:
-                    raise TransferRefused(
-                        f"stale fence for {daimon_id!r}: manifest epoch "
-                        f"{fence_epoch} but the lease is epoch "
-                        f"{st['last_epoch']} — another holder renewed "
-                        f"first; refusing to wake")
-                # epochs reset on re-acquire — also bind to the lease
-                # acquisition recorded in the manifest (issue #30)
-                _check_stale_acquisition(manifest, store.get(daimon_id),
-                                         daimon_id)
+            if "register" not in completed:
+                _check_checkpoint_freshness(
+                    manifest, reg.get(being_root, embodiment),
+                    embodiment, manifest_path)
         _done("verify-manifest")
 
-        # 2. fence — epoch+1 CAS. Refuses if a newer fence exists.
-        if "fence" not in completed:
-            renewed = _acquire_fence(store, daimon_id)
-            record["fence_epoch"] = renewed["epoch"]
-            _done("fence", fence_epoch=renewed["epoch"])
+        # 2. register — the awake transition at cursor+1 (ordering, never
+        #    exclusion). Runs BEFORE start: the census records the
+        #    embodiment's re-entry before the body becomes reachable.
+        if "register" not in completed:
+            entry = _register_transition(reg, being_root, embodiment, name,
+                                         "awake", str(manifest_path), actor)
+            record["cursor"] = entry["cursor"]
+            _done("register", cursor=entry["cursor"])
         else:
-            _done("fence")
+            _done("register")
 
         # 3. start — spec parked → waking; the container must be RUNNING
         #    for the restore below (incus exec — live drill 1 caught the
@@ -429,18 +436,22 @@ def run_wake(
 
         # 5. record — finalize the signed wake record.
         record["status"] = "ok"
-        record["fence_epoch"] = outputs.get("fence_epoch",
-                                            record.get("fence_epoch"))
+        record["cursor"] = outputs.get("cursor", record.get("cursor"))
         _done("record")
 
     except TransferError as exc:
         record["status"] = "failed"
         record["error"] = str(exc)
         _atomic_write(record_path, _sign(record, signer))
-        # The lease stays parked and the spec rolls back to parked. If
-        # the start step ran, best-effort stop the container so the
-        # convergent state is "both parked" (resumable via a later wake).
+        # The registry records the embodiment parked again (append at
+        # cursor+1) if this run registered the awake transition; the spec
+        # rolls back to parked and the container is best-effort stopped —
+        # the convergent state is "parked", resumable via a later wake.
         try:
+            if "register" in completed:
+                reg.set_state(being_root, embodiment, "parked",
+                              manifest=str(manifest_path),
+                              actor=f"{actor}:wake-rollback")
             update_spec(cfg.instances_dir, name, {"status": "parked"})
             if "start" in completed:
                 adapter.stop(name)
@@ -453,7 +464,7 @@ def run_wake(
         "name": name,
         "result": "ok",
         "state": "active",
-        "fence_epoch": record.get("fence_epoch"),
+        "cursor": record.get("cursor"),
         "restored_files": record.get("restored_files") or {},
         "announcement": ANNOUNCEMENT_RELOCATION,
         "wake_record": str(record_path),
@@ -493,7 +504,7 @@ def cmd_wake(args, cfg, adapter) -> int:
         _record_idempotency(args, cfg, operation, name, store, result)
         _audit_ok(args, cfg, operation, name, {
             "state": "active",
-            "fence_epoch": result["fence_epoch"],
+            "cursor": result["cursor"],
             "announcement": result["announcement"],
             "wake_record": result["wake_record"],
             "manifest": result["manifest"],
@@ -501,7 +512,7 @@ def cmd_wake(args, cfg, adapter) -> int:
         })
         _emit(args, result,
               f"woke {name}: re-entry from checkpoint {result['manifest']} "
-              f"(fence_epoch {result['fence_epoch']}, announcement "
+              f"(cursor {result['cursor']}, announcement "
               f"{result['announcement']}, container running)")
         return EXIT_OK
 
@@ -551,13 +562,13 @@ def _save_transfer_state(cfg, name: str, new_name: str, state: dict) -> None:
     _atomic_write(_transfer_state_path(cfg, name, new_name), state)
 
 
-def _rollback_transfer(cfg, adapter, store: leases.LeaseStore,
-                       name: str, new_name: str, daimon_id: str,
-                       state: dict) -> dict:
-    """Destroy the target, delete its spec, restore the pre-renew fence
-    (only if this run acquired it). Idempotent; recorded in the
-    transfer-state file. The source stays parked with its lease intact —
-    the operator resumes with ``wake --handoff`` on the source."""
+def _rollback_transfer(cfg, adapter, reg: registry_mod.EmbodimentRegistry,
+                       name: str, new_name: str, embodiment: str,
+                       being_root: str, state: dict) -> dict:
+    """Destroy the target, delete its spec, and append a parked record
+    for the embodiment (cursor+1 — never a restore). Idempotent; recorded
+    in the transfer-state file. The source stays parked — the operator
+    resumes with ``wake --handoff`` on the source."""
     outputs = state.get("outputs") or {}
     errors = []
 
@@ -580,15 +591,17 @@ def _rollback_transfer(cfg, adapter, store: leases.LeaseStore,
         except Exception as exc:
             errors.append(f"delete target spec: {exc}")
 
-    # 3. release the new fence attempt — only if THIS run acquired it.
-    if outputs.get("fence_acquired") and not outputs.get("fence_rolled_back"):
-        prev = outputs.get("prev_lease")
+    # 3. census rollback — the embodiment goes back to parked on the
+    #    source body as a NEW record at cursor+1 (append-only truth;
+    #    the cursor never goes down).
+    if outputs.get("registered") and not outputs.get("registry_rolled_back"):
         try:
-            if prev is not None:
-                store.restore(daimon_id, prev)
-            outputs["fence_rolled_back"] = True
+            reg.rollback(being_root, embodiment,
+                         f"transfer to {new_name} failed; back to parked "
+                         f"on {name}", actor="transfer-rollback")
+            outputs["registry_rolled_back"] = True
         except Exception as exc:
-            errors.append(f"restore fence: {exc}")
+            errors.append(f"registry rollback: {exc}")
 
     # 4. the source stays parked (defensive — nothing should have moved it).
     try:
@@ -602,7 +615,7 @@ def _rollback_transfer(cfg, adapter, store: leases.LeaseStore,
         "errors": errors,
         "target_destroyed": not outputs.get("target_created"),
         "target_spec_deleted": not outputs.get("target_spec"),
-        "fence_restored": bool(outputs.get("fence_rolled_back")),
+        "registry_rolled_back": bool(outputs.get("registry_rolled_back")),
         "resume_hint": f"wake --handoff {name} resumes the source from "
                        f"the same checkpoint",
     }
@@ -618,10 +631,10 @@ def run_transfer(
     adapter,
     *,
     actor: str,
-    signer: leases.Signer | None = None,
+    signer: Signer | None = None,
     on_step=None,
 ) -> dict:
-    """Same-host identity relocation: parked source → new container.
+    """Same-host embodiment relocation: parked source → new container.
 
     Resumable via the transfer-state file. Raises ``TransferRefused``
     (exit 6: pre-conditions, tampered manifest) or ``TransferError``
@@ -629,7 +642,7 @@ def run_transfer(
     marked ``transferred`` (kept for audit — destroy is a separate
     human decision).
     """
-    signer = signer or leases.FakeSigner()
+    signer = signer or FakeSigner()
     spec = load_spec_raw(cfg.instances_dir, name)
     if spec is None:
         raise TransferError(f"instance {name!r} is not declared")
@@ -653,8 +666,9 @@ def run_transfer(
             in ("transferring", "waking", "active")):
         raise TransferRefused(f"target {new_name!r} is already declared")
 
-    daimon_id = _daimon_id(spec, name)
-    store = leases.LeaseStore(cfg.state_dir, signer)
+    embodiment = _daimon_id(spec, name)
+    being_root = park._being_root(spec, name)
+    reg = registry_mod.EmbodimentRegistry(cfg.state_dir, signer)
     outputs = state.setdefault("outputs", {})
     completed = state.setdefault("completed", [])
 
@@ -673,7 +687,7 @@ def run_transfer(
         #    proceeds on a stale/tampered manifest.
         try:
             manifest = park.load_manifest(manifest_path, signer)
-        except leases.InvalidSignature as exc:
+        except InvalidSignature as exc:
             raise TransferRefused(str(exc)) from exc
         state_files = manifest.get("state_files")
         if isinstance(state_files, dict):
@@ -683,10 +697,11 @@ def run_transfer(
                     "checkpoint manifest hash verification failed: "
                     + "; ".join(problems),
                     {"problems": problems})
-        # stale-holder gate (issue #30): refuse when the identity was
-        # re-acquired after this checkpoint. A MISSING lease is left to
-        # the fence step (CAS failure → TransferError + rollback).
-        _check_stale_acquisition(manifest, store.get(daimon_id), daimon_id)
+        # checkpoint freshness (ontology.md): refuse when the census has
+        # moved past this checkpoint (a newer park superseded it).
+        _check_checkpoint_freshness(
+            manifest, reg.get(being_root, embodiment),
+            embodiment, manifest_path)
         volume_name = str(spec.get("volume") or f"{name}-durable")
         image_version = spec.get("image_version")
         _done("verify-manifest",
@@ -728,27 +743,18 @@ def run_transfer(
                     f"target container create failed: {exc}") from exc
         _done("target-create", target_created=True)
 
-        # d. fence — NEW fence for the daimon identity (CAS epoch+1).
-        #    The pre-renew lease is snapshotted so rollback can restore
-        #    it exactly. CAS failure → rollback. The fence runs BEFORE
-        #    start: the target must not become reachable before the new
-        #    fence is held (live drill 1: restoring into a STOPPED
-        #    container is impossible — incus exec requires running — so
-        #    restore moved after start, and start after the fence).
-        if not outputs.get("fence_acquired"):
-            prev_lease = store.get(daimon_id)
-            try:
-                renewed = _acquire_fence(store, daimon_id)
-            except TransferRefused as exc:
-                # CAS failure AFTER the target exists → rollback (the
-                # source stays parked with its lease intact).
-                raise TransferError(
-                    f"fence CAS failed ({exc}); rolling back the target"
-                ) from exc
-            _done("fence", fence_acquired=True, prev_lease=prev_lease,
-                  fence_epoch=renewed["epoch"])
+        # d. register — the embodiment's transition to the new body at
+        #    cursor+1 (ordering, never exclusion). Runs BEFORE start: the
+        #    census records where the being lives before the target body
+        #    becomes reachable. The embodiment keeps its name across
+        #    bodies — transfer relocates a body, the /me thread continues.
+        if not outputs.get("registered"):
+            entry = _register_transition(reg, being_root, embodiment,
+                                         new_name, "awake",
+                                         str(manifest_path), actor)
+            _done("register", registered=True, cursor=entry["cursor"])
         else:
-            _done("fence")
+            _done("register")
 
         # e. start — target spec transferring → waking; start the target
         #    container ONLY after the fence is held (before this step the
@@ -780,14 +786,14 @@ def run_transfer(
             update_spec(cfg.instances_dir, name, {"status": "transferred"})
 
         # g. record — signed transfer-record/v1.
-        fence_epoch = outputs.get("fence_epoch")
-        record_path = _transfer_record_path(cfg, name, new_name, fence_epoch)
+        cursor = outputs.get("cursor")
+        record_path = _transfer_record_path(cfg, name, new_name, cursor)
         record = _sign({
             "schema": TRANSFER_RECORD_SCHEMA,
             "source": name,
             "target": new_name,
             "manifest_path": str(manifest_path),
-            "fence_epoch": fence_epoch,
+            "cursor": cursor,
             "restored_files": outputs.get("restored_files") or {},
             "state_commit": outputs.get("state_commit"),
             "volume": "moved",
@@ -810,8 +816,8 @@ def run_transfer(
             (s for s in TRANSFER_STEPS if s not in completed), None)
         state["error"] = str(exc)
         _save_transfer_state(cfg, name, new_name, state)
-        rollback = _rollback_transfer(cfg, adapter, store, name, new_name,
-                                      daimon_id, state)
+        rollback = _rollback_transfer(cfg, adapter, reg, name, new_name,
+                                      embodiment, being_root, state)
         exc.detail.setdefault("rollback", rollback)
         raise
 
@@ -821,7 +827,7 @@ def run_transfer(
         "target": new_name,
         "result": "ok",
         "state": "active",
-        "fence_epoch": outputs.get("fence_epoch"),
+        "cursor": outputs.get("cursor"),
         "restored_files": outputs.get("restored_files") or {},
         "state_commit": outputs.get("state_commit"),
         "volume": "moved",
@@ -874,7 +880,7 @@ def cmd_transfer(args, cfg, adapter) -> int:
             "source": name,
             "state": "active",
             "source_status": "transferred",
-            "fence_epoch": result["fence_epoch"],
+            "cursor": result["cursor"],
             "announcement": result["announcement"],
             "volume": "moved",
             "volume_name": result["volume_name"],
@@ -883,8 +889,8 @@ def cmd_transfer(args, cfg, adapter) -> int:
             **stale,
         })
         _emit(args, result,
-              f"transferred {name} -> {new_name}: identity relocated "
-              f"(fence_epoch {result['fence_epoch']}, volume moved, "
+              f"transferred {name} -> {new_name}: embodiment relocated "
+              f"(cursor {result['cursor']}, volume moved, "
               f"announcement {result['announcement']}, target running; "
               f"source spec kept as transferred)")
         return EXIT_OK

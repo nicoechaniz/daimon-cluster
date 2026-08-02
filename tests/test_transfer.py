@@ -1,12 +1,17 @@
-"""Transfer, wake, re-entry, and rollback tests (issue #29).
+"""Transfer, wake, re-entry, and rollback tests (issue #29, M10-R2).
 
-Covers: wake happy path (fence epoch+1, verified restore, announcement),
-stale-fence refusal, no-lease manifest refusal, wake start-failure
-rollback, transfer happy path (call ORDER: create before start, fence
-before start), transfer pre-condition refusals, tampered-manifest
-refusal, CAS-failure rollback (target destroyed, spec deleted, source
-parked with lease intact), restored-file sha mismatch, and resume from
-an interruption point. All against FakeAdapter — no incus.
+Covers: wake happy path (census transition at cursor+1, verified restore,
+announcement), stale-checkpoint refusal (the census moved past), no-registry
+manifest refusal, wake start-failure rollback (append-only: the embodiment
+goes back to parked as a NEW record), transfer happy path (call ORDER:
+create before register before start), transfer pre-condition refusals,
+tampered-manifest refusal, start-failure rollback (target destroyed, spec
+deleted, rolled-back record appended), restored-file sha mismatch, and
+resume from an interruption point. All against FakeAdapter — no incus.
+
+Ontology (docs/design/ontology.md): the registry is a census, never an
+exclusion mechanism; transitions append at cursor+1 and the cursor never
+goes down.
 """
 
 import hashlib
@@ -14,18 +19,19 @@ import json
 
 import pytest
 
-from clusterctl import leases, park, transfer
+from clusterctl import park, registry, transfer
 from clusterctl.adapters import FakeAdapter
 from clusterctl.cli import run
 from clusterctl.config import Config
 from clusterctl.inventory import load_spec_raw
 
 from test_park import (  # shared fixtures/helpers from the park suite
-    COMMIT_SHA, DAIMON_ID, FINGERPRINT, HANDOFF_CONTENT, NAME,
-    NOW_CONTENT, PUBKEY, _Kill, _exec_handler, _manifest_path,
+    COMMIT_SHA, DAIMON_ID, HANDOFF_CONTENT, NAME,
+    NOW_CONTENT, _Kill, _exec_handler, _manifest_path,
     _write_spec)
 
 NEW = "daimon-y"
+BEING = "daimon-x"
 
 
 def _sha(text: str) -> str:
@@ -59,18 +65,18 @@ def adapter():
         exec_handler=_exec_handler)
 
 
+def _reg(state_dir):
+    return registry.EmbodimentRegistry(state_dir)
+
+
 def _parked(state_dir, cfg, adapter):
-    """Park NAME with a lease, leaving a verified manifest behind."""
-    store = leases.LeaseStore(state_dir)
-    store.acquire(DAIMON_ID, PUBKEY, FINGERPRINT)
+    """Register the embodiment awake, then park it — leaving a verified
+    manifest behind and the census parked at cursor 2."""
+    _reg(state_dir).register(BEING, DAIMON_ID, NAME, "awake", actor="test")
     result = park.run_park(NAME, cfg, adapter, actor="test")
     assert result["result"] == "ok"
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "parked"
     adapter.mutation_log.clear()
-
-
-def _lease_files(state_dir):
-    return list((state_dir / "leases").glob("*.json"))
 
 
 # ---------------------------------------------------------------------------
@@ -85,18 +91,22 @@ def test_wake_happy_path(state_dir, cfg, adapter):
 
     assert res["result"] == "ok"
     assert res["state"] == "active"
-    assert res["fence_epoch"] == 1  # park held epoch 0; wake renews to 1
+    assert res["cursor"] == 3  # awake=1, parked=2, re-entry=3
     assert res["announcement"] == "same-identity-relocation"
     assert res["restored_files"] == EXPECTED_RESTORED
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "active"
     assert ("start", NAME) in adapter.mutation_log
+    row = _reg(state_dir).get(BEING, DAIMON_ID)
+    assert row["state"] == "awake"
+    assert row["body"] == NAME
 
 
-def test_wake_stale_fence_refused(state_dir, cfg, adapter):
-    """Another holder renewed first → CAS refuse, container stays down."""
+def test_wake_stale_checkpoint_refused(state_dir, cfg, adapter):
+    """The census moved past this checkpoint (a newer transition was
+    registered) → refuse; the container stays down."""
     _write_spec(state_dir)
     _parked(state_dir, cfg, adapter)
-    leases.LeaseStore(state_dir).renew(DAIMON_ID, "")  # epoch 1 externally
+    _reg(state_dir).set_state(BEING, DAIMON_ID, "awake", actor="external")
 
     with pytest.raises(transfer.TransferRefused):
         transfer.run_wake(NAME, cfg, adapter, actor="test")
@@ -105,10 +115,10 @@ def test_wake_stale_fence_refused(state_dir, cfg, adapter):
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "parked"
 
 
-def test_wake_no_lease_manifest_refused(state_dir, cfg, adapter):
-    """A --no-lease checkpoint cannot drive a handoff wake."""
+def test_wake_no_registry_manifest_refused(state_dir, cfg, adapter):
+    """A --no-registry checkpoint cannot drive a handoff wake."""
     _write_spec(state_dir)
-    park.run_park(NAME, cfg, adapter, actor="test", no_lease=True)
+    park.run_park(NAME, cfg, adapter, actor="test", no_registry=True)
     adapter.mutation_log.clear()
 
     with pytest.raises(transfer.TransferRefused):
@@ -136,9 +146,16 @@ def test_wake_start_failure_rolls_back(state_dir, cfg, adapter):
     # spec rolled back to parked; the failure is recorded
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "parked"
     record = json.loads(
-        transfer._wake_record_path(cfg, NAME, 1).read_text())
+        transfer._wake_record_path(cfg, NAME, 2).read_text())
     assert record["status"] == "failed"
     assert "start failure" in record["error"]
+    # append-only rollback: the census records parked AGAIN at cursor+1 —
+    # the awake attempt stays in history, the cursor never goes down
+    row = _reg(state_dir).get(BEING, DAIMON_ID)
+    assert row["state"] == "parked"
+    assert row["cursor"] == 4  # awake=1, parked=2, re-entry=3, rollback=4
+    states = [e["state"] for e in _reg(state_dir).history(BEING)]
+    assert states == ["awake", "parked", "awake", "parked"]
 
 
 def test_wake_resume_from_interruption(state_dir, cfg, adapter):
@@ -156,7 +173,7 @@ def test_wake_resume_from_interruption(state_dir, cfg, adapter):
                           on_step=killer)
     res = transfer.run_wake(NAME, cfg, adapter, actor="test")
     assert res["result"] == "ok"
-    assert res["fence_epoch"] == 1
+    assert res["cursor"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -173,10 +190,13 @@ def test_transfer_happy_path_order(state_dir, cfg, adapter):
     i_create = log.index(("create_instance", NEW))
     i_start = log.index(("start", NEW))
     assert i_create < i_start  # target never reachable before create+verify
-    # the fence (epoch 1) is held by the time start ran (step e before f)
-    st = leases.LeaseStore(state_dir).status(DAIMON_ID)
-    assert st["last_epoch"] == 1
+    # the census recorded the relocation (cursor 3) before start ran
+    row = _reg(state_dir).get(BEING, DAIMON_ID)
+    assert row["state"] == "awake"
+    assert row["body"] == NEW
+    assert row["cursor"] == 3
     assert res["result"] == "ok"
+    assert res["cursor"] == 3
     assert res["announcement"] == "same-identity-relocation"
     assert res["volume"] == "moved"
     assert res["restored_files"] == EXPECTED_RESTORED
@@ -190,6 +210,7 @@ def test_transfer_happy_path_order(state_dir, cfg, adapter):
     record = json.loads(open(res["transfer_record"]).read())
     assert record["schema"] == "transfer-record/v1"
     assert record["source"] == NAME and record["target"] == NEW
+    assert record["cursor"] == 3
     assert record["signature"]
 
 
@@ -215,13 +236,19 @@ def test_transfer_tampered_manifest_refused(state_dir, cfg, adapter):
     assert load_spec_raw(cfg.instances_dir, NEW) is None
 
 
-def test_transfer_cas_failure_rolls_back(state_dir, cfg, adapter):
-    """Fence CAS failure after target create → full rollback, source
-    parked with its lease intact."""
+def test_transfer_start_failure_rolls_back(state_dir, cfg, adapter):
+    """Start failure after the census transition → full rollback: target
+    destroyed, spec deleted, and the embodiment back to parked as a NEW
+    record (append-only — the cursor never goes down)."""
     _write_spec(state_dir)
     _parked(state_dir, cfg, adapter)
-    for f in _lease_files(state_dir):  # identity lease vanished
-        f.unlink()
+
+    real_start = adapter.start
+    def boom(name):
+        if name == NEW:
+            raise RuntimeError("simulated target start failure")
+        return real_start(name)
+    adapter.start = boom
 
     with pytest.raises(transfer.TransferError):
         transfer.run_transfer(NAME, NEW, cfg, adapter, actor="test")
@@ -229,13 +256,20 @@ def test_transfer_cas_failure_rolls_back(state_dir, cfg, adapter):
     log = adapter.mutation_log
     assert ("create_instance", NEW) in log   # target existed...
     assert ("delete", NEW) in log            # ...and was destroyed
-    assert not any(c == ("start", NEW) for c in log)  # never started
     assert load_spec_raw(cfg.instances_dir, NEW) is None  # spec deleted
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "parked"
+    # the census: relocation attempt (3) + rolled-back (4), both kept
+    row = _reg(state_dir).get(BEING, DAIMON_ID)
+    assert row["state"] == "rolled-back"
+    assert row["cursor"] == 4
+    states = [e["state"] for e in _reg(state_dir).history(BEING)]
+    assert states == ["awake", "parked", "awake", "rolled-back",
+                      "rollback-note"]
     # transfer-state records the rollback with a resume hint
     state = json.loads(
         transfer._transfer_state_path(cfg, NAME, NEW).read_text())
     assert state["rollback"]["attempted"] is True
+    assert state["rollback"]["registry_rolled_back"] is True
     assert "wake --handoff" in state["rollback"]["resume_hint"]
 
 

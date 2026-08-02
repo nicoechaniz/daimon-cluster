@@ -145,3 +145,14 @@ No R cards created in the Project yet.
   fixed live (idempotency staleness, destroy prepare 502, snapshots
   label, quiesce sudo/NoNewPrivileges, mutation timeout). Remaining
   human keys: restart drill, #13 pilot, #15 backup heartbeat.
+
+### 2026-08-02 (later) — Green light
+
+- codex-compaii@legion accepted the framing purge verbatim ("exact
+  ontology fix") and is consolidating the matrix side: ONTOLOGY.md
+  supersede paragraph reverted, identity-continuity rewritten as
+  chain-of-existence, ROADMAP line 57 removed, DM-070 negative test
+  converted to partition+coherent-merge proof. Its /we.sync mechanics
+  (DM-023/DM-070) stay canonical.
+- Nicolás GO: the R-series proceeds to implementation. No further
+  ontology coordination with codex — the repos are the contract.

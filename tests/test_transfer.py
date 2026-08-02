@@ -1,7 +1,7 @@
 """Transfer, wake, re-entry, and rollback tests (issue #29).
 
 Covers: wake happy path (fence epoch+1, verified restore, announcement),
-stale-fence refusal, no-lease manifest refusal, wake start-failure
+stale-fence refusal, no-fence manifest refusal, wake start-failure
 rollback, transfer happy path (call ORDER: create before start, fence
 before start), transfer pre-condition refusals, tampered-manifest
 refusal, CAS-failure rollback (target destroyed, spec deleted, source
@@ -18,6 +18,7 @@ from clusterctl import leases, park, transfer
 from clusterctl.adapters import FakeAdapter
 from clusterctl.cli import run
 from clusterctl.config import Config
+from clusterctl.embodiments import Registry
 from clusterctl.inventory import load_spec_raw
 
 from test_park import (  # shared fixtures/helpers from the park suite
@@ -73,6 +74,18 @@ def _lease_files(state_dir):
     return list((state_dir / "leases").glob("*.json"))
 
 
+def _declare_running_embodiment(state_dir):
+    registry = Registry(state_dir)
+    embodiment = registry.register(body_ref=DAIMON_ID)
+    first = registry.start(embodiment["embodiment_id"])
+    _write_spec(
+        state_dir, body_ref=DAIMON_ID,
+        embodiment_id=embodiment["embodiment_id"],
+        current_incarnation_id=first["incarnation_id"],
+    )
+    return embodiment, first
+
+
 # ---------------------------------------------------------------------------
 # wake --handoff
 # ---------------------------------------------------------------------------
@@ -86,10 +99,22 @@ def test_wake_happy_path(state_dir, cfg, adapter):
     assert res["result"] == "ok"
     assert res["state"] == "active"
     assert res["fence_epoch"] == 1  # park held epoch 0; wake renews to 1
-    assert res["announcement"] == "same-identity-relocation"
+    assert res["announcement"] == "embodiment-relocation"
     assert res["restored_files"] == EXPECTED_RESTORED
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "active"
     assert ("start", NAME) in adapter.mutation_log
+
+
+def test_park_and_wake_close_then_open_incarnation(state_dir, cfg, adapter):
+    embodiment, first = _declare_running_embodiment(state_dir)
+    _parked(state_dir, cfg, adapter)
+    assert Registry(state_dir).status(embodiment["embodiment_id"])["status"] == "stopped"
+    assert load_spec_raw(cfg.instances_dir, NAME)["current_incarnation_id"] is None
+
+    result = transfer.run_wake(NAME, cfg, adapter, actor="test")
+    assert result["incarnation_id"] != first["incarnation_id"]
+    current = Registry(state_dir).status(embodiment["embodiment_id"])
+    assert current["current_incarnation_id"] == result["incarnation_id"]
 
 
 def test_wake_stale_fence_refused(state_dir, cfg, adapter):
@@ -105,10 +130,10 @@ def test_wake_stale_fence_refused(state_dir, cfg, adapter):
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "parked"
 
 
-def test_wake_no_lease_manifest_refused(state_dir, cfg, adapter):
-    """A --no-lease checkpoint cannot drive a handoff wake."""
+def test_wake_no_fence_manifest_refused(state_dir, cfg, adapter):
+    """A --no-fence checkpoint cannot drive a resource-moving wake."""
     _write_spec(state_dir)
-    park.run_park(NAME, cfg, adapter, actor="test", no_lease=True)
+    park.run_park(NAME, cfg, adapter, actor="test", no_fence=True)
     adapter.mutation_log.clear()
 
     with pytest.raises(transfer.TransferRefused):
@@ -177,7 +202,7 @@ def test_transfer_happy_path_order(state_dir, cfg, adapter):
     st = leases.LeaseStore(state_dir).status(DAIMON_ID)
     assert st["last_epoch"] == 1
     assert res["result"] == "ok"
-    assert res["announcement"] == "same-identity-relocation"
+    assert res["announcement"] == "embodiment-relocation"
     assert res["volume"] == "moved"
     assert res["restored_files"] == EXPECTED_RESTORED
     assert res["state_commit"] == COMMIT_SHA
@@ -191,6 +216,16 @@ def test_transfer_happy_path_order(state_dir, cfg, adapter):
     assert record["schema"] == "transfer-record/v1"
     assert record["source"] == NAME and record["target"] == NEW
     assert record["signature"]
+
+
+def test_transfer_preserves_embodiment_and_opens_incarnation(state_dir, cfg, adapter):
+    embodiment, first = _declare_running_embodiment(state_dir)
+    _parked(state_dir, cfg, adapter)
+    result = transfer.run_transfer(NAME, NEW, cfg, adapter, actor="test")
+    target = load_spec_raw(cfg.instances_dir, NEW)
+    assert target["embodiment_id"] == embodiment["embodiment_id"]
+    assert result["incarnation_id"] != first["incarnation_id"]
+    assert target["current_incarnation_id"] == result["incarnation_id"]
 
 
 def test_transfer_requires_parked_source(state_dir, cfg, adapter):
@@ -292,7 +327,7 @@ def test_cli_wake_handoff_and_transfer(state_dir, cfg, adapter):
     code, out, _ = _cli(state_dir, "wake", "--handoff", NAME, "--json",
                         adapter=adapter)
     assert code == 0
-    assert json.loads(out)["announcement"] == "same-identity-relocation"
+    assert json.loads(out)["announcement"] == "embodiment-relocation"
 
     # park again, then transfer via CLI
     park.run_park(NAME, cfg, adapter, actor="test")
@@ -304,5 +339,5 @@ def test_cli_wake_handoff_and_transfer(state_dir, cfg, adapter):
 
 def test_announcement_strings_distinct():
     """Relocation vs creation announcements are exact, distinct strings."""
-    assert transfer.ANNOUNCEMENT_RELOCATION == "same-identity-relocation"
+    assert transfer.ANNOUNCEMENT_RELOCATION == "embodiment-relocation"
     assert transfer.ANNOUNCEMENT_RELOCATION != "incarnation-creation"

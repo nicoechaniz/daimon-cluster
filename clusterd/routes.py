@@ -2,8 +2,7 @@
 
 The OpenAPI document (``clusterd.openapi``) is generated FROM this
 table, and the HTTP server (``clusterd.server``) dispatches FROM this
-table. Adding a route (e.g. lease routes in a later milestone) means
-adding one ``Route`` entry here plus one handler function in
+table. Adding a route means adding one ``Route`` entry here plus one handler function in
 ``clusterd.handlers`` — server and OpenAPI pick it up automatically.
 
 ``required_scope`` is ENFORCED (issue #18): every route except
@@ -255,17 +254,31 @@ ROUTES: list[Route] = [
     ),
     Route(
         method="GET",
-        path="/v1/leases",
-        operation_id="listLeases",
-        summary="List all non-expired daimon presence leases (CAS fencing + TTL)",
-        handler="list_leases",
+        path="/v1/embodiments",
+        operation_id="listEmbodiments",
+        summary="List body embodiments and their incarnation histories",
+        handler="list_embodiments",
         scope="fleet:read",
-        clusterctl="reads state_dir/leases/*.json (same files LeaseStore writes)",
+        clusterctl="reads state_dir/embodiments.json (same registry clusterctl writes)",
     ),
-    # Future lease mutation routes (issue #28):
-    #   POST /v1/leases/acquire  (steward mutation, idempotency_required)
-    #   POST /v1/leases/{identity}/park  (idempotency_required, mutation)
-    #   POST /v1/leases/{identity}/wake  (idempotency_required, mutation)
+    Route(
+        method="GET",
+        path="/v1/resource-fences",
+        operation_id="listResourceFences",
+        summary="List active CAS/TTL fences for concrete writable resources",
+        handler="list_resource_fences",
+        scope="fleet:read",
+        clusterctl="reads state_dir/leases/*.json resource-fence/v1 records",
+    ),
+    Route(
+        method="GET",
+        path="/v1/weave/status",
+        operation_id="getWeaveStatus",
+        summary="Show local /we manifest, origin, heads, and durable peer cursors",
+        handler="weave_status",
+        scope="fleet:read",
+        clusterctl="reads state_dir/weave/{being-manifest.json,runtime.json,ledger.sqlite}",
+    ),
     Route(
         method="POST",
         path="/v1/dashboard/prepare",

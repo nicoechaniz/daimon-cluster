@@ -63,6 +63,22 @@ def test_idempotency_key_reuse_different_op_conflicts(state_dir, capsys):
     assert code == 6
 
 
+def test_idempotency_reexecutes_when_cached_effect_drifted(state_dir, capsys):
+    ad = FakeAdapter()
+    _run(state_dir, "create", "daimon-x", "--species", "t",
+         "--idempotency-key", UUID1, adapter=ad)
+    _run(state_dir, "start", "daimon-x", "--idempotency-key", UUID2,
+         adapter=ad)
+    ad.stop("daimon-x")  # external reality changed after the cached success
+    ad.mutation_log.clear()
+    capsys.readouterr()
+    code, _ = _run(state_dir, "start", "daimon-x", "--idempotency-key",
+                   UUID2, "--json", adapter=ad)
+    assert code == 0
+    assert ad.mutation_log == [("start", "daimon-x")]
+    assert json.loads(capsys.readouterr().out).get("idempotent-replay") is not True
+
+
 def test_lock_conflict_reports_holder(state_dir, capsys):
     ad = FakeAdapter()
     _run(state_dir, "create", "daimon-x", "--species", "t", "--idempotency-key", UUID1, adapter=ad)

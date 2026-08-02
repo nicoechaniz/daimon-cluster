@@ -51,7 +51,7 @@ Example (`clusterctl status iso-a --json`):
   "species": "unknown",
   "host": "daimonmatrix",
   "state": "undeclared",
-  "lease_state": "unknown",
+  "resource_fence_state": "unknown",
   "image_version": "debian-trixie-amd64-default-20260731_05:24",
   "budgets": {
     "cpu": 1,
@@ -65,7 +65,7 @@ Example (`clusterctl status iso-a --json`):
 }
 ```
 
-Notes for v0.1.0: `lease_state` and `hmk_integrity` are pinned to
+Notes for v0.1.0: `resource_fence_state` and `hmk_integrity` are pinned to
 `"unknown"`; `durable_bytes` and `last_audit_event` are `null` until the
 audit log (issue #19) lands. Consumers must ignore unknown fields.
 

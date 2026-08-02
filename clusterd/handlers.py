@@ -458,24 +458,61 @@ def audit_tail(deps: Deps, ctx: RequestContext, query=None, **params) -> Respons
     return Response(200, result)
 
 
-def list_leases(deps: Deps, ctx: RequestContext, **params) -> Response:
-    """GET /v1/leases — list all non-expired daimon presence leases.
+def _state_dir(deps: Deps) -> str:
+    return deps.state_dir or load_config(deps.config_path).state_dir
 
-    Reads the same ``state_dir/leases/*.json`` files written by
-    ``clusterctl.leases.LeaseStore``. Returns a list of status dicts
-    filtered to non-expired entries (lease files may exist on disk
-    past expiry until garbage-collected — the API filters them out).
+
+def list_embodiments(deps: Deps, ctx: RequestContext, **params) -> Response:
+    """GET /v1/embodiments — body and incarnation registry."""
+    from clusterctl.embodiments import Registry
+
+    return Response(200, Registry(_state_dir(deps)).list_all())
+
+
+def list_resource_fences(deps: Deps, ctx: RequestContext, **params) -> Response:
+    """GET /v1/resource-fences — active fences for concrete resources.
+
+    These fences never assert exclusive presence for a being. They exclude
+    concurrent writers only when their exact ``resource_ref`` is equal.
     """
-    from clusterctl.leases import LeaseStore
+    from clusterctl.fences import ResourceFenceStore
 
-    state_dir = deps.state_dir
-    if state_dir is None:
-        state_dir = load_config(deps.config_path).state_dir
-    store = LeaseStore(state_dir)
-    all_leases = store.list_all()
-    # Filter to non-expired leases.
-    non_expired = [st for st in all_leases if not st.get("expired", True)]
-    return Response(200, non_expired)
+    fences = ResourceFenceStore(_state_dir(deps)).list_all()
+    return Response(200, [row for row in fences if not row.get("expired", True)])
+
+
+def weave_status(deps: Deps, ctx: RequestContext, **params) -> Response:
+    """GET /v1/weave/status — independent local ledger progress.
+
+    Runtime configuration is local-only and may contain a signing seed; this
+    route reads only the public origin/key mapping and never returns the seed.
+    """
+    from weave.ledger import Ledger
+    from weave.protocol import BeingManifest
+
+    root = Path(_state_dir(deps)) / "weave"
+    manifest_path = root / "being-manifest.json"
+    runtime_path = root / "runtime.json"
+    ledger_path = root / "ledger.sqlite"
+    if not manifest_path.is_file() or not runtime_path.is_file():
+        return Response(200, {"schema": "dm.we.status/v1", "configured": False})
+    manifest = BeingManifest.load(manifest_path)
+    runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+    ledger = Ledger(
+        ledger_path,
+        manifest=manifest,
+        local_origin=runtime["origin"],
+        public_keys=runtime["public_keys"],
+    )
+    return Response(200, {
+        "schema": "dm.we.status/v1",
+        "configured": True,
+        "being_ref": manifest.value["being_ref"],
+        "manifest_hash": manifest.digest,
+        "origin": runtime["origin"],
+        "heads": ledger.heads(),
+        "peer_cursors": ledger.peer_cursors(),
+    })
 
 
 def dashboard(deps: Deps, ctx: RequestContext, **params) -> Response:
@@ -733,6 +770,22 @@ input:focus{outline:none;border-color:var(--accent)}
     </div>
   </div>
 
+  <!-- Same-being plurality and synchronization -->
+  <div class="card" id="we-card">
+    <div class="section-header"><h2>/we — Embodiments and Weave</h2></div>
+    <div id="weave-content" hx-get="/v1/weave/status" hx-trigger="load, every 10s"
+         hx-swap="innerHTML" hx-target="#weave-content"
+         hx-on::after-request="renderWeave(event)"><p class="muted">Loading...</p></div>
+    <div class="grid-2" style="margin-top:8px">
+      <div id="embodiments-content" hx-get="/v1/embodiments" hx-trigger="load, every 10s"
+           hx-swap="innerHTML" hx-target="#embodiments-content"
+           hx-on::after-request="renderEmbodiments(event)"><p class="muted">Loading embodiments...</p></div>
+      <div id="fences-content" hx-get="/v1/resource-fences" hx-trigger="load, every 10s"
+           hx-swap="innerHTML" hx-target="#fences-content"
+           hx-on::after-request="renderFences(event)"><p class="muted">Loading resource fences...</p></div>
+    </div>
+  </div>
+
   <!-- Backups -->
   <div class="card" id="backups-card">
     <div class="section-header"><h2>Snapshots (per-daimon)</h2></div>
@@ -781,6 +834,9 @@ function authenticate(){
       document.getElementById('dashboard').style.display='block';
       htmx.trigger('#health-content','load');
       htmx.trigger('#fleet-content','load');
+      htmx.trigger('#weave-content','load');
+      htmx.trigger('#embodiments-content','load');
+      htmx.trigger('#fences-content','load');
       htmx.trigger('#backups-content','load');
       htmx.trigger('#activity-content','load');
     })
@@ -895,6 +951,44 @@ function renderFleet(event){
     });
     el.innerHTML=h;
   }catch(e){el.innerHTML='<div class="alert">No data <span class="retry-link" onclick="htmx.trigger(\'#fleet-content\',\'load\')">retry</span></div>'}
+}
+
+function renderWeave(event){
+  var el=document.getElementById('weave-content');
+  try{
+    var d=JSON.parse(event.detail.xhr.responseText);
+    if(!d.configured){el.innerHTML='<p class="muted">Weave runtime not configured on this host.</p>';return}
+    var origin=d.origin||{};
+    el.innerHTML='<div class="muted">being <code>'+escHtml(d.being_ref)+'</code> · manifest <code>'
+      +truncDigest(d.manifest_hash)+'</code> · local '+escHtml(origin.principal_id||'?')
+      +' · '+(d.heads||[]).length+' origin heads · '+(d.peer_cursors||[]).length+' durable peer cursors</div>';
+  }catch(e){el.innerHTML='<div class="alert">No Weave status</div>'}
+}
+
+function renderEmbodiments(event){
+  var el=document.getElementById('embodiments-content');
+  try{
+    var rows=JSON.parse(event.detail.xhr.responseText);
+    var h='<strong style="font-size:0.85rem">Embodiments</strong>';
+    if(!rows.length){el.innerHTML=h+'<p class="muted">None registered.</p>';return}
+    rows.forEach(function(row){h+='<div class="activity-item">'+stateBadge(row.status)
+      +' <code>'+escHtml(row.body_ref)+'</code><br><span class="muted">'
+      +escHtml(row.embodiment_id)+' · incarnation '+escHtml(row.current_incarnation_id||'stopped')+'</span></div>'});
+    el.innerHTML=h;
+  }catch(e){el.innerHTML='<div class="alert">No embodiment data</div>'}
+}
+
+function renderFences(event){
+  var el=document.getElementById('fences-content');
+  try{
+    var rows=JSON.parse(event.detail.xhr.responseText);
+    var h='<strong style="font-size:0.85rem">Resource fences</strong>';
+    if(!rows.length){el.innerHTML=h+'<p class="muted">No active fences.</p>';return}
+    rows.forEach(function(row){h+='<div class="activity-item"><code>'+escHtml(row.resource_ref||'?')
+      +'</code> <span class="tag">epoch '+escHtml(row.last_epoch)+'</span><br><span class="muted">holder '
+      +escHtml(row.holder_embodiment_id||'?')+'</span></div>'});
+    el.innerHTML=h;
+  }catch(e){el.innerHTML='<div class="alert">No resource-fence data</div>'}
 }
 
 function renderBackups(event){
@@ -1093,7 +1187,9 @@ HANDLERS = {
     "list_backups": list_backups,
     "audit_tail": audit_tail,
     "dashboard": dashboard,
-    "list_leases": list_leases,
+    "list_embodiments": list_embodiments,
+    "list_resource_fences": list_resource_fences,
+    "weave_status": weave_status,
     "dashboard_prepare": dashboard_prepare,
     "dashboard_confirm": dashboard_confirm,
     "restore_instance": restore_instance,

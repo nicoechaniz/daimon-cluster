@@ -40,6 +40,9 @@ class InstanceSpec:
     budgets: dict
     created_ms: int | None
     created_by: str | None
+    body_ref: str | None = None
+    embodiment_id: str | None = None
+    current_incarnation_id: str | None = None
 
 
 def load_specs(instances_dir: str | Path) -> dict[str, InstanceSpec]:
@@ -73,6 +76,9 @@ def load_specs(instances_dir: str | Path) -> dict[str, InstanceSpec]:
             },
             created_ms=raw.get("created_ms"),
             created_by=raw.get("created_by"),
+            body_ref=raw.get("body_ref"),
+            embodiment_id=raw.get("embodiment_id"),
+            current_incarnation_id=raw.get("current_incarnation_id"),
         )
     return specs
 
@@ -112,6 +118,9 @@ def _status_record(
     image_version,
     budgets: dict,
     uptime_s,
+    body_ref=None,
+    embodiment_id=None,
+    incarnation_id=None,
 ) -> dict:
     return {
         "schema": STATUS_SCHEMA,
@@ -119,7 +128,7 @@ def _status_record(
         "species": species,
         "host": host_id,
         "state": state,
-        "lease_state": "unknown",
+        "resource_fence_state": "unknown",
         "image_version": image_version,
         "budgets": {
             "cpu": budgets.get("cpu"),
@@ -130,6 +139,9 @@ def _status_record(
         "hmk_integrity": "unknown",
         "uptime_s": uptime_s,
         "last_audit_event": None,
+        "body_ref": body_ref,
+        "embodiment_id": embodiment_id,
+        "incarnation_id": incarnation_id,
     }
 
 
@@ -148,7 +160,9 @@ def reconcile(specs: dict[str, InstanceSpec], adapter: Adapter, host_id: str) ->
         if actual is None:
             records.append(
                 _status_record(name, host_id, "missing", spec.species,
-                               spec.image_version, spec.budgets, None)
+                               spec.image_version, spec.budgets, None,
+                               spec.body_ref, spec.embodiment_id,
+                               spec.current_incarnation_id)
             )
             continue
         drift = compute_drift(spec, actual)
@@ -158,7 +172,9 @@ def reconcile(specs: dict[str, InstanceSpec], adapter: Adapter, host_id: str) ->
             actual_state = actual.get("state")
             state = actual_state if actual_state in ("running", "stopped") else (actual_state or "unknown")
         rec = _status_record(name, host_id, state, spec.species,
-                             spec.image_version, spec.budgets, actual.get("uptime_s"))
+                             spec.image_version, spec.budgets, actual.get("uptime_s"),
+                             spec.body_ref, spec.embodiment_id,
+                             spec.current_incarnation_id)
         if drift:
             rec["drift"] = drift
         records.append(rec)

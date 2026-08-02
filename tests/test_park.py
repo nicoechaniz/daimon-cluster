@@ -3,7 +3,7 @@
 Covers: happy path (all 9 steps), resume from every interruption point,
 verification failure rollback, secret-refusal (fail-closed), unsigned /
 tampered manifest rejection, --abandon-critical actor recording, the
-explicit --no-lease path, outbox refusal, and CLI wiring.
+explicit --no-fence path, outbox refusal, and CLI wiring.
 
 All tests run against FakeAdapter with a scripted exec_handler — no incus.
 """
@@ -114,7 +114,7 @@ def _cli(state_dir, *argv, adapter=None):
 
 
 def _manifest_path(state_dir, fence_epoch=0):
-    suffix = fence_epoch if fence_epoch is not None else "nolease"
+    suffix = fence_epoch if fence_epoch is not None else "nofence"
     return state_dir / "park" / NAME / f"manifest-{suffix}.json"
 
 
@@ -148,8 +148,8 @@ def test_happy_path_all_steps(state_dir, cfg, adapter, lease, capsys):
     assert manifest["hmk_integrity"] == "ok"
     assert manifest["state_commit"] == COMMIT_SHA
     assert manifest["backup_ids"] == "not-configured"
-    assert manifest["lease"] == "active"
-    assert manifest["lease_epoch"] == lease["epoch"]
+    assert manifest["resource_fence"] == "active"
+    assert manifest["resource_fence_epoch"] == lease["epoch"]
     assert [s["name"] for s in manifest["steps"]] == [
         "spec-parking", "critical-jobs", "outbox", "hmk-checkpoint",
         "state-files", "state-repo", "verify"]
@@ -330,26 +330,26 @@ def test_abandon_critical_records_human_actor(
 
 
 # ---------------------------------------------------------------------------
-# lease requirement / --no-lease
+# resource-fence requirement / --no-fence
 # ---------------------------------------------------------------------------
 
 
-def test_no_lease_path_is_explicit(state_dir, cfg, adapter, capsys):
+def test_no_fence_path_is_explicit(state_dir, cfg, adapter, capsys):
     _write_spec(state_dir)
-    # no lease acquired — park without --no-lease fails and rolls back
+    # no fence acquired — park without --no-fence fails and rolls back
     code, _ = _cli(state_dir, "park", "--handoff", NAME, "--json", adapter=adapter)
     assert code == 10
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "active"
     capsys.readouterr()
 
-    # explicit --no-lease records the pre-M7 path in the manifest
-    code, ad = _cli(state_dir, "park", "--handoff", NAME, "--no-lease", "--json",
+    # explicit --no-fence records that no exclusive resource exists
+    code, ad = _cli(state_dir, "park", "--handoff", NAME, "--no-fence", "--json",
                     adapter=adapter)
     assert code == 0
     out = json.loads(capsys.readouterr().out)
     manifest = out["checkpoint"]
-    assert manifest["lease"] == "no-lease-pre-m7"
-    assert manifest["lease_epoch"] is None
+    assert manifest["resource_fence"] == "not-required"
+    assert manifest["resource_fence_epoch"] is None
     assert manifest["fence_epoch"] is None
     assert _manifest_path(state_dir, None).is_file()
 

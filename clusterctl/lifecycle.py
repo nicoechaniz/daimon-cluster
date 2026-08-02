@@ -29,8 +29,8 @@ from pathlib import Path
 
 import yaml
 
-from . import audit, idempotency, locks
-from .inventory import SPEC_SCHEMA, load_specs
+from . import audit, embodiments, idempotency, locks
+from .inventory import SPEC_SCHEMA, load_spec_raw, load_specs, update_spec
 
 EXIT_OK = 0
 EXIT_NOT_FOUND = 3
@@ -117,10 +117,32 @@ def _audit_ok(args, cfg, action: str, target: str, detail: dict | None = None) -
     )
 
 
-def _check_idempotency(args, cfg, operation: str, name: str, store: dict):
+def _check_idempotency(args, cfg, operation: str, name: str, store: dict,
+                       *, adapter=None, expected_state: str | None = None):
     """Handle replay/conflict. Returns an exit code, or None to proceed."""
     status, entry = idempotency.check(store, _idem_key(args), operation, name)
     if status == "replay":
+        if adapter is not None and expected_state is not None:
+            try:
+                actual = next(
+                    (item for item in adapter.list_instances()
+                     if item.get("name") == name), None
+                )
+            except Exception:
+                actual = None
+            observed_state = None if actual is None else actual.get("state")
+            if observed_state != expected_state:
+                audit.append_event(
+                    cfg.state_dir, actor=_actor(args), action=operation,
+                    target=name, result="ok",
+                    detail={"idempotency_effect_drift": True,
+                            "cached_state": expected_state,
+                            "observed_state": observed_state},
+                    idempotency_key=_idem_key(args),
+                    request_id=_request_id(args),
+                    action_digest=_action_digest(args),
+                )
+                return None
         _audit_ok(args, cfg, operation, name, {"idempotent_replay": True})
         payload = dict(entry.get("result") or {})
         payload["idempotent-replay"] = True
@@ -210,6 +232,9 @@ def cmd_create(args, cfg, adapter) -> int:
             "created_ms": audit.now_ms(),
             "created_by": _actor(args),
             "idempotency_key": _idem_key(args),
+            "body_ref": f"cluster:{cfg.host_id}:{name}",
+            "embodiment_id": embodiments.new_id("embodiment"),
+            "current_incarnation_id": None,
         }
         _write_spec(cfg.instances_dir, spec)
 
@@ -234,6 +259,22 @@ def cmd_create(args, cfg, adapter) -> int:
                          f"spec marked creation-failed",
                          EXIT_INTERNAL, audit_result="error", detail=detail)
 
+        try:
+            embodiments.Registry(cfg.state_dir).register(
+                body_ref=spec["body_ref"], embodiment_id=spec["embodiment_id"]
+            )
+        except embodiments.RegistryError as exc:
+            try:
+                adapter.delete(name)
+            except Exception:
+                pass
+            spec["state"] = "creation-failed"
+            spec["state_reason"] = str(exc)
+            _write_spec(cfg.instances_dir, spec)
+            return _fail(args, cfg, operation, name,
+                         f"embodiment registration failed: {exc}", EXIT_INTERNAL,
+                         audit_result="error", detail={"reversed": True, **stale})
+
         result = {
             "operation": operation,
             "name": name,
@@ -243,6 +284,9 @@ def cmd_create(args, cfg, adapter) -> int:
             "image_version": image_version,
             "budgets": budgets,
             "state": "stopped",
+            "body_ref": spec["body_ref"],
+            "embodiment_id": spec["embodiment_id"],
+            "incarnation_id": None,
             "idempotency_key": _idem_key(args),
         }
         _record_idempotency(args, cfg, operation, name, store, result)
@@ -261,7 +305,11 @@ def cmd_create(args, cfg, adapter) -> int:
 def cmd_power(args, cfg, adapter, operation: str) -> int:
     name = args.name
     store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store)
+    rc = _check_idempotency(
+        args, cfg, operation, name, store, adapter=adapter,
+        expected_state={"start": "running", "stop": "stopped",
+                        "restart": "running"}[operation],
+    )
     if rc is not None:
         return rc
 
@@ -289,15 +337,39 @@ def cmd_power(args, cfg, adapter, operation: str) -> int:
                          audit_result="error", detail=stale)
 
         state = "stopped" if operation == "stop" else "running"
+        raw_spec = load_spec_raw(cfg.instances_dir, name) or {}
+        embodiment_id = raw_spec.get("embodiment_id")
+        incarnation_id = raw_spec.get("current_incarnation_id")
+        if embodiment_id:
+            try:
+                registry = embodiments.Registry(cfg.state_dir)
+                if operation == "stop":
+                    registry.stop(embodiment_id)
+                    incarnation_id = None
+                else:
+                    if operation == "restart" or registry.status(
+                        embodiment_id
+                    )["status"] == "running":
+                        registry.stop(embodiment_id)
+                    incarnation_id = registry.start(embodiment_id)["incarnation_id"]
+                update_spec(cfg.instances_dir, name, {"current_incarnation_id": incarnation_id})
+            except embodiments.RegistryError as exc:
+                return _fail(args, cfg, operation, name,
+                             f"lifecycle registry failed after runtime mutation: {exc}",
+                             EXIT_INTERNAL, audit_result="error", detail=stale)
         result = {
             "operation": operation,
             "name": name,
             "result": "ok",
             "state": state,
             "idempotency_key": _idem_key(args),
+            "embodiment_id": embodiment_id,
+            "incarnation_id": incarnation_id,
         }
         _record_idempotency(args, cfg, operation, name, store, result)
-        _audit_ok(args, cfg, operation, name, {"state": state, **stale})
+        _audit_ok(args, cfg, operation, name,
+                  {"state": state, "embodiment_id": embodiment_id,
+                   "incarnation_id": incarnation_id, **stale})
         _emit(args, result, f"{operation} {name}: ok (state {state})")
         return EXIT_OK
 

@@ -64,7 +64,7 @@ STATE_ACTIVE_PENDING = "active-pending-directory"
 
 # Announcement recorded in the result + audit detail (never broadcast by
 # clusterctl itself): provisioning creates a NEW incarnation, unlike
-# wake/transfer (#29) which relocate the SAME identity.
+# wake/transfer (#29) which relocate the same embodiment.
 ANNOUNCEMENT_CREATION = "incarnation-creation"
 
 # Per-kind default target paths (design §4); kind "file" (or unknown

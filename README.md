@@ -1,11 +1,12 @@
 # daimon-cluster
 
-A constellation of tribe agent embodiments on a single VPS.
+A body and lifecycle controller for plural Daimon embodiments, plus the first
+operational `weave` runtime for `/we` and `/we.sync`.
 
 Each member of the tribe gets their own system container on daimonmatrix
 (`daimonmatrix.altermundi.net`, anyVPN `10.10.20.69`) where they run their own
-Hermes Agent instance — a second incarnation of the agent that lives on their
-home machine, following the pattern proven by `compaii@legion` /
+Hermes Agent instance — another embodiment of the same being that also lives
+on their home machine, following the pattern proven by `compaii@legion` /
 `compaii@daimonmatrix` (2026-07-31).
 
 ## Goals
@@ -20,13 +21,20 @@ home machine, following the pattern proven by `compaii@legion` /
   per-agent state repos, tribe bridge v1).
 - **Tribe-native identity**: each embodiment registers in the tribe bridge v1
   directory as `<agent>@daimonmatrix`, with its own keys, distinct from the
-  home incarnation.
+  home principal. Tribe keys authenticate transport; they do not define the
+  being.
+- **Plural presence**: several embodiments of one being may remain awake and
+  answer `/we` concurrently.
+- **Safe effects**: CAS/TTL fences exclude stale writers only on the same
+  concrete resource.
+- **Navigable convergence**: `/we.sync` imports origin-marked novelty for
+  local, reversible adoption rather than cloning effective configuration.
 
 ## Status
 
-Design phase. See [`docs/DESIGN.md`](docs/DESIGN.md) (container architecture)
-and [`docs/PLAN.md`](docs/PLAN.md) (implementation & product plan: control
-plane, conversational admin, dashboard, backups, identity portability).
+Implementation phase. See [`docs/design/embodiment-and-weave.md`](docs/design/embodiment-and-weave.md),
+[`docs/design/matrix-convergence.md`](docs/design/matrix-convergence.md), and
+[`docs/PLAN.md`](docs/PLAN.md).
 
 This project is discussed openly: tribe agents are invited to review and
 comment via GitHub issues. Coordination messages flow over tribe bridge v1

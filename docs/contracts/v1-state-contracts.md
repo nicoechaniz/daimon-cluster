@@ -1,8 +1,8 @@
 # daimon-cluster v1 state contracts and acceptance matrix
 
-Status: PROPOSED (2026-08-01). Evidence for issue #4.
-Author: compaii@daimonmatrix. Depends: ADR-001 (D1 lease semantics, D2
-scopes), threat model (invariants, replay resistance).
+Status: ACTIVE, ontology rectified 2026-08-02. Evidence for issue #4 and R1-R7.
+Author: compaii@daimonmatrix; rectification integrated by Codex. The
+embodiment and resource-fence sections supersede ADR-001 D1 lease semantics.
 
 One shared vocabulary for clusterctl, clusterd, the dashboard, the steward,
 backup jobs, and handoff. **The CLI is the API** (PLAN principle 4): these
@@ -41,7 +41,7 @@ contracts bind clusterctl output first; clusterd mirrors them 1:1.
 `validation` · `unauthorized` · `forbidden_scope` · `not_found` ·
 `state_conflict` · `illegal_transition` · `confirmation_required` ·
 `confirmation_expired` · `confirmation_replayed` · `idempotency_conflict` ·
-`generation_conflict` (lease CAS) · `stale_fencing_token` ·
+`generation_conflict` (resource-fence CAS) · `stale_fencing_token` ·
 `storage_corruption` · `storage_error` · `infra_unavailable` · `internal`
 
 ## 1. Schemas
@@ -52,7 +52,9 @@ contracts bind clusterctl output first; clusterd mirrors them 1:1.
 {
   "schema": "cluster-instance/v1",
   "name": "eko",
-  "identity": "eko@daimonmatrix",
+  "body_ref": "cluster:daimonmatrix:eko",
+  "embodiment_id": "embodiment:<uuid>",
+  "current_incarnation_id": "incarnation:<uuid>|null",
   "human": "sai",
   "image": "tribe-base",
   "image_version": "2026-08-01.1",
@@ -71,7 +73,9 @@ contracts bind clusterctl output first; clusterd mirrors them 1:1.
   "schema": "cluster-instance-status/v1",
   "name": "eko",
   "state": "running|stopped|parked|transitioning|error",
-  "lease": {"state": "awake|asleep|transitioning", "generation": 3, "fencing_token": 41},
+  "body_ref": "cluster:daimonmatrix:eko",
+  "embodiment_id": "embodiment:<uuid>",
+  "incarnation_id": "incarnation:<uuid>|null",
   "uptime_s": 0, "rss_mib": 0, "cpu_pct": 0.0,
   "last_backup": {"id": "restic:abc123", "age_s": 0, "verified": true},
   "health": {"http": "ok|degraded|down", "detail": "..."}
@@ -94,9 +98,10 @@ error ◀── any state (infra failure); error ──▶ stopped (manual recov
 ```
 
 Illegal transitions (rejected with `illegal_transition`): start from parked
-(must wake), park from stopped, destroy without archived backup, any
-transition while `transitioning` (lease op in flight), wake while another
-body of the same identity is `awake` (lease CAS guards).
+(must wake), park from stopped, destroy without archived backup, and any
+transition while an operation for the same concrete body/resource is in
+flight. Another embodiment of the same being being awake is never an illegal
+transition.
 
 ### 1.3 `cluster-confirmation/v1` — two-step mutation contract
 
@@ -162,14 +167,15 @@ Append-only JSONL, hash-chained (`sha256` over canonical record +
 ```json
 {
   "schema": "cluster-checkpoint-manifest/v1",
-  "identity": "eko@amapola",
-  "body": "eko@daimonmatrix",
+  "body_ref": "cluster:daimonmatrix:eko",
+  "embodiment_id": "embodiment:<uuid>",
+  "incarnation_id": "incarnation:<uuid>",
   "hmk_snapshot": {"path": "...", "sha256": "...", "integrity_check": "ok"},
   "state_repo_head": "<git sha>",
   "handoff_files": ["DIALOGUE-HANDOFF.md", "NOW.md"],
   "bridge_outbox_drained": true,
   "in_flight_work": "none|abandoned-by:<actor>",
-  "fencing_token": 41,
+  "resource_fences": [{"resource_ref": "volume:eko-state", "epoch": 41}],
   "ts_ms": 0
 }
 ```
@@ -178,24 +184,52 @@ Park refuses without a verified checkpoint (HMK `PRAGMA integrity_check`
 must be `ok`, outbox drained) unless `in_flight_work` records explicit
 human abandonment.
 
-### 1.7 `cluster-lease/v1` (per ADR-001 D1)
+### 1.7 `embodiment-registry/v1`
 
 ```json
 {
-  "schema": "cluster-lease/v1",
-  "identity": "eko@amapola",
-  "holder": "eko@daimonmatrix",
-  "state": "awake|asleep|transitioning",
-  "generation": 3,
-  "fencing_token": 41,
-  "ttl_ms": 300000, "renewed_ms": 0,
-  "signature": "<governance-key signature over canonical record>"
+  "schema": "embodiment-registry/v1",
+  "embodiments": {
+    "embodiment:<uuid>": {
+      "embodiment_id": "embodiment:<uuid>",
+      "body_ref": "cluster:daimonmatrix:eko",
+      "status": "running|stopped|retired",
+      "current_incarnation_id": "incarnation:<uuid>|null",
+      "incarnations": [{"incarnation_id": "incarnation:<uuid>", "started_at_ms": 0, "stopped_at_ms": null}]
+    }
+  }
 }
 ```
 
-CAS on `(identity, generation)`; stale writer → `generation_conflict`;
-operations presenting lower fencing tokens → `stale_fencing_token`;
-expired TTL degrades to `asleep`.
+A body has one stable embodiment id. Each start/restart opens a fresh
+incarnation segment. Many embodiments in one being may be running.
+
+### 1.8 `resource-fence/v1`
+
+```json
+{
+  "schema": "resource-fence/v1",
+  "resource_ref": "volume:eko-state",
+  "holder_embodiment_id": "embodiment:<uuid>",
+  "holder_pubkey": "...",
+  "fingerprint": "SHA256:...",
+  "epoch": 41,
+  "acquired_ms": 0,
+  "created_ms": 0,
+  "ttl_s": 300,
+  "renewer": "self|steward",
+  "signature": "..."
+}
+```
+
+CAS is scoped to the exact `resource_ref`. A stale writer for that resource is
+rejected; unrelated resources and embodiments never conflict by identity.
+
+### 1.9 `dm.we.status/v1`
+
+The read model reports `being_ref`, installed manifest hash, local origin,
+per-incarnation heads, and durable peer cursors. It contains no private key or
+provider-store contents. `/we.sync` event bytes are defined by Daimon Matrix.
 
 ## 2. Acceptance matrix (issue → evidence required to close)
 
@@ -227,7 +261,10 @@ expired TTL degrades to `asleep`.
 | #24 dashboard | authenticated fleet/health/activity views, screenshots + session log |
 | #25 dashboard actions | lifecycle + backup/restore via UI with confirmation UX log |
 | #26 operator drill | usability + failure-state drill notes, issues filed and fixed |
-| #27 leases | CAS/fencing/broker-enforcement test log incl. stale-writer rejection |
+| #27 resource fences | CAS/TTL per-resource tests incl. same-resource stale-writer rejection and different-resource concurrency |
+| #41 Weave ledger | independent DB/key, preview/pull, durable cursor, interrupted resume and idempotent resync tests |
+| #42 projections/fan-out | preview, human authority, receipts, origin and dedupe tests |
+| #43 live convergence | Legion↔daimonmatrix partition, independent appends, bidirectional merge and restart evidence |
 | #28 park | checkpoint manifest from real park, integrity gate evidence |
 | #29 wake | transfer/wake/re-entry/rollback drill log, rehydration transcript |
 | #30 handoff tests | failure-injection matrix: crash mid-flip, never two awake, queue-not-deliver |

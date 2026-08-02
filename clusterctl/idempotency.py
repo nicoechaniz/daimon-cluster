@@ -4,11 +4,11 @@
 
     {"operation": str, "name": str, "result": dict, "created_ms": int}
 
-Semantics (mirrors the tribe-bridge v1 broker):
+Semantics:
 
-- Same key + same operation + same name -> replay the cached result
-  (exit 0, ``"idempotent-replay": true`` in ``--json`` output); the
-  mutation is NOT re-executed.
+- Same key + same operation + same name is only a replay candidate. The caller
+  MUST also observe that the cached postcondition and current resource fence
+  still match. Drift turns the retry into a successor execution.
 - Same key + different operation (or different name) -> conflict
   (exit 6).
 
@@ -66,4 +66,8 @@ def record(store: dict, key: str, operation: str, name: str, result: dict) -> No
         "name": name,
         "result": result,
         "created_ms": int(time.time() * 1000),
+        "effect": {
+            "expected_state": result.get("state"),
+            "resource_fence": result.get("resource_fence"),
+        },
     }

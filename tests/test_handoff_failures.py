@@ -9,7 +9,7 @@ Scenarios NOT already covered by test_park.py / test_transfer.py:
   holder B re-acquires after expiry (epoch 0, NEW acquisition), holder A
   attempts wake with its old manifest → TransferRefused (stale fence).
   Epochs reset on re-acquire, so this binds the manifest to the lease
-  acquisition timestamp (lease_acquired_ms / acquired_ms).
+  acquisition timestamp (resource_fence_acquired_ms / acquired_ms).
 - network partition during transfer — adapter.exec raising mid
   restore-files → TransferError → rollback leaves the target destroyed
   and the source parked.
@@ -79,7 +79,7 @@ def _lease_path(state_dir, daimon_id=DAIMON_ID):
 def _expire_lease_file(state_dir, daimon_id=DAIMON_ID):
     """Clock-skew the lease on disk: created_ms far in the past, ttl 1s.
 
-    The file is re-signed so it stays a valid lease/v1 record — only its
+    The file is re-signed so it stays a valid resource-fence/v1 record — only its
     TIMING is wrong, simulating a holder whose clock (or whose lease
     file) is stale.
     """
@@ -113,13 +113,13 @@ def test_clock_skew_expired_lease_status_and_reacquire(state_dir, lease):
     # the OLD holder's renew is refused (CAS fencing on expiry)
     assert store.renew(DAIMON_ID, "") is None
 
-    # the expired lease does NOT block re-acquire — a new holder takes
-    # the identity with a fresh fence (epoch 0, NEW acquisition)
+    # the expired fence does NOT block re-acquire — a new holder takes
+    # the resource with a strictly greater epoch
     new = store.acquire(DAIMON_ID, PUBKEY, FINGERPRINT)
-    assert new["epoch"] == 0
+    assert new["epoch"] == 1
     st = store.status(DAIMON_ID)
     assert st["expired"] is False
-    assert st["last_epoch"] == 0
+    assert st["last_epoch"] == 1
 
     # CONVERGENT STATE: exactly one valid holder — the new acquisition
     # (source awake under the new holder; no stale fence accepted).
@@ -135,16 +135,16 @@ def test_clock_skew_expired_lease_status_and_reacquire(state_dir, lease):
 def test_stale_holder_wake_with_old_manifest_refused(
         state_dir, cfg, adapter):
     """Holder A parks (epoch 0). Holder B re-acquires after expiry
-    (epoch 0, NEW acquisition). Holder A's wake with the OLD manifest
+    (epoch 1, new acquisition). Holder A's wake with the OLD manifest
     is refused as a stale fence — B's fence is the only valid holder."""
     _write_spec(state_dir)
     _parked(state_dir, cfg, adapter)  # A parks: manifest bound to A's lease
 
-    # A's lease lapses (clock skew); B acquires a NEW fence at epoch 0.
+    # A's fence lapses (clock skew); B acquires a NEW fence at epoch 1.
     _expire_lease_file(state_dir)
     store = leases.LeaseStore(state_dir)
     b_lease = store.acquire(DAIMON_ID, PUBKEY, FINGERPRINT)
-    assert b_lease["epoch"] == 0  # epoch resets — the race window
+    assert b_lease["epoch"] == 1
 
     # A attempts wake with its old manifest → stale fence refusal.
     with pytest.raises(transfer.TransferRefused):
@@ -156,7 +156,7 @@ def test_stale_holder_wake_with_old_manifest_refused(
 
     # B's fence is untouched and is the ONLY valid holder.
     st = store.status(DAIMON_ID)
-    assert st["last_epoch"] == 0
+    assert st["last_epoch"] == 1
     assert st["expired"] is False
     assert st["acquired_ms"] == b_lease["acquired_ms"]
 

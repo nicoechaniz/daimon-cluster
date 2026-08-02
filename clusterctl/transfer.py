@@ -8,32 +8,32 @@ Cross-host transfer needs the directory API — out of scope.
 a local handoff park:
 
   1. load + verify the checkpoint manifest (signature; fence epoch must
-     match the daimon's lease history — a newer lease epoch means
-     someone else took the identity, refuse)
+     match the resource's fence history — a newer epoch means another
+     holder won that resource, refuse)
   2. restore state files back into the container (inverse of park step
      5), sha256 of each file verified BEFORE writing, restored shas
      recorded in the wake record
-  3. acquire a NEW fence via ``LeaseStore.renew`` (epoch+1 CAS)
+  3. acquire a NEW fence via ``ResourceFenceStore.renew`` (epoch+1 CAS)
   4. spec status parked → waking → active; container start
   5. signed ``wake-record/v1`` at ``state_dir/park/<name>/wake-<epoch>.json``
 
-On ANY failure the lease stays parked, the container stays stopped, the
+On ANY failure the resource remains fenced safely, the container stays stopped, the
 spec rolls back to ``parked``, and the wake record (status ``failed``)
 makes the run resumable like park.
 
-``clusterctl transfer <name> --to <new-name>`` — same-host identity
+``clusterctl transfer <name> --to <new-name>`` — same-host embodiment
 relocation. Pre-conditions: source spec status ``parked`` AND a
 verified checkpoint manifest exists (else exit 6 with guidance to run
 ``park --handoff`` first). Steps (resumable via ``transfer-state/v1``):
 
   a. verify manifest signature + hashes again (provenance gate)
   b. create the target spec (copy of source, status ``transferring``,
-     same image_version/budgets, SAME durable volume name — identity
+     same image_version/budgets, SAME durable volume name — embodiment
      keys travel WITH the volume, never through git; ``volume: moved``)
   c. create the target container STOPPED (never reachable before
      verification + fence)
   d. restore state files into the target, sha256 verified per file
-  e. acquire a NEW fence via ``LeaseStore.renew`` (CAS epoch+1)
+  e. acquire a NEW fence via ``ResourceFenceStore.renew`` (CAS epoch+1)
   f. target spec transferring → waking → active; start the target
   g. signed ``transfer-record/v1`` at
      ``state_dir/transfer/<name>-to-<new-name>-<epoch>.json``
@@ -42,13 +42,13 @@ verified checkpoint manifest exists (else exit 6 with guidance to run
 
 ROLLBACK: any failure after (c) destroys the target container, deletes
 the target spec, and restores the pre-renew fence (only if this run
-acquired it). The source stays parked with its lease intact — the
+acquired it). The source stays parked with its resource fence intact — the
 operator resumes with ``wake --handoff`` on the source. Rollback is
 idempotent and recorded in the transfer-state file. On success the old
 source spec is marked ``transferred`` (kept for audit; destroy is a
 separate human decision).
 
-Announcements distinguish ``same-identity-relocation`` (wake/transfer)
+Announcements distinguish ``embodiment-relocation`` (wake/transfer)
 from ``incarnation-creation`` (provision). The field is recorded in
 audit detail — clusterctl never broadcasts it.
 
@@ -67,7 +67,7 @@ import os
 import shlex
 from pathlib import Path
 
-from . import audit, idempotency, leases, park
+from . import audit, embodiments, fences, idempotency, park
 from .inventory import load_spec_raw, load_specs, update_spec
 from .lifecycle import (
     EXIT_CONFLICT,  # noqa: F401  (re-exported for callers/tests)
@@ -93,8 +93,8 @@ TRANSFER_STATE_SCHEMA = "transfer-state/v1"
 TRANSFER_RECORD_SCHEMA = "transfer-record/v1"
 
 # Announcement values (exact strings — tests assert them). Recorded in
-# audit detail only; clusterctl never broadcasts presence itself.
-ANNOUNCEMENT_RELOCATION = "same-identity-relocation"
+# audit detail only; clusterctl never broadcasts lifecycle itself.
+ANNOUNCEMENT_RELOCATION = "embodiment-relocation"
 ANNOUNCEMENT_CREATION = "incarnation-creation"  # used by provision
 
 WAKE_STEPS = (
@@ -140,8 +140,8 @@ class TransferRefused(TransferError):
 # ---------------------------------------------------------------------------
 
 
-def _daimon_id(spec: dict, name: str) -> str:
-    return park._daimon_id(spec, name)
+def _resource_ref(spec: dict, name: str) -> str:
+    return park._resource_ref(spec, name)
 
 
 def _latest_manifest_path(cfg, name: str) -> Path | None:
@@ -163,12 +163,12 @@ def _latest_manifest_path(cfg, name: str) -> Path | None:
 
 
 def _manifest_hash(manifest: dict) -> str:
-    return hashlib.sha256(leases._canonical(manifest)).hexdigest()
+    return hashlib.sha256(fences._canonical(manifest)).hexdigest()
 
 
-def _sign(record: dict, signer: leases.Signer) -> dict:
+def _sign(record: dict, signer: fences.Signer) -> dict:
     signed = dict(record)
-    signed["signature"] = signer.sign(leases._canonical(record))
+    signed["signature"] = signer.sign(fences._canonical(record))
     return signed
 
 
@@ -241,38 +241,58 @@ def _restore_state_files(cfg, park_name: str, target: str, spec: dict,
     return restored
 
 
-def _check_stale_acquisition(manifest: dict, lease: dict | None,
-                             daimon_id: str) -> None:
-    """Refuse when the lease on disk belongs to a NEWER acquisition than
+def _check_stale_acquisition(manifest: dict, fence: dict | None,
+                             resource_ref: str) -> None:
+    """Refuse when the fence on disk belongs to a NEWER acquisition than
     the one the checkpoint manifest was bound to (issue #30).
 
-    Epochs reset to 0 when a new holder re-acquires after expiry, so the
-    epoch check alone cannot detect the two-holders race — the manifest
-    also records ``lease_acquired_ms`` and the lease preserves
-    ``acquired_ms`` across renews. Manifests written before this field
-    existed (``None``) fall back to the epoch-only check.
+    The monotonic epoch already catches normal stale holders. The acquisition
+    binding is a second invariant that also detects restored or manually
+    replaced fence bytes. Manifests written before this field existed
+    (``None``) fall back to the epoch-only check.
     """
-    manifest_acq = manifest.get("lease_acquired_ms")
-    if manifest_acq is None or lease is None:
+    manifest_acq = manifest.get("resource_fence_acquired_ms")
+    if manifest_acq is None or fence is None:
         return
-    current_acq = lease.get("acquired_ms", lease.get("created_ms"))
+    current_acq = fence.get("acquired_ms", fence.get("created_ms"))
     if current_acq != manifest_acq:
         raise TransferRefused(
-            f"stale fence for {daimon_id!r}: the manifest is bound to "
-            f"lease acquisition {manifest_acq} but the current lease was "
+            f"stale fence for {resource_ref!r}: the manifest is bound to "
+            f"resource acquisition {manifest_acq} but the current fence was "
             f"acquired at {current_acq} — another holder re-acquired the "
-            f"identity after this checkpoint; refusing")
+            f"resource after this checkpoint; refusing")
 
 
-def _acquire_fence(store: leases.LeaseStore, daimon_id: str) -> dict:
-    """Renew the daimon's lease (epoch+1 CAS). Refuses when the lease is
-    gone or expired — someone else took (or lost) the identity."""
-    renewed = store.renew(daimon_id, "")
+def _acquire_fence(store: fences.ResourceFenceStore, resource_ref: str) -> dict:
+    """Renew one concrete resource fence (epoch+1 CAS)."""
+    renewed = store.renew(resource_ref, "")
     if renewed is None:
         raise TransferRefused(
-            f"fence CAS failed for {daimon_id!r}: no active lease to "
-            f"renew — another holder may have taken the identity")
+            f"fence CAS failed for {resource_ref!r}: no active resource "
+            f"fence to renew — another holder may have acquired it")
     return renewed
+
+
+def _open_incarnation(cfg, name: str, spec: dict) -> str | None:
+    embodiment_id = spec.get("embodiment_id")
+    if not embodiment_id:
+        return None
+    incarnation = embodiments.Registry(cfg.state_dir).start(embodiment_id)
+    incarnation_id = incarnation["incarnation_id"]
+    update_spec(
+        cfg.instances_dir, name,
+        {"current_incarnation_id": incarnation_id},
+    )
+    return incarnation_id
+
+
+def _close_incarnation(cfg, name: str, spec: dict) -> None:
+    embodiment_id = spec.get("embodiment_id")
+    if not embodiment_id:
+        return
+    embodiments.Registry(cfg.state_dir).stop(embodiment_id)
+    if load_spec_raw(cfg.instances_dir, name) is not None:
+        update_spec(cfg.instances_dir, name, {"current_incarnation_id": None})
 
 
 # ---------------------------------------------------------------------------
@@ -317,17 +337,17 @@ def run_wake(
     adapter,
     *,
     actor: str,
-    signer: leases.Signer | None = None,
+    signer: fences.Signer | None = None,
     on_step=None,
 ) -> dict:
     """Re-entry on the SAME body after a local handoff park.
 
     Resumable via the wake record (completed steps skip). Raises
     ``TransferRefused`` (exit 6) or ``TransferError`` (exit 10); on any
-    failure the lease stays parked, the container stays stopped, the
+    failure the resource remains fenced, the container stays stopped, the
     spec rolls back to ``parked`` and the failure is recorded.
     """
-    signer = signer or leases.FakeSigner()
+    signer = signer or fences.FakeSigner()
     spec = load_spec_raw(cfg.instances_dir, name)
     if spec is None:
         raise TransferError(f"instance {name!r} is not declared")
@@ -344,17 +364,17 @@ def run_wake(
             f"`park --handoff {name}` first")
     try:
         manifest = park.load_manifest(manifest_path, signer)
-    except leases.InvalidSignature as exc:
+    except fences.InvalidSignature as exc:
         raise TransferRefused(str(exc)) from exc
     fence_epoch = manifest.get("fence_epoch")
     if fence_epoch is None:
         raise TransferRefused(
-            f"manifest for {name!r} was parked with --no-lease; "
-            f"handoff wake requires a leased checkpoint")
+            f"manifest for {name!r} was parked with --no-fence; "
+            f"handoff wake requires a resource-fenced checkpoint")
     intended_epoch = int(fence_epoch) + 1
 
-    daimon_id = _daimon_id(spec, name)
-    store = leases.LeaseStore(cfg.state_dir, signer)
+    resource_ref = _resource_ref(spec, name)
+    store = fences.ResourceFenceStore(cfg.state_dir, signer)
     record = _load_wake_record(cfg, name, intended_epoch, actor, manifest_path)
     record_path = _wake_record_path(cfg, name, intended_epoch)
     outputs = record.setdefault("outputs", {})
@@ -371,32 +391,30 @@ def run_wake(
 
     try:
         # 1. verify-manifest — signature already verified by load_manifest;
-        #    the fence epoch must match the daimon's lease history (a newer
-        #    lease epoch means another holder renewed first). On resume
+        #    the epoch must match this resource's fence history. On resume
         #    after the fence step this check is skipped: this run IS the
         #    newer holder.
         if "verify-manifest" not in completed:
             if "fence" not in completed:
-                st = store.status(daimon_id)
+                st = store.status(resource_ref)
                 if not st["present"] or st["expired"]:
                     raise TransferRefused(
-                        f"no active lease for {daimon_id!r}; cannot "
+                        f"no active resource fence for {resource_ref!r}; cannot "
                         f"acquire a new fence")
                 if st["last_epoch"] != fence_epoch:
                     raise TransferRefused(
-                        f"stale fence for {daimon_id!r}: manifest epoch "
-                        f"{fence_epoch} but the lease is epoch "
+                        f"stale fence for {resource_ref!r}: manifest epoch "
+                        f"{fence_epoch} but the resource fence is epoch "
                         f"{st['last_epoch']} — another holder renewed "
                         f"first; refusing to wake")
-                # epochs reset on re-acquire — also bind to the lease
-                # acquisition recorded in the manifest (issue #30)
-                _check_stale_acquisition(manifest, store.get(daimon_id),
-                                         daimon_id)
+                # Also bind to the acquisition recorded in the manifest.
+                _check_stale_acquisition(manifest, store.get(resource_ref),
+                                         resource_ref)
         _done("verify-manifest")
 
         # 2. fence — epoch+1 CAS. Refuses if a newer fence exists.
         if "fence" not in completed:
-            renewed = _acquire_fence(store, daimon_id)
+            renewed = _acquire_fence(store, resource_ref)
             record["fence_epoch"] = renewed["epoch"]
             _done("fence", fence_epoch=renewed["epoch"])
         else:
@@ -409,9 +427,12 @@ def run_wake(
             update_spec(cfg.instances_dir, name, {"status": "waking"})
             try:
                 adapter.start(name)
+                incarnation_id = _open_incarnation(cfg, name, spec)
             except Exception as exc:
                 raise TransferError(f"wake start failed: {exc}") from exc
-        _done("start")
+            _done("start", incarnation_id=incarnation_id)
+        else:
+            _done("start")
 
         # 4. restore-files — inverse of park step 5; sha256 verified
         #    BEFORE writing; restored shas recorded. On success the spec
@@ -437,13 +458,14 @@ def run_wake(
         record["status"] = "failed"
         record["error"] = str(exc)
         _atomic_write(record_path, _sign(record, signer))
-        # The lease stays parked and the spec rolls back to parked. If
+        # The resource remains fenced and the spec rolls back to parked. If
         # the start step ran, best-effort stop the container so the
         # convergent state is "both parked" (resumable via a later wake).
         try:
             update_spec(cfg.instances_dir, name, {"status": "parked"})
             if "start" in completed:
                 adapter.stop(name)
+                _close_incarnation(cfg, name, spec)
         except Exception:  # pragma: no cover - defensive
             logger.exception("wake rollback failed for %s", name)
         raise
@@ -454,6 +476,7 @@ def run_wake(
         "result": "ok",
         "state": "active",
         "fence_epoch": record.get("fence_epoch"),
+        "incarnation_id": outputs.get("incarnation_id"),
         "restored_files": record.get("restored_files") or {},
         "announcement": ANNOUNCEMENT_RELOCATION,
         "wake_record": str(record_path),
@@ -551,17 +574,26 @@ def _save_transfer_state(cfg, name: str, new_name: str, state: dict) -> None:
     _atomic_write(_transfer_state_path(cfg, name, new_name), state)
 
 
-def _rollback_transfer(cfg, adapter, store: leases.LeaseStore,
-                       name: str, new_name: str, daimon_id: str,
+def _rollback_transfer(cfg, adapter, store: fences.ResourceFenceStore,
+                       name: str, new_name: str, resource_ref: str,
                        state: dict) -> dict:
     """Destroy the target, delete its spec, restore the pre-renew fence
     (only if this run acquired it). Idempotent; recorded in the
-    transfer-state file. The source stays parked with its lease intact —
+    transfer-state file. The source stays parked with its resource fence intact —
     the operator resumes with ``wake --handoff`` on the source."""
     outputs = state.get("outputs") or {}
     errors = []
 
-    # 1. destroy the target container (only if this run created it).
+    # 1. close any incarnation opened for the target.
+    if outputs.get("incarnation_id"):
+        try:
+            target_spec = load_spec_raw(cfg.instances_dir, new_name) or {}
+            _close_incarnation(cfg, new_name, target_spec)
+            outputs["incarnation_id"] = None
+        except Exception as exc:
+            errors.append(f"close target incarnation: {exc}")
+
+    # 2. destroy the target container (only if this run created it).
     if outputs.get("target_created"):
         try:
             present = {inst["name"] for inst in adapter.list_instances()}
@@ -571,7 +603,7 @@ def _rollback_transfer(cfg, adapter, store: leases.LeaseStore,
         except Exception as exc:  # best effort — recorded, never masks
             errors.append(f"destroy target: {exc}")
 
-    # 2. delete the target spec.
+    # 3. delete the target spec.
     if outputs.get("target_spec"):
         try:
             (Path(cfg.instances_dir) / f"{new_name}.yaml").unlink(
@@ -580,17 +612,17 @@ def _rollback_transfer(cfg, adapter, store: leases.LeaseStore,
         except Exception as exc:
             errors.append(f"delete target spec: {exc}")
 
-    # 3. release the new fence attempt — only if THIS run acquired it.
+    # 4. release the new fence attempt — only if THIS run acquired it.
     if outputs.get("fence_acquired") and not outputs.get("fence_rolled_back"):
-        prev = outputs.get("prev_lease")
+        previous_fence = outputs.get("previous_resource_fence")
         try:
-            if prev is not None:
-                store.restore(daimon_id, prev)
+            if previous_fence is not None:
+                store.restore(resource_ref, previous_fence)
             outputs["fence_rolled_back"] = True
         except Exception as exc:
             errors.append(f"restore fence: {exc}")
 
-    # 4. the source stays parked (defensive — nothing should have moved it).
+    # 5. the source stays parked (defensive — nothing should have moved it).
     try:
         update_spec(cfg.instances_dir, name, {"status": "parked"})
     except Exception as exc:  # pragma: no cover - defensive
@@ -618,10 +650,10 @@ def run_transfer(
     adapter,
     *,
     actor: str,
-    signer: leases.Signer | None = None,
+    signer: fences.Signer | None = None,
     on_step=None,
 ) -> dict:
-    """Same-host identity relocation: parked source → new container.
+    """Same-host embodiment relocation: parked source → new container.
 
     Resumable via the transfer-state file. Raises ``TransferRefused``
     (exit 6: pre-conditions, tampered manifest) or ``TransferError``
@@ -629,7 +661,7 @@ def run_transfer(
     marked ``transferred`` (kept for audit — destroy is a separate
     human decision).
     """
-    signer = signer or leases.FakeSigner()
+    signer = signer or fences.FakeSigner()
     spec = load_spec_raw(cfg.instances_dir, name)
     if spec is None:
         raise TransferError(f"instance {name!r} is not declared")
@@ -653,8 +685,8 @@ def run_transfer(
             in ("transferring", "waking", "active")):
         raise TransferRefused(f"target {new_name!r} is already declared")
 
-    daimon_id = _daimon_id(spec, name)
-    store = leases.LeaseStore(cfg.state_dir, signer)
+    resource_ref = _resource_ref(spec, name)
+    store = fences.ResourceFenceStore(cfg.state_dir, signer)
     outputs = state.setdefault("outputs", {})
     completed = state.setdefault("completed", [])
 
@@ -673,7 +705,7 @@ def run_transfer(
         #    proceeds on a stale/tampered manifest.
         try:
             manifest = park.load_manifest(manifest_path, signer)
-        except leases.InvalidSignature as exc:
+        except fences.InvalidSignature as exc:
             raise TransferRefused(str(exc)) from exc
         state_files = manifest.get("state_files")
         if isinstance(state_files, dict):
@@ -683,10 +715,10 @@ def run_transfer(
                     "checkpoint manifest hash verification failed: "
                     + "; ".join(problems),
                     {"problems": problems})
-        # stale-holder gate (issue #30): refuse when the identity was
-        # re-acquired after this checkpoint. A MISSING lease is left to
+        # stale-holder gate (issue #30): refuse when the resource was
+        # re-acquired after this checkpoint. A missing fence is left to
         # the fence step (CAS failure → TransferError + rollback).
-        _check_stale_acquisition(manifest, store.get(daimon_id), daimon_id)
+        _check_stale_acquisition(manifest, store.get(resource_ref), resource_ref)
         volume_name = str(spec.get("volume") or f"{name}-durable")
         image_version = spec.get("image_version")
         _done("verify-manifest",
@@ -698,7 +730,7 @@ def run_transfer(
 
         # b. target-spec — copy of the source spec, status
         #    ``transferring``, same image_version/budgets, SAME durable
-        #    volume name (identity keys travel WITH the volume — never
+        #    volume name (embodiment keys travel WITH the volume — never
         #    copied through git).
         if not outputs.get("target_spec"):
             target_spec = dict(spec)
@@ -728,24 +760,25 @@ def run_transfer(
                     f"target container create failed: {exc}") from exc
         _done("target-create", target_created=True)
 
-        # d. fence — NEW fence for the daimon identity (CAS epoch+1).
-        #    The pre-renew lease is snapshotted so rollback can restore
+        # d. fence — renew the concrete body-volume resource (CAS epoch+1).
+        #    The pre-renew fence is snapshotted so rollback can restore
         #    it exactly. CAS failure → rollback. The fence runs BEFORE
         #    start: the target must not become reachable before the new
         #    fence is held (live drill 1: restoring into a STOPPED
         #    container is impossible — incus exec requires running — so
         #    restore moved after start, and start after the fence).
         if not outputs.get("fence_acquired"):
-            prev_lease = store.get(daimon_id)
+            previous_fence = store.get(resource_ref)
             try:
-                renewed = _acquire_fence(store, daimon_id)
+                renewed = _acquire_fence(store, resource_ref)
             except TransferRefused as exc:
                 # CAS failure AFTER the target exists → rollback (the
-                # source stays parked with its lease intact).
+                # source stays parked with its resource fence intact).
                 raise TransferError(
                     f"fence CAS failed ({exc}); rolling back the target"
                 ) from exc
-            _done("fence", fence_acquired=True, prev_lease=prev_lease,
+            _done("fence", fence_acquired=True,
+                  previous_resource_fence=previous_fence,
                   fence_epoch=renewed["epoch"])
         else:
             _done("fence")
@@ -758,10 +791,14 @@ def run_transfer(
             update_spec(cfg.instances_dir, new_name, {"status": "waking"})
             try:
                 adapter.start(new_name)
+                target_spec = load_spec_raw(cfg.instances_dir, new_name) or {}
+                incarnation_id = _open_incarnation(cfg, new_name, target_spec)
             except Exception as exc:
                 raise TransferError(
                     f"target start failed: {exc}") from exc
-        _done("start")
+            _done("start", incarnation_id=incarnation_id)
+        else:
+            _done("start")
 
         # f. restore-files — sha256 verified per file BEFORE writing.
         #    Requires a RUNNING target (incus exec); on success the
@@ -788,6 +825,7 @@ def run_transfer(
             "target": new_name,
             "manifest_path": str(manifest_path),
             "fence_epoch": fence_epoch,
+            "incarnation_id": outputs.get("incarnation_id"),
             "restored_files": outputs.get("restored_files") or {},
             "state_commit": outputs.get("state_commit"),
             "volume": "moved",
@@ -811,7 +849,7 @@ def run_transfer(
         state["error"] = str(exc)
         _save_transfer_state(cfg, name, new_name, state)
         rollback = _rollback_transfer(cfg, adapter, store, name, new_name,
-                                      daimon_id, state)
+                                      resource_ref, state)
         exc.detail.setdefault("rollback", rollback)
         raise
 
@@ -822,6 +860,7 @@ def run_transfer(
         "result": "ok",
         "state": "active",
         "fence_epoch": outputs.get("fence_epoch"),
+        "incarnation_id": outputs.get("incarnation_id"),
         "restored_files": outputs.get("restored_files") or {},
         "state_commit": outputs.get("state_commit"),
         "volume": "moved",
@@ -883,7 +922,7 @@ def cmd_transfer(args, cfg, adapter) -> int:
             **stale,
         })
         _emit(args, result,
-              f"transferred {name} -> {new_name}: identity relocated "
+              f"transferred {name} -> {new_name}: embodiment relocated "
               f"(fence_epoch {result['fence_epoch']}, volume moved, "
               f"announcement {result['announcement']}, target running; "
               f"source spec kept as transferred)")

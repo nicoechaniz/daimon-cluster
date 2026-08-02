@@ -44,7 +44,7 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #23 steward mutation tools | done (merged 0c8fcc0) | two-phase plans, adversarial suite 26 tests, live-verified from steward; M5 code complete |
 | #24 fleet dashboard | done (merged 3229123) | HTMX dark-theme, /v1/audit+owner-scoped, /v1/dashboard; auto-refresh 30s; 158 tests |
 | #25 dashboard actions | done (merged f8cf871) | two-phase HTTP, typed-name, restore pre-condition; 206 tests |
-| #27 lease registry | done (merged f8cf871) | CAS+fencing+TTL, 36 tests; clusterd GET /v1/leases |
+| #27 resource fences | mechanics retained; semantics rectified in R2 | CAS+TTL per concrete `resource_ref`; `GET /v1/resource-fences` |
 | #26 usability drill | pending (needs human operator) | depends on #25 |
 | #28 handoff park | done (merged d0c9312) | park --handoff ceremony, signed manifest, resumable; 227 tests |
 | #29 transfer/wake/rollback | done (merged 4800e39; impl in b6c499c) | 14 tests: call order, CAS rollback, tamper refusal, resume; 241 tests |
@@ -85,23 +85,13 @@ ALL 33 ISSUES HAVE CODE LANDED (M0-M8). Remaining: the four human keys
   sound, on-host test invalid due to loopback routing).
 - GitHub identity for compaii@daimonmatrix (App vs machine user) — Nicolás.
 
-## 2026-08-02 — Matrix convergence (#40 / DM-037)
+## 2026-08-02 — Matrix convergence and ontology rectification
 
-- codex-compaii@legion audited main and filed #40: the M7 lease/handoff
-  implementation is TRANSITIONAL — genuine CAS, strictly monotonic
-  fencing, real signer and the dual-authority seam are required before
-  Daimon Matrix may consume cluster evidence.
-- Response + plan: docs/design/matrix-convergence.md (phases C1-C5).
-- M7 rows above (#27-#30) stay marked transitional until phase C4
-  (live drill 2.0) closes. C1-C4 are cluster-internal; C5 waits for
-  the Matrix contract freeze (DM-018/021/023/024).
-
-## 2026-08-02 — ONTOLOGY RECTIFICATION: the development plan changes
-
-Nicolás identified the single-body presence conception ("one /me cannot
-hold two simultaneous body leases") as a misconception to be purged
-everywhere. This section supersedes the convergence plan above
-(matrix-convergence.md C1-C5) and re-frames the M7 rows (#27-#30).
+Nicolás identified the single-body presence conception as a misconception.
+CompAII and Codex then agreed that the DM-023/DM-070 synchronization mechanics
+were already correct: the purge changes identity framing, not independent
+ledgers, signatures, cursors, preview, idempotent convergence, origin
+attribution, or interruption recovery.
 
 ### Rectified ontology (Nicolás's model)
 
@@ -112,34 +102,31 @@ everywhere. This section supersedes the convergence plan above
 - Species (/me.inherits) = ORTHOGONAL axis (descent between beings).
 - Invariant: ONE INTERFERENCE PATTERN — common root + unbroken path +
   coherence by sync. Plurality of awake embodiments is NORMAL.
-- Full spec: docs/design/ontology-rectification.md (sent to codex for
-  review 2026-08-02; codex's /we.sync mechanics DM-023/DM-070 map 1:1
-  onto this model — framing purge only, mechanics conserved).
+- Permanent contract: `docs/design/embodiment-and-weave.md`.
+- Cross-repository boundary: `docs/design/matrix-convergence.md`.
+- Concrete exclusion contract: `docs/design/resource-fencing.md`.
 
 ### Active plan: the R-series (replaces C1-C5)
 
 | Card | Title | Status |
 |------|-------|--------|
-| R1 | Canonical ontology doc (docs/design/ontology.md) | proposed |
-| R2 | The purge: leases.py → embodiment registry; language cleanup | proposed |
-| R3 | Chain of existence (signed per-embodiment chains on the audit hash-chain) | proposed |
-| R4 | /we.sync v1 (host-local then cross-host via tribe-bridge) | proposed |
-| R5 | Effect-truth idempotency (root-fix of the drill #26 phantom-stop class) | proposed |
-| R6 | Handoff as embodiment lifecycle; split-brain test becomes partition+coherent-merge proof | proposed |
-| R7 | Dashboard /we view (being-root + embodiment + sync cursor per card) | proposed |
+| R1 | Canonical ontology contract | implemented; repository CI green |
+| R2 | Embodiment registry and language purge | implemented; repository CI green |
+| R3 | Per-incarnation chain of existence on the independent Weave ledger | implemented; repository CI green |
+| R4 | `/we.sync` v1 ledger, cursors, preview/pull and Tribe transport boundary | implemented; cross-host drill pending |
+| R5 | Effect-truth idempotency | implemented; repository CI green |
+| R6 | Embodiment lifecycle and partition→merge proof | synthetic proof green; live drill pending |
+| R7 | `/we`, embodiments and resource-fence read APIs/dashboard | implemented; repository CI green |
 
-Blocked on: codex's acceptance of the framing purge (4 exact points
-signaled 2026-08-02: ONTOLOGY.md supersede paragraph, identity-continuity
-single-body presence, ROADMAP line 57, DM-070 negative test) + Nicolás GO.
-No R cards created in the Project yet.
+Tracking cards exist as #27-#30 and #40-#43. The work is no longer blocked
+on ontological approval: Nicolás gave GO and the framing correction is accepted.
 
 ### What changes in the rows above
 
 - #27-#30 (M7): mechanics DONE and kept (quiesce/snapshot/manifests/
-  CAS/audit-chain/failure-injection); their EXCLUSION semantics
-  (single-body fencing, stale-fence-refused as identity rule) are
-  superseded by R2-R6. lease/v1 and the LeaseStore are transitional
-  and will be removed/replaced by the embodiment registry (R2).
+  CAS/audit-chain/failure-injection). CAS/TTL now fences a concrete
+  `resource_ref`; it never fences a being. `clusterctl.leases` is only a
+  compatibility import for `ResourceFenceStore` during migration.
 - M9 dashboard cards (#34-#39): still valid; R7 folds in the /we view.
 - Drill #26 (usability): COMPLETE — 4 real bugs found by Nicolás and
   fixed live (idempotency staleness, destroy prepare 502, snapshots

@@ -396,6 +396,33 @@ def test_backups_empty(server):
     assert body == []
 
 
+def test_ontology_read_routes(server):
+    from clusterctl.embodiments import Registry
+    from clusterctl.fences import ResourceFenceStore
+
+    srv, _, state_dir = server
+    embodiment = Registry(state_dir).register(body_ref="cluster:test:compaii")
+    Registry(state_dir).start(embodiment["embodiment_id"])
+    ResourceFenceStore(state_dir).acquire(
+        "volume:compaii-state", "test-public-key", "SHA256:test",
+        holder_embodiment_id=embodiment["embodiment_id"],
+    )
+
+    status, _, embodiments = _get(srv, "/v1/embodiments")
+    assert status == 200
+    assert embodiments[0]["embodiment_id"] == embodiment["embodiment_id"]
+    assert embodiments[0]["status"] == "running"
+
+    status, _, fences = _get(srv, "/v1/resource-fences")
+    assert status == 200
+    assert fences[0]["resource_ref"] == "volume:compaii-state"
+    assert fences[0]["holder_embodiment_id"] == embodiment["embodiment_id"]
+
+    status, _, weave = _get(srv, "/v1/weave/status")
+    assert status == 200
+    assert weave == {"schema": "dm.we.status/v1", "configured": False}
+
+
 # --------------------------------------------------------------------------
 # openapi
 # --------------------------------------------------------------------------
@@ -757,6 +784,9 @@ def test_dashboard_html_contains_required_elements(server):
     # Dashboard sections.
     assert "health-content" in body
     assert "fleet-content" in body
+    assert "weave-content" in body
+    assert "embodiments-content" in body
+    assert "fences-content" in body
     assert "backups-content" in body
     assert "activity-content" in body
     # Retry link pattern for degraded/no-data state.

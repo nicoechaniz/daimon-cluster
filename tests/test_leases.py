@@ -1,8 +1,9 @@
-"""Lease registry tests (issue #27): acquire, renew, CAS fencing, TTL expiry.
+"""Resource-fence registry tests (issue #27): acquire, renew, CAS and TTL.
 
 Covers: signature verification, epoch monotonicity, CAS rejection on
 stale epoch, TTL enforcement, garbage collection, and the clusterd
-GET /v1/leases route.
+The legacy imports below are compatibility aliases; public API naming is
+``resource-fence/v1`` and ``GET /v1/resource-fences``.
 """
 
 import json
@@ -54,9 +55,9 @@ DAIMON2 = "oliva@daimonmatrix"
 class TestAcquire:
     def test_acquire_returns_lease_with_correct_fields(self, store, pubkey, fingerprint):
         lease = store.acquire(DAIMON, pubkey, fingerprint)
-        assert lease["schema"] == "lease/v1"
-        assert lease["daimon_id"] == DAIMON
-        assert lease["identity_pubkey"] == pubkey
+        assert lease["schema"] == "resource-fence/v1"
+        assert lease["resource_ref"] == DAIMON
+        assert lease["holder_pubkey"] == pubkey
         assert lease["fingerprint"] == fingerprint
         assert lease["epoch"] == 0
         assert lease["ttl_s"] == 3600
@@ -76,7 +77,7 @@ class TestAcquire:
         path = store._lease_path(DAIMON)
         assert path.is_file()
         raw = json.loads(path.read_text(encoding="utf-8"))
-        assert raw["daimon_id"] == DAIMON
+        assert raw["resource_ref"] == DAIMON
         assert raw["epoch"] == 0
 
 
@@ -89,7 +90,7 @@ class TestStatus:
     def test_status_valid_after_acquire(self, store, pubkey, fingerprint):
         store.acquire(DAIMON, pubkey, fingerprint)
         st = store.status(DAIMON)
-        assert st["daimon_id"] == DAIMON
+        assert st["resource_ref"] == DAIMON
         assert st["present"] is True
         assert st["expired"] is False
         assert st["expires_in_ms"] > 0
@@ -184,7 +185,7 @@ class TestRelease:
         assert not store._lease_path(DAIMON).is_file()
 
     def test_release_raises_on_missing(self, store):
-        with pytest.raises(LeaseNotFound, match="no lease"):
+        with pytest.raises(LeaseNotFound, match="no resource fence"):
             store.release("unknown@daimonmatrix")
 
     def test_release_raises_on_invalid_signature(self, store, pubkey, fingerprint):
@@ -211,17 +212,25 @@ class TestCASFencing:
     def test_expired_lease_does_not_block_reacquire(self, store, pubkey, fingerprint):
         store.acquire(DAIMON, pubkey, fingerprint, ttl_s=0)
         time.sleep(0.001)
-        # Should succeed — expired lease is silently overwritten.
+        # Should succeed without reusing an old fencing epoch.
         lease = store.acquire(DAIMON, pubkey, fingerprint)
-        assert lease["epoch"] == 0
-        assert lease["daimon_id"] == DAIMON
+        assert lease["epoch"] == 1
+        assert lease["resource_ref"] == DAIMON
 
     def test_acquire_after_release_succeeds(self, store, pubkey, fingerprint):
         store.acquire(DAIMON, pubkey, fingerprint)
         store.release(DAIMON)
         # Release removed the file — acquire should succeed.
         lease = store.acquire(DAIMON, pubkey, fingerprint)
-        assert lease["epoch"] == 0
+        assert lease["epoch"] == 1
+
+    def test_restore_rollback_does_not_reuse_intermediate_epoch(self, store, pubkey, fingerprint):
+        original = store.acquire(DAIMON, pubkey, fingerprint)
+        renewed = store.renew(DAIMON, "/fake/privkey")
+        assert renewed["epoch"] == 1
+        store.restore(DAIMON, original)
+        after_rollback = store.renew(DAIMON, "/fake/privkey")
+        assert after_rollback["epoch"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -257,9 +266,10 @@ class TestSignatureVerification:
         from clusterctl.leases import _canonical
 
         body = {
-            "schema": "lease/v1",
-            "daimon_id": DAIMON,
-            "identity_pubkey": pubkey,
+            "schema": "resource-fence/v1",
+            "resource_ref": DAIMON,
+            "holder_embodiment_id": "unbound",
+            "holder_pubkey": pubkey,
             "fingerprint": fingerprint,
             "epoch": 0,
             "created_ms": 1000000,
@@ -286,7 +296,7 @@ class TestListAll:
         store.acquire(DAIMON2, pubkey, fingerprint)
         result = store.list_all()
         assert len(result) == 2
-        ids = {st["daimon_id"] for st in result}
+        ids = {st["resource_ref"] for st in result}
         assert ids == {DAIMON, DAIMON2}
 
     def test_list_all_includes_expired_leases(self, store, pubkey, fingerprint):
@@ -326,8 +336,8 @@ class TestSSHSigner:
     def test_ssh_signer_produces_distinguishable_sig(self, pubkey, fingerprint):
         signer = SSHSigner("/path/to/key")
         lease = {
-            "schema": "lease/v1",
-            "daimon_id": DAIMON,
+            "schema": "resource-fence/v1",
+            "resource_ref": DAIMON,
             "identity_pubkey": pubkey,
             "fingerprint": fingerprint,
             "epoch": 0,
@@ -356,8 +366,8 @@ class TestMultiDaimon:
     def test_independent_acquisitions(self, store, pubkey, fingerprint):
         lease1 = store.acquire(DAIMON, pubkey, fingerprint)
         lease2 = store.acquire(DAIMON2, pubkey, fingerprint)
-        assert lease1["daimon_id"] == DAIMON
-        assert lease2["daimon_id"] == DAIMON2
+        assert lease1["resource_ref"] == DAIMON
+        assert lease2["resource_ref"] == DAIMON2
         assert lease1["epoch"] == 0
         assert lease2["epoch"] == 0
 

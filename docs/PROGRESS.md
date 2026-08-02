@@ -84,3 +84,14 @@ ALL 33 ISSUES HAVE CODE LANDED (M0-M8). Remaining: the four human keys
 - Off-mesh probe of public ingress (belt & braces; ruleset is logically
   sound, on-host test invalid due to loopback routing).
 - GitHub identity for compaii@daimonmatrix (App vs machine user) — Nicolás.
+
+## 2026-08-02 — Matrix convergence (#40 / DM-037)
+
+- codex-compaii@legion audited main and filed #40: the M7 lease/handoff
+  implementation is TRANSITIONAL — genuine CAS, strictly monotonic
+  fencing, real signer and the dual-authority seam are required before
+  Daimon Matrix may consume cluster evidence.
+- Response + plan: docs/design/matrix-convergence.md (phases C1-C5).
+- M7 rows above (#27-#30) stay marked transitional until phase C4
+  (live drill 2.0) closes. C1-C4 are cluster-internal; C5 waits for
+  the Matrix contract freeze (DM-018/021/023/024).

@@ -459,18 +459,37 @@ def audit_tail(deps: Deps, ctx: RequestContext, query=None, **params) -> Respons
 
 
 def list_embodiments(deps: Deps, ctx: RequestContext, **params) -> Response:
-    """GET /v1/registry — the embodiment census (ontology.md).
+    """GET /v1/registry — the embodiment census (ontology.md, M10-R7).
 
-    Lists every registered embodiment of every known being: being root,
-    embodiment, body, lifecycle state and chain cursor. Multiple awake
-    embodiments of one being are normal plurality, never an error.
+    Per being: chain tip cursor, chain verification, merge state
+    ("coherente" / "mergeando" — the /we dashboard vocabulary) and the
+    embodiment rows (being root, embodiment, body, lifecycle state,
+    chain cursor). Multiple awake embodiments of one being are normal
+    plurality, never an error.
     """
     from clusterctl.registry import EmbodimentRegistry
+    from clusterctl.wesync import WeSync
 
     state_dir = deps.state_dir
     if state_dir is None:
         state_dir = load_config(deps.config_path).state_dir
-    return Response(200, EmbodimentRegistry(state_dir).list_all())
+    reg = EmbodimentRegistry(state_dir)
+    sync = WeSync(state_dir)
+    beings = []
+    for root in reg.beings():
+        chain = reg.verify_chain(root)
+        merge = sync.merge_state(root)
+        beings.append({
+            "being_root": root,
+            "chain_ok": chain["ok"],
+            "chain_cursor": chain["cursor"],
+            "genesis_sha": (chain.get("genesis_sha") or "")[:12] or None,
+            "sync_state": "mergeando" if merge else "coherente",
+            "merge_state": merge,
+            "experiences": len(sync.experiences(root)),
+            "embodiments": reg.list_all(root),
+        })
+    return Response(200, beings)
 
 
 def dashboard(deps: Deps, ctx: RequestContext, **params) -> Response:
@@ -728,6 +747,16 @@ input:focus{outline:none;border-color:var(--accent)}
     </div>
   </div>
 
+  <!-- /we — beings and their embodiments (M10-R7) -->
+  <div class="card" id="we-card">
+    <div class="section-header"><h2>/we — Beings</h2></div>
+    <div id="we-content" hx-get="/v1/registry" hx-trigger="load, every 10s, refresh"
+         hx-swap="innerHTML" hx-target="#we-content"
+         hx-on::after-request="renderWe(event)">
+      <p class="muted">Loading...</p>
+    </div>
+  </div>
+
   <!-- Backups -->
   <div class="card" id="backups-card">
     <div class="section-header"><h2>Snapshots (per-daimon)</h2></div>
@@ -776,6 +805,7 @@ function authenticate(){
       document.getElementById('dashboard').style.display='block';
       htmx.trigger('#health-content','load');
       htmx.trigger('#fleet-content','load');
+      htmx.trigger('#we-content','load');
       htmx.trigger('#backups-content','load');
       htmx.trigger('#activity-content','load');
     })
@@ -890,6 +920,44 @@ function renderFleet(event){
     });
     el.innerHTML=h;
   }catch(e){el.innerHTML='<div class="alert">No data <span class="retry-link" onclick="htmx.trigger(\'#fleet-content\',\'load\')">retry</span></div>'}
+}
+
+// ── /we renderer (M10-R7): one card per being — root + embodiments +
+// sync cursor, state "coherente"/"mergeando" ───────────────────────
+function renderWe(event){
+  var el=document.getElementById('we-content');
+  try{
+    var beings=JSON.parse(event.detail.xhr.responseText);
+    if(!Array.isArray(beings)||beings.length===0){el.innerHTML='<p class="muted">No beings registered yet — the census is empty.</p>';return}
+    var h='';
+    beings.forEach(function(b){
+      var syncBadge=b.sync_state==='mergeando'
+        ?'<span class="badge badge-degraded">mergeando</span>'
+        :'<span class="badge badge-ok">coherente</span>';
+      var chainBadge=b.chain_ok
+        ?'<span class="badge badge-ok">chain ok</span>'
+        :'<span class="badge badge-bad">chain broken</span>';
+      h+='<div class="card" style="cursor:default">';
+      h+='<div class="section-header">';
+      h+='<strong style="font-size:0.95rem">'+escHtml(b.being_root)+'</strong>';
+      h+='<span>'+syncBadge+' '+chainBadge+'</span></div>';
+      h+='<div class="muted">';
+      h+='<span>genesis: '+escHtml(b.genesis_sha||'—')+'</span>';
+      h+='<span style="margin-left:12px">chain cursor: '+(b.chain_cursor!=null?b.chain_cursor:'—')+'</span>';
+      h+='<span style="margin-left:12px">experiences: '+b.experiences+'</span>';
+      h+='</div>';
+      (b.embodiments||[]).forEach(function(e){
+        h+='<div style="margin-top:6px;padding:6px 8px;border:1px solid var(--border,#333);border-radius:6px">';
+        h+='<div class="section-header"><strong>'+escHtml(e.embodiment)+'</strong><span>'+stateBadge(e.state)+'</span></div>';
+        h+='<div class="muted"><span>body: '+escHtml(e.body||'—')+'</span>';
+        h+='<span style="margin-left:12px">cursor: '+e.cursor+'</span>';
+        h+='<span style="margin-left:12px">actor: '+escHtml(e.actor||'—')+'</span></div>';
+        h+='</div>';
+      });
+      h+='</div>';
+    });
+    el.innerHTML=h;
+  }catch(e){el.innerHTML='<div class="alert">No data <span class="retry-link" onclick="htmx.trigger(\'#we-content\',\'load\')">retry</span></div>'}
 }
 
 function renderBackups(event){

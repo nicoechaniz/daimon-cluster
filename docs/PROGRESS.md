@@ -162,3 +162,25 @@ No R cards created in the Project yet.
 Canonical ontology landed: docs/design/ontology.md — /me, /we, /we.sync,
 embodiment, chain of existence, sync cursor, effect-truth idempotency,
 embodiment registry, lifecycle verbs, purged vocabulary, old→new mapping.
+
+### M10-R2 done (77483ba) — the purge
+
+- `clusterctl/leases.py` (LeaseStore: exclusion, TTL, fencing, CAS-refusal)
+  DELETED. Signing primitives live in `clusterctl/signing.py`.
+- `clusterctl/registry.py`: EmbodimentRegistry — census, never a gate.
+  Register always succeeds; cursors order (monotonic per being) but never
+  refuse; signed append-only history per being; rollback appends (cursor
+  never goes down). Plurality of awake embodiments is normal.
+- park/transfer rewired as lifecycle verbs: checkpoint freshness replaces
+  stale-fence; register replaces fence CAS; failures append
+  parked/rolled-back records. Real re-park bug found+fixed (completed
+  park-state made a new cycle skip every step).
+- clusterd: `GET /v1/leases` → `GET /v1/registry` (census).
+- docs: lease-registry.md deleted → embodiment-registry.md; ceremonies.md
+  and ontology.md language updated. Repo-wide grep: "single-body
+  presence"/"LeaseStore" only remain in purge-documentation contexts.
+- tests: test_leases.py deleted; test_registry.py (13) pins the ontology;
+  park/transfer/handoff suites rewritten to lifecycle semantics (the
+  two-holders race retired as a concept). **226 passed on main.**
+- Live verified: clusterd active, /v1/registry 200 (empty census — clean
+  start), dashboard 200, old /v1/leases 404, journal clean.

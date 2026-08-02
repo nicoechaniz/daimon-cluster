@@ -273,3 +273,22 @@ R6 partition+merge → R7 dashboard /we. The repo speaks the ontology.
 Remaining for the goal's Done: the first /we.sync demonstration
 between two REAL embodiments (daimonmatrix ↔ legion) — pending the
 legion's pull of main.
+
+### M10 close-out (f5937d0) — merge idempotency + final purge sweep
+
+- Root-fixed a sha-lottery flake: a stale pre-merge bundle replayed to
+  the WINNING side re-flagged/re-merged. Entries already re-anchored
+  are CONVERGED (merged_entry sha check in merge_branch and import
+  branch-detection). 5 consecutive runs green.
+- Last live lease-language trace in code removed ("stale fence" →
+  "stale checkpoint" in transfer.py comments).
+- SUPERSEDED banners: PLAN.md identity model, ADR-001 D1,
+  matrix-convergence.md. Remaining historical mentions are marked
+  records only. Orphan .pyc purged.
+- Final grep verification: zero live traces of single-body presence /
+  lease-as-identity in code, configs, tests, and live docs.
+- **255 passed on main.** Deployed; clusterd active.
+
+The R series is complete. The goal's last open item — the first
+/we.sync between two REAL embodiments (daimonmatrix ↔ legion) — rides
+on the legion's pull (push #35 carries the instructions).

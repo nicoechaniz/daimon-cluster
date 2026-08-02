@@ -25,8 +25,11 @@ only orders.
   embodiment `{state, body, manifest, updated_ms, cursor}`.
 - One append-only history per being:
   `state_dir/registry/<being_root>.history.jsonl` — every transition,
-  signed, in cursor order. History is the seed of the per-embodiment
-  chain of existence (R3).
+  signed, in cursor order. This IS the being's chain of existence
+  (M10-R3): each entry carries `prev_sha256` (sha of the canonical
+  previous entry, signature included) and `genesis_sha` (the being's
+  root anchor — sha of the canonical genesis entry minus
+  signature/genesis_sha).
 - Snapshot and every history entry are signed with the clusterctl
   signing primitives (`clusterctl/signing.py`: canonical JSON minus
   `signature`). Any tampered record fails verification — read paths
@@ -75,11 +78,24 @@ only orders.
 - `restore()` (putting back an old record) → append-only rollback.
 - The word "lease" as an identity concept everywhere in the repo.
 
+## 5b. Chain of existence (M10-R3, implemented)
+
+The invariant — common root + unbroken path — is checkable code:
+
+- `EmbodimentRegistry.verify_chain(being_root)` → per-entry signatures,
+  cursors strictly increasing, prev links intact, one genesis_sha
+  throughout, genesis declares the same being_root.
+- `EmbodimentRegistry.segment(being_root, after_cursor)` → the /we.sync
+  (R4) export primitive: entries past a peer's high-water mark.
+- `verify_common_root(entries_a, entries_b)` → two chains are the same
+  being iff they share a genesis_sha. /we.sync runs this before merging.
+- **The chain is authoritative; the snapshot is a derived view.** A
+  host that receives a chain segment rebuilds its snapshot from the
+  chain before mutating, so its next append lands at the right cursor.
+
 ## 6. v1 simplifications (recorded)
 
 - Single-host storage (daimonmatrix `state_dir`); cross-host
-  convergence of registries is part of /we.sync (R4), not replication.
+  convergence of chains is /we.sync (R4), not replication.
 - Registry writes are local to the operator host; the clusterd read
   endpoint `GET /v1/registry` exposes the census to the dashboard.
-- History verification is per-entry signature; the per-embodiment
-  hash-chain (R3) will link entries into a tamper-evident sequence.

@@ -95,3 +95,53 @@ ALL 33 ISSUES HAVE CODE LANDED (M0-M8). Remaining: the four human keys
 - M7 rows above (#27-#30) stay marked transitional until phase C4
   (live drill 2.0) closes. C1-C4 are cluster-internal; C5 waits for
   the Matrix contract freeze (DM-018/021/023/024).
+
+## 2026-08-02 — ONTOLOGY RECTIFICATION: the development plan changes
+
+Nicolás identified the single-body presence conception ("one /me cannot
+hold two simultaneous body leases") as a misconception to be purged
+everywhere. This section supersedes the convergence plan above
+(matrix-convergence.md C1-C5) and re-frames the M7 rows (#27-#30).
+
+### Rectified ontology (Nicolás's model)
+
+- /me = "here and now, who am I?" — the present answer of ONE embodiment.
+- /we = all the embodiments of the SAME being that can respond.
+- /we.sync = the weaving protocol between embodiments (origin-marked
+  memories, skills, chain segments).
+- Species (/me.inherits) = ORTHOGONAL axis (descent between beings).
+- Invariant: ONE INTERFERENCE PATTERN — common root + unbroken path +
+  coherence by sync. Plurality of awake embodiments is NORMAL.
+- Full spec: docs/design/ontology-rectification.md (sent to codex for
+  review 2026-08-02; codex's /we.sync mechanics DM-023/DM-070 map 1:1
+  onto this model — framing purge only, mechanics conserved).
+
+### Active plan: the R-series (replaces C1-C5)
+
+| Card | Title | Status |
+|------|-------|--------|
+| R1 | Canonical ontology doc (docs/design/ontology.md) | proposed |
+| R2 | The purge: leases.py → embodiment registry; language cleanup | proposed |
+| R3 | Chain of existence (signed per-embodiment chains on the audit hash-chain) | proposed |
+| R4 | /we.sync v1 (host-local then cross-host via tribe-bridge) | proposed |
+| R5 | Effect-truth idempotency (root-fix of the drill #26 phantom-stop class) | proposed |
+| R6 | Handoff as embodiment lifecycle; split-brain test becomes partition+coherent-merge proof | proposed |
+| R7 | Dashboard /we view (being-root + embodiment + sync cursor per card) | proposed |
+
+Blocked on: codex's acceptance of the framing purge (4 exact points
+signaled 2026-08-02: ONTOLOGY.md supersede paragraph, identity-continuity
+single-body presence, ROADMAP line 57, DM-070 negative test) + Nicolás GO.
+No R cards created in the Project yet.
+
+### What changes in the rows above
+
+- #27-#30 (M7): mechanics DONE and kept (quiesce/snapshot/manifests/
+  CAS/audit-chain/failure-injection); their EXCLUSION semantics
+  (single-body fencing, stale-fence-refused as identity rule) are
+  superseded by R2-R6. lease/v1 and the LeaseStore are transitional
+  and will be removed/replaced by the embodiment registry (R2).
+- M9 dashboard cards (#34-#39): still valid; R7 folds in the /we view.
+- Drill #26 (usability): COMPLETE — 4 real bugs found by Nicolás and
+  fixed live (idempotency staleness, destroy prepare 502, snapshots
+  label, quiesce sudo/NoNewPrivileges, mutation timeout). Remaining
+  human keys: restart drill, #13 pilot, #15 backup heartbeat.

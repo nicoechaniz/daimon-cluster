@@ -4,7 +4,8 @@ Status: CANONICAL (M10, 2026-08-02). Authority: Nicolás Echániz.
 This document defines the words every module, doc, test and comment in
 this repository must use. When code and this document disagree, the code
 is wrong. It supersedes every earlier framing of identity, presence and
-leases in this repo (including lease-registry.md's original text).
+leases in this repo (the original lease-registry.md is deleted;
+its successor is embodiment-registry.md).
 
 ## The being
 

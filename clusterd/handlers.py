@@ -458,24 +458,19 @@ def audit_tail(deps: Deps, ctx: RequestContext, query=None, **params) -> Respons
     return Response(200, result)
 
 
-def list_leases(deps: Deps, ctx: RequestContext, **params) -> Response:
-    """GET /v1/leases — list all non-expired daimon presence leases.
+def list_embodiments(deps: Deps, ctx: RequestContext, **params) -> Response:
+    """GET /v1/registry — the embodiment census (ontology.md).
 
-    Reads the same ``state_dir/leases/*.json`` files written by
-    ``clusterctl.leases.LeaseStore``. Returns a list of status dicts
-    filtered to non-expired entries (lease files may exist on disk
-    past expiry until garbage-collected — the API filters them out).
+    Lists every registered embodiment of every known being: being root,
+    embodiment, body, lifecycle state and chain cursor. Multiple awake
+    embodiments of one being are normal plurality, never an error.
     """
-    from clusterctl.leases import LeaseStore
+    from clusterctl.registry import EmbodimentRegistry
 
     state_dir = deps.state_dir
     if state_dir is None:
         state_dir = load_config(deps.config_path).state_dir
-    store = LeaseStore(state_dir)
-    all_leases = store.list_all()
-    # Filter to non-expired leases.
-    non_expired = [st for st in all_leases if not st.get("expired", True)]
-    return Response(200, non_expired)
+    return Response(200, EmbodimentRegistry(state_dir).list_all())
 
 
 def dashboard(deps: Deps, ctx: RequestContext, **params) -> Response:
@@ -1093,7 +1088,7 @@ HANDLERS = {
     "list_backups": list_backups,
     "audit_tail": audit_tail,
     "dashboard": dashboard,
-    "list_leases": list_leases,
+    "list_embodiments": list_embodiments,
     "dashboard_prepare": dashboard_prepare,
     "dashboard_confirm": dashboard_confirm,
     "restore_instance": restore_instance,

@@ -27,10 +27,10 @@ Those three sentences are the whole security model of the ceremony.
 
 ## 2. Offboarding ceremony (a daimon leaves — transfer or dissolution)
 
-Transfer to another host: the M7 park/transfer flow (#28/#29) plus:
-lease flip confirmed awake at the new holder → member verifies contact
-at the new embodiment → 7-day grace with the old volume retained cold →
-archive-verified destroy (#8 §3).
+Transfer to another host: the park/transfer flow (#28/#29, M10-R2
+lifecycle verbs) plus: census transition confirmed awake on the new
+body → member verifies contact at the new embodiment → 7-day grace
+with the old volume retained cold → archive-verified destroy (#8 §3).
 
 Dissolution (the daimon ends): park + verified checkpoint → member
 explicitly chooses: (a) sealed archive (volume retained, keys intact,
@@ -79,18 +79,18 @@ audit log or the named store; "we did it" without evidence is not done.
 | 1 | **Request** | member (human) | request record in state repo (species, motivation, named sponsor) | withdraw request; no state mutated | request carries no credentials, ever |
 | 2 | **Sponsor / ownership proof** | human sponsor (≠ requester) | clusterd audit event: sponsor signs the request with their cluster token (mutate scope, owner = sponsor) | sponsor revokes signature; request dies unsigned | signature proves possession; the token value NEVER enters the audit event |
 | 3 | **Capacity approval** | cluster owner (Nico) OR governance majority | headroom report from `GET /v1/capacity` attached to the request + approval audit event | approval rescinded before step 5; nothing provisioned yet | report is counts/headroom only — no per-daimon secrets |
-| 4 | **Identity naming** | governance | directory pre-approval entry: name matches `species@host` (e.g. `phideus@daimonmatrix`); uniqueness verified against BOTH live leases (`/v1/leases`) and the directory (incl. tombstones) | name released; pre-approval entry removed with audit event | the name is public metadata; no key material exists yet |
+| 4 | **Identity naming** | governance | directory pre-approval entry: name matches `species@host` (e.g. `phideus@daimonmatrix`); uniqueness verified against BOTH the embodiment census (`/v1/registry`) and the directory (incl. tombstones) | name released; pre-approval entry removed with audit event | the name is public metadata; no key material exists yet |
 | 5 | **Governance change** | governance majority | governance-signed directory activation granting the new member a READ-scoped cluster token only | token revoked; activation epoch rolled back with a compensating governance act | mutate scope is NOT granted until step 8 acceptance completes |
 | 6 | **Provisioning** | steward@daimonmatrix | `provision prepare` per #12: instance spec in `state_dir/instances/`, exported pubkey + proposed directory entry, SEED-PROVENANCE if seeded | `provision prepare` aborted → container + volume destroyed, spec removed, audit records the abort | keys born inside the durable volume; private material never leaves it (#12 §2) |
 | 7 | **Credential handoff** | member (human) + steward | audit event `credential-handoff` naming channel + parties, WITHOUT the secret value | handoff voided; tokens re-generated inside the volume and re-delivered | tokens delivered ONLY via the tribe-bridge encrypted channel or in-person; NEVER via git, email, chat logs, or audit payloads |
-| 8 | **Acceptance** | new daimon + member (human) | (a) new daimon signs its FIRST lease (epoch 0, renewer=self); (b) member confirms first contact over the bridge | acceptance failed → back to step 6 state (parked, read-only) or full abort per step 6 rollback | first lease signed with the in-volume key; no private material in evidence |
+| 8 | **Acceptance** | new daimon + member (human) | (a) the new embodiment is REGISTERED awake in the census (cursor 1, actor=self); (b) member confirms first contact over the bridge | acceptance failed → back to step 6 state (parked, read-only) or full abort per step 6 rollback | first census registration signed with the in-volume key; no private material in evidence |
 | 9 | **Announcement** | steward | message to public-agents using the template below | correction follow-up message; announcement carries no secrets | public material only: name, species, sponsor, fingerprint |
 
 Announcement template (public-agents):
 
 ```
 [cluster] welcome <species>@<host> — daimon of <member>, sponsored by <sponsor>.
-identity fingerprint: <fp>. directory epoch: <n>. first lease signed <ts>.
+identity fingerprint: <fp>. directory epoch: <n>. first census registration <ts>.
 ```
 
 ## 6. Offboarding and key ceremonies — governable step spec (expands §2/§3)
@@ -98,10 +98,11 @@ identity fingerprint: <fp>. directory epoch: <n>. first lease signed <ts>.
 ### 6.1 Suspension (reversible; audit period 30 days)
 
 - **Actor:** governance majority (or cluster owner on emergency).
-- **Evidence:** audit event `suspend` + lease parked (released, not
-  re-acquirable) + token record updated: mutate revoked, read RETAINED.
-- **Rollback:** governance `resume` event re-grants mutate; daimon
-  re-acquires its lease (same identity, epoch continues).
+- **Evidence:** audit event `suspend` + census records the embodiment
+  suspended (parked; no re-entry without governance `resume`) + token
+  record updated: mutate revoked, read RETAINED.
+- **Rollback:** governance `resume` event re-grants mutate; the
+  embodiment wakes again (same being, census cursor continues).
 - **Secrets:** read scope retained so the member can audit their own
   daimon's state during the 30-day window; no secret changes hands.
 
@@ -202,8 +203,8 @@ hope.
    four verified before the ceremony closes: (a) tokens revoked, (b)
    DNS/bridge routes removed, (c) container destroyed, (d) archive
    verified. Test: post-offboarding probe — bridge dial to the retired
-   fingerprint must fail, `/v1/leases` must not list the name, inventory
-   must not list the container.
+   fingerprint must fail, `/v1/registry` must not list the name,
+   inventory must not list the container.
 4. **Distinct tested recovery per key class.** Lost bridge, provider,
    and backup keys each follow a DISTINCT recovery path with its own
    drill:

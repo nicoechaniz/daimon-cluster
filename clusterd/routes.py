@@ -2,8 +2,8 @@
 
 The OpenAPI document (``clusterd.openapi``) is generated FROM this
 table, and the HTTP server (``clusterd.server``) dispatches FROM this
-table. Adding a route (e.g. lease routes in a later milestone) means
-adding one ``Route`` entry here plus one handler function in
+table. Adding a route (e.g. registry mutation routes in a later
+milestone) means adding one ``Route`` entry here plus one handler function in
 ``clusterd.handlers`` — server and OpenAPI pick it up automatically.
 
 ``required_scope`` is ENFORCED (issue #18): every route except
@@ -255,17 +255,13 @@ ROUTES: list[Route] = [
     ),
     Route(
         method="GET",
-        path="/v1/leases",
-        operation_id="listLeases",
-        summary="List all non-expired daimon presence leases (CAS fencing + TTL)",
-        handler="list_leases",
+        path="/v1/registry",
+        operation_id="listEmbodiments",
+        summary="Embodiment census: where each being is embodied (state + cursor)",
+        handler="list_embodiments",
         scope="fleet:read",
-        clusterctl="reads state_dir/leases/*.json (same files LeaseStore writes)",
+        clusterctl="reads state_dir/registry/*.json (EmbodimentRegistry snapshots)",
     ),
-    # Future lease mutation routes (issue #28):
-    #   POST /v1/leases/acquire  (steward mutation, idempotency_required)
-    #   POST /v1/leases/{identity}/park  (idempotency_required, mutation)
-    #   POST /v1/leases/{identity}/wake  (idempotency_required, mutation)
     Route(
         method="POST",
         path="/v1/dashboard/prepare",

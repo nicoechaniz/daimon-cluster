@@ -1,9 +1,9 @@
-"""Park with verified checkpoint manifest tests (issue #28).
+"""Park with verified checkpoint manifest tests (issue #28, M10-R2).
 
 Covers: happy path (all 9 steps), resume from every interruption point,
 verification failure rollback, secret-refusal (fail-closed), unsigned /
 tampered manifest rejection, --abandon-critical actor recording, the
-explicit --no-lease path, outbox refusal, and CLI wiring.
+explicit --no-registry path, outbox refusal, and CLI wiring.
 
 All tests run against FakeAdapter with a scripted exec_handler — no incus.
 """
@@ -14,11 +14,12 @@ import json
 import pytest
 import yaml
 
-from clusterctl import leases, park
+from clusterctl import park, registry
 from clusterctl.adapters import FakeAdapter
 from clusterctl.cli import run
 from clusterctl.config import Config
 from clusterctl.inventory import load_spec_raw
+from clusterctl.signing import FakeSigner, InvalidSignature
 
 NAME = "daimon-x"
 DAIMON_ID = "daimon-x@daimonmatrix"
@@ -98,9 +99,10 @@ def adapter():
 
 
 @pytest.fixture()
-def lease(state_dir):
-    store = leases.LeaseStore(state_dir)
-    return store.acquire(DAIMON_ID, PUBKEY, FINGERPRINT)
+def registered(state_dir):
+    """The embodiment census knows daimon-x is awake on NAME (ontology.md)."""
+    reg = registry.EmbodimentRegistry(state_dir)
+    return reg.register("daimon-x", DAIMON_ID, NAME, "awake", actor="test")
 
 
 def _cli(state_dir, *argv, adapter=None):
@@ -113,8 +115,8 @@ def _cli(state_dir, *argv, adapter=None):
     return code, ad
 
 
-def _manifest_path(state_dir, fence_epoch=0):
-    suffix = fence_epoch if fence_epoch is not None else "nolease"
+def _manifest_path(state_dir, cursor=1):
+    suffix = cursor if cursor is not None else "noregistry"
     return state_dir / "park" / NAME / f"manifest-{suffix}.json"
 
 
@@ -123,7 +125,7 @@ def _manifest_path(state_dir, fence_epoch=0):
 # ---------------------------------------------------------------------------
 
 
-def test_happy_path_all_steps(state_dir, cfg, adapter, lease, capsys):
+def test_happy_path_all_steps(state_dir, cfg, adapter, registered, capsys):
     _write_spec(state_dir)
     code, ad = _cli(state_dir, "park", "--handoff", NAME, "--json", adapter=adapter)
     assert code == 0
@@ -136,23 +138,32 @@ def test_happy_path_all_steps(state_dir, cfg, adapter, lease, capsys):
     # container stopped only after manifest verified
     assert ad._find(NAME)["state"] == "stopped"
 
-    mpath = _manifest_path(state_dir, lease["epoch"])
+    mpath = _manifest_path(state_dir, registered["cursor"])
     assert mpath.is_file()
-    manifest = park.load_manifest(mpath, leases.FakeSigner())
+    manifest = park.load_manifest(mpath, FakeSigner())
     assert manifest["schema"] == "checkpoint-manifest/v1"
     assert manifest["name"] == NAME
-    assert manifest["fence_epoch"] == lease["epoch"]
+    assert manifest["cursor"] == registered["cursor"]
+    assert manifest["being_root"] == "daimon-x"
+    assert manifest["embodiment"] == DAIMON_ID
     assert manifest["actor"] == "clusterctl-cli"
     assert manifest["critical_jobs"] == "refused"
     assert manifest["outbox"] == "not-configured"
     assert manifest["hmk_integrity"] == "ok"
     assert manifest["state_commit"] == COMMIT_SHA
     assert manifest["backup_ids"] == "not-configured"
-    assert manifest["lease"] == "active"
-    assert manifest["lease_epoch"] == lease["epoch"]
+    assert manifest["registry"] == "awake"
+    assert manifest["registry_cursor"] == registered["cursor"]
     assert [s["name"] for s in manifest["steps"]] == [
         "spec-parking", "critical-jobs", "outbox", "hmk-checkpoint",
         "state-files", "state-repo", "verify"]
+
+    # the census recorded the awake → parked transition, pointing at
+    # THIS manifest
+    row = registry.EmbodimentRegistry(state_dir).get("daimon-x", DAIMON_ID)
+    assert row["state"] == "parked"
+    assert row["manifest"] == str(mpath)
+    assert row["cursor"] == registered["cursor"] + 1
 
     # state files copied with recorded sha256
     dest = state_dir / "park" / NAME / "state"
@@ -184,7 +195,7 @@ def test_happy_path_all_steps(state_dir, cfg, adapter, lease, capsys):
 
 
 @pytest.mark.parametrize("kill_after", park.STEPS)
-def test_resume_from_interruption(state_dir, cfg, adapter, lease, kill_after):
+def test_resume_from_interruption(state_dir, cfg, adapter, registered, kill_after):
     _write_spec(state_dir)
 
     def hook(step):
@@ -201,19 +212,19 @@ def test_resume_from_interruption(state_dir, cfg, adapter, lease, kill_after):
     # re-run converges
     result = park.run_park(NAME, cfg, adapter, actor="test")
     assert result["result"] == "ok"
-    manifest = park.load_manifest(result["manifest"], leases.FakeSigner())
-    assert manifest["fence_epoch"] == lease["epoch"]
+    manifest = park.load_manifest(result["manifest"], FakeSigner())
+    assert manifest["cursor"] == registered["cursor"]
     assert adapter._find(NAME)["state"] == "stopped"
     ps = json.loads((state_dir / "park" / f"{NAME}.json").read_text())
     assert ps["completed"] == list(park.STEPS)
 
 
 # ---------------------------------------------------------------------------
-# failed verification → rollback to active, lease untouched
+# failed verification → rollback to active, registry untouched
 # ---------------------------------------------------------------------------
 
 
-def test_failed_verification_rolls_back(state_dir, cfg, adapter, lease):
+def test_failed_verification_rolls_back(state_dir, cfg, adapter, registered):
     _write_spec(state_dir)
     calls = {"rev_parse": 0}
 
@@ -234,9 +245,10 @@ def test_failed_verification_rolls_back(state_dir, cfg, adapter, lease):
     assert not any(c[0] == "stop" for c in adapter.mutation_log)
     # no manifest written
     assert not _manifest_path(state_dir).exists()
-    # lease stays held by the daimon
-    st = leases.LeaseStore(state_dir).status(DAIMON_ID)
-    assert st["present"] and not st["expired"]
+    # the census still shows the embodiment awake (park failed before
+    # the transition was recorded)
+    row = registry.EmbodimentRegistry(state_dir).get("daimon-x", DAIMON_ID)
+    assert row["state"] == "awake"
     # failure recorded in park-state
     ps = json.loads((state_dir / "park" / f"{NAME}.json").read_text())
     assert ps["failed_step"] == "verify"
@@ -254,7 +266,7 @@ def test_failed_verification_rolls_back(state_dir, cfg, adapter, lease):
 # ---------------------------------------------------------------------------
 
 
-def test_secret_in_staged_changes_refused(state_dir, cfg, adapter, lease, capsys):
+def test_secret_in_staged_changes_refused(state_dir, cfg, adapter, registered, capsys):
     _write_spec(state_dir)
 
     def leaky(name, argv):
@@ -276,7 +288,7 @@ def test_secret_in_staged_changes_refused(state_dir, cfg, adapter, lease, capsys
 
 
 def test_happy_manifest_contains_no_secret_values(
-        state_dir, cfg, adapter, lease):
+        state_dir, cfg, adapter, registered):
     _write_spec(state_dir)
     result = park.run_park(NAME, cfg, adapter, actor="test")
     raw = json.dumps(result["checkpoint"]).lower()
@@ -290,11 +302,11 @@ def test_happy_manifest_contains_no_secret_values(
 
 
 def test_unsigned_or_tampered_manifest_rejected(
-        state_dir, cfg, adapter, lease):
+        state_dir, cfg, adapter, registered):
     _write_spec(state_dir)
     result = park.run_park(NAME, cfg, adapter, actor="test")
     manifest = json.loads(open(result["manifest"]).read())
-    signer = leases.FakeSigner()
+    signer = FakeSigner()
     assert park.verify_manifest(manifest, signer) is True
 
     tampered = dict(manifest, actor="mallory")
@@ -303,7 +315,7 @@ def test_unsigned_or_tampered_manifest_rejected(
     # write the tampered copy back and confirm it is rejected
     with open(result["manifest"], "w") as fh:
         json.dump(tampered, fh)
-    with pytest.raises(leases.InvalidSignature):
+    with pytest.raises(InvalidSignature):
         park.load_manifest(result["manifest"], signer)
 
     unsigned = dict(manifest)
@@ -317,7 +329,7 @@ def test_unsigned_or_tampered_manifest_rejected(
 
 
 def test_abandon_critical_records_human_actor(
-        state_dir, cfg, adapter, lease, capsys):
+        state_dir, cfg, adapter, registered, capsys):
     _write_spec(state_dir)
     code, _ = _cli(state_dir, "--actor", "mariano",
                    "park", "--handoff", NAME, "--abandon-critical", "--json",
@@ -330,27 +342,28 @@ def test_abandon_critical_records_human_actor(
 
 
 # ---------------------------------------------------------------------------
-# lease requirement / --no-lease
+# registry requirement / --no-registry
 # ---------------------------------------------------------------------------
 
 
-def test_no_lease_path_is_explicit(state_dir, cfg, adapter, capsys):
+def test_no_registry_path_is_explicit(state_dir, cfg, adapter, capsys):
     _write_spec(state_dir)
-    # no lease acquired — park without --no-lease fails and rolls back
+    # unregistered embodiment — park without --no-registry fails and
+    # rolls back
     code, _ = _cli(state_dir, "park", "--handoff", NAME, "--json", adapter=adapter)
     assert code == 10
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "active"
     capsys.readouterr()
 
-    # explicit --no-lease records the pre-M7 path in the manifest
-    code, ad = _cli(state_dir, "park", "--handoff", NAME, "--no-lease", "--json",
+    # explicit --no-registry records the pre-M10 path in the manifest
+    code, ad = _cli(state_dir, "park", "--handoff", NAME, "--no-registry", "--json",
                     adapter=adapter)
     assert code == 0
     out = json.loads(capsys.readouterr().out)
     manifest = out["checkpoint"]
-    assert manifest["lease"] == "no-lease-pre-m7"
-    assert manifest["lease_epoch"] is None
-    assert manifest["fence_epoch"] is None
+    assert manifest["registry"] == "no-registry"
+    assert manifest["registry_cursor"] is None
+    assert manifest["cursor"] is None
     assert _manifest_path(state_dir, None).is_file()
 
 
@@ -360,7 +373,7 @@ def test_no_lease_path_is_explicit(state_dir, cfg, adapter, capsys):
 
 
 def test_outbox_nonempty_refused_unless_forced(
-        state_dir, cfg, adapter, lease, capsys):
+        state_dir, cfg, adapter, registered, capsys):
     _write_spec(state_dir)
     outbox = state_dir / "bridge-outbox"
     outbox.mkdir(parents=True)
@@ -377,7 +390,7 @@ def test_outbox_nonempty_refused_unless_forced(
     assert out["checkpoint"]["outbox"] == "force-flushed"
 
 
-def test_outbox_empty_records_flushed(state_dir, cfg, adapter, lease):
+def test_outbox_empty_records_flushed(state_dir, cfg, adapter, registered):
     _write_spec(state_dir)
     (state_dir / "bridge-outbox").mkdir(parents=True)
     result = park.run_park(NAME, cfg, adapter, actor="test")
@@ -389,7 +402,7 @@ def test_outbox_empty_records_flushed(state_dir, cfg, adapter, lease):
 # ---------------------------------------------------------------------------
 
 
-def test_minimal_spec_records_absent_capabilities(state_dir, cfg, adapter, lease):
+def test_minimal_spec_records_absent_capabilities(state_dir, cfg, adapter, registered):
     _write_spec(state_dir, hmk_path=None, state_files=False, state_repo=False)
     result = park.run_park(NAME, cfg, adapter, actor="test")
     manifest = result["checkpoint"]
@@ -410,7 +423,7 @@ def test_undeclared_instance_exit_3(state_dir, capsys):
     assert code == 3
 
 
-def test_backup_ids_listed_when_configured(state_dir, cfg, adapter, lease):
+def test_backup_ids_listed_when_configured(state_dir, cfg, adapter, registered):
     _write_spec(state_dir)
     bdir = state_dir / "backups" / NAME
     bdir.mkdir(parents=True)

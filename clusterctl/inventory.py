@@ -119,7 +119,7 @@ def _status_record(
         "species": species,
         "host": host_id,
         "state": state,
-        "lease_state": "unknown",
+        "registry_state": "unregistered",
         "image_version": image_version,
         "budgets": {
             "cpu": budgets.get("cpu"),

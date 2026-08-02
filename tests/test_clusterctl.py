@@ -30,7 +30,7 @@ STATUS_FIELDS = {
     "species",
     "host",
     "state",
-    "lease_state",
+    "registry_state",
     "image_version",
     "budgets",
     "durable_bytes",
@@ -144,7 +144,7 @@ def test_status_schema_shape(state_dir, fake_adapter):
         assert rec["schema"] == STATUS_SCHEMA
         assert set(rec["budgets"]) == BUDGET_FIELDS
         assert rec["host"] == "testhost"
-        assert rec["lease_state"] == "unknown"
+        assert rec["registry_state"] == "unregistered"
         assert rec["hmk_integrity"] == "unknown"
 
 
@@ -265,5 +265,5 @@ def test_incus_cli_status_iso_a_undeclared(tmp_path, capsys):
     assert rec["schema"] == STATUS_SCHEMA
     assert rec["name"] == "iso-a"
     assert rec["state"] == "undeclared"
-    assert rec["lease_state"] == "unknown"
+    assert rec["registry_state"] == "unregistered"
     assert rec["hmk_integrity"] == "unknown"

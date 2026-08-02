@@ -726,7 +726,7 @@ input:focus{outline:none;border-color:var(--accent)}
   <!-- Fleet View -->
   <div class="card" id="fleet-card">
     <div class="section-header"><h2>Fleet</h2></div>
-    <div id="fleet-content" hx-get="/v1/instances" hx-trigger="load, every 30s"
+    <div id="fleet-content" hx-get="/v1/instances" hx-trigger="load, every 10s, refresh"
          hx-swap="innerHTML" hx-target="#fleet-content"
          hx-on::after-request="renderFleet(event)">
       <p class="muted">Loading...</p>
@@ -751,7 +751,7 @@ input:focus{outline:none;border-color:var(--accent)}
       <button class="btn btn-sm filter-btn" data-filter="actor">by actor</button>
       <button class="btn btn-sm filter-btn" data-filter="action">by action</button>
     </div>
-    <div id="activity-content" hx-get="/v1/audit?limit=30" hx-trigger="load, every 30s"
+    <div id="activity-content" hx-get="/v1/audit?limit=30" hx-trigger="load, every 10s, refresh"
          hx-swap="innerHTML" hx-target="#activity-content"
          hx-on::after-request="renderActivity(event)">
       <p class="muted">Loading...</p>
@@ -1043,6 +1043,12 @@ function dashConfirm(target){
       resultEl.innerHTML='<div style="color:var(--bad);font-weight:600;font-size:0.85rem">\u2717 Error: '+escHtml(result.data.error||'unknown')+'</div>';
     }
     delete _pendingPlans[target];
+    // Immediate refresh: the action already landed server-side — do not
+    // leave the card stale until the next poll tick (drill #26 UX).
+    if(window.htmx){
+      htmx.trigger('#fleet-content','refresh');
+      htmx.trigger('#activity-content','refresh');
+    }
   })
   .catch(function(e){
     resultEl.innerHTML='<div style="color:var(--bad);font-weight:600;font-size:0.85rem">\u2717 '+escHtml(e.message)+'</div>';

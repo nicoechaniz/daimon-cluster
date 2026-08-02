@@ -343,3 +343,117 @@ class WeSync:
     def merge_state(self, being_root: str) -> dict | None:
         path = self._merge_path(being_root)
         return json.loads(path.read_text()) if path.exists() else None
+
+    # ---------- coherent branch merge (M10-R6) ----------
+
+    def merge_branch(self, being_root: str, bundle: dict,
+                     actor: str = "wesync-merge") -> dict:
+        """Converge a flagged branch — the re-imagined split-brain.
+
+        Both branches HAPPENED: during the partition the being lived
+        both paths. Coherence comes from weaving, never from erasing.
+        The merge is DETERMINISTIC — both sides compute it independently
+        and arrive at a byte-identical chain (no wall-clock fields, no
+        side-dependent fields on the chain):
+
+        1. divergence = first cursor where local and the bundle's chain
+           segment differ.
+        2. BASE: the divergent entry with the lexicographically SMALLER
+           canonical sha wins; its branch stays. Same winner on both
+           sides.
+        3. The losing branch's divergent entries RE-ANCHOR after the
+           base tip as ``merged`` records, each carrying the original
+           entry under ``merged_entry`` (provenance intact — nothing
+           is lost). All fields are derived from the entries themselves
+           (ms = the original entry's ms), so both sides produce
+           identical records.
+        4. A ``merge-record`` entry (base_sha, divergence — both
+           side-independent) marks the convergence; the flag clears.
+
+        ``bundle`` must carry the FULL remote chain (export without
+        peer cursors) — the losing side rebuilds from it.
+        """
+        self._validate_bundle(bundle)
+        local = self.registry.history(being_root)
+        remote = bundle["chain_segment"]
+        by_cursor = {e["cursor"]: e for e in local}
+
+        divergence = None
+        remote_at = None
+        for entry in remote:
+            mine = by_cursor.get(entry["cursor"])
+            if mine is not None and _strip(mine) != _strip(entry):
+                divergence, remote_at = entry["cursor"], entry
+                break
+        if divergence is None:
+            self._clear_merge(being_root)
+            return {"being_root": being_root, "merged": 0,
+                    "divergence": None, "note": "no divergence found"}
+
+        mine_sha = _sha256_hex(_canonical(_strip(by_cursor[divergence])))
+        remote_sha = _sha256_hex(_canonical(_strip(remote_at)))
+        local_is_base = mine_sha < remote_sha
+        base_sha = mine_sha if local_is_base else remote_sha
+
+        if local_is_base:
+            reanchor = [x for x in remote if x["cursor"] >= divergence]
+            tip = max(x["cursor"] for x in local)
+        else:
+            reanchor = [x for x in local if x["cursor"] >= divergence]
+            if not remote or remote[0]["cursor"] != 1:
+                raise WeSyncError(
+                    "merge with a losing local branch requires a "
+                    "full-chain bundle (export without peer cursors)")
+            self._rewrite_chain(being_root, list(remote))
+            tip = max(x["cursor"] for x in remote)
+
+        report = {"being_root": being_root, "divergence": divergence,
+                  "base": "local" if local_is_base else "remote",
+                  "base_sha": base_sha, "merged": 0}
+
+        for entry in reanchor:
+            tip += 1
+            stripped = _strip(entry)
+            merged = {"being_root": being_root,
+                      "embodiment": entry.get("embodiment"),
+                      "cursor": tip, "state": "merged",
+                      "body": entry.get("body"),
+                      "manifest": entry.get("manifest"),
+                      "actor": actor, "ms": entry.get("ms"),
+                      "merged_entry": stripped,
+                      "divergence": divergence}
+            self.registry._append_history(being_root, merged)
+            report["merged"] += 1
+
+        tip += 1
+        record = {"being_root": being_root, "embodiment": None,
+                  "cursor": tip, "state": "merge-record",
+                  "body": None, "manifest": None, "actor": actor,
+                  "ms": reanchor[-1].get("ms"),
+                  "divergence": divergence, "base_sha": base_sha,
+                  "merged_cursors": report["merged"]}
+        self.registry._append_history(being_root, record)
+        self.registry._rebuild_snap(being_root)
+        self._clear_merge(being_root)
+        report["tip_cursor"] = tip
+        return report
+
+    def _rewrite_chain(self, being_root: str, entries: list[dict]) -> None:
+        """Replace the local chain with ``entries`` (used when the local
+        branch loses the deterministic base selection)."""
+        path = self.registry._hist_path(being_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(
+            json.dumps(e, separators=(",", ":")) + "\n" for e in entries))
+        snap = self.registry._snap_path(being_root)
+        if snap.exists():
+            snap.unlink()
+
+    def _clear_merge(self, being_root: str) -> None:
+        path = self._merge_path(being_root)
+        if path.exists():
+            path.unlink()
+
+
+def _strip(entry: dict) -> dict:
+    return {k: v for k, v in entry.items() if k != "signature"}

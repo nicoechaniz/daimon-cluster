@@ -88,14 +88,18 @@ class EmbodimentRegistry:
         snap = {"schema": REGISTRY_SCHEMA, "being_root": being_root,
                 "cursor": 0, "embodiments": {}}
         for entry in self.history(being_root):
-            if entry.get("state") == "rollback-note":
+            snap["cursor"] = max(snap["cursor"], entry["cursor"])
+            if entry.get("state") in ("rollback-note", "merged",
+                                      "merge-record"):
+                # branch-merge records preserve the losing path as
+                # history; the census's current rows follow the base
+                # chain (R6)
                 continue
             snap["embodiments"][entry["embodiment"]] = {
                 "state": entry["state"], "body": entry["body"],
                 "manifest": entry.get("manifest"),
                 "cursor": entry["cursor"], "updated_ms": entry["ms"],
                 "actor": entry.get("actor", "system")}
-            snap["cursor"] = max(snap["cursor"], entry["cursor"])
         self._write_snap(being_root, snap)
         return snap
 

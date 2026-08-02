@@ -26,10 +26,20 @@ Skills and larger state ride as experience payloads/refs in v1.
 - Experiences converge by UNION — no cross-origin conflict is
   possible, re-import is idempotent (no duplicates, ever).
 - Chain entries append only when they link onto the local tip. Same
-  cursor with different content = a partition BRANCH: v1 never picks a
-  winner — it flags `wesync/<being>/merge.json` (the dashboard's
-  "mergeando" state, R7) and still weaves experiences. Branch merge is
-  R6's partition+coherent-merge test.
+  cursor with different content = a partition BRANCH: import flags
+  `wesync/<being>/merge.json` (the dashboard's "mergeando" state, R7)
+  and still weaves experiences.
+- **Coherent merge (R6, implemented)** — `wesync.merge_branch` /
+  `clusterctl wesync merge`: both branches HAPPENED; convergence is
+  deterministic (both sides compute it independently to a
+  byte-identical chain). The divergent entry with the smaller
+  canonical sha's branch is the base; the losing branch's entries
+  re-anchor after the base tip as `merged` records carrying the
+  original entry under `merged_entry` (nothing is lost); a
+  `merge-record` entry (side-independent fields only) marks the
+  convergence and the flag clears. The census's current rows follow
+  the base chain; merged records are preserved history. No wall-clock
+  or side-dependent fields touch the merged chain.
 - Common root is enforced: a bundle whose genesis differs from the
   local chain is refused — a different being, not a conflict.
 

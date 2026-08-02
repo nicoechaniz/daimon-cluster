@@ -236,3 +236,21 @@ embodiment registry, lifecycle verbs, purged vocabulary, old→new mapping.
   NO replay: re-executed, iso-b STOPPED for real, discrepancy audited
   (recorded stopped vs observed running), audit chain ok. iso-b
   restored RUNNING.
+
+### M10-R6 done (cad23d3) — handoff as lifecycle + partition/coherent merge
+
+- `wesync.merge_branch` / `clusterctl wesync merge`: DETERMINISTIC
+  merge — smaller canonical sha's branch is the base; the losing branch
+  re-anchors as `merged` records (original entry preserved under
+  `merged_entry`); `merge-record` with side-independent fields only.
+  Both sides compute it independently → byte-identical chains.
+- Census rows follow the base chain (merged records are history);
+  snapshot cursor tracks the chain tip.
+- handoff-failure-matrix.md fully retargeted (scenario 8 = effect-truth,
+  12 = partition+merge; retired lease scenarios kept for the record).
+- tests/test_merge.py (3). **250 passed on main.**
+- LIVE drill with the deployed code (/tmp/wesync-r6-drill): partition
+  (both append independently) → heal (branch flagged both sides,
+  experiences converge) → independent merges → byte-identical chains
+  (states: awake, awake, parked, merged, merge-record), both verify,
+  losing branch preserved, flags cleared.

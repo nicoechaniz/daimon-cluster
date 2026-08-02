@@ -16,7 +16,7 @@ do not enforce the "exec requires a running container" constraint).
 create handoff-probe      → ok
 start handoff-probe       → ok
 park handoff-probe        → ok        (manifest-0.json, fence epoch 0,
-                                       lease_acquired_ms bound)
+                                       resource_fence_acquired_ms bound)
 transfer handoff-probe    → error     (BUG 1 — see below; rollback ran)
 transfer handoff-probe-2  → ok        (resumed; fence epoch 1; sha256
                                        restore verified)
@@ -64,7 +64,7 @@ Fence epochs incremented exactly once each (0 → 1).
   byte-identical inside (`# NOW — handoff probe drilling issue 30`)
 - lease `handoff-probe-2@daimonmatrix`: epoch 1
 - transfer record: `transfer/handoff-probe-to-handoff-probe-2-1.json`
-  (signed, `announcement: same-identity-relocation`, `volume: moved`)
+  (signed, `announcement: embodiment-relocation`, `volume: moved`)
 - audit chain: `verify_chain ok`, 71 events
 
 ## Known v1 limits (recorded, not hidden)

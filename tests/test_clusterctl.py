@@ -30,13 +30,16 @@ STATUS_FIELDS = {
     "species",
     "host",
     "state",
-    "lease_state",
+    "resource_fence_state",
     "image_version",
     "budgets",
     "durable_bytes",
     "hmk_integrity",
     "uptime_s",
     "last_audit_event",
+    "body_ref",
+    "embodiment_id",
+    "incarnation_id",
 }
 BUDGET_FIELDS = {"cpu", "memory_mib", "disk_gib"}
 
@@ -144,7 +147,7 @@ def test_status_schema_shape(state_dir, fake_adapter):
         assert rec["schema"] == STATUS_SCHEMA
         assert set(rec["budgets"]) == BUDGET_FIELDS
         assert rec["host"] == "testhost"
-        assert rec["lease_state"] == "unknown"
+        assert rec["resource_fence_state"] == "unknown"
         assert rec["hmk_integrity"] == "unknown"
 
 
@@ -265,5 +268,5 @@ def test_incus_cli_status_iso_a_undeclared(tmp_path, capsys):
     assert rec["schema"] == STATUS_SCHEMA
     assert rec["name"] == "iso-a"
     assert rec["state"] == "undeclared"
-    assert rec["lease_state"] == "unknown"
+    assert rec["resource_fence_state"] == "unknown"
     assert rec["hmk_integrity"] == "unknown"

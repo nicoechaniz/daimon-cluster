@@ -41,7 +41,7 @@ refuses while a live lease exists (LeaseStore.acquire). Proven by
 tests/test_leases.py (TestAcquire, TestCASFencing, TestMultiDaimon)
 plus scenarios 6–8 above. Issue #30 added acquisition-bound fencing:
 because epochs reset to 0 on re-acquire, the checkpoint manifest binds
-to `lease_acquired_ms` (preserved across renews); a stale holder's
+to `resource_fence_acquired_ms` (preserved across renews); a stale holder's
 manifest never matches a newer acquisition (scenario 7).
 
 **(b) No accepted work from a stale fence.** Every wake/transfer first

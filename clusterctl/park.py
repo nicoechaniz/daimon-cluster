@@ -1,7 +1,7 @@
 """Park with verified checkpoint manifest (issue #28).
 
 ``clusterctl park <name>`` produces a complete, immutable handoff point
-before a daimon relinquishes its lease. Fail-closed per stage, ordered,
+before a daimon relinquishes its concrete resource fence. Fail-closed per stage, ordered,
 idempotent — resumable via a ``park-state/v1`` file at
 ``state_dir/park/<name>.json``.
 
@@ -25,17 +25,17 @@ Sequence:
      REDACT_PATTERNS — any match refuses (fail-closed)
   7. verification — recompute every recorded hash, sqlite integrity must
      be ok, commit sha must resolve via git rev-parse, backup ids listed,
-     active lease required (or explicit ``--no-lease``)
-  8. lease transition + manifest — spec status parking → parked ONLY after
+     active resource fence required (or explicit ``--no-fence``)
+  8. resource-fence transition + manifest — spec status parking → parked ONLY after
      all verifications pass; signed ``checkpoint-manifest/v1`` written to
-     ``state_dir/park/<name>/manifest-<fence_epoch>.json``
+     ``state_dir/park/<name>/manifest-<resource_fence_epoch>.json``
   9. stop — the container is stopped only after the manifest is written
      and verified
 
 Interruption at any step: the park-state file records completed steps and
 their outputs; re-running park resumes — idempotent steps check their
 outputs before redoing. Any failure rolls the spec status back to its
-pre-park value (default ``active``); the lease is never touched.
+pre-park value (default ``active``); the resource fence is never touched.
 
 Exit codes (clusterctl.cli contract): 0 ok, 3 undeclared, 6 conflict
 (refusals: outbox non-empty, secrets, lock), 10 internal (verification
@@ -50,7 +50,7 @@ import logging
 import os
 from pathlib import Path
 
-from . import audit, idempotency, leases
+from . import audit, embodiments, fences, idempotency
 from .inventory import load_spec_raw, load_specs, update_spec
 from .lifecycle import (
     EXIT_CONFLICT,  # noqa: F401  (re-exported for callers/tests)
@@ -157,15 +157,15 @@ def _save_state(cfg, name: str, state: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def sign_manifest(manifest: dict, signer: leases.Signer) -> dict:
+def sign_manifest(manifest: dict, signer: fences.Signer) -> dict:
     """Return a copy of ``manifest`` with a signature over the canonical
     record (manifest minus ``signature``)."""
     signed = dict(manifest)
-    signed["signature"] = signer.sign(leases._canonical(manifest))
+    signed["signature"] = signer.sign(fences._canonical(manifest))
     return signed
 
 
-def verify_manifest(manifest: dict, signer: leases.Signer) -> bool:
+def verify_manifest(manifest: dict, signer: fences.Signer) -> bool:
     """True when ``manifest`` carries a valid signature over its canonical
     body. Unsigned or tampered manifests are rejected."""
     sig = manifest.get("signature")
@@ -173,15 +173,15 @@ def verify_manifest(manifest: dict, signer: leases.Signer) -> bool:
         return False
     if manifest.get("schema") != MANIFEST_SCHEMA:
         return False
-    return signer.verify(leases._canonical(manifest), sig, "")
+    return signer.verify(fences._canonical(manifest), sig, "")
 
 
-def load_manifest(path: str | Path, signer: leases.Signer) -> dict:
+def load_manifest(path: str | Path, signer: fences.Signer) -> dict:
     """Load and verify a checkpoint manifest file. Raises
-    ``leases.InvalidSignature`` when unsigned or tampered."""
+    ``fences.InvalidSignature`` when unsigned or tampered."""
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     if not verify_manifest(raw, signer):
-        raise leases.InvalidSignature(
+        raise fences.InvalidSignature(
             f"checkpoint manifest {path} is unsigned or tampered")
     return raw
 
@@ -191,8 +191,13 @@ def load_manifest(path: str | Path, signer: leases.Signer) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _daimon_id(spec: dict, name: str) -> str:
-    return str(spec.get("daimon_id") or name)
+def _resource_ref(spec: dict, name: str) -> str:
+    """Return the concrete body resource fenced during handoff.
+
+    Older fixture specs may use ``daimon_id`` as an opaque resource label;
+    newly created specs always carry ``body_ref``.
+    """
+    return str(spec.get("body_ref") or spec.get("daimon_id") or f"resource:body:{name}")
 
 
 def _read_backup_ids(state_dir, name: str):
@@ -244,8 +249,8 @@ def run_park(
     actor: str,
     abandon_critical: bool = False,
     force_outbox: bool = False,
-    no_lease: bool = False,
-    signer: leases.Signer | None = None,
+    no_fence: bool = False,
+    signer: fences.Signer | None = None,
     stop_timeout: int = STOP_TIMEOUT_S,
     on_step=None,
 ) -> dict:
@@ -261,7 +266,7 @@ def run_park(
     (verification/internal failure, exit 10); both roll the spec status
     back to its pre-park value.
     """
-    signer = signer or leases.FakeSigner()
+    signer = signer or fences.FakeSigner()
     state = _load_state(cfg, name)
     outputs = state.setdefault("outputs", {})
     completed = state.setdefault("completed", [])
@@ -416,31 +421,31 @@ def run_park(
             if current != outputs["state_commit"]:
                 problems.append("state repo commit sha does not resolve")
         backup_ids = _read_backup_ids(cfg.state_dir, name)
-        if no_lease:
-            lease_epoch, lease_state = None, "no-lease-pre-m7"
-            lease_acquired_ms = None
+        if no_fence:
+            fence_epoch, fence_state = None, "not-required"
+            fence_acquired_ms = None
         else:
-            st = leases.LeaseStore(cfg.state_dir, signer).status(
-                _daimon_id(_spec(), name))
+            st = fences.ResourceFenceStore(cfg.state_dir, signer).status(
+                _resource_ref(_spec(), name))
             if not st["present"] or st["expired"]:
-                problems.append("no active lease held by the daimon "
-                                "(or pass --no-lease for pre-M7 instances)")
-            lease_epoch = st["last_epoch"]
-            lease_state = "active"
-            # acquisition-bound fencing (issue #30): epochs reset to 0
-            # when a new holder re-acquires after expiry, so the manifest
-            # binds to the lease ACQUISITION timestamp, not just the epoch.
-            lease_acquired_ms = st.get("acquired_ms")
+                problems.append("no active resource fence held by the embodiment "
+                                "(or pass --no-fence when no exclusive resource exists)")
+            fence_epoch = st["last_epoch"]
+            fence_state = "active"
+            # Acquisition binding complements the monotonic epoch and catches
+            # restored or manually replaced fence bytes (issue #30).
+            fence_acquired_ms = st.get("acquired_ms")
         if problems:
             raise ParkError("park verification failed: " + "; ".join(problems),
                             {"problems": problems})
-        _done("verify", backup_ids=backup_ids, lease_epoch=lease_epoch,
-              lease=lease_state)
+        _done("verify", backup_ids=backup_ids,
+              resource_fence_epoch=fence_epoch,
+              resource_fence=fence_state)
 
-        # 8. lease transition parking → parked, then signed manifest.
-        fence_epoch = outputs.get("lease_epoch")
+        # 8. resource-fence transition parking → parked, then signed manifest.
+        fence_epoch = outputs.get("resource_fence_epoch")
         manifest_path = (_park_dir(cfg, name) / name
-                         / f"manifest-{fence_epoch if fence_epoch is not None else 'nolease'}.json")
+                         / f"manifest-{fence_epoch if fence_epoch is not None else 'nofence'}.json")
         if not (manifest_path.is_file() and "manifest" in completed):
             update_spec(cfg.instances_dir, name, {"status": "parked"})
             steps_record = []
@@ -464,9 +469,9 @@ def run_park(
                 "critical_jobs": outputs.get("critical_jobs"),
                 "critical_jobs_actor": outputs.get("critical_jobs_actor"),
                 "outbox": outputs.get("outbox"),
-                "lease_epoch": fence_epoch,
-                "lease": outputs.get("lease"),
-                "lease_acquired_ms": lease_acquired_ms,
+                "resource_fence_epoch": fence_epoch,
+                "resource_fence": outputs.get("resource_fence"),
+                "resource_fence_acquired_ms": fence_acquired_ms,
             }, signer)
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = manifest_path.with_name(manifest_path.name + ".tmp")
@@ -480,6 +485,18 @@ def run_park(
         # 9. stop — only after the manifest is written and verified.
         if "stop" not in completed:
             adapter.stop(name, stop_timeout)
+            embodiment_id = _spec().get("embodiment_id")
+            if embodiment_id:
+                try:
+                    embodiments.Registry(cfg.state_dir).stop(embodiment_id)
+                    update_spec(
+                        cfg.instances_dir, name,
+                        {"current_incarnation_id": None},
+                    )
+                except embodiments.RegistryError as exc:
+                    raise ParkError(
+                        f"cannot close embodiment incarnation: {exc}"
+                    ) from exc
         _done("stop")
 
     except ParkError as exc:
@@ -537,7 +554,7 @@ def cmd_park(args, cfg, adapter) -> int:
                 actor=_actor(args),
                 abandon_critical=bool(getattr(args, "abandon_critical", False)),
                 force_outbox=bool(getattr(args, "force_outbox", False)),
-                no_lease=bool(getattr(args, "no_lease", False)),
+                no_fence=bool(getattr(args, "no_fence", False)),
                 stop_timeout=int(getattr(args, "timeout", STOP_TIMEOUT_S)),
             )
         except ParkRefused as exc:
@@ -555,12 +572,12 @@ def cmd_park(args, cfg, adapter) -> int:
             "manifest": result["manifest"],
             "critical_jobs": result["checkpoint"].get("critical_jobs"),
             "outbox": result["checkpoint"].get("outbox"),
-            "lease_epoch": result["checkpoint"].get("lease_epoch"),
+            "resource_fence_epoch": result["checkpoint"].get("resource_fence_epoch"),
             **stale,
         })
         _emit(args, result,
               f"parked {name}: checkpoint manifest {result['manifest']} "
-              f"(lease_epoch {result['checkpoint'].get('lease_epoch')}, "
+              f"(resource_fence_epoch {result['checkpoint'].get('resource_fence_epoch')}, "
               f"critical_jobs {result['checkpoint'].get('critical_jobs')}, "
               f"container stopped)")
         return EXIT_OK

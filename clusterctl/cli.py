@@ -117,8 +117,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "with --handoff, full verified checkpoint manifest ceremony "
         "(issue #28)")
     p_park.add_argument("--handoff", action="store_true",
-                        help="run the M7 handoff park ceremony (checkpoint "
-                             "manifest + lease transition) instead of the "
+                        help="run the handoff park ceremony (checkpoint "
+                             "manifest + resource-fence transition) instead of the "
                              "writer-quiesce park")
     p_park.add_argument("--abandon-critical", action="store_true",
                         dest="abandon_critical",
@@ -128,9 +128,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         dest="force_outbox",
                         help="override a non-empty bridge outbox (refused "
                              "by default, fail-closed)")
-    p_park.add_argument("--no-lease", action="store_true", dest="no_lease",
-                        help="park a pre-M7 instance without an active "
-                             "lease (recorded explicitly in the manifest)")
+    p_park.add_argument("--no-fence", action="store_true", dest="no_fence",
+                        help="park a body with no fenced writable resource "
+                             "(recorded explicitly in the manifest)")
     _mutation("wake", "wake a parked daimon (SIGCONT hermes, issue #23)")
     p_wake = sub.choices["wake"]
     p_wake.add_argument("--handoff", action="store_true",
@@ -139,10 +139,10 @@ def _build_parser() -> argparse.ArgumentParser:
                              "instead of the writer-resume wake")
     p_transfer = _mutation(
         "transfer",
-        "same-host identity relocation (issue #29): parked source -> new "
+        "same-host embodiment relocation (issue #29): parked source -> new "
         "container with verified checkpoint + new fence")
     p_transfer.add_argument("--to", required=True, dest="to",
-                            help="new instance name for the relocated identity")
+                            help="new instance name for the relocated embodiment")
 
     p_logs = sub.add_parser("logs", help="fetch instance logs (bounded, secrets redacted)")
     p_logs.add_argument("name", help="instance name")
@@ -160,7 +160,7 @@ def _build_parser() -> argparse.ArgumentParser:
     prov_sub = p_prov.add_subparsers(dest="provision_command", required=True)
     p_prep = prov_sub.add_parser(
         "prepare",
-        help="create container+volume+identity, emit confirmation token, then HALT")
+        help="create container+volume+embodiment, emit confirmation token, then HALT")
     p_prep.add_argument("name", help="instance (daimon) name")
     p_prep.add_argument("--species", required=True, help="species tag recorded in the spec")
     p_prep.add_argument("--requested-by", required=True, dest="requested_by",

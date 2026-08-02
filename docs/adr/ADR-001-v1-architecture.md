@@ -23,48 +23,29 @@ Overlap map:
 
 ---
 
-## D1 — Lease representation (PLAN Q1)
+## D1 — Embodiments and resource fencing (rectified 2026-08-02)
 
-**Decision: ACCEPTED — dedicated signed lease registry, outside the
-governance directory.**
+**Decision: ACCEPTED — runtime plurality is represented by a body/embodiment/
+incarnation registry; CAS/TTL fencing applies only to concrete writable
+resources.** This decision supersedes the original identity-wide lease text.
 
-Rejected alternatives:
+- One body receives a stable `body_ref` and `embodiment_id`; each start opens
+  a fresh `incarnation_id`.
+- Multiple embodiments installed under one `being-manifest/v1` may be awake.
+  Cluster observes this plurality but does not prove same-being identity.
+- A `resource-fence/v1` names exactly one `resource_ref`, one holder
+  embodiment, a monotonic epoch, acquisition time, TTL, and signature.
+- CAS rejects a competing or stale writer only for the same `resource_ref`.
+  Different volumes, databases, or mutation lanes do not conflict merely
+  because their holders are embodiments of one being.
+- Tribe delivery never consults a presence-exclusion registry. It transports
+  typed encrypted messages; Weave and Matrix validate event meaning/origin.
+- A failed relocation leaves the concrete resource safely fenced or parked.
+  It never invalidates another embodiment or rolls back a being's existence.
 
-- *Full governance epoch bump per move* (PLAN Q1 option A): legitimate but
-  heavyweight; conflates identity governance with runtime state; every move
-  would require the offline governance holder. Rejected.
-- *Signed metadata field in the directory updated by the current governance
-  holder* (PLAN Q1 option B, the PLAN's own proposal): still couples dynamic
-  runtime state to the identity registry and forces directory re-issuance
-  (or stale metadata) on every move. Rejected in favor of a separate
-  registry whose trust root is the same governance key but whose cadence is
-  operational, not constitutional.
-
-Registry semantics (binding for M7):
-
-- Record: `{identity, holder, state: awake|asleep|transitioning, generation,
-  fencing_token (monotonic uint64), ttl_ms, updated_at, signature}`.
-- Updates are **compare-and-swap** on `(identity, generation)`; a writer
-  presenting a stale generation is rejected (`generation_conflict`).
-- **Fencing**: every stateful operation by a lease holder carries the current
-  `fencing_token`. The broker and transfer tooling reject any token lower
-  than the last-seen token for that identity (**stale-writer rejection**) —
-  this is what prevents a previously-awake body from acting after the flip.
-- **TTL with explicit states**: `awake` leases must be renewed before TTL
-  expiry; an expired lease degrades to `asleep`, never to ambiguity. A body
-  that loses its lease mid-work stops accepting new work and parks itself.
-- **Broker enforcement**: the tribe-bridge v1 broker consults the registry
-  for direct-message delivery. Delivery to an `asleep` holder is **queued,
-  not delivered**; delivery to `transitioning` is deferred until the state
-  resolves; `awake` delivers normally. Registry reads are cached only for
-  seconds and never override a fresher fencing token presented by a sender.
-- **Failure posture**: conservative. A failed flip leaves the identity
-  `asleep` everywhere — never awake twice. Humans wake it manually.
-- Directory epoch bumps remain for identity/key/audience changes only.
-
-Consequences: a new small service/table to build (M7, issues #27–#30) and a
-broker hook; in exchange, park-and-pull becomes safe under crash and
-split-brain conditions without governance-holder availability.
+Consequences: M7 quiesce, snapshot, CAS, audit, rollback, and failure-injection
+mechanics are retained. `clusterctl.leases` is a temporary import alias for
+`ResourceFenceStore`; public artifacts and APIs use resource-fence names.
 
 ## D2 — Steward identity and host residency (PLAN Q2 + DESIGN Q1)
 
@@ -91,12 +72,12 @@ scoped-credential compromise, not host compromise.
 
 ## D3 — State repositories (PLAN Q3 + DESIGN Q2)
 
-**Decision: ACCEPTED — one private state repository per daimon identity.**
+**Decision: ACCEPTED — one private state repository per embodiment.**
 Exception: one per human where a single human owns several tightly coupled
 identities. Never a shared branch-based repository.
 
-Rationale: blast radius per identity, independent ACLs, clean rebirth
-semantics (`/we.pull` already assumes one repo per identity), no cross-agent
+Rationale: blast radius per embodiment, independent ACLs, clean rebirth
+semantics (`/we.pull` assumes independent ledgers/stores), no cross-agent
 branch contention. Consequences: slightly more repos to administer; the
 onboarding ceremony (M8, #31) must include repo provisioning.
 
@@ -164,12 +145,12 @@ OK because it is a host-level change.
 
 **Decision: ACCEPTED — six separated roles:**
 
-1. Tribe member requests (states desired identity + human sponsor).
-2. Human sponsor confirms ownership of the identity.
+1. A human requests a hosted body (species, capacity, and sponsor).
+2. The sponsor confirms the request and its resource budget.
 3. Cluster owner (Nicolás) approves capacity.
-4. Governance registers the identity (directory epoch bump — the ONLY
-   governance touch in the flow).
-5. Steward provisions (container, keys generated inside, scoped creds).
+4. Steward provisions a new body and embodiment; no being or Tribe
+   membership is inferred.
+5. Keys are generated inside the body and transport credentials are scoped.
 6. Member supplies their own private provider credentials (never shared,
    never Nicolás's keys).
 

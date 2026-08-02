@@ -25,6 +25,12 @@ Overlap map:
 
 ## D1 — Lease representation (PLAN Q1)
 
+> **SUPERSEDED (2026-08-02, M10-R2).** The lease registry as identity
+> authority is a retired misconception (`docs/design/ontology.md`). The
+> embodiment registry (`docs/design/embodiment-registry.md`) is a CENSUS
+> and sync directory, never an exclusion mechanism; the signed,
+> governance-rooted, append-only properties decided below survive in it.
+
 **Decision: ACCEPTED — dedicated signed lease registry, outside the
 governance directory.**
 

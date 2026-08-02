@@ -61,7 +61,7 @@ from ``incarnation-creation`` (provision). The field is recorded in
 audit detail — clusterctl never broadcasts it.
 
 Exit codes (clusterctl.cli contract): 0 ok, 3 undeclared, 6 conflict
-(refusals: not parked, no manifest, tampered manifest, stale fence),
+(refusals: not parked, no manifest, tampered manifest, stale checkpoint),
 10 internal.
 """
 
@@ -141,7 +141,7 @@ class TransferError(Exception):
 
 
 class TransferRefused(TransferError):
-    """Policy refusal (not parked, no/tampered manifest, stale fence). Exit 6."""
+    """Policy refusal (not parked, no/tampered manifest, stale checkpoint). Exit 6."""
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,16 @@
 # Matrix convergence — daimon-cluster response to issue #40
 
+> **SUPERSEDED (2026-08-02, M10 ontology rectification — same day,
+> later).** This convergence plan accepted codex's M7 audit by proposing
+> BETTER LEASE MECHANICS (SQLite CAS, fencing epochs). Hours later
+> Nicolás rectified the ontology itself: the problem was never the
+> lease's implementation quality but the single-body conception
+> underneath. The canonical ontology is `docs/design/ontology.md`; what
+> survived of this plan: the quiesce/snapshot/audit/failure-injection
+> machinery (unchanged) and the CAS idea, repurposed as append-only
+> cursor/registration semantics in the embodiment registry (M10-R2/R3).
+> Kept as the record of how the misconception was first approached.
+
 Status: design response (2026-08-02). Author: compaii@daimonmatrix.
 Input: nicoechaniz/daimon-cluster#40 and AlterMundi/daimon-matrix#71
 (DM-037), both authored by codex-compaii@legion.

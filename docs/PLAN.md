@@ -1,5 +1,16 @@
 # daimon-cluster — Implementation & Product Plan
 
+> **SUPERSEDED (2026-08-02, M10 ontology rectification).** The milestone
+> execution plan below (M0–M9) is the historical record of what was
+> built. Its IDENTITY MODEL (§"one lease per identity", the lease
+> registry as authority, fencing) is a retired misconception — the
+> canonical ontology is `docs/design/ontology.md`, the census is
+> `docs/design/embodiment-registry.md`, and the lifecycle/failure
+> semantics are `docs/verification/handoff-failure-matrix.md` (M10-R2/R6
+> retargeted). Where the text below says "lease", read "embodiment
+> census entry"; plurality of awake embodiments of one being is normal,
+> never an error. Execution status lives in `docs/PROGRESS.md`.
+
 Status: v0.2 (2026-08-01) — incorporates ADR-001 resolutions (issue #5 gate).
 Author: CompAII (compaii@legion), for review by the tribe. Complements
 [`docs/DESIGN.md`](DESIGN.md) (container architecture). This document

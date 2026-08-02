@@ -321,13 +321,19 @@ class WeSync:
         return False
 
     def _entry_differs(self, bundle: dict, entry: dict) -> bool:
-        local = {e["cursor"]: e for e in
-                 self.registry.history(bundle["being_root"])}
-        mine = local.get(entry["cursor"])
+        local = self.registry.history(bundle["being_root"])
+        mine = {e["cursor"]: e for e in local}.get(entry["cursor"])
         if mine is None:
             return False
-        strip = lambda e: {k: v for k, v in e.items() if k != "signature"}
-        return strip(mine) != strip(entry)
+        if _strip(mine) == _strip(entry):
+            return False
+        # already re-anchored by an earlier merge = converged, not a
+        # branch (a stale pre-merge bundle replayed after the heal)
+        entry_sha = _sha256_hex(_canonical(_strip(entry)))
+        merged_shas = {
+            _sha256_hex(_canonical(e["merged_entry"]))
+            for e in local if e.get("state") == "merged"}
+        return entry_sha not in merged_shas
 
     def _flag_merge(self, being_root: str, peer: str, actor: str) -> None:
         """The 'mergeando' state (R7 dashboard): a branch exists and no
@@ -377,12 +383,19 @@ class WeSync:
         local = self.registry.history(being_root)
         remote = bundle["chain_segment"]
         by_cursor = {e["cursor"]: e for e in local}
+        # entries already re-anchored by an earlier merge are CONVERGED,
+        # not divergent — the merge must be idempotent
+        merged_shas = {
+            _sha256_hex(_canonical(e["merged_entry"]))
+            for e in local if e.get("state") == "merged"}
 
         divergence = None
         remote_at = None
         for entry in remote:
             mine = by_cursor.get(entry["cursor"])
             if mine is not None and _strip(mine) != _strip(entry):
+                if _sha256_hex(_canonical(_strip(entry))) in merged_shas:
+                    continue  # already woven in — nothing to do
                 divergence, remote_at = entry["cursor"], entry
                 break
         if divergence is None:

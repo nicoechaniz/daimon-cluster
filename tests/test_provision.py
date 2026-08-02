@@ -105,11 +105,14 @@ def test_prepare_duplicate_name_rejected(state_dir, capsys):
 
 
 def test_prepare_idempotent_replay(state_dir, capsys):
-    code1, _ = _prepare(state_dir)
+    code1, ad = _prepare(state_dir)
     out1 = json.loads(capsys.readouterr().out)
-    code2, _ = _prepare(state_dir)
+    assert code1 == 0
+    # same adapter: production incus is a shared substrate (R5 —
+    # effect-truth verification needs the same shared world)
+    code2, _ = _prepare(state_dir, adapter=ad)
     out2 = json.loads(capsys.readouterr().out)
-    assert code1 == 0 and code2 == 0
+    assert code2 == 0
     assert out2.get("idempotent-replay") is True
     assert out2["token"] == out1["token"]
 

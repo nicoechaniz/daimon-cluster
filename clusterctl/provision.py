@@ -251,7 +251,7 @@ def _reverse_and_fail(args, cfg, adapter, name, spec, stale, exc, created) -> in
 def cmd_provision_prepare(args, cfg, adapter) -> int:
     name, operation = args.name, "provision-prepare"
     store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store)
+    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
     if rc is not None:
         return rc
 

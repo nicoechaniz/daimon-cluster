@@ -47,13 +47,19 @@ def test_create_duplicate_name_conflict(state_dir, capsys):
 
 
 def test_idempotent_replay(state_dir, capsys):
-    _run(state_dir, "create", "daimon-x", "--species", "t", "--idempotency-key", UUID1)
+    code, ad = _run(state_dir, "create", "daimon-x", "--species", "t",
+                    "--idempotency-key", UUID1)
+    assert code == 0
     capsys.readouterr()
+    # same adapter: production incus is a shared substrate (R5 — the
+    # replay is verified against OBSERVED state, so the test's fake
+    # must model the same shared world)
     code, _ = _run(state_dir, "create", "daimon-x", "--species", "t",
-                   "--idempotency-key", UUID1, "--json")
+                   "--idempotency-key", UUID1, "--json", adapter=ad)
     assert code == 0
     out = json.loads(capsys.readouterr().out)
     assert out.get("idempotent-replay") is True
+    assert out.get("effect-truth") == "verified"
 
 
 def test_idempotency_key_reuse_different_op_conflicts(state_dir, capsys):

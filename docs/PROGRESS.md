@@ -220,3 +220,19 @@ embodiment registry, lifecycle verbs, purged vocabulary, old→new mapping.
   embodiments compaii@daimonmatrix + compaii@legion in two state dirs —
   record → export → import both directions, converged IDENTICAL with
   attribution intact, chain ok at cursor 2, re-import 0 appended.
+
+### M10-R5 done (9c260c9) — effect-truth idempotency
+
+- `_check_idempotency` verifies the recorded effect against OBSERVED
+  state before serving a replay (root-fix of the drill #26 class:
+  replaying "stop ok" while the body was running).
+- Contradiction → audit `effect-truth-discrepancy` + fresh execution
+  (operations are state-convergent; replaying a lie is not).
+  Unverifiable → fresh only for convergent ops; snapshot-create refuses
+  instead of guessing. human_turn keying untouched (UX dedupe).
+- tests/test_effect_truth.py (4). **247 passed on main.**
+- LIVE verified on real incus: stop iso-b → retry same key → verified
+  replay; start iso-b DIRECTLY via incus (the lie) → retry same key →
+  NO replay: re-executed, iso-b STOPPED for real, discrepancy audited
+  (recorded stopped vs observed running), audit chain ok. iso-b
+  restored RUNNING.

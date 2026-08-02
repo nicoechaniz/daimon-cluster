@@ -95,7 +95,7 @@ def _prune_snapshots(adapter, name: str) -> list[str]:
 def cmd_snapshot_create(args, cfg, adapter) -> int:
     name, operation = args.name, SNAPSHOT_OPERATION
     store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store)
+    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
     if rc is not None:
         return rc
 

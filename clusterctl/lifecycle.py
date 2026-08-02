@@ -117,16 +117,64 @@ def _audit_ok(args, cfg, action: str, target: str, detail: dict | None = None) -
     )
 
 
-def _check_idempotency(args, cfg, operation: str, name: str, store: dict):
-    """Handle replay/conflict. Returns an exit code, or None to proceed."""
+def _check_idempotency(args, cfg, operation: str, name: str, store: dict,
+                       adapter) -> int | None:
+    """Handle replay/conflict. Returns an exit code, or None to proceed.
+
+    M10-R5 — effect-truth idempotency: a replay is served ONLY when the
+    observed state matches the recorded effect. If reality contradicts
+    the record (the drill #26 bug class: the store said "stopped" while
+    the body was running), the record was a lie — we do NOT replay; we
+    audit the discrepancy and execute fresh. Operations are
+    state-convergent, so re-execution is safe; replaying a lie is not.
+    """
     status, entry = idempotency.check(store, _idem_key(args), operation, name)
     if status == "replay":
-        _audit_ok(args, cfg, operation, name, {"idempotent_replay": True})
-        payload = dict(entry.get("result") or {})
-        payload["idempotent-replay"] = True
-        _emit(args, payload,
-              f"idempotent-replay: {operation} {name} (key {_idem_key(args)}) — no-op")
-        return EXIT_OK
+        truth, observed = _verify_effect(cfg, adapter, operation, name,
+                                         entry.get("result") or {})
+        if truth == "matches":
+            _audit_ok(args, cfg, operation, name,
+                      {"idempotent_replay": True, "effect_truth": "verified",
+                       "observed": observed})
+            payload = dict(entry.get("result") or {})
+            payload["idempotent-replay"] = True
+            payload["effect-truth"] = "verified"
+            _emit(args, payload,
+                  f"idempotent-replay: {operation} {name} (key {_idem_key(args)}) — no-op")
+            return EXIT_OK
+        if truth == "unverifiable" and operation not in _EFFECT_CONVERGENT_OPS:
+            # re-execution would NOT converge (e.g. snapshot-create would
+            # make a second snapshot) — refuse instead of guessing
+            audit.append_event(
+                cfg.state_dir, actor=_actor(args), action=operation,
+                target=name, result="error",
+                detail={"kind": "effect-unverifiable-refused",
+                        "recorded_effect": entry.get("result"),
+                        "observed": observed,
+                        "idempotency_key": _idem_key(args)},
+                idempotency_key=_idem_key(args),
+                request_id=_request_id(args),
+                action_digest=_action_digest(args))
+            return _fail(
+                args, cfg, operation, name,
+                f"recorded effect for key {_idem_key(args)} cannot be "
+                f"verified and {operation} does not converge — refusing "
+                "to guess (retry with a new key to force execution)",
+                EXIT_INTERNAL)
+        # contradiction or convergent-unverifiable: audit and fall
+        # through to a FRESH execution (the fresh record overwrites the
+        # false one)
+        audit.append_event(
+            cfg.state_dir, actor=_actor(args), action=operation, target=name,
+            result="error",
+            detail={"kind": "effect-truth-discrepancy",
+                    "recorded_effect": entry.get("result"),
+                    "observed": observed, "verdict": truth,
+                    "idempotency_key": _idem_key(args)},
+            idempotency_key=_idem_key(args),
+            request_id=_request_id(args),
+            action_digest=_action_digest(args))
+        return None
     if status == "conflict":
         return _fail(
             args, cfg, operation, name,
@@ -140,6 +188,68 @@ def _check_idempotency(args, cfg, operation: str, name: str, store: dict):
             }},
         )
     return None
+
+
+def _verify_effect(cfg, adapter, operation: str, name: str,
+                   recorded: dict) -> tuple[str, dict]:
+    """Compare the recorded effect against observed reality.
+
+    Returns (verdict, observed) where verdict is "matches" (replay is
+    honest), "contradicts" (the record was a lie) or "unverifiable"
+    (no recorded effect to check — fall through to fresh execution).
+    """
+    # snapshot-create: the effect is a named snapshot on the instance
+    if recorded.get("snap_name"):
+        try:
+            present = bool(adapter.incus_snapshot_verify(
+                name, recorded["snap_name"]))
+        except Exception as exc:
+            return "unverifiable", {"error": str(exc)}
+        return ("matches" if present else "contradicts",
+                {"snapshot": recorded["snap_name"], "present": present})
+
+    # provision: the effect is a declared spec + a created container
+    if recorded.get("state") == "provisioned-pending-activation":
+        from .inventory import load_spec_raw
+        spec = load_spec_raw(cfg.instances_dir, name)
+        try:
+            present = any(inst["name"] == name
+                          for inst in adapter.list_instances())
+        except Exception as exc:
+            return "unverifiable", {"error": str(exc)}
+        observed = {"spec_present": spec is not None,
+                    "container_present": present}
+        if spec is not None and present:
+            return "matches", observed
+        return "contradicts", observed
+
+    try:
+        actual = {inst["name"]: inst for inst in adapter.list_instances()}
+    except Exception as exc:  # adapter unreachable → cannot verify
+        return "unverifiable", {"error": str(exc)}
+    observed_inst = actual.get(name)
+    observed_state = (observed_inst or {}).get("state")
+    observed = {"present": observed_inst is not None, "state": observed_state}
+
+    expected_state = recorded.get("state")
+    if expected_state is None:
+        return "unverifiable", observed
+    # recorded states: "stopped" (create/stop/park), "active"
+    # (start/restart/wake/transfer)
+    want_running = expected_state in ("active", "running")
+    got_running = observed_state == "running"
+    if want_running == got_running and observed_inst is not None:
+        return "matches", observed
+    return "contradicts", observed
+
+
+# Operations whose fresh re-execution converges to the desired end
+# state (safe when a record is found false). Operations NOT listed
+# here refuse when their effect is unverifiable, instead of guessing.
+_EFFECT_CONVERGENT_OPS = frozenset({
+    "create", "start", "stop", "restart", "park", "wake", "transfer",
+    "provision-prepare", "provision-confirm",
+})
 
 
 def _record_idempotency(args, cfg, operation: str, name: str,
@@ -181,7 +291,7 @@ def _write_spec(instances_dir: Path, spec: dict) -> Path:
 def cmd_create(args, cfg, adapter) -> int:
     name, operation = args.name, "create"
     store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store)
+    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
     if rc is not None:
         return rc
 
@@ -261,7 +371,7 @@ def cmd_create(args, cfg, adapter) -> int:
 def cmd_power(args, cfg, adapter, operation: str) -> int:
     name = args.name
     store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store)
+    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
     if rc is not None:
         return rc
 
@@ -315,7 +425,7 @@ def cmd_parkwake(args, cfg, adapter, operation: str) -> int:
     as every other lifecycle mutation; the adapter only executes."""
     name = args.name
     store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store)
+    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
     if rc is not None:
         return rc
 

@@ -184,3 +184,22 @@ embodiment registry, lifecycle verbs, purged vocabulary, old→new mapping.
   two-holders race retired as a concept). **226 passed on main.**
 - Live verified: clusterd active, /v1/registry 200 (empty census — clean
   start), dashboard 200, old /v1/leases 404, journal clean.
+
+### M10-R3 done (d25b07e) — chain of existence
+
+- Registry history IS the being's chain of existence: every entry carries
+  `prev_sha256` + `genesis_sha` (root anchor, reproducible from the
+  on-disk genesis entry alone).
+- `verify_chain(being_root)`: signatures + increasing cursors + intact
+  prev links + one genesis_sha + genesis declares the same root.
+- `segment(being_root, after_cursor)`: the /we.sync (R4) export
+  primitive. `verify_common_root(a, b)`: same being iff shared genesis.
+- Chain is authoritative, snapshot a derived view: a host receiving a
+  segment rebuilds the snapshot before mutating (found via cross-host
+  test — register used to derive cursor 1 from the missing snapshot).
+- CAS machinery conserved, repurposed: park→wake→park→transfer writes a
+  verifiable 5-cursor chain (end-to-end test).
+- tests/test_chain.py (10). **236 passed on main.**
+- Live verified with the DEPLOYED code (real venv, real module): chain
+  verify ok, segment export ok, other-host append at cursor 3 with chain
+  intact, common root ok. clusterd active, health ok.

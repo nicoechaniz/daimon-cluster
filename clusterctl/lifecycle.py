@@ -25,11 +25,12 @@ from __future__ import annotations
 
 import json
 import sys
+import uuid
 from pathlib import Path
 
 import yaml
 
-from . import audit, embodiments, idempotency, locks
+from . import audit, embodiments, fences, idempotency, locks
 from .inventory import SPEC_SCHEMA, load_spec_raw, load_specs, update_spec
 
 EXIT_OK = 0
@@ -118,37 +119,61 @@ def _audit_ok(args, cfg, action: str, target: str, detail: dict | None = None) -
 
 
 def _check_idempotency(args, cfg, operation: str, name: str, store: dict,
-                       *, adapter=None, expected_state: str | None = None):
-    """Handle replay/conflict. Returns an exit code, or None to proceed."""
+                       adapter) -> int | None:
+    """Replay only when the recorded effect still matches reality.
+
+    An idempotency hit is a replay *candidate*, not proof that the effect is
+    still true. Contradictory or safely re-checkable effects execute again so
+    the operation converges; unverifiable non-convergent effects fail closed.
+    """
     status, entry = idempotency.check(store, _idem_key(args), operation, name)
     if status == "replay":
-        if adapter is not None and expected_state is not None:
-            try:
-                actual = next(
-                    (item for item in adapter.list_instances()
-                     if item.get("name") == name), None
-                )
-            except Exception:
-                actual = None
-            observed_state = None if actual is None else actual.get("state")
-            if observed_state != expected_state:
-                audit.append_event(
-                    cfg.state_dir, actor=_actor(args), action=operation,
-                    target=name, result="ok",
-                    detail={"idempotency_effect_drift": True,
-                            "cached_state": expected_state,
-                            "observed_state": observed_state},
-                    idempotency_key=_idem_key(args),
-                    request_id=_request_id(args),
-                    action_digest=_action_digest(args),
-                )
-                return None
-        _audit_ok(args, cfg, operation, name, {"idempotent_replay": True})
-        payload = dict(entry.get("result") or {})
-        payload["idempotent-replay"] = True
-        _emit(args, payload,
-              f"idempotent-replay: {operation} {name} (key {_idem_key(args)}) — no-op")
-        return EXIT_OK
+        recorded = entry.get("result") or {}
+        truth, observed = _verify_effect(cfg, adapter, operation, name, recorded)
+        if truth == "matches":
+            _audit_ok(args, cfg, operation, name, {
+                "idempotent_replay": True,
+                "effect_truth": "verified",
+                "observed": observed,
+            })
+            payload = dict(recorded)
+            payload["idempotent-replay"] = True
+            payload["effect-truth"] = "verified"
+            _emit(
+                args, payload,
+                f"idempotent-replay: {operation} {name} "
+                f"(key {_idem_key(args)}) — verified no-op",
+            )
+            return EXIT_OK
+        if not _effect_reexecution_is_safe(operation, recorded, truth):
+            return _fail(
+                args, cfg, operation, name,
+                f"recorded effect for key {_idem_key(args)} cannot be "
+                f"verified as current and {operation} is not safely "
+                "convergent; refusing",
+                EXIT_INTERNAL, audit_result="error",
+                detail={
+                    "kind": "effect-truth-refused",
+                    "recorded_effect": recorded,
+                    "observed": observed,
+                    "verdict": truth,
+                },
+            )
+        audit.append_event(
+            cfg.state_dir, actor=_actor(args), action=operation, target=name,
+            result="error",
+            detail={
+                "kind": "effect-truth-discrepancy",
+                "recorded_effect": recorded,
+                "observed": observed,
+                "verdict": truth,
+                "idempotency_key": _idem_key(args),
+            },
+            idempotency_key=_idem_key(args),
+            request_id=_request_id(args),
+            action_digest=_action_digest(args),
+        )
+        return None
     if status == "conflict":
         return _fail(
             args, cfg, operation, name,
@@ -162,6 +187,268 @@ def _check_idempotency(args, cfg, operation: str, name: str, store: dict,
             }},
         )
     return None
+
+
+def _verify_effect(cfg, adapter, operation: str, name: str,
+                   recorded: dict) -> tuple[str, dict]:
+    """Compare one operation's recorded postcondition with current reality.
+
+    A runtime state is not a universal effect verifier: a quiesced writer can
+    live in a running container, and handoff operations also bind durable
+    records and resource-fence generations.  Keep the checks operation-shaped
+    so adding a lifecycle verb cannot silently inherit the wrong semantics.
+    """
+    if operation == "snapshot-create":
+        snap_name = recorded.get("snap_name")
+        if not isinstance(snap_name, str) or not snap_name:
+            return "unverifiable", {"reason": "missing recorded snapshot"}
+        try:
+            present = bool(adapter.incus_snapshot_verify(name, snap_name))
+        except Exception as exc:
+            return "unverifiable", {"error": str(exc)}
+        manifest = _path_observation(recorded.get("manifest"))
+        observed = {
+            "snapshot": snap_name,
+            "present": present,
+            "manifest": manifest,
+        }
+        return (
+            "matches" if present and manifest.get("present") else "contradicts",
+            observed,
+        )
+
+    if operation == "provision-prepare":
+        spec = load_spec_raw(cfg.instances_dir, name)
+        try:
+            present = any(
+                item.get("name") == name for item in adapter.list_instances()
+            )
+        except Exception as exc:
+            return "unverifiable", {"error": str(exc)}
+        token = _confirmation_observation(cfg, name, recorded.get("token"))
+        observed = {
+            "spec_present": spec is not None,
+            "spec_state": None if spec is None else spec.get("state"),
+            "container_present": present,
+            "confirmation": token,
+        }
+        matches = (
+            spec is not None
+            and spec.get("state") == "provisioned-pending-activation"
+            and present
+            and token.get("valid") is True
+        )
+        return ("matches" if matches else "contradicts", observed)
+
+    observed_name = str(recorded.get("target") or name)
+    runtime_truth, observed = _runtime_state_observation(
+        adapter, observed_name, operation, recorded,
+    )
+    if runtime_truth != "matches":
+        return runtime_truth, observed
+
+    if operation == "park" and recorded.get("manifest"):
+        manifest = _path_observation(recorded.get("manifest"))
+        checkpoint_matches = _json_file_matches(
+            recorded.get("manifest"), recorded.get("checkpoint"),
+        )
+        fence = _resource_fence_observation(cfg, name, recorded)
+        observed.update({
+            "manifest": manifest,
+            "checkpoint_matches": checkpoint_matches,
+            "resource_fence": fence,
+        })
+        matches = (
+            manifest.get("present") is True
+            and checkpoint_matches is True
+            and fence.get("matches") is True
+        )
+        return ("matches" if matches else "contradicts", observed)
+
+    if operation in {"wake", "transfer"}:
+        record_key = "wake_record" if operation == "wake" else "transfer_record"
+        durable_record = _path_observation(recorded.get(record_key))
+        manifest = _path_observation(recorded.get("manifest"))
+        fence = _resource_fence_observation(cfg, name, recorded)
+        observed.update({
+            record_key: durable_record,
+            "manifest": manifest,
+            "resource_fence": fence,
+        })
+        matches = (
+            durable_record.get("present") is True
+            and manifest.get("present") is True
+            and fence.get("matches") is True
+        )
+        return ("matches" if matches else "contradicts", observed)
+
+    return "matches", observed
+
+
+def _runtime_state_observation(adapter, observed_name: str, operation: str,
+                               recorded: dict) -> tuple[str, dict]:
+    """Verify only substrate state; never infer writer quiescence from it."""
+    try:
+        actual = {
+            item.get("name"): item for item in adapter.list_instances()
+            if item.get("name")
+        }
+    except Exception as exc:
+        return "unverifiable", {"name": observed_name, "error": str(exc)}
+    observed_instance = actual.get(observed_name)
+    observed_state = str((observed_instance or {}).get("state") or "").lower()
+    observed = {
+        "name": observed_name,
+        "present": observed_instance is not None,
+        "state": observed_state or None,
+    }
+    if observed_instance is None:
+        return "contradicts", observed
+
+    # Plain park only SIGSTOPs writers; Incus correctly remains "running".
+    # There is no read-only adapter probe for that postcondition, so a retry
+    # must execute the convergent quiesce operation instead of claiming truth.
+    if operation == "park" and not recorded.get("manifest"):
+        return "unverifiable", {
+            **observed,
+            "reason": "writer quiescence is not observable",
+        }
+
+    expected = {
+        "create": "stopped",
+        "start": "running",
+        "stop": "stopped",
+        "restart": "running",
+        "park": "stopped",       # full --handoff park
+        "wake": "running",
+        "transfer": "running",  # target selected above
+    }.get(operation)
+    if expected is None:
+        return "unverifiable", {
+            **observed,
+            "reason": f"no verifier for operation {operation}",
+        }
+    observed["expected_state"] = expected
+    return ("matches" if observed_state == expected else "contradicts", observed)
+
+
+def _path_observation(value) -> dict:
+    if not isinstance(value, str) or not value:
+        return {"path": value, "present": False}
+    return {"path": value, "present": Path(value).is_file()}
+
+
+def _json_file_matches(value, expected) -> bool:
+    if not isinstance(value, str) or not isinstance(expected, dict):
+        return False
+    try:
+        actual = json.loads(Path(value).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return actual == expected
+
+
+def _confirmation_observation(cfg, name: str, token) -> dict:
+    if not isinstance(token, str) or not token:
+        return {"token": token, "present": False, "valid": False}
+    try:
+        if str(uuid.UUID(token)) != token:
+            raise ValueError
+    except ValueError:
+        return {"token": token, "present": False, "valid": False}
+    path = Path(cfg.state_dir) / "confirmations" / f"{token}.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"token": token, "present": path.is_file(), "valid": False}
+    created_ms = value.get("created_ms")
+    ttl_s = value.get("ttl_s")
+    temporal_shape = (
+        isinstance(created_ms, int) and not isinstance(created_ms, bool)
+        and isinstance(ttl_s, int) and not isinstance(ttl_s, bool)
+        and ttl_s >= 0
+    )
+    expired = (
+        not temporal_shape
+        or audit.now_ms() > created_ms + ttl_s * 1000
+    )
+    valid = (
+        value.get("schema") == "confirmation/v1"
+        and value.get("operation") == "provision-activate"
+        and value.get("target") == name
+        and value.get("token") == token
+        and value.get("used") is False
+        and not expired
+    )
+    return {
+        "token": token,
+        "present": True,
+        "used": value.get("used"),
+        "expired": expired,
+        "valid": valid,
+    }
+
+
+def _resource_fence_observation(cfg, name: str, recorded: dict) -> dict:
+    checkpoint = recorded.get("checkpoint")
+    checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+    expected_epoch = recorded.get("fence_epoch")
+    if expected_epoch is None:
+        expected_epoch = checkpoint.get("resource_fence_epoch")
+    fence_required = expected_epoch is not None
+    if not fence_required:
+        return {"required": False, "matches": True}
+    spec = load_spec_raw(cfg.instances_dir, name) or {}
+    resource_ref = str(
+        spec.get("body_ref") or spec.get("daimon_id")
+        or f"resource:body:{name}"
+    )
+    try:
+        status = fences.ResourceFenceStore(cfg.state_dir).status(resource_ref)
+    except fences.FenceError as exc:
+        return {
+            "required": True,
+            "resource_ref": resource_ref,
+            "expected_epoch": expected_epoch,
+            "matches": False,
+            "error": str(exc),
+        }
+    matches = (
+        status.get("present") is True
+        and status.get("expired") is False
+        and status.get("last_epoch") == expected_epoch
+    )
+    return {
+        "required": True,
+        "resource_ref": resource_ref,
+        "expected_epoch": expected_epoch,
+        "observed_epoch": status.get("last_epoch"),
+        "present": status.get("present"),
+        "expired": status.get("expired"),
+        "matches": matches,
+    }
+
+
+def _effect_reexecution_is_safe(operation: str, recorded: dict,
+                                verdict: str) -> bool:
+    """Whether the existing workflow can converge after a stale receipt.
+
+    Durable handoff workflows have their own resume journals. Re-entering a
+    journal whose terminal records or fence have drifted can return the same
+    stale terminal output, so those cases fail closed until an explicit repair
+    protocol exists. Plain writer park/wake and power state changes are
+    repeatable. A missing snapshot is a contradiction that permits a new
+    capture; an unreachable snapshot backend does not.
+    """
+    if operation in {"start", "stop"}:
+        return True
+    if operation == "park":
+        return not recorded.get("manifest")
+    if operation == "wake":
+        return not recorded.get("wake_record")
+    if operation == "snapshot-create":
+        return verdict == "contradicts"
+    return False
 
 
 def _record_idempotency(args, cfg, operation: str, name: str,
@@ -203,7 +490,7 @@ def _write_spec(instances_dir: Path, spec: dict) -> Path:
 def cmd_create(args, cfg, adapter) -> int:
     name, operation = args.name, "create"
     store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store)
+    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
     if rc is not None:
         return rc
 
@@ -305,11 +592,7 @@ def cmd_create(args, cfg, adapter) -> int:
 def cmd_power(args, cfg, adapter, operation: str) -> int:
     name = args.name
     store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(
-        args, cfg, operation, name, store, adapter=adapter,
-        expected_state={"start": "running", "stop": "stopped",
-                        "restart": "running"}[operation],
-    )
+    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
     if rc is not None:
         return rc
 
@@ -387,7 +670,7 @@ def cmd_parkwake(args, cfg, adapter, operation: str) -> int:
     as every other lifecycle mutation; the adapter only executes."""
     name = args.name
     store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store)
+    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
     if rc is not None:
         return rc
 

@@ -105,9 +105,9 @@ def test_prepare_duplicate_name_rejected(state_dir, capsys):
 
 
 def test_prepare_idempotent_replay(state_dir, capsys):
-    code1, _ = _prepare(state_dir)
+    code1, adapter = _prepare(state_dir)
     out1 = json.loads(capsys.readouterr().out)
-    code2, _ = _prepare(state_dir)
+    code2, _ = _prepare(state_dir, adapter=adapter)
     out2 = json.loads(capsys.readouterr().out)
     assert code1 == 0 and code2 == 0
     assert out2.get("idempotent-replay") is True

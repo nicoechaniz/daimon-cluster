@@ -10,7 +10,15 @@ canary passed all nine acceptance checks; its redacted receipt is
 `docs/verification/weave-r6-legion-daimonmatrix.md`. R7 now exposes plural
 origins, payload-free differences, incoming novelty summaries, durable
 cursors, honest reachability, transport faults, and resource fences. The full
-repository suite passes with 271 tests and 2 intentional skips.
+repository suite passes with 280 tests and 2 intentional skips.
+
+The parallel daimonmatrix R-series was reconciled semantically rather than
+merged wholesale. Effect-truth idempotency was ported with operation-specific
+postcondition checks and stricter fail-closed handling for terminal handoff
+journals. Its global-chain partition merge was rejected as incompatible with
+immutable per-incarnation `dm.we.v1` signatures; current set convergence and
+the cross-host canary remain canonical. The decision record is
+`docs/design/m10-reconciliation.md`; production hardening is held in #46.
 
 ## Historical snapshot (2026-08-01, end of M1 core)
 

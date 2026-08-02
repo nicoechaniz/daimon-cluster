@@ -47,13 +47,17 @@ def test_create_duplicate_name_conflict(state_dir, capsys):
 
 
 def test_idempotent_replay(state_dir, capsys):
-    _run(state_dir, "create", "daimon-x", "--species", "t", "--idempotency-key", UUID1)
+    _, adapter = _run(
+        state_dir, "create", "daimon-x", "--species", "t",
+        "--idempotency-key", UUID1,
+    )
     capsys.readouterr()
     code, _ = _run(state_dir, "create", "daimon-x", "--species", "t",
-                   "--idempotency-key", UUID1, "--json")
+                   "--idempotency-key", UUID1, "--json", adapter=adapter)
     assert code == 0
     out = json.loads(capsys.readouterr().out)
     assert out.get("idempotent-replay") is True
+    assert out.get("effect-truth") == "verified"
 
 
 def test_idempotency_key_reuse_different_op_conflicts(state_dir, capsys):

@@ -203,3 +203,20 @@ embodiment registry, lifecycle verbs, purged vocabulary, old→new mapping.
 - Live verified with the DEPLOYED code (real venv, real module): chain
   verify ok, segment export ok, other-host append at cursor 3 with chain
   intact, common root ok. clusterd active, health ok.
+
+### M10-R4 done (5d5e625) — /we.sync v1
+
+- `clusterctl/wesync.py`: origin-marked experiences (signed by the origin
+  host, attribution + original signatures preserved) + R3 chain segments
+  in one `we-sync-bundle/v1`. Peer high-water cursors; export = delta,
+  import advances. Experiences converge by union (idempotent); chain
+  appends only on tip-link; same cursor different content = branch →
+  `merge.json` flagged (R7 "mergeando"), never a silent winner; common
+  genesis enforced.
+- CLI: `wesync status|record|export|import [--dry-run]`; bundles are
+  plain JSON, transportable over tribe-bridge v1.
+- tests/test_wesync.py (7) mirrors codex DM-070. **243 passed on main.**
+- LIVE demo with the deployed code (`/tmp/wesync-demo`): being "source",
+  embodiments compaii@daimonmatrix + compaii@legion in two state dirs —
+  record → export → import both directions, converged IDENTICAL with
+  attribution intact, chain ok at cursor 2, re-import 0 appended.

@@ -254,3 +254,22 @@ embodiment registry, lifecycle verbs, purged vocabulary, old→new mapping.
   experiences converge) → independent merges → byte-identical chains
   (states: awake, awake, parked, merged, merge-record), both verify,
   losing branch preserved, flags cleared.
+
+### M10-R7 done (4ec681d) — dashboard /we view
+
+- GET /v1/registry: one card per being — root, genesis anchor, chain
+  tip cursor, chain_ok, sync_state (coherente/mergeando), experience
+  count, embodiment rows with cursors. Plurality = rows, never error.
+- Dashboard: "/we — Beings" card (thin client, 10s poll, renderWe()).
+- tests/test_we_view.py (5). **255 passed on main.**
+- Live: endpoint 200, dashboard wired, journal clean; the census was
+  bootstrapped with the first REAL entry — being `compaii`, embodiment
+  `compaii@daimonmatrix` awake, genesis 7b0e19109b8f, cursor 1.
+
+### M10 — series complete (R1-R7)
+
+R1 ontology → R2 purge → R3 chain → R4 /we.sync → R5 effect-truth →
+R6 partition+merge → R7 dashboard /we. The repo speaks the ontology.
+Remaining for the goal's Done: the first /we.sync demonstration
+between two REAL embodiments (daimonmatrix ↔ legion) — pending the
+legion's pull of main.

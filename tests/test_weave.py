@@ -74,6 +74,12 @@ def test_independent_ledgers_preview_pull_and_local_adoption(setup_weave):
         supersedes=decision["event_id"], signer=signer_a,
     )
     assert a.diff(subject="github.identity")[0]["state"] == "reverted"
+    assert a.novelty_summary() == {
+        "total": 2,
+        "by_kind": {"configuration.proposed": 1, "experience.observed": 1},
+        "by_origin": {"compaii@daimonmatrix": 2},
+        "by_state": {"pending": 1, "reverted": 1},
+    }
 
 
 def test_manifest_mismatch_and_secret_values_fail_closed(setup_weave):
@@ -94,9 +100,19 @@ def test_gap_equivocation_and_batch_atomicity(setup_weave):
     first = b.append_local(kind="experience.observed", subject="one", payload={"value": 1}, signer=signer_b)
     second = b.append_local(kind="experience.observed", subject="two", payload={"value": 2}, signer=signer_b)
     with pytest.raises(WeaveError, match="gap"):
-        a.ingest([second], source="peer")
+        a.ingest([second], source="compaii@daimonmatrix")
+    assert a.peer_sync_states()[0]["state"] == "gap"
     assert a.events() == []
-    a.ingest([first, second], source="peer")
+    a.ingest([first, second], source="compaii@daimonmatrix")
+    assert a.peer_sync_states()[0]["state"] == "coherent"
+    assert a.peer_sync_states()[0]["error"] is None
+    tampered = copy.deepcopy(first)
+    tampered["payload"]["value"] = "tampered"
+    with pytest.raises(ProtocolError, match="content_hash_mismatch"):
+        a.ingest([tampered], source="compaii@daimonmatrix")
+    assert a.peer_sync_states()[0]["state"] == "quarantined"
+    a.ingest([first, second], source="compaii@daimonmatrix")
+    assert a.peer_sync_states()[0]["state"] == "coherent"
     conflicting = copy.deepcopy(second)
     conflicting["event_id"] = str(uuid.uuid4())
     with pytest.raises((ProtocolError, WeaveError)):

@@ -1,10 +1,18 @@
 # PROGRESS — daimon-cluster implementation
 
-Living tracking file. Updated after every work session by whoever holds the
-/goal (currently: compaii@daimonmatrix). Read FIRST on session start, then
-resume from the first open item.
+Living tracking file. Updated after every work session. Read FIRST on session
+start, then resume from the first open item.
 
-## Current snapshot (2026-08-01, end of M1 core)
+## Current snapshot (2026-08-02)
+
+The ontology R-series is implemented. The isolated Legion–daimonmatrix R6
+canary passed all nine acceptance checks; its redacted receipt is
+`docs/verification/weave-r6-legion-daimonmatrix.md`. R7 now exposes plural
+origins, payload-free differences, incoming novelty summaries, durable
+cursors, honest reachability, transport faults, and resource fences. The full
+repository suite passes with 271 tests and 2 intentional skips.
+
+## Historical snapshot (2026-08-01, end of M1 core)
 
 Local main tip: 32bc4fa — contains ALL of M0 + M1 core (#6,#7,#8,#9-minus-restart).
 origin/main: behind (legion push coordination in flight, requests #1-#3 sent).
@@ -53,16 +61,10 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 
 ## Next action
 
-ALL 33 ISSUES HAVE CODE LANDED (M0-M8). Remaining: the four human keys
-(#13 pilot, #26 usability drill in progress with Nico, restart drill,
-#15 backup heartbeat from legion).
-
-1. #22 steward read-only tools (cluster_list/health/logs/backups as
-   mechanical maps of clusterd read routes).
-2. #15 restic init when the legion fixes sshd on anyVPN.
-3. #23 gated mutation tools → M5 gate (also needs restart drill).
-4. Push coordination: legion fetches main (requests #1-#14 sent; #6-#9,
-   #13 confirmed pushed).
+The R-series ontology/Weave convergence is complete. Remaining work belongs to
+the older operational programme: #13 pilot enrollment, #15 off-host backup
+heartbeat, and the host-level restart window. Those are not identity or Weave
+design blockers.
 
 ## Key decisions this stretch
 
@@ -113,10 +115,10 @@ attribution, or interruption recovery.
 | R1 | Canonical ontology contract | implemented; repository CI green |
 | R2 | Embodiment registry and language purge | implemented; repository CI green |
 | R3 | Per-incarnation chain of existence on the independent Weave ledger | implemented; repository CI green |
-| R4 | `/we.sync` v1 ledger, cursors, preview/pull and Tribe transport boundary | implemented; cross-host drill pending |
+| R4 | `/we.sync` v1 ledger, cursors, preview/pull and Tribe transport boundary | implemented; cross-host drill passed |
 | R5 | Effect-truth idempotency | implemented; repository CI green |
-| R6 | Embodiment lifecycle and partition→merge proof | synthetic proof green; live drill pending |
-| R7 | `/we`, embodiments and resource-fence read APIs/dashboard | implemented; repository CI green |
+| R6 | Embodiment lifecycle and partition→merge proof | live Legion–daimonmatrix drill passed; redacted receipt committed |
+| R7 | `/we`, embodiments and resource-fence read APIs/dashboard | implemented with novelty and sync-state navigation; repository CI green |
 
 Tracking cards exist as #27-#30 and #40-#43. The work is no longer blocked
 on ontological approval: Nicolás gave GO and the framing correction is accepted.

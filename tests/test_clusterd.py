@@ -423,6 +423,74 @@ def test_ontology_read_routes(server):
     assert weave == {"schema": "dm.we.status/v1", "configured": False}
 
 
+def test_weave_status_exposes_plural_origins_novelty_and_sync_state(server):
+    from weave.ledger import Ledger
+    from weave.protocol import BeingManifest, EventSigner
+
+    srv, _, state_dir = server
+    root = state_dir / "weave"
+    root.mkdir(parents=True)
+    emb_a = "embodiment:11111111-1111-4111-8111-111111111111"
+    emb_b = "embodiment:22222222-2222-4222-8222-222222222222"
+    origin_a = {
+        "embodiment_id": emb_a,
+        "incarnation_id": "incarnation:11111111-1111-4111-8111-111111111112",
+        "principal_id": "compaii@legion",
+        "body_ref": "cluster:legion:compaii",
+    }
+    origin_b = {
+        "embodiment_id": emb_b,
+        "incarnation_id": "incarnation:22222222-2222-4222-8222-222222222223",
+        "principal_id": "compaii@daimonmatrix",
+        "body_ref": "cluster:daimonmatrix:compaii",
+    }
+    manifest = BeingManifest.from_value({
+        "schema": "being-manifest/v1",
+        "being_ref": "being:33333333-3333-4333-8333-333333333333",
+        "revision": 1,
+        "embodiments": [
+            {"embodiment_id": emb_a, "principal_id": origin_a["principal_id"],
+             "body_ref": origin_a["body_ref"], "status": "active"},
+            {"embodiment_id": emb_b, "principal_id": origin_b["principal_id"],
+             "body_ref": origin_b["body_ref"], "status": "active"},
+        ],
+    })
+    signer_a = EventSigner.generate("legion/sig/1")
+    signer_b = EventSigner.generate("daimonmatrix/sig/1")
+    keys = {signer_a.kid: signer_a.public_key_text,
+            signer_b.kid: signer_b.public_key_text}
+    (root / "being-manifest.json").write_text(
+        json.dumps(manifest.value), encoding="utf-8")
+    (root / "runtime.json").write_text(json.dumps({
+        "origin": origin_a, "public_keys": keys,
+        "signing_kid": signer_a.kid, "private_key": "redacted-in-test",
+    }), encoding="utf-8")
+    local = Ledger(root / "ledger.sqlite", manifest=manifest,
+                   local_origin=origin_a, public_keys=keys)
+    remote = Ledger(root / "remote.sqlite", manifest=manifest,
+                    local_origin=origin_b, public_keys=keys)
+    proposal = remote.append_local(
+        kind="configuration.proposed", subject="github.identity",
+        payload={"secret_slot_ref": "github/daimonmatrix"}, signer=signer_b)
+    local.ingest([proposal], source="compaii@daimonmatrix")
+
+    status, _, value = _get(srv, "/v1/weave/status")
+    assert status == 200
+    assert value["sync_state"] == "pending"
+    assert value["incoming_novelty"] == {
+        "total": 1,
+        "by_kind": {"configuration.proposed": 1},
+        "by_origin": {"compaii@daimonmatrix": 1},
+        "by_state": {"pending": 1},
+    }
+    assert "payload" not in value["differences"][0]
+    by_principal = {row["principal_id"]: row for row in value["origins"]}
+    assert by_principal["compaii@legion"]["presence"] == "awake"
+    assert by_principal["compaii@legion"]["reachability"] == "local"
+    assert by_principal["compaii@daimonmatrix"]["presence"] == "unknown"
+    assert by_principal["compaii@daimonmatrix"]["incarnation_id"] == origin_b["incarnation_id"]
+
+
 # --------------------------------------------------------------------------
 # openapi
 # --------------------------------------------------------------------------

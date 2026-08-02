@@ -1069,7 +1069,7 @@ paths:
   /v1/weave/status:
     get:
       operationId: getWeaveStatus
-      summary: Show local /we manifest, origin, heads, and durable peer cursors
+      summary: Show /we origins, sync health, novelty, heads, and durable cursors
       description: "Delegates to `reads state_dir/weave/{being-manifest.json,runtime.json,ledger.sqlite}`\
         \ \u2014 the same code path as the CLI; clusterd adds no business logic.\n\
         \nRequired bearer scope: `read` \u2014 enforced (issue #18). Owner-scoped\

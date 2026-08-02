@@ -208,6 +208,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_wi.add_argument("--file", help="bundle JSON path (default: stdin)")
     p_wi.add_argument("--dry-run", action="store_true", dest="dry_run",
                       help="preview only, no mutation")
+    p_wm = we_sub.add_parser("merge", help="coherently converge a flagged branch (R6)")
+    p_wm.add_argument("being")
+    p_wm.add_argument("--file", required=True,
+                      help="full-chain bundle JSON from the peer")
     return parser
 
 
@@ -388,6 +392,14 @@ def _run_wesync(args, cfg: Config) -> int:
                        if args.peer else None)
             bundle = engine.export_bundle(args.being, args.from_emb, cursors)
             print(json.dumps(bundle, indent=2))
+            return EXIT_OK
+
+        if args.wesync_command == "merge":
+            bundle = json.loads(open(args.file).read())
+            report = engine.merge_branch(
+                args.being, bundle,
+                actor=getattr(args, "actor", "clusterctl-cli"))
+            print(json.dumps(report, indent=2))
             return EXIT_OK
 
         # import

@@ -17,6 +17,16 @@ body preserves the embodiment and opens another incarnation.
 Lifecycle records are exposed to Weave and the dashboard. Presence is routing
 and observability metadata, never an exclusivity fence.
 
+`GET /v1/weave/status` exposes the manifest root, local origin, all declared
+origins, origin heads, durable peer cursors, fail-closed peer sync state, and
+payload-free semantic differences. Incoming novelty is counted by kind,
+origin, and local decision state. `coherent` and `pending` describe ordinary
+operation; a rejected non-contiguous page records `gap`, while invalid signed
+or protocol content records `quarantined`. A later valid pull clears that
+transport fault. Historical peer events never prove current presence or
+reachability, so remote values remain `unknown` until a live `/we` response is
+available.
+
 ## Resource fences
 
 `resource-fence/v1` records live in the existing guarded registry directory.
@@ -49,4 +59,3 @@ resource-writing effects additionally bind the current resource fence.
 Matrix will eventually replace the provisional manifest as cryptographic
 being authority and issue body-bound embodiment credentials. Cluster will
 continue to own bodies and resource fences. Tribe keys remain transport keys.
-

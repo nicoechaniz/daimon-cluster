@@ -75,6 +75,12 @@ class Ledger:
                     tip_hash TEXT NOT NULL,
                     PRIMARY KEY(peer_id, incarnation_id)
                 );
+                CREATE TABLE IF NOT EXISTS peer_sync_state (
+                    peer_id TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    error TEXT,
+                    updated_at_ms INTEGER NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS events_kind_subject
                     ON events(kind, subject);
                 """
@@ -169,7 +175,15 @@ class Ledger:
         }
 
     def ingest(self, events: list[dict[str, Any]], *, source: str) -> dict[str, Any]:
-        preview = self.preview(events)
+        try:
+            preview = self.preview(events)
+        except WeaveError as exc:
+            state = "gap" if str(exc) == "origin_sequence_gap" else "quarantined"
+            self._set_peer_sync_state(source, state, str(exc))
+            raise
+        except ProtocolError as exc:
+            self._set_peer_sync_state(source, "quarantined", str(exc))
+            raise
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             for event in preview["events"]:
@@ -182,7 +196,59 @@ class Ledger:
                        WHERE excluded.sequence > peer_cursors.sequence""",
                     (source, event["origin"]["incarnation_id"], event["sequence"], event["content_hash"]),
                 )
+        self._set_peer_sync_state(source, "coherent", None)
         return {key: value for key, value in preview.items() if key != "events"}
+
+    def _set_peer_sync_state(self, peer_id: str, state: str, error: str | None) -> None:
+        self.initialize()
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO peer_sync_state(peer_id, state, error, updated_at_ms)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(peer_id) DO UPDATE SET
+                     state=excluded.state, error=excluded.error,
+                     updated_at_ms=excluded.updated_at_ms""",
+                (peer_id, state, error, int(time.time() * 1000)),
+            )
+
+    def peer_sync_states(self) -> list[dict[str, Any]]:
+        """Last fail-closed transport result for each peer.
+
+        A later valid pull clears a previous gap/quarantine. This is transport
+        health only; unapplied semantic novelty is reported separately.
+        """
+        self.initialize()
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT peer_id, state, error, updated_at_ms "
+                "FROM peer_sync_state ORDER BY peer_id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def novelty_summary(self) -> dict[str, Any]:
+        """Aggregate unapplied peer-origin differences without payloads."""
+        incoming = [
+            item for item in self.diff()
+            if item["origin"]["embodiment_id"]
+            != self.local_origin["embodiment_id"]
+        ]
+
+        def counts(field: str) -> dict[str, int]:
+            result: dict[str, int] = {}
+            for item in incoming:
+                if field == "origin":
+                    key = item["origin"]["principal_id"]
+                else:
+                    key = str(item[field])
+                result[key] = result.get(key, 0) + 1
+            return dict(sorted(result.items()))
+
+        return {
+            "total": len(incoming),
+            "by_kind": counts("kind"),
+            "by_origin": counts("origin"),
+            "by_state": counts("state"),
+        }
 
     def peer_cursors(self, peer_id: str | None = None) -> list[dict[str, Any]]:
         self.initialize()
@@ -227,7 +293,7 @@ class Ledger:
     def delta(self, remote_heads: Mapping[str, int], limit: int = MAX_PAGE_EVENTS) -> list[dict[str, Any]]:
         if not 1 <= limit <= MAX_PAGE_EVENTS:
             raise WeaveError("invalid_delta_limit")
-        result = []
+        result: list[dict[str, Any]] = []
         for event in self.events():
             if event["sequence"] > int(remote_heads.get(event["origin"]["incarnation_id"], 0)):
                 candidate = result + [event]

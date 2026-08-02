@@ -504,6 +504,45 @@ def weave_status(deps: Deps, ctx: RequestContext, **params) -> Response:
         local_origin=runtime["origin"],
         public_keys=runtime["public_keys"],
     )
+    differences = ledger.diff()
+    novelty = ledger.novelty_summary()
+    peer_sync_states = ledger.peer_sync_states()
+    fault_states = {row["state"] for row in peer_sync_states}
+    if "quarantined" in fault_states:
+        sync_state = "quarantined"
+    elif "gap" in fault_states:
+        sync_state = "gap"
+    elif novelty["by_state"].get("pending", 0) or novelty["by_state"].get("deferred", 0):
+        sync_state = "pending"
+    else:
+        sync_state = "coherent"
+
+    events = ledger.events()
+    origins = []
+    for member in manifest.value["embodiments"]:
+        embodiment_id = member["embodiment_id"]
+        local = embodiment_id == runtime["origin"]["embodiment_id"]
+        member_events = [
+            event for event in events
+            if event["origin"]["embodiment_id"] == embodiment_id
+        ]
+        latest = max(
+            member_events,
+            key=lambda event: (event["occurred_at_ms"], event["sequence"]),
+            default=None,
+        )
+        origins.append({
+            **member,
+            "incarnation_id": (
+                runtime["origin"]["incarnation_id"] if local
+                else None if latest is None
+                else latest["origin"]["incarnation_id"]
+            ),
+            # A ledger event proves history, not current reachability. Only
+            # this serving runtime can honestly claim local presence.
+            "presence": "awake" if local else "unknown",
+            "reachability": "local" if local else "unknown",
+        })
     return Response(200, {
         "schema": "dm.we.status/v1",
         "configured": True,
@@ -512,6 +551,11 @@ def weave_status(deps: Deps, ctx: RequestContext, **params) -> Response:
         "origin": runtime["origin"],
         "heads": ledger.heads(),
         "peer_cursors": ledger.peer_cursors(),
+        "peer_sync_states": peer_sync_states,
+        "sync_state": sync_state,
+        "origins": origins,
+        "incoming_novelty": novelty,
+        "differences": differences,
     })
 
 
@@ -862,9 +906,9 @@ function authenticate(){
 function stateBadge(s){
   if(!s)return '<span class="badge badge-degraded">unknown</span>';
   var lower=s.toLowerCase();
-  if(lower==='running'||lower==='ok')return '<span class="badge badge-ok">'+s+'</span>';
-  if(lower==='degraded')return '<span class="badge badge-degraded">'+s+'</span>';
-  if(lower==='stopped'||lower==='error'||lower==='unreachable')return '<span class="badge badge-bad">'+s+'</span>';
+  if(lower==='running'||lower==='ok'||lower==='awake'||lower==='coherent'||lower==='local')return '<span class="badge badge-ok">'+s+'</span>';
+  if(lower==='degraded'||lower==='pending'||lower==='unknown')return '<span class="badge badge-degraded">'+s+'</span>';
+  if(lower==='stopped'||lower==='error'||lower==='unreachable'||lower==='gap'||lower==='quarantined')return '<span class="badge badge-bad">'+s+'</span>';
   return '<span class="badge badge-info">'+s+'</span>';
 }
 
@@ -959,9 +1003,29 @@ function renderWeave(event){
     var d=JSON.parse(event.detail.xhr.responseText);
     if(!d.configured){el.innerHTML='<p class="muted">Weave runtime not configured on this host.</p>';return}
     var origin=d.origin||{};
-    el.innerHTML='<div class="muted">being <code>'+escHtml(d.being_ref)+'</code> · manifest <code>'
+    var state=d.sync_state||'unknown';
+    var novelty=d.incoming_novelty||{};
+    var h='<div class="muted">being <code>'+escHtml(d.being_ref)+'</code> · manifest <code>'
       +truncDigest(d.manifest_hash)+'</code> · local '+escHtml(origin.principal_id||'?')
       +' · '+(d.heads||[]).length+' origin heads · '+(d.peer_cursors||[]).length+' durable peer cursors</div>';
+    h+='<div style="margin-top:6px">sync '+stateBadge(state)
+      +' <span class="tag">'+escHtml(novelty.total||0)+' incoming differences</span></div>';
+    var kinds=novelty.by_kind||{}, origins=novelty.by_origin||{}, states=novelty.by_state||{};
+    h+='<div class="muted" style="margin-top:4px">by kind: '+escHtml(JSON.stringify(kinds))
+      +' · by origin: '+escHtml(JSON.stringify(origins))
+      +' · by state: '+escHtml(JSON.stringify(states))+'</div>';
+    (d.origins||[]).forEach(function(o){
+      h+='<div class="activity-item">'+stateBadge(o.presence)
+        +' <code>'+escHtml(o.principal_id)+'</code> <span class="tag">'+escHtml(o.reachability)+'</span>'
+        +'<br><span class="muted">'+escHtml(o.body_ref)+' · '+escHtml(o.embodiment_id)
+        +' · incarnation '+escHtml(o.incarnation_id||'unknown')+'</span></div>';
+    });
+    (d.differences||[]).forEach(function(item){
+      h+='<div class="activity-item"><span class="tag">'+escHtml(item.state)+'</span> '
+        +escHtml(item.kind)+' · <code>'+escHtml(item.subject)+'</code><br><span class="muted">from '
+        +escHtml((item.origin||{}).principal_id||'?')+' · '+escHtml(item.event_id)+'</span></div>';
+    });
+    el.innerHTML=h;
   }catch(e){el.innerHTML='<div class="alert">No Weave status</div>'}
 }
 

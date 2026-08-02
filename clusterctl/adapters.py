@@ -636,6 +636,15 @@ class IncusAdapter(Adapter):
         Unlike ``exec`` this does not raise on non-zero rc — pkill uses
         rc 1 for "no processes matched", which is a valid quiesce state.
         """
+        rc, out, _ = self._exec_rc_full(name, argv)
+        return rc, out
+
+    def _exec_rc_full(self, name: str,
+                      argv: list[str]) -> tuple[int, str, str]:
+        """Same as _exec_rc but also returns stderr — quiesce failures
+        must be diagnosable from the audit trail (drill #26: the daemon
+        path failed while every out-of-daemon replica passed, and the
+        discarded stderr hid the cause)."""
         cmd = ["incus", "exec"]
         if self.project:
             cmd += ["--project", self.project]
@@ -643,8 +652,17 @@ class IncusAdapter(Adapter):
         env = dict(os.environ)
         if "/usr/sbin" not in env.get("PATH", "").split(":"):
             env["PATH"] = env.get("PATH", "") + ":/usr/sbin"
-        proc = subprocess.run(["sudo", *cmd], capture_output=True, text=True, env=env)
-        return proc.returncode, proc.stdout
+        # Direct first (incus-admin membership covers the daemon); sudo
+        # only as fallback for interactive operator shells — and never
+        # unconditionally: under systemd NoNewPrivileges sudo cannot
+        # run at all, which silently broke every quiesce verify from
+        # the daemon (drill #26, found via this very stderr capture).
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        if proc.returncode != 0 and (
+                "permissions" in proc.stderr or "unix.socket" in proc.stderr):
+            proc = subprocess.run(
+                ["sudo", *cmd], capture_output=True, text=True, env=env)
+        return proc.returncode, proc.stdout, proc.stderr
 
     def exec_quiesce_park(self, name: str, timeout_s: int = 30) -> bool:
         """SIGSTOP all hermes processes. rc 0 = parked; rc 1 = no hermes
@@ -674,7 +692,7 @@ class IncusAdapter(Adapter):
             "done; "
             "echo \"__RESULT__$OK\""
         )
-        rc, out = self._exec_rc(name, ["sh", "-c", script])
+        rc, out, stderr = self._exec_rc_full(name, ["sh", "-c", script])
         files: list[str] = []
         sqlite_ok = False
         section = None
@@ -692,7 +710,12 @@ class IncusAdapter(Adapter):
                 files.append(line.strip())
         if rc != 0:
             sqlite_ok = False
-        return {"checkpoint_files": files, "sqlite_ok": sqlite_ok}
+        result = {"checkpoint_files": files, "sqlite_ok": sqlite_ok}
+        if not sqlite_ok:
+            result["rc"] = rc
+            result["stderr_tail"] = stderr.strip()[-300:]
+            result["stdout_tail"] = out.strip()[-300:]
+        return result
 
     def exec_unpark(self, name: str) -> bool:
         """SIGCONT all hermes processes. Best effort; rc 0/1 both fine."""

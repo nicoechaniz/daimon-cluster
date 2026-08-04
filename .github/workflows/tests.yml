@@ -1,0 +1,66 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-weave.txt
+            requirements-dev.txt
+            constraints.txt
+      - run: python -m pip install -c constraints.txt -r requirements-dev.txt
+      - name: Verify exact Matrix source pin
+        run: |
+          python - <<'PY'
+          import importlib.metadata
+          import json
+
+          from clusterctl.matrix_host import MATRIX_CONTRACT_COMMIT
+
+          direct_url = json.loads(
+              importlib.metadata.distribution("daimon-matrix").read_text(
+                  "direct_url.json"
+              )
+          )
+          assert direct_url["vcs_info"]["commit_id"] == MATRIX_CONTRACT_COMMIT
+          assert (
+              importlib.metadata.distribution("daimon-matrix")
+              .metadata["License-Expression"]
+              == "MIT"
+          )
+          PY
+      - name: Lint the Matrix integration boundary
+        run: >-
+          python -m ruff check
+          clusterctl/matrix_host.py
+          clusterd/__main__.py
+          clusterd/handlers.py
+          tests/test_matrix_host.py
+          tests/test_matrix_host_process.py
+          tests/test_matrix_parity.py
+          tests/test_matrix_status.py
+      - name: Type-check the Matrix host boundary
+        run: >-
+          python -m mypy --follow-imports=skip --ignore-missing-imports
+          clusterctl/matrix_host.py
+      - run: python -m compileall -q clusterctl clusterd steward_tools tests
+      - run: python -W error::ResourceWarning -m pytest -q

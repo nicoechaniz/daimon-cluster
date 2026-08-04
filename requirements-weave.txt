@@ -1,1 +1,1 @@
-cryptography>=43,<47
+daimon-matrix @ git+https://github.com/AlterMundi/daimon-matrix.git@73767504b777d0d0c9132a341959f486afce99f1

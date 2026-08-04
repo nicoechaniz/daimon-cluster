@@ -23,11 +23,14 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import hashlib
 import io
 import json
 import re
 import threading
 import time
+import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -74,7 +77,7 @@ def _audit_chain_ok(state_dir: str) -> bool:
 
 
 def _mirror_state(state_dir: str) -> str:
-    """"not-configured" | "ok" | "failing" (design §4 mirror placeholder).
+    """ "not-configured" | "ok" | "failing" (design §4 mirror placeholder).
 
     The v1 mirror is a directory stub (``state_dir/mirror/``); issue #15
     replaces it with real off-host targets. Configured-but-unwritable
@@ -103,6 +106,7 @@ class Deps:
     config_path: str
     state_dir: str | None = None
     adapter_factory: object | None = None  # callable () -> Adapter, or None=live
+    matrix_client_factory: Callable[[str], object] | None = None
     clusterd_base_url: str = "http://127.0.0.1:8785"
 
 
@@ -128,19 +132,23 @@ class RequestContext:
 @dataclasses.dataclass(frozen=True)
 class Response:
     status: int
-    body: object                      # dict/list -> JSON, str -> raw
+    body: object  # dict/list -> JSON, str -> raw
     content_type: str = "application/json"
 
 
-def _error(status: int, message: str, action: str, target: str,
-           request_id: str) -> Response:
+def _error(
+    status: int, message: str, action: str, target: str, request_id: str
+) -> Response:
     """Structured error envelope mirroring clusterctl's error JSON."""
-    return Response(status, {
-        "error": message,
-        "action": action,
-        "target": target,
-        "request_id": request_id,
-    })
+    return Response(
+        status,
+        {
+            "error": message,
+            "action": action,
+            "target": target,
+            "request_id": request_id,
+        },
+    )
 
 
 def _adapter(deps: Deps):
@@ -166,8 +174,7 @@ def _run_cli(deps: Deps, ctx: RequestContext, argv: list[str]) -> Response:
 
     out_buf, err_buf = io.StringIO(), io.StringIO()
     with _CLI_LOCK:
-        with contextlib.redirect_stdout(out_buf), \
-             contextlib.redirect_stderr(err_buf):
+        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
             code = cli.run(full_argv, adapter=_adapter(deps))
     out, err = out_buf.getvalue().strip(), err_buf.getvalue().strip()
     status = EXIT_TO_HTTP.get(code, 500)
@@ -178,14 +185,22 @@ def _run_cli(deps: Deps, ctx: RequestContext, argv: list[str]) -> Response:
         try:
             return Response(status, json.loads(out) if out else {})
         except json.JSONDecodeError:
-            return _error(500, f"clusterctl emitted non-JSON output: {out[:200]}",
-                          action, target, ctx.request_id)
+            return _error(
+                500,
+                f"clusterctl emitted non-JSON output: {out[:200]}",
+                action,
+                target,
+                ctx.request_id,
+            )
     # Error: clusterctl prints {error, action, target} JSON to stderr.
     try:
         payload = json.loads(err) if err else {}
     except json.JSONDecodeError:
-        payload = {"error": err or f"clusterctl exited {code}",
-                   "action": action, "target": target}
+        payload = {
+            "error": err or f"clusterctl exited {code}",
+            "action": action,
+            "target": target,
+        }
     payload["request_id"] = ctx.request_id
     return Response(status, payload)
 
@@ -193,6 +208,7 @@ def _run_cli(deps: Deps, ctx: RequestContext, argv: list[str]) -> Response:
 # --------------------------------------------------------------------------
 # route handlers
 # --------------------------------------------------------------------------
+
 
 def health(deps: Deps, ctx: RequestContext, **params) -> Response:
     """Liveness + clusterctl reachability probe.
@@ -205,8 +221,10 @@ def health(deps: Deps, ctx: RequestContext, **params) -> Response:
     try:
         adapter = _adapter(deps)
         with _CLI_LOCK:
-            with contextlib.redirect_stdout(io.StringIO()), \
-                 contextlib.redirect_stderr(io.StringIO()):
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
                 argv = ["--config", deps.config_path]
                 if deps.state_dir is not None:
                     argv += ["--state-dir", deps.state_dir]
@@ -226,18 +244,22 @@ def health(deps: Deps, ctx: RequestContext, **params) -> Response:
     # health; local events are NEVER dropped for a mirror failure
     # (design §4 — the local log is the source of truth).
     healthy = reachable and chain_ok and mirror != "failing"
-    return Response(200, {
-        "schema": HEALTH_SCHEMA,
-        "status": "ok" if healthy else "degraded",
-        "version": __version__,
-        "clusterctl_reachable": reachable,
-        "audit_chain_ok": chain_ok,
-        "mirror_state": mirror,
-    })
+    return Response(
+        200,
+        {
+            "schema": HEALTH_SCHEMA,
+            "status": "ok" if healthy else "degraded",
+            "version": __version__,
+            "clusterctl_reachable": reachable,
+            "audit_chain_ok": chain_ok,
+            "mirror_state": mirror,
+        },
+    )
 
 
 def openapi_yaml(deps: Deps, ctx: RequestContext, **params) -> Response:
     from .openapi import dump_openapi
+
     return Response(200, dump_openapi(), content_type="application/yaml")
 
 
@@ -245,13 +267,11 @@ def list_instances(deps: Deps, ctx: RequestContext, **params) -> Response:
     return _run_cli(deps, ctx, ["list", "--json"])
 
 
-def get_instance(deps: Deps, ctx: RequestContext, name: str,
-                 **params) -> Response:
+def get_instance(deps: Deps, ctx: RequestContext, name: str, **params) -> Response:
     return _run_cli(deps, ctx, ["status", name, "--json"])
 
 
-def logs(deps: Deps, ctx: RequestContext, name: str, query=None,
-         **params) -> Response:
+def logs(deps: Deps, ctx: RequestContext, name: str, query=None, **params) -> Response:
     """GET /v1/instances/{name}/logs?lines=N — bounded, redacted (issue #22).
 
     Pure delegation to ``clusterctl logs``: the bounded read and the
@@ -259,8 +279,9 @@ def logs(deps: Deps, ctx: RequestContext, name: str, query=None,
     handler only validates the name and binds the lines parameter.
     """
     if not INSTANCE_NAME_RE.fullmatch(name):
-        return _error(400, f"invalid instance name {name!r}",
-                      "logs", name, ctx.request_id)
+        return _error(
+            400, f"invalid instance name {name!r}", "logs", name, ctx.request_id
+        )
     raw = (query or {}).get("lines", [None])[0]
     if raw is None:
         n = lifecycle.LOGS_DEFAULT_LINES
@@ -268,14 +289,14 @@ def logs(deps: Deps, ctx: RequestContext, name: str, query=None,
         try:
             n = int(raw)
         except (TypeError, ValueError):
-            return _error(400, f"invalid lines parameter {raw!r}",
-                          "logs", name, ctx.request_id)
+            return _error(
+                400, f"invalid lines parameter {raw!r}", "logs", name, ctx.request_id
+            )
     n = max(1, min(n, lifecycle.LOGS_MAX_LINES))
     return _run_cli(deps, ctx, ["logs", name, "--lines", str(n), "--json"])
 
 
-def power(deps: Deps, ctx: RequestContext, name: str, route=None,
-          **params) -> Response:
+def power(deps: Deps, ctx: RequestContext, name: str, route=None, **params) -> Response:
     """POST /v1/instances/{name}/start|stop|restart.
 
     Idempotency-Key is REQUIRED (HTTP-side admission, mirrors the CLI
@@ -283,15 +304,17 @@ def power(deps: Deps, ctx: RequestContext, name: str, route=None,
     """
     operation = route.path.rsplit("/", 1)[-1]
     if not ctx.idempotency_key:
-        return _error(400, "Idempotency-Key header is required",
-                      operation, name, ctx.request_id)
-    return _run_cli(deps, ctx, [operation, name,
-                                "--idempotency-key", ctx.idempotency_key,
-                                "--json"])
+        return _error(
+            400, "Idempotency-Key header is required", operation, name, ctx.request_id
+        )
+    return _run_cli(
+        deps, ctx, [operation, name, "--idempotency-key", ctx.idempotency_key, "--json"]
+    )
 
 
-def snapshot(deps: Deps, ctx: RequestContext, name: str, route=None,
-             **params) -> Response:
+def snapshot(
+    deps: Deps, ctx: RequestContext, name: str, route=None, **params
+) -> Response:
     """POST /v1/instances/{name}/snapshot — quiesced snapshot (issue #23).
 
     Pure delegation to ``clusterctl snapshot create``: the quiesce
@@ -301,12 +324,14 @@ def snapshot(deps: Deps, ctx: RequestContext, name: str, route=None,
     Idempotency-Key header (the steward's gated flow always sends one).
     """
     key = ctx.idempotency_key or f"clusterd-{ctx.request_id}"
-    return _run_cli(deps, ctx, ["snapshot", "create", name,
-                                "--idempotency-key", key, "--json"])
+    return _run_cli(
+        deps, ctx, ["snapshot", "create", name, "--idempotency-key", key, "--json"]
+    )
 
 
-def park_wake(deps: Deps, ctx: RequestContext, name: str, route=None,
-              **params) -> Response:
+def park_wake(
+    deps: Deps, ctx: RequestContext, name: str, route=None, **params
+) -> Response:
     """POST /v1/instances/{name}/park|wake (issue #23).
 
     Delegates to the thin ``clusterctl park|wake`` commands, which apply
@@ -316,11 +341,12 @@ def park_wake(deps: Deps, ctx: RequestContext, name: str, route=None,
     """
     operation = route.path.rsplit("/", 1)[-1]
     if not ctx.idempotency_key:
-        return _error(400, "Idempotency-Key header is required",
-                      operation, name, ctx.request_id)
-    return _run_cli(deps, ctx, [operation, name,
-                                "--idempotency-key", ctx.idempotency_key,
-                                "--json"])
+        return _error(
+            400, "Idempotency-Key header is required", operation, name, ctx.request_id
+        )
+    return _run_cli(
+        deps, ctx, [operation, name, "--idempotency-key", ctx.idempotency_key, "--json"]
+    )
 
 
 def list_backups(deps: Deps, ctx: RequestContext, **params) -> Response:
@@ -356,8 +382,7 @@ def list_backups(deps: Deps, ctx: RequestContext, **params) -> Response:
 
 
 # Secret redaction patterns mirror clusterctl.lifecycle.REDACT_PATTERNS.
-_AUDIT_REDACT_PATTERNS = ("private key", "api_key", "token=", "bearer ", "sk-",
-                          "aiza")
+_AUDIT_REDACT_PATTERNS = ("private key", "api_key", "token=", "bearer ", "sk-", "aiza")
 
 
 def _redact_event_fields(event: dict) -> dict:
@@ -481,82 +506,252 @@ def list_resource_fences(deps: Deps, ctx: RequestContext, **params) -> Response:
     return Response(200, [row for row in fences if not row.get("expired", True)])
 
 
-def weave_status(deps: Deps, ctx: RequestContext, **params) -> Response:
-    """GET /v1/weave/status — independent local ledger progress.
+def _matrix_result(call: object) -> dict:
+    if not callable(call):
+        raise TypeError("matrix_client_method_unavailable")
+    _request, response = call()
+    if (
+        not isinstance(response, dict)
+        or response.get("ok") is not True
+        or not isinstance(response.get("result"), dict)
+    ):
+        raise RuntimeError("matrix_client_response_rejected")
+    return response["result"]
 
-    Runtime configuration is local-only and may contain a signing seed; this
-    route reads only the public origin/key mapping and never returns the seed.
-    """
-    from weave.ledger import Ledger
-    from weave.protocol import BeingManifest
 
-    root = Path(_state_dir(deps)) / "weave"
-    manifest_path = root / "being-manifest.json"
-    runtime_path = root / "runtime.json"
-    ledger_path = root / "ledger.sqlite"
-    if not manifest_path.is_file() or not runtime_path.is_file():
-        return Response(200, {"schema": "dm.we.status/v1", "configured": False})
-    manifest = BeingManifest.load(manifest_path)
-    runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
-    ledger = Ledger(
-        ledger_path,
-        manifest=manifest,
-        local_origin=runtime["origin"],
-        public_keys=runtime["public_keys"],
+def _projection_summary(value: object) -> dict:
+    if not isinstance(value, dict) or not isinstance(value.get("entries"), list):
+        raise TypeError("matrix_projection_rejected")
+    allowed = (
+        "decision_event_id",
+        "event_id",
+        "invalid_projection_receipt_ids",
+        "kind",
+        "local_decision_chain",
+        "origin",
+        "projection_receipt_ids",
+        "remote_decision_event_ids",
+        "remote_projection_receipt_ids",
+        "state",
+        "subject",
     )
-    differences = ledger.diff()
-    novelty = ledger.novelty_summary()
-    peer_sync_states = ledger.peer_sync_states()
-    fault_states = {row["state"] for row in peer_sync_states}
-    if "quarantined" in fault_states:
-        sync_state = "quarantined"
-    elif "gap" in fault_states:
-        sync_state = "gap"
-    elif novelty["by_state"].get("pending", 0) or novelty["by_state"].get("deferred", 0):
-        sync_state = "pending"
-    else:
-        sync_state = "coherent"
+    return {
+        "schema": value.get("schema"),
+        "being_ref": value.get("being_ref"),
+        "manifest_hash": value.get("manifest_hash"),
+        "local_embodiment_id": value.get("local_embodiment_id"),
+        "projection_hash": value.get("projection_hash"),
+        "entries": [
+            {field: entry.get(field) for field in allowed}
+            for entry in value["entries"]
+            if isinstance(entry, dict)
+        ],
+    }
 
-    events = ledger.events()
-    origins = []
-    for member in manifest.value["embodiments"]:
-        embodiment_id = member["embodiment_id"]
-        local = embodiment_id == runtime["origin"]["embodiment_id"]
-        member_events = [
-            event for event in events
-            if event["origin"]["embodiment_id"] == embodiment_id
-        ]
-        latest = max(
-            member_events,
-            key=lambda event: (event["occurred_at_ms"], event["sequence"]),
-            default=None,
+
+def _redacted_matrix_status(deps: Deps) -> Response:
+    """Read authenticated Matrix views without exposing routes or requests."""
+    from clusterctl.embodiments import Registry
+    from clusterctl.matrix_host import MATRIX_CONTRACT_COMMIT, MATRIX_STATUS_SCHEMA
+
+    factory = deps.matrix_client_factory
+    if factory is None:
+        raise RuntimeError("matrix_client_factory_unavailable")
+    rows = []
+    for record in Registry(_state_dir(deps)).list_all():
+        if record.get("status") != "running":
+            continue
+        embodiment_id = record["embodiment_id"]
+        client = factory(embodiment_id)
+        runtime = _matrix_result(getattr(client, "runtime_status", None))
+        me = _matrix_result(getattr(client, "scope_me", None))
+        we = _matrix_result(getattr(client, "scope_we", None))
+        difference = _matrix_result(getattr(client, "scope_diff", None))
+        plan_id = str(uuid.uuid4())
+        sync_plan_method = getattr(client, "scope_sync_plan", None)
+        if not callable(sync_plan_method):
+            raise TypeError("matrix_client_method_unavailable")
+        _request, plan_response = sync_plan_method(
+            {"request_id": plan_id, "limit": 100}
         )
-        origins.append({
-            **member,
-            "incarnation_id": (
-                runtime["origin"]["incarnation_id"] if local
-                else None if latest is None
-                else latest["origin"]["incarnation_id"]
-            ),
-            # A ledger event proves history, not current reachability. Only
-            # this serving runtime can honestly claim local presence.
-            "presence": "awake" if local else "unknown",
-            "reachability": "local" if local else "unknown",
-        })
-    return Response(200, {
-        "schema": "dm.we.status/v1",
-        "configured": True,
-        "being_ref": manifest.value["being_ref"],
-        "manifest_hash": manifest.digest,
-        "origin": runtime["origin"],
-        "heads": ledger.heads(),
-        "peer_cursors": ledger.peer_cursors(),
-        "peer_sync_states": peer_sync_states,
-        "sync_state": sync_state,
-        "origins": origins,
-        "incoming_novelty": novelty,
-        "differences": differences,
-    })
+        if (
+            not isinstance(plan_response, dict)
+            or plan_response.get("ok") is not True
+            or not isinstance(plan_response.get("result"), dict)
+        ):
+            raise RuntimeError("matrix_client_response_rejected")
+        plan = plan_response["result"]
+        topology = [
+            {
+                field: member.get(field)
+                for field in (
+                    "availability",
+                    "body_ref",
+                    "embodiment_id",
+                    "evidence_ref",
+                    "incarnation_id",
+                    "manifest_status",
+                )
+            }
+            for member in we.get("embodiments", [])
+        ]
+        targets = []
+        for target in plan.get("targets", []):
+            request_hash = hashlib.sha256(
+                json.dumps(
+                    target.get("request"),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            targets.append(
+                {
+                    "availability": target.get("availability"),
+                    "embodiment_id": target.get("embodiment_id"),
+                    "evidence_ref": target.get("evidence_ref"),
+                    "incarnation_id": target.get("incarnation_id"),
+                    "request_hash": request_hash,
+                }
+            )
+        rows.append(
+            {
+                "embodiment_id": embodiment_id,
+                "incarnation_id": record["current_incarnation_id"],
+                "runtime": {
+                    **{
+                        field: runtime.get(field)
+                        for field in (
+                            "schema",
+                            "being_ref",
+                            "manifest_hash",
+                            "local_origin",
+                            "ledger_schema_version",
+                            "integrity",
+                        )
+                    },
+                    "counts": {
+                        field: runtime.get("counts", {}).get(field)
+                        for field in (
+                            "known_events",
+                            "incomplete_events",
+                            "peer_lanes",
+                            "pending_rpc",
+                        )
+                    },
+                    "authority_epoch": {
+                        field: runtime.get("authority_epoch", {}).get(field)
+                        for field in (
+                            "schema",
+                            "active_manifest_hash",
+                            "accepted_manifest_hashes",
+                            "epoch_count",
+                        )
+                    },
+                },
+                "me": {
+                    "schema": me.get("schema"),
+                    "being_ref": me.get("being_ref"),
+                    "manifest_hash": me.get("manifest_hash"),
+                    "evaluated_at_ms": me.get("evaluated_at_ms"),
+                    "origin": me.get("origin"),
+                    "credential_ref": me.get("credential_ref"),
+                    "incarnation_authorization_ref": me.get(
+                        "incarnation_authorization_ref"
+                    ),
+                    "body_capabilities": me.get("body_capabilities"),
+                    "body": {
+                        field: me.get("body", {}).get(field)
+                        for field in (
+                            "schema",
+                            "body_ref",
+                            "embodiment_id",
+                            "incarnation_id",
+                            "observed_at_ms",
+                            "state",
+                            "resource_fences",
+                        )
+                    },
+                    "heads": me.get("heads"),
+                    "effective": _projection_summary(me.get("effective")),
+                },
+                "we": {
+                    "schema": we.get("schema"),
+                    "being_ref": we.get("being_ref"),
+                    "manifest_hash": we.get("manifest_hash"),
+                    "evaluated_at_ms": we.get("evaluated_at_ms"),
+                    "local_origin": we.get("local_origin"),
+                    "embodiments": topology,
+                    "partial": we.get("partial"),
+                },
+                "diff": {
+                    "schema": difference.get("schema"),
+                    "being_ref": difference.get("being_ref"),
+                    "manifest_hash": difference.get("manifest_hash"),
+                    "local_embodiment_id": difference.get("local_embodiment_id"),
+                    "projection_hash": difference.get("projection_hash"),
+                    "origin_summaries": [
+                        {
+                            "embodiment_id": summary.get("embodiment_id"),
+                            "states": summary.get("states"),
+                        }
+                        for summary in difference.get("origin_summaries", [])
+                        if isinstance(summary, dict)
+                    ],
+                    "entries": _projection_summary(
+                        {
+                            **difference,
+                            "schema": "dm.we.projection/v1",
+                        }
+                    )["entries"],
+                },
+                "sync_plan": {
+                    "schema": plan.get("schema"),
+                    "plan_id": plan.get("plan_id"),
+                    "targets": targets,
+                    "partial": plan.get("partial"),
+                },
+            }
+        )
+    return Response(
+        200,
+        {
+            "schema": MATRIX_STATUS_SCHEMA,
+            "configured": bool(rows),
+            "implementation": "installed-daimon-matrix",
+            "matrix_contract_commit": MATRIX_CONTRACT_COMMIT,
+            "embodiments": rows,
+        },
+    )
+
+
+def weave_status(deps: Deps, ctx: RequestContext, **params) -> Response:
+    """GET /v1/weave/status from the installed Matrix authority only."""
+    if deps.matrix_client_factory is None:
+        from clusterctl.matrix_host import MATRIX_CONTRACT_COMMIT
+
+        return Response(
+            200,
+            {
+                "schema": "dm.cluster-matrix-status/v1",
+                "configured": False,
+                "implementation": "installed-daimon-matrix",
+                "matrix_contract_commit": MATRIX_CONTRACT_COMMIT,
+                "embodiments": [],
+            },
+        )
+    try:
+        return _redacted_matrix_status(deps)
+    except Exception:  # noqa: BLE001 - membership-safe HTTP failure boundary
+        return Response(
+            503,
+            {
+                "schema": "dm.cluster-matrix-status/v1",
+                "configured": True,
+                "implementation": "installed-daimon-matrix",
+                "error": "matrix-status-unavailable",
+            },
+        )
 
 
 def dashboard(deps: Deps, ctx: RequestContext, **params) -> Response:
@@ -570,8 +765,9 @@ def dashboard(deps: Deps, ctx: RequestContext, **params) -> Response:
     return Response(200, html, content_type="text/html; charset=utf-8")
 
 
-def destroy(deps: Deps, ctx: RequestContext, name: str, route=None,
-            **params) -> Response:
+def destroy(
+    deps: Deps, ctx: RequestContext, name: str, route=None, **params
+) -> Response:
     """POST /v1/instances/{name}/destroy — destructive-class placeholder.
 
     The confirmation machinery (challenge issue/validate/consume) runs
@@ -579,12 +775,18 @@ def destroy(deps: Deps, ctx: RequestContext, name: str, route=None,
     valid single-use confirmation was consumed. Execution (archive-first
     destroy, #8 §3) is a later milestone.
     """
-    return _error(501, "destroy confirmed; execution is a later milestone",
-                  "destroy", name, ctx.request_id)
+    return _error(
+        501,
+        "destroy confirmed; execution is a later milestone",
+        "destroy",
+        name,
+        ctx.request_id,
+    )
 
 
-def dashboard_prepare(deps: Deps, ctx: RequestContext, route=None,
-                      query=None, _body=None, **params) -> Response:
+def dashboard_prepare(
+    deps: Deps, ctx: RequestContext, route=None, query=None, _body=None, **params
+) -> Response:
     """POST /v1/dashboard/prepare — propose a mutation, return plan JSON.
 
     Reads operation + target from JSON body, calls the appropriate
@@ -596,13 +798,19 @@ def dashboard_prepare(deps: Deps, ctx: RequestContext, route=None,
     target = str(body.get("target", "")).strip()
 
     if not operation or not target:
-        return _error(400, "operation and target are required",
-                      operation or "?", target or "?", ctx.request_id)
+        return _error(
+            400,
+            "operation and target are required",
+            operation or "?",
+            target or "?",
+            ctx.request_id,
+        )
 
     valid_ops = {"start", "stop", "restart", "snapshot", "destroy", "restore"}
     if operation not in valid_ops:
-        return _error(400, f"unknown operation {operation!r}",
-                      operation, target, ctx.request_id)
+        return _error(
+            400, f"unknown operation {operation!r}", operation, target, ctx.request_id
+        )
 
     # restore pre-condition: instance must not be running
     if operation == "restore":
@@ -610,9 +818,13 @@ def dashboard_prepare(deps: Deps, ctx: RequestContext, route=None,
         if resp.status == 200 and isinstance(resp.body, dict):
             state = str(resp.body.get("state", "")).lower()
             if state == "running":
-                return _error(409,
-                              "instance must be stopped before restore",
-                              operation, target, ctx.request_id)
+                return _error(
+                    409,
+                    "instance must be stopped before restore",
+                    operation,
+                    target,
+                    ctx.request_id,
+                )
 
     _propose = {
         "start": mutations.propose_start,
@@ -636,8 +848,9 @@ def dashboard_prepare(deps: Deps, ctx: RequestContext, route=None,
     except ValueError as exc:
         return _error(400, str(exc), operation, target, ctx.request_id)
     except Exception as exc:
-        return _error(502, f"clusterd internal: {exc!r}", operation,
-                      target, ctx.request_id)
+        return _error(
+            502, f"clusterd internal: {exc!r}", operation, target, ctx.request_id
+        )
 
     plan_dict = dataclasses.asdict(plan)
     return Response(200, plan_dict)
@@ -661,8 +874,9 @@ def _plan_from_json(plan_json: dict) -> mutations.MutationPlan:
     )
 
 
-def dashboard_confirm(deps: Deps, ctx: RequestContext, route=None,
-                      query=None, _body=None, **params) -> Response:
+def dashboard_confirm(
+    deps: Deps, ctx: RequestContext, route=None, query=None, _body=None, **params
+) -> Response:
     """POST /v1/dashboard/confirm — execute a previously proposed plan.
 
     Reconstructs the MutationPlan from the JSON body, validates typed-name
@@ -676,8 +890,13 @@ def dashboard_confirm(deps: Deps, ctx: RequestContext, route=None,
     human_turn_id = str(body.get("human_turn_id", str(int(time.time()))))
 
     if not plan_json:
-        return _error(400, "plan is required (field 'plan' missing)",
-                      operation or "?", target or "?", ctx.request_id)
+        return _error(
+            400,
+            "plan is required (field 'plan' missing)",
+            operation or "?",
+            target or "?",
+            ctx.request_id,
+        )
 
     plan = _plan_from_json(plan_json)
 
@@ -686,22 +905,27 @@ def dashboard_confirm(deps: Deps, ctx: RequestContext, route=None,
     if plan.operation == "destroy":
         typed_name = str(body.get("typed_name", "")).strip()
         if not typed_name or typed_name != plan.target:
-            return Response(400, {
-                "schema": mutations.RESULT_SCHEMA,
-                "ok": False,
-                "operation": operation,
-                "target": target,
-                "refused": "typed-name-mismatch",
-                "error": "typed_name must EXACTLY match the target (case-sensitive)",
-            })
+            return Response(
+                400,
+                {
+                    "schema": mutations.RESULT_SCHEMA,
+                    "ok": False,
+                    "operation": operation,
+                    "target": target,
+                    "refused": "typed-name-mismatch",
+                    "error": "typed_name must EXACTLY match the target (case-sensitive)",
+                },
+            )
     else:
         typed_name = None
 
     # Use the dashboard's bearer token for the mutation call.
     mc = mutations.MutationClient(token_override=ctx.scope_token)
     result = mutations.confirm_plan(
-        plan, human_turn_id=human_turn_id,
-        typed_name=typed_name, client=mc,
+        plan,
+        human_turn_id=human_turn_id,
+        typed_name=typed_name,
+        client=mc,
     )
 
     if result.get("ok"):
@@ -712,16 +936,22 @@ def dashboard_confirm(deps: Deps, ctx: RequestContext, route=None,
         return Response(500, result)
 
 
-def restore_instance(deps: Deps, ctx: RequestContext, name: str,
-                     route=None, **params) -> Response:
+def restore_instance(
+    deps: Deps, ctx: RequestContext, name: str, route=None, **params
+) -> Response:
     """POST /v1/instances/{name}/restore — placeholder.
 
     Execution (snapshot-to-instance restore) is a later milestone.
     The pre-condition check (instance must be stopped) runs in the
     dashboard_prepare route.
     """
-    return _error(501, "restore confirmed; execution is a later milestone",
-                  "restore", name, ctx.request_id)
+    return _error(
+        501,
+        "restore confirmed; execution is a later milestone",
+        "restore",
+        name,
+        ctx.request_id,
+    )
 
 
 _DASHBOARD_HTML = r"""<!DOCTYPE html>

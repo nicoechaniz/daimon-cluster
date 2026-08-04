@@ -1,36 +1,106 @@
-# Matrix integration contract
+# Daimon Matrix–Cluster–Tribe convergence contract
 
-Daimon Matrix supplies the canonical ontology and `dm.we.v1` bytes. Cluster
-supplies bodies, embodiments, incarnations, resource fences, lifecycle audit,
-and the hosted Weave process. Tribe Bridge supplies authenticated encrypted
-delivery.
+Status: normative cross-repository contract for the V0 hosted runtime.
 
-The first release deliberately has no Matrix daemon. An administrator installs
-the same `being-manifest/v1` hash on every participating host. This is
-operational trust, not identity proof. A future Matrix root attaches the
-provisional history only through an explicit signed binding artifact.
+“Matrix” in this document means our `daimon-matrix` component. Matrix.org is
+not used. The `daimonmatrix host` is the VPS where Cluster can realize bodies;
+it is not a software component or an identity authority.
 
-## Cluster obligations
+## Authority boundaries
 
-- New body means new embodiment; restart means new incarnation.
-- Multiple embodiments for one being may run.
-- Presence never excludes another embodiment.
-- Fences are scoped to concrete resources and reject stale generations.
-- Lifecycle and fence results are auditable and secret-free.
-- Weave has an independent ledger and no direct writes into provider stores.
-- HMK and configuration changes happen through idempotent projection adapters.
+| Boundary | Sole authority |
+|---|---|
+| Being root, recovery, embodiment credentials, authority epochs | `daimon-matrix` |
+| Signed `dm.we` history, `/me`, `/we`, `/we.sync`, decisions, projections | `daimon-matrix` |
+| Bodies, incarnation runtime state, lifecycle and portable storage | `daimon-cluster` |
+| Concrete resource exclusion and observed postconditions | `daimon-cluster` |
+| Encrypted authenticated delivery and transport receipts | Tribe Bridge |
 
-## Matrix obligations
+Transport principals do not define a being. Cluster registry rows do not prove
+a being. Receiving an event does not adopt it.
 
-- Preserve `/me` as the current embodiment viewpoint and `/we` as same-being
-  plurality.
-- Define origin-retaining event, head, delta, decision, and receipt schemas.
-- Later provide root custody, recovery, body-bound credentials, revocation,
-  and provisional-history binding without restoring single-body exclusion.
+## Exact installed boundary
 
-## Tribe obligations
+Cluster pins `daimon-matrix` by full Git commit in
+`requirements-weave.txt`. Startup verifies the installed distribution's
+`direct_url.json` commit and every public schema constant used by the adapter.
+An unpinned wheel, editable checkout, wrong commit or schema downgrade fails
+closed. Cluster does not carry a fallback implementation.
 
-- Carry typed Weave payloads over direct encrypted audiences.
-- Authenticate each origin principal and preserve exact bytes and receipts.
-- Keep founded-tribe membership separate from same-being membership.
-- Never interpret receive as adoption or transport directory as Matrix truth.
+For each running embodiment Cluster starts one Matrix daemon with:
+
+- an opaque, owner-only root below `state_dir/matrix/`;
+- a distinct ledger, encrypted keystore, signing key, capability key, socket
+  and process lock;
+- the keystore password delivered once through an inherited descriptor, never
+  argv or environment;
+- an exact registry check before ready and on every body observation.
+
+Matrix calls Cluster's body reader with
+`(body_ref, embodiment_id, incarnation_id, evaluated_at_ms)`. Cluster binds
+its registry and fence read to that exact evaluation coordinate and returns a
+closed `dm.cluster-body-snapshot/v1`. It does not acquire or renew a fence while
+reading. Substitution, stopped state, incarnation drift, unsafe storage or a
+future observation fails closed.
+
+## Resource effects
+
+Cluster owns `dm.cluster-resource-fence-*` evidence and observes concrete
+postconditions. Matrix owns canonical effect receipts and reconciliation.
+Idempotency is not evidence that an effect remains true: replay is accepted
+only when intent, observed postcondition and current fence position still
+agree. A stale holder or epoch yields an effect-truth discrepancy.
+
+## clusterd read projection
+
+`clusterd` receives a least-authority local Matrix capability from an
+owner-only sidecar below `state_dir/matrix-clients/`. It contains no root or
+recovery seed, and its capability must contain exactly `runtime.status`,
+`scope.me`, `scope.we`, `scope.we.diff`, and `scope.we.sync-plan`. Broader
+authority is rejected. The sidecar's expected origin must equal both the Matrix
+bundle and current Cluster registry row. `/v1/weave/status` reads authenticated
+Matrix runtime, `/me`, `/we`, diff and sync-plan methods, then emits a bounded
+projection without payloads, routes, endpoints, private paths or raw requests.
+All underlying errors collapse to `matrix-status-unavailable`.
+
+The sidecar is deliberately host-local. It is not part of portable state and
+must be provisioned anew after relocation.
+
+## Portability and rebirth
+
+A supported relocation/rebirth sequence is:
+
+1. quiesce and stop the source Matrix daemon;
+2. create a hashed snapshot of its encrypted custody, runtime bundle, ledger
+   and sync journals, excluding socket/lock/transient files;
+3. restore into a fresh owner-only root attached to the same body and
+   embodiment;
+4. install the signed authority-epoch successor when opening incarnation N+1;
+5. reprovision the clusterd capability from separate host custody (or rotate
+   bundle and encrypted custody together) and start Matrix;
+6. require runtime integrity, accepted manifest history and ledger high-water
+   checks before healthy;
+7. resume exact requests and sync cursors idempotently.
+
+This preserves one being across plural embodiments without copying another
+embodiment's keys. Creating a new body is a new embodiment, not a relocation.
+
+## Tribe Bridge
+
+Tribe Bridge remains the carrier for direct encrypted audiences and exact
+`dm.we.v1` envelopes. Matrix validates root/credential/incarnation signatures,
+causal continuity and adoption semantics after receipt. Cluster only hosts the
+process and provides physical observations. Alternative chat-facing carriers
+may be evaluated later; they do not replace this authority split.
+
+## Migration and rollback
+
+Cluster's provisional `weave/` executable was retired after the frozen
+historical fixture was accepted byte-for-byte by the pinned Matrix provisional
+authority and tampering was rejected. The old code remains recoverable at Git
+commit `54a30fa`, but is not shipped or imported.
+
+Rollback preserves both ledgers unchanged: stop admission, quiesce the Matrix
+process, retain state/high-waters, and deploy the prior whole release. Never
+let provisional code open a Matrix root, lower a fence epoch, downgrade a root
+manifest or reinterpret imported history as adoption.

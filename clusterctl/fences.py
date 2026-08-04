@@ -6,6 +6,7 @@ Only contenders for the exact same ``resource_ref`` exclude one another.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -25,7 +26,8 @@ def now_ms() -> int:
 def _canonical(record: dict) -> bytes:
     return json.dumps(
         {key: value for key, value in record.items() if key != "signature"},
-        sort_keys=True, separators=(",", ":"),
+        sort_keys=True,
+        separators=(",", ":"),
     ).encode("utf-8")
 
 
@@ -56,10 +58,20 @@ class SSHSigner(Signer):
         raise NotImplementedError("SSH verification not yet implemented")
 
 
-class FenceError(Exception): pass
-class FenceConflict(FenceError): pass
-class FenceNotFound(FenceError): pass
-class InvalidSignature(FenceError): pass
+class FenceError(Exception):
+    pass
+
+
+class FenceConflict(FenceError):
+    pass
+
+
+class FenceNotFound(FenceError):
+    pass
+
+
+class InvalidSignature(FenceError):
+    pass
 
 
 class ResourceFenceStore:
@@ -111,7 +123,12 @@ class ResourceFenceStore:
 
     @staticmethod
     def _filename(resource_ref: str) -> str:
-        if not resource_ref or "/" in resource_ref or "\\" in resource_ref or resource_ref in {".", ".."}:
+        if (
+            not resource_ref
+            or "/" in resource_ref
+            or "\\" in resource_ref
+            or resource_ref in {".", ".."}
+        ):
             raise FenceError("resource_ref is not safe for registry storage")
         return resource_ref + ".json"
 
@@ -132,7 +149,9 @@ class ResourceFenceStore:
         self._fences_dir.mkdir(parents=True, exist_ok=True)
         path = self._lease_path(resource_ref)
         temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        temporary.write_text(
+            json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+        )
         os.replace(temporary, path)
 
     def _sign(self, value: dict) -> str:
@@ -146,11 +165,18 @@ class ResourceFenceStore:
 
     @staticmethod
     def _is_expired(value: dict, at_ms: int | None = None) -> bool:
-        return (now_ms() if at_ms is None else at_ms) >= value.get("created_ms", 0) + value.get("ttl_s", 0) * 1000
+        return (now_ms() if at_ms is None else at_ms) >= value.get(
+            "created_ms", 0
+        ) + value.get("ttl_s", 0) * 1000
 
     def acquire(
-        self, resource_ref: str, pubkey: str, fingerprint: str,
-        ttl_s: int = 3600, renewer: str = "self", *,
+        self,
+        resource_ref: str,
+        pubkey: str,
+        fingerprint: str,
+        ttl_s: int = 3600,
+        renewer: str = "self",
+        *,
         holder_embodiment_id: str | None = None,
     ) -> dict:
         existing = self._read_lease(resource_ref)
@@ -166,18 +192,25 @@ class ResourceFenceStore:
         timestamp = now_ms()
         epoch = self._next_epoch(resource_ref, existing)
         value = {
-            "schema": FENCE_SCHEMA, "resource_ref": resource_ref,
+            "schema": FENCE_SCHEMA,
+            "resource_ref": resource_ref,
             "holder_embodiment_id": holder_embodiment_id or "unbound",
-            "holder_pubkey": pubkey, "fingerprint": fingerprint,
-            "epoch": epoch, "created_ms": timestamp, "acquired_ms": timestamp,
-            "ttl_s": ttl_s, "renewer": renewer,
+            "holder_pubkey": pubkey,
+            "fingerprint": fingerprint,
+            "epoch": epoch,
+            "created_ms": timestamp,
+            "acquired_ms": timestamp,
+            "ttl_s": ttl_s,
+            "renewer": renewer,
         }
         value["signature"] = self._sign(value)
         self._write_lease(resource_ref, value)
         self._record_high_water(resource_ref, epoch)
         return value
 
-    def renew(self, resource_ref: str, privkey_path: str, new_ttl_s: int | None = None) -> dict | None:
+    def renew(
+        self, resource_ref: str, privkey_path: str, new_ttl_s: int | None = None
+    ) -> dict | None:
         existing = self._read_lease(resource_ref)
         if existing is None or self._is_expired(existing):
             return None
@@ -197,9 +230,100 @@ class ResourceFenceStore:
     def get(self, resource_ref: str) -> dict | None:
         return self._read_lease(resource_ref)
 
+    @staticmethod
+    def proof_ref(value: dict) -> str:
+        """Return an opaque reference bound to the complete signed record."""
+        raw = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return "cluster:fence-proof:v1:" + hashlib.sha256(raw).hexdigest()
+
+    def verify_current(
+        self, resource_ref: str, *, at_ms: int | None = None
+    ) -> dict | None:
+        """Return one signed, unexpired, non-regressed fence or fail closed."""
+        value = self._read_lease(resource_ref)
+        if value is None:
+            return None
+        if value.get("schema") != FENCE_SCHEMA or not self._verify(value):
+            raise InvalidSignature(
+                f"cannot verify {resource_ref!r}: invalid resource fence"
+            )
+        observed_at_ms = now_ms() if at_ms is None else at_ms
+        created_ms = value.get("created_ms")
+        ttl_s = value.get("ttl_s")
+        if (
+            isinstance(observed_at_ms, bool)
+            or not isinstance(observed_at_ms, int)
+            or observed_at_ms < 0
+            or isinstance(created_ms, bool)
+            or not isinstance(created_ms, int)
+            or created_ms < 0
+            or isinstance(ttl_s, bool)
+            or not isinstance(ttl_s, int)
+            or ttl_s <= 0
+        ):
+            raise FenceError("invalid resource-fence time boundary")
+        if created_ms > observed_at_ms:
+            return None
+        if observed_at_ms >= created_ms + ttl_s * 1000:
+            return None
+        epoch = value.get("epoch")
+        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+            raise FenceError("invalid resource-fence epoch")
+        high_water = self._high_waters().get(resource_ref)
+        if high_water is None or epoch != high_water:
+            raise FenceError("resource-fence high-water regression")
+        return copy.deepcopy(value)
+
+    def current_for_holder(
+        self, holder_embodiment_id: str, *, at_ms: int | None = None
+    ) -> list[dict]:
+        """Return verified current fences for a holder in resource order."""
+        if not self._fences_dir.is_dir():
+            return []
+        result = []
+        for path in sorted(self._fences_dir.glob("*.json")):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                resource_ref = raw["resource_ref"]
+            except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+                raise FenceError("unreadable resource-fence registry") from exc
+            current = self.verify_current(resource_ref, at_ms=at_ms)
+            if (
+                current is not None
+                and current.get("holder_embodiment_id") == holder_embodiment_id
+            ):
+                result.append(current)
+        return result
+
+    def support_status(self) -> dict:
+        """Expose honest hardening support without leaking key material."""
+        if isinstance(self._signer, FakeSigner):
+            mode = "synthetic-fake-signer"
+        elif isinstance(self._signer, SSHSigner):
+            mode = "ssh-sign-only-verification-unimplemented"
+        else:
+            mode = "injected-signer"
+        return {
+            "schema": "resource-fence-support/v1",
+            "mode": mode,
+            "production_ready": False,
+            "interprocess_cas": False,
+        }
+
     def restore(self, resource_ref: str, value: dict) -> None:
-        if value.get("schema") != FENCE_SCHEMA or value.get("resource_ref") != resource_ref or not self._verify(value):
-            raise InvalidSignature(f"cannot restore {resource_ref!r}: invalid resource fence")
+        if (
+            value.get("schema") != FENCE_SCHEMA
+            or value.get("resource_ref") != resource_ref
+            or not self._verify(value)
+        ):
+            raise InvalidSignature(
+                f"cannot restore {resource_ref!r}: invalid resource fence"
+            )
         self._write_lease(resource_ref, value)
         self._record_high_water(resource_ref, int(value["epoch"]))
 
@@ -208,25 +332,44 @@ class ResourceFenceStore:
         if value is None:
             raise FenceNotFound(f"no resource fence for {resource_ref!r}")
         if not self._verify(value):
-            raise InvalidSignature(f"cannot release {resource_ref!r}: invalid signature")
+            raise InvalidSignature(
+                f"cannot release {resource_ref!r}: invalid signature"
+            )
         self._lease_path(resource_ref).unlink()
 
     def status(self, resource_ref: str) -> dict:
         value = self._read_lease(resource_ref)
         if value is None:
-            return {"resource_ref": resource_ref, "present": False, "expires_in_ms": 0, "expired": True, "renewer": None, "last_epoch": None, "acquired_ms": None, "holder_embodiment_id": None}
+            return {
+                "resource_ref": resource_ref,
+                "present": False,
+                "expires_in_ms": 0,
+                "expired": True,
+                "renewer": None,
+                "last_epoch": None,
+                "acquired_ms": None,
+                "holder_embodiment_id": None,
+            }
         if not self._verify(value):
             return {
-                "resource_ref": resource_ref, "present": True,
-                "expires_in_ms": 0, "expired": True, "renewer": None,
-                "last_epoch": None, "acquired_ms": None,
-                "holder_embodiment_id": None, "error": "invalid_signature",
+                "resource_ref": resource_ref,
+                "present": True,
+                "expires_in_ms": 0,
+                "expired": True,
+                "renewer": None,
+                "last_epoch": None,
+                "acquired_ms": None,
+                "holder_embodiment_id": None,
+                "error": "invalid_signature",
             }
         remaining = max(0, value["created_ms"] + value["ttl_s"] * 1000 - now_ms())
         return {
-            "resource_ref": resource_ref, "present": True,
-            "expires_in_ms": remaining, "expired": remaining == 0,
-            "renewer": value.get("renewer"), "last_epoch": value.get("epoch"),
+            "resource_ref": resource_ref,
+            "present": True,
+            "expires_in_ms": remaining,
+            "expired": remaining == 0,
+            "renewer": value.get("renewer"),
+            "last_epoch": value.get("epoch"),
             "acquired_ms": value.get("acquired_ms"),
             "holder_embodiment_id": value.get("holder_embodiment_id"),
         }

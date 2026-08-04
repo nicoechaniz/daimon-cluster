@@ -7,7 +7,8 @@ How clusterd runs as a hardened host service on daimonmatrix.
 - Code deploy target: `/opt/daimon-cluster/` (rsync from the repo, owned
   root:clusterd, group-readable). The repo stays the workspace; /opt is
   the service boundary — the service account never traverses /home.
-- Runtime: `/opt/daimon-cluster/venv` (pyyaml only) with
+- Runtime: `/opt/daimon-cluster/venv` (the exact committed
+  `requirements.txt`, including source-pinned `daimon-matrix`) with
   `PYTHONPATH=/opt/daimon-cluster`.
 - State: `/var/lib/daimon-cluster/` owned `clusterd:clusterd`.
 - Identity: system user `clusterd` (no shell, no home), group
@@ -25,12 +26,17 @@ How clusterd runs as a hardened host service on daimonmatrix.
     sudo useradd --system --no-create-home --shell /usr/sbin/nologin clusterd
     sudo usermod -aG incus-admin clusterd
     sudo mkdir -p /opt/daimon-cluster
-    sudo rsync -a --delete --exclude __pycache__ clusterd clusterctl configs /opt/daimon-cluster/
-    sudo uv venv /opt/daimon-cluster/venv && sudo uv pip install --python /opt/daimon-cluster/venv/bin/python pyyaml
+    sudo rsync -a --delete --exclude __pycache__ clusterd clusterctl configs constraints.txt requirements.txt requirements-weave.txt /opt/daimon-cluster/
+    sudo uv venv /opt/daimon-cluster/venv
+    sudo uv pip install --python /opt/daimon-cluster/venv/bin/python -c /opt/daimon-cluster/constraints.txt -r /opt/daimon-cluster/requirements.txt
     sudo chown -R root:clusterd /opt/daimon-cluster && sudo chmod -R g+rX /opt/daimon-cluster
     sudo chown -R clusterd:clusterd /var/lib/daimon-cluster
     sudo cp configs/clusterd.service /etc/systemd/system/
     sudo systemctl daemon-reload && sudo systemctl enable --now clusterd
+
+Provision each running embodiment's owner-only Matrix root and host-local
+clusterd capability according to `docs/runbooks/matrix-host.md` before
+expecting `/v1/weave/status` to become configured and healthy.
 
 ## Verified on deploy day (2026-08-01)
 

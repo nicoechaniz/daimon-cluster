@@ -11,6 +11,7 @@ an interruption point. All against FakeAdapter — no incus.
 
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -212,7 +213,9 @@ def test_transfer_happy_path_order(state_dir, cfg, adapter):
     assert target_spec["status"] == "active"
     assert target_spec["transferred_from"] == NAME
     # signed transfer record on disk
-    record = json.loads(open(res["transfer_record"]).read())
+    record = json.loads(
+        Path(res["transfer_record"]).read_text(encoding="utf-8")
+    )
     assert record["schema"] == "transfer-record/v1"
     assert record["source"] == NAME and record["target"] == NEW
     assert record["signature"]

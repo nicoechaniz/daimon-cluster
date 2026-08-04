@@ -1,7 +1,8 @@
 # daimon-cluster
 
-A body and lifecycle controller for plural Daimon embodiments, plus the first
-operational `weave` runtime for `/we` and `/we.sync`.
+A body and lifecycle controller for plural Daimon embodiments and the host
+boundary for the root-authorized `daimon-matrix` `/me`, `/we`, and `/we.sync`
+runtime. Matrix.org is not part of this architecture.
 
 Each member of the tribe gets their own system container on daimonmatrix
 (`daimonmatrix.altermundi.net`, anyVPN `10.10.20.69`) where they run their own
@@ -27,12 +28,12 @@ on their home machine, following the pattern proven by `compaii@legion` /
   answer `/we` concurrently.
 - **Safe effects**: CAS/TTL fences exclude stale writers only on the same
   concrete resource.
-- **Navigable convergence**: `/we.sync` imports origin-marked novelty for
+- **Navigable convergence**: Matrix `/we.sync` imports origin-marked novelty for
   local, reversible adoption rather than cloning effective configuration.
 
 ## Status
 
-Implementation phase. See [`docs/design/embodiment-and-weave.md`](docs/design/embodiment-and-weave.md),
+Matrix hosting integration is in implementation/verification. See [`docs/design/embodiment-and-weave.md`](docs/design/embodiment-and-weave.md),
 [`docs/design/matrix-convergence.md`](docs/design/matrix-convergence.md), and
 [`docs/PLAN.md`](docs/PLAN.md).
 

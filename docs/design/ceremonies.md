@@ -85,14 +85,14 @@ leave/expel operations are separate signed membership artifacts.
 - Volume lost, verified backup intact: restore the same body only if the
   checkpoint, keys, and provenance prove it; otherwise create a new embodiment
   and explicitly import eligible history.
-- Embodiment signing key lost: retire that embodiment/key. Future Matrix root
-  recovery may bind a successor; Cluster must not infer identity from copied
-  memories.
+- Embodiment signing key lost: retire that embodiment/key. Matrix root/recovery
+  authority may issue the explicit supported successor; Cluster must not infer
+  identity from copied memories.
 - Host compromise: retire/revoke affected embodiment and transport keys,
   rotate resource-fence authority, restore on a clean host, then reconcile
   Weave from independently verified peers.
 
-Provider, transport, backup, embodiment, and future Matrix-root keys have
+Provider, transport, backup, embodiment, and Matrix root/recovery keys have
 distinct custody and recovery paths.
 
 ## 7. Testable invariants

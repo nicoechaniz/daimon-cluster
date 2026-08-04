@@ -3,7 +3,26 @@
 Living tracking file. Updated after every work session. Read FIRST on session
 start, then resume from the first open item.
 
-## Current snapshot (2026-08-02)
+## Current snapshot (2026-08-04)
+
+Issue #48 is implemented on branch `matrix-host-dm037` pending integration.
+Cluster source-pins the installed `daimon-matrix` merge `7376750`, hosts one
+root-authorized process per exact embodiment, injects registry/fence snapshots
+at Matrix's evaluation coordinate, and exposes a redacted authenticated
+clusterd status projection. Portable restore preserves encrypted custody,
+ledger, authority epochs, cursors and exact retry results while excluding
+socket, lock and host-local clusterd capabilities. The provisional executable
+`weave/` package is retired after frozen-byte parity evidence.
+
+The real-process test runs two distinct embodiments, advances one through a
+signed incarnation N+1, restarts and relocates it, and verifies `/me`, `/we`,
+history, authority epoch and idempotent replay. The clock-boundary test was
+repeated five times after Matrix DM-080; all passed. The full Cluster suite is
+283 passed and 2 intentional skips before final PR CI. See
+`docs/design/matrix-convergence.md`, `docs/runbooks/matrix-host.md`, and
+`docs/verification/matrix-provisional-retirement.md`.
+
+### Earlier snapshot (2026-08-02)
 
 The ontology R-series is implemented. The isolated Legion–daimonmatrix R6
 canary passed all nine acceptance checks; its redacted receipt is
@@ -69,10 +88,10 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 
 ## Next action
 
-The R-series ontology/Weave convergence is complete. Remaining work belongs to
-the older operational programme: #13 pilot enrollment, #15 off-host backup
-heartbeat, and the host-level restart window. Those are not identity or Weave
-design blockers.
+The R-series ontology/Weave convergence is complete. The immediate integration
+gate is #48 (installed Matrix host); older operational work remains #13 pilot
+enrollment, #15 off-host backup heartbeat, and the host-level restart window.
+Those are not identity or Weave design blockers.
 
 ## Key decisions this stretch
 

@@ -10,6 +10,7 @@ All tests run against FakeAdapter with a scripted exec_handler — no incus.
 
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 import yaml
@@ -326,7 +327,7 @@ def test_unsigned_or_tampered_manifest_rejected(
         state_dir, cfg, adapter, lease):
     _write_spec(state_dir)
     result = park.run_park(NAME, cfg, adapter, actor="test")
-    manifest = json.loads(open(result["manifest"]).read())
+    manifest = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
     signer = leases.FakeSigner()
     assert park.verify_manifest(manifest, signer) is True
 

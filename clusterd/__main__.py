@@ -30,6 +30,7 @@ import sys
 from pathlib import Path
 
 from clusterctl.config import load_config
+from clusterctl.matrix_host import matrix_client_factory
 
 from . import __version__, auth, handlers, server
 from .openapi import dump_openapi
@@ -132,7 +133,11 @@ def main(argv=None) -> int:
         return 0
 
     binds = args.bind or [(server.DEFAULT_BIND, server.DEFAULT_PORT)]
-    deps = handlers.Deps(config_path=args.config, state_dir=args.state_dir)
+    deps = handlers.Deps(
+        config_path=args.config,
+        state_dir=args.state_dir,
+        matrix_client_factory=matrix_client_factory(state_dir),
+    )
     server.serve(deps, binds)
     return 0
 

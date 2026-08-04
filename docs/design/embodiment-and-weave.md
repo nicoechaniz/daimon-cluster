@@ -11,21 +11,22 @@ same time. Cluster does not prove that they are one being.
 
 `state_dir/embodiments.json` records each body, embodiment, current state, and
 complete incarnation intervals. Restart closes the prior interval and opens a
-new one. Cloning state creates a new body and embodiment; relocating the same
-body preserves the embodiment and opens another incarnation.
+new one only when Matrix has a signed authority-epoch successor. Cloning state
+creates a new body and embodiment; relocating the same body preserves the
+embodiment and opens another incarnation.
 
-Lifecycle records are exposed to Weave and the dashboard. Presence is routing
-and observability metadata, never an exclusivity fence.
+Lifecycle records are exposed to Matrix through the closed
+`dm.cluster-body-snapshot/v1` callback and to operators through a redacted
+dashboard. Presence is routing and observability metadata, never an
+exclusivity fence. Matrix owns the evaluation instant and supplies it to the
+Cluster callback, so an honest read cannot become “future” across a clock
+tick.
 
-`GET /v1/weave/status` exposes the manifest root, local origin, all declared
-origins, origin heads, durable peer cursors, fail-closed peer sync state, and
-payload-free semantic differences. Incoming novelty is counted by kind,
-origin, and local decision state. `coherent` and `pending` describe ordinary
-operation; a rejected non-contiguous page records `gap`, while invalid signed
-or protocol content records `quarantined`. A later valid pull clears that
-transport fault. Historical peer events never prove current presence or
-reachability, so remote values remain `unknown` until a live `/we` response is
-available.
+`GET /v1/weave/status` calls the owner-local authenticated Matrix client and
+projects `/me`, `/we`, difference and sync-plan data. It omits payloads,
+routes, endpoints, requests, secrets and private paths; any underlying error
+collapses to one membership-safe failure. The old Cluster `weave/` runtime is
+not an alternate status source.
 
 ## Resource fences
 
@@ -39,23 +40,30 @@ Park, snapshot, wake, and transfer retain their quiesce, integrity, rollback,
 and audit guarantees. A body-volume transfer renews the fence for that volume;
 it does not establish or move being identity.
 
-## Weave
+## Matrix-hosted Weave
 
-The `weave` package is an independent service boundary hosted in this repo. It
-owns a per-embodiment SQLite ledger, origin chains, heads/deltas, local
-decisions, projections, and `/we` fan-out. It never writes HMK SQLite directly
-and never shares its database with another embodiment.
+The exact installed `daimon-matrix` artifact owns the per-embodiment SQLite
+ledger, origin/incarnation chains, heads/deltas, decisions, projections,
+authority epochs and `/we` fan-out. Each embodiment has a distinct owner-only
+root, socket, signing authority and capability. Cluster neither vendors nor
+reinterprets those bytes.
 
-It loads a canonical `being-manifest/v1`. Peers must present the same
-`being_ref` and manifest hash. Tribe authenticates/encrypts the transport;
-Weave validates event origin and meaning. Pull adds `known` events only.
+Peers prove a common root-authorized being and accepted manifest history.
+Tribe Bridge authenticates/encrypts transport; Matrix validates event origin
+and meaning. Import adds known signed history only. Adoption needs a local
+decision event and projection receipt.
 
 Memory/configuration adapters expose preview and receipt APIs. Secret values
-are rejected. Identity/access/external effects require a human confirmation;
-resource-writing effects additionally bind the current resource fence.
+are rejected. Identity/access/external effects require the appropriate local
+authority; resource-writing effects bind a current Cluster resource-fence
+position and are replayed only while observed effect truth still agrees.
 
-## Future Matrix boundary
+## Portability and custody
 
-Matrix will eventually replace the provisional manifest as cryptographic
-being authority and issue body-bound embodiment credentials. Cluster will
-continue to own bodies and resource fences. Tribe keys remain transport keys.
+Cluster snapshots only a quiesced Matrix root, hashes every included regular
+file, and excludes sockets, locks, WAL temporaries and host-local clusterd
+client material. Restore targets must be new owner-only directories. The
+encrypted Matrix custody and canonical ledger travel; the least-authority
+clusterd capability is reprovisioned on the destination host. Root/recovery
+seeds never enter Cluster. Tribe keys remain transport keys, not being
+identity.

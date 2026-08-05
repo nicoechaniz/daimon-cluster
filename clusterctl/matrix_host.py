@@ -27,7 +27,7 @@ from typing import Any
 from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
-MATRIX_CONTRACT_COMMIT = "73767504b777d0d0c9132a341959f486afce99f1"
+MATRIX_CONTRACT_COMMIT = "8145b4c6227abded433e21e67fae18de94b1d504"
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
 MATRIX_STATUS_SCHEMA = "dm.cluster-matrix-status/v1"
@@ -86,6 +86,12 @@ def _matrix_api() -> dict[str, Any]:
     if getattr(runtime, "BUNDLE_SCHEMA", None) != "dm.runtime.bundle/v1":
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     if getattr(runtime, "BUNDLE_SCHEMA_V2", None) != "dm.runtime.bundle/v2":
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if getattr(runtime, "BUNDLE_SCHEMA_V3", None) != "dm.runtime.bundle/v3":
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if getattr(runtime, "BUNDLE_SCHEMA_V4", None) != "dm.runtime.bundle/v4":
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if getattr(runtime, "BUNDLE_SCHEMA_V5", None) != "dm.runtime.bundle/v5":
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     if getattr(client, "CLIENT_CONFIG_SCHEMA", None) != "dm.local.client-config/v1":
         raise MatrixHostError("daimon_matrix_contract_mismatch")
@@ -193,6 +199,9 @@ def _public_bundle(root: Path, bundle_name: str) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("schema") not in {
         "dm.runtime.bundle/v1",
         "dm.runtime.bundle/v2",
+        "dm.runtime.bundle/v3",
+        "dm.runtime.bundle/v4",
+        "dm.runtime.bundle/v5",
     }:
         raise MatrixHostError("matrix_bundle_rejected")
     return value

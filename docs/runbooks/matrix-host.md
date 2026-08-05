@@ -73,7 +73,10 @@ Recreate `STATE/matrix-clients/HASH/` on the destination; it must not appear in
 the snapshot. Start the daemon and require authenticated `runtime.status`,
 `/me`, `/we`, cursor and authority-epoch checks before routing traffic.
 
-Any commit/schema mismatch, unsafe path, altered hash, registry/origin drift,
+The host boundary accepts the additive Matrix runtime bundle line V1 through
+V5 at the pinned commit. V3 enables native peer transport, V4 adds species and
+V5 adds attributed sources; all remain owned and interpreted by Matrix. Any
+commit/schema mismatch, unsafe path, altered hash, registry/origin drift,
 stale resource epoch or missing local capability is a refusal. Preserve the
 source and destination state roots for diagnosis; do not rewrite either
 ledger.

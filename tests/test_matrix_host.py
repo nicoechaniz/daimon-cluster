@@ -176,6 +176,41 @@ def test_registry_and_matrix_roots_are_owner_only_and_opaque(tmp_path):
     assert EMBODIMENT not in str(root)
 
 
+@pytest.mark.parametrize(
+    "schema",
+    [
+        "dm.runtime.bundle/v1",
+        "dm.runtime.bundle/v2",
+        "dm.runtime.bundle/v3",
+        "dm.runtime.bundle/v4",
+        "dm.runtime.bundle/v5",
+    ],
+)
+def test_public_bundle_accepts_the_pinned_additive_line(tmp_path, schema):
+    root = tmp_path / "runtime"
+    root.mkdir(mode=0o700)
+    bundle = root / "runtime.json"
+    bundle.write_text(json.dumps({"schema": schema}), encoding="utf-8")
+    bundle.chmod(0o600)
+
+    assert matrix_host_module._public_bundle(root, "runtime.json") == {
+        "schema": schema
+    }
+
+
+def test_public_bundle_rejects_an_unpinned_successor_schema(tmp_path):
+    root = tmp_path / "runtime"
+    root.mkdir(mode=0o700)
+    bundle = root / "runtime.json"
+    bundle.write_text(
+        json.dumps({"schema": "dm.runtime.bundle/v6"}), encoding="utf-8"
+    )
+    bundle.chmod(0o600)
+
+    with pytest.raises(MatrixHostError, match="matrix_bundle_rejected"):
+        matrix_host_module._public_bundle(root, "runtime.json")
+
+
 def test_quiesced_snapshot_restore_excludes_host_locals_and_detects_tamper(
     tmp_path, monkeypatch
 ):

@@ -27,6 +27,12 @@ Cluster pins `daimon-matrix` by full Git commit in
 An unpinned wheel, editable checkout, wrong commit or schema downgrade fails
 closed. Cluster does not carry a fallback implementation.
 
+The current pin is audited Matrix commit
+`8145b4c6227abded433e21e67fae18de94b1d504`.
+The adapter accepts the additive runtime bundle line V1 through V5 and checks
+every corresponding public schema constant before opening state. Bundle
+contents remain Matrix authority; Cluster only validates the hosting envelope.
+
 For each running embodiment Cluster starts one Matrix daemon with:
 
 - an opaque, owner-only root below `state_dir/matrix/`;

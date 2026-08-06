@@ -8,8 +8,10 @@ Last reconciled: 2026-08-06.
 
 ## Exact state
 
-- Cluster `main` is `5cc2583`, produced by PR #51.
-- That release pins Matrix `8145b4c` in `requirements-weave.txt`, accepts
+- The executable Cluster baseline produced by PR #51 is `5cc2583`.
+  Documentation-only commits may advance repository `main`; inspect Git rather
+  than treating this runtime SHA as the documentation head.
+- That executable baseline pins Matrix `8145b4c` in `requirements-weave.txt`, accepts
   runtime bundles V1 through V5, and passed its synthetic installed-process
   gate.
 - Matrix DM-082 then merged at `dad012d` and added relationship/grant runtime

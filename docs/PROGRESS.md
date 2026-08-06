@@ -5,8 +5,9 @@ start, then resume from the first open item.
 
 ## Pause checkpoint (2026-08-06)
 
-PR #51 is merged on `main` as `5cc2583`. It pins the Matrix DM-083 preparation
-commit `8145b4c` and accepts bundles V1 through V5. Matrix DM-082 subsequently
+The executable baseline from PR #51 is `5cc2583`; later documentation-only
+commits may advance repository `main`. That baseline pins the Matrix DM-083
+preparation commit `8145b4c` and accepts bundles V1 through V5. Matrix DM-082 subsequently
 merged as `dad012d` and introduced V6, so this pin must not be used for live
 dogfood. Cluster issue #52 owns the exact post-DM-082 repin and verification.
 

@@ -33,6 +33,13 @@ The adapter accepts the additive runtime bundle line V1 through V5 and checks
 every corresponding public schema constant before opening state. Bundle
 contents remain Matrix authority; Cluster only validates the hosting envelope.
 
+Pause note (2026-08-06): this is the merged PR #51 preparation pin, not the
+next live candidate. Matrix DM-082 merged afterward at `dad012d` and adds V6.
+Cluster issue #52 must pin the frozen post-DM-082 DM-083 candidate, extend the
+same exact checks through V6 and rerun installed compatibility before any host
+preflight/effect. Until then, fail closed rather than silently accepting V6 or
+using `8145b4c` for dogfood.
+
 For each running embodiment Cluster starts one Matrix daemon with:
 
 - an opaque, owner-only root below `state_dir/matrix/`;

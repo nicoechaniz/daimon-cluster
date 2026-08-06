@@ -33,7 +33,12 @@ on their home machine, following the pattern proven by `compaii@legion` /
 
 ## Status
 
-Matrix hosting integration is in implementation/verification. See [`docs/design/embodiment-and-weave.md`](docs/design/embodiment-and-weave.md),
+Repository preparation is paused before the live DM-083 dogfood. Read
+[`RESUME.md`](RESUME.md) first: the current Matrix pin predates DM-082/V6 and
+must be replaced through issue #52 before any host preflight or effect.
+
+Matrix hosting integration is otherwise implemented and under verification.
+See [`docs/design/embodiment-and-weave.md`](docs/design/embodiment-and-weave.md),
 [`docs/design/matrix-convergence.md`](docs/design/matrix-convergence.md), and
 [`docs/PLAN.md`](docs/PLAN.md).
 

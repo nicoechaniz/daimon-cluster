@@ -11,10 +11,10 @@ it is not a software component or an identity authority.
 | Boundary | Sole authority |
 |---|---|
 | Being root, recovery, embodiment credentials, authority epochs | `daimon-matrix` |
-| Signed `dm.we` history, `/me`, `/we`, `/we.sync`, decisions, projections | `daimon-matrix` |
+| Signed `dm.we` history, `/me`, `/we`, `/we.sync`, decisions, projections, relationship/grant authority and canonical communication semantics | `daimon-matrix` |
 | Bodies, incarnation runtime state, lifecycle and portable storage | `daimon-cluster` |
 | Concrete resource exclusion and observed postconditions | `daimon-cluster` |
-| Encrypted authenticated delivery and transport receipts | Tribe Bridge |
+| Transitional v1 ordinary human-message transport, deduplication and its own ACK evidence | Tribe Bridge |
 
 Transport principals do not define a being. Cluster registry rows do not prove
 a being. Receiving an event does not adopt it.
@@ -100,11 +100,15 @@ embodiment's keys. Creating a new body is a new embodiment, not a relocation.
 
 ## Tribe Bridge
 
-Tribe Bridge remains the carrier for direct encrypted audiences and exact
-`dm.we.v1` envelopes. Matrix validates root/credential/incarnation signatures,
-causal continuity and adoption semantics after receipt. Cluster only hosts the
-process and provides physical observations. Alternative chat-facing carriers
-may be evaluated later; they do not replace this authority split.
+Tribe Bridge remains temporarily deployed for ordinary human messages and its
+own authenticated transport/deduplication/ACK evidence. It is not the Matrix
+peer wire, does not carry canonical `/we.sync` authority, and its ACK is never
+Matrix recipient intake or a semantic receipt. Matrix DM-051 through DM-055 and
+DM-082 independently own recipient encryption, logical message legs,
+authenticated intake, signed semantic receipts, relationships/grants and the
+native peer carrier. Cluster only hosts the exact Matrix process and provides
+physical observations. Alternative chat-facing carriers may be evaluated
+later; they do not replace this authority split.
 
 ## Migration and rollback
 

@@ -3,9 +3,21 @@
 Living tracking file. Updated after every work session. Read FIRST on session
 start, then resume from the first open item.
 
-## Current snapshot (2026-08-04)
+## Pause checkpoint (2026-08-06)
 
-Issue #48 is implemented on branch `matrix-host-dm037` pending integration.
+PR #51 is merged on `main` as `5cc2583`. It pins the Matrix DM-083 preparation
+commit `8145b4c` and accepts bundles V1 through V5. Matrix DM-082 subsequently
+merged as `dad012d` and introduced V6, so this pin must not be used for live
+dogfood. Cluster issue #52 owns the exact post-DM-082 repin and verification.
+
+No live DM-083 host preflight or effect has run. The cold-start sequence and
+authority boundaries are in [`../RESUME.md`](../RESUME.md). The active
+cross-repository card is AlterMundi/daimon-matrix#111 with draft PR #112; it
+still requires explicit operator authorization before contacting either host.
+
+## Previous snapshot (2026-08-04)
+
+Issue #48 is implemented and merged through PR #49.
 Cluster source-pins the installed `daimon-matrix` merge `7376750`, hosts one
 root-authorized process per exact embodiment, injects registry/fence snapshots
 at Matrix's evaluation coordinate, and exposes a redacted authenticated
@@ -88,10 +100,12 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 
 ## Next action
 
-The R-series ontology/Weave convergence is complete. The immediate integration
-gate is #48 (installed Matrix host); older operational work remains #13 pilot
-enrollment, #15 off-host backup heartbeat, and the host-level restart window.
-Those are not identity or Weave design blockers.
+The R-series ontology/Weave convergence and installed Matrix host issue #48 are
+complete. The immediate repository-only integration gate is #52: pin the
+frozen post-DM-082 Matrix candidate and verify V6 without acquiring social or
+canonical-state authority. Then stop for the explicit DM-083 human gate.
+Older operational work remains #13 pilot enrollment, #15 off-host backup
+heartbeat, and the host-level restart window; none authorizes DM-083 effects.
 
 ## Key decisions this stretch
 

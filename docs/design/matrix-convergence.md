@@ -27,18 +27,16 @@ Cluster pins `daimon-matrix` by full Git commit in
 An unpinned wheel, editable checkout, wrong commit or schema downgrade fails
 closed. Cluster does not carry a fallback implementation.
 
-The current pin is audited Matrix commit
-`8145b4c6227abded433e21e67fae18de94b1d504`.
-The adapter accepts the additive runtime bundle line V1 through V5 and checks
+The current pin is audited Matrix DM-083 candidate
+`d086e7432c46310c563af14e51c7a4fa5a5f6b88`.
+The adapter accepts the additive runtime bundle line V1 through V6 and checks
 every corresponding public schema constant before opening state. Bundle
 contents remain Matrix authority; Cluster only validates the hosting envelope.
 
-Pause note (2026-08-06): this is the merged PR #51 preparation pin, not the
-next live candidate. Matrix DM-082 merged afterward at `dad012d` and adds V6.
-Cluster issue #52 must pin the frozen post-DM-082 DM-083 candidate, extend the
-same exact checks through V6 and rerun installed compatibility before any host
-preflight/effect. Until then, fail closed rather than silently accepting V6 or
-using `8145b4c` for dogfood.
+DM-083 gate (2026-08-10): Matrix draft PR #112 is frozen at the exact commit
+above after DM-082 merged at `dad012d`. Cluster issue #52 owns the source and
+installed-process verification of this pin. Any later Matrix candidate change
+requires another exact repin and complete downstream gate.
 
 For each running embodiment Cluster starts one Matrix daemon with:
 

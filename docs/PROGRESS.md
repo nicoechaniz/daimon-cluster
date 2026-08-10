@@ -20,6 +20,13 @@ single-incarnation client/service assumption. The cold-start sequence and
 authority boundaries are in [`../RESUME.md`](../RESUME.md). The active
 cross-repository card is AlterMundi/daimon-matrix#111 with draft PR #112.
 
+Issue #64 implements the first #46 hardening dependency as a review candidate:
+authenticated `resource-fence/v2` holder operations, owner-only Ed25519
+custody, transactional SQLite CAS/high-waters/tombstones, explicit offline V1
+migration, crash/race tests and unchanged Matrix verifier consumption. See
+`docs/design/production-resource-fences.md` and
+`docs/verification/resource-fence-h1.md`. It is not enabled on a live host.
+
 ## Previous snapshot (2026-08-04)
 
 Issue #48 is implemented and merged through PR #49.

@@ -225,6 +225,15 @@ incarnation segment. Many embodiments in one being may be running.
 CAS is scoped to the exact `resource_ref`. A stale writer for that resource is
 rejected; unrelated resources and embodiments never conflict by identity.
 
+V1 is now the synthetic/offline fixture contract. Production uses the
+additive but deliberately distinct `resource-fence/v2`: it binds `body_ref`,
+`holder_incarnation_id`, `holder_key_id`, `state`, `operation`,
+`signing_key_id` and `authorization_ref`. Its current record, monotonic
+high-water/proof, append-only event and release/migration tombstone commit in
+one SQLite transaction. Every mutation requires a holder-signed exact expected
+epoch/proof; expiry is observed without deleting history. See
+`docs/design/production-resource-fences.md`.
+
 ### 1.9 `dm.we.status/v1`
 
 The read model reports `being_ref`, installed manifest hash, local origin,

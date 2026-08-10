@@ -6,6 +6,7 @@ store never fences a being or Daimon identity.
 
 from .fences import (
     FENCE_SCHEMA as LEASE_SCHEMA,
+    Ed25519Signer,
     FakeSigner,
     FenceConflict as LeaseConflict,
     FenceError as LeaseError,
@@ -19,7 +20,7 @@ from .fences import (
 )
 
 __all__ = [
-    "FakeSigner", "InvalidSignature", "LEASE_SCHEMA", "LeaseConflict",
+    "Ed25519Signer", "FakeSigner", "InvalidSignature", "LEASE_SCHEMA", "LeaseConflict",
     "LeaseError", "LeaseNotFound", "LeaseStore", "SSHSigner", "Signer",
     "_canonical", "now_ms",
 ]

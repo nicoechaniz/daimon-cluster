@@ -48,9 +48,12 @@ jobs:
               == "MIT"
           )
           PY
-      - name: Lint the Matrix integration boundary
+      - name: Lint the Matrix and production-fence boundaries
         run: >-
           python -m ruff check
+          clusterctl/fences.py
+          clusterctl/production_fences.py
+          clusterctl/leases.py
           clusterctl/matrix_host.py
           clusterd/__main__.py
           clusterd/handlers.py
@@ -58,9 +61,12 @@ jobs:
           tests/test_matrix_host_process.py
           tests/test_matrix_parity.py
           tests/test_matrix_status.py
-      - name: Type-check the Matrix host boundary
+          tests/test_production_fences.py
+      - name: Type-check the Matrix and production-fence boundaries
         run: >-
           python -m mypy --follow-imports=skip --ignore-missing-imports
+          clusterctl/fences.py
+          clusterctl/production_fences.py
           clusterctl/matrix_host.py
       - run: python -m compileall -q clusterctl clusterd steward_tools tests
       - run: python -W error::ResourceWarning -m pytest -q

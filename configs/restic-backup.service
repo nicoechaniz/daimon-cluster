@@ -8,6 +8,7 @@ After=incus.service
 [Service]
 Type=oneshot
 User=root
-ExecStart=/bin/bash -c 'RESTIC_PASSWORD=$$(cat /var/lib/daimon-cluster/backup-keys/restic-password) /home/debian/Projects/daimon-cluster/scripts/restic-backup.sh'
+Environment=RESTIC_PASSWORD_FILE=/var/lib/daimon-cluster/backup-keys/restic-password
+ExecStart=/opt/daimon-cluster/scripts/restic-backup.sh
 Nice=19
 IOSchedulingClass=idle

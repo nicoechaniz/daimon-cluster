@@ -10,11 +10,16 @@ daimonmatrix, password never leaves the host.
 
 - Local repo: `/var/lib/daimon-cluster/restic-repo` (restic 0.18.0,
   encrypted; password at backup-keys/restic-password, 0600 root).
-- Daily: systemd timer `restic-backup.timer` (04:17 + jitter) →
-  `scripts/restic-backup.sh`: state (specs/audit/idempotency) + every
-  declared daimon's durable volume; forget 7d/4w; check after each run.
+- Daily: systemd timer `restic-backup.timer` (04:17 + jitter) runs the
+  deployed `/opt/daimon-cluster/scripts/restic-backup.sh`. It stops active
+  Matrix hosts and then clusterd, captures the complete state boundary,
+  deployed release, Matrix service/custody and every declared daimon's durable
+  volume, then resumes only services that were active. The repository and its
+  circular unlock material are excluded; retention is 7d/4w and every run ends
+  with `restic check`.
   Fail-closed --check-only/--verify modes gate destroy/update paths.
-- Off-host copy: legion cron rsync -a --delete of the repo dir
+- Off-host copy: legion cron rsync -a --delete of the repo dir (using its
+  already-authorized remote sudo because the Cluster state parent is 0700)
   (append-mostly → cheap) + heartbeat via bridge. Legion holds
   ciphertext only. Fleet-phase targets (OVH S3 / Hetzner paid, second
   tribe host) stay parked for Nicolás.

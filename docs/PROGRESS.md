@@ -5,16 +5,19 @@ start, then resume from the first open item.
 
 ## Active checkpoint (2026-08-10)
 
-Cluster issue #57 repins Matrix from the superseded V6 candidate to frozen
-DM-083 V7 candidate `bcf6b9f6ef5a46fdd35dfc8036a7a4d458103c7b`.
-The adapter checks and hosts the additive bundle line through V7 while leaving
-peer topology, synchronization, identity and adoption semantics in Matrix.
+Cluster issue #61 repins Matrix from the exercised V7 predecessor to the
+successor-retry candidate `f0181f7117859f3f9cc4afc7dfbdaf9b06e74754`.
+The adapter checks the additive client config V2 constant and hosts the bundle
+line through V7 while leaving retry, peer, identity and adoption semantics in
+Matrix.
 An exact clean Python 3.13 install verified `direct_url.json` and MIT metadata,
-then passed lint, type, compile and the complete Cluster suite: 292 passed and
+then passed lint, type, compile and the complete Cluster suite: 297 passed and
 2 intentional skips.
 
-No live DM-083 host effect had run at this checkpoint. The cold-start sequence
-and authority boundaries are in [`../RESUME.md`](../RESUME.md). The active
+The authorized same-being live path reached a real successor incarnation. Its
+old exact response remained durable and duplicate-free but was rejected by the
+single-incarnation client/service assumption. The cold-start sequence and
+authority boundaries are in [`../RESUME.md`](../RESUME.md). The active
 cross-repository card is AlterMundi/daimon-matrix#111 with draft PR #112.
 
 ## Previous snapshot (2026-08-04)
@@ -103,10 +106,10 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 ## Next action
 
 The R-series ontology/Weave convergence and installed Matrix host issue #48 are
-complete. Issue #57 verifies the frozen Matrix V7 candidate without acquiring
-identity, peer, social or canonical-state authority; that repository gate is
-green. Next execute the authorized DM-083 preflight with reversible effects
-only.
+complete. Issue #61 verifies the exact successor-retry Matrix candidate without
+acquiring identity, retry, peer, social or canonical-state authority. Next
+redeploy the verified pair and complete the preserved-request replay plus
+successor-lane convergence.
 Older operational work remains #13 pilot enrollment, #15 off-host backup
 heartbeat, and the host-level restart window; none authorizes DM-083 effects.
 

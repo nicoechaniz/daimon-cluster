@@ -37,13 +37,15 @@ STATE/matrix-clients/HASH/         host-local clusterd client (0700)
   capability.key                   exactly 32 bytes (0600)
 ```
 
-Provision `client.json` with schema `dm.local.client-config/v1`, the descriptor
-of a capability containing exactly `runtime.status`, `scope.me`, `scope.we`,
-`scope.we.diff`, and `scope.we.sync-plan`, and the exact current Matrix
-`local_origin`. Write the raw 32-byte capability key separately. Broader
+Provision `client.json` with schema `dm.local.client-config/v1` for an unchanged
+incarnation, or V2 after succession with the exact current origin and Matrix-
+verified bounded historical origin rows. The capability contains exactly
+`runtime.status`, `scope.me`, `scope.we`, `scope.we.diff`, and
+`scope.we.sync-plan`. Write the raw 32-byte capability key separately. Broader
 capabilities are rejected. Do not give Cluster root or recovery seeds. On
-incarnation succession update the expected origin. On relocation restore the
-capability from separate host custody; rotate it only by updating the Matrix
+incarnation succession update the expected origin and retain each eligible
+retired origin with its exact retirement millisecond. On relocation restore
+the capability from separate host custody; rotate it only by updating the Matrix
 bundle and encrypted custody atomically.
 
 ## Start

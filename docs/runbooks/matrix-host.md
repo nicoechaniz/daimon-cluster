@@ -69,8 +69,16 @@ scripts/matrix-host \
   --state-dir /var/lib/daimon-cluster \
   --embodiment-id "$EMBODIMENT_ID" \
   --password-fd "$PASSWORD_FD" \
-  --ready-fd "$READY_FD"
+  --ready-fd "$READY_FD" \
+  --production-fence-verifier
 ```
+
+The production flag requires an initialized, owner-controlled
+`STATE/resource-fences.sqlite3`. It opens that database query-only and loads
+only registered public verification keys. Do not pass the Cluster fence
+private-key path or material to the Matrix host process. Omit the flag only for
+the explicit V1 compatibility fixtures used by tests and offline migration;
+that mode is not a production fence authority.
 
 Ready is emitted only after pin/schema, owner, registry, bundle/origin, socket
 length and second-writer checks pass and Matrix has loaded encrypted custody.

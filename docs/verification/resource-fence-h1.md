@@ -19,7 +19,9 @@ Ed25519 keys and real SQLite processes:
   proving current record and high-water roll back together;
 - release tombstones, monotonic reacquire and refusal of byte restore;
 - explicit offline retirement of expired V1 synthetic fixtures;
-- the unchanged Matrix host adapter consuming the production verifier.
+- the unchanged Matrix verifier and the real curator daemon process consuming
+  a verifier-only production store, with no signing custody, for a fenced
+  claim/effect refusal and exact response-loss replay.
 
 The compatibility suite continues to cover park, wake, transfer and V1
 fixtures. Production operations do not silently fall back to that backend.

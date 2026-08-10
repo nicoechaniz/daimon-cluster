@@ -503,6 +503,7 @@ class ResourceFenceStore:
                 key_id=key_id,
                 database_path=database_path,
                 fault_hook=fault_hook,
+                verifier_only=False,
             )
         else:
             self._backend = _LegacyFileFenceStore(state_dir, signer)
@@ -525,6 +526,25 @@ class ResourceFenceStore:
             database_path=database_path,
             fault_hook=fault_hook,
         )
+
+    @classmethod
+    def production_verifier(
+        cls,
+        state_dir: str | Path,
+        *,
+        database_path: str | Path | None = None,
+    ) -> ResourceFenceStore:
+        from .production_fences import ProductionFenceStore
+
+        value = cls.__new__(cls)
+        value._backend = ProductionFenceStore(
+            state_dir,
+            signer=None,
+            key_id=None,
+            database_path=database_path,
+            verifier_only=True,
+        )
+        return value
 
     def __getattr__(self, name: str):
         return getattr(self._backend, name)

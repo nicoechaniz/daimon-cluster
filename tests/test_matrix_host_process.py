@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 pytest.importorskip("daimon_matrix")
 
@@ -38,7 +40,7 @@ from daimon_matrix.service import CURATOR_METHODS, METHODS, SCOPE_METHODS
 from daimon_matrix.weave import BeingManifest
 
 from clusterctl.embodiments import Registry
-from clusterctl.fences import ResourceFenceStore
+from clusterctl.fences import Ed25519Signer, ResourceFenceStore
 from clusterctl.matrix_host import (
     MatrixHostAdapter,
     MatrixHostError,
@@ -49,6 +51,10 @@ from clusterctl.matrix_host import (
     matrix_curator_client_root,
     matrix_root,
     restore_portable_snapshot,
+)
+from clusterctl.production_fences import (
+    create_holder_authorization,
+    ed25519_fingerprint,
 )
 
 PASSWORD = b"cluster-matrix-process-password"
@@ -69,6 +75,20 @@ def short_tmp_path():
 
 def _seed(label: str) -> bytes:
     return hashlib.sha256(f"cluster-matrix-process:{label}".encode()).digest()
+
+
+def _fence_signer(root: Path, label: str, key_id: str) -> Ed25519Signer:
+    path = root / f"{label}.pem"
+    private = Ed25519PrivateKey.from_private_bytes(_seed(f"fence:{label}"))
+    path.write_bytes(
+        private.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    path.chmod(0o600)
+    return Ed25519Signer(path, key_id)
 
 
 def _transport(label: str, principal_id: str) -> dict:
@@ -283,7 +303,12 @@ def _write_client_config(
     return root
 
 
-def _spawn(state_dir: Path, embodiment_id: str):
+def _spawn(
+    state_dir: Path,
+    embodiment_id: str,
+    *,
+    production_fence_verifier: bool = False,
+):
     password_read, password_write = os.pipe()
     ready_read, ready_write = os.pipe()
     command = [
@@ -299,6 +324,8 @@ def _spawn(state_dir: Path, embodiment_id: str):
         "--ready-fd",
         str(ready_write),
     ]
+    if production_fence_verifier:
+        command.append("--production-fence-verifier")
     process = subprocess.Popen(
         command,
         pass_fds=(password_read, ready_write),
@@ -782,18 +809,53 @@ def test_real_host_keeps_curator_worker_separate_and_replays_one_result(
         effect_intent_hash=hashlib.sha256(canonical_bytes(shared_intent)).hexdigest(),
         queued_at_ms=now_ms,
     )
-    fences = ResourceFenceStore(state_dir)
+    owner_signer = _fence_signer(
+        short_tmp_path, "cluster-fence-owner", "cluster-fence-test-owner"
+    )
+    holder_signer = _fence_signer(
+        short_tmp_path, "cluster-fence-holder", "cluster-fence-test-holder"
+    )
+    fences = ResourceFenceStore.production(
+        state_dir,
+        signer=owner_signer,
+        key_id=owner_signer.key_id,
+    )
+    fence_position = fences.position(shared_item["resource_ref"])
+    fence_authorization = create_holder_authorization(
+        holder_signer,
+        operation="acquire",
+        body_ref=origin["body_ref"],
+        embodiment_id=origin["embodiment_id"],
+        incarnation_id=origin["incarnation_id"],
+        resource_ref=shared_item["resource_ref"],
+        expected_epoch=fence_position["epoch"],
+        expected_proof=fence_position["proof"],
+        issued_ms=now_ms - 1,
+        ttl_s=60,
+        nonce="real-process-production-fence",
+    )
     fences.acquire(
         shared_item["resource_ref"],
-        "real-process-fence",
-        "SHA256:real-process",
+        holder_signer.public_key,
+        ed25519_fingerprint(holder_signer.public_key),
         holder_embodiment_id=origin["embodiment_id"],
+        body_ref=origin["body_ref"],
+        holder_incarnation_id=origin["incarnation_id"],
+        holder_key_id=holder_signer.key_id,
+        expected_epoch=fence_position["epoch"],
+        expected_proof=fence_position["proof"],
+        authorization=fence_authorization,
+        observed_at_ms=now_ms,
     )
     fence_evidence = MatrixHostAdapter(
         state_dir, origin["embodiment_id"], fence_store=fences
     ).fence_evidence(shared_item["resource_ref"])
     assert fence_evidence is not None
-    process, _ = _spawn(state_dir, origin["embodiment_id"])
+    process, _ = _spawn(
+        state_dir,
+        origin["embodiment_id"],
+        production_fence_verifier=True,
+    )
     completion_request = None
     try:
         status_client = matrix_client_factory(state_dir)(origin["embodiment_id"])

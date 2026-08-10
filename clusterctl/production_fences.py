@@ -46,7 +46,7 @@ def _proof_ref(value: dict[str, Any]) -> str:
     ).hexdigest()
 
 
-def _public_fingerprint(public_key: str) -> str:
+def ed25519_fingerprint(public_key: str) -> str:
     try:
         algorithm, encoded = public_key.split()[:2]
         if algorithm != "ssh-ed25519":
@@ -56,6 +56,26 @@ def _public_fingerprint(public_key: str) -> str:
         raise FenceError("holder public key must be OpenSSH Ed25519") from exc
     digest = base64.b64encode(hashlib.sha256(raw).digest()).decode("ascii").rstrip("=")
     return "SHA256:" + digest
+
+
+def _verify_ed25519(data: bytes, signature: str, public_key: str) -> bool:
+    from cryptography.exceptions import InvalidSignature as CryptoInvalidSignature
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    if not signature.startswith(Ed25519Signer.PREFIX):
+        return False
+    try:
+        decoded = base64.b64decode(
+            signature[len(Ed25519Signer.PREFIX) :], validate=True
+        )
+        verifier = serialization.load_ssh_public_key(public_key.encode("ascii"))
+        if not isinstance(verifier, Ed25519PublicKey):
+            return False
+        verifier.verify(decoded, data)
+    except (ValueError, TypeError, CryptoInvalidSignature, UnicodeError):
+        return False
+    return True
 
 
 def create_holder_authorization(
@@ -112,21 +132,35 @@ class ProductionFenceStore:
         key_id: str | None,
         database_path: str | Path | None = None,
         fault_hook: Callable[[str], None] | None = None,
+        verifier_only: bool = False,
     ):
-        if not isinstance(signer, Ed25519Signer):
-            raise FenceError("production resource fences require an Ed25519 signer")
-        if key_id is None or signer.key_id != key_id:
-            raise FenceError("production signing key id mismatch")
         self._state_dir = Path(state_dir)
         self._database_path = (
             Path(database_path)
             if database_path is not None
             else self._state_dir / "resource-fences.sqlite3"
         )
-        self._signer = signer
-        self._key_id = key_id
+        self._signer: Ed25519Signer | None
+        self._key_id: str | None
+        if verifier_only:
+            if signer is not None or key_id is not None:
+                raise FenceError("verifier-only fences cannot receive signing custody")
+            self._signer = None
+            self._key_id = None
+        else:
+            if not isinstance(signer, Ed25519Signer):
+                raise FenceError(
+                    "production resource fences require an Ed25519 signer"
+                )
+            if key_id is None or signer.key_id != key_id:
+                raise FenceError("production signing key id mismatch")
+            self._signer = signer
+            self._key_id = key_id
         self._fault_hook = fault_hook
-        self._initialize()
+        if verifier_only:
+            self._open_verifier()
+        else:
+            self._initialize()
 
     def _hook(self, boundary: str) -> None:
         if self._fault_hook is not None:
@@ -149,6 +183,7 @@ class ProductionFenceStore:
         return connection
 
     def _initialize(self) -> None:
+        assert self._signer is not None and self._key_id is not None
         self._database_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
             connection = self._connect()
@@ -223,6 +258,23 @@ class ProductionFenceStore:
                 connection.close()
         self._secure_database_files()
 
+    def _open_verifier(self) -> None:
+        if not self._database_path.is_file():
+            raise FenceError("production fence database is unavailable")
+        self._secure_database_files()
+        try:
+            connection = self._read_connection()
+            schema = connection.execute(
+                "SELECT value FROM metadata WHERE name='schema'"
+            ).fetchone()
+            if schema is None or schema["value"] != DATABASE_SCHEMA:
+                raise FenceError("unsupported production fence database schema")
+        except sqlite3.Error as exc:
+            raise FenceError("cannot open production fence verifier") from exc
+        finally:
+            if "connection" in locals():
+                connection.close()
+
     def _secure_database_files(self) -> None:
         for path in (
             self._database_path,
@@ -283,7 +335,7 @@ class ProductionFenceStore:
     ) -> None:
         signature = record.get("signature")
         public_key = self._key_for_record(connection, record)
-        if not isinstance(signature, str) or not self._signer.verify(
+        if not isinstance(signature, str) or not _verify_ed25519(
             _canonical(record), signature, public_key
         ):
             raise InvalidSignature("invalid production resource fence signature")
@@ -374,7 +426,7 @@ class ProductionFenceStore:
         ):
             raise InvalidSignature("holder authorization time or nonce is invalid")
         signature = authorization.get("signature")
-        if not isinstance(signature, str) or not self._signer.verify(
+        if not isinstance(signature, str) or not _verify_ed25519(
             _canonical(authorization), signature, holder_pubkey
         ):
             raise InvalidSignature("holder authorization signature is invalid")
@@ -392,6 +444,8 @@ class ProductionFenceStore:
             raise InvalidSignature("holder key is mismatched or revoked")
 
     def _signed_evidence(self, fields: dict[str, Any]) -> dict[str, Any]:
+        if self._signer is None or self._key_id is None:
+            raise FenceError("verifier-only fence store cannot mutate")
         value = {
             "schema": PRODUCTION_FENCE_SCHEMA,
             **fields,
@@ -401,6 +455,8 @@ class ProductionFenceStore:
         return value
 
     def _assert_active_signer(self, connection: sqlite3.Connection) -> None:
+        if self._signer is None or self._key_id is None:
+            raise FenceError("verifier-only fence store cannot mutate")
         key = connection.execute(
             "SELECT public_key,state FROM signing_keys WHERE key_id=?",
             (self._key_id,),
@@ -506,7 +562,7 @@ class ProductionFenceStore:
             for value in (body_ref, holder_embodiment_id, holder_incarnation_id, holder_key_id)
         ):
             raise FenceError("exact holder coordinates are required")
-        if fingerprint != _public_fingerprint(pubkey):
+        if fingerprint != ed25519_fingerprint(pubkey):
             raise InvalidSignature("holder key fingerprint mismatch")
         timestamp = now_ms() if observed_at_ms is None else observed_at_ms
 
@@ -825,6 +881,8 @@ class ProductionFenceStore:
         raise FenceError("production fence bytes cannot be restored")
 
     def rotate_signer(self, signer: Ed25519Signer) -> None:
+        if self._key_id is None:
+            raise FenceError("verifier-only fence store cannot rotate custody")
         if signer.key_id == self._key_id:
             raise FenceError("replacement signing key id must be new")
 
@@ -915,25 +973,39 @@ class ProductionFenceStore:
     def support_status(self) -> dict[str, Any]:
         try:
             connection = self._read_connection()
-            signing = connection.execute(
-                "SELECT state FROM signing_keys WHERE key_id=?", (self._key_id,)
-            ).fetchone()
+            signing = (
+                None
+                if self._key_id is None
+                else connection.execute(
+                    "SELECT state FROM signing_keys WHERE key_id=?", (self._key_id,)
+                ).fetchone()
+            )
+            verifier_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM signing_keys WHERE state!='revoked'"
+            ).fetchone()["count"]
             migration = connection.execute(
                 "SELECT value FROM metadata WHERE name='legacy_migration'"
             ).fetchone()
         finally:
             if "connection" in locals():
                 connection.close()
-        ready = signing is not None and signing["state"] == "active"
+        signer_ready = signing is not None and signing["state"] == "active"
+        verifier_ready = int(verifier_count) > 0
         return {
             "schema": SUPPORT_SCHEMA,
-            "mode": "production-sqlite-ed25519",
+            "mode": (
+                "production-sqlite-ed25519-verifier"
+                if self._signer is None
+                else "production-sqlite-ed25519"
+            ),
             "backend": DATABASE_SCHEMA,
             "signer": "ed25519",
             "signing_key_id": self._key_id,
-            "signer_ready": ready,
-            "verifier_ready": ready,
-            "production_ready": ready,
+            "signer_ready": signer_ready,
+            "verifier_ready": verifier_ready,
+            "production_ready": verifier_ready and (
+                self._signer is None or signer_ready
+            ),
             "interprocess_cas": True,
             "cas_mode": "sqlite-begin-immediate-full-sync",
             "migration_state": "not-run" if migration is None else migration["value"],

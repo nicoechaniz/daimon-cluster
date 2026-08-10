@@ -23,8 +23,8 @@ from clusterctl.fences import (
     ResourceFenceStore,
 )
 from clusterctl.production_fences import (
-    _public_fingerprint,
     create_holder_authorization,
+    ed25519_fingerprint,
 )
 
 BODY = "cluster:being:compaii"
@@ -107,7 +107,7 @@ def _acquire(
     return store.acquire(
         resource_ref,
         holder.public_key,
-        _public_fingerprint(holder.public_key),
+        ed25519_fingerprint(holder.public_key),
         ttl_s=ttl_s,
         holder_embodiment_id=EMBODIMENT,
         body_ref=BODY,
@@ -137,7 +137,7 @@ def _race_worker(
         store.acquire(
             resource_ref,
             holder.public_key,
-            _public_fingerprint(holder.public_key),
+            ed25519_fingerprint(holder.public_key),
             holder_embodiment_id=EMBODIMENT,
             body_ref=BODY,
             holder_incarnation_id=INCARNATION,
@@ -177,7 +177,7 @@ def _kill_worker(
     store.acquire(
         RESOURCE,
         holder.public_key,
-        _public_fingerprint(holder.public_key),
+        ed25519_fingerprint(holder.public_key),
         holder_embodiment_id=EMBODIMENT,
         body_ref=BODY,
         holder_incarnation_id=INCARNATION,
@@ -225,6 +225,8 @@ def test_production_refuses_synthetic_and_non_owner_key(tmp_path):
         ResourceFenceStore(
             tmp_path, FakeSigner(), production=True, key_id="fake"
         )
+    with pytest.raises(FenceError, match="unavailable"):
+        ResourceFenceStore.production_verifier(tmp_path / "missing")
     path = tmp_path / "open.pem"
     signer = _key(path, OWNER_KEY_ID)
     path.chmod(0o644)
@@ -266,6 +268,26 @@ def test_signed_acquire_is_exact_and_matrix_verifier_compatible(tmp_path, keys):
     assert support["interprocess_cas"] is True
     assert "path" not in json.dumps(support)
 
+    verifier = ResourceFenceStore.production_verifier(tmp_path / "state")
+    assert verifier.verify_current(RESOURCE, at_ms=held["created_ms"] + 1) == held
+    verifier_support = verifier.support_status()
+    assert verifier_support["verifier_ready"] is True
+    assert verifier_support["signer_ready"] is False
+    with pytest.raises(FenceError, match="verifier-only"):
+        verifier.acquire(
+            "volume:forbidden",
+            holder.public_key,
+            ed25519_fingerprint(holder.public_key),
+            holder_embodiment_id=EMBODIMENT,
+            body_ref=BODY,
+            holder_incarnation_id=INCARNATION,
+            holder_key_id=holder.key_id,
+            expected_epoch=-1,
+            expected_proof=None,
+            authorization={},
+            observed_at_ms=held["created_ms"] + 1,
+        )
+
 
 @pytest.mark.parametrize(
     ("field", "replacement"),
@@ -297,7 +319,7 @@ def test_wrong_authorization_binding_fails_closed(tmp_path, keys, field, replace
         store.acquire(
             RESOURCE,
             holder.public_key,
-            _public_fingerprint(holder.public_key),
+            ed25519_fingerprint(holder.public_key),
             holder_embodiment_id=EMBODIMENT,
             body_ref=BODY,
             holder_incarnation_id=INCARNATION,
@@ -323,7 +345,7 @@ def test_signature_fingerprint_future_expiry_and_revocation_fail_closed(tmp_path
         store.acquire(
             RESOURCE,
             holder.public_key,
-            _public_fingerprint(holder.public_key),
+            ed25519_fingerprint(holder.public_key),
             holder_embodiment_id=EMBODIMENT,
             body_ref=BODY,
             holder_incarnation_id=INCARNATION,
@@ -354,7 +376,7 @@ def test_signature_fingerprint_future_expiry_and_revocation_fail_closed(tmp_path
         store.acquire(
             RESOURCE,
             holder.public_key,
-            _public_fingerprint(holder.public_key),
+            ed25519_fingerprint(holder.public_key),
             holder_embodiment_id=EMBODIMENT,
             body_ref=BODY,
             holder_incarnation_id=INCARNATION,
@@ -489,7 +511,7 @@ def test_signer_rotation_verifies_old_records_and_revocation_fails_closed(tmp_pa
         stale_process.acquire(
             "volume:stale-process",
             holder.public_key,
-            _public_fingerprint(holder.public_key),
+            ed25519_fingerprint(holder.public_key),
             holder_embodiment_id=EMBODIMENT,
             body_ref=BODY,
             holder_incarnation_id=INCARNATION,
@@ -648,7 +670,7 @@ def test_offline_migration_retires_only_expired_synthetic_fixtures(tmp_path, key
     legacy.acquire(
         RESOURCE,
         holder.public_key,
-        _public_fingerprint(holder.public_key),
+            ed25519_fingerprint(holder.public_key),
         ttl_s=0,
         holder_embodiment_id=EMBODIMENT,
     )

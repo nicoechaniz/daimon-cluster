@@ -781,12 +781,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--bundle", default="runtime.json")
     parser.add_argument("--password-fd", type=int, required=True)
     parser.add_argument("--ready-fd", type=int)
+    parser.add_argument(
+        "--production-fence-verifier",
+        action="store_true",
+        help="verify Cluster's production fence database without signing custody",
+    )
     args = parser.parse_args(argv)
     lock_descriptor: int | None = None
     stopping = threading.Event()
     try:
         api = _matrix_api()
-        adapter = MatrixHostAdapter(args.state_dir, args.embodiment_id)
+        fence_store = (
+            ResourceFenceStore.production_verifier(args.state_dir)
+            if args.production_fence_verifier
+            else None
+        )
+        adapter = MatrixHostAdapter(
+            args.state_dir, args.embodiment_id, fence_store=fence_store
+        )
         root = _owner_directory(matrix_root(args.state_dir, args.embodiment_id))
         bundle = _public_bundle(root, args.bundle)
         adapter.require_origin(_origin(bundle.get("local_origin")))

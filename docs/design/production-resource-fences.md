@@ -7,7 +7,9 @@ Status: implemented candidate for issue #64; not yet enabled on a live host.
 Cluster is the only writer and signer of current resource-fence truth. Matrix
 receives a closed `resource-fence/v2` record through the unchanged
 `ResourceFenceStore.verify_current()` interface and converts it to Matrix's
-own evidence contract. Matrix never receives the Cluster signing key.
+own evidence contract. The hosted Matrix process opens a query-only
+`production_verifier` backed solely by the database's public-key registry; it
+cannot sign or rotate and never receives the Cluster private key.
 
 `resource-fence/v1` JSON plus `FAKE:` signatures remains an offline fixture
 format only. A production store never reads those files during acquire,
@@ -64,7 +66,8 @@ record under the replacement before revoking a previous key needed by that
 record.
 
 `support_status()` reports only backend/schema, CAS mode, key id, readiness
-booleans and migration state.
+booleans and migration state. A verifier-only process reports signer readiness
+false while remaining production-ready for verification.
 
 ## Offline V1 migration
 

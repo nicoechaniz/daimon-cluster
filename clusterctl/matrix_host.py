@@ -27,7 +27,7 @@ from typing import Any
 from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
-MATRIX_CONTRACT_COMMIT = "d086e7432c46310c563af14e51c7a4fa5a5f6b88"
+MATRIX_CONTRACT_COMMIT = "bcf6b9f6ef5a46fdd35dfc8036a7a4d458103c7b"
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
 MATRIX_STATUS_SCHEMA = "dm.cluster-matrix-status/v1"
@@ -94,6 +94,8 @@ def _matrix_api() -> dict[str, Any]:
     if getattr(runtime, "BUNDLE_SCHEMA_V5", None) != "dm.runtime.bundle/v5":
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     if getattr(runtime, "BUNDLE_SCHEMA_V6", None) != "dm.runtime.bundle/v6":
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if getattr(runtime, "BUNDLE_SCHEMA_V7", None) != "dm.runtime.bundle/v7":
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     if getattr(client, "CLIENT_CONFIG_SCHEMA", None) != "dm.local.client-config/v1":
         raise MatrixHostError("daimon_matrix_contract_mismatch")
@@ -205,6 +207,7 @@ def _public_bundle(root: Path, bundle_name: str) -> dict[str, Any]:
         "dm.runtime.bundle/v4",
         "dm.runtime.bundle/v5",
         "dm.runtime.bundle/v6",
+        "dm.runtime.bundle/v7",
     }:
         raise MatrixHostError("matrix_bundle_rejected")
     return value

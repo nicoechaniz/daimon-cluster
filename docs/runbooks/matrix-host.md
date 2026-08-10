@@ -35,6 +35,9 @@ STATE/matrix/HASH/                 portable Matrix root (0700)
 STATE/matrix-clients/HASH/         host-local clusterd client (0700)
   client.json                      capability descriptor + expected origin
   capability.key                   exactly 32 bytes (0600)
+STATE/matrix-curator-clients/HASH/ host-local curator worker client (0700)
+  client.json                      separate capability + expected origin
+  capability.key                   separate 32-byte key (0600)
 ```
 
 Provision `client.json` with schema `dm.local.client-config/v1` for an unchanged
@@ -47,6 +50,12 @@ incarnation succession update the expected origin and retain each eligible
 retired origin with its exact retirement millisecond. On relocation restore
 the capability from separate host custody; rotate it only by updating the Matrix
 bundle and encrypted custody atomically.
+
+Only when an embodiment has a curator worker, provision the second sidecar
+with exactly `curator.enqueue`, `curator.claim`, `curator.complete`, and
+`curator.inspect`. Its key and descriptor must differ from the clusterd client.
+The worker capability coordinates Matrix queue state; it does not grant human
+review, Cluster fence mutation, identity mutation or a generic tool call.
 
 ## Start
 
@@ -67,13 +76,22 @@ Ready is emitted only after pin/schema, owner, registry, bundle/origin, socket
 length and second-writer checks pass and Matrix has loaded encrypted custody.
 SIGTERM/SIGINT quiesces the service boundary.
 
+The host injects the current Cluster fence verifier and a closed effect-truth
+router. Production starts with an empty route list: resource-fenced claims may
+be verified, but completion is refused as `effect_truth_unverifiable` until a
+reviewed concrete adapter registers an exact `(adapter, work_kind,
+resource_namespace)` observer. Do not configure a wildcard, receipt-trusting
+fallback or environment-selected observer.
+
 ## Snapshot and restore
 
 Stop the daemon, call `create_portable_snapshot`, transfer the resulting closed
 directory, and call `restore_portable_snapshot` into a nonexistent target.
-Recreate `STATE/matrix-clients/HASH/` on the destination; it must not appear in
+Recreate `STATE/matrix-clients/HASH/` and, when applicable,
+`STATE/matrix-curator-clients/HASH/` on the destination; neither may appear in
 the snapshot. Start the daemon and require authenticated `runtime.status`,
-`/me`, `/we`, cursor and authority-epoch checks before routing traffic.
+`/me`, `/we`, cursor, curator queue and authority-epoch checks before routing
+traffic.
 
 The host boundary accepts the additive Matrix runtime bundle line V1 through
 V7 at the pinned commit. V3 enables native peer transport, V4 adds species,

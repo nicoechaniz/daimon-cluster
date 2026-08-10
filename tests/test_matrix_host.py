@@ -2,6 +2,7 @@ import hashlib
 import json
 import stat
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,11 +12,19 @@ from daimon_matrix.cluster import (
     resource_fence_position,
     verify_resource_fence_evidence,
 )
+from daimon_matrix.curator import (
+    CuratorCoordinator,
+    CuratorError,
+    create_curator_item,
+)
+from daimon_matrix.ledger import Ledger
 
 from clusterctl import matrix_host as matrix_host_module
 from clusterctl.embodiments import Registry
 from clusterctl.fences import ResourceFenceStore
 from clusterctl.matrix_host import (
+    EffectObserverRoute,
+    EffectObserverRouter,
     MATRIX_CONTRACT_COMMIT,
     MatrixHostAdapter,
     MatrixHostError,
@@ -150,6 +159,191 @@ def test_fence_evidence_checks_live_high_water_and_effect_truth(tmp_path):
     )
 
 
+def test_allowlisted_curator_effect_completes_and_replay_rechecks_truth(tmp_path):
+    _running(tmp_path)
+    fences = ResourceFenceStore(tmp_path)
+    held = fences.acquire(
+        RESOURCE,
+        "test-key",
+        "SHA256:test",
+        holder_embodiment_id=EMBODIMENT,
+    )
+    now = [held["created_ms"] + 1]
+    intent = {"operation": "publish", "value": "synthetic"}
+    postcondition = {"generation": 7, "state": "present"}
+
+    adapter = None
+
+    def observe(item, receipt, at_ms):
+        assert item["work_kind"] == "publication"
+        assert receipt["adapter"] == "synthetic-wiki/v1"
+        assert at_ms == now[0]
+        assert adapter is not None
+        return {
+            "intent": dict(intent),
+            "observed_postcondition": dict(postcondition),
+            "current_fence_evidence": adapter.fence_evidence(RESOURCE),
+        }
+
+    adapter = MatrixHostAdapter(
+        tmp_path,
+        EMBODIMENT,
+        fence_store=fences,
+        effect_observer_routes=[
+            EffectObserverRoute(
+                adapter="synthetic-wiki/v1",
+                work_kind="publication",
+                resource_namespace="volume",
+                observer=observe,
+            )
+        ],
+        clock=lambda: now[0],
+    )
+    origin = {
+        "body_ref": BODY,
+        "embodiment_id": EMBODIMENT,
+        "incarnation_id": INCARNATION,
+        "principal_id": "compaii@legion",
+    }
+    ledger = Ledger(
+        tmp_path / "matrix-ledger.sqlite",
+        authority=SimpleNamespace(
+            manifest=SimpleNamespace(
+                being_ref="me:synthetic",
+                digest="d" * 64,
+                trust_mode="provisional",
+            )
+        ),
+        local_origin=origin,
+        clock=lambda: now[0],
+    )
+    coordinator = CuratorCoordinator(
+        ledger,
+        clock=lambda: now[0],
+        fence_verifier=adapter.verify_fence,
+        effect_observer=adapter.effect_observer,
+    )
+    item = create_curator_item(
+        subject_me_id="me:synthetic",
+        resource_ref=RESOURCE,
+        work_kind="publication",
+        input_ref="proposal:synthetic",
+        input_hash="a" * 64,
+        coordination_mode="resource-fence",
+        required_authority="daimon",
+        effect_intent_hash=hashlib.sha256(
+            json.dumps(intent, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        queued_at_ms=now[0],
+    )
+    coordinator.enqueue(
+        item,
+        client_id="client:effect-worker",
+        request_id="34000000-0000-4000-8000-000000000001",
+    )
+    evidence = adapter.fence_evidence(RESOURCE)
+    claim = coordinator.claim(
+        item_id=item["item_id"],
+        claim_id="34000000-0000-4000-8000-000000000002",
+        expected_generation=0,
+        lease_until_ms=now[0] + 1_000,
+        fence_evidence=evidence,
+        client_id="client:effect-worker",
+        request_id="34000000-0000-4000-8000-000000000003",
+    )
+    receipt = adapter.create_effect_receipt(
+        effect_id="34000000-0000-4000-8000-000000000004",
+        target_event_id="34000000-0000-4000-8000-000000000005",
+        decision_event_id="34000000-0000-4000-8000-000000000006",
+        adapter="synthetic-wiki/v1",
+        preview_hash="b" * 64,
+        intent_hash=item["effect_intent_hash"],
+        actor=origin["principal_id"],
+        authority="daimon",
+        resource_fence=resource_fence_position(evidence),
+        result="applied",
+        observed_postcondition=postcondition,
+        started_at_ms=now[0] - 1,
+        completed_at_ms=now[0],
+    )
+    result = coordinator.complete(
+        claim_id=claim["claim_id"],
+        expected_generation=1,
+        outcome="completed",
+        output_refs=["publication:synthetic"],
+        effect_receipt=receipt,
+        client_id="client:effect-worker",
+        request_id="34000000-0000-4000-8000-000000000007",
+    )
+    assert result["effect_receipt"] == receipt
+
+    postcondition["generation"] = 8
+    with pytest.raises(CuratorError, match="effect-truth-discrepancy"):
+        coordinator.complete(
+            claim_id=claim["claim_id"],
+            expected_generation=1,
+            outcome="completed",
+            output_refs=["publication:synthetic"],
+            effect_receipt=receipt,
+            client_id="client:effect-worker",
+            request_id="34000000-0000-4000-8000-000000000007",
+        )
+    assert coordinator.inspect(item["item_id"])["result"] == result
+
+
+def test_effect_observer_router_fails_closed_for_every_non_exact_route():
+    item = {"work_kind": "publication", "resource_ref": "wiki:page:home"}
+    receipt = {"adapter": "synthetic-wiki/v1"}
+    exact = EffectObserverRouter(
+        [
+            EffectObserverRoute(
+                "synthetic-wiki/v1",
+                "publication",
+                "wiki",
+                lambda *_: {
+                    "intent": {},
+                    "observed_postcondition": {},
+                    "current_fence_evidence": None,
+                },
+            )
+        ]
+    )
+    for changed_item, changed_receipt in (
+        (item, {"adapter": "unknown/v1"}),
+        ({**item, "work_kind": "memory-projection"}, receipt),
+        ({**item, "resource_ref": "volume:page:home"}, receipt),
+    ):
+        with pytest.raises(MatrixHostError, match="effect_truth_unverifiable"):
+            exact(changed_item, changed_receipt, 1)
+    with pytest.raises(MatrixHostError, match="effect_truth_unverifiable"):
+        EffectObserverRouter()(item, receipt, 1)
+    with pytest.raises(MatrixHostError, match="effect_observer_route_ambiguous"):
+        EffectObserverRouter(
+            [
+                EffectObserverRoute(
+                    "synthetic-wiki/v1", "publication", "wiki", lambda *_: {}
+                ),
+                EffectObserverRoute(
+                    "synthetic-wiki/v1", "publication", "wiki", lambda *_: {}
+                ),
+            ]
+        )
+    unavailable = EffectObserverRouter(
+        [EffectObserverRoute("synthetic-wiki/v1", "publication", "wiki", None)]
+    )
+    with pytest.raises(MatrixHostError, match="effect_truth_unverifiable"):
+        unavailable(item, receipt, 1)
+
+    def broken(*_args):
+        raise RuntimeError("private observer detail")
+
+    throwing = EffectObserverRouter(
+        [EffectObserverRoute("synthetic-wiki/v1", "publication", "wiki", broken)]
+    )
+    with pytest.raises(MatrixHostError, match="^effect_truth_unverifiable$"):
+        throwing(item, receipt, 1)
+
+
 def test_high_water_rollback_fails_closed(tmp_path):
     _running(tmp_path)
     fences = ResourceFenceStore(tmp_path)
@@ -194,18 +388,14 @@ def test_public_bundle_accepts_the_pinned_additive_line(tmp_path, schema):
     bundle.write_text(json.dumps({"schema": schema}), encoding="utf-8")
     bundle.chmod(0o600)
 
-    assert matrix_host_module._public_bundle(root, "runtime.json") == {
-        "schema": schema
-    }
+    assert matrix_host_module._public_bundle(root, "runtime.json") == {"schema": schema}
 
 
 def test_public_bundle_rejects_an_unpinned_successor_schema(tmp_path):
     root = tmp_path / "runtime"
     root.mkdir(mode=0o700)
     bundle = root / "runtime.json"
-    bundle.write_text(
-        json.dumps({"schema": "dm.runtime.bundle/v8"}), encoding="utf-8"
-    )
+    bundle.write_text(json.dumps({"schema": "dm.runtime.bundle/v8"}), encoding="utf-8")
     bundle.chmod(0o600)
 
     with pytest.raises(MatrixHostError, match="matrix_bundle_rejected"):

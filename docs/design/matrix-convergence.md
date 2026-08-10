@@ -30,8 +30,12 @@ closed. Cluster does not carry a fallback implementation.
 The current pin is audited Matrix DM-083 successor-retry candidate
 `f0181f7117859f3f9cc4afc7dfbdaf9b06e74754`.
 The adapter accepts the additive runtime bundle line V1 through V7 and checks
-every corresponding public schema constant before opening state. Bundle
-contents remain Matrix authority; Cluster only validates the hosting envelope.
+every corresponding public schema constant before opening state. It also
+checks the closed DM-031 item/claim/result/inspection schemas, work kinds,
+coordination modes and exact four-method curator capability introduced at
+Matrix merge `1b133976932cbbc0914ba4ecc403020c647f53c1`; the current pin is an
+audited additive descendant of that merge. Bundle contents remain Matrix
+authority; Cluster only validates the hosting envelope.
 
 DM-083 gate (2026-08-10): Matrix draft PR #112 is frozen at the exact commit
 above after real succession exposed a duplicate-free historical-response
@@ -64,6 +68,16 @@ Idempotency is not evidence that an effect remains true: replay is accepted
 only when intent, observed postcondition and current fence position still
 agree. A stale holder or epoch yields an effect-truth discrepancy.
 
+The hosted process injects `MatrixHostAdapter.verify_fence` into Matrix's
+DM-031 coordinator. Effect truth passes through a closed router selected by
+the exact receipt adapter, curator work kind and first `resource_ref`
+namespace. Unknown, duplicate, unavailable or throwing routes are
+`effect_truth_unverifiable`; there is no receipt-trusting fallback. V0 ships
+with no production effect routes. A concrete DM-034/DM-035/DM-036 projection
+or publication adapter must add its own observer and acceptance evidence
+before resource-fenced completion can succeed. Queue-item coordination remains
+available because it represents no shared external effect.
+
 ## clusterd read projection
 
 `clusterd` receives a least-authority local Matrix capability from an
@@ -78,6 +92,13 @@ All underlying errors collapse to `matrix-status-unavailable`.
 
 The sidecar is deliberately host-local. It is not part of portable state and
 must be provisioned anew after relocation.
+
+Curator workers use a second owner-only sidecar below
+`state_dir/matrix-curator-clients/`. Its capability must contain exactly
+`curator.enqueue`, `curator.claim`, `curator.complete`, and `curator.inspect`.
+It is never reused by clusterd and the five-method status capability is never
+expanded. Both sidecars bind the exact current origin and remain host-local;
+neither is identity, review, fence or effect authority by itself.
 
 ## Portability and rebirth
 

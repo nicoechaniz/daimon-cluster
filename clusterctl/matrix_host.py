@@ -20,7 +20,8 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,86 @@ _CLUSTERD_MATRIX_METHODS = frozenset(
         "scope.we.sync-plan",
     }
 )
+_CURATOR_WORKER_METHODS = frozenset(
+    {"curator.claim", "curator.complete", "curator.enqueue", "curator.inspect"}
+)
+_EFFECT_OBSERVATION_FIELDS = frozenset(
+    {"intent", "observed_postcondition", "current_fence_evidence"}
+)
+
+EffectObserver = Callable[
+    [Mapping[str, Any], Mapping[str, Any], int], Mapping[str, Any]
+]
+
+
+@dataclass(frozen=True)
+class EffectObserverRoute:
+    """One explicit effect-truth adapter binding.
+
+    A route is selected by all three authority coordinates.  The namespace is
+    the first component of ``resource_ref`` (for example ``wiki`` in
+    ``wiki:page:home``); it is not a prefix or wildcard.
+    """
+
+    adapter: str
+    work_kind: str
+    resource_namespace: str
+    observer: EffectObserver | None
+
+    def __post_init__(self) -> None:
+        for value in (self.adapter, self.work_kind, self.resource_namespace):
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value.encode("utf-8")) > 256
+                or any(ord(character) < 0x21 for character in value)
+            ):
+                raise MatrixHostError("effect_observer_route_rejected")
+        if ":" in self.resource_namespace:
+            raise MatrixHostError("effect_observer_route_rejected")
+
+
+class EffectObserverRouter:
+    """Fail-closed router for concrete downstream effect observers."""
+
+    def __init__(self, routes: Sequence[EffectObserverRoute] = ()) -> None:
+        self._routes = tuple(routes)
+        coordinates = [
+            (route.adapter, route.work_kind, route.resource_namespace)
+            for route in self._routes
+        ]
+        if len(coordinates) != len(set(coordinates)):
+            raise MatrixHostError("effect_observer_route_ambiguous")
+
+    def __call__(
+        self,
+        item: Mapping[str, Any],
+        receipt: Mapping[str, Any],
+        at_ms: int,
+    ) -> Mapping[str, Any]:
+        resource_ref = item.get("resource_ref")
+        namespace = (
+            resource_ref.split(":", 1)[0]
+            if isinstance(resource_ref, str) and ":" in resource_ref
+            else None
+        )
+        coordinate = (receipt.get("adapter"), item.get("work_kind"), namespace)
+        matches = [
+            route
+            for route in self._routes
+            if (route.adapter, route.work_kind, route.resource_namespace) == coordinate
+        ]
+        if len(matches) != 1 or not callable(matches[0].observer):
+            raise MatrixHostError("effect_truth_unverifiable")
+        try:
+            observed = matches[0].observer(item, receipt, at_ms)
+        except Exception as exception:
+            raise MatrixHostError("effect_truth_unverifiable") from exception
+        if not isinstance(observed, Mapping) or set(observed) != set(
+            _EFFECT_OBSERVATION_FIELDS
+        ):
+            raise MatrixHostError("effect_truth_unverifiable")
+        return observed
 
 
 class MatrixHostError(RuntimeError):
@@ -55,7 +136,7 @@ def _matrix_api() -> dict[str, Any]:
 
     try:
         from daimon_matrix import cluster as cluster_api
-        from daimon_matrix import client, daemon, runtime
+        from daimon_matrix import client, curator, daemon, runtime, service
     except ImportError as exception:  # base clusterctl remains usable without it
         raise MatrixHostError("daimon_matrix_dependency_unavailable") from exception
     try:
@@ -101,11 +182,40 @@ def _matrix_api() -> dict[str, Any]:
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     if getattr(client, "CLIENT_CONFIG_SCHEMA_V2", None) != "dm.local.client-config/v2":
         raise MatrixHostError("daimon_matrix_contract_mismatch")
+    curator_expected = {
+        "ITEM_SCHEMA": "dm.curator.item/v1",
+        "CLAIM_SCHEMA": "dm.curator.claim/v1",
+        "RESULT_SCHEMA": "dm.curator.result/v1",
+        "ENQUEUE_SCHEMA": "dm.curator.enqueue-result/v1",
+        "INSPECTION_SCHEMA": "dm.curator.inspection/v1",
+    }
+    if any(
+        getattr(curator, name, None) != value
+        for name, value in curator_expected.items()
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if frozenset(getattr(curator, "WORK_KINDS", ())) != frozenset(
+        {
+            "memory-evaluation",
+            "memory-proposal",
+            "memory-projection",
+            "publication",
+        }
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if frozenset(getattr(curator, "COORDINATION_MODES", ())) != frozenset(
+        {"queue-item", "resource-fence"}
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if frozenset(getattr(service, "CURATOR_METHODS", ())) != _CURATOR_WORKER_METHODS:
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
     return {
         "client": client,
         "cluster": cluster_api,
+        "curator": curator,
         "daemon": daemon,
         "runtime": runtime,
+        "service": service,
     }
 
 
@@ -131,6 +241,17 @@ def matrix_client_root(state_dir: str | Path, embodiment_id: str) -> Path:
         raise MatrixHostError("invalid_embodiment_id")
     key = hashlib.sha256(embodiment_id.encode("utf-8")).hexdigest()[:32]
     return Path(os.path.abspath(state_dir)) / "matrix-clients" / key
+
+
+def matrix_curator_client_root(state_dir: str | Path, embodiment_id: str) -> Path:
+    """Return the separate host-local root for one curator worker capability."""
+
+    if not isinstance(embodiment_id, str) or not embodiment_id.startswith(
+        "embodiment:"
+    ):
+        raise MatrixHostError("invalid_embodiment_id")
+    key = hashlib.sha256(embodiment_id.encode("utf-8")).hexdigest()[:32]
+    return Path(os.path.abspath(state_dir)) / "matrix-curator-clients" / key
 
 
 def _owner_directory(path: Path, *, create: bool = False) -> Path:
@@ -237,12 +358,14 @@ class MatrixHostAdapter:
         embodiment_id: str,
         *,
         fence_store: ResourceFenceStore | None = None,
+        effect_observer_routes: Sequence[EffectObserverRoute] = (),
         clock: Any = lambda: time.time_ns() // 1_000_000,
     ) -> None:
         self.state_dir = Path(os.path.abspath(state_dir))
         self.embodiment_id = embodiment_id
         self.registry = Registry(self.state_dir)
         self.fences = fence_store or ResourceFenceStore(self.state_dir)
+        self.effect_observer = EffectObserverRouter(effect_observer_routes)
         self.clock = clock
 
     def require_origin(self, value: Mapping[str, Any]) -> dict[str, Any]:
@@ -398,13 +521,14 @@ class MatrixHostAdapter:
         }
 
 
-def matrix_client(state_dir: str | Path, embodiment_id: str) -> Any:
-    """Load clusterd's least-authority local client for a running Matrix host.
-
-    The descriptor and 32-byte capability key live outside the portable Matrix
-    root.  Snapshots therefore carry encrypted Matrix custody and ledger state,
-    but never the host-local capability used by clusterd's status projection.
-    """
+def _matrix_client(
+    state_dir: str | Path,
+    embodiment_id: str,
+    *,
+    client_root: Path,
+    required_methods: frozenset[str],
+) -> Any:
+    """Load one exact least-authority local client."""
 
     api = _matrix_api()
     adapter = MatrixHostAdapter(state_dir, embodiment_id)
@@ -420,7 +544,7 @@ def matrix_client(state_dir: str | Path, embodiment_id: str) -> Any:
         or len(os.fsencode(root / socket_name)) > _MAX_UNIX_SOCKET_BYTES
     ):
         raise MatrixHostError("matrix_socket_path_rejected")
-    client_root = _owner_directory(matrix_client_root(state_dir, embodiment_id))
+    client_root = _owner_directory(client_root)
     key_descriptor = _owner_file_descriptor(client_root / "capability.key")
     try:
         key = api["client"].read_capability_key(key_descriptor)
@@ -430,11 +554,38 @@ def matrix_client(state_dir: str | Path, embodiment_id: str) -> Any:
         config = api["client"].ClientConfig.load(client_root / "client.json", key)
     except Exception as exception:
         raise MatrixHostError("matrix_client_config_rejected") from exception
-    if frozenset(config.capability.methods) != _CLUSTERD_MATRIX_METHODS:
+    if frozenset(config.capability.methods) != required_methods:
         raise MatrixHostError("matrix_client_authority_rejected")
     if dict(config.expected_server) != origin:
         raise MatrixHostError("matrix_client_origin_mismatch")
     return api["client"].LocalClient(root / socket_name, config)
+
+
+def matrix_client(state_dir: str | Path, embodiment_id: str) -> Any:
+    """Load clusterd's read-only five-method Matrix status client.
+
+    The descriptor and 32-byte capability key live outside the portable Matrix
+    root.  Snapshots therefore carry encrypted Matrix custody and ledger state,
+    but never the host-local capability used by clusterd's status projection.
+    """
+
+    return _matrix_client(
+        state_dir,
+        embodiment_id,
+        client_root=matrix_client_root(state_dir, embodiment_id),
+        required_methods=_CLUSTERD_MATRIX_METHODS,
+    )
+
+
+def matrix_curator_client(state_dir: str | Path, embodiment_id: str) -> Any:
+    """Load a separate exact curator-worker capability for one embodiment."""
+
+    return _matrix_client(
+        state_dir,
+        embodiment_id,
+        client_root=matrix_curator_client_root(state_dir, embodiment_id),
+        required_methods=_CURATOR_WORKER_METHODS,
+    )
 
 
 def matrix_client_factory(state_dir: str | Path) -> Any:
@@ -654,6 +805,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _password_reader(args.password_fd),
             clock=lambda: time.time_ns() // 1_000_000,
             body_reader=adapter.body_snapshot,
+            curator_fence_verifier=adapter.verify_fence,
+            curator_effect_observer=adapter.effect_observer,
         )
 
         def request_stop(_number: int, _frame: object) -> None:
@@ -679,6 +832,8 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "EffectObserverRoute",
+    "EffectObserverRouter",
     "MATRIX_CONTRACT_COMMIT",
     "MATRIX_SNAPSHOT_SCHEMA",
     "MATRIX_STATUS_SCHEMA",
@@ -689,6 +844,8 @@ __all__ = [
     "matrix_client",
     "matrix_client_factory",
     "matrix_client_root",
+    "matrix_curator_client",
+    "matrix_curator_client_root",
     "matrix_root",
     "restore_portable_snapshot",
 ]

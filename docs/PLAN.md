@@ -24,6 +24,9 @@ bytes. Matrix.org is excluded.
    reprovisioned after relocation.
 10. Reproducible dependency pin, cross-version CI, deployment runbook and
     retirement of the provisional Cluster `weave/` executable.
+11. DM-031 resource-scoped curator hosting with exact fence injection,
+    separate worker capability and fail-closed adapter/work-kind/resource
+    effect-observer routing.
 
 ## Acceptance
 

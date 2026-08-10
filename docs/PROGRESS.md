@@ -5,6 +5,20 @@ start, then resume from the first open item.
 
 ## Active checkpoint (2026-08-10)
 
+Cluster issue #50 is implemented on its review branch against the exact
+successor-retry pin. The host now verifies DM-031 public parity, injects the
+current resource-fence verifier, routes effect truth only through an exact
+adapter/work-kind/resource-namespace allowlist, and keeps curator worker
+authority in a separate host-local capability. The production route list is
+empty, so unknown effects remain unavailable until a concrete DM-034/35/36
+adapter lands. Focused unit and real-process tests prove a synthetic exact
+effect, contradiction on replay, resource-fenced claim admission, refusal of
+an unregistered effect, response replay after restart, one durable result and
+the unchanged read-only clusterd capability.
+
+The verification receipt is
+[`verification/dm031-cluster-host.md`](verification/dm031-cluster-host.md).
+
 Cluster issue #61 repins Matrix from the exercised V7 predecessor to the
 successor-retry candidate `f0181f7117859f3f9cc4afc7dfbdaf9b06e74754`.
 The adapter checks the additive client config V2 constant and hosts the bundle
@@ -106,10 +120,13 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 ## Next action
 
 The R-series ontology/Weave convergence and installed Matrix host issue #48 are
-complete. Issue #61 verifies the exact successor-retry Matrix candidate without
-acquiring identity, retry, peer, social or canonical-state authority. Next
-redeploy the verified pair and complete the preserved-request replay plus
-successor-lane convergence.
+complete. Issue #50 adapts that host to DM-031 without acquiring identity,
+review, effect or canonical-state authority. Issue #61 verifies the exact
+successor-retry Matrix candidate without acquiring identity, retry, peer,
+social or canonical-state authority. Next let independent review/CI accept #50
+and keep production effect routes disabled until their concrete downstream
+adapter exists. The separately authorized DM-083 redeploy still requires the
+recorded live gate and preserved-request/successor-lane evidence.
 Older operational work remains #13 pilot enrollment, #15 off-host backup
 heartbeat, and the host-level restart window; none authorizes DM-083 effects.
 

@@ -39,7 +39,9 @@ authenticated `resource-fence/v2` holder operations, owner-only Ed25519
 custody, transactional SQLite CAS/high-waters/tombstones, explicit offline V1
 migration, crash/race tests and unchanged Matrix verifier consumption. See
 `docs/design/production-resource-fences.md` and
-`docs/verification/resource-fence-h1.md`. It is not enabled on a live host.
+`docs/verification/resource-fence-h1.md`. The stacked DM-031/H1 candidate
+passes 324 tests with 2 intentional skips under ResourceWarning-as-error. It
+is not enabled on a live host.
 
 ## Previous snapshot (2026-08-04)
 

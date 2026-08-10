@@ -40,3 +40,11 @@ python -m compileall -q clusterctl clusterd steward_tools tests
 
 No live host configuration or private key was copied into the evidence. The
 candidate remains subject to independent review before merge or deployment.
+
+## Candidate result
+
+On 2026-08-10, the stacked DM-031/H1 candidate passed 50 focused Matrix/fence
+tests and the complete suite: 324 passed, 2 intentional skips. Focused ruff,
+mypy, compileall and `git diff --check` were clean. The multiprocess race/crash
+subset also passed five consecutive repetitions after fixing a WAL-sidecar
+disappearance race in the security-mode check.

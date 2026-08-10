@@ -26,13 +26,36 @@ How clusterd runs as a hardened host service on daimonmatrix.
     sudo useradd --system --no-create-home --shell /usr/sbin/nologin clusterd
     sudo usermod -aG incus-admin clusterd
     sudo mkdir -p /opt/daimon-cluster
-    sudo rsync -a --delete --exclude __pycache__ clusterd clusterctl configs constraints.txt requirements.txt requirements-weave.txt /opt/daimon-cluster/
-    sudo uv venv /opt/daimon-cluster/venv
+    sudo rsync -a --delete --exclude __pycache__ clusterd clusterctl configs scripts steward_tools constraints.txt requirements.txt requirements-weave.txt /opt/daimon-cluster/
+    sudo uv venv --clear /opt/daimon-cluster/venv
     sudo uv pip install --python /opt/daimon-cluster/venv/bin/python -c /opt/daimon-cluster/constraints.txt -r /opt/daimon-cluster/requirements.txt
     sudo chown -R root:clusterd /opt/daimon-cluster && sudo chmod -R g+rX /opt/daimon-cluster
     sudo chown -R clusterd:clusterd /var/lib/daimon-cluster
     sudo cp configs/clusterd.service /etc/systemd/system/
     sudo systemctl daemon-reload && sudo systemctl enable --now clusterd
+
+The virtualenv must be created only after the code is at its final absolute
+pathname. Never copy or rename a prepared virtualenv: generated console scripts
+retain absolute shebangs and will keep pointing at the staging directory. Verify
+both boundaries before starting the service:
+
+    sudo -u clusterd /opt/daimon-cluster/venv/bin/python -c 'import clusterd, clusterctl, steward_tools'
+    test "$(head -n 1 /opt/daimon-cluster/venv/bin/daimon)" = '#!/opt/daimon-cluster/venv/bin/python'
+    sudo -u clusterd /opt/daimon-cluster/venv/bin/daimon --help >/dev/null
+
+## Update and rollback
+
+Build a source-only candidate containing the same asset list as the install
+command. Stop `daimon-matrix-*.service` before `clusterd`, preserve the current
+`/opt/daimon-cluster` under an explicit rollback name, and move the candidate to
+the final pathname. Only then create its venv and run the three validations
+above. Install units from the deployed `configs/`, reload systemd, start
+`clusterd` first and Matrix hosts second, then require both health endpoints.
+
+If dependency installation or any validation fails, keep the failed candidate
+for diagnosis, restore the preserved release to `/opt/daimon-cluster`, reload
+systemd and restart the previously active services. A pre-deploy verified restic
+snapshot must cover the old release and complete state before this sequence.
 
 Provision each running embodiment's owner-only Matrix root and host-local
 clusterd capability according to `docs/runbooks/matrix-host.md` before

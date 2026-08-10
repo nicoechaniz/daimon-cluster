@@ -204,7 +204,7 @@ def test_public_bundle_rejects_an_unpinned_successor_schema(tmp_path):
     root.mkdir(mode=0o700)
     bundle = root / "runtime.json"
     bundle.write_text(
-        json.dumps({"schema": "dm.runtime.bundle/v7"}), encoding="utf-8"
+        json.dumps({"schema": "dm.runtime.bundle/v8"}), encoding="utf-8"
     )
     bundle.chmod(0o600)
 

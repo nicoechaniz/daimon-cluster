@@ -28,15 +28,16 @@ An unpinned wheel, editable checkout, wrong commit or schema downgrade fails
 closed. Cluster does not carry a fallback implementation.
 
 The current pin is audited Matrix DM-083 candidate
-`d086e7432c46310c563af14e51c7a4fa5a5f6b88`.
-The adapter accepts the additive runtime bundle line V1 through V6 and checks
+`bcf6b9f6ef5a46fdd35dfc8036a7a4d458103c7b`.
+The adapter accepts the additive runtime bundle line V1 through V7 and checks
 every corresponding public schema constant before opening state. Bundle
 contents remain Matrix authority; Cluster only validates the hosting envelope.
 
 DM-083 gate (2026-08-10): Matrix draft PR #112 is frozen at the exact commit
-above after DM-082 merged at `dad012d`. Cluster issue #52 owns the source and
-installed-process verification of this pin. Any later Matrix candidate change
-requires another exact repin and complete downstream gate.
+above with the Matrix-owned V7 peer topology and bootstrap contract. Cluster
+issue #57 owns the source and installed-process verification of this pin. Any
+later Matrix candidate change requires another exact repin and complete
+downstream gate.
 
 For each running embodiment Cluster starts one Matrix daemon with:
 

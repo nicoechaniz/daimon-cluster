@@ -5,14 +5,13 @@ start, then resume from the first open item.
 
 ## Active checkpoint (2026-08-10)
 
-Cluster issue #52 is advancing the Matrix dependency from historical
-preparation commit `8145b4c` to frozen DM-083 candidate
-`d086e7432c46310c563af14e51c7a4fa5a5f6b88`. The adapter now checks and hosts
-the additive bundle line through V6 while leaving all relationship and grant
-semantics in Matrix. Source and installed-process verification remain the gate
-before live dogfood. A clean Python 3.13 environment installed Matrix directly
-from that Git commit and passed exact metadata verification, ruff, mypy,
-compileall and the complete Cluster suite: 291 passed, 2 intentional skips.
+Cluster issue #57 repins Matrix from the superseded V6 candidate to frozen
+DM-083 V7 candidate `bcf6b9f6ef5a46fdd35dfc8036a7a4d458103c7b`.
+The adapter checks and hosts the additive bundle line through V7 while leaving
+peer topology, synchronization, identity and adoption semantics in Matrix.
+An exact clean Python 3.13 install verified `direct_url.json` and MIT metadata,
+then passed lint, type, compile and the complete Cluster suite: 292 passed and
+2 intentional skips.
 
 No live DM-083 host effect had run at this checkpoint. The cold-start sequence
 and authority boundaries are in [`../RESUME.md`](../RESUME.md). The active
@@ -104,10 +103,10 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 ## Next action
 
 The R-series ontology/Weave convergence and installed Matrix host issue #48 are
-complete. The immediate integration gate is #52: verify the frozen post-DM-082
-Matrix candidate and V6 without acquiring social or canonical-state authority;
-that repository gate is now green. Next execute the authorized DM-083 preflight
-with reversible effects only.
+complete. Issue #57 verifies the frozen Matrix V7 candidate without acquiring
+identity, peer, social or canonical-state authority; that repository gate is
+green. Next execute the authorized DM-083 preflight with reversible effects
+only.
 Older operational work remains #13 pilot enrollment, #15 off-host backup
 heartbeat, and the host-level restart window; none authorizes DM-083 effects.
 

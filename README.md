@@ -33,9 +33,9 @@ on their home machine, following the pattern proven by `compaii@legion` /
 
 ## Status
 
-Repository preparation is paused before the live DM-083 dogfood. Read
-[`RESUME.md`](RESUME.md) first: the current Matrix pin predates DM-082/V6 and
-must be replaced through issue #52 before any host preflight or effect.
+Repository integration is active for the authorized DM-083 dogfood. Read
+[`RESUME.md`](RESUME.md) first: issue #57 repins the exact Matrix V7 candidate
+before any live Matrix service, key or database effect.
 
 Matrix hosting integration is otherwise implemented and under verification.
 See [`docs/design/embodiment-and-weave.md`](docs/design/embodiment-and-weave.md),

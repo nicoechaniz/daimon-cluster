@@ -34,8 +34,8 @@ on their home machine, following the pattern proven by `compaii@legion` /
 ## Status
 
 Repository integration is active for the authorized DM-083 dogfood. Read
-[`RESUME.md`](RESUME.md) first: issue #57 repins the exact Matrix V7 candidate
-before any live Matrix service, key or database effect.
+[`RESUME.md`](RESUME.md) first: issue #61 repins the exact Matrix
+successor-retry candidate before that repair is redeployed.
 
 Matrix hosting integration is otherwise implemented and under verification.
 See [`docs/design/embodiment-and-weave.md`](docs/design/embodiment-and-weave.md),

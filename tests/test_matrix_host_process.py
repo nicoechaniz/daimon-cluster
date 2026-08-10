@@ -226,20 +226,29 @@ def _rewrite_bundle(root: Path, bundle: dict) -> None:
     path.chmod(0o600)
 
 
-def _write_client_config(state_dir: Path, capability, origin: dict) -> Path:
+def _write_client_config(
+    state_dir: Path,
+    capability,
+    origin: dict,
+    *,
+    historical_servers: list[dict] | None = None,
+) -> Path:
     root = matrix_client_root(state_dir, origin["embodiment_id"])
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     root.chmod(0o700)
     config = root / "client.json"
-    config.write_bytes(
-        canonical_bytes(
-            {
-                "schema": "dm.local.client-config/v1",
-                "capability": capability.descriptor,
-                "expected_server": origin,
-            }
-        )
-    )
+    value = {
+        "schema": (
+            "dm.local.client-config/v1"
+            if historical_servers is None
+            else "dm.local.client-config/v2"
+        ),
+        "capability": capability.descriptor,
+        "expected_server": origin,
+    }
+    if historical_servers is not None:
+        value["historical_servers"] = historical_servers
+    config.write_bytes(canonical_bytes(value))
     config.chmod(0o600)
     key = root / "capability.key"
     key.write_bytes(capability.key)
@@ -652,6 +661,22 @@ def test_production_client_factory_rejects_host_local_key_and_origin_drift(
     client_root = _write_client_config(state_dir, status_capability, origin)
     factory = matrix_client_factory(state_dir)
     assert factory(origin["embodiment_id"]).config.expected_server == origin
+
+    historical = {
+        **origin,
+        "incarnation_id": "incarnation:matrix-client-retired",
+    }
+    _write_client_config(
+        state_dir,
+        status_capability,
+        origin,
+        historical_servers=[{"server": historical, "retired_at_ms": now_ms - 1}],
+    )
+    v2_config = factory(origin["embodiment_id"]).config
+    assert v2_config.expected_server == origin
+    assert v2_config.historical_servers == (
+        {"server": historical, "retired_at_ms": now_ms - 1},
+    )
 
     _write_client_config(state_dir, _capability, origin)
     with pytest.raises(MatrixHostError, match="matrix_client_authority_rejected"):

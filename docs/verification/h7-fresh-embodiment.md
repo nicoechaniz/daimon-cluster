@@ -7,7 +7,7 @@ Date: 2026-08-11. Candidate only; not deployed or independently reviewed.
 - Cluster base: integration PR #78 head
   `a2de10be5ec359925b096c217afa9fbb2bfa7118`.
 - Matrix fresh-embodiment contract:
-  `1452bf6f7cea841ee1f1757f3b001708f8e72c84` (Matrix draft PR #116).
+  `0a5fd3383aeb391488888d397a3d3296a71f98db` (Matrix draft PR #116).
 - Cluster issue: #79.
 
 Cluster verifies the installed Matrix source commit through distribution

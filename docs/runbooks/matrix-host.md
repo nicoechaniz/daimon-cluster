@@ -38,6 +38,9 @@ STATE/matrix-clients/HASH/         host-local clusterd client (0700)
 STATE/matrix-curator-clients/HASH/ host-local curator worker client (0700)
   client.json                      separate capability + expected origin
   capability.key                   separate 32-byte key (0600)
+STATE/dm034-executors/HASH/         host-local HMK executor custody (0700)
+  journal.sqlite                   recovery only, never memory authority (0600)
+  journal.sqlite.lock              process lock (0600)
 ```
 
 Provision `client.json` with schema `dm.local.client-config/v1` for an unchanged
@@ -85,11 +88,27 @@ length and second-writer checks pass and Matrix has loaded encrypted custody.
 SIGTERM/SIGINT quiesces the service boundary.
 
 The host injects the current Cluster fence verifier and a closed effect-truth
-router. Production starts with an empty route list: resource-fenced claims may
-be verified, but completion is refused as `effect_truth_unverifiable` until a
-reviewed concrete adapter registers an exact `(adapter, work_kind,
-resource_namespace)` observer. Do not configure a wildcard, receipt-trusting
-fallback or environment-selected observer.
+router. Without an explicitly constructed executor its route list is empty and
+resource-fenced completion remains `effect_truth_unverifiable`. H5's only HMK
+registration is the `DM034ProjectionExecutor.route` coordinate
+`(cluster-dm034-hmk/v1, memory-projection, hmk)`. Construct it with fixed
+per-embodiment HMK checkout/base, content resolver, Matrix adapter and journal;
+none may come from queue bytes or environment-selected dispatch. Do not
+configure a wildcard or receipt-trusting fallback.
+
+The HMK checkout must be clean at the exact Matrix-pinned commit and the base
+must be owner-only. The closed transport exports only its fixed instance/base
+and a minimal non-secret environment, sets umask 077, accepts five DM-034
+operations, and collapses diagnostics to stable codes. Before a canary, run:
+
+```sh
+PYTHONPATH=. .venv/bin/python scripts/h5-hmk-projection-drill.py \
+  --hmk-checkout /opt/hermes-memory-kit-dm034
+```
+
+The drill uses synthetic bytes and temporary bases. Its receipt reports only
+booleans, exact commits, stable hashes, byte counts and SQLite integrity—not
+paths, statements, database contents or credentials.
 
 ## Snapshot and restore
 

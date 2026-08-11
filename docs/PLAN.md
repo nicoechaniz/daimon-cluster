@@ -27,6 +27,9 @@ bytes. Matrix.org is excluded.
 11. DM-031 resource-scoped curator hosting with exact fence injection,
     separate worker capability and fail-closed adapter/work-kind/resource
     effect-observer routing.
+12. Exact DM-034 HMK executor with a payload-free Matrix intent, fixed
+    per-embodiment custody, crash recovery, fresh effect observation and
+    disposable SQLite snapshot/restore/rebuild.
 
 ## Acceptance
 

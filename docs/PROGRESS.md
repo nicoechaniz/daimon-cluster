@@ -76,6 +76,25 @@ ResourceWarning-as-error; its 31 H3-specific tests pass five consecutive
 repetitions. Focused lint, type checking, compile, diff and secret scans are
 clean.
 
+Issue #68 implements the H5 DM-034 physical executor as a stacked review
+candidate. Cluster now pins every DM-034 schema/version constant already
+present at the exact Matrix commit, exposes one non-wildcard
+`(cluster-dm034-hmk/v1, memory-projection, hmk)` observer route, and keeps
+paths, SQLite handles, statement bytes and process selection out of curator
+items and outer receipts. The executor re-resolves current Matrix intent,
+binds preview/plan, actor, accepted source review, profile and production fence,
+uses only the Matrix `MemoryProjectionAdapter`, and persists a three-state
+owner-only recovery journal. Cached retry re-observes both HMK and the current
+fence; it never trusts the historical receipt alone.
+
+The exact pinned HMK CLI and two real isolated SQLite bases pass apply/replay,
+atomic namespace rebuild, snapshot/restore and peer-independence drills. The
+complete stacked suite is 430 passed with 2 intentional skips under
+ResourceWarning-as-error. See `docs/contracts/dm034-hmk-executor-v1.md` and
+`docs/verification/h5-dm034-hmk-executor.md`. This candidate is not deployed;
+an executor route exists only when a supervisor supplies its fixed
+per-embodiment dependencies.
+
 ## Previous snapshot (2026-08-04)
 
 Issue #48 is implemented and merged through PR #49.

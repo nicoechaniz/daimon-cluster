@@ -136,7 +136,15 @@ def _matrix_api() -> dict[str, Any]:
 
     try:
         from daimon_matrix import cluster as cluster_api
-        from daimon_matrix import client, curator, daemon, runtime, service
+        from daimon_matrix import (
+            canonical,
+            client,
+            curator,
+            daemon,
+            memory_projection,
+            runtime,
+            service,
+        )
     except ImportError as exception:  # base clusterctl remains usable without it
         raise MatrixHostError("daimon_matrix_dependency_unavailable") from exception
     try:
@@ -209,11 +217,31 @@ def _matrix_api() -> dict[str, Any]:
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     if frozenset(getattr(service, "CURATOR_METHODS", ())) != _CURATOR_WORKER_METHODS:
         raise MatrixHostError("daimon_matrix_contract_mismatch")
+    projection_expected = {
+        "PROFILE_SCHEMA": "dm.memory-projection.profile/v1",
+        "INTENT_SCHEMA": "dm.memory-projection.intent/v1",
+        "RECEIPT_SCHEMA": "dm.memory-projection.receipt/v1",
+        "RECONCILIATION_SCHEMA": "dm.memory-projection.reconciliation/v1",
+        "REBUILD_PLAN_SCHEMA": "dm.memory-projection.rebuild-plan/v1",
+        "REBUILD_RECEIPT_SCHEMA": "dm.memory-projection.rebuild-receipt/v1",
+        "HMK_COMMIT": "f10fd5c3089c0962920314c97e14bc024feffa7a",
+        "HMK_API_VERSION": "1.0.0",
+        "HMK_SCHEMA_VERSION": 1,
+        "PROJECTOR_ID": "matrix:personal-memory-projector",
+        "PROJECTOR_VERSION": "1.0.0",
+    }
+    if any(
+        getattr(memory_projection, name, None) != value
+        for name, value in projection_expected.items()
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
     return {
+        "canonical": canonical,
         "client": client,
         "cluster": cluster_api,
         "curator": curator,
         "daemon": daemon,
+        "memory_projection": memory_projection,
         "runtime": runtime,
         "service": service,
     }

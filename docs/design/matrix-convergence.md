@@ -32,7 +32,8 @@ The current pin is audited Matrix DM-083 successor-retry candidate
 The adapter accepts the additive runtime bundle line V1 through V7 and checks
 every corresponding public schema constant before opening state. It also
 checks the closed DM-031 item/claim/result/inspection schemas, work kinds,
-coordination modes and exact four-method curator capability introduced at
+coordination modes, exact four-method curator capability and the complete
+DM-034 profile/intent/receipt/reconciliation/rebuild schema line introduced at
 Matrix merge `1b133976932cbbc0914ba4ecc403020c647f53c1`; the current pin is an
 audited additive descendant of that merge. Bundle contents remain Matrix
 authority; Cluster only validates the hosting envelope.
@@ -72,11 +73,23 @@ The hosted process injects `MatrixHostAdapter.verify_fence` into Matrix's
 DM-031 coordinator. Effect truth passes through a closed router selected by
 the exact receipt adapter, curator work kind and first `resource_ref`
 namespace. Unknown, duplicate, unavailable or throwing routes are
-`effect_truth_unverifiable`; there is no receipt-trusting fallback. V0 ships
-with no production effect routes. A concrete DM-034/DM-035/DM-036 projection
-or publication adapter must add its own observer and acceptance evidence
-before resource-fenced completion can succeed. Queue-item coordination remains
-available because it represents no shared external effect.
+`effect_truth_unverifiable`; there is no receipt-trusting fallback.
+
+H5 provides exactly one reviewed production-capable route:
+`(cluster-dm034-hmk/v1, memory-projection, hmk)`. It is created only together
+with a fixed per-embodiment executor; the generic Matrix host still has no
+ambient/default route. The executor accepts no queue-selected path, database,
+process or operation. It re-resolves Matrix's current payload-free intent,
+checks the exact DM-034 profile and preview/plan hash, current actor and any
+independent source-review reference, verifies the production fence before and
+after the effect, and invokes only `MemoryProjectionAdapter.project`,
+`rebuild_plan`, `rebuild_apply`, `inspect`, `verify`, and `reconcile`. Its
+observer repeats inner effect observation and returns current fence evidence.
+See `docs/contracts/dm034-hmk-executor-v1.md`.
+
+DM-035/DM-036 remain unavailable until their own exact routes and acceptance
+evidence land. Queue-item coordination remains available because it represents
+no shared external effect.
 
 ## clusterd read projection
 

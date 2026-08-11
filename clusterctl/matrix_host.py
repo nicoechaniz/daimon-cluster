@@ -28,7 +28,7 @@ from typing import Any
 from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
-MATRIX_CONTRACT_COMMIT = "f0181f7117859f3f9cc4afc7dfbdaf9b06e74754"
+MATRIX_CONTRACT_COMMIT = "915c56c8899fd53d683bd7c7c81c3465b600bed9"
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
 MATRIX_STATUS_SCHEMA = "dm.cluster-matrix-status/v1"
@@ -142,6 +142,7 @@ def _matrix_api() -> dict[str, Any]:
             curator,
             daemon,
             memory_projection,
+            operator_bootstrap,
             publication,
             runtime,
             service,
@@ -261,6 +262,11 @@ def _matrix_api() -> dict[str, Any]:
     if any(
         getattr(publication, name, None) != value
         for name, value in publication_expected.items()
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if (
+        frozenset(getattr(operator_bootstrap, "STATUS_OBSERVER_METHODS", ()))
+        != _CLUSTERD_MATRIX_METHODS
     ):
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     return {

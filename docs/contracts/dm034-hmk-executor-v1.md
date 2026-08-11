@@ -24,8 +24,8 @@ or operation.
 
 ## Exact dependency line
 
-Cluster's existing Matrix pin
-`f0181f7117859f3f9cc4afc7dfbdaf9b06e74754` contains the audited DM-034 line.
+Cluster's current Matrix pin
+`915c56c8899fd53d683bd7c7c81c3465b600bed9` contains the audited DM-034 line.
 Startup now checks the exact profile, intent, receipt, reconciliation,
 rebuild-plan and rebuild-receipt schemas plus HMK commit
 `f10fd5c3089c0962920314c97e14bc024feffa7a`, API `1.0.0`, schema `1` and

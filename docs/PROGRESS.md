@@ -3,36 +3,48 @@
 Living tracking file. Updated after every work session. Read FIRST on session
 start, then resume from the first open item.
 
-## Active checkpoint (2026-08-10)
+## Active checkpoint (2026-08-11)
 
-Cluster issue #50 is implemented on its review branch against the exact
-successor-retry pin. The host now verifies DM-031 public parity, injects the
-current resource-fence verifier, routes effect truth only through an exact
-adapter/work-kind/resource-namespace allowlist, and keeps curator worker
-authority in a separate host-local capability. The production route list is
-empty, so unknown effects remain unavailable until a concrete DM-034/35/36
-adapter lands. Focused unit and real-process tests prove a synthetic exact
-effect, contradiction on replay, resource-fenced claim admission, refusal of
-an unregistered effect, response replay after restart, one durable result and
-the unchanged read-only clusterd capability.
+The exact DM-055/DM-083 host-qualified pair is Cluster
+`94d80baca05f468287b7d2bf99c577350d654a36` with Matrix
+`915c56c8899fd53d683bd7c7c81c3465b600bed9`. The adapter checks the additive
+client V2 and exact five-method status-observer contracts while leaving retry,
+peer, identity and adoption semantics in Matrix.
 
-The verification receipt is
-[`verification/dm031-cluster-host.md`](verification/dm031-cluster-host.md).
+The first authorized full-host reboot restored every enabled service and
+durable hash but exposed two real release gaps: the original V7 ceremony had
+not emitted clusterd's distinct status observer, and Incus could report active
+before its private bridge address was bindable. Matrix now emits the separate
+owner-only status client. Cluster now performs a bounded local bind preflight
+instead of relying on one expected crash/restart.
 
-Cluster issue #61 repins Matrix from the exercised V7 predecessor to the
-successor-retry candidate `f0181f7117859f3f9cc4afc7dfbdaf9b06e74754`.
-The adapter checks the additive client config V2 constant and hosts the bundle
-line through V7 while leaving retry, peer, identity and adoption semantics in
-Matrix.
-An exact clean Python 3.13 install verified `direct_url.json` and MIT metadata,
-then passed lint, type, compile and the complete Cluster suite: 297 passed and
-2 intentional skips.
+Matrix passed its 543-test source suite with 18 intentional skips plus build,
+conformance and Python 3.11–3.14 CI. Cluster passed 299 tests with 2 intentional
+skips plus lint, type, compile and Python 3.11–3.14 CI. The exact installed pair
+passed pin/parity checks, authenticated status (9 known, 0 incomplete, epoch 2,
+non-partial), repeated whole-pair rollback, restic snapshot `89d801b1`, restic
+repository check and an exact encrypted mirror pull to Legion.
+
+The final reboot passed. Boot ID changed; zero units failed; every required
+service and all three containers recovered; audit/idempotency hashes and the
+five known reconcile findings were identical. `clusterd`'s bridge preflight
+exited zero in two seconds, the service started once with `NRestarts=0`, and
+the boot journal had no `EADDRNOTAVAIL`. The listener is deliberately private
+dual-bind (loopback plus Incus bridge), never public.
+
+The unmerged DM-031/H1-H6 stack has now been integrated on top of that exact
+host-qualified pair in an isolated candidate branch. The combined clean
+Python 3.13 gate passed 436 tests with 2 intentional skips, lint, type,
+compile, exact pin/license checks and both real-storage H5/H6 drills. This does
+not make the stack deployed or independently reviewed; production routes are
+unchanged. See
+[`verification/dm055-h6-integration.md`](verification/dm055-h6-integration.md).
 
 The authorized same-being live path reached a real successor incarnation. Its
 old exact response remained durable and duplicate-free but was rejected by the
 single-incarnation client/service assumption. The cold-start sequence and
 authority boundaries are in [`../RESUME.md`](../RESUME.md). The active
-cross-repository card is AlterMundi/daimon-matrix#111 with draft PR #112.
+cross-repository card is AlterMundi/daimon-matrix#111 with PR #112.
 
 Issue #64 implements the first #46 hardening dependency as a review candidate:
 authenticated `resource-fence/v2` holder operations, owner-only Ed25519
@@ -174,29 +186,29 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #3 threat model | done | docs/security/threat-model-v1.md (9b084a5) |
 | #4 contracts | done | docs/contracts/v1-state-contracts.md (37c2f0c) |
 | #5 gate docs | done | PLAN v0.2 + DESIGN resolutions (ea50501) |
-| #6 foundation | done | docs/runbooks/m1-incus-foundation.md (45f02d3); pending: off-mesh ingress probe |
+| #6 foundation | done; off-mesh ingress probe passed 2026-08-11 | public SSH reachable by design; Incus API, Tribe broker and clusterd public ports closed |
 | #7 tribe-base image | done | scripts/build-tribe-base.sh + configs/tribe-base-manifest-2026-08-01.1.json (def64fa); reproducibility + secret scan + boot smoke verified |
 | #8 profile+volumes | done | docs/design/tribe-agent-profile-and-volumes.md (6682e61 + allowlist fix in def64fa) |
-| #9 acceptance tests | done minus restart drill | docs/verification/m1-acceptance-tests.md (32bc4fa); drill staged, awaits Nicolás's restart window |
+| #9 acceptance tests | done; full reboot drill passed 2026-08-11 | docs/verification/m1-acceptance-tests.md; cold recovery, isolation, hashes and services verified |
 | #10 clusterctl list/status | done (85b0b79, merged 32e626c) | clusterctl/, tests (16 pass incl. live fixture), docs/contracts/clusterctl-cli.md; live reconciliation cycle verified |
 | #11 lifecycle mutations | done (3baadae, merged c0040ad) | clusterctl/lifecycle.py+audit+idempotency+locks, 28 tests, live cycle verified |
 | #12 provisioning | done (merged 0587848) | clusterctl/provision.py, tests 40 pass, live cycle verified (key custody, seed staging, confirm, expiry fail-closed) |
 | #13 pilot | pending (needs volunteer + provider creds) | #12 infra ready |
 | #14 quiesced snapshots | done (merged 3b8ae44) | clusterctl/snapshot.py, 49 tests, live cycle verified |
 | #16 restore drill | drill 1 PASS (merged 1928976) | docs/verification/restore-drill-1.md; restic-class drill pending #15 |
-| #15 backups | local repo live (d152df5): init+backup+check+restore verified, daily timer on | off-host = legion pull cron (requested); heartbeat pending |
+| #15 backups | one off-host target live; second independent target still missing | fresh snapshot `89d801b1`, check green, timer active, Legion pull/heartbeat green; two-target acceptance remains open |
 | #17 clusterd API | done (merged fe02f39) | clusterd/, 72 tests, live verified (health/instances/restart/replay via HTTP); OpenAPI doc committed |
 | #18 auth/confirmations | done (merged e884312) | clusterd/auth.py+confirm.py, 82 tests, live battery 8/8 (401/403/revocation/challenge/steward) |
 | #19 audit hash-chain | done (merged 52f76a6) | seq+prev_sha256+HWM, reconcile, health audit_chain_ok; 91 tests; live verified on real log |
-| #20 clusterd deploy | done (merged 21b3d79) | systemd hardened, /opt deploy, socket-direct (no setuid), loopback-only, reboot rows in drill |
-| M4 gate | code complete (#17-#20); formal gate open until #13 pilot (issue #17 dep) + restart drill | all four live-verified |
+| #20 clusterd deploy | done; reboot reverified 2026-08-11 | hardened systemd, /opt deploy, loopback+private-bridge binds, no public listener, bridge wait, exact Matrix status |
+| M4 gate | code/reboot complete; formal gate open only on #13 pilot dependency | all four live-verified; no restart gap remains |
 | #21 steward identity | done (merged 1274c04) | multi-bind (loopback+bridge), container live, scoped tokens, invariants verified from inside, custody runbook |
 | #22 steward read tools | done (merged 7b2cf47) | 124 tests; live-verified from inside steward container (4/4 tools) |
 | #23 steward mutation tools | done (merged 0c8fcc0) | two-phase plans, adversarial suite 26 tests, live-verified from steward; M5 code complete |
 | #24 fleet dashboard | done (merged 3229123) | HTMX dark-theme, /v1/audit+owner-scoped, /v1/dashboard; auto-refresh 30s; 158 tests |
 | #25 dashboard actions | done (merged f8cf871) | two-phase HTTP, typed-name, restore pre-condition; 206 tests |
 | #27 resource fences | mechanics retained; semantics rectified in R2 | CAS+TTL per concrete `resource_ref`; `GET /v1/resource-fences` |
-| #26 usability drill | pending (needs human operator) | depends on #25 |
+| #26 usability drill | done; four live findings repaired | exact receipt summarized below; depends-on-#25 gate satisfied |
 | #28 handoff park | done (merged d0c9312) | park --handoff ceremony, signed manifest, resumable; 227 tests |
 | #29 transfer/wake/rollback | done (merged 4800e39; impl in b6c499c) | 14 tests: call order, CAS rollback, tamper refusal, resume; 241 tests |
 | #30 handoff failure-injection | done (merged 466009c + a7accff) | 16-scenario matrix + live drill 1: caught + fixed 2 sequencing bugs (restore-before-start in transfer AND wake); 248 tests |
@@ -204,16 +216,13 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 
 ## Next action
 
-The R-series ontology/Weave convergence and installed Matrix host issue #48 are
-complete. Issue #50 adapts that host to DM-031 without acquiring identity,
-review, effect or canonical-state authority. Issue #61 verifies the exact
-successor-retry Matrix candidate without acquiring identity, retry, peer,
-social or canonical-state authority. Next let independent review/CI accept #50
-and keep production effect routes disabled until their concrete downstream
-adapter exists. The separately authorized DM-083 redeploy still requires the
-recorded live gate and preserved-request/successor-lane evidence.
-Older operational work remains #13 pilot enrollment, #15 off-host backup
-heartbeat, and the host-level restart window; none authorizes DM-083 effects.
+The R-series, Matrix-host integration and final reboot/status candidate are
+technically complete and deployed at the exact DM-055 pair. The isolated
+DM-031/H1-H6 integration is qualified locally; submit it for CI and independent
+review without enabling effect routes on the live host. Remaining operational
+work is external: #13 pilot volunteer/provider credentials, #15 a second
+independent off-host target, fresh-host custody/governance and the final human
+cutover. None can be inferred from host or synthetic qualification.
 
 ## Key decisions this stretch
 
@@ -231,9 +240,6 @@ heartbeat, and the host-level restart window; none authorizes DM-083 effects.
 
 ## Open questions
 
-- Restart drill window (Nicolás).
-- Off-mesh probe of public ingress (belt & braces; ruleset is logically
-  sound, on-host test invalid due to loopback routing).
 - GitHub identity for compaii@daimonmatrix (App vs machine user) — Nicolás.
 
 ## 2026-08-02 — Matrix convergence and ontology rectification
@@ -282,4 +288,4 @@ on ontological approval: Nicolás gave GO and the framing correction is accepted
 - Drill #26 (usability): COMPLETE — 4 real bugs found by Nicolás and
   fixed live (idempotency staleness, destroy prepare 502, snapshots
   label, quiesce sudo/NoNewPrivileges, mutation timeout). Remaining
-  human keys: restart drill, #13 pilot, #15 backup heartbeat.
+  human keys: #13 pilot and #15 second independent backup target.

@@ -24,7 +24,7 @@ review, identity, signing, fence-mutation or generic tool authority.
 
 ## Exact dependency line
 
-At Matrix pin `f0181f7117859f3f9cc4afc7dfbdaf9b06e74754`, Cluster verifies
+At Matrix pin `915c56c8899fd53d683bd7c7c81c3465b600bed9`, Cluster verifies
 the complete DM-035 policy/profile/proposal/review/request/claim/acceptance and
 provider request/plan/receipt schema line. It also verifies provider commit
 `cf56e9de703f68f44b85fdf21f503d55a5557984`, adapter

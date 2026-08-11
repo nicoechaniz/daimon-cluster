@@ -83,10 +83,12 @@ contain `flush ruleset` once incus is installed.
 Known finding moved to #8: default containers still get `/dev/net/tun` —
 the `tribe-agent` profile must strip it (ADR-001 D6).
 
-External ingress verification (public IP probe from off-mesh) is pending an
-off-mesh helper; from on-host, loopback routing makes the test invalid.
-The ruleset contains no rule that would accept 8685 from the public
-interface; legion probe requested as belt-and-braces.
+External ingress verification passed on 2026-08-11 from an authorized helper
+with no ZeroTier interface resolving the host through public DNS. Public SSH
+remained reachable as designed, while the Incus API, Tribe broker and clusterd
+ports were all unreachable. The receipt publishes only port classes/results,
+not the resolved address. This is the valid off-mesh check that an on-host
+loopback route could not provide.
 
 ## 6. Pinned versions (installed 2026-08-01)
 

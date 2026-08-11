@@ -7,8 +7,10 @@ Date: 2026-08-10.
 
 ## Frozen boundary
 
-- Cluster Matrix pin:
-  `f0181f7117859f3f9cc4afc7dfbdaf9b06e74754`.
+- Current integrated Cluster Matrix pin:
+  `915c56c8899fd53d683bd7c7c81c3465b600bed9`. The original DM-031 exercise
+  used predecessor `f0181f7117859f3f9cc4afc7dfbdaf9b06e74754`; the current
+  additive descendant passed the combined integration gate on 2026-08-11.
 - Normative DM-031 merge in that additive lineage:
   `1b133976932cbbc0914ba4ecc403020c647f53c1`.
 - Matrix owns curator items, local queue generations, claims, results, request

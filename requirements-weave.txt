@@ -1,1 +1,1 @@
-daimon-matrix @ git+https://github.com/AlterMundi/daimon-matrix.git@c7c6e236ff59596dd596e69fcd46efbe0446ea69
+daimon-matrix @ git+https://github.com/AlterMundi/daimon-matrix.git@915c56c8899fd53d683bd7c7c81c3465b600bed9

@@ -27,7 +27,7 @@ from typing import Any
 from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
-MATRIX_CONTRACT_COMMIT = "c7c6e236ff59596dd596e69fcd46efbe0446ea69"
+MATRIX_CONTRACT_COMMIT = "915c56c8899fd53d683bd7c7c81c3465b600bed9"
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
 MATRIX_STATUS_SCHEMA = "dm.cluster-matrix-status/v1"
@@ -55,7 +55,7 @@ def _matrix_api() -> dict[str, Any]:
 
     try:
         from daimon_matrix import cluster as cluster_api
-        from daimon_matrix import client, daemon, runtime
+        from daimon_matrix import client, daemon, operator_bootstrap, runtime
     except ImportError as exception:  # base clusterctl remains usable without it
         raise MatrixHostError("daimon_matrix_dependency_unavailable") from exception
     try:
@@ -100,6 +100,11 @@ def _matrix_api() -> dict[str, Any]:
     if getattr(client, "CLIENT_CONFIG_SCHEMA", None) != "dm.local.client-config/v1":
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     if getattr(client, "CLIENT_CONFIG_SCHEMA_V2", None) != "dm.local.client-config/v2":
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if (
+        frozenset(getattr(operator_bootstrap, "STATUS_OBSERVER_METHODS", ()))
+        != _CLUSTERD_MATRIX_METHODS
+    ):
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     return {
         "client": client,

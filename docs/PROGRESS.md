@@ -6,18 +6,23 @@ start, then resume from the first open item.
 ## Active checkpoint (2026-08-11)
 
 Cluster repins Matrix from the exercised V7 successor candidate to the
-DM-055/DM-083 peer-retry candidate
-`c7c6e236ff59596dd596e69fcd46efbe0446ea69`.
+DM-055/DM-083 reboot/status candidate
+`915c56c8899fd53d683bd7c7c81c3465b600bed9`.
 The adapter checks the additive client config V2 constant and hosts the bundle
 line through V7 while leaving retry, peer, identity and adoption semantics in
 Matrix.
+The first authorized full-host reboot restored every enabled service and
+durable hash but exposed that the original V7 ceremony had not emitted
+clusterd's separate status observer. The repaired bootstrap generates a
+distinct key and exactly the five read methods Cluster accepts; the adapter
+now verifies that method-set contract before ready.
 The Matrix candidate preserves the first encrypted request's bounded expiry
 across a later retry, accepts existing V1 outbox plans, and still fails closed
 after the stored envelope expires. Its full Matrix suite, reproducible build
 and installed-wheel smoke gate pass locally. A clean exact Cluster install
 verified `direct_url.json` and MIT metadata, then passed lint, type, compile and
-the complete suite: 297 passed and 2 intentional skips. Cluster CI and
-installed-process evidence remain required for this repin.
+the complete suite: 298 passed and 2 intentional skips. Cluster CI and the
+installed reboot/status round trip remain required for this repin.
 
 The authorized same-being live path reached a real successor incarnation. Its
 old exact response remained durable and duplicate-free but was rejected by the

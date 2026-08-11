@@ -27,17 +27,19 @@ Cluster pins `daimon-matrix` by full Git commit in
 An unpinned wheel, editable checkout, wrong commit or schema downgrade fails
 closed. Cluster does not carry a fallback implementation.
 
-The current pin is the audited Matrix DM-055/DM-083 peer-retry candidate
-`c7c6e236ff59596dd596e69fcd46efbe0446ea69`.
+The current pin is the audited Matrix DM-055/DM-083 reboot/status candidate
+`915c56c8899fd53d683bd7c7c81c3465b600bed9`.
 The adapter accepts the additive runtime bundle line V1 through V7 and checks
 every corresponding public schema constant before opening state. Bundle
 contents remain Matrix authority; Cluster only validates the hosting envelope.
 
 DM-083 gate (2026-08-11): Matrix PR #112 is frozen at the exact commit above
 after the live-canary preflight exposed a rolling-deadline conflict during
-post-commit peer-response recovery. Cluster owns source and installed-process
-verification of this pin plus the additive client config V2 constant. Cluster
-does not interpret the historical-server list. Any later Matrix candidate
+post-commit peer-response recovery and the first full host reboot exposed a
+missing least-authority clusterd status client. Cluster owns source and
+installed-process verification of this pin, the additive client config V2
+constant and the exact five-method status-observer set. Cluster does not
+interpret historical servers or Matrix custody. Any later Matrix candidate
 change requires another exact repin and complete downstream gate.
 
 For each running embodiment Cluster starts one Matrix daemon with:

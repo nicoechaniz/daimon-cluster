@@ -92,6 +92,16 @@ checkpoint, fence, container and spec steps. A policy refusal or verified
 rollback closes the outer record as compensated, allowing a later request
 with changed approved flags.
 
+Transfer intent additionally closes both lock targets, the source/target
+names, exact custom-volume identity/device/mount, checkpoint manifest hash and
+immutable fence epoch/proof. Runtime retry must re-observe those same bytes.
+The target container is created stopped without a home device; create, start,
+detach and attach response loss converge from substrate truth. One intended
+incarnation id is persisted before target start and registry recovery may
+commit that id only once. A rollback is compensated only after the exact
+volume is observably back on one stopped source attachment and the target is
+gone; inability to prove custody leaves the row degraded.
+
 ## Observation and bounded repair
 
 `clusterctl reconcile --json` adds one `pending_operation` warning or

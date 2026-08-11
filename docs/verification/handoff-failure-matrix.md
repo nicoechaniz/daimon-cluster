@@ -62,8 +62,9 @@ tests/test_transfer.py::test_transfer_happy_path_order).
 **(c) Every failure converges.** Park: stop runs ONLY after a verified
 manifest; resume from any step re-verifies (scenarios 1–5, 15).
 Transfer: any TransferError after target create triggers the idempotent
-rollback (destroy target, delete spec, restore pre-renew lease exactly,
-source stays parked) with a recorded resume hint (scenarios 9–12).
+rollback (restore the exact source attachment, destroy target/spec, preserve
+any committed monotonic fence successor, source stays parked) with a recorded
+resume hint (scenarios 9–12).
 Wake: on failure the lease stays parked, the container stays stopped,
 the spec rolls back to parked, and the signed wake record carries the
 error (scenario 6, tests/test_transfer.py::test_wake_start_failure_rolls_back).

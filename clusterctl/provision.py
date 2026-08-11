@@ -374,6 +374,9 @@ def cmd_provision_prepare(args, cfg, adapter) -> int:
                     "requested_by": args.requested_by,
                     "sponsor": args.sponsor,
                 },
+                "volume": f"{name}-home",
+                "volume_device": "home",
+                "volume_mount": "/home/agent",
                 "idempotency_key": _idem_key(args),
             }
             token = str(uuid.uuid4())

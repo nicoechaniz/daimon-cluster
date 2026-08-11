@@ -254,6 +254,37 @@ One open row per target is permitted; a degraded row blocks new mutation until
 an operation-specific repair policy authorizes a bounded resume. See
 `docs/design/operation-journal.md`.
 
+### 1.11 `cluster-volume-observation/v1`
+
+```json
+{
+  "schema": "cluster-volume-observation/v1",
+  "present": true,
+  "pool": "default",
+  "project": "default",
+  "name": "eko-home",
+  "identity": "volume:<sha256>",
+  "type": "custom",
+  "content_type": "filesystem",
+  "created_at": "2026-08-10T00:00:00Z",
+  "attachments": [{
+    "instance": "eko-next",
+    "device": "home",
+    "path": "/home/agent",
+    "writable": true
+  }]
+}
+```
+
+For Incus 6.0 custom volumes, `identity` closes pool, project, name, type,
+content type and immutable creation timestamp. It is an operational identity,
+not a content hash or a claim about being identity. A relocation journal also
+closes source/target, mount/device, manifest hash and the current fence
+`{resource_ref, epoch, proof, current}` coordinate. The target is created
+stopped without a home device; detach and attach are observe-first and
+idempotent. At every writable stage the attachment list must contain exactly
+one allowlisted `home` mount, or the workflow fails closed.
+
 ## 2. Acceptance matrix (issue → evidence required to close)
 
 | Issue | Evidence artifact |

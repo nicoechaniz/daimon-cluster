@@ -55,6 +55,27 @@ observable power operations have a bounded audited repair command. See
 with 2 intentional skips; the 58 H2 crash/retry tests also pass five
 consecutive repetitions. It is not enabled on a live host.
 
+Issue #66 implements the third #46 hardening dependency as a stacked review
+candidate. Transfer now locks source and target, closes the exact manifest,
+custom-volume identity/attachment and fence epoch/proof before effect, creates
+the target stopped without a fresh home, and performs observe-first Incus
+detach/attach. Response loss for create, start, detach and attach converges
+without duplicate effects; one intended incarnation survives retry. Rollback
+restores the same volume to one stopped source before deleting the target, or
+leaves explicit degraded custody. See
+`docs/design/real-volume-relocation.md` and
+`docs/verification/h3-volume-relocation.md`. A self-cleaning real Incus drill
+on daimonmatrix proved the same volume identity, state hash and in-volume
+public-key fingerprint across target start and source rollback; all scratch
+resources were removed and the existing fleet was unchanged. Production
+fence activation remains gated with H1; the H3 path is exercised against the
+real H1 SQLite/Ed25519 position through dependency injection and does not
+silently treat fixture status as production proof.
+The exact candidate passes 413 tests with 2 intentional skips under
+ResourceWarning-as-error; its 31 H3-specific tests pass five consecutive
+repetitions. Focused lint, type checking, compile, diff and secret scans are
+clean.
+
 ## Previous snapshot (2026-08-04)
 
 Issue #48 is implemented and merged through PR #49.

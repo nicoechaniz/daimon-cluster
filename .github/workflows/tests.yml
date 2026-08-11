@@ -52,6 +52,7 @@ jobs:
         run: >-
           python -m ruff check
           clusterctl/audit.py
+          clusterctl/adapters.py
           clusterctl/cli.py
           clusterctl/embodiments.py
           clusterctl/fences.py
@@ -59,6 +60,7 @@ jobs:
           clusterctl/inventory.py
           clusterctl/production_fences.py
           clusterctl/leases.py
+          clusterctl/locks.py
           clusterctl/lifecycle.py
           clusterctl/matrix_host.py
           clusterctl/operation_journal.py
@@ -76,16 +78,23 @@ jobs:
           tests/test_park.py
           tests/test_production_fences.py
           tests/test_transfer.py
+          tests/test_volume_relocation.py
+          scripts/h3-volume-drill.py
       - name: Type-check the Matrix, fence and mutation-journal boundaries
         run: >-
           python -m mypy --follow-imports=skip --ignore-missing-imports
           --disable-error-code=import-untyped
+          clusterctl/adapters.py
           clusterctl/embodiments.py
           clusterctl/fences.py
           clusterctl/idempotency.py
           clusterctl/inventory.py
+          clusterctl/locks.py
           clusterctl/operation_journal.py
           clusterctl/production_fences.py
           clusterctl/matrix_host.py
-      - run: python -m compileall -q clusterctl clusterd steward_tools tests
+          clusterctl/transfer.py
+      - run: >-
+          python -m compileall -q clusterctl clusterd steward_tools tests
+          scripts/h3-volume-drill.py
       - run: python -W error::ResourceWarning -m pytest -q

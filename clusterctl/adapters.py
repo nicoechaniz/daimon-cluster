@@ -19,10 +19,12 @@ unknown fields per the forward-compatibility rule):
 from __future__ import annotations
 
 import abc
+import hashlib
 import json
 import os
 import re
 import subprocess
+import urllib.parse
 from datetime import datetime, timezone
 
 import yaml
@@ -160,6 +162,39 @@ class Adapter(abc.ABC):
         return None
 
     # ------------------------------------------------------------------
+    # Durable-volume relocation primitives (issue #66)
+    # ------------------------------------------------------------------
+
+    def volume_observation(self, volume_name: str) -> dict:
+        """Return exact custom-volume identity and instance attachments."""
+        raise NotImplementedError
+
+    def instance_volume_devices(self, instance: str) -> list[dict]:
+        """Return unexpanded custom-volume devices attached to one instance."""
+        raise NotImplementedError
+
+    def attach_volume(
+        self,
+        volume_name: str,
+        instance: str,
+        *,
+        device: str = "home",
+        path: str = "/home/agent",
+    ) -> dict:
+        """Idempotently attach one existing volume and return observation."""
+        raise NotImplementedError
+
+    def detach_volume(
+        self,
+        volume_name: str,
+        instance: str,
+        *,
+        device: str = "home",
+    ) -> dict:
+        """Idempotently detach one exact volume and return observation."""
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
     # Quiesced snapshot primitives (issue #14)
     # ------------------------------------------------------------------
 
@@ -225,10 +260,20 @@ class FakeAdapter(Adapter):
         fail_capture: bool = False,
         quiesce_files: list | None = None,
         volumes: list | None = None,
+        volume_records: dict | None = None,
         exec_handler=None,
     ):
         self._instances = list(instances or [])
         self._volumes = set(volumes or [])
+        self._volume_records: dict[str, dict] = {}
+        for volume in self._volumes:
+            self._volume_records[volume] = self._new_volume_record(volume)
+        for volume, value in (volume_records or {}).items():
+            record = self._new_volume_record(volume)
+            record.update(dict(value))
+            record["attachments"] = [dict(item) for item in value.get("attachments", [])]
+            self._volume_records[volume] = record
+            self._volumes.add(volume)
         self._profile_budgets = dict(profile_budgets_map or {})
         self._image_aliases = dict(image_aliases or {})
         self._log_lines = {k: list(v) for k, v in (log_lines or {}).items()}
@@ -307,6 +352,10 @@ class FakeAdapter(Adapter):
         self.mutation_log.append(("delete", name))
         inst = self._require(name)
         self._instances.remove(inst)
+        for volume in self._volume_records.values():
+            volume["attachments"] = [
+                item for item in volume["attachments"] if item["instance"] != name
+            ]
 
     def logs(self, name: str, max_lines: int) -> str:
         self.mutation_log.append(("logs", name))
@@ -340,14 +389,129 @@ class FakeAdapter(Adapter):
         self._require(name)
         if self.fail_volume:
             raise RuntimeError(f"simulated volume attach failure for {name!r}")
-        self._volumes.add(f"{name}-home")
+        volume = f"{name}-home"
+        self._volumes.add(volume)
+        self._volume_records.setdefault(volume, self._new_volume_record(volume))
+        self.attach_volume(volume, name)
 
     def delete_volume(self, name: str) -> None:
         self.mutation_log.append(("delete_volume", name))
-        self._volumes.discard(f"{name}-home")
+        volume = f"{name}-home"
+        self._volumes.discard(volume)
+        self._volume_records.pop(volume, None)
 
     def list_volumes(self) -> list[str]:
         return sorted(self._volumes)
+
+    @staticmethod
+    def _new_volume_record(volume_name: str) -> dict:
+        return {
+            "identity": "volume:" + hashlib.sha256(volume_name.encode()).hexdigest(),
+            "content_type": "filesystem",
+            "created_at": "fake",
+            "attachments": [],
+            "content_sha256": hashlib.sha256(
+                f"fake-content:{volume_name}".encode()
+            ).hexdigest(),
+        }
+
+    def volume_observation(self, volume_name: str) -> dict:
+        record = self._volume_records.get(volume_name)
+        if record is None:
+            return {
+                "schema": "cluster-volume-observation/v1",
+                "present": False,
+                "pool": "default",
+                "project": "default",
+                "name": volume_name,
+                "identity": None,
+                "attachments": [],
+            }
+        return {
+            "schema": "cluster-volume-observation/v1",
+            "present": True,
+            "pool": "default",
+            "project": "default",
+            "name": volume_name,
+            "identity": record["identity"],
+            "content_type": record["content_type"],
+            "created_at": record["created_at"],
+            "attachments": sorted(
+                [dict(item) for item in record["attachments"]],
+                key=lambda item: (item["instance"], item["device"]),
+            ),
+            "content_sha256": record["content_sha256"],
+        }
+
+    def instance_volume_devices(self, instance: str) -> list[dict]:
+        self._require(instance)
+        result = []
+        for volume_name, record in self._volume_records.items():
+            for attachment in record["attachments"]:
+                if attachment["instance"] == instance:
+                    result.append(
+                        {
+                            "device": attachment["device"],
+                            "pool": "default",
+                            "source": volume_name,
+                            "path": attachment["path"],
+                            "writable": attachment["writable"],
+                        }
+                    )
+        return sorted(result, key=lambda item: (item["device"], item["source"]))
+
+    def attach_volume(
+        self,
+        volume_name: str,
+        instance: str,
+        *,
+        device: str = "home",
+        path: str = "/home/agent",
+    ) -> dict:
+        self.mutation_log.append(("attach_volume", volume_name, instance, device, path))
+        self._require(instance)
+        record = self._volume_records.get(volume_name)
+        if record is None:
+            raise ValueError(f"unknown volume {volume_name!r}")
+        exact = {
+            "instance": instance,
+            "device": device,
+            "path": path,
+            "writable": True,
+        }
+        same_instance = [
+            item for item in record["attachments"] if item["instance"] == instance
+        ]
+        if same_instance and same_instance != [exact]:
+            raise ValueError("instance has a contradictory volume attachment")
+        if not same_instance:
+            record["attachments"].append(exact)
+        return self.volume_observation(volume_name)
+
+    def detach_volume(
+        self,
+        volume_name: str,
+        instance: str,
+        *,
+        device: str = "home",
+    ) -> dict:
+        self.mutation_log.append(("detach_volume", volume_name, instance, device))
+        record = self._volume_records.get(volume_name)
+        if record is None:
+            raise ValueError(f"unknown volume {volume_name!r}")
+        contradictory = [
+            item
+            for item in record["attachments"]
+            if item["instance"] == instance and item["device"] != device
+        ]
+        if contradictory:
+            raise ValueError("volume is attached under a different device")
+        record["attachments"] = [
+            item
+            for item in record["attachments"]
+            if not (item["instance"] == instance and item["device"] == device)
+        ]
+        return self.volume_observation(volume_name)
 
     # -- quiesced snapshots (issue #14) ----------------------------------
 
@@ -619,12 +783,162 @@ class IncusAdapter(Adapter):
         except IncusError as exc:
             if "already exists" not in str(exc):
                 raise
+        self.attach_volume(volume, name)
+
+    @staticmethod
+    def _volume_instance(used_by: str) -> str | None:
+        parsed = urllib.parse.urlsplit(used_by)
+        marker = "/instances/"
+        if marker not in parsed.path:
+            return None
+        value = parsed.path.split(marker, 1)[1]
+        return urllib.parse.unquote(value) if value else None
+
+    def volume_observation(self, volume_name: str) -> dict:
         try:
-            self._incus("config", "device", "add", name, "home", "disk",
-                        "pool=default", f"source={volume}", "path=/home/agent")
+            raw = yaml.safe_load(
+                self._incus("storage", "volume", "show", "default", volume_name)
+            ) or {}
         except IncusError as exc:
-            if "already exists" not in str(exc):
-                raise
+            if "not found" in str(exc).lower():
+                return {
+                    "schema": "cluster-volume-observation/v1",
+                    "present": False,
+                    "pool": "default",
+                    "project": self.project,
+                    "name": volume_name,
+                    "identity": None,
+                    "attachments": [],
+                }
+            raise
+        identity_record = {
+            "pool": "default",
+            "project": str(raw.get("project") or self.project),
+            "name": str(raw.get("name") or volume_name),
+            "type": str(raw.get("type") or "custom"),
+            "content_type": str(raw.get("content_type") or "filesystem"),
+            "created_at": str(raw.get("created_at") or "unknown"),
+        }
+        identity = "volume:" + hashlib.sha256(
+            json.dumps(identity_record, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        attachments = []
+        for reference in raw.get("used_by") or []:
+            instance = self._volume_instance(str(reference))
+            if instance is None:
+                continue
+            devices = yaml.safe_load(
+                self._incus("config", "device", "show", instance)
+            ) or {}
+            matched = False
+            for device, config in devices.items():
+                if (
+                    isinstance(config, dict)
+                    and config.get("type") == "disk"
+                    and config.get("pool") == "default"
+                    and config.get("source") == volume_name
+                ):
+                    attachments.append(
+                        {
+                            "instance": instance,
+                            "device": str(device),
+                            "path": config.get("path"),
+                            "writable": str(
+                                config.get("readonly") or "false"
+                            ).lower() not in {"1", "true", "yes"},
+                        }
+                    )
+                    matched = True
+            if not matched:
+                attachments.append(
+                    {
+                        "instance": instance,
+                        "device": None,
+                        "path": None,
+                        "writable": None,
+                    }
+                )
+        return {
+            "schema": "cluster-volume-observation/v1",
+            "present": True,
+            **identity_record,
+            "identity": identity,
+            "attachments": sorted(
+                attachments,
+                key=lambda item: (item["instance"], str(item["device"])),
+            ),
+        }
+
+    def instance_volume_devices(self, instance: str) -> list[dict]:
+        devices = yaml.safe_load(
+            self._incus("config", "device", "show", instance)
+        ) or {}
+        result = []
+        for device, config in devices.items():
+            if not isinstance(config, dict) or config.get("type") != "disk":
+                continue
+            if "source" not in config:
+                continue
+            result.append(
+                {
+                    "device": str(device),
+                    "pool": config.get("pool"),
+                    "source": config.get("source"),
+                    "path": config.get("path"),
+                    "writable": str(config.get("readonly") or "false").lower()
+                    not in {"1", "true", "yes"},
+                }
+            )
+        return sorted(result, key=lambda item: (item["device"], item["source"]))
+
+    def attach_volume(
+        self,
+        volume_name: str,
+        instance: str,
+        *,
+        device: str = "home",
+        path: str = "/home/agent",
+    ) -> dict:
+        before = self.volume_observation(volume_name)
+        exact = {
+            "instance": instance,
+            "device": device,
+            "path": path,
+            "writable": True,
+        }
+        current = [
+            item for item in before.get("attachments", []) if item["instance"] == instance
+        ]
+        if current == [exact]:
+            return before
+        if current:
+            raise IncusError("instance has a contradictory volume attachment")
+        self._incus(
+            "storage", "volume", "attach", "default", volume_name,
+            instance, device, path,
+        )
+        return self.volume_observation(volume_name)
+
+    def detach_volume(
+        self,
+        volume_name: str,
+        instance: str,
+        *,
+        device: str = "home",
+    ) -> dict:
+        before = self.volume_observation(volume_name)
+        current = [
+            item for item in before.get("attachments", []) if item["instance"] == instance
+        ]
+        if not current:
+            return before
+        if len(current) != 1 or current[0].get("device") != device:
+            raise IncusError("volume is attached under a different device")
+        self._incus(
+            "storage", "volume", "detach", "default", volume_name,
+            instance, device,
+        )
+        return self.volume_observation(volume_name)
 
     # ------------------------------------------------------------------
     # Quiesced snapshot primitives (issue #14)

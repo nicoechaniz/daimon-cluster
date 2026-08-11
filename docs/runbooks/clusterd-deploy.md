@@ -27,8 +27,8 @@ How clusterd runs as a hardened host service on daimonmatrix.
     sudo usermod -aG incus-admin clusterd
     sudo mkdir -p /opt/daimon-cluster
     sudo rsync -a --delete --exclude __pycache__ clusterd clusterctl configs scripts steward_tools constraints.txt requirements.txt requirements-weave.txt /opt/daimon-cluster/
-    sudo uv venv --clear /opt/daimon-cluster/venv
-    sudo uv pip install --python /opt/daimon-cluster/venv/bin/python -c /opt/daimon-cluster/constraints.txt -r /opt/daimon-cluster/requirements.txt
+    sudo python3 -m venv /opt/daimon-cluster/venv
+    sudo /opt/daimon-cluster/venv/bin/python -m pip install -c /opt/daimon-cluster/constraints.txt -r /opt/daimon-cluster/requirements.txt
     sudo chown -R root:clusterd /opt/daimon-cluster && sudo chmod -R g+rX /opt/daimon-cluster
     sudo chown -R clusterd:clusterd /var/lib/daimon-cluster
     sudo cp configs/clusterd.service /etc/systemd/system/
@@ -39,7 +39,7 @@ pathname. Never copy or rename a prepared virtualenv: generated console scripts
 retain absolute shebangs and will keep pointing at the staging directory. Verify
 both boundaries before starting the service:
 
-    sudo -u clusterd /opt/daimon-cluster/venv/bin/python -c 'import clusterd, clusterctl, steward_tools'
+    sudo -u clusterd env PYTHONPATH=/opt/daimon-cluster /opt/daimon-cluster/venv/bin/python -c 'import clusterd, clusterctl, steward_tools'
     test "$(head -n 1 /opt/daimon-cluster/venv/bin/daimon)" = '#!/opt/daimon-cluster/venv/bin/python'
     sudo -u clusterd /opt/daimon-cluster/venv/bin/daimon --help >/dev/null
 
@@ -67,9 +67,8 @@ expecting `/v1/weave/status` to become configured and healthy.
   ProtectSystem=strict, ReadWritePaths only the state dir, MemoryMax
   256M, TasksMax 64, restart on-failure, After incus+zerotier.
 - Health ok end-to-end: clusterctl_reachable true, audit_chain_ok true.
-- Listener: `ss -tlnp` shows 127.0.0.1:8785 only — no public v4/v6
-  listener (acceptance: no public listener reachable). anyVPN bind is a
-  steward-milestone decision (M5/M6), not v1.
+- Listener initially used loopback only. The current steward topology binds
+  loopback plus the private Incus bridge — still no public v4/v6 listener.
 - Authenticated mutation through the service: token for `nico` (30d)
   created via the CLI, `GET /v1/instances` + restart of iso-b executed
   over HTTP, idempotency intact.
@@ -80,12 +79,15 @@ expecting `/v1/weave/status` to become configured and healthy.
 
 ## Reboot
 
-Three clusterd rows added to `host-restart-drill.md` §2 (service active,
-loopback-only listener, auth + state survival). The drill itself is run
-by Nicolás (agent-side hardline block on reboot).
+The authorized 2026-08-11 drill in `host-restart-drill.md` passed service,
+private-only listener, authenticated state, exact Matrix status and durability
+checks. The final candidate was Cluster `94d80ba` with Matrix `915c56c`.
 
 The unit waits up to 30 seconds for the private Incus bridge address before
 opening either listener. `incus.service` being active is not sufficient: the
 bridge may still be materializing during boot. The preflight probes only local
 bindability on an ephemeral port, emits no address or socket inventory, and
 fails boundedly instead of making clusterd crash once with `EADDRNOTAVAIL`.
+On the final cold boot the preflight exited zero after two seconds, clusterd
+started exactly once, `NRestarts=0`, and the boot journal contained no bind
+failure.

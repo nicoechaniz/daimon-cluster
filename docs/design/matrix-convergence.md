@@ -28,7 +28,7 @@ An unpinned wheel, editable checkout, wrong commit or schema downgrade fails
 closed. Cluster does not carry a fallback implementation.
 
 The H7 candidate pin is the additive Matrix fresh-embodiment branch
-`1452bf6f7cea841ee1f1757f3b001708f8e72c84` (draft PR #116), stacked on the
+`0a5fd3383aeb391488888d397a3d3296a71f98db` (draft PR #116), stacked on the
 audited DM-055/DM-083 reboot/status candidate
 `915c56c8899fd53d683bd7c7c81c3465b600bed9`. It is not a release pin until
 both reviews and the cross-repository acceptance gate complete.

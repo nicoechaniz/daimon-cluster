@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
 import json
 import os
@@ -85,6 +86,40 @@ class OperationJournal:
         return connection
 
     def _initialize(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        parent = self.path.parent.lstat()
+        if (
+            stat.S_ISLNK(parent.st_mode)
+            or not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != os.geteuid()
+        ):
+            raise JournalError("operation journal parent is not owner-controlled")
+        self.path.parent.chmod(0o700)
+        lock_path = self.path.parent / ".operation-journal-init.lock"
+        try:
+            descriptor = os.open(
+                lock_path,
+                os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o077
+            ):
+                raise JournalError(
+                    "operation journal init lock is not owner-controlled"
+                )
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            self._initialize_locked()
+        except OSError as exc:
+            raise JournalError("cannot lock operation journal initialization") from exc
+        finally:
+            if "descriptor" in locals():
+                os.close(descriptor)
+
+    def _initialize_locked(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         parent = self.path.parent.lstat()
         if (

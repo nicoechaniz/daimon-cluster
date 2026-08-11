@@ -75,7 +75,7 @@ the exact receipt adapter, curator work kind and first `resource_ref`
 namespace. Unknown, duplicate, unavailable or throwing routes are
 `effect_truth_unverifiable`; there is no receipt-trusting fallback.
 
-H5 provides exactly one reviewed production-capable route:
+H5 provides the exact personal-memory route:
 `(cluster-dm034-hmk/v1, memory-projection, hmk)`. It is created only together
 with a fixed per-embodiment executor; the generic Matrix host still has no
 ambient/default route. The executor accepts no queue-selected path, database,
@@ -87,9 +87,22 @@ after the effect, and invokes only `MemoryProjectionAdapter.project`,
 observer repeats inner effect observation and returns current fence evidence.
 See `docs/contracts/dm034-hmk-executor-v1.md`.
 
-DM-035/DM-036 remain unavailable until their own exact routes and acceptance
-evidence land. Queue-item coordination remains available because it represents
-no shared external effect.
+H6 adds the separate exact reviewed-publication route
+`(cluster-dm035-publisher/v1, publication, publication)`. Matrix DM-035 still
+owns final-byte rendering, explicit consent, purpose-separated human signature,
+source checkpoint, predecessor, claim, provider receipt and signed canonical
+acceptance. Cluster projects those decisions into a payload-free current
+intent, verifies the outer production fence, and invokes only the complete
+Matrix `PublicationCoordinator`. The pinned provider runs in a minimal-env
+subprocess with six closed operations and fixed Wiki/state/runtime/HMK roots;
+it cannot inspect Matrix custody or choose configuration from queue bytes.
+Cached outer observation re-enters DM-035 exact replay/reconciliation and
+reconstructs the complete Cluster receipt instead of trusting it. See
+`docs/contracts/dm035-reviewed-publisher-v1.md`.
+
+DM-036 remains unavailable until its own exact route and acceptance evidence
+land. Queue-item coordination remains available because it represents no
+shared external effect.
 
 ## clusterd read projection
 

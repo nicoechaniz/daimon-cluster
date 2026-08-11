@@ -95,6 +95,30 @@ ResourceWarning-as-error. See `docs/contracts/dm034-hmk-executor-v1.md` and
 an executor route exists only when a supervisor supplies its fixed
 per-embodiment dependencies.
 
+Issue #69 implements H6 as the next stacked review candidate. The Matrix host
+now checks the complete DM-035 schema and provider pin line and exposes exactly
+`(cluster-dm035-publisher/v1, publication, publication)`. A payload-free
+current intent binds the canonical request/claim, deterministic final-byte
+hash, signed independent review, explicit consent, source checkpoint/set,
+target, predecessor, Matrix profile/policy, actor and production fence.
+Cluster invokes only Matrix's complete `PublicationCoordinator`; its outer
+receipt is reconstructed deterministically from the signed acceptance and
+fresh provider reconciliation.
+
+The exact compaii-state provider runs in a separate minimal-environment process
+with fixed roots and six operations. It receives neither Matrix custody nor an
+arbitrary command/path/URL/database handle. DM-035's existing Matrix and
+provider journals recover response loss and every old-or-new crash stage; no
+duplicate outer journal is introduced. A local exact-provider/HMK real-storage
+drill passed plan parity, apply/replay, reconciliation, concurrent-publisher
+refusal and unrelated-target preservation. The upstream normative gate passed
+`22 tests + 25 subtests`, including both targets, successors, reviewed
+tombstone/rollback, every provider/Matrix crash window and two-writer locking.
+The complete stacked Cluster suite is `434 passed, 2 skipped` under
+ResourceWarning-as-error. See
+`docs/contracts/dm035-reviewed-publisher-v1.md` and
+`docs/verification/h6-dm035-reviewed-publisher.md`. It is not deployed.
+
 ## Previous snapshot (2026-08-04)
 
 Issue #48 is implemented and merged through PR #49.

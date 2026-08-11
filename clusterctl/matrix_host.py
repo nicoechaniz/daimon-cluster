@@ -142,6 +142,7 @@ def _matrix_api() -> dict[str, Any]:
             curator,
             daemon,
             memory_projection,
+            publication,
             runtime,
             service,
         )
@@ -235,6 +236,33 @@ def _matrix_api() -> dict[str, Any]:
         for name, value in projection_expected.items()
     ):
         raise MatrixHostError("daimon_matrix_contract_mismatch")
+    publication_expected = {
+        "POLICY_SCHEMA": "dm.publication.policy/v1",
+        "PROFILE_SCHEMA": "dm.publication.profile/v1",
+        "PROPOSAL_SCHEMA": "dm.publication.proposal/v1",
+        "REVIEW_SCHEMA": "dm.publication.review/v1",
+        "REQUEST_SCHEMA": "dm.publication.request/v1",
+        "CLAIM_SCHEMA": "dm.publication.claim/v1",
+        "ACCEPTANCE_SCHEMA": "dm.publication.acceptance/v1",
+        "RECONCILIATION_SCHEMA": "dm.publication.reconciliation/v1",
+        "PROVIDER_REQUEST_SCHEMA": "dm.publisher.request/v1",
+        "PROVIDER_PLAN_SCHEMA": "dm.publisher.plan/v1",
+        "PROVIDER_RECEIPT_SCHEMA": "dm.publisher.receipt/v1",
+        "COMPAII_STATE_COMMIT": "cf56e9de703f68f44b85fdf21f503d55a5557984",
+        "HMK_COMMIT": "f10fd5c3089c0962920314c97e14bc024feffa7a",
+        "PROVIDER_API_VERSION": "1.0.0",
+        "PROVIDER_ADAPTER_ID": (
+            "dm:adapter:v0:OnDIAMjSu2T_8EqLG_wxxygVXCPGXaTJsA41-IMcpSo"
+        ),
+        "PROVIDER_POLICY_HASH": (
+            "800929a4d56687ca224c5df767ab05c4c259acc75904530848683a92e2484b88"
+        ),
+    }
+    if any(
+        getattr(publication, name, None) != value
+        for name, value in publication_expected.items()
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
     return {
         "canonical": canonical,
         "client": client,
@@ -242,6 +270,7 @@ def _matrix_api() -> dict[str, Any]:
         "curator": curator,
         "daemon": daemon,
         "memory_projection": memory_projection,
+        "publication": publication,
         "runtime": runtime,
         "service": service,
     }

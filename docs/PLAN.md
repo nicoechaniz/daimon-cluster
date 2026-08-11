@@ -30,6 +30,9 @@ bytes. Matrix.org is excluded.
 12. Exact DM-034 HMK executor with a payload-free Matrix intent, fixed
     per-embodiment custody, crash recovery, fresh effect observation and
     disposable SQLite snapshot/restore/rebuild.
+13. Exact DM-035 reviewed publisher with signed final-byte approval, fixed
+    least-authority provider subprocess, monotonic predecessor/tombstone
+    semantics and fresh Wiki/state/HMK effect observation.
 
 ## Acceptance
 

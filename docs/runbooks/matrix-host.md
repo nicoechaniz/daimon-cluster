@@ -41,6 +41,10 @@ STATE/matrix-curator-clients/HASH/ host-local curator worker client (0700)
 STATE/dm034-executors/HASH/         host-local HMK executor custody (0700)
   journal.sqlite                   recovery only, never memory authority (0600)
   journal.sqlite.lock              process lock (0600)
+STATE/dm035-publishers/HASH/        host-local publisher custody (0700)
+  runtime/                         leases/transactions/receipts (0700)
+  projection/                      protected compaii-state projection (0700)
+  hmk/                             derived publication index (0700)
 ```
 
 Provision `client.json` with schema `dm.local.client-config/v1` for an unchanged
@@ -109,6 +113,32 @@ PYTHONPATH=. .venv/bin/python scripts/h5-hmk-projection-drill.py \
 The drill uses synthetic bytes and temporary bases. Its receipt reports only
 booleans, exact commits, stable hashes, byte counts and SQLite integrity—not
 paths, statements, database contents or credentials.
+
+H6's only publisher registration is
+`(cluster-dm035-publisher/v1, publication, publication)`. Construct the
+executor with one exact Matrix `PublicationCoordinator`, a fixed resource
+fence and an owner-local publisher root. The provider transport additionally
+receives a fixed owner-controlled Wiki root and clean detached checkouts at
+compaii-state `cf56e9de703f68f44b85fdf21f503d55a5557984` and HMK
+`f10fd5c3089c0962920314c97e14bc024feffa7a`. The checkout roots/files must not
+be group/other writable.
+
+The provider is not imported into the Matrix host. Each closed operation runs
+in a child process with a minimal non-secret environment and umask 077. The
+child receives only fixed host configuration plus the DM-035 logical document,
+and stdout/stderr/time are bounded. Before a canary, run:
+
+```sh
+PYTHONPATH=. .venv/bin/python scripts/h6-reviewed-publication-drill.py \
+  --provider-checkout /opt/compaii-state-dm035 \
+  --hmk-checkout /opt/hermes-memory-kit-dm034
+```
+
+This synthetic drill must report plan parity, exact replay, current effect
+reconciliation, concurrent publisher refusal and unchanged unrelated target.
+It does not authorize a live Wiki/state publication. A real canary still needs
+an exact current Matrix request and independent human review of its final byte
+hash.
 
 ## Snapshot and restore
 

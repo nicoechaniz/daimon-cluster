@@ -49,6 +49,13 @@ After removing group write from only the temporary checkout roots and audited
 files, the exact same commits passed. This was the intended custody gate, not
 a source or protocol substitution.
 
+The same H5 and H6 drills then passed over SSH on the authorized
+`daimonmatrix` host from exact candidate `c2d2c2b3799a4e3c41207cc4adddccbd3fa6e9a2`
+and its installed Matrix `915c56c` environment. All repositories and state
+lived below one unique `/tmp/dm055-h6-remote.*` root, which was removed by the
+bounded cleanup trap. The active `/opt` release was not replaced; `clusterd`
+remained active after the drill.
+
 ## Remaining gate
 
 Push this integration-only candidate for CI and independent review. Do not

@@ -35,8 +35,9 @@ dual-bind (loopback plus Incus bridge), never public.
 The unmerged DM-031/H1-H6 stack has now been integrated on top of that exact
 host-qualified pair in an isolated candidate branch. The combined clean
 Python 3.13 gate passed 436 tests with 2 intentional skips, lint, type,
-compile, exact pin/license checks and both real-storage H5/H6 drills. This does
-not make the stack deployed or independently reviewed; production routes are
+compile, exact pin/license checks and both real-storage H5/H6 drills locally
+and from an isolated remote scratch root on the qualified host. This does not
+make the stack deployed or independently reviewed; production routes are
 unchanged. See
 [`verification/dm055-h6-integration.md`](verification/dm055-h6-integration.md).
 

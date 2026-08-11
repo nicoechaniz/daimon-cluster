@@ -74,11 +74,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_list = sub.add_parser("list", help="list all instances with reconciled state")
-    p_list.add_argument("--json", action="store_true", help="emit JSON array of instance-status/v1 records")
+    p_list.add_argument("--json", action="store_true", help="emit JSON array of instance-status/v2 records")
 
     p_status = sub.add_parser("status", help="show one instance's reconciled status")
     p_status.add_argument("name", help="instance name")
-    p_status.add_argument("--json", action="store_true", help="emit a single instance-status/v1 record")
+    p_status.add_argument("--json", action="store_true", help="emit a single instance-status/v2 record")
 
     p_cfg = sub.add_parser("config-show", help="show the resolved clusterctl config")
     p_cfg.add_argument("--json", action="store_true", help="emit config as JSON")

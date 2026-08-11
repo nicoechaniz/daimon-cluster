@@ -16,20 +16,23 @@ construction).
 ```
 browser (operator, on anyVPN) ──HTTPS──> clusterd:8785
    ├── GET  /              → static bundle (vanilla JS, no build step)
-   ├── GET  /v1/instances  → fleet table
+   ├── GET  /v1/instances  → bounded fleet snapshot page
    └── POST /v1/...        → actions (with the operator's bearer token)
 ```
 
 ## 2. Screens (v1)
 
-1. **Fleet**: one row per daimon — identity, state (color-coded
-   running/stopped/missing/drifted/undeclared), image version, budgets,
-   durable bytes, last audit event. Polls GET /v1/instances every 15s.
+1. **Fleet**: one row per daimon — declared, runtime, embodiment,
+   incarnation and Matrix-process observations shown separately, plus image,
+   budgets and uptime. Polls the first bounded snapshot page from
+   GET /v1/instances; truncation is visible and never silently treated as the
+   whole fleet.
 2. **Health**: host headroom (RAM/disk vs inventory budgets), per-daimon
    sparkline-free numbers (RSS, uptime), backup state per daimon
    (protected/degraded/unprotected from #15).
-3. **Activity**: audit tail (GET /v1/audit?since=), filterable by
-   identity/actor/result. Denials visible — the audit is the product.
+3. **Activity**: bounded audit snapshot tail (`GET /v1/audit?limit=...`),
+   filterable by identity/actor/result. Tail truncation is visible. Denials
+   remain visible — the audit is the product.
 4. **Actions** (behind per-action confirm dialogs that mirror the API's
    own prepare/confirm): start/stop/restart, snapshot, provision prepare.
    Destroy/update stay CLI-only in v1 — the dashboard shows their state

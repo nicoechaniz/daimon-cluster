@@ -39,8 +39,8 @@ def _envelope_parameters() -> list[dict]:
             "name": "X-Actor",
             "in": "header",
             "required": False,
-            "description": "Actor recorded in clusterctl audit events "
-                           "(default: anonymous).",
+            "description": "Advisory only. Authenticated routes use the "
+                           "bearer token actor as the authoritative actor.",
             "schema": {"type": "string", "default": "anonymous"},
         },
     ]
@@ -105,9 +105,29 @@ def _operation(route) -> dict:
 
     error_ref = {"$ref": "#/components/schemas/ErrorEnvelope"}
     err_content = {"application/json": {"schema": error_ref}}
-    responses = {
+    responses: dict[str, dict] = {
         "200": {"description": "clusterctl result JSON (exit 0)"},
     }
+    if route.handler in {"list_instances", "audit_tail", "weave_differences"}:
+        responses["200"] = {
+            "description": "Bounded immutable snapshot page",
+            "content": {"application/json": {"schema": {
+                "$ref": "#/components/schemas/SnapshotPage",
+            }}},
+        }
+        responses["400"] = {
+            "description": "invalid limit/cursor or cursor scope mismatch",
+            "content": err_content,
+        }
+        responses["409"] = {
+            "description": "cursor snapshot expired or was evicted; restart pagination",
+            "content": err_content,
+        }
+    if route.handler in {"weave_status", "weave_differences"}:
+        responses["503"] = {
+            "description": "membership-safe Matrix read unavailable",
+            "content": err_content,
+        }
     if not route.public:
         responses["401"] = {
             "description": "missing/unknown/expired/revoked bearer token "
@@ -158,13 +178,15 @@ def _operation(route) -> dict:
     responses["500"] = {"description": "internal error (CLI exit 10)",
                         "content": err_content}
 
-    security = [] if route.public else [{"bearerAuth": []}]
+    security: list[dict] = [] if route.public else [{"bearerAuth": []}]
     return {
         "operationId": route.operation_id,
         "summary": route.summary,
         "description": (
-            f"Delegates to `{route.clusterctl}` — the same code path as "
-            f"the CLI; clusterd adds no business logic.\n\n"
+            f"Uses `{route.clusterctl}` as its source; mutations retain the "
+            f"same clusterctl business-logic boundary while reads may add "
+            f"owner scoping, redaction, observation envelopes, and bounded "
+            f"snapshot pagination.\n\n"
             f"Required bearer scope: `{route.required_scope}`"
             + (" (route is public)" if route.public else
                " — enforced (issue #18). Owner-scoped tokens may only "
@@ -186,10 +208,10 @@ def build_openapi() -> dict:
             "title": "clusterd",
             "version": __version__,
             "description": (
-                "Thin HTTP API over clusterctl (issue #17; design: "
-                "docs/design/clusterd.md). Every route adapts a "
-                "clusterctl.cli.run invocation or reads state files "
-                "clusterctl writes — no business logic is duplicated. "
+                "HTTP API over clusterctl (issue #17; design: "
+                "docs/design/clusterd.md). Mutations adapt clusterctl; read "
+                "models add owner scoping, redaction, explicit observation "
+                "boundaries and bounded snapshot pagination. "
                 "Errors mirror clusterctl exit codes: 0->200, 2->400, "
                 "3->404, 6->409, 10->500."
             ),
@@ -205,6 +227,34 @@ def build_openapi() -> dict:
         "components": {
             "schemas": {
                 "ErrorEnvelope": ERROR_ENVELOPE,
+                "SnapshotPage": {
+                    "type": "object",
+                    "required": ["schema", "items", "page"],
+                    "properties": {
+                        "schema": {"type": "string", "enum": ["clusterd-page/v1"]},
+                        "items": {"type": "array", "items": {"type": "object"}},
+                        "page": {
+                            "type": "object",
+                            "required": [
+                                "limit", "count", "has_more", "next_cursor",
+                                "snapshot_id", "observed_at_ms", "expires_in_s",
+                                "truncated",
+                            ],
+                            "properties": {
+                                "limit": {"type": "integer", "minimum": 1,
+                                          "maximum": 200},
+                                "count": {"type": "integer", "minimum": 0,
+                                          "maximum": 200},
+                                "has_more": {"type": "boolean"},
+                                "next_cursor": {"type": "string", "nullable": True},
+                                "snapshot_id": {"type": "string"},
+                                "observed_at_ms": {"type": "integer"},
+                                "expires_in_s": {"type": "integer", "minimum": 0},
+                                "truncated": {"type": "boolean"},
+                            },
+                        },
+                    },
+                },
                 "ConfirmationChallenge": {
                     "type": "object",
                     "required": ["schema", "token", "operation", "target",

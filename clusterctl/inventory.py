@@ -19,6 +19,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import stat
+import time
 from pathlib import Path
 
 import yaml
@@ -26,7 +27,7 @@ import yaml
 from .adapters import Adapter
 
 SPEC_SCHEMA = "instance-spec/v1"
-STATUS_SCHEMA = "instance-status/v1"
+STATUS_SCHEMA = "instance-status/v2"
 
 DRIFT_FIELDS = ("cpu", "memory_mib", "disk_gib")
 
@@ -124,6 +125,11 @@ def _status_record(
     body_ref=None,
     embodiment_id=None,
     incarnation_id=None,
+    *,
+    observed_at_ms: int,
+    declared: bool,
+    runtime_present: bool,
+    runtime_state: str | None,
 ) -> dict:
     return {
         "schema": STATUS_SCHEMA,
@@ -145,6 +151,38 @@ def _status_record(
         "body_ref": body_ref,
         "embodiment_id": embodiment_id,
         "incarnation_id": incarnation_id,
+        "observed_at_ms": observed_at_ms,
+        # These observations deliberately remain separate.  The legacy
+        # aggregate ``state`` above is useful for CLI reconciliation, but it
+        # is never evidence for identity, embodiment, incarnation, or Matrix
+        # process health.
+        "observations": {
+            "declared": {
+                "state": "declared" if declared else "absent",
+                "observed_at_ms": observed_at_ms,
+                "created_by": None,
+            },
+            "runtime": {
+                "state": runtime_state if runtime_present else "missing",
+                "present": runtime_present,
+                "observed_at_ms": observed_at_ms,
+            },
+            "embodiment": {
+                "state": "unavailable",
+                "observed_at_ms": observed_at_ms,
+                "reason": "registry-not-observed-by-inventory",
+            },
+            "incarnation": {
+                "state": "unavailable",
+                "observed_at_ms": observed_at_ms,
+                "reason": "registry-not-observed-by-inventory",
+            },
+            "matrix_process": {
+                "state": "unavailable",
+                "observed_at_ms": observed_at_ms,
+                "reason": "matrix-process-not-observed-by-inventory",
+            },
+        },
     }
 
 
@@ -152,9 +190,10 @@ def reconcile(specs: dict[str, InstanceSpec], adapter: Adapter, host_id: str) ->
     """Reconcile declared specs with actual state into status records.
 
     Pure read: queries the adapter once, writes nothing. Each returned
-    record conforms to ``instance-status/v1``; drifted records carry a
+    record conforms to ``instance-status/v2``; drifted records carry a
     ``drift`` array of ``{field, declared, actual}`` entries.
     """
+    observed_at_ms = int(time.time() * 1000)
     actual_by_name = {inst["name"]: inst for inst in adapter.list_instances()}
     records: list[dict] = []
 
@@ -165,8 +204,13 @@ def reconcile(specs: dict[str, InstanceSpec], adapter: Adapter, host_id: str) ->
                 _status_record(name, host_id, "missing", spec.species,
                                spec.image_version, spec.budgets, None,
                                spec.body_ref, spec.embodiment_id,
-                               spec.current_incarnation_id)
+                               spec.current_incarnation_id,
+                               observed_at_ms=observed_at_ms,
+                               declared=True,
+                               runtime_present=False,
+                               runtime_state=None)
             )
+            records[-1]["observations"]["declared"]["created_by"] = spec.created_by
             continue
         drift = compute_drift(spec, actual)
         if drift:
@@ -177,7 +221,12 @@ def reconcile(specs: dict[str, InstanceSpec], adapter: Adapter, host_id: str) ->
         rec = _status_record(name, host_id, state, spec.species,
                              spec.image_version, spec.budgets, actual.get("uptime_s"),
                              spec.body_ref, spec.embodiment_id,
-                             spec.current_incarnation_id)
+                             spec.current_incarnation_id,
+                             observed_at_ms=observed_at_ms,
+                             declared=True,
+                             runtime_present=True,
+                             runtime_state=actual.get("state") or "unknown")
+        rec["observations"]["declared"]["created_by"] = spec.created_by
         if drift:
             rec["drift"] = drift
         records.append(rec)
@@ -188,7 +237,11 @@ def reconcile(specs: dict[str, InstanceSpec], adapter: Adapter, host_id: str) ->
         records.append(
             _status_record(name, host_id, "undeclared", "unknown",
                            actual.get("image_version"), actual.get("budgets") or {},
-                           actual.get("uptime_s"))
+                           actual.get("uptime_s"),
+                           observed_at_ms=observed_at_ms,
+                           declared=False,
+                           runtime_present=True,
+                           runtime_state=actual.get("state") or "unknown")
         )
 
     return records

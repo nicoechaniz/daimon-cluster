@@ -26,6 +26,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import os
 import re
 import threading
 import time
@@ -42,6 +43,7 @@ from clusterctl import operation_journal
 from clusterctl.config import load_config
 
 from . import __version__
+from . import paging
 import steward_tools.mutations as mutations
 
 # clusterctl.cli.run prints JSON to stdout/stderr; capture is
@@ -124,9 +126,12 @@ class Deps:
 
     config_path: str
     state_dir: str | None = None
-    adapter_factory: object | None = None  # callable () -> Adapter, or None=live
+    adapter_factory: Callable[[], object] | None = None
     matrix_client_factory: Callable[[str], object] | None = None
     clusterd_base_url: str = "http://127.0.0.1:8785"
+    pager: paging.SnapshotPager = dataclasses.field(
+        default_factory=paging.SnapshotPager
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -289,12 +294,248 @@ def openapi_yaml(deps: Deps, ctx: RequestContext, **params) -> Response:
     return Response(200, dump_openapi(), content_type="application/yaml")
 
 
-def list_instances(deps: Deps, ctx: RequestContext, **params) -> Response:
-    return _run_cli(deps, ctx, ["list", "--json"])
+def _request_owner(ctx: RequestContext) -> str:
+    return str((ctx.token_record or {}).get("owner") or "*")
+
+
+def _owner_instance_names(state_dir: str, owner: str) -> set[str] | None:
+    """Declared instance allowlist; ``None`` means wildcard visibility."""
+    if owner == "*":
+        return None
+    allowed: set[str] = set()
+    inst_dir = Path(state_dir) / "instances"
+    if not inst_dir.is_dir():
+        return allowed
+    for spec_file in inst_dir.glob("*.yaml"):
+        try:
+            raw = yaml.safe_load(spec_file.read_text(encoding="utf-8"))
+        except (yaml.YAMLError, OSError):
+            continue
+        if (
+            isinstance(raw, dict)
+            and raw.get("created_by") == owner
+            and isinstance(raw.get("name"), str)
+        ):
+            allowed.add(raw["name"])
+    return allowed
+
+
+def _cursor_error(ctx: RequestContext, exc: paging.CursorError) -> Response:
+    return _error(
+        409 if exc.stale else 400,
+        exc.reason,
+        "page",
+        "cursor",
+        ctx.request_id,
+    )
+
+
+def _page_or_resume(
+    deps: Deps,
+    ctx: RequestContext,
+    *,
+    query: dict | None,
+    kind: str,
+    filters: dict | None,
+    build: Callable[[], tuple[list[object], int, bool]],
+) -> Response:
+    try:
+        limit = paging.parse_limit(query)
+        cursor = paging.query_cursor(query)
+        binding = deps.pager.binding(kind, _request_owner(ctx), filters)
+        if cursor is not None:
+            return Response(
+                200,
+                deps.pager.resume(cursor, binding=binding, limit=limit),
+            )
+        items, observed_at_ms, truncated = build()
+        return Response(
+            200,
+            deps.pager.first(
+                items,
+                binding=binding,
+                limit=limit,
+                observed_at_ms=observed_at_ms,
+                truncated=truncated,
+            ),
+        )
+    except paging.CursorError as exc:
+        return _cursor_error(ctx, exc)
+
+
+def _enrich_instance_records(deps: Deps, records: list[dict]) -> list[dict]:
+    """Attach independently observed registry and Matrix-process states."""
+    from clusterctl.embodiments import Registry, RegistryError
+
+    observed_at_ms = int(time.time() * 1000)
+    try:
+        registry_by_id = {
+            row["embodiment_id"]: row
+            for row in Registry(_state_dir(deps)).list_all()
+            if isinstance(row.get("embodiment_id"), str)
+        }
+        registry_error = None
+    except RegistryError:
+        registry_by_id = {}
+        registry_error = "registry-unavailable"
+
+    enriched: list[dict] = []
+    for original in records:
+        record = dict(original)
+        observations = {
+            key: dict(value)
+            for key, value in (record.get("observations") or {}).items()
+            if isinstance(value, dict)
+        }
+        embodiment_id = record.get("embodiment_id")
+        registry = registry_by_id.get(embodiment_id)
+        if registry_error is not None:
+            embodiment = {
+                "state": "unavailable",
+                "observed_at_ms": observed_at_ms,
+                "reason": registry_error,
+            }
+            incarnation = dict(embodiment)
+        elif not isinstance(embodiment_id, str):
+            embodiment = {"state": "absent", "observed_at_ms": observed_at_ms}
+            incarnation = {"state": "absent", "observed_at_ms": observed_at_ms}
+        elif registry is None:
+            embodiment = {
+                "state": "missing",
+                "observed_at_ms": observed_at_ms,
+                "embodiment_id": embodiment_id,
+            }
+            incarnation = {
+                "state": "unavailable",
+                "observed_at_ms": observed_at_ms,
+                "reason": "embodiment-missing",
+            }
+        else:
+            registry_state = str(registry.get("status") or "unknown")
+            embodiment = {
+                "state": registry_state,
+                "observed_at_ms": observed_at_ms,
+                "embodiment_id": embodiment_id,
+                "body_ref": registry.get("body_ref"),
+            }
+            declared_incarnation = record.get("incarnation_id")
+            current = registry.get("current_incarnation_id")
+            if declared_incarnation and current and declared_incarnation != current:
+                incarnation = {
+                    "state": "contradictory",
+                    "observed_at_ms": observed_at_ms,
+                    "declared_incarnation_id": declared_incarnation,
+                    "registry_incarnation_id": current,
+                }
+            elif current:
+                open_record = next(
+                    (
+                        item
+                        for item in registry.get("incarnations", [])
+                        if item.get("incarnation_id") == current
+                    ),
+                    None,
+                )
+                incarnation = {
+                    "state": (
+                        "open"
+                        if isinstance(open_record, dict)
+                        and open_record.get("stopped_at_ms") is None
+                        else "contradictory"
+                    ),
+                    "observed_at_ms": observed_at_ms,
+                    "incarnation_id": current,
+                }
+            else:
+                incarnation = {
+                    "state": "absent",
+                    "observed_at_ms": observed_at_ms,
+                }
+
+        if not isinstance(embodiment_id, str):
+            matrix_process = {
+                "state": "absent",
+                "observed_at_ms": observed_at_ms,
+            }
+        elif deps.matrix_client_factory is None:
+            matrix_process = {
+                "state": "not-configured",
+                "observed_at_ms": observed_at_ms,
+            }
+        elif registry is None or registry.get("status") != "running":
+            matrix_process = {
+                "state": "not-observed",
+                "observed_at_ms": observed_at_ms,
+                "reason": "embodiment-not-running",
+            }
+        else:
+            try:
+                client = deps.matrix_client_factory(embodiment_id)
+                runtime = _matrix_result(getattr(client, "runtime_status", None))
+                matrix_process = {
+                    "state": "available",
+                    "observed_at_ms": observed_at_ms,
+                    "ledger_integrity": runtime.get("integrity"),
+                }
+            except Exception:  # noqa: BLE001 - redact process boundary
+                matrix_process = {
+                    "state": "down",
+                    "observed_at_ms": observed_at_ms,
+                }
+
+        observations["embodiment"] = embodiment
+        observations["incarnation"] = incarnation
+        observations["matrix_process"] = matrix_process
+        record["observations"] = observations
+        enriched.append(record)
+    return enriched
+
+
+def list_instances(
+    deps: Deps, ctx: RequestContext, query=None, **params
+) -> Response:
+    owner = _request_owner(ctx)
+
+    def build() -> tuple[list[object], int, bool]:
+        response = _run_cli(deps, ctx, ["list", "--json"])
+        if response.status != 200 or not isinstance(response.body, list):
+            raise RuntimeError("instance-inventory-unavailable")
+        allowed = _owner_instance_names(_state_dir(deps), owner)
+        visible = [
+            row
+            for row in response.body
+            if allowed is None or row.get("name") in allowed
+        ]
+        truncated = len(visible) > paging.MAX_SNAPSHOT_ITEMS
+        visible = visible[: paging.MAX_SNAPSHOT_ITEMS]
+        enriched = _enrich_instance_records(deps, visible)
+        observed = max(
+            (int(row.get("observed_at_ms") or 0) for row in enriched),
+            default=int(time.time() * 1000),
+        )
+        return list(enriched), observed, truncated
+
+    return _page_or_resume(
+        deps,
+        ctx,
+        query=query,
+        kind="instances",
+        filters=None,
+        build=build,
+    )
 
 
 def get_instance(deps: Deps, ctx: RequestContext, name: str, **params) -> Response:
-    return _run_cli(deps, ctx, ["status", name, "--json"])
+    owner = _request_owner(ctx)
+    allowed = _owner_instance_names(_state_dir(deps), owner)
+    if allowed is not None and name not in allowed:
+        return _error(404, "instance not found", "status", name, ctx.request_id)
+    response = _run_cli(deps, ctx, ["status", name, "--json"])
+    if response.status == 200 and isinstance(response.body, dict):
+        response = Response(
+            200, _enrich_instance_records(deps, [response.body])[0]
+        )
+    return response
 
 
 def logs(deps: Deps, ctx: RequestContext, name: str, query=None, **params) -> Response:
@@ -386,17 +627,19 @@ def list_backups(deps: Deps, ctx: RequestContext, **params) -> Response:
     if state_dir is None:
         state_dir = load_config(deps.config_path).state_dir
     backups_root = Path(state_dir) / "backups"
+    allowed = _owner_instance_names(state_dir, _request_owner(ctx))
     entries = []
     if backups_root.is_dir():
         for daimon_dir in sorted(p for p in backups_root.iterdir() if p.is_dir()):
+            if allowed is not None and daimon_dir.name not in allowed:
+                continue
             manifests = sorted(daimon_dir.glob("*.json"))
             if not manifests:
                 continue
             latest = manifests[-1]
-            entry = {
+            entry: dict[str, object] = {
                 "schema": BACKUP_SUMMARY_SCHEMA,
                 "name": daimon_dir.name,
-                "manifest_path": str(latest),
             }
             try:
                 entry["manifest"] = json.loads(latest.read_text(encoding="utf-8"))
@@ -446,67 +689,86 @@ def _redact_event_fields(event: dict) -> dict:
 
 
 def audit_tail(deps: Deps, ctx: RequestContext, query=None, **params) -> Response:
-    """GET /v1/audit — filtered tail of audit.jsonl with owner scoping.
-
-    Reads audit events via ``clusterctl.audit.read_events``, reverses
-    for tail semantics, applies query-param filters, scopes to the
-    token owner's declared instances, and redacts before returning.
-    """
+    """GET /v1/audit — bounded snapshot tail with owner scoping."""
     state_dir = deps.state_dir
     if state_dir is None:
         state_dir = load_config(deps.config_path).state_dir
 
-    # Parse query params.
     q = query or {}
-    try:
-        limit = int((q.get("limit", [None])[0] or 50))
-    except (TypeError, ValueError):
-        limit = 50
-    limit = max(1, min(limit, 200))
     filter_actor = (q.get("actor", [None])[0] or "").strip() or None
     filter_target = (q.get("target", [None])[0] or "").strip() or None
     filter_action = (q.get("action", [None])[0] or "").strip() or None
+    owner = _request_owner(ctx)
+    filters = {
+        "actor": filter_actor,
+        "target": filter_target,
+        "action": filter_action,
+    }
 
-    # Owner scoping: non-"*" owners may only see events about their
-    # own declared instances.
-    owner = (ctx.token_record or {}).get("owner") or "*"
-    owner_allowlist: set[str] | None = None
-    if owner != "*":
-        inst_dir = Path(state_dir) / "instances"
-        owner_allowlist = set()
-        if inst_dir.is_dir():
-            for spec_file in inst_dir.glob("*.yaml"):
-                try:
-                    raw = yaml.safe_load(spec_file.read_text(encoding="utf-8"))
-                except (yaml.YAMLError, OSError):
-                    continue
-                if isinstance(raw, dict) and raw.get("created_by") == owner:
-                    owner_allowlist.add(raw.get("name", ""))
-        # If owner has no declared instances, return empty (never leak).
-        if not owner_allowlist:
-            return Response(200, [])
+    def build() -> tuple[list[object], int, bool]:
+        owner_allowlist = _owner_instance_names(state_dir, owner)
+        if owner_allowlist is not None and not owner_allowlist:
+            return [], int(time.time() * 1000), False
+        events, scan_truncated = _bounded_reverse_audit_events(state_dir)
+        result: list[object] = []
+        truncated = scan_truncated
+        for event in events:
+            target = event.get("target") or ""
+            if owner_allowlist is not None and target not in owner_allowlist:
+                continue
+            if filter_actor is not None and event.get("actor") != filter_actor:
+                continue
+            if filter_target is not None and target != filter_target:
+                continue
+            if filter_action is not None and event.get("action") != filter_action:
+                continue
+            if len(result) >= paging.MAX_SNAPSHOT_ITEMS:
+                truncated = True
+                break
+            result.append(_redact_event_fields(event))
+        return result, int(time.time() * 1000), truncated
 
-    events = audit.read_events(state_dir)
-    # Reverse: most recent first (tail semantics).
-    events.reverse()
+    return _page_or_resume(
+        deps,
+        ctx,
+        query=q,
+        kind="audit",
+        filters=filters,
+        build=build,
+    )
 
-    result = []
-    for event in events:
-        if len(result) >= limit:
-            break
-        target = event.get("target") or ""
-        # Owner scoping: only include events for this owner's instances.
-        if owner_allowlist is not None and target not in owner_allowlist:
-            continue
-        if filter_actor is not None and event.get("actor") != filter_actor:
-            continue
-        if filter_target is not None and target != filter_target:
-            continue
-        if filter_action is not None and event.get("action") != filter_action:
-            continue
-        result.append(_redact_event_fields(event))
 
-    return Response(200, result)
+_AUDIT_SCAN_MAX_BYTES = 4 * 1024 * 1024
+_AUDIT_SCAN_MAX_LINES = 10_000
+
+
+def _bounded_reverse_audit_events(state_dir: str) -> tuple[list[dict], bool]:
+    """Read a fixed append-only suffix; never load the whole audit log."""
+    path = audit.audit_path(state_dir)
+    if not path.is_file():
+        return [], False
+    with path.open("rb") as stream:
+        descriptor = stream.fileno()
+        end = stream.seek(0, 2)
+        start = max(0, end - _AUDIT_SCAN_MAX_BYTES)
+        raw = os.pread(descriptor, end - start, start)
+        cut_first = start > 0 and os.pread(descriptor, 1, start - 1) != b"\n"
+    lines = raw.splitlines()
+    if cut_first and lines:
+        lines = lines[1:]
+    truncated = start > 0 or len(lines) > _AUDIT_SCAN_MAX_LINES
+    lines = lines[-_AUDIT_SCAN_MAX_LINES:]
+    result: list[dict] = []
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if isinstance(event, dict):
+            result.append(event)
+    return result, truncated
 
 
 def _state_dir(deps: Deps) -> str:
@@ -515,9 +777,7 @@ def _state_dir(deps: Deps) -> str:
 
 def list_embodiments(deps: Deps, ctx: RequestContext, **params) -> Response:
     """GET /v1/embodiments — body and incarnation registry."""
-    from clusterctl.embodiments import Registry
-
-    return Response(200, Registry(_state_dir(deps)).list_all())
+    return Response(200, _visible_embodiment_records(deps, ctx))
 
 
 def list_resource_fences(deps: Deps, ctx: RequestContext, **params) -> Response:
@@ -529,7 +789,14 @@ def list_resource_fences(deps: Deps, ctx: RequestContext, **params) -> Response:
     from clusterctl.fences import ResourceFenceStore
 
     fences = ResourceFenceStore(_state_dir(deps)).list_all()
-    return Response(200, [row for row in fences if not row.get("expired", True)])
+    visible_ids = None if _request_owner(ctx) == "*" else {
+        row.get("embodiment_id") for row in _visible_embodiment_records(deps, ctx)
+    }
+    return Response(200, [
+        row for row in fences
+        if not row.get("expired", True)
+        and (visible_ids is None or row.get("holder_embodiment_id") in visible_ids)
+    ])
 
 
 def _matrix_result(call: object) -> dict:
@@ -575,209 +842,451 @@ def _projection_summary(value: object) -> dict:
     }
 
 
-def _redacted_matrix_status(deps: Deps) -> Response:
-    """Read authenticated Matrix views without exposing routes or requests."""
-    from clusterctl.embodiments import Registry
-    from clusterctl.matrix_host import MATRIX_CONTRACT_COMMIT, MATRIX_STATUS_SCHEMA
+_MATRIX_STATUS_MAX_ROWS = 100
+_MATRIX_STATUS_MAX_MEMBERS = 100
+_MATRIX_STATUS_MAX_TARGETS = 100
+_MATRIX_STATUS_MAX_SUMMARIES = 100
+_MATRIX_STATUS_MAX_ROW_BYTES = 64 * 1024
+_MATRIX_STATUS_MAX_RESPONSE_BYTES = 1024 * 1024
 
-    factory = deps.matrix_client_factory
-    if factory is None:
-        raise RuntimeError("matrix_client_factory_unavailable")
-    rows = []
-    for record in Registry(_state_dir(deps)).list_all():
-        if record.get("status") != "running":
-            continue
-        embodiment_id = record["embodiment_id"]
-        client = factory(embodiment_id)
+
+def _visible_embodiment_records(deps: Deps, ctx: RequestContext) -> list[dict]:
+    from clusterctl.embodiments import Registry
+
+    records = Registry(_state_dir(deps)).list_all()
+    owner = _request_owner(ctx)
+    if owner == "*":
+        return records
+    visible_ids: set[str] = set()
+    inst_dir = Path(_state_dir(deps)) / "instances"
+    if inst_dir.is_dir():
+        for path in inst_dir.glob("*.yaml"):
+            try:
+                raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                continue
+            if (
+                isinstance(raw, dict)
+                and raw.get("created_by") == owner
+                and isinstance(raw.get("embodiment_id"), str)
+            ):
+                visible_ids.add(raw["embodiment_id"])
+    return [row for row in records if row.get("embodiment_id") in visible_ids]
+
+
+def _matrix_sync_plan(client: object) -> dict:
+    method = getattr(client, "scope_sync_plan", None)
+    if not callable(method):
+        raise TypeError("matrix_client_method_unavailable")
+    _request, response = method(
+        {"request_id": str(uuid.uuid4()), "limit": _MATRIX_STATUS_MAX_TARGETS}
+    )
+    if (
+        not isinstance(response, dict)
+        or response.get("ok") is not True
+        or not isinstance(response.get("result"), dict)
+    ):
+        raise RuntimeError("matrix_client_response_rejected")
+    return response["result"]
+
+
+def _queue_observation(counts: dict) -> dict:
+    incomplete = counts.get("incomplete_events")
+    pending = counts.get("pending_rpc")
+    if not isinstance(incomplete, int) or not isinstance(pending, int):
+        state = "unknown"
+    elif incomplete == 0 and pending == 0:
+        state = "clean"
+    else:
+        state = "attention-required"
+    return {
+        "state": state,
+        "incomplete_events": incomplete,
+        "pending_rpc": pending,
+        "scope": "owner-local",
+    }
+
+
+def _peer_reachability(topology: list[dict], local_id: str) -> dict:
+    peers = [row for row in topology if row.get("embodiment_id") != local_id]
+    available = sum(row.get("availability") == "available" for row in peers)
+    offline = len(peers) - available
+    if not peers:
+        state = "none-observed"
+    elif available == len(peers):
+        state = "available"
+    elif available:
+        state = "partial"
+    else:
+        state = "offline"
+    return {
+        "state": state,
+        "peer_count": len(peers),
+        "available": available,
+        "offline_or_unknown": offline,
+    }
+
+
+def _caught_up_observation(
+    *, local_integrity: object, queue_state: str, peer_state: str,
+    known_differences: int, partial: bool
+) -> dict:
+    if local_integrity != "ok":
+        state, reason = "unknown", "owner-local-ledger-not-ok"
+    elif queue_state != "clean":
+        state, reason = "no", "owner-local-queue-not-clean"
+    elif peer_state in {"offline", "partial"}:
+        state, reason = "unknown", "peer-unreachable"
+    elif peer_state == "none-observed":
+        state, reason = "unknown", "no-peer-observation"
+    elif partial:
+        state, reason = "unknown", "matrix-view-partial"
+    elif known_differences:
+        state, reason = "no", "known-differences"
+    else:
+        state, reason = "yes", "all-observed-peers-caught-up"
+    return {"state": state, "reason": reason}
+
+
+def _matrix_alerts(
+    *, integrity: object, queue_state: str, peer_state: str,
+    known_differences: int, partial: bool,
+) -> list[dict]:
+    """Typed alerts; none of them aliases local cleanliness to convergence."""
+    alerts: list[dict] = []
+    if integrity != "ok":
+        alerts.append({"code": "owner-local-ledger-not-ok", "severity": "critical"})
+    if queue_state == "attention-required":
+        alerts.append({"code": "owner-local-queue-attention", "severity": "warning"})
+    elif queue_state == "unknown":
+        alerts.append({"code": "owner-local-queue-unknown", "severity": "warning"})
+    if peer_state in {"offline", "partial"}:
+        alerts.append({"code": f"peer-{peer_state}", "severity": "warning"})
+    elif peer_state == "none-observed":
+        alerts.append({"code": "peer-observation-absent", "severity": "info"})
+    if known_differences:
+        alerts.append({
+            "code": "known-peer-differences", "severity": "info",
+            "count": known_differences,
+        })
+    if partial:
+        alerts.append({"code": "matrix-view-partial", "severity": "warning"})
+    return alerts
+
+
+def _matrix_status_row(deps: Deps, record: dict, observed_at_ms: int) -> dict:
+    embodiment_id = record["embodiment_id"]
+    base = {
+        "embodiment_id": embodiment_id,
+        "incarnation_id": record.get("current_incarnation_id"),
+        "embodiment_observation": {
+            "state": record.get("status") or "unknown",
+            "observed_at_ms": observed_at_ms,
+        },
+    }
+    if deps.matrix_client_factory is None:
+        return {
+            **base,
+            "matrix_process": {
+                "state": "not-configured",
+                "observed_at_ms": observed_at_ms,
+            },
+            "owner_local": {"state": "unavailable"},
+            "peer_sync": {"state": "unavailable"},
+            "alerts": [{"code": "matrix-not-configured", "severity": "info"}],
+        }
+    if record.get("status") != "running":
+        return {
+            **base,
+            "matrix_process": {
+                "state": "not-observed",
+                "reason": "embodiment-not-running",
+                "observed_at_ms": observed_at_ms,
+            },
+            "owner_local": {"state": "unavailable"},
+            "peer_sync": {"state": "unavailable"},
+            "alerts": [{"code": "embodiment-not-running", "severity": "info"}],
+        }
+    try:
+        client = deps.matrix_client_factory(embodiment_id)
         runtime = _matrix_result(getattr(client, "runtime_status", None))
         me = _matrix_result(getattr(client, "scope_me", None))
         we = _matrix_result(getattr(client, "scope_we", None))
         difference = _matrix_result(getattr(client, "scope_diff", None))
-        plan_id = str(uuid.uuid4())
-        sync_plan_method = getattr(client, "scope_sync_plan", None)
-        if not callable(sync_plan_method):
-            raise TypeError("matrix_client_method_unavailable")
-        _request, plan_response = sync_plan_method(
-            {"request_id": plan_id, "limit": 100}
-        )
-        if (
-            not isinstance(plan_response, dict)
-            or plan_response.get("ok") is not True
-            or not isinstance(plan_response.get("result"), dict)
-        ):
-            raise RuntimeError("matrix_client_response_rejected")
-        plan = plan_response["result"]
-        topology = [
-            {
-                field: member.get(field)
-                for field in (
-                    "availability",
-                    "body_ref",
-                    "embodiment_id",
-                    "evidence_ref",
-                    "incarnation_id",
-                    "manifest_status",
-                )
-            }
-            for member in we.get("embodiments", [])
-        ]
-        targets = []
-        for target in plan.get("targets", []):
-            request_hash = hashlib.sha256(
-                json.dumps(
-                    target.get("request"),
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ).encode("utf-8")
-            ).hexdigest()
-            targets.append(
-                {
-                    "availability": target.get("availability"),
-                    "embodiment_id": target.get("embodiment_id"),
-                    "evidence_ref": target.get("evidence_ref"),
-                    "incarnation_id": target.get("incarnation_id"),
-                    "request_hash": request_hash,
-                }
-            )
-        rows.append(
-            {
-                "embodiment_id": embodiment_id,
-                "incarnation_id": record["current_incarnation_id"],
-                "runtime": {
-                    **{
-                        field: runtime.get(field)
-                        for field in (
-                            "schema",
-                            "being_ref",
-                            "manifest_hash",
-                            "local_origin",
-                            "ledger_schema_version",
-                            "integrity",
-                        )
-                    },
-                    "counts": {
-                        field: runtime.get("counts", {}).get(field)
-                        for field in (
-                            "known_events",
-                            "incomplete_events",
-                            "peer_lanes",
-                            "pending_rpc",
-                        )
-                    },
-                    "authority_epoch": {
-                        field: runtime.get("authority_epoch", {}).get(field)
-                        for field in (
-                            "schema",
-                            "active_manifest_hash",
-                            "accepted_manifest_hashes",
-                            "epoch_count",
-                        )
-                    },
-                },
-                "me": {
-                    "schema": me.get("schema"),
-                    "being_ref": me.get("being_ref"),
-                    "manifest_hash": me.get("manifest_hash"),
-                    "evaluated_at_ms": me.get("evaluated_at_ms"),
-                    "origin": me.get("origin"),
-                    "credential_ref": me.get("credential_ref"),
-                    "incarnation_authorization_ref": me.get(
-                        "incarnation_authorization_ref"
-                    ),
-                    "body_capabilities": me.get("body_capabilities"),
-                    "body": {
-                        field: me.get("body", {}).get(field)
-                        for field in (
-                            "schema",
-                            "body_ref",
-                            "embodiment_id",
-                            "incarnation_id",
-                            "observed_at_ms",
-                            "state",
-                            "resource_fences",
-                        )
-                    },
-                    "heads": me.get("heads"),
-                    "effective": _projection_summary(me.get("effective")),
-                },
-                "we": {
-                    "schema": we.get("schema"),
-                    "being_ref": we.get("being_ref"),
-                    "manifest_hash": we.get("manifest_hash"),
-                    "evaluated_at_ms": we.get("evaluated_at_ms"),
-                    "local_origin": we.get("local_origin"),
-                    "embodiments": topology,
-                    "partial": we.get("partial"),
-                },
-                "diff": {
-                    "schema": difference.get("schema"),
-                    "being_ref": difference.get("being_ref"),
-                    "manifest_hash": difference.get("manifest_hash"),
-                    "local_embodiment_id": difference.get("local_embodiment_id"),
-                    "projection_hash": difference.get("projection_hash"),
-                    "origin_summaries": [
-                        {
-                            "embodiment_id": summary.get("embodiment_id"),
-                            "states": summary.get("states"),
-                        }
-                        for summary in difference.get("origin_summaries", [])
-                        if isinstance(summary, dict)
-                    ],
-                    "entries": _projection_summary(
-                        {
-                            **difference,
-                            "schema": "dm.we.projection/v1",
-                        }
-                    )["entries"],
-                },
-                "sync_plan": {
-                    "schema": plan.get("schema"),
-                    "plan_id": plan.get("plan_id"),
-                    "targets": targets,
-                    "partial": plan.get("partial"),
-                },
-            }
-        )
-    return Response(
-        200,
+        plan = _matrix_sync_plan(client)
+    except Exception:  # noqa: BLE001 - membership-safe process boundary
+        return {
+            **base,
+            "matrix_process": {
+                "state": "down",
+                "observed_at_ms": observed_at_ms,
+            },
+            "owner_local": {"state": "unavailable"},
+            "peer_sync": {"state": "unavailable"},
+            "alerts": [{"code": "matrix-process-down", "severity": "critical"}],
+        }
+
+    raw_counts = runtime.get("counts")
+    counts: dict = raw_counts if isinstance(raw_counts, dict) else {}
+    queue = _queue_observation(counts)
+    raw_topology = [
+        row for row in we.get("embodiments", []) if isinstance(row, dict)
+    ]
+    topology = [
         {
-            "schema": MATRIX_STATUS_SCHEMA,
-            "configured": bool(rows),
-            "implementation": "installed-daimon-matrix",
-            "matrix_contract_commit": MATRIX_CONTRACT_COMMIT,
-            "embodiments": rows,
-        },
+            field: member.get(field)
+            for field in (
+                "availability", "body_ref", "embodiment_id", "evidence_ref",
+                "incarnation_id", "manifest_status",
+            )
+        }
+        for member in raw_topology[:_MATRIX_STATUS_MAX_MEMBERS]
+    ]
+    reachability = _peer_reachability(raw_topology, embodiment_id)
+    raw_entries = [
+        row for row in difference.get("entries", []) if isinstance(row, dict)
+    ]
+    raw_summaries = [
+        row for row in difference.get("origin_summaries", [])
+        if isinstance(row, dict)
+    ]
+    raw_targets = [row for row in plan.get("targets", []) if isinstance(row, dict)]
+    targets = []
+    for target in raw_targets[:_MATRIX_STATUS_MAX_TARGETS]:
+        request_hash = hashlib.sha256(
+            json.dumps(
+                target.get("request"), sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        targets.append({
+            "availability": target.get("availability"),
+            "embodiment_id": target.get("embodiment_id"),
+            "evidence_ref": target.get("evidence_ref"),
+            "incarnation_id": target.get("incarnation_id"),
+            "request_hash": request_hash,
+        })
+    partial = bool(we.get("partial") or plan.get("partial"))
+    caught_up = _caught_up_observation(
+        local_integrity=runtime.get("integrity"),
+        queue_state=queue["state"],
+        peer_state=reachability["state"],
+        known_differences=len(raw_entries),
+        partial=partial,
     )
+    alerts = _matrix_alerts(
+        integrity=runtime.get("integrity"),
+        queue_state=queue["state"],
+        peer_state=reachability["state"],
+        known_differences=len(raw_entries),
+        partial=partial,
+    )
+    raw_effective = me.get("effective")
+    effective: dict = raw_effective if isinstance(raw_effective, dict) else {}
+    raw_heads = me.get("heads")
+    heads: dict = raw_heads if isinstance(raw_heads, dict) else {}
+    raw_authority_epoch = runtime.get("authority_epoch")
+    authority_epoch: dict = (
+        raw_authority_epoch if isinstance(raw_authority_epoch, dict) else {}
+    )
+    raw_body = me.get("body")
+    body: dict = raw_body if isinstance(raw_body, dict) else {}
+    return {
+        **base,
+        "matrix_process": {"state": "available", "observed_at_ms": observed_at_ms},
+        "alerts": alerts,
+        "owner_local": {
+            "state": "observed",
+            "observed_at_ms": observed_at_ms,
+            "ledger_integrity": runtime.get("integrity"),
+            "queue": queue,
+            "known_events": counts.get("known_events"),
+            "ledger_schema_version": runtime.get("ledger_schema_version"),
+            "authority_epoch": {
+                field: authority_epoch.get(field)
+                for field in (
+                    "schema", "active_manifest_hash",
+                    "accepted_manifest_hashes", "epoch_count",
+                )
+            },
+        },
+        "identity_view": {
+            "being_ref": me.get("being_ref"),
+            "manifest_hash": me.get("manifest_hash"),
+            "evaluated_at_ms": me.get("evaluated_at_ms"),
+            "body": {
+                field: body.get(field)
+                for field in (
+                    "schema", "body_ref", "embodiment_id", "incarnation_id",
+                    "observed_at_ms", "state", "resource_fences",
+                )
+            },
+            "head_count": len(heads),
+            "effective": {
+                "schema": effective.get("schema"),
+                "projection_hash": effective.get("projection_hash"),
+                "entry_count": len(effective.get("entries", []))
+                if isinstance(effective.get("entries"), list) else None,
+            },
+        },
+        "peer_sync": {
+            "state": "observed",
+            "observed_at_ms": observed_at_ms,
+            "reachability": reachability,
+            "last_successful_sync": {
+                "state": "unavailable",
+                "at_ms": None,
+                "reason": "not-exposed-by-matrix-contract",
+            },
+            "known_difference_count": len(raw_entries),
+            "caught_up": caught_up,
+            "partial": partial,
+            "topology": topology,
+            "topology_count": len(raw_topology),
+            "topology_truncated": len(raw_topology) > len(topology),
+            "origin_summaries": [
+                {
+                    "embodiment_id": summary.get("embodiment_id"),
+                    "states": summary.get("states"),
+                }
+                for summary in raw_summaries[:_MATRIX_STATUS_MAX_SUMMARIES]
+            ],
+            "origin_summaries_truncated": (
+                len(raw_summaries) > _MATRIX_STATUS_MAX_SUMMARIES
+            ),
+            "sync_targets": targets,
+            "sync_target_count": len(raw_targets),
+            "sync_targets_truncated": len(raw_targets) > len(targets),
+            "differences_path": (
+                "/v1/weave/differences?embodiment_id=" + embodiment_id
+            ),
+        },
+    }
+
+
+def _redacted_matrix_status(deps: Deps, ctx: RequestContext) -> Response:
+    from clusterctl.matrix_host import MATRIX_CONTRACT_COMMIT, MATRIX_STATUS_SCHEMA
+
+    observed_at_ms = int(time.time() * 1000)
+    records = _visible_embodiment_records(deps, ctx)
+    rows: list[dict] = []
+    admitted_bytes = 0
+    for record in records[:_MATRIX_STATUS_MAX_ROWS]:
+        row = _matrix_status_row(deps, record, observed_at_ms)
+        encoded = json.dumps(
+            row, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        if len(encoded) > _MATRIX_STATUS_MAX_ROW_BYTES:
+            identifier = record.get("embodiment_id")
+            if not isinstance(identifier, str) or len(identifier) > 256:
+                identifier = "[oversized-identifier]"
+            row = {
+                "embodiment_id": identifier,
+                "embodiment_observation": {
+                    "state": record.get("status") or "unknown",
+                    "observed_at_ms": observed_at_ms,
+                },
+                "matrix_process": {
+                    "state": "available",
+                    "observed_at_ms": observed_at_ms,
+                },
+                "owner_local": {
+                    "state": "unavailable", "reason": "read-model-overflow",
+                },
+                "peer_sync": {
+                    "state": "unavailable", "reason": "read-model-overflow",
+                },
+            }
+            encoded = json.dumps(row, separators=(",", ":")).encode()
+        if admitted_bytes + len(encoded) > _MATRIX_STATUS_MAX_RESPONSE_BYTES:
+            break
+        rows.append(row)
+        admitted_bytes += len(encoded)
+    return Response(200, {
+        "schema": MATRIX_STATUS_SCHEMA,
+        "read_model_version": 2,
+        "configured": deps.matrix_client_factory is not None,
+        "implementation": "installed-daimon-matrix",
+        "matrix_contract_commit": MATRIX_CONTRACT_COMMIT,
+        "observed_at_ms": observed_at_ms,
+        "embodiments": rows,
+        "embodiment_count": len(records),
+        "embodiments_truncated": len(records) > len(rows),
+        "response_budget_bytes": _MATRIX_STATUS_MAX_RESPONSE_BYTES,
+    })
 
 
 def weave_status(deps: Deps, ctx: RequestContext, **params) -> Response:
-    """GET /v1/weave/status from the installed Matrix authority only."""
-    if deps.matrix_client_factory is None:
-        from clusterctl.matrix_host import MATRIX_CONTRACT_COMMIT
-
-        return Response(
-            200,
-            {
-                "schema": "dm.cluster-matrix-status/v1",
-                "configured": False,
-                "implementation": "installed-daimon-matrix",
-                "matrix_contract_commit": MATRIX_CONTRACT_COMMIT,
-                "embodiments": [],
-            },
-        )
+    """GET /v1/weave/status; partial failures remain per embodiment."""
     try:
-        return _redacted_matrix_status(deps)
+        return _redacted_matrix_status(deps, ctx)
     except Exception:  # noqa: BLE001 - membership-safe HTTP failure boundary
-        return Response(
-            503,
-            {
-                "schema": "dm.cluster-matrix-status/v1",
-                "configured": True,
-                "implementation": "installed-daimon-matrix",
-                "error": "matrix-status-unavailable",
-            },
+        return Response(503, {
+            "schema": "dm.cluster-matrix-status/v1",
+            "read_model_version": 2,
+            "configured": deps.matrix_client_factory is not None,
+            "implementation": "installed-daimon-matrix",
+            "error": "matrix-status-unavailable",
+            "action": "status",
+            "target": "weave",
+            "request_id": ctx.request_id,
+        })
+
+
+def weave_differences(
+    deps: Deps, ctx: RequestContext, query=None, **params
+) -> Response:
+    """Paginated, redacted Matrix differences for one visible embodiment."""
+    q = query or {}
+    embodiment_id = (q.get("embodiment_id", [None])[0] or "").strip()
+    if not embodiment_id:
+        return _error(
+            400, "embodiment_id is required", "differences", "weave",
+            ctx.request_id,
         )
+    visible = {
+        row.get("embodiment_id"): row for row in _visible_embodiment_records(deps, ctx)
+    }
+    record = visible.get(embodiment_id)
+    if record is None:
+        return _error(404, "embodiment not found", "differences", embodiment_id,
+                      ctx.request_id)
+
+    def build() -> tuple[list[object], int, bool]:
+        if deps.matrix_client_factory is None:
+            raise RuntimeError("matrix-client-not-configured")
+        if record.get("status") != "running":
+            raise RuntimeError("matrix-process-not-running")
+        client = deps.matrix_client_factory(embodiment_id)
+        difference = _matrix_result(getattr(client, "scope_diff", None))
+        projection = _projection_summary({
+            **difference,
+            "schema": "dm.we.projection/v1",
+        })
+        entries = projection["entries"]
+        truncated = len(entries) > paging.MAX_SNAPSHOT_ITEMS
+        return (
+            entries[:paging.MAX_SNAPSHOT_ITEMS],
+            int(time.time() * 1000),
+            truncated,
+        )
+
+    try:
+        return _page_or_resume(
+            deps,
+            ctx,
+            query=q,
+            kind="weave-differences",
+            filters={"embodiment_id": embodiment_id},
+            build=build,
+        )
+    except Exception:  # noqa: BLE001 - membership-safe Matrix boundary
+        return Response(503, {
+            "error": "matrix-differences-unavailable",
+            "action": "differences",
+            "target": "weave",
+            "request_id": ctx.request_id,
+        })
 
 
 def dashboard(deps: Deps, ctx: RequestContext, **params) -> Response:
@@ -852,14 +1361,15 @@ def dashboard_prepare(
                     ctx.request_id,
                 )
 
-    _propose = {
+    proposers: dict[str, Callable[..., mutations.MutationPlan]] = {
         "start": mutations.propose_start,
         "stop": mutations.propose_stop,
         "restart": mutations.propose_restart,
         "snapshot": mutations.propose_snapshot,
         "destroy": mutations.propose_destroy,
         "restore": mutations.propose_restore,
-    }[operation]
+    }
+    _propose = proposers[operation]
 
     try:
         # The dashboard's own bearer token authorizes the mutation call —
@@ -1212,7 +1722,8 @@ function renderHealth(event){
 function renderFleet(event){
   var el=document.getElementById('fleet-content');
   try{
-    var daimons=JSON.parse(event.detail.xhr.responseText);
+    var page=JSON.parse(event.detail.xhr.responseText);
+    var daimons=page&&Array.isArray(page.items)?page.items:[];
     if(!Array.isArray(daimons)||daimons.length===0){el.innerHTML='<p class="muted">No daimons declared.</p>';return}
     var h='';
     daimons.forEach(function(d,i){
@@ -1227,6 +1738,12 @@ function renderFleet(event){
       h+='<span style="margin-left:12px">image: '+escHtml(d.image_version||'—')+'</span>';
       h+='<span style="margin-left:12px">uptime: '+uptime+'</span>';
       h+='</div>';
+      var o=d.observations||{};
+      h+='<div class="muted" style="margin-top:4px">declared '
+        +stateBadge((o.declared||{}).state)+' · runtime '+stateBadge((o.runtime||{}).state)
+        +' · embodiment '+stateBadge((o.embodiment||{}).state)
+        +' · incarnation '+stateBadge((o.incarnation||{}).state)
+        +' · Matrix process '+stateBadge((o.matrix_process||{}).state)+'</div>';
       var b=d.budgets||{};
       var u=d.usage||{};
       var cpuPct=u.cpu_pct!=null?u.cpu_pct:0;
@@ -1249,6 +1766,7 @@ function renderFleet(event){
       h+='</div>';
       h+='</div>';
     });
+    if(page.page&&page.page.truncated)h+='<p class="alert">Inventory snapshot was bounded; refine the owner scope before acting.</p>';
     el.innerHTML=h;
   }catch(e){el.innerHTML='<div class="alert">No data <span class="retry-link" onclick="htmx.trigger(\'#fleet-content\',\'load\')">retry</span></div>'}
 }
@@ -1258,29 +1776,26 @@ function renderWeave(event){
   try{
     var d=JSON.parse(event.detail.xhr.responseText);
     if(!d.configured){el.innerHTML='<p class="muted">Weave runtime not configured on this host.</p>';return}
-    var origin=d.origin||{};
-    var state=d.sync_state||'unknown';
-    var novelty=d.incoming_novelty||{};
-    var h='<div class="muted">being <code>'+escHtml(d.being_ref)+'</code> · manifest <code>'
-      +truncDigest(d.manifest_hash)+'</code> · local '+escHtml(origin.principal_id||'?')
-      +' · '+(d.heads||[]).length+' origin heads · '+(d.peer_cursors||[]).length+' durable peer cursors</div>';
-    h+='<div style="margin-top:6px">sync '+stateBadge(state)
-      +' <span class="tag">'+escHtml(novelty.total||0)+' incoming differences</span></div>';
-    var kinds=novelty.by_kind||{}, origins=novelty.by_origin||{}, states=novelty.by_state||{};
-    h+='<div class="muted" style="margin-top:4px">by kind: '+escHtml(JSON.stringify(kinds))
-      +' · by origin: '+escHtml(JSON.stringify(origins))
-      +' · by state: '+escHtml(JSON.stringify(states))+'</div>';
-    (d.origins||[]).forEach(function(o){
-      h+='<div class="activity-item">'+stateBadge(o.presence)
-        +' <code>'+escHtml(o.principal_id)+'</code> <span class="tag">'+escHtml(o.reachability)+'</span>'
-        +'<br><span class="muted">'+escHtml(o.body_ref)+' · '+escHtml(o.embodiment_id)
-        +' · incarnation '+escHtml(o.incarnation_id||'unknown')+'</span></div>';
+    var rows=Array.isArray(d.embodiments)?d.embodiments:[];
+    var h='';
+    if(!rows.length)h='<p class="muted">No visible embodiments registered.</p>';
+    rows.forEach(function(row){
+      var local=row.owner_local||{}, peer=row.peer_sync||{}, reach=peer.reachability||{};
+      var queue=local.queue||{}, caught=peer.caught_up||{};
+      h+='<div class="activity-item"><code>'+escHtml(row.embodiment_id)+'</code> · embodiment '
+        +stateBadge((row.embodiment_observation||{}).state)+' · Matrix process '
+        +stateBadge((row.matrix_process||{}).state)+'<br>';
+      h+='<span class="muted">owner-local ledger: '+escHtml(local.ledger_integrity||local.state||'unavailable')
+        +' · owner-local queue: '+escHtml(queue.state||'unavailable')
+        +' · peer reachability: '+escHtml(reach.state||peer.state||'unavailable')
+        +' · known differences: '+escHtml(peer.known_difference_count==null?'unknown':peer.known_difference_count)
+        +' · caught up: '+escHtml(caught.state||'unknown')+' ('+escHtml(caught.reason||'not observed')+')</span></div>';
+      (row.alerts||[]).forEach(function(alert){
+        var cls=alert.severity==='critical'?'badge-bad':alert.severity==='warning'?'badge-degraded':'badge-info';
+        h+='<span class="badge '+cls+'" style="margin-right:4px">'+escHtml(alert.code)+'</span>';
+      });
     });
-    (d.differences||[]).forEach(function(item){
-      h+='<div class="activity-item"><span class="tag">'+escHtml(item.state)+'</span> '
-        +escHtml(item.kind)+' · <code>'+escHtml(item.subject)+'</code><br><span class="muted">from '
-        +escHtml((item.origin||{}).principal_id||'?')+' · '+escHtml(item.event_id)+'</span></div>';
-    });
+    if(d.embodiments_truncated)h+='<p class="alert">Embodiment status is bounded; not every visible record is shown.</p>';
     el.innerHTML=h;
   }catch(e){el.innerHTML='<div class="alert">No Weave status</div>'}
 }
@@ -1338,7 +1853,8 @@ function renderBackups(event){
 function renderActivity(event){
   var el=document.getElementById('activity-content');
   try{
-    var events=JSON.parse(event.detail.xhr.responseText);
+    var page=JSON.parse(event.detail.xhr.responseText);
+    var events=page&&Array.isArray(page.items)?page.items:[];
     if(!Array.isArray(events)||events.length===0){el.innerHTML='<p class="muted">No activity yet.</p>';return}
     var h='<div class="activity-list">';
     events.forEach(function(e){
@@ -1355,6 +1871,7 @@ function renderActivity(event){
       h+='</div>';
     });
     h+='</div>';
+    if(page.page&&page.page.truncated)h+='<p class="alert">Activity is a bounded tail snapshot; older matching events are not shown.</p>';
     el.innerHTML=h;
   }catch(e){el.innerHTML='<div class="alert">No data <span class="retry-link" onclick="htmx.trigger(\'#activity-content\',\'load\')">retry</span></div>'}
 }
@@ -1510,6 +2027,7 @@ HANDLERS = {
     "list_embodiments": list_embodiments,
     "list_resource_fences": list_resource_fences,
     "weave_status": weave_status,
+    "weave_differences": weave_differences,
     "dashboard_prepare": dashboard_prepare,
     "dashboard_confirm": dashboard_confirm,
     "restore_instance": restore_instance,

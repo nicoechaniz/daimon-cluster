@@ -36,6 +36,9 @@ bytes. Matrix.org is excluded.
 14. Root-authorized fresh-embodiment installation: distinct target custody,
     exact Matrix package pin, forward peer-manifest update, stopped admission,
     durable retry and one audit receipt per activation.
+15. Rebirth runtime supervision: admit the exact signed initial incarnation,
+    descriptor-only password delivery, authenticated readiness, restartable
+    startup journal and native three-process convergence evidence.
 
 ## Acceptance
 

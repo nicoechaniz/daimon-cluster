@@ -68,6 +68,7 @@ jobs:
           clusterctl/provision.py
           clusterctl/reconcile.py
           clusterctl/rebirth.py
+          clusterctl/rebirth_host.py
           clusterctl/transfer.py
           clusterd/__main__.py
           clusterd/handlers.py
@@ -97,6 +98,7 @@ jobs:
           clusterctl/matrix_host.py
           clusterctl/transfer.py
           clusterctl/rebirth.py
+          clusterctl/rebirth_host.py
           clusterctl/cli.py
           tests/test_rebirth.py
       - run: >-

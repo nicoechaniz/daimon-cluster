@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from daimon_matrix.client import ClientConfig, LocalClient
 from daimon_matrix.operator_bootstrap import PROFILE_SCHEMA, _create
 from daimon_matrix.operator_rebirth import (
     activate_target_runtime,
@@ -21,11 +27,17 @@ from daimon_matrix.runtime import load_runtime
 from clusterctl.embodiments import Registry
 from clusterctl.matrix_host import matrix_client_root, matrix_root
 from clusterctl.operation_journal import OperationJournal
-from clusterctl import audit, cli, rebirth
+from clusterctl import audit, cli, rebirth, rebirth_host
 
 
 class SimulatedCrash(BaseException):
     pass
+
+
+@pytest.fixture
+def short_tmp_path():
+    with tempfile.TemporaryDirectory(prefix="dmc-rebirth-") as value:
+        yield Path(value)
 
 
 def _descriptor(value: bytes) -> int:
@@ -35,7 +47,7 @@ def _descriptor(value: bytes) -> int:
     return reader
 
 
-def _ceremony(tmp_path: Path) -> dict:
+def _ceremony(tmp_path: Path, *, now_ms: int = 1_800_000_000_000) -> dict:
     source = tmp_path / "source"
     source.mkdir(mode=0o700)
     profile = {
@@ -72,12 +84,14 @@ def _ceremony(tmp_path: Path) -> dict:
     authority_document = json.loads((output / "authority.json").read_bytes())
     authority = authority_from_document(authority_document)
     peers = {}
+    peer_passwords = {}
     target_rows = []
     for label, port in (("host-a", 18686), ("host-b", 19686)):
         root = output / "runtimes" / label
         bundle = json.loads((root / "runtime.json").read_bytes())
         embodiment_id = bundle["local_origin"]["embodiment_id"]
         peers[embodiment_id] = root
+        peer_passwords[embodiment_id] = passwords[label]
         target_rows.append(
             {
                 "embodiment_id": embodiment_id,
@@ -101,8 +115,8 @@ def _ceremony(tmp_path: Path) -> dict:
             "targets": target_rows,
         },
         lambda: bytearray(target_password),
-        created_at_ms=1_800_000_000_000,
-        expires_at_ms=1_800_000_060_000,
+        created_at_ms=now_ms,
+        expires_at_ms=now_ms + 60_000,
     )
     request = json.loads((preparation_root / "request.json").read_bytes())
     activation = authorize_from_root_custody(
@@ -110,7 +124,7 @@ def _ceremony(tmp_path: Path) -> dict:
         authority,
         output / "offline/root-custody.json",
         lambda: bytearray(root_password),
-        issued_at_ms=1_800_000_000_010,
+        issued_at_ms=now_ms + 10,
     )
     package = source / "target-package"
     activate_target_runtime(
@@ -125,13 +139,14 @@ def _ceremony(tmp_path: Path) -> dict:
     return {
         "package": package,
         "peers": peers,
+        "peer_passwords": peer_passwords,
         "password": target_password,
         "activation": activation,
     }
 
 
-def _install(tmp_path: Path, **changes):
-    fixture = _ceremony(tmp_path)
+def _install(tmp_path: Path, *, ceremony_now_ms: int = 1_800_000_000_000, **changes):
+    fixture = _ceremony(tmp_path, now_ms=ceremony_now_ms)
     state = tmp_path / "cluster-state"
     state.mkdir(mode=0o700)
     values = {
@@ -142,6 +157,45 @@ def _install(tmp_path: Path, **changes):
     }
     values.update(changes)
     return fixture, state, values
+
+
+def _spawn_matrix_host(state: Path, embodiment_id: str, password: bytes):
+    password_read, password_write = os.pipe()
+    ready_read, ready_write = os.pipe()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "clusterctl.matrix_host",
+            "--state-dir",
+            str(state),
+            "--embodiment-id",
+            embodiment_id,
+            "--password-fd",
+            str(password_read),
+            "--ready-fd",
+            str(ready_write),
+        ],
+        pass_fds=(password_read, ready_write),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    os.close(password_read)
+    os.close(ready_write)
+    os.write(password_write, password)
+    os.close(password_write)
+    ready = os.read(ready_read, 64)
+    os.close(ready_read)
+    if ready != b"READY\n":
+        _stdout, stderr = process.communicate(timeout=10)
+        raise AssertionError(stderr)
+    return process
+
+
+def _operator_client(root: Path) -> LocalClient:
+    config = ClientConfig.load(root / "client.json", (root / "client.key").read_bytes())
+    return LocalClient(root / "matrix.sock", config)
 
 
 def test_journaled_install_adds_stopped_target_and_loadable_empty_runtime(tmp_path):
@@ -243,6 +297,211 @@ def test_cli_installs_exact_peer_set_and_emits_receipt(tmp_path, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["state"] == "installed-stopped"
     assert Registry(state).status(result["embodiment_id"])["status"] == "stopped"
+
+
+def test_supervisor_starts_exact_authorized_incarnation_and_restarts(short_tmp_path):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    process, ready = rebirth_host.launch_rebirth_host(
+        state,
+        installed["embodiment_id"],
+        _descriptor(fixture["password"]),
+    )
+    try:
+        assert ready["state"] == "running-ready"
+        assert ready["incarnation_id"] == installed["incarnation_id"]
+        assert ready["embodiment_id"] in ready["active_embodiment_ids"]
+        registered = Registry(state).status(ready["embodiment_id"])
+        assert registered["status"] == "running"
+        assert registered["current_incarnation_id"] == ready["incarnation_id"]
+        assert fixture["password"] not in b"\0".join(
+            str(argument).encode() for argument in process.args
+        )
+        assert (
+            fixture["password"] not in Path(f"/proc/{process.pid}/environ").read_bytes()
+        )
+    finally:
+        process.terminate()
+        _stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr
+
+    restarted, replay = rebirth_host.launch_rebirth_host(
+        state,
+        installed["embodiment_id"],
+        _descriptor(fixture["password"]),
+    )
+    try:
+        assert replay == ready
+        assert len(OperationJournal(state).list_all(limit=10)) == 2
+        assert (
+            sum(
+                event["action"] == "rebirth-start" for event in audit.read_events(state)
+            )
+            == 1
+        )
+    finally:
+        restarted.terminate()
+        _stdout, stderr = restarted.communicate(timeout=10)
+        assert restarted.returncode == 0, stderr
+
+
+def test_failed_password_resumes_same_admitted_incarnation(short_tmp_path):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    with pytest.raises(rebirth_host.RebirthHostError, match="startup"):
+        rebirth_host.launch_rebirth_host(
+            state,
+            installed["embodiment_id"],
+            _descriptor(b"incorrect-target-password"),
+        )
+    record = Registry(state).status(installed["embodiment_id"])
+    assert record["status"] == "running"
+    assert record["current_incarnation_id"] == installed["incarnation_id"]
+    pending = OperationJournal(state).open_operations()
+    assert pending[0]["operation"] == "rebirth-start"
+    assert pending[0]["state"] == "runtime-dispatching"
+
+    process, result = rebirth_host.launch_rebirth_host(
+        state,
+        installed["embodiment_id"],
+        _descriptor(fixture["password"]),
+    )
+    try:
+        assert result["state"] == "running-ready"
+        assert OperationJournal(state).open_operations() == []
+    finally:
+        process.terminate()
+        _stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr
+
+
+def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
+    short_tmp_path,
+):
+    now_ms = time.time_ns() // 1_000_000
+    fixture, state, values = _install(short_tmp_path, ceremony_now_ms=now_ms)
+    registry = Registry(state)
+    hosted_peers = {}
+    for embodiment_id, source in fixture["peers"].items():
+        target = matrix_root(state, embodiment_id)
+        target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        target.parent.chmod(0o700)
+        shutil.copytree(source, target)
+        bundle = json.loads((target / "runtime.json").read_bytes())
+        origin = bundle["local_origin"]
+        registry.register(
+            body_ref=origin["body_ref"], embodiment_id=origin["embodiment_id"]
+        )
+        registry.start(
+            origin["embodiment_id"],
+            incarnation_id=origin["incarnation_id"],
+            started_at_ms=now_ms,
+        )
+        hosted_peers[embodiment_id] = target
+    values["peer_roots"] = hosted_peers
+    installed = rebirth.install_rebirth_package(**values)
+
+    processes = []
+    try:
+        for embodiment_id, root in hosted_peers.items():
+            processes.append(
+                _spawn_matrix_host(
+                    state, embodiment_id, fixture["peer_passwords"][embodiment_id]
+                )
+            )
+            assert (
+                _operator_client(root).runtime_status()[1]["result"]["integrity"]
+                == "ok"
+            )
+        target_process, ready = rebirth_host.launch_rebirth_host(
+            state,
+            installed["embodiment_id"],
+            _descriptor(fixture["password"]),
+        )
+        processes.append(target_process)
+        target_root = matrix_root(state, installed["embodiment_id"])
+        target_client = _operator_client(target_root)
+        peer_id = sorted(hosted_peers)[0]
+        peer_client = _operator_client(hosted_peers[peer_id])
+        assert ready["active_embodiment_ids"] == sorted(
+            [*hosted_peers, installed["embodiment_id"]]
+        )
+        assert target_client.scope_we()[1]["result"]["partial"] is False
+
+        target_observation = target_client.we_observe(
+            {
+                "subject": "h8-target-origin",
+                "payload": {"summary": "fresh embodiment event"},
+                "sensitivity": "shareable",
+                "causal_parents": [],
+                "occurred_at_ms": now_ms + 20,
+                "event_id": None,
+            },
+            request_id=str(uuid.uuid4()),
+        )[1]["result"]["event"]
+        pull_params = {
+            "sync_request_id": str(uuid.uuid4()),
+            "target_embodiment_id": installed["embodiment_id"],
+            "limit": 16,
+        }
+        request_id = str(uuid.uuid4())
+        prepared_pull = peer_client.prepare(
+            "we.sync.peer-pull", pull_params, request_id=request_id
+        )
+        first_pull = peer_client.send(prepared_pull)
+        assert first_pull["ok"] is True
+        assert first_pull["result"]["events"] == 1
+        assert peer_client.send(prepared_pull) == first_pull
+
+        peer_observation = peer_client.we_observe(
+            {
+                "subject": "h8-existing-origin",
+                "payload": {"summary": "existing embodiment event"},
+                "sensitivity": "shareable",
+                "causal_parents": [],
+                "occurred_at_ms": now_ms + 21,
+                "event_id": None,
+            },
+            request_id=str(uuid.uuid4()),
+        )[1]["result"]["event"]
+        reverse = target_client.sync_peer_pull(
+            {
+                "sync_request_id": str(uuid.uuid4()),
+                "target_embodiment_id": peer_id,
+                "limit": 16,
+            },
+            request_id=str(uuid.uuid4()),
+        )[1]
+        assert reverse["ok"] is True
+        assert reverse["result"]["events"] >= 1
+        target_projection = target_client.projection_rebuild()[1]["result"]
+        peer_projection = peer_client.projection_rebuild()[1]["result"]
+        assert (
+            next(
+                row
+                for row in target_projection["entries"]
+                if row["event_id"] == peer_observation["event_id"]
+            )["state"]
+            == "pending"
+        )
+        assert (
+            next(
+                row
+                for row in peer_projection["entries"]
+                if row["event_id"] == target_observation["event_id"]
+            )["state"]
+            == "pending"
+        )
+    finally:
+        for process in reversed(processes):
+            process.terminate()
+        for process in reversed(processes):
+            _stdout, stderr = process.communicate(timeout=10)
+            assert process.returncode == 0, stderr
 
 
 @pytest.mark.parametrize(

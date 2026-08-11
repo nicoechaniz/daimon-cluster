@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
 import json
 import os
@@ -85,6 +86,40 @@ class OperationJournal:
         return connection
 
     def _initialize(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        parent = self.path.parent.lstat()
+        if (
+            stat.S_ISLNK(parent.st_mode)
+            or not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != os.geteuid()
+        ):
+            raise JournalError("operation journal parent is not owner-controlled")
+        self.path.parent.chmod(0o700)
+        lock_path = self.path.parent / ".operation-journal-init.lock"
+        try:
+            descriptor = os.open(
+                lock_path,
+                os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o077
+            ):
+                raise JournalError(
+                    "operation journal init lock is not owner-controlled"
+                )
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            self._initialize_locked()
+        except OSError as exc:
+            raise JournalError("cannot lock operation journal initialization") from exc
+        finally:
+            if "descriptor" in locals():
+                os.close(descriptor)
+
+    def _initialize_locked(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         parent = self.path.parent.lstat()
         if (
@@ -463,6 +498,28 @@ class OperationJournal:
                 "SELECT * FROM operations WHERE idempotency_key=? "
                 "ORDER BY created_ms DESC,operation_id DESC LIMIT 1",
                 (key,),
+            ).fetchone()
+            return None if row is None else self._decode(row)
+        except sqlite3.Error as exc:
+            raise JournalError("cannot read operation journal") from exc
+        finally:
+            if "connection" in locals():
+                connection.close()
+
+    def latest_completed_for_result(
+        self, operation: str, field: str, value: str
+    ) -> dict[str, Any] | None:
+        """Return the newest completed operation with one exact result field."""
+
+        if not field or not field.replace("_", "").isalnum():
+            raise JournalError("operation journal result field is invalid")
+        try:
+            connection = self._connect(query_only=True)
+            row = connection.execute(
+                "SELECT * FROM operations WHERE operation=? AND state='completed' "
+                "AND json_extract(result_json,?)=? "
+                "ORDER BY created_ms DESC,operation_id DESC LIMIT 1",
+                (operation, f'$."{field}"', value),
             ).fetchone()
             return None if row is None else self._decode(row)
         except sqlite3.Error as exc:

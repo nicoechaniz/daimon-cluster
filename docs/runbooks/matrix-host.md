@@ -91,6 +91,26 @@ Ready is emitted only after pin/schema, owner, registry, bundle/origin, socket
 length and second-writer checks pass and Matrix has loaded encrypted custody.
 SIGTERM/SIGINT quiesces the service boundary.
 
+For a target admitted by `rebirth-install`, run the H8 foreground supervisor
+instead of invoking `matrix_host` directly:
+
+```sh
+python -m clusterctl.rebirth_host \
+  --state-dir /var/lib/daimon-cluster \
+  --embodiment-id "$EMBODIMENT_ID" \
+  --password-fd "$PASSWORD_FD" \
+  --ready-fd "$READY_FD" \
+  --production-fence-verifier
+```
+
+It accepts only a completed exact H7 install receipt, admits the signed initial
+incarnation, starts the ordinary Matrix host child, and emits ready only after
+authenticated status, local-origin, body-state and complete active-manifest
+checks. A password failure or crash before ready is retried against the same
+open journal; do not stop/restart the registry with a generated incarnation.
+Keep the state path short enough for the derived Unix socket and use the same
+foreground service supervision/cgroup rules as the ordinary host process.
+
 The host injects the current Cluster fence verifier and a closed effect-truth
 router. Without an explicitly constructed executor its route list is empty and
 resource-fenced completion remains `effect_truth_unverifiable`. H5's only HMK

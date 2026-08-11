@@ -49,14 +49,28 @@ clusterctl --state-dir STATE rebirth-install \
 
 ## Deliberate stopped boundary
 
-Success is `installed-stopped`, not a running daemon. It has changed accepted
+H7 success is `installed-stopped`, not a running daemon. It has changed accepted
 authority on disk and admitted the physical body, but it has not claimed that
-the target process is reachable. Starting requires a separate journaled
-ceremony that binds Cluster's current incarnation to the exact root-authorized
+the target process is reachable. H8 provides the separate foreground
+`python -m clusterctl.rebirth_host` supervisor. It resolves the exact completed
+H7 receipt from Cluster's journal, binds the registry to the root-authorized
 target incarnation, supplies the target password only by inherited descriptor,
-waits for Matrix readiness, restarts old peers onto the successor, and proves
-native peer convergence. Until that ceremony lands, an operator must not mark
-the target healthy merely because H7 installation succeeded.
+waits for Matrix readiness, and authenticates `runtime.status`, `/me` and `/we`
+before emitting its own `READY` or completing the start receipt.
+
+If the child refuses before readiness, the start journal remains at
+`runtime-dispatching` and the exact admitted incarnation remains the only
+permitted retry. The supervisor never invents a replacement incarnation and
+never reports healthy from registry state alone. A later supervisor restart
+reopens the same completed receipt, starts a new process over the same durable
+runtime, and redoes all authenticated observations; the Matrix writer lock
+still rejects a concurrent second daemon.
+
+Prior peers must be restarted or reloaded from the H7-updated bundles before
+the convergence gate. The disposable H8 journey runs all three real daemon
+processes, exchanges one event in each direction through native encrypted peer
+pull, repeats the exact request without a second import, and proves both remote
+events remain pending until an observer explicitly adopts them.
 
 Rollback before target start is a whole-candidate rollback: stop admission,
 preserve every runtime and journal, and restore the previous release. Never

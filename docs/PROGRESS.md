@@ -3,22 +3,27 @@
 Living tracking file. Updated after every work session. Read FIRST on session
 start, then resume from the first open item.
 
-## Active checkpoint (2026-08-10)
+## Active checkpoint (2026-08-11)
 
-Cluster issue #61 repins Matrix from the exercised V7 predecessor to the
-successor-retry candidate `f0181f7117859f3f9cc4afc7dfbdaf9b06e74754`.
+Cluster repins Matrix from the exercised V7 successor candidate to the
+DM-055/DM-083 peer-retry candidate
+`c7c6e236ff59596dd596e69fcd46efbe0446ea69`.
 The adapter checks the additive client config V2 constant and hosts the bundle
 line through V7 while leaving retry, peer, identity and adoption semantics in
 Matrix.
-An exact clean Python 3.13 install verified `direct_url.json` and MIT metadata,
-then passed lint, type, compile and the complete Cluster suite: 297 passed and
-2 intentional skips.
+The Matrix candidate preserves the first encrypted request's bounded expiry
+across a later retry, accepts existing V1 outbox plans, and still fails closed
+after the stored envelope expires. Its full Matrix suite, reproducible build
+and installed-wheel smoke gate pass locally. A clean exact Cluster install
+verified `direct_url.json` and MIT metadata, then passed lint, type, compile and
+the complete suite: 297 passed and 2 intentional skips. Cluster CI and
+installed-process evidence remain required for this repin.
 
 The authorized same-being live path reached a real successor incarnation. Its
 old exact response remained durable and duplicate-free but was rejected by the
 single-incarnation client/service assumption. The cold-start sequence and
 authority boundaries are in [`../RESUME.md`](../RESUME.md). The active
-cross-repository card is AlterMundi/daimon-matrix#111 with draft PR #112.
+cross-repository card is AlterMundi/daimon-matrix#111 with PR #112.
 
 ## Previous snapshot (2026-08-04)
 

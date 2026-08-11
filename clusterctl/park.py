@@ -50,7 +50,7 @@ import logging
 import os
 from pathlib import Path
 
-from . import audit, embodiments, fences, idempotency
+from . import audit, embodiments, fences
 from .inventory import load_spec_raw, load_specs, update_spec
 from .lifecycle import (
     EXIT_CONFLICT,  # noqa: F401  (re-exported for callers/tests)
@@ -59,13 +59,11 @@ from .lifecycle import (
     EXIT_OK,
     REDACT_PATTERNS,
     _actor,
-    _audit_ok,
-    _check_idempotency,
+    _complete_resumable_journal,
     _emit,
     _fail,
-    _idem_key,
     _lock_or_fail,
-    _record_idempotency,
+    _prepare_resumable_journal,
     _stale_detail,
 )
 
@@ -533,11 +531,6 @@ def run_park(
 
 def cmd_park(args, cfg, adapter) -> int:
     name, operation = args.name, "park"
-    store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
-    if rc is not None:
-        return rc
-
     specs = load_specs(cfg.instances_dir)
     if name not in specs:
         return _fail(args, cfg, operation, name,
@@ -548,33 +541,78 @@ def cmd_park(args, cfg, adapter) -> int:
         return lock_ctx
     with lock_ctx as acquired:
         stale = _stale_detail(acquired)
+        prepared = _prepare_resumable_journal(
+            args,
+            cfg,
+            adapter,
+            operation=operation,
+            target=name,
+            runtime_call={
+                "method": "park-handoff",
+                "name": name,
+                "abandon_critical": bool(getattr(args, "abandon_critical", False)),
+                "force_outbox": bool(getattr(args, "force_outbox", False)),
+                "no_fence": bool(getattr(args, "no_fence", False)),
+                "stop_timeout": int(getattr(args, "timeout", STOP_TIMEOUT_S)),
+            },
+            audit_context=stale,
+        )
+        if isinstance(prepared, int):
+            return prepared
+        journal, record, _recovered = prepared
         try:
-            result = run_park(
-                name, cfg, adapter,
-                actor=_actor(args),
-                abandon_critical=bool(getattr(args, "abandon_critical", False)),
-                force_outbox=bool(getattr(args, "force_outbox", False)),
-                no_fence=bool(getattr(args, "no_fence", False)),
-                stop_timeout=int(getattr(args, "timeout", STOP_TIMEOUT_S)),
-            )
+            if record["state"] == "runtime-dispatching":
+                result = run_park(
+                    name, cfg, adapter,
+                    actor=_actor(args),
+                    abandon_critical=bool(getattr(args, "abandon_critical", False)),
+                    force_outbox=bool(getattr(args, "force_outbox", False)),
+                    no_fence=bool(getattr(args, "no_fence", False)),
+                    stop_timeout=int(getattr(args, "timeout", STOP_TIMEOUT_S)),
+                )
+            else:
+                result = dict(record.get("result") or {})
         except ParkRefused as exc:
+            journal.advance(
+                record["operation_id"],
+                "compensated",
+                result={"result": "denied"},
+                last_error=str(exc),
+            )
             return _fail(args, cfg, operation, name, str(exc), EXIT_CONFLICT,
                          detail={**exc.detail, **stale})
         except ParkError as exc:
+            journal.advance(
+                record["operation_id"],
+                "compensated",
+                result={"result": "error"},
+                last_error=str(exc),
+            )
             return _fail(args, cfg, operation, name, str(exc), EXIT_INTERNAL,
                          audit_result="error",
                          detail={**exc.detail, **stale})
 
-        result["idempotency_key"] = _idem_key(args)
-        _record_idempotency(args, cfg, operation, name, store, result)
-        _audit_ok(args, cfg, operation, name, {
-            "state": "parked",
-            "manifest": result["manifest"],
-            "critical_jobs": result["checkpoint"].get("critical_jobs"),
-            "outbox": result["checkpoint"].get("outbox"),
-            "resource_fence_epoch": result["checkpoint"].get("resource_fence_epoch"),
-            **stale,
-        })
+        result["idempotency_key"] = record["idempotency_key"]
+        result["operation_id"] = record["operation_id"]
+        record = _complete_resumable_journal(
+            args,
+            cfg,
+            operation=operation,
+            target=name,
+            journal=journal,
+            record=record,
+            result=result,
+            audit_target=name,
+            audit_detail={
+                "state": "parked",
+                "manifest": result["manifest"],
+                "critical_jobs": result["checkpoint"].get("critical_jobs"),
+                "outbox": result["checkpoint"].get("outbox"),
+                "resource_fence_epoch": result["checkpoint"].get(
+                    "resource_fence_epoch"
+                ),
+            },
+        )
         _emit(args, result,
               f"parked {name}: checkpoint manifest {result['manifest']} "
               f"(resource_fence_epoch {result['checkpoint'].get('resource_fence_epoch')}, "

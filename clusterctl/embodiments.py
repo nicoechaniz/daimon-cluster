@@ -77,6 +77,14 @@ class Registry:
         finally:
             os.close(descriptor)
         os.replace(temporary, self.path)
+        directory = os.open(
+            self.path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
     def register(
         self, *, body_ref: str, embodiment_id: str | None = None

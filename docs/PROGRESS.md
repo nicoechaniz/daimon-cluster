@@ -43,6 +43,18 @@ migration, crash/race tests and unchanged Matrix verifier consumption. See
 passes 324 tests with 2 intentional skips under ResourceWarning-as-error. It
 is not enabled on a live host.
 
+Issue #65 implements the second #46 hardening dependency as a stacked review
+candidate. An owner-only SQLite journal now records exact create, power,
+provision and handoff intent before substrate dispatch, reserves stable
+embodiment/incarnation/token identities, observes effect truth before logical
+commit and closes idempotency/audit with stable identities. Pending or
+contradictory work is visible in reconcile and clusterd health; only
+observable power operations have a bounded audited repair command. See
+`docs/design/operation-journal.md` and
+`docs/verification/h2-operation-journal.md`. The candidate passes 382 tests
+with 2 intentional skips; the 58 H2 crash/retry tests also pass five
+consecutive repetitions. It is not enabled on a live host.
+
 ## Previous snapshot (2026-08-04)
 
 Issue #48 is implemented and merged through PR #49.

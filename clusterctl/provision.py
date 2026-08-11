@@ -24,12 +24,13 @@ import hashlib
 import json
 import os
 import shlex
+import stat
 import uuid
 from pathlib import Path
 
 import yaml
 
-from . import audit, idempotency
+from . import audit, idempotency, operation_journal
 from .inventory import SPEC_SCHEMA, load_specs
 from .lifecycle import (
     EXIT_CONFLICT,
@@ -43,6 +44,11 @@ from .lifecycle import (
     _idem_key,
     _lock_or_fail,
     _record_idempotency,
+    _request_id,
+    _action_digest,
+    _actor,
+    _mutation_boundary,
+    _observe_runtime,
     _stale_detail,
     _write_spec,
 )
@@ -110,8 +116,45 @@ class ProvisionError(Exception):
 
 def _confirmations_dir(state_dir) -> Path:
     path = Path(state_dir) / "confirmations"
-    path.mkdir(parents=True, exist_ok=True)
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    metadata = path.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+    ):
+        raise ProvisionError("confirmation directory is not owner-controlled")
+    path.chmod(0o700)
     return path
+
+
+def _write_confirmation(path: Path, value: dict) -> None:
+    if path.is_symlink():
+        raise ProvisionError("confirmation symlink is forbidden")
+    temporary = path.with_suffix(".json.tmp")
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        os.fchmod(descriptor, 0o600)
+        raw = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+        written = 0
+        while written < len(raw):
+            written += os.write(descriptor, raw[written:])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.replace(temporary, path)
+    directory = os.open(
+        path.parent,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def _generate_identity(adapter, name: str) -> tuple[str, str]:
@@ -250,98 +293,280 @@ def _reverse_and_fail(args, cfg, adapter, name, spec, stale, exc, created) -> in
 
 def cmd_provision_prepare(args, cfg, adapter) -> int:
     name, operation = args.name, "provision-prepare"
-    store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
-    if rc is not None:
-        return rc
-
     lock_ctx = _lock_or_fail(args, cfg, operation, name)
     if isinstance(lock_ctx, int):
         return lock_ctx
     with lock_ctx as acquired:
         stale = _stale_detail(acquired)
-
-        # Admission: fresh name in BOTH state_dir and incus; sponsor must
-        # differ from requester (ADR D8 onboarding ceremony).
-        specs = load_specs(cfg.instances_dir)
-        actual_names = {inst["name"] for inst in adapter.list_instances()}
-        if name in specs or name in actual_names:
-            where = "declared in state_dir" if name in specs else "present in incus"
-            return _fail(args, cfg, operation, name,
-                         f"instance {name!r} already exists ({where})",
-                         EXIT_CONFLICT, detail=stale)
-        if args.requested_by == args.sponsor:
-            return _fail(args, cfg, operation, name,
-                         "sponsor must differ from requester (ADR D8)",
-                         EXIT_CONFLICT,
-                         detail={"requested_by": args.requested_by,
-                                 "sponsor": args.sponsor, **stale})
-
-        # Seed manifest: parse + verify checksums BEFORE any effect.
+        journal = operation_journal.OperationJournal(cfg.state_dir)
+        pending = journal.open_for_target(name)
         seed = None
+        seed_digest = None
         if getattr(args, "seed_manifest", None):
             try:
                 seed = _load_seed_manifest(args.seed_manifest)
-            except SeedError as exc:
-                return _fail(args, cfg, operation, name,
-                             f"seed manifest rejected: {exc}",
-                             EXIT_CONFLICT, detail=stale)
-
-        image_version = adapter.resolve_image(DEFAULT_IMAGE)
-        budgets = adapter.profile_budgets(cfg.profile)
-        spec = {
-            "schema": SPEC_SCHEMA,
+                seed_digest = hashlib.sha256(
+                    Path(args.seed_manifest).read_bytes()
+                ).hexdigest()
+            except (SeedError, OSError) as exc:
+                return _fail(
+                    args,
+                    cfg,
+                    operation,
+                    name,
+                    f"seed manifest rejected: {exc}",
+                    EXIT_CONFLICT,
+                    detail=stale,
+                )
+        exact_call = {
+            "method": "provision-prepare",
             "name": name,
             "species": args.species,
-            "image_version": image_version,
-            "budgets": budgets,
-            "created_ms": audit.now_ms(),
-            "created_by": args.requested_by,
-            "governance": {"requested_by": args.requested_by, "sponsor": args.sponsor},
-            "idempotency_key": _idem_key(args),
+            "requested_by": args.requested_by,
+            "sponsor": args.sponsor,
+            "seed_manifest_sha256": seed_digest,
+            "image": DEFAULT_IMAGE,
+            "profile": cfg.profile,
         }
-
-        try:
-            adapter.create_instance(name, image_version, cfg.profile)
-            adapter.start(name)
-            # Durable home volume BEFORE key generation so the identity
-            # lands on durable storage (design §2 step 2 -> 3).
-            adapter.ensure_volume(name)
-            pubkey, fingerprint = _generate_identity(adapter, name)
-            if seed is not None:
-                _stage_seed(adapter, name, seed)
-        except Exception as exc:
-            # Always attempt reversal: a mid-create failure may still have
-            # left a partial container behind (mirrors #11 cmd_create).
-            return _reverse_and_fail(args, cfg, adapter, name, spec, stale,
-                                     exc, created=True)
-
-        # Spec + confirmation token. Public identity material only.
-        spec["state"] = STATE_PENDING
-        spec["identity_pubkey"] = pubkey
-        spec["key_fingerprint"] = fingerprint
-        _write_spec(cfg.instances_dir, spec)
-
-        directory_entry = {
-            "identity": f"{name}@daimonmatrix",
-            "pubkey": pubkey,
-            "fingerprint": fingerprint,
-            "host_broker": HOST_BROKER,
-        }
-        token = str(uuid.uuid4())
-        confirmation = {
-            "schema": CONFIRMATION_SCHEMA,
-            "token": token,
-            "operation": CONFIRM_OPERATION,
+        if pending is None:
+            store = idempotency.load_store(cfg.state_dir)
+            rc = _check_idempotency(args, cfg, operation, name, store, adapter)
+            if rc is not None:
+                return rc
+            specs = load_specs(cfg.instances_dir)
+            actual_names = {inst["name"] for inst in adapter.list_instances()}
+            if name in specs or name in actual_names:
+                where = "declared in state_dir" if name in specs else "present in incus"
+                return _fail(
+                    args,
+                    cfg,
+                    operation,
+                    name,
+                    f"instance {name!r} already exists ({where})",
+                    EXIT_CONFLICT,
+                    detail=stale,
+                )
+            if args.requested_by == args.sponsor:
+                return _fail(
+                    args,
+                    cfg,
+                    operation,
+                    name,
+                    "sponsor must differ from requester (ADR D8)",
+                    EXIT_CONFLICT,
+                    detail={
+                        "requested_by": args.requested_by,
+                        "sponsor": args.sponsor,
+                        **stale,
+                    },
+                )
+            image_version = adapter.resolve_image(DEFAULT_IMAGE)
+            budgets = adapter.profile_budgets(cfg.profile)
+            spec = {
+                "schema": SPEC_SCHEMA,
+                "name": name,
+                "species": args.species,
+                "image_version": image_version,
+                "budgets": budgets,
+                "created_ms": audit.now_ms(),
+                "created_by": args.requested_by,
+                "governance": {
+                    "requested_by": args.requested_by,
+                    "sponsor": args.sponsor,
+                },
+                "idempotency_key": _idem_key(args),
+            }
+            token = str(uuid.uuid4())
+            transition = {
+                "spec": spec,
+                "confirmation_token": token,
+                "confirmation_created_ms": audit.now_ms(),
+            }
+            expected = {
+                "runtime": {"present": False},
+                "spec_present": False,
+                "volume_present": False,
+            }
+        else:
+            if pending["operation"] != operation:
+                return _fail(
+                    args,
+                    cfg,
+                    operation,
+                    name,
+                    "target has an unresolved operation",
+                    EXIT_CONFLICT,
+                    detail={"operation_id": pending["operation_id"]},
+                )
+            if pending["intent"].get("runtime_call") != exact_call:
+                return _fail(
+                    args,
+                    cfg,
+                    operation,
+                    name,
+                    "pending provision has different exact bytes",
+                    EXIT_CONFLICT,
+                    detail={"operation_id": pending["operation_id"]},
+                )
+            transition = pending["intended_transition"]
+            expected = pending["expected_precondition"]
+            spec = transition["spec"]
+            token = transition["confirmation_token"]
+            image_version = spec["image_version"]
+            budgets = spec["budgets"]
+        intent = {
+            "operation": operation,
             "target": name,
-            "created_ms": audit.now_ms(),
-            "ttl_s": TOKEN_TTL_S,
-            "used": False,
-            "artifacts": {"directory_entry": directory_entry},
+            "runtime_call": exact_call,
+            "expected_precondition": expected,
+            "intended_transition": transition,
         }
-        token_path = _confirmations_dir(cfg.state_dir) / f"{token}.json"
-        token_path.write_text(json.dumps(confirmation, indent=2, sort_keys=True) + "\n",
-                              encoding="utf-8")
+        try:
+            record = journal.plan(
+                operation=operation,
+                target=name,
+                idempotency_key=_idem_key(args),
+                intent=intent,
+                expected_precondition=expected,
+                intended_transition=transition,
+                audit_identity={
+                    "actor": _actor(args),
+                    "request_id": _request_id(args),
+                    "action_digest": _action_digest(args),
+                    "context": stale,
+                },
+            )
+        except operation_journal.JournalConflict as exc:
+            return _fail(args, cfg, operation, name, str(exc), EXIT_CONFLICT)
+        _mutation_boundary("after-plan", record)
+        try:
+            if record["state"] == "planned":
+                record = journal.advance(
+                    record["operation_id"],
+                    "runtime-dispatching",
+                    runtime_observation={"before_dispatch": _observe_runtime(adapter, name)},
+                )
+                _mutation_boundary("after-runtime-dispatch-persist", record)
+            if record["state"] == "runtime-dispatching":
+                observed = _observe_runtime(adapter, name)
+                if not observed["present"]:
+                    adapter.create_instance(name, image_version, cfg.profile)
+                _mutation_boundary("after-provision-create", record)
+                observed = _observe_runtime(adapter, name)
+                if observed["state"] != "running":
+                    adapter.start(name)
+                _mutation_boundary("after-provision-start", record)
+                adapter.ensure_volume(name)
+                _mutation_boundary("after-provision-volume", record)
+                pubkey, fingerprint = _generate_identity(adapter, name)
+                _mutation_boundary("after-provision-identity", record)
+                if seed is not None:
+                    _stage_seed(adapter, name, seed)
+                _mutation_boundary("after-provision-seed", record)
+                observed = _observe_runtime(adapter, name)
+                if observed["state"] != "running":
+                    raise ProvisionError("provisioned runtime is not running")
+                record = journal.advance(
+                    record["operation_id"],
+                    "runtime-applied",
+                    runtime_observation={
+                        "runtime": observed,
+                        "identity_pubkey": pubkey,
+                        "key_fingerprint": fingerprint,
+                        "volume": f"{name}-home",
+                    },
+                )
+                _mutation_boundary("after-runtime-observation", record)
+            if record["state"] == "runtime-applied":
+                pubkey = record["runtime_observation"]["identity_pubkey"]
+                fingerprint = record["runtime_observation"]["key_fingerprint"]
+                final_spec = {
+                    **spec,
+                    "state": STATE_PENDING,
+                    "identity_pubkey": pubkey,
+                    "key_fingerprint": fingerprint,
+                }
+                _write_spec(cfg.instances_dir, final_spec)
+                _mutation_boundary("after-spec", record)
+                directory_entry = {
+                    "identity": f"{name}@daimonmatrix",
+                    "pubkey": pubkey,
+                    "fingerprint": fingerprint,
+                    "host_broker": HOST_BROKER,
+                }
+                confirmation = {
+                    "schema": CONFIRMATION_SCHEMA,
+                    "token": token,
+                    "operation": CONFIRM_OPERATION,
+                    "target": name,
+                    "created_ms": transition["confirmation_created_ms"],
+                    "ttl_s": TOKEN_TTL_S,
+                    "used": False,
+                    "artifacts": {"directory_entry": directory_entry},
+                }
+                token_path = _confirmations_dir(cfg.state_dir) / f"{token}.json"
+                _write_confirmation(token_path, confirmation)
+                _mutation_boundary("after-confirmation", record)
+                record = journal.advance(
+                    record["operation_id"],
+                    "logical-committed",
+                    logical_observation={
+                        "spec_state": STATE_PENDING,
+                        "confirmation_token": token,
+                        "directory_entry": directory_entry,
+                    },
+                )
+                _mutation_boundary("after-logical-commit", record)
+        except Exception as exc:
+            cleanup_errors = []
+            for action in (
+                lambda: adapter.stop(name, 30),
+                lambda: adapter.delete(name),
+                lambda: adapter.delete_volume(name),
+            ):
+                try:
+                    action()
+                except Exception as cleanup_exc:
+                    cleanup_errors.append(str(cleanup_exc))
+            failed_spec = {**spec, "state": STATE_FAILED, "state_reason": str(exc)}
+            _write_spec(cfg.instances_dir, failed_spec)
+            try:
+                after_cleanup = _observe_runtime(adapter, name)
+            except operation_journal.JournalError:
+                after_cleanup = {"present": None, "state": None}
+            terminal = not after_cleanup.get("present") and not cleanup_errors
+            record = journal.advance(
+                record["operation_id"],
+                "compensated" if terminal else "degraded",
+                runtime_observation={"after_cleanup": after_cleanup},
+                result={"result": "error", "reversed": terminal},
+                last_error=str(exc),
+            )
+            return _fail(
+                args,
+                cfg,
+                operation,
+                name,
+                f"provision failed ({exc}); "
+                + (
+                    "container+volume reversed"
+                    if terminal
+                    else "cleanup unresolved; follow-on blocked"
+                ),
+                EXIT_INTERNAL,
+                audit_result="error",
+                detail={
+                    "reversed": terminal,
+                    "cleanup_errors": cleanup_errors,
+                    "operation_id": record["operation_id"],
+                    **stale,
+                },
+                event_id=record["audit_event_id"],
+            )
+
+        pubkey = record["runtime_observation"]["identity_pubkey"]
+        fingerprint = record["runtime_observation"]["key_fingerprint"]
+        directory_entry = record["logical_observation"]["directory_entry"]
 
         result = {
             "operation": operation,
@@ -357,15 +582,43 @@ def cmd_provision_prepare(args, cfg, adapter) -> int:
             "seed_staged": len(seed["staged"]) if seed else 0,
             "announcement": ANNOUNCEMENT_CREATION,
             "idempotency_key": _idem_key(args),
+            "operation_id": record["operation_id"],
         }
-        _record_idempotency(args, cfg, operation, name, store, result)
-        _audit_ok(args, cfg, operation, name,
-                  {"image_version": image_version,
-                   "key_fingerprint": fingerprint,
-                   "requested_by": args.requested_by,
-                   "sponsor": args.sponsor,
-                   "seed_staged": result["seed_staged"],
-                   "announcement": ANNOUNCEMENT_CREATION, **stale})
+        if record["state"] == "logical-committed":
+            store = idempotency.load_store(cfg.state_dir)
+            _record_idempotency(args, cfg, operation, name, store, result)
+            _mutation_boundary("after-idempotency", record)
+            record = journal.advance(
+                record["operation_id"], "idempotency-persisted", result=result
+            )
+        if record["state"] == "idempotency-persisted":
+            identity = record["audit_identity"]
+            audit.append_event(
+                cfg.state_dir,
+                actor=identity["actor"],
+                action=operation,
+                target=name,
+                result="ok",
+                detail={
+                    "image_version": image_version,
+                    "key_fingerprint": fingerprint,
+                    "requested_by": args.requested_by,
+                    "sponsor": args.sponsor,
+                    "seed_staged": result["seed_staged"],
+                    "announcement": ANNOUNCEMENT_CREATION,
+                    "operation_id": record["operation_id"],
+                    **identity.get("context", {}),
+                },
+                idempotency_key=record["idempotency_key"],
+                request_id=identity.get("request_id"),
+                action_digest=identity.get("action_digest"),
+                event_id=record["audit_event_id"],
+            )
+            _mutation_boundary("after-audit", record)
+            record = journal.advance(record["operation_id"], "audited")
+        if record["state"] == "audited":
+            record = journal.advance(record["operation_id"], "completed", result=result)
+            _mutation_boundary("after-completed", record)
         _emit(args, result,
               f"provisioned {name} (state {STATE_PENDING}); confirmation "
               f"token {token} (ttl {TOKEN_TTL_S}s) — HALT until "
@@ -380,7 +633,7 @@ def cmd_provision_prepare(args, cfg, adapter) -> int:
 def cmd_provision_confirm(args, cfg, adapter) -> int:
     operation = "provision-confirm"
     token = args.token
-    path = Path(cfg.state_dir) / "confirmations" / f"{token}.json"
+    path = _confirmations_dir(cfg.state_dir) / f"{token}.json"
     if not path.is_file():
         return _fail(args, cfg, operation, token,
                      f"unknown confirmation token {token!r}", EXIT_NOT_FOUND)
@@ -413,11 +666,9 @@ def cmd_provision_confirm(args, cfg, adapter) -> int:
                      EXIT_CONFLICT,
                      detail={"token": token, "ttl_s": ttl_s, "age_s": age_ms // 1000})
 
-    # Consume the token atomically (tmp + rename).
+    # Consume the token durably (fsynced tmp + rename + directory fsync).
     data["used"] = True
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    _write_confirmation(path, data)
 
     # Directory activation is governance's act (design §2 step 8):
     # clusterctl only flips the spec and hands the artifact to the
@@ -426,7 +677,7 @@ def cmd_provision_confirm(args, cfg, adapter) -> int:
     if spec_path.is_file():
         spec = yaml.safe_load(spec_path.read_text(encoding="utf-8")) or {}
         spec["state"] = STATE_ACTIVE_PENDING
-        spec_path.write_text(yaml.safe_dump(spec, sort_keys=False), encoding="utf-8")
+        _write_spec(cfg.instances_dir, spec)
 
     _audit_ok(args, cfg, operation, target,
               {"token": token, "state": STATE_ACTIVE_PENDING})

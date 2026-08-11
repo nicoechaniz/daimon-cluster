@@ -10,12 +10,15 @@ Reconciliation classifies every instance as one of:
 - ``undeclared`` — present in incus, not declared
 - ``drifted``    — declared budgets or image differ from actual config
 
-All functions here are strictly side-effect free.
+Read and reconciliation functions are side-effect free. Spec mutations use
+the durable `write_spec`/`update_spec` boundary.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import os
+import stat
 from pathlib import Path
 
 import yaml
@@ -208,6 +211,50 @@ def load_spec_raw(instances_dir: str | Path, name: str) -> dict | None:
     return raw
 
 
+def write_spec(instances_dir: str | Path, spec: dict) -> Path:
+    """Durably replace one schema-checked instance spec."""
+    if spec.get("schema") != SPEC_SCHEMA:
+        raise SpecError(f"spec schema must be {SPEC_SCHEMA!r}")
+    name = spec.get("name")
+    if not isinstance(name, str) or not name:
+        raise SpecError("spec name is required")
+    parent = Path(instances_dir)
+    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    metadata = parent.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+    ):
+        raise SpecError("instance spec directory is not owner-controlled")
+    parent.chmod(0o700)
+    path = parent / f"{name}.yaml"
+    if path.is_symlink():
+        raise SpecError("instance spec symlink is forbidden")
+    temporary = path.with_suffix(".yaml.tmp")
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        os.fchmod(descriptor, 0o600)
+        raw = yaml.safe_dump(spec, sort_keys=False).encode()
+        written = 0
+        while written < len(raw):
+            written += os.write(descriptor, raw[written:])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.replace(temporary, path)
+    directory = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return path
+
+
 def update_spec(instances_dir: str | Path, name: str, updates: dict) -> dict:
     """The spec-store write API: merge ``updates`` into the declared spec
     and persist. Callers (park, lifecycle) MUST go through here instead of
@@ -217,8 +264,7 @@ def update_spec(instances_dir: str | Path, name: str, updates: dict) -> dict:
     if raw is None:
         raise SpecError(f"instance {name!r} is not declared")
     raw.update(updates)
-    path = Path(instances_dir) / f"{name}.yaml"
-    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    write_spec(instances_dir, raw)
     return raw
 
 

@@ -89,6 +89,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rec.add_argument("--json", action="store_true",
                        help="emit the clusterctl-reconcile-report/v1 JSON")
 
+    p_repair = sub.add_parser(
+        "repair",
+        help="resume one exact journaled mutation with bounded policy",
+    )
+    p_repair.add_argument("--operation-id", required=True, dest="operation_id")
+    p_repair.add_argument("--json", action="store_true", help="emit JSON")
+
     def _mutation(name, help_text):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("name", help="instance name")
@@ -260,7 +267,7 @@ def run(argv=None, adapter=None) -> int:
 
         if args.command in ("create", "start", "stop", "restart", "logs",
                             "destroy-plan", "provision", "snapshot",
-                            "park", "wake", "transfer"):
+                            "park", "wake", "transfer", "repair"):
             ad = adapter if adapter is not None else _adapter_for(cfg)
             return lifecycle.dispatch(args, cfg, ad)
 

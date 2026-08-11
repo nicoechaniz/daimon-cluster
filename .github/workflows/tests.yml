@@ -48,24 +48,43 @@ jobs:
               == "MIT"
           )
           PY
-      - name: Lint the Matrix and production-fence boundaries
+      - name: Lint the Matrix, fence and mutation-journal boundaries
         run: >-
           python -m ruff check
+          clusterctl/audit.py
+          clusterctl/cli.py
+          clusterctl/embodiments.py
           clusterctl/fences.py
+          clusterctl/idempotency.py
+          clusterctl/inventory.py
           clusterctl/production_fences.py
           clusterctl/leases.py
+          clusterctl/lifecycle.py
           clusterctl/matrix_host.py
+          clusterctl/operation_journal.py
+          clusterctl/park.py
+          clusterctl/provision.py
+          clusterctl/reconcile.py
+          clusterctl/transfer.py
           clusterd/__main__.py
           clusterd/handlers.py
           tests/test_matrix_host.py
           tests/test_matrix_host_process.py
           tests/test_matrix_parity.py
           tests/test_matrix_status.py
+          tests/test_operation_journal.py
+          tests/test_park.py
           tests/test_production_fences.py
-      - name: Type-check the Matrix and production-fence boundaries
+          tests/test_transfer.py
+      - name: Type-check the Matrix, fence and mutation-journal boundaries
         run: >-
           python -m mypy --follow-imports=skip --ignore-missing-imports
+          --disable-error-code=import-untyped
+          clusterctl/embodiments.py
           clusterctl/fences.py
+          clusterctl/idempotency.py
+          clusterctl/inventory.py
+          clusterctl/operation_journal.py
           clusterctl/production_fences.py
           clusterctl/matrix_host.py
       - run: python -m compileall -q clusterctl clusterd steward_tools tests

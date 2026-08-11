@@ -67,7 +67,7 @@ import os
 import shlex
 from pathlib import Path
 
-from . import audit, embodiments, fences, idempotency, park
+from . import audit, embodiments, fences, park
 from .inventory import load_spec_raw, load_specs, update_spec
 from .lifecycle import (
     EXIT_CONFLICT,  # noqa: F401  (re-exported for callers/tests)
@@ -75,13 +75,11 @@ from .lifecycle import (
     EXIT_NOT_FOUND,
     EXIT_OK,
     _actor,
-    _audit_ok,
-    _check_idempotency,
+    _complete_resumable_journal,
     _emit,
     _fail,
-    _idem_key,
     _lock_or_fail,
-    _record_idempotency,
+    _prepare_resumable_journal,
     _stale_detail,
     _write_spec,
 )
@@ -487,11 +485,6 @@ def run_wake(
 
 def cmd_wake(args, cfg, adapter) -> int:
     name, operation = args.name, "wake"
-    store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
-    if rc is not None:
-        return rc
-
     specs = load_specs(cfg.instances_dir)
     if name not in specs:
         return _fail(args, cfg, operation, name,
@@ -502,26 +495,62 @@ def cmd_wake(args, cfg, adapter) -> int:
         return lock_ctx
     with lock_ctx as acquired:
         stale = _stale_detail(acquired)
+        prepared = _prepare_resumable_journal(
+            args,
+            cfg,
+            adapter,
+            operation=operation,
+            target=name,
+            runtime_call={"method": "wake-handoff", "name": name},
+            audit_context=stale,
+        )
+        if isinstance(prepared, int):
+            return prepared
+        journal, record, _recovered = prepared
         try:
-            result = run_wake(name, cfg, adapter, actor=_actor(args))
+            if record["state"] == "runtime-dispatching":
+                result = run_wake(name, cfg, adapter, actor=_actor(args))
+            else:
+                result = dict(record.get("result") or {})
         except TransferRefused as exc:
+            journal.advance(
+                record["operation_id"],
+                "compensated",
+                result={"result": "denied"},
+                last_error=str(exc),
+            )
             return _fail(args, cfg, operation, name, str(exc), EXIT_CONFLICT,
                          detail={**exc.detail, **stale})
         except TransferError as exc:
+            journal.advance(
+                record["operation_id"],
+                "compensated",
+                result={"result": "error"},
+                last_error=str(exc),
+            )
             return _fail(args, cfg, operation, name, str(exc), EXIT_INTERNAL,
                          audit_result="error",
                          detail={**exc.detail, **stale})
 
-        result["idempotency_key"] = _idem_key(args)
-        _record_idempotency(args, cfg, operation, name, store, result)
-        _audit_ok(args, cfg, operation, name, {
-            "state": "active",
-            "fence_epoch": result["fence_epoch"],
-            "announcement": result["announcement"],
-            "wake_record": result["wake_record"],
-            "manifest": result["manifest"],
-            **stale,
-        })
+        result["idempotency_key"] = record["idempotency_key"]
+        result["operation_id"] = record["operation_id"]
+        record = _complete_resumable_journal(
+            args,
+            cfg,
+            operation=operation,
+            target=name,
+            journal=journal,
+            record=record,
+            result=result,
+            audit_target=name,
+            audit_detail={
+                "state": "active",
+                "fence_epoch": result["fence_epoch"],
+                "announcement": result["announcement"],
+                "wake_record": result["wake_record"],
+                "manifest": result["manifest"],
+            },
+        )
         _emit(args, result,
               f"woke {name}: re-entry from checkpoint {result['manifest']} "
               f"(fence_epoch {result['fence_epoch']}, announcement "
@@ -876,11 +905,6 @@ def run_transfer(
 
 def cmd_transfer(args, cfg, adapter) -> int:
     name, new_name, operation = args.name, args.to, "transfer"
-    store = idempotency.load_store(cfg.state_dir)
-    rc = _check_idempotency(args, cfg, operation, name, store, adapter)
-    if rc is not None:
-        return rc
-
     specs = load_specs(cfg.instances_dir)
     if name not in specs:
         return _fail(args, cfg, operation, name,
@@ -891,36 +915,76 @@ def cmd_transfer(args, cfg, adapter) -> int:
         return lock_ctx
     with lock_ctx as acquired:
         stale = _stale_detail(acquired)
+        prepared = _prepare_resumable_journal(
+            args,
+            cfg,
+            adapter,
+            operation=operation,
+            target=name,
+            runtime_call={
+                "method": "transfer-handoff",
+                "source": name,
+                "target": new_name,
+            },
+            audit_context=stale,
+        )
+        if isinstance(prepared, int):
+            return prepared
+        journal, record, _recovered = prepared
         try:
-            result = run_transfer(name, new_name, cfg, adapter,
-                                  actor=_actor(args))
+            if record["state"] == "runtime-dispatching":
+                result = run_transfer(
+                    name, new_name, cfg, adapter, actor=_actor(args)
+                )
+            else:
+                result = dict(record.get("result") or {})
         except TransferRefused as exc:
+            journal.advance(
+                record["operation_id"],
+                "compensated",
+                result={"result": "denied"},
+                last_error=str(exc),
+            )
             return _fail(args, cfg, operation, name, str(exc), EXIT_CONFLICT,
                          detail={**exc.detail, **stale})
         except TransferError as exc:
+            journal.advance(
+                record["operation_id"],
+                "compensated",
+                result={"result": "error"},
+                last_error=str(exc),
+            )
             return _fail(args, cfg, operation, name, str(exc), EXIT_INTERNAL,
                          audit_result="error",
                          detail={**exc.detail, **stale})
 
-        result["idempotency_key"] = _idem_key(args)
-        _record_idempotency(args, cfg, operation, name, store, result)
+        result["idempotency_key"] = record["idempotency_key"]
+        result["operation_id"] = record["operation_id"]
         # h. audit event transfer — action_digest bound to the manifest
         #    hash (provenance), announcement recorded in the detail,
         #    never broadcast by clusterctl itself.
-        if not getattr(args, "action_digest", None):
-            args.action_digest = result["manifest_hash"]
-        _audit_ok(args, cfg, operation, new_name, {
-            "source": name,
-            "state": "active",
-            "source_status": "transferred",
-            "fence_epoch": result["fence_epoch"],
-            "announcement": result["announcement"],
-            "volume": "moved",
-            "volume_name": result["volume_name"],
-            "transfer_record": result["transfer_record"],
-            "manifest": result["manifest"],
-            **stale,
-        })
+        record = _complete_resumable_journal(
+            args,
+            cfg,
+            operation=operation,
+            target=name,
+            journal=journal,
+            record=record,
+            result=result,
+            audit_target=new_name,
+            audit_detail={
+                "source": name,
+                "state": "active",
+                "source_status": "transferred",
+                "fence_epoch": result["fence_epoch"],
+                "announcement": result["announcement"],
+                "volume": "moved",
+                "volume_name": result["volume_name"],
+                "transfer_record": result["transfer_record"],
+                "manifest": result["manifest"],
+            },
+            derived_action_digest=result["manifest_hash"],
+        )
         _emit(args, result,
               f"transferred {name} -> {new_name}: embodiment relocated "
               f"(fence_epoch {result['fence_epoch']}, volume moved, "

@@ -240,6 +240,20 @@ The read model reports `being_ref`, installed manifest hash, local origin,
 per-incarnation heads, and durable peer cursors. It contains no private key or
 provider-store contents. `/we.sync` event bytes are defined by Daimon Matrix.
 
+### 1.10 `cluster-operation-journal/v1`
+
+The owner-only SQLite journal closes substrate mutation intent before effect
+dispatch. Each row binds an operation id, optional idempotency key, exact
+`cluster-operation-intent/v1` bytes, expected precondition, intended logical
+transition, stable audit event id, runtime/logical observations and result.
+
+States are `planned`, `runtime-dispatching`, `runtime-applied`,
+`logical-committed`, `idempotency-persisted`, `audited`, `completed`,
+`compensated` and `degraded`. `completed` and `compensated` are terminal.
+One open row per target is permitted; a degraded row blocks new mutation until
+an operation-specific repair policy authorizes a bounded resume. See
+`docs/design/operation-journal.md`.
+
 ## 2. Acceptance matrix (issue → evidence required to close)
 
 | Issue | Evidence artifact |

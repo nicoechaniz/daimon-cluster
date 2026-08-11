@@ -38,6 +38,7 @@ import yaml
 from clusterctl import audit
 from clusterctl import cli
 from clusterctl import lifecycle
+from clusterctl import operation_journal
 from clusterctl.config import load_config
 
 from . import __version__
@@ -97,6 +98,24 @@ def _mirror_state(state_dir: str) -> str:
     except OSError:
         return "failing"
     return "ok"
+
+
+def _operation_journal_state(state_dir: str | None) -> dict:
+    if not state_dir:
+        return {"state": "unavailable", "open": 0, "degraded": 0}
+    try:
+        journal = operation_journal.OperationJournal.existing(state_dir)
+        if journal is not None:
+            journal.validate()
+        rows = [] if journal is None else journal.open_operations()
+    except operation_journal.JournalError:
+        return {"state": "unavailable", "open": 0, "degraded": 0}
+    degraded = sum(row["state"] == "degraded" for row in rows)
+    return {
+        "state": "clean" if not rows else "attention-required",
+        "open": len(rows),
+        "degraded": degraded,
+    }
 
 
 @dataclasses.dataclass(frozen=True)
@@ -240,10 +259,16 @@ def health(deps: Deps, ctx: RequestContext, **params) -> Response:
             state_dir = None
     chain_ok = _audit_chain_ok(state_dir) if state_dir else False
     mirror = _mirror_state(state_dir) if state_dir else "failing"
+    operations = _operation_journal_state(state_dir)
     # A broken audit chain or a configured-but-failing mirror degrades
     # health; local events are NEVER dropped for a mirror failure
     # (design §4 — the local log is the source of truth).
-    healthy = reachable and chain_ok and mirror != "failing"
+    healthy = (
+        reachable
+        and chain_ok
+        and mirror != "failing"
+        and operations["state"] == "clean"
+    )
     return Response(
         200,
         {
@@ -253,6 +278,7 @@ def health(deps: Deps, ctx: RequestContext, **params) -> Response:
             "clusterctl_reachable": reachable,
             "audit_chain_ok": chain_ok,
             "mirror_state": mirror,
+            "operation_journal": operations,
         },
     )
 

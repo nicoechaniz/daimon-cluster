@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from clusterctl import leases, park
+from clusterctl import leases, lifecycle, park
 from clusterctl.adapters import FakeAdapter
 from clusterctl.cli import run
 from clusterctl.config import Config
@@ -33,6 +33,10 @@ HANDOFF_CONTENT = "# DIALOGUE-HANDOFF\nresume hint: park tests\n"
 
 class _Kill(Exception):
     """Simulates a kill between steps (raised inside the on_step hook)."""
+
+
+class _OuterCrash(BaseException):
+    """Simulates process loss at an outer operation-journal boundary."""
 
 
 def _spec_dict(**overrides):
@@ -168,8 +172,10 @@ def test_happy_path_all_steps(state_dir, cfg, adapter, lease, capsys):
     assert calls.index("exec_quiesce_verify") < calls.index("stop")
 
     # audited
-    events = [json.loads(l) for l in
-              (state_dir / "audit.jsonl").read_text().strip().splitlines()]
+    events = [
+        json.loads(line)
+        for line in (state_dir / "audit.jsonl").read_text().strip().splitlines()
+    ]
     assert any(e["action"] == "park" and e["result"] == "ok" for e in events)
 
     # park-state converged
@@ -210,6 +216,71 @@ def test_handoff_park_replay_requires_current_terminal_effect(
     assert code == 10
     captured = capsys.readouterr()
     assert "not safely convergent" in captured.err
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "after-plan",
+        "after-runtime-dispatch-persist",
+        "after-runtime-observation",
+        "after-logical-commit",
+        "after-idempotency",
+        "after-audit",
+        "after-completed",
+    ],
+)
+def test_handoff_park_outer_journal_resumes_every_boundary(
+    state_dir, adapter, lease, monkeypatch, capsys, boundary
+):
+    _write_spec(state_dir)
+    key = "55555555-5555-4555-8555-555555555555"
+
+    def crash(observed, _record):
+        if observed == boundary:
+            raise _OuterCrash
+
+    monkeypatch.setattr(lifecycle, "_MUTATION_BOUNDARY_HOOK", crash)
+    with pytest.raises(_OuterCrash):
+        _cli(
+            state_dir,
+            "park",
+            "--handoff",
+            NAME,
+            "--idempotency-key",
+            key,
+            "--json",
+            adapter=adapter,
+        )
+    monkeypatch.setattr(lifecycle, "_MUTATION_BOUNDARY_HOOK", None)
+    capsys.readouterr()
+    code, _ = _cli(
+        state_dir,
+        "park",
+        "--handoff",
+        NAME,
+        "--idempotency-key",
+        key,
+        "--json",
+        adapter=adapter,
+    )
+    assert code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["state"] == "parked"
+    assert adapter._find(NAME)["state"] == "stopped"
+    events = [
+        json.loads(line)
+        for line in (state_dir / "audit.jsonl").read_text().splitlines()
+    ]
+    assert len(
+        [
+            event
+            for event in events
+            if event["action"] == "park"
+            and event["result"] == "ok"
+            and "operation_id" in event["detail"]
+        ]
+    ) == 1
 
 
 # ---------------------------------------------------------------------------

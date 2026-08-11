@@ -179,3 +179,20 @@ path — never file contents.
 `scripts/clusterctl` is a thin wrapper that execs the repo venv
 (`repo/.venv/bin/python -m clusterctl.cli "$@"`). Runtime deps: Python
 3.13 stdlib + PyYAML only.
+
+## Mutation recovery (issue #65)
+
+Create, power, provision-prepare and handoff mutations persist an exact
+operation intent before their first substrate call. `clusterctl reconcile
+--json` reports `counts.open_operations` plus pending/degraded findings.
+Clusterd health reports an `operation_journal` object and degrades while a
+record needs attention.
+
+```console
+clusterctl repair --operation-id operation:<uuid> --json
+```
+
+Repair accepts only a journaled start, stop or restart with a bounded,
+observable runtime state. It never clears arbitrary create, provision,
+handoff or future destroy ambiguity. The full state and rollback contract is
+`docs/design/operation-journal.md`.

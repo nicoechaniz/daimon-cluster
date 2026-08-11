@@ -337,7 +337,18 @@ def test_cli_wake_handoff_and_transfer(state_dir, cfg, adapter):
     code, out, _ = _cli(state_dir, "transfer", NAME, "--to", NEW,
                         "--json", adapter=adapter)
     assert code == 0
-    assert json.loads(out)["target"] == NEW
+    result = json.loads(out)
+    assert result["target"] == NEW
+    events = [
+        json.loads(line)
+        for line in (state_dir / "audit.jsonl").read_text().splitlines()
+    ]
+    success = next(
+        event
+        for event in events
+        if event["action"] == "transfer" and "operation_id" in event["detail"]
+    )
+    assert success["action_digest"] == result["manifest_hash"]
 
 
 def test_announcement_strings_distinct():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -27,7 +28,7 @@ from daimon_matrix.runtime import load_runtime
 from clusterctl.embodiments import Registry
 from clusterctl.matrix_host import matrix_client_root, matrix_root
 from clusterctl.operation_journal import OperationJournal
-from clusterctl import audit, cli, rebirth, rebirth_host
+from clusterctl import audit, cli, distributed_rebirth, rebirth, rebirth_host
 
 
 class SimulatedCrash(BaseException):
@@ -566,3 +567,186 @@ def test_changed_package_or_incomplete_peer_set_fails_before_install(tmp_path):
             fixture["peers"],
             idempotency_key=str(uuid.uuid4()),
         )
+
+
+def test_public_distributed_rollout_contains_no_target_custody(tmp_path, capsys):
+    fixture, state, _values = _install(tmp_path)
+    output = state / "public" / "rollout.json"
+    assert (
+        cli.run(
+            [
+                "--state-dir",
+                str(state),
+                "rebirth-rollout-create",
+                "--package-dir",
+                str(fixture["package"]),
+                "--output",
+                str(output),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    rollout = json.loads(capsys.readouterr().out)
+    assert (
+        distributed_rebirth.create_rollout_bundle(fixture["package"], output) == rollout
+    )
+    assert rollout["participant_embodiment_ids"] == sorted(fixture["peers"])
+    assert rollout["target"]["embodiment_id"] not in fixture["peers"]
+    raw = output.read_bytes()
+    assert raw == json.dumps(rollout, sort_keys=True, separators=(",", ":")).encode()
+    assert fixture["password"] not in raw
+    assert b"keystore" not in raw.lower()
+    assert b"client.key" not in raw.lower()
+    assert output.stat().st_mode & 0o077 == 0
+
+    changed = json.loads(raw)
+    changed["target"]["advertised_endpoint"] += "/changed"
+    with pytest.raises(
+        distributed_rebirth.DistributedRebirthError, match="rollout_id_mismatch"
+    ):
+        distributed_rebirth.validate_rollout(changed)
+
+
+def test_peer_rollout_waits_for_authenticated_restarted_daemon(short_tmp_path):
+    now_ms = time.time_ns() // 1_000_000
+    fixture, state, _values = _install(short_tmp_path, ceremony_now_ms=now_ms)
+    rollout = distributed_rebirth.create_rollout_bundle(fixture["package"])
+    peer_id = sorted(fixture["peers"])[0]
+    source = fixture["peers"][peer_id]
+    target = matrix_root(state, peer_id)
+    target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    target.parent.chmod(0o700)
+    shutil.copytree(source, target)
+    client_target = matrix_client_root(state, peer_id)
+    client_target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    shutil.copytree(source.parents[1] / "host-clients" / source.name, client_target)
+    origin = json.loads((target / "runtime.json").read_bytes())["local_origin"]
+    registry = Registry(state)
+    registry.register(body_ref=origin["body_ref"], embodiment_id=peer_id)
+    registry.start(
+        peer_id,
+        incarnation_id=origin["incarnation_id"],
+        started_at_ms=now_ms,
+    )
+
+    application = distributed_rebirth.apply_peer_rollout(state, rollout, peer_id)
+    assert application["state"] == "restart-required"
+    record = OperationJournal(state).latest_for_target(
+        f"distributed-rebirth:{rollout['rollout_id']}:{peer_id}"
+    )
+    assert record is not None
+    assert record["state"] == "runtime-applied"
+    with pytest.raises(
+        distributed_rebirth.DistributedRebirthError, match="status_rejected"
+    ):
+        distributed_rebirth.acknowledge_peer_rollout(state, rollout, peer_id)
+
+    process = _spawn_matrix_host(state, peer_id, fixture["peer_passwords"][peer_id])
+    try:
+        acknowledgement = distributed_rebirth.acknowledge_peer_rollout(
+            state, rollout, peer_id
+        )
+        assert acknowledgement["state"] == "completed"
+        assert acknowledgement["incarnation_id"] == origin["incarnation_id"]
+        assert (
+            acknowledgement["successor_manifest_hash"]
+            == rollout["successor_manifest_hash"]
+        )
+        assert (
+            distributed_rebirth.acknowledge_peer_rollout(state, rollout, peer_id)
+            == acknowledgement
+        )
+        assert (
+            distributed_rebirth.apply_peer_rollout(state, rollout, peer_id)["state"]
+            == "already-acknowledged"
+        )
+        assert (
+            sum(
+                event["action"] == "distributed-rebirth-peer-ack"
+                for event in audit.read_events(state)
+            )
+            == 1
+        )
+    finally:
+        process.terminate()
+        _stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr
+
+
+def test_distributed_target_cannot_start_before_exact_all_peer_admission(
+    short_tmp_path,
+):
+    now_ms = time.time_ns() // 1_000_000
+    fixture, _unused_state, _values = _install(short_tmp_path, ceremony_now_ms=now_ms)
+    rollout = distributed_rebirth.create_rollout_bundle(fixture["package"])
+    state = short_tmp_path / "target-cluster-state"
+    state.mkdir(mode=0o700)
+    installed = distributed_rebirth.install_distributed_target(
+        state,
+        fixture["package"],
+        rollout,
+        idempotency_key=str(uuid.uuid4()),
+    )
+    assert installed["state"] == "installed-stopped"
+    assert installed["admission_required"] is True
+    assert installed["peer_bundle_sha256"] == {}
+    with pytest.raises(rebirth_host.RebirthHostError, match="admission_missing"):
+        rebirth_host.launch_rebirth_host(
+            state,
+            installed["embodiment_id"],
+            _descriptor(fixture["password"]),
+        )
+    assert Registry(state).status(installed["embodiment_id"])["status"] == "stopped"
+
+    incarnations = {
+        item["embodiment_id"]: item["incarnation_id"]
+        for item in rollout["activation"]["body"]["successor_manifest"]["embodiments"]
+    }
+    acknowledgements = [
+        {
+            "schema": distributed_rebirth.ACK_SCHEMA,
+            "rollout_id": rollout["rollout_id"],
+            "embodiment_id": embodiment_id,
+            "incarnation_id": incarnations[embodiment_id],
+            "successor_manifest_hash": rollout["successor_manifest_hash"],
+            "runtime_sha256": hashlib.sha256(embodiment_id.encode()).hexdigest(),
+            "operation_id": str(uuid.uuid4()),
+            "audit_event_id": str(uuid.uuid4()),
+            "state": "completed",
+        }
+        for embodiment_id in rollout["participant_embodiment_ids"]
+    ]
+    with pytest.raises(
+        distributed_rebirth.DistributedRebirthError, match="ack_set_incomplete"
+    ):
+        distributed_rebirth.record_target_admission(
+            state, rollout, acknowledgements[:-1]
+        )
+    admission = distributed_rebirth.record_target_admission(
+        state, rollout, acknowledgements
+    )
+    assert (
+        distributed_rebirth.record_target_admission(
+            state, rollout, [*acknowledgements, acknowledgements[0]]
+        )
+        == admission
+    )
+
+    process, result = rebirth_host.launch_rebirth_host(
+        state,
+        installed["embodiment_id"],
+        _descriptor(fixture["password"]),
+    )
+    try:
+        assert result["state"] == "running-ready"
+        assert result["active_embodiment_ids"] == sorted(
+            [
+                *rollout["participant_embodiment_ids"],
+                installed["embodiment_id"],
+            ]
+        )
+    finally:
+        process.terminate()
+        _stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr

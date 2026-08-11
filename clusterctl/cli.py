@@ -26,7 +26,7 @@ from pathlib import Path
 
 import yaml
 
-from . import audit, lifecycle, rebirth
+from . import audit, distributed_rebirth, lifecycle, rebirth
 from .adapters import IncusAdapter, IncusError
 from .config import Config, ConfigError, load_config
 from .inventory import SpecError, find_record, load_specs, reconcile
@@ -301,6 +301,47 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_rebirth.add_argument("--idempotency-key", required=True)
     p_rebirth.add_argument("--json", action="store_true", help="emit JSON")
+
+    p_rollout = sub.add_parser(
+        "rebirth-rollout-create",
+        help="derive one custody-free content-addressed rollout bundle",
+    )
+    p_rollout.add_argument("--package-dir", required=True)
+    p_rollout.add_argument("--output", required=True)
+    p_rollout.add_argument("--json", action="store_true", help="emit JSON")
+
+    p_peer_apply = sub.add_parser(
+        "rebirth-peer-apply",
+        help="apply a public rollout to this host and require daemon restart",
+    )
+    p_peer_apply.add_argument("--rollout", required=True)
+    p_peer_apply.add_argument("--embodiment-id", required=True)
+    p_peer_apply.add_argument("--json", action="store_true", help="emit JSON")
+
+    p_peer_ack = sub.add_parser(
+        "rebirth-peer-ack",
+        help="authenticate the restarted peer and emit its rollout acknowledgement",
+    )
+    p_peer_ack.add_argument("--rollout", required=True)
+    p_peer_ack.add_argument("--embodiment-id", required=True)
+    p_peer_ack.add_argument("--json", action="store_true", help="emit JSON")
+
+    p_target = sub.add_parser(
+        "rebirth-target-install",
+        help="install target-only custody, stopped behind the acknowledgement gate",
+    )
+    p_target.add_argument("--package-dir", required=True)
+    p_target.add_argument("--rollout", required=True)
+    p_target.add_argument("--idempotency-key", required=True)
+    p_target.add_argument("--json", action="store_true", help="emit JSON")
+
+    p_admit = sub.add_parser(
+        "rebirth-target-admit",
+        help="record the exact all-predecessor acknowledgement set",
+    )
+    p_admit.add_argument("--rollout", required=True)
+    p_admit.add_argument("--ack", action="append", required=True)
+    p_admit.add_argument("--json", action="store_true", help="emit JSON")
     return parser
 
 
@@ -453,6 +494,71 @@ def run(argv=None, adapter=None) -> int:
                 )
             return EXIT_OK
 
+        if args.command == "rebirth-rollout-create":
+            result = distributed_rebirth.create_rollout_bundle(
+                args.package_dir, args.output
+            )
+            print(
+                json.dumps(result, indent=2)
+                if args.json
+                else f"{result['rollout_id']} {args.output}"
+            )
+            return EXIT_OK
+
+        if args.command == "rebirth-peer-apply":
+            result = distributed_rebirth.apply_peer_rollout(
+                cfg.state_dir,
+                args.rollout,
+                args.embodiment_id,
+                actor=args.actor,
+            )
+            print(
+                json.dumps(result, indent=2)
+                if args.json
+                else f"{result['embodiment_id']} {result['state']}"
+            )
+            return EXIT_OK
+
+        if args.command == "rebirth-peer-ack":
+            result = distributed_rebirth.acknowledge_peer_rollout(
+                cfg.state_dir,
+                args.rollout,
+                args.embodiment_id,
+                actor=args.actor,
+            )
+            print(
+                json.dumps(result, indent=2)
+                if args.json
+                else f"{result['embodiment_id']} {result['state']}"
+            )
+            return EXIT_OK
+
+        if args.command == "rebirth-target-install":
+            result = distributed_rebirth.install_distributed_target(
+                cfg.state_dir,
+                args.package_dir,
+                args.rollout,
+                idempotency_key=args.idempotency_key,
+                actor=args.actor,
+            )
+            print(
+                json.dumps(result, indent=2)
+                if args.json
+                else f"{result['embodiment_id']} {result['state']} admission-required"
+            )
+            return EXIT_OK
+
+        if args.command == "rebirth-target-admit":
+            result = distributed_rebirth.record_target_admission(
+                cfg.state_dir, args.rollout, args.ack
+            )
+            print(
+                json.dumps(result, indent=2)
+                if args.json
+                else f"{result['admission_id']} admitted"
+            )
+            return EXIT_OK
+
         if adapter is not None:
             specs = load_specs(cfg.instances_dir)
             records = reconcile(specs, adapter, cfg.host_id)
@@ -485,7 +591,13 @@ def run(argv=None, adapter=None) -> int:
                 )
         return EXIT_OK
 
-    except (ConfigError, SpecError, IncusError, rebirth.RebirthInstallError) as exc:
+    except (
+        ConfigError,
+        SpecError,
+        IncusError,
+        rebirth.RebirthInstallError,
+        distributed_rebirth.DistributedRebirthError,
+    ) as exc:
         print(f"clusterctl: error: {exc}", file=sys.stderr)
         return EXIT_INTERNAL
     except Exception as exc:  # pragma: no cover - defensive

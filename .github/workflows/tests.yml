@@ -54,6 +54,7 @@ jobs:
           clusterctl/audit.py
           clusterctl/adapters.py
           clusterctl/cli.py
+          clusterctl/distributed_rebirth.py
           clusterctl/embodiments.py
           clusterctl/fences.py
           clusterctl/idempotency.py
@@ -100,6 +101,7 @@ jobs:
           clusterctl/rebirth.py
           clusterctl/rebirth_host.py
           clusterctl/cli.py
+          clusterctl/distributed_rebirth.py
           tests/test_rebirth.py
       - run: >-
           python -m compileall -q clusterctl clusterd steward_tools tests

@@ -45,7 +45,9 @@ def _installed_identity(state: Path, embodiment_id: str) -> dict[str, Any]:
         "rebirth-install", "embodiment_id", embodiment_id
     )
     result = None if install is None else install.get("result")
-    activation_id = result.get("activation_id") if isinstance(result, dict) else None
+    if not isinstance(result, dict):
+        raise RebirthHostError("rebirth_host_install_receipt_missing")
+    activation_id = result.get("activation_id")
     if not isinstance(activation_id, str):
         raise RebirthHostError("rebirth_host_install_receipt_missing")
     install_target = f"rebirth:{authority.manifest.being_ref}:{activation_id}"
@@ -54,17 +56,38 @@ def _installed_identity(state: Path, embodiment_id: str) -> dict[str, Any]:
         or install["target"] != install_target
         or install["operation"] != "rebirth-install"
         or install["state"] != "completed"
-        or not isinstance(install["result"], dict)
-        or install["result"].get("embodiment_id") != embodiment_id
-        or install["result"].get("incarnation_id") != origin.get("incarnation_id")
-        or install["result"].get("successor_manifest_hash") != authority.manifest.digest
+        or result.get("embodiment_id") != embodiment_id
+        or result.get("incarnation_id") != origin.get("incarnation_id")
+        or result.get("successor_manifest_hash") != authority.manifest.digest
     ):
         raise RebirthHostError("rebirth_host_install_receipt_missing")
+    rollout_id = result.get("rollout_id")
+    participants = result.get("participant_embodiment_ids")
+    admission_required = result.get("admission_required")
+    rollout_gate: dict[str, Any] | None = None
+    if any(
+        value is not None for value in (rollout_id, participants, admission_required)
+    ):
+        if (
+            not isinstance(rollout_id, str)
+            or not isinstance(participants, list)
+            or not participants
+            or participants != sorted(participants)
+            or len(participants) != len(set(participants))
+            or not all(isinstance(item, str) and item for item in participants)
+            or admission_required is not True
+        ):
+            raise RebirthHostError("rebirth_host_install_receipt_missing")
+        rollout_gate = {
+            "rollout_id": rollout_id,
+            "participant_embodiment_ids": participants,
+        }
     return {
         "activation_id": activation_id,
         "being_ref": authority.manifest.being_ref,
         "manifest_hash": authority.manifest.digest,
         "origin": dict(origin),
+        "rollout_gate": rollout_gate,
     }
 
 
@@ -166,6 +189,22 @@ def launch_rebirth_host(
     state = _owner_directory(Path(state_dir), create=True)
     identity = _installed_identity(state, embodiment_id)
     origin = identity["origin"]
+    rollout_gate = identity["rollout_gate"]
+    if rollout_gate is not None:
+        try:
+            from .distributed_rebirth import require_target_admission
+
+            require_target_admission(
+                state,
+                rollout_gate["rollout_id"],
+                rollout_gate["participant_embodiment_ids"],
+                identity["manifest_hash"],
+            )
+        except Exception as exception:
+            os.close(password_descriptor)
+            raise RebirthHostError(
+                "rebirth_host_rollout_admission_missing"
+            ) from exception
     journal = OperationJournal(state)
     target = f"rebirth-start:{embodiment_id}:{identity['activation_id']}"
     with acquire(state, embodiment_id, "rebirth-start"):

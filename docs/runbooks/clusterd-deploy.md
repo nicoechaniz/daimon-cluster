@@ -83,3 +83,9 @@ expecting `/v1/weave/status` to become configured and healthy.
 Three clusterd rows added to `host-restart-drill.md` §2 (service active,
 loopback-only listener, auth + state survival). The drill itself is run
 by Nicolás (agent-side hardline block on reboot).
+
+The unit waits up to 30 seconds for the private Incus bridge address before
+opening either listener. `incus.service` being active is not sufficient: the
+bridge may still be materializing during boot. The preflight probes only local
+bindability on an ephemeral port, emits no address or socket inventory, and
+fails boundedly instead of making clusterd crash once with `EADDRNOTAVAIL`.

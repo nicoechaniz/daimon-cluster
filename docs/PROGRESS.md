@@ -16,6 +16,10 @@ durable hash but exposed that the original V7 ceremony had not emitted
 clusterd's separate status observer. The repaired bootstrap generates a
 distinct key and exactly the five read methods Cluster accepts; the adapter
 now verifies that method-set contract before ready.
+The same reboot showed that Incus may report active before its private bridge
+address is bindable. A bounded unit preflight now waits for that local address
+instead of relying on one expected clusterd crash/restart. Its full local gate
+is 299 passed and 2 intentional skips.
 The Matrix candidate preserves the first encrypted request's bounded expiry
 across a later retry, accepts existing V1 outbox plans, and still fails closed
 after the stored envelope expires. Its full Matrix suite, reproducible build

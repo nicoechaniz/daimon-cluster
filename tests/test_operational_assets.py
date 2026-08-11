@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -155,3 +156,49 @@ def test_deploy_and_unit_assets_pin_the_final_release_boundary() -> None:
     subprocess.run(
         ["bash", "-n", str(ROOT / "scripts/restic-backup.sh")], check=True
     )
+
+    clusterd_unit = (ROOT / "configs/clusterd.service").read_text()
+    assert (
+        "ExecStartPre=/usr/bin/python3 "
+        "/opt/daimon-cluster/scripts/wait-private-bind.py "
+        "--address 10.105.93.1 --timeout 30"
+    ) in clusterd_unit
+
+
+def test_private_bind_wait_is_bounded_and_disclosure_safe() -> None:
+    script = ROOT / "scripts/wait-private-bind.py"
+    ready = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--address",
+            "127.0.0.1",
+            "--timeout",
+            "0.1",
+            "--interval",
+            "0.01",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert ready.returncode == 0, ready.stderr
+
+    missing = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--address",
+            "192.0.2.1",
+            "--timeout",
+            "0.05",
+            "--interval",
+            "0.01",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert missing.returncode == 1
+    assert missing.stdout == ""
+    assert missing.stderr == "bind_address_unavailable\n"

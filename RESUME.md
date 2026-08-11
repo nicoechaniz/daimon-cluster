@@ -34,11 +34,11 @@ Last reconciled: 2026-08-11.
   ports were closed. This completes the old M1 off-mesh ingress gap.
 - Matrix PR #112 / issue #111 owns the accepted dogfood evidence and remaining
   independent review gate.
-- The isolated integration branch combines H6 head `26fcfaf` with DM-055 PR
-  head `b719cbb` (runtime code `94d80ba`) while pinning Matrix `915c56c`. Its
-  clean Python 3.13 gate passed 436 tests with 2 skips, lint, type, compile,
-  pin/license checks and real-storage H5/H6 drills. It is not deployed or
-  independently reviewed.
+- The isolated integration merge `9591d44` combines H6 head `26fcfaf` with
+  DM-055 PR head `b719cbb` (runtime code `94d80ba`) while pinning Matrix
+  `915c56c`. Its clean Python 3.13 gate passed 436 tests with 2 skips, lint,
+  type, compile, pin/license checks and real-storage H5/H6 drills. It is not
+  deployed or independently reviewed.
 
 ## Resume order
 

@@ -4,6 +4,7 @@ Date: 2026-08-11. Candidate only; not deployed or independently reviewed.
 
 ## Exact boundary
 
+- Qualified semantic merge: `9591d445d6a5f77bcdba026f90c64e8e5810f140`.
 - H6 stack head: `26fcfafdf2721440563aff428614adfba2cc471e`.
 - DM-055 branch head: `b719cbbc7fa79d28a94263997d091f1f1bb06daf`;
   runtime code `94d80baca05f468287b7d2bf99c577350d654a36`.

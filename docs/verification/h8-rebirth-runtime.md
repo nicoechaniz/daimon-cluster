@@ -42,6 +42,21 @@ pytest tests/test_rebirth.py: 16 passed
 complete Cluster suite: 452 passed, 2 skipped
 ```
 
-The four-version CI and isolated remote journey remain gates for this branch.
-No live service, production state root, Incus instance, authority manifest or
-custody was changed by this receipt.
+The four-version CI remains a gate for this branch. No live service,
+production state root, Incus instance, authority manifest or custody was
+changed by the local receipt.
+
+## Remote disposable gate
+
+The exact Cluster head `df2c2acc239615e79a8488f2c2e4597e834cdfd9` was then
+checked out on the authorized `daimonmatrix` host in one unique owner-local
+temporary root. A fresh Python 3.13 environment installed Matrix directly from
+the exact Git pin and verified `direct_url.json` before import. Changed-source
+Ruff and mypy were clean and all 16 focused scenarios passed in 20.07 seconds,
+including the real three-process bidirectional journey.
+
+Ports 18686, 19686 and 20686 were free before and after the journey. All child
+processes stopped, the exact temporary root was removed, and the installed
+`clusterd` service remained active. The active release, `/opt` trees, Incus
+instances, production Cluster state and existing Matrix runtimes were not read
+or changed by the drill.

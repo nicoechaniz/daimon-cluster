@@ -93,7 +93,7 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #3 threat model | done | docs/security/threat-model-v1.md (9b084a5) |
 | #4 contracts | done | docs/contracts/v1-state-contracts.md (37c2f0c) |
 | #5 gate docs | done | PLAN v0.2 + DESIGN resolutions (ea50501) |
-| #6 foundation | done | docs/runbooks/m1-incus-foundation.md (45f02d3); pending: off-mesh ingress probe |
+| #6 foundation | done; off-mesh ingress probe passed 2026-08-11 | public SSH reachable by design; Incus API, Tribe broker and clusterd public ports closed |
 | #7 tribe-base image | done | scripts/build-tribe-base.sh + configs/tribe-base-manifest-2026-08-01.1.json (def64fa); reproducibility + secret scan + boot smoke verified |
 | #8 profile+volumes | done | docs/design/tribe-agent-profile-and-volumes.md (6682e61 + allowlist fix in def64fa) |
 | #9 acceptance tests | done; full reboot drill passed 2026-08-11 | docs/verification/m1-acceptance-tests.md; cold recovery, isolation, hashes and services verified |
@@ -146,8 +146,6 @@ from the successful host qualification.
 
 ## Open questions
 
-- Off-mesh probe of public ingress (belt & braces; ruleset is logically
-  sound, on-host test invalid due to loopback routing).
 - GitHub identity for compaii@daimonmatrix (App vs machine user) — Nicolás.
 
 ## 2026-08-02 — Matrix convergence and ontology rectification

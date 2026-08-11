@@ -29,6 +29,9 @@ Last reconciled: 2026-08-11.
   `iso-a`, `iso-b` and `steward`. Audit/idempotency hashes and the exact five
   reconcile findings persisted. The private-bridge preflight exited zero,
   `clusterd` started once, and the boot had no `EADDRNOTAVAIL` or restart.
+- A separate authorized helper without ZeroTier resolved the host publicly and
+  proved only public SSH reachable; Incus API, Tribe broker and clusterd public
+  ports were closed. This completes the old M1 off-mesh ingress gap.
 - Matrix PR #112 / issue #111 owns the accepted dogfood evidence and remaining
   independent review gate.
 

@@ -65,7 +65,8 @@ passed the complete gate:
 | Matrix | exact pin `915c56c`; configured, integrity `ok`, 9 known, 0 incomplete, epoch 2, no partial view |
 | Tribe | `tribe-bridge-v1.service` healthy, protocol `tribe/v1`, directory epoch 5 |
 | Recovery | restic timer active; snapshot `89d801b1` previously checked and mirrored to Legion; prior release rollback preserved |
+| Public ingress | authorized off-mesh/no-ZeroTier helper reached public SSH only; Incus API, Tribe broker and clusterd ports were closed |
 
-This completes issue #9's reboot criterion. It does not satisfy the separate
-off-mesh public-ingress probe, pilot, second independent backup target,
-independent code review or human cutover gates.
+This completes issue #9's reboot criterion and issue #6's separate off-mesh
+public-ingress probe. It does not satisfy the pilot, second independent backup
+target, independent code review or human cutover gates.

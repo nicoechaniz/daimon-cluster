@@ -5,6 +5,29 @@ start, then resume from the first open item.
 
 ## Active checkpoint (2026-08-11)
 
+H7-H9 now form a stacked fresh-embodiment candidate. Matrix PR #116 packages
+the exact DM-078 operator surface at
+`0a5fd3383aeb391488888d397a3d3296a71f98db`; Cluster PRs #80, #82 and #84 add
+journaled target install, authenticated foreground supervision and a closed
+distributed predecessor rollout. Matrix package, conformance, Hermes and
+Python 3.11-3.14 CI are green. The final Cluster H9 head
+`a53517178e9ed19b3392a739a793d1a1e0c39bdf` passes 455 tests with 2 intentional
+skips plus Python 3.11-3.14 CI.
+
+A disposable Legion-daimonmatrix journey created a distinct embodiment of one
+synthetic root-authorized being with custody generated and retained only on
+the target host. Two Legion predecessors independently advanced, restarted
+and acknowledged the same successor before target admission. All three
+runtimes then reported the exact non-partial active set and exchanged native
+events in both directions; imported events remained pending and terminal
+replays were idempotent. Private-byte comparison, process secret inspection,
+listener shutdown and exact-root cleanup passed. See
+[`verification/h9-distributed-rebirth.md`](verification/h9-distributed-rebirth.md).
+
+This qualifies the technical release candidate; it is not a live transition.
+Independent review, DM-078 exact preflight/same-plan GO and real root/recovery
+custody policy remain external release gates.
+
 The exact DM-055/DM-083 host-qualified pair is Cluster
 `94d80baca05f468287b7d2bf99c577350d654a36` with Matrix
 `915c56c8899fd53d683bd7c7c81c3465b600bed9`. The adapter checks the additive
@@ -219,11 +242,12 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 
 The R-series, Matrix-host integration and final reboot/status candidate are
 technically complete and deployed at the exact DM-055 pair. The isolated
-DM-031/H1-H6 integration is qualified locally; submit it for CI and independent
-review without enabling effect routes on the live host. Remaining operational
-work is external: #13 pilot volunteer/provider credentials, #15 a second
-independent off-host target, fresh-host custody/governance and the final human
-cutover. None can be inferred from host or synthetic qualification.
+DM-031/H1-H6 integration and stacked DM-078/H7-H9 fresh-embodiment path are
+qualified candidates; obtain independent review without enabling effect or
+authority routes on a live host. Remaining operational work is external: #13
+pilot volunteer/provider credentials, #15 a second independent off-host
+target, production root/recovery custody and the final human preflight/GO.
+None can be inferred from host or synthetic qualification.
 
 ## Key decisions this stretch
 

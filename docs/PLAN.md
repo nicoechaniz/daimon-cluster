@@ -39,11 +39,16 @@ bytes. Matrix.org is excluded.
 15. Rebirth runtime supervision: admit the exact signed initial incarnation,
     descriptor-only password delivery, authenticated readiness, restartable
     startup journal and native three-process convergence evidence.
+16. Distributed fresh-embodiment rollout: keep target custody on its physical
+    host, update and authenticate every predecessor independently, require the
+    exact closed acknowledgement set before target start, and recover only
+    forward after a signed successor is accepted.
 
 ## Acceptance
 
 Two embodiments of one root-authorized being run simultaneously in separate
-Matrix processes, exchange origin-marked events through Tribe Bridge, report
+Matrix processes on separate physical hosts, exchange origin-marked events
+through Tribe Bridge, report
 unapplied differences, choose independently, reverse a choice, answer `/me`
 and `/we` separately, advance to a signed incarnation N+1, relocate without
 duplicates or secrets, and still reject stale writers against the same

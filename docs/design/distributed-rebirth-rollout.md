@@ -105,8 +105,10 @@ declared converged.
   transition and another distributed rollout. Deleting files or restoring the
   previous manifest is not rollback.
 
-The disposable acceptance journey uses synthetic authority and custody on two
-physical hosts, injects response loss before and after each acknowledgement,
-proves no private target bytes reach a peer, and removes only its exact
-temporary roots. A live same-being rollout remains gated by the DM-078
-content-addressed preflight and same-plan human GO.
+The focused suite injects response loss around peer operations. The disposable
+acceptance journey uses synthetic authority and custody on two physical hosts,
+proves no private target bytes reach a peer, exercises terminal replay and
+removes only its exact temporary roots. Its redacted receipt is
+[`../verification/h9-distributed-rebirth.md`](../verification/h9-distributed-rebirth.md).
+A live same-being rollout remains gated by the DM-078 content-addressed
+preflight and same-plan human GO.

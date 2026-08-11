@@ -26,7 +26,7 @@ from pathlib import Path
 
 import yaml
 
-from . import audit, lifecycle
+from . import audit, lifecycle, rebirth
 from .adapters import IncusAdapter, IncusError
 from .config import Config, ConfigError, load_config
 from .inventory import SpecError, find_record, load_specs, reconcile
@@ -63,31 +63,41 @@ def _build_parser() -> argparse.ArgumentParser:
         "--request-id",
         default=None,
         help="caller request id recorded in audit events (clusterd "
-             "X-Request-Id passthrough, issue #19)",
+        "X-Request-Id passthrough, issue #19)",
     )
     parser.add_argument(
         "--action-digest",
         default=None,
         help="confirmation action digest recorded in audit events "
-             "(clusterd cluster-confirmation/v1 passthrough, issue #19)",
+        "(clusterd cluster-confirmation/v1 passthrough, issue #19)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_list = sub.add_parser("list", help="list all instances with reconciled state")
-    p_list.add_argument("--json", action="store_true", help="emit JSON array of instance-status/v2 records")
+    p_list.add_argument(
+        "--json",
+        action="store_true",
+        help="emit JSON array of instance-status/v2 records",
+    )
 
     p_status = sub.add_parser("status", help="show one instance's reconciled status")
     p_status.add_argument("name", help="instance name")
-    p_status.add_argument("--json", action="store_true", help="emit a single instance-status/v2 record")
+    p_status.add_argument(
+        "--json", action="store_true", help="emit a single instance-status/v2 record"
+    )
 
     p_cfg = sub.add_parser("config-show", help="show the resolved clusterctl config")
     p_cfg.add_argument("--json", action="store_true", help="emit config as JSON")
 
     p_rec = sub.add_parser(
         "reconcile",
-        help="cross-check audit trail vs specs vs incus (read-only, issue #19)")
-    p_rec.add_argument("--json", action="store_true",
-                       help="emit the clusterctl-reconcile-report/v1 JSON")
+        help="cross-check audit trail vs specs vs incus (read-only, issue #19)",
+    )
+    p_rec.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the clusterctl-reconcile-report/v1 JSON",
+    )
 
     p_repair = sub.add_parser(
         "repair",
@@ -99,104 +109,209 @@ def _build_parser() -> argparse.ArgumentParser:
     def _mutation(name, help_text):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("name", help="instance name")
-        p.add_argument("--idempotency-key", default=None,
-                       help="uuid; retry with the same key replays the cached result")
+        p.add_argument(
+            "--idempotency-key",
+            default=None,
+            help="uuid; retry with the same key replays the cached result",
+        )
         p.add_argument("--json", action="store_true", help="emit JSON")
         return p
 
-    p_create = sub.add_parser("create", help="declare and create a new instance (stopped)")
+    p_create = sub.add_parser(
+        "create", help="declare and create a new instance (stopped)"
+    )
     p_create.add_argument("name", help="instance name")
-    p_create.add_argument("--species", required=True, help="species tag recorded in the spec")
-    p_create.add_argument("--image", default=lifecycle.DEFAULT_IMAGE,
-                          help="image alias (default: %(default)s)")
-    p_create.add_argument("--idempotency-key", required=True,
-                          help="uuid; retry with the same key replays the cached result")
+    p_create.add_argument(
+        "--species", required=True, help="species tag recorded in the spec"
+    )
+    p_create.add_argument(
+        "--image",
+        default=lifecycle.DEFAULT_IMAGE,
+        help="image alias (default: %(default)s)",
+    )
+    p_create.add_argument(
+        "--idempotency-key",
+        required=True,
+        help="uuid; retry with the same key replays the cached result",
+    )
     p_create.add_argument("--json", action="store_true", help="emit JSON")
 
     _mutation("start", "start a declared instance")
     p_stop = _mutation("stop", "stop a declared instance")
-    p_stop.add_argument("--timeout", type=int, default=lifecycle.STOP_DEFAULT_TIMEOUT,
-                        help="graceful stop timeout in seconds (default: %(default)s)")
+    p_stop.add_argument(
+        "--timeout",
+        type=int,
+        default=lifecycle.STOP_DEFAULT_TIMEOUT,
+        help="graceful stop timeout in seconds (default: %(default)s)",
+    )
     _mutation("restart", "restart a declared (running) instance")
     p_park = _mutation(
         "park",
         "park a declared daimon's writers (SIGSTOP hermes, issue #23); "
         "with --handoff, full verified checkpoint manifest ceremony "
-        "(issue #28)")
-    p_park.add_argument("--handoff", action="store_true",
-                        help="run the handoff park ceremony (checkpoint "
-                             "manifest + resource-fence transition) instead of the "
-                             "writer-quiesce park")
-    p_park.add_argument("--abandon-critical", action="store_true",
-                        dest="abandon_critical",
-                        help="human abandonment of critical jobs; recorded "
-                             "in the manifest with the actor — never silent")
-    p_park.add_argument("--force-outbox", action="store_true",
-                        dest="force_outbox",
-                        help="override a non-empty bridge outbox (refused "
-                             "by default, fail-closed)")
-    p_park.add_argument("--no-fence", action="store_true", dest="no_fence",
-                        help="park a body with no fenced writable resource "
-                             "(recorded explicitly in the manifest)")
+        "(issue #28)",
+    )
+    p_park.add_argument(
+        "--handoff",
+        action="store_true",
+        help="run the handoff park ceremony (checkpoint "
+        "manifest + resource-fence transition) instead of the "
+        "writer-quiesce park",
+    )
+    p_park.add_argument(
+        "--abandon-critical",
+        action="store_true",
+        dest="abandon_critical",
+        help="human abandonment of critical jobs; recorded "
+        "in the manifest with the actor — never silent",
+    )
+    p_park.add_argument(
+        "--force-outbox",
+        action="store_true",
+        dest="force_outbox",
+        help="override a non-empty bridge outbox (refused by default, fail-closed)",
+    )
+    p_park.add_argument(
+        "--no-fence",
+        action="store_true",
+        dest="no_fence",
+        help="park a body with no fenced writable resource "
+        "(recorded explicitly in the manifest)",
+    )
     _mutation("wake", "wake a parked daimon (SIGCONT hermes, issue #23)")
     p_wake = sub.choices["wake"]
-    p_wake.add_argument("--handoff", action="store_true",
-                        help="run the M7 handoff wake ceremony (verified "
-                             "checkpoint re-entry + new fence, issue #29) "
-                             "instead of the writer-resume wake")
+    p_wake.add_argument(
+        "--handoff",
+        action="store_true",
+        help="run the M7 handoff wake ceremony (verified "
+        "checkpoint re-entry + new fence, issue #29) "
+        "instead of the writer-resume wake",
+    )
     p_transfer = _mutation(
         "transfer",
         "same-host embodiment relocation (issue #29): parked source -> new "
-        "container with verified checkpoint + new fence")
-    p_transfer.add_argument("--to", required=True, dest="to",
-                            help="new instance name for the relocated embodiment")
+        "container with verified checkpoint + new fence",
+    )
+    p_transfer.add_argument(
+        "--to",
+        required=True,
+        dest="to",
+        help="new instance name for the relocated embodiment",
+    )
 
-    p_logs = sub.add_parser("logs", help="fetch instance logs (bounded, secrets redacted)")
+    p_logs = sub.add_parser(
+        "logs", help="fetch instance logs (bounded, secrets redacted)"
+    )
     p_logs.add_argument("name", help="instance name")
-    p_logs.add_argument("--lines", type=int, default=lifecycle.LOGS_DEFAULT_LINES,
-                        help=f"max lines (default: %(default)s, max {lifecycle.LOGS_MAX_LINES})")
+    p_logs.add_argument(
+        "--lines",
+        type=int,
+        default=lifecycle.LOGS_DEFAULT_LINES,
+        help=f"max lines (default: %(default)s, max {lifecycle.LOGS_MAX_LINES})",
+    )
     p_logs.add_argument("--json", action="store_true", help="emit JSON")
 
-    p_dp = sub.add_parser("destroy-plan", help="print the destroy plan for an instance (plan only)")
+    p_dp = sub.add_parser(
+        "destroy-plan", help="print the destroy plan for an instance (plan only)"
+    )
     p_dp.add_argument("name", help="instance name")
-    p_dp.add_argument("--delete-volumes", action="store_true",
-                      help="include volume deletion in the plan")
+    p_dp.add_argument(
+        "--delete-volumes",
+        action="store_true",
+        help="include volume deletion in the plan",
+    )
     p_dp.add_argument("--json", action="store_true", help="emit JSON")
 
     p_prov = sub.add_parser("provision", help="governed provisioning (issue #12)")
     prov_sub = p_prov.add_subparsers(dest="provision_command", required=True)
     p_prep = prov_sub.add_parser(
         "prepare",
-        help="create container+volume+embodiment, emit confirmation token, then HALT")
+        help="create container+volume+embodiment, emit confirmation token, then HALT",
+    )
     p_prep.add_argument("name", help="instance (daimon) name")
-    p_prep.add_argument("--species", required=True, help="species tag recorded in the spec")
-    p_prep.add_argument("--requested-by", required=True, dest="requested_by",
-                        help="human requesting the provisioning (ADR D8)")
-    p_prep.add_argument("--sponsor", required=True,
-                        help="human sponsor; must differ from --requested-by")
-    p_prep.add_argument("--seed-manifest", default=None, dest="seed_manifest",
-                        help="optional seed-manifest/v1 YAML to stage")
-    p_prep.add_argument("--idempotency-key", required=True,
-                        help="uuid; retry with the same key replays the cached result")
+    p_prep.add_argument(
+        "--species", required=True, help="species tag recorded in the spec"
+    )
+    p_prep.add_argument(
+        "--requested-by",
+        required=True,
+        dest="requested_by",
+        help="human requesting the provisioning (ADR D8)",
+    )
+    p_prep.add_argument(
+        "--sponsor",
+        required=True,
+        help="human sponsor; must differ from --requested-by",
+    )
+    p_prep.add_argument(
+        "--seed-manifest",
+        default=None,
+        dest="seed_manifest",
+        help="optional seed-manifest/v1 YAML to stage",
+    )
+    p_prep.add_argument(
+        "--idempotency-key",
+        required=True,
+        help="uuid; retry with the same key replays the cached result",
+    )
     p_prep.add_argument("--json", action="store_true", help="emit JSON")
     p_conf = prov_sub.add_parser(
         "confirm",
-        help="consume a provision-activate token (directory activation is governance's act)")
-    p_conf.add_argument("--token", required=True, help="token emitted by provision prepare")
+        help="consume a provision-activate token (directory activation is governance's act)",
+    )
+    p_conf.add_argument(
+        "--token", required=True, help="token emitted by provision prepare"
+    )
     p_conf.add_argument("--json", action="store_true", help="emit JSON")
 
     p_snap = sub.add_parser("snapshot", help="quiesced snapshots (issue #14)")
     snap_sub = p_snap.add_subparsers(dest="snapshot_command", required=True)
     p_sc = snap_sub.add_parser(
         "create",
-        help="quiesce (park+checkpoint), capture, verify, then write backup manifest")
+        help="quiesce (park+checkpoint), capture, verify, then write backup manifest",
+    )
     p_sc.add_argument("name", help="instance (daimon) name")
-    p_sc.add_argument("--timeout-s", type=int, default=30, dest="timeout_s",
-                      help="quiesce timeout in seconds (default: %(default)s)")
-    p_sc.add_argument("--idempotency-key", required=True,
-                      help="uuid; retry with the same key replays the cached result")
+    p_sc.add_argument(
+        "--timeout-s",
+        type=int,
+        default=30,
+        dest="timeout_s",
+        help="quiesce timeout in seconds (default: %(default)s)",
+    )
+    p_sc.add_argument(
+        "--idempotency-key",
+        required=True,
+        help="uuid; retry with the same key replays the cached result",
+    )
     p_sc.add_argument("--json", action="store_true", help="emit JSON")
+
+    p_rebirth = sub.add_parser(
+        "rebirth-install",
+        help="install one root-authorized fresh Matrix embodiment, stopped",
+    )
+    p_rebirth.add_argument(
+        "--package-dir", required=True, help="owner-only activated target package"
+    )
+    p_rebirth.add_argument(
+        "--peer",
+        action="append",
+        required=True,
+        metavar="EMBODIMENT_ID=RUNTIME_ROOT",
+        help="exact existing peer set; repeat once per active embodiment",
+    )
+    p_rebirth.add_argument("--idempotency-key", required=True)
+    p_rebirth.add_argument("--json", action="store_true", help="emit JSON")
     return parser
+
+
+def _rebirth_peers(values: list[str]) -> dict[str, str]:
+    peers: dict[str, str] = {}
+    for value in values:
+        embodiment_id, separator, root = value.partition("=")
+        if not separator or not embodiment_id or not root or embodiment_id in peers:
+            raise rebirth.RebirthInstallError("rebirth_peer_argument_rejected")
+        peers[embodiment_id] = root
+    return peers
 
 
 def _resolve_config(args) -> Config:
@@ -221,7 +336,16 @@ def _adapter_for(cfg: Config):
 
 
 def _render_table(records: list[dict]) -> str:
-    headers = ["NAME", "SPECIES", "STATE", "IMAGE_VERSION", "CPU", "MEM_MIB", "DISK_GIB", "UPTIME_S"]
+    headers = [
+        "NAME",
+        "SPECIES",
+        "STATE",
+        "IMAGE_VERSION",
+        "CPU",
+        "MEM_MIB",
+        "DISK_GIB",
+        "UPTIME_S",
+    ]
 
     def cell(value) -> str:
         return "-" if value is None else str(value)
@@ -240,7 +364,9 @@ def _render_table(records: list[dict]) -> str:
         for rec in records
     ]
     widths = [
-        max(len(headers[i]), *(len(row[i]) for row in rows)) if rows else len(headers[i])
+        max(len(headers[i]), *(len(row[i]) for row in rows))
+        if rows
+        else len(headers[i])
         for i in range(len(headers))
     ]
     lines = ["  ".join(headers[i].ljust(widths[i]) for i in range(len(headers)))]
@@ -265,9 +391,20 @@ def run(argv=None, adapter=None) -> int:
     try:
         cfg = _resolve_config(args)
 
-        if args.command in ("create", "start", "stop", "restart", "logs",
-                            "destroy-plan", "provision", "snapshot",
-                            "park", "wake", "transfer", "repair"):
+        if args.command in (
+            "create",
+            "start",
+            "stop",
+            "restart",
+            "logs",
+            "destroy-plan",
+            "provision",
+            "snapshot",
+            "park",
+            "wake",
+            "transfer",
+            "repair",
+        ):
             ad = adapter if adapter is not None else _adapter_for(cfg)
             return lifecycle.dispatch(args, cfg, ad)
 
@@ -275,6 +412,7 @@ def run(argv=None, adapter=None) -> int:
             # Read-only three-source cross-check (issue #19). Exit 0
             # always: discrepancies are data in the findings array.
             from .reconcile import render_human, run_reconcile
+
             ad = adapter if adapter is not None else _adapter_for(cfg)
             report = run_reconcile(cfg, ad)
             if args.json:
@@ -298,11 +436,30 @@ def run(argv=None, adapter=None) -> int:
                 print(yaml.safe_dump(data, sort_keys=False), end="")
             return EXIT_OK
 
+        if args.command == "rebirth-install":
+            result = rebirth.install_rebirth_package(
+                cfg.state_dir,
+                args.package_dir,
+                _rebirth_peers(args.peer),
+                idempotency_key=args.idempotency_key,
+                actor=args.actor,
+            )
+            if args.json:
+                print(json.dumps(result, indent=2))
+            else:
+                print(
+                    f"{result['embodiment_id']} {result['state']} "
+                    f"{result['successor_manifest_hash']}"
+                )
+            return EXIT_OK
+
         if adapter is not None:
             specs = load_specs(cfg.instances_dir)
             records = reconcile(specs, adapter, cfg.host_id)
-            for rec in records:
-                rec["last_audit_event"] = audit.last_event_for(cfg.state_dir, rec["name"])
+            for record in records:
+                record["last_audit_event"] = audit.last_event_for(
+                    cfg.state_dir, record["name"]
+                )
         else:
             records = _reconcile(cfg)
 
@@ -323,10 +480,12 @@ def run(argv=None, adapter=None) -> int:
         else:
             print(_render_table([rec]))
             for entry in rec.get("drift") or []:
-                print(f"drift: {entry['field']}: declared={entry['declared']} actual={entry['actual']}")
+                print(
+                    f"drift: {entry['field']}: declared={entry['declared']} actual={entry['actual']}"
+                )
         return EXIT_OK
 
-    except (ConfigError, SpecError, IncusError) as exc:
+    except (ConfigError, SpecError, IncusError, rebirth.RebirthInstallError) as exc:
         print(f"clusterctl: error: {exc}", file=sys.stderr)
         return EXIT_INTERNAL
     except Exception as exc:  # pragma: no cover - defensive

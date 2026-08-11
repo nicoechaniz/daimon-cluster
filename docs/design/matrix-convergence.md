@@ -27,8 +27,11 @@ Cluster pins `daimon-matrix` by full Git commit in
 An unpinned wheel, editable checkout, wrong commit or schema downgrade fails
 closed. Cluster does not carry a fallback implementation.
 
-The current pin is the audited Matrix DM-055/DM-083 reboot/status candidate
-`915c56c8899fd53d683bd7c7c81c3465b600bed9`.
+The H7 candidate pin is the additive Matrix fresh-embodiment branch
+`1452bf6f7cea841ee1f1757f3b001708f8e72c84` (draft PR #116), stacked on the
+audited DM-055/DM-083 reboot/status candidate
+`915c56c8899fd53d683bd7c7c81c3465b600bed9`. It is not a release pin until
+both reviews and the cross-repository acceptance gate complete.
 The adapter accepts the additive runtime bundle line V1 through V7 and checks
 every corresponding public schema constant before opening state. It also
 checks the closed DM-031 item/claim/result/inspection schemas, work kinds,
@@ -46,6 +49,11 @@ installed-process verification of this pin, the additive client config V2
 constant and the exact five-method status-observer set. Cluster does not
 interpret historical servers or Matrix custody. Any later Matrix candidate
 change requires another exact repin and complete downstream gate.
+
+H7 adds the Matrix `operator_rebirth` contract to the same closed import gate.
+Cluster accepts only the root-authorized package produced by the exact pin,
+installs new target custody without opening it, and forward-updates prior peers
+with the signed activation. See `docs/design/fresh-embodiment-rebirth.md`.
 
 For each running embodiment Cluster starts one Matrix daemon with:
 

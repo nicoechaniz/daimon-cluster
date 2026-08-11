@@ -33,6 +33,9 @@ bytes. Matrix.org is excluded.
 13. Exact DM-035 reviewed publisher with signed final-byte approval, fixed
     least-authority provider subprocess, monotonic predecessor/tombstone
     semantics and fresh Wiki/state/HMK effect observation.
+14. Root-authorized fresh-embodiment installation: distinct target custody,
+    exact Matrix package pin, forward peer-manifest update, stopped admission,
+    durable retry and one audit receipt per activation.
 
 ## Acceptance
 

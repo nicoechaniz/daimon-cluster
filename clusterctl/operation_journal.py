@@ -437,8 +437,46 @@ class OperationJournal:
             if "connection" in locals():
                 connection.close()
 
+    def latest_for_target(self, target: str) -> dict[str, Any] | None:
+        """Return the newest operation for an exact durable target identity."""
+
+        try:
+            connection = self._connect(query_only=True)
+            row = connection.execute(
+                "SELECT * FROM operations WHERE target=? "
+                "ORDER BY created_ms DESC,operation_id DESC LIMIT 1",
+                (target,),
+            ).fetchone()
+            return None if row is None else self._decode(row)
+        except sqlite3.Error as exc:
+            raise JournalError("cannot read operation journal") from exc
+        finally:
+            if "connection" in locals():
+                connection.close()
+
+    def latest_for_idempotency_key(self, key: str) -> dict[str, Any] | None:
+        """Return the newest operation bound to a caller idempotency key."""
+
+        try:
+            connection = self._connect(query_only=True)
+            row = connection.execute(
+                "SELECT * FROM operations WHERE idempotency_key=? "
+                "ORDER BY created_ms DESC,operation_id DESC LIMIT 1",
+                (key,),
+            ).fetchone()
+            return None if row is None else self._decode(row)
+        except sqlite3.Error as exc:
+            raise JournalError("cannot read operation journal") from exc
+        finally:
+            if "connection" in locals():
+                connection.close()
+
     def list_all(self, *, limit: int = 100) -> list[dict[str, Any]]:
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 1000
+        ):
             raise JournalError("operation journal limit is out of range")
         try:
             connection = self._connect(query_only=True)
@@ -483,7 +521,9 @@ class OperationJournal:
             if row is None:
                 raise JournalError("unknown operation journal id")
             if row["state"] != "degraded":
-                raise JournalConflict("only a degraded operation needs repair authority")
+                raise JournalConflict(
+                    "only a degraded operation needs repair authority"
+                )
             connection.execute(
                 "UPDATE operations SET state=?,last_error=NULL,updated_ms=? "
                 "WHERE operation_id=?",

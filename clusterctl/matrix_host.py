@@ -28,7 +28,7 @@ from typing import Any
 from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
-MATRIX_CONTRACT_COMMIT = "915c56c8899fd53d683bd7c7c81c3465b600bed9"
+MATRIX_CONTRACT_COMMIT = "1452bf6f7cea841ee1f1757f3b001708f8e72c84"
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
 MATRIX_STATUS_SCHEMA = "dm.cluster-matrix-status/v1"
@@ -143,6 +143,7 @@ def _matrix_api() -> dict[str, Any]:
             daemon,
             memory_projection,
             operator_bootstrap,
+            operator_rebirth,
             publication,
             runtime,
             service,
@@ -269,6 +270,17 @@ def _matrix_api() -> dict[str, Any]:
         != _CLUSTERD_MATRIX_METHODS
     ):
         raise MatrixHostError("daimon_matrix_contract_mismatch")
+    rebirth_expected = {
+        "REQUEST_SCHEMA": "dm.operator.embodiment-request/v1",
+        "ACTIVATION_SCHEMA": "dm.operator.embodiment-activation/v1",
+        "PREPARATION_SCHEMA": "dm.operator.rebirth-preparation/v1",
+        "TARGET_PROFILE_SCHEMA": "dm.operator.rebirth-target-profile/v1",
+    }
+    if any(
+        getattr(operator_rebirth, name, None) != value
+        for name, value in rebirth_expected.items()
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
     return {
         "canonical": canonical,
         "client": client,
@@ -276,6 +288,7 @@ def _matrix_api() -> dict[str, Any]:
         "curator": curator,
         "daemon": daemon,
         "memory_projection": memory_projection,
+        "operator_rebirth": operator_rebirth,
         "publication": publication,
         "runtime": runtime,
         "service": service,

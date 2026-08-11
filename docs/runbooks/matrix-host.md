@@ -110,6 +110,10 @@ checks. A password failure or crash before ready is retried against the same
 open journal; do not stop/restart the registry with a generated incarnation.
 Keep the state path short enough for the derived Unix socket and use the same
 foreground service supervision/cgroup rules as the ordinary host process.
+For a rollout spanning physical hosts, follow
+[`distributed-rebirth.md`](distributed-rebirth.md); direct H7 installation is
+not a substitute for its per-predecessor restart/acknowledgement and exact
+target-admission gate.
 
 The host injects the current Cluster fence verifier and a closed effect-truth
 router. Without an explicitly constructed executor its route list is empty and

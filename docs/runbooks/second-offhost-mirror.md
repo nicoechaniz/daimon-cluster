@@ -102,7 +102,10 @@ Acceptance requires a read-only repository pull plus denials for shell, TTY,
 forwarding, upload and path escape. It then revokes the export key and deletes
 the export account, requiring a fresh administrative login after each action
 and an unchanged synthetic administrative-key hash. The Dockerfile pins its
-base image digest and the test destroys its named container and image.
+base image digest. The source fixture is an actual encrypted restic repository;
+a second `--network none` container mounts the mirror read-only, runs
+`restic check --no-lock`, restores the latest snapshot and verifies its closed
+payload. The test finally destroys its named container and image.
 
 ## Install and verify
 

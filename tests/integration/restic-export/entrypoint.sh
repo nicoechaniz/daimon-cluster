@@ -22,17 +22,14 @@ python3 /opt/fixture/restic-export-apply-disposable.py \
     --expect-sha256 "$EXPORT_BUNDLE_SHA256"
 
 install -d -o root -g daimon-backup-export -m 0750 \
-    /var/lib/daimon-cluster/restic-repo/data \
-    /var/lib/daimon-cluster/restic-repo/index \
-    /var/lib/daimon-cluster/restic-repo/keys \
-    /var/lib/daimon-cluster/restic-repo/locks \
-    /var/lib/daimon-cluster/restic-repo/snapshots/ab
-install -o root -g daimon-backup-export -m 0640 \
-    /fixture/repository/config /var/lib/daimon-cluster/restic-repo/config
-install -o root -g daimon-backup-export -m 0640 \
-    /fixture/repository/payload /var/lib/daimon-cluster/restic-repo/data/payload
-install -o root -g daimon-backup-export -m 0640 \
-    /fixture/repository/snapshot \
-    /var/lib/daimon-cluster/restic-repo/snapshots/ab/cdef
+    /var/lib/daimon-cluster/restic-repo
+RESTIC_REPOSITORY=/var/lib/daimon-cluster/restic-repo \
+RESTIC_PASSWORD_FILE=/fixture/repository-password \
+    restic init
+RESTIC_REPOSITORY=/var/lib/daimon-cluster/restic-repo \
+RESTIC_PASSWORD_FILE=/fixture/repository-password \
+    restic backup /fixture/plain --tag disposable-export-proof
+chgrp -R daimon-backup-export /var/lib/daimon-cluster/restic-repo
+chmod -R g+rX,o-rwx /var/lib/daimon-cluster/restic-repo
 
 exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config

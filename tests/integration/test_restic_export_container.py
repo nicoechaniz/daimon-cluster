@@ -86,11 +86,12 @@ def test_export_identity_failure_cannot_change_admin_access(tmp_path: Path) -> N
     assert rendered.returncode == 0, rendered.stderr
     bundle_sha256 = rendered.stdout.strip().removeprefix("bundle_sha256=")
 
-    repository = fixture / "repository"
-    repository.mkdir()
-    (repository / "config").write_text("synthetic encrypted config\n")
-    (repository / "payload").write_bytes(b"synthetic ciphertext\n")
-    (repository / "snapshot").write_bytes(b"synthetic snapshot\n")
+    plain = fixture / "plain"
+    plain.mkdir()
+    embodiment = b'{"embodiment_id":"disposable-restic-proof"}\n'
+    (plain / "embodiment.json").write_bytes(embodiment)
+    password = fixture / "repository-password"
+    password.write_text("disposable-restic-password\n")
 
     try:
         built = _run(
@@ -192,7 +193,65 @@ def test_export_identity_failure_cannot_change_admin_access(tmp_path: Path) -> N
             check=False,
         )
         assert pulled.returncode == 0, pulled.stderr
-        assert (destination / "data/payload").read_bytes() == b"synthetic ciphertext\n"
+        assert (destination / "config").is_file()
+        assert any((destination / "data").rglob("*"))
+
+        checked = _run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--entrypoint",
+                "restic",
+                "--env",
+                "RESTIC_REPOSITORY=/mirror",
+                "--env",
+                "RESTIC_PASSWORD_FILE=/repository-password",
+                "--volume",
+                f"{destination}:/mirror:ro",
+                "--volume",
+                f"{password}:/repository-password:ro",
+                image,
+                "check",
+                "--no-lock",
+            ],
+            check=False,
+        )
+        assert checked.returncode == 0, checked.stderr
+        restore = tmp_path / "restore"
+        restore.mkdir()
+        restored_snapshot = _run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--entrypoint",
+                "restic",
+                "--env",
+                "RESTIC_REPOSITORY=/mirror",
+                "--env",
+                "RESTIC_PASSWORD_FILE=/repository-password",
+                "--volume",
+                f"{destination}:/mirror:ro",
+                "--volume",
+                f"{password}:/repository-password:ro",
+                "--volume",
+                f"{restore}:/restore",
+                image,
+                "restore",
+                "latest",
+                "--no-lock",
+                "--target",
+                "/restore",
+            ],
+            check=False,
+        )
+        assert restored_snapshot.returncode == 0, restored_snapshot.stderr
+        assert (restore / "fixture/plain/embodiment.json").read_bytes() == embodiment
 
         shell = _run(
             [*export_ssh, "daimon-backup-export@127.0.0.1", "id"], check=False
@@ -315,6 +374,8 @@ def test_export_identity_failure_cannot_change_admin_access(tmp_path: Path) -> N
             "bundle_sha256": bundle_sha256,
             "admin_key_sha256": original_admin_hash,
             "read_only_pull": "ok",
+            "offline_restic_check": "ok",
+            "offline_restore": "ok",
             "shell": "denied",
             "tty": "denied",
             "forwarding": "denied",

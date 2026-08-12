@@ -3,7 +3,19 @@
 Living tracking file. Updated after every work session. Read FIRST on session
 start, then resume from the first open item.
 
-## Active checkpoint (2026-08-11)
+## Active checkpoint (2026-08-12)
+
+The #15/#16 software gate is now a ready-for-review candidate in PR #85 at
+`cdf0651`, stacked on H9 without deployment. A dedicated
+`daimon-backup-export` identity, content-addressed disposable-only
+provisioning, pinned read-only SSH/rrsync pull and portable atomic tree exchange
+pass the complete 470-test/3-skip suite and Python 3.11–3.14 CI. A disposable
+container proof created a real encrypted restic repository, denied shell, TTY,
+forwarding, upload and path escape, preserved fresh synthetic administrative
+login across export-key revocation and account deletion, then checked and
+restored the mirror in a second network-disabled container. Mona is excluded;
+no remote evidence was used. Selecting and authorizing a genuinely independent
+physical target remains external.
 
 H7-H9 now form a stacked fresh-embodiment candidate. Matrix PR #116 packages
 the exact DM-078 operator surface at
@@ -219,8 +231,8 @@ order before incus), profile tribe-agent (allowlist devices, no tun,
 | #12 provisioning | done (merged 0587848) | clusterctl/provision.py, tests 40 pass, live cycle verified (key custody, seed staging, confirm, expiry fail-closed) |
 | #13 pilot | pending (needs volunteer + provider creds) | #12 infra ready |
 | #14 quiesced snapshots | done (merged 3b8ae44) | clusterctl/snapshot.py, 49 tests, live cycle verified |
-| #16 restore drill | drill 1 PASS (merged 1928976) | docs/verification/restore-drill-1.md; restic-class drill pending #15 |
-| #15 backups | one off-host target live; second independent target still missing | fresh snapshot `89d801b1`, check green, timer active, Legion pull/heartbeat green; two-target acceptance remains open |
+| #16 restore drill | drill 1 PASS (merged 1928976); real encrypted disposable restore candidate in PR #85 | network-disabled mirror `check --no-lock` plus closed restore passed; live RPO/RTO remains coupled to approved #15 target |
+| #15 backups | one off-host target live; second-target software candidate green in PR #85; independent physical target still unselected | dedicated exporter and mirror/restore proof pass without remote hosts; two-target acceptance remains open pending review, target approval and exact GO |
 | #17 clusterd API | done (merged fe02f39) | clusterd/, 72 tests, live verified (health/instances/restart/replay via HTTP); OpenAPI doc committed |
 | #18 auth/confirmations | done (merged e884312) | clusterd/auth.py+confirm.py, 82 tests, live battery 8/8 (401/403/revocation/challenge/steward) |
 | #19 audit hash-chain | done (merged 52f76a6) | seq+prev_sha256+HWM, reconcile, health audit_chain_ok; 91 tests; live verified on real log |
@@ -245,8 +257,9 @@ technically complete and deployed at the exact DM-055 pair. The isolated
 DM-031/H1-H6 integration and stacked DM-078/H7-H9 fresh-embodiment path are
 qualified candidates; obtain independent review without enabling effect or
 authority routes on a live host. Remaining operational work is external: #13
-pilot volunteer/provider credentials, #15 a second independent off-host
-target, production root/recovery custody and the final human preflight/GO.
+pilot volunteer/provider credentials, independent review of #85/#86, #15 a
+second independent off-host target, production root/recovery custody and the
+final human preflight/GO.
 None can be inferred from host or synthetic qualification.
 
 ## Key decisions this stretch

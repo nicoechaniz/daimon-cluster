@@ -3,9 +3,11 @@
 Status: the DM-055/DM-083 runtime pair is host-qualified. Exact Cluster code
 `94d80ba` pins exact Matrix code `915c56c`; local suites, Python 3.11–3.14 CI,
 installed contract checks, rollback, encrypted backup/mirror and the final cold
-host reboot all passed. Both PRs remain unmerged pending independent review.
+host reboot all passed. The forward candidate adds the reviewed-stack gates for
+a fresh embodiment plus a purpose-built-only second-mirror implementation. No
+forward candidate is deployed; all remain unmerged pending independent review.
 
-Last reconciled: 2026-08-11.
+Last reconciled: 2026-08-12.
 
 ## Exact state
 
@@ -39,17 +41,39 @@ Last reconciled: 2026-08-11.
   `915c56c`. Its clean Python 3.13 gate passed 436 tests with 2 skips, lint,
   type, compile, pin/license checks and real-storage H5/H6 drills. It is not
   deployed or independently reviewed.
+- Matrix PR #116 at `0a5fd338` and Cluster PRs #80, #82 and #84 form the
+  root-authorized fresh-embodiment candidate. The current stack converges three
+  local processes, keeps target custody separate, requires the closed
+  predecessor acknowledgement set and passes Python 3.11–3.14 CI. It creates a
+  new embodiment; it never copies an existing embodiment's custody or writable
+  database.
+- Cluster PR #85 at `cdf0651` adds the second-mirror software boundary on top
+  of H9. Its dedicated export identity, content-addressed disposable
+  provisioning, atomic repository exchange and real encrypted offline restore
+  pass `470 tests, 3 skips` plus all four CI versions. The adversarial Docker
+  proof denies shell, TTY, forwarding, upload and path escape; revoking the key
+  or deleting the export account preserves fresh synthetic administrative
+  logins and an unchanged admin-key hash.
+- PR #85 is not a deployment and does not select a second physical target.
+  Mona is categorically excluded; prior Mona activity is incident evidence
+  only. PR #86 carries the minimal administrative-access invariant and incident
+  record directly against `main`; its CI is green and independent review is
+  pending.
 
 ## Resume order
 
-1. Read Matrix `RESUME.md`, issue #111 and PR #112.
+1. Read Matrix `RESUME.md`, issue #111 and PRs #112/#116.
 2. Preserve Matrix runtime code `915c56c` and Cluster runtime code `94d80ba` as
    the exact deployed pair. Documentation-only successors do not move the pin.
-3. Obtain independent review for Matrix PR #112 and Cluster PR #77. Do not
-   self-merge or treat CI as that review.
-4. Continue only the remaining explicit external gates: consented cross-being
-   native delivery, fresh-host root authorization/private custody, governance
-   approvals and final human cutover. Do not infer them from this host proof.
+3. Obtain independent review for Matrix PRs #112/#116, the Cluster stack through
+   #84, safety PR #86, mirror PR #85 and Tribe PR #61. Respect stack order; do
+   not self-merge or treat CI as independent review.
+4. Keep all mirror/export/restore rehearsals on local fixtures or purpose-built
+   disposable infrastructure. Never contact Mona for discovery or proof.
+5. Continue only the remaining explicit external gates: selecting an approved
+   independent second target, root/recovery custody policy, exact same-plan GO,
+   governance approvals and final human cutover. Do not infer them from
+   synthetic qualification or SSH inventory.
 
 Cluster owns bodies, storage, lifecycle, deployment evidence and concrete
 resource fences. Matrix alone owns being/relationship/grant authority,

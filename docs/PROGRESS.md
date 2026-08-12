@@ -13,8 +13,9 @@ pass the complete 470-test/3-skip suite and Python 3.11–3.14 CI. A disposable
 container proof created a real encrypted restic repository, denied shell, TTY,
 forwarding, upload and path escape, preserved fresh synthetic administrative
 login across export-key revocation and account deletion, then checked and
-restored the mirror in a second network-disabled container. Mona is excluded;
-no remote evidence was used. Selecting and authorizing a genuinely independent
+restored the mirror in a second network-disabled container. That journey is
+now a separate required CI job, not manual evidence. Mona is excluded; no
+remote evidence was used. Selecting and authorizing a genuinely independent
 physical target remains external.
 
 H7-H9 now form a stacked fresh-embodiment candidate. Matrix PR #116 packages

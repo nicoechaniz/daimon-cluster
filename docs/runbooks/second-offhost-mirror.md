@@ -98,6 +98,10 @@ DAIMON_RUN_DOCKER_TESTS=1 python -m pytest -q -s \
   tests/integration/test_restic_export_container.py
 ```
 
+The `backup-export-disposable` CI job runs this proof independently from the
+four-version Python suite using an environment with only the pinned pytest
+dependency. A PR is not green when the real exporter/restore journey fails.
+
 Acceptance requires a read-only repository pull plus denials for shell, TTY,
 forwarding, upload and path escape. It then revokes the export key and deletes
 the export account, requiring a fresh administrative login after each action

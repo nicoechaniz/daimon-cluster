@@ -83,6 +83,8 @@ jobs:
           tests/test_production_fences.py
           tests/test_rebirth.py
           tests/test_recovery_rebirth.py
+          tests/integration/recovery-rebirth/role.py
+          tests/integration/test_recovery_rebirth_containers.py
           tests/test_transfer.py
           tests/test_volume_relocation.py
           scripts/h3-volume-drill.py
@@ -107,6 +109,8 @@ jobs:
           clusterctl/distributed_rebirth.py
           tests/test_rebirth.py
           tests/test_recovery_rebirth.py
+          tests/integration/recovery-rebirth/role.py
+          tests/integration/test_recovery_rebirth_containers.py
       - run: >-
           python -m compileall -q clusterctl clusterd steward_tools tests
           scripts/h3-volume-drill.py
@@ -134,3 +138,35 @@ jobs:
         run: >-
           python -W error::ResourceWarning -m pytest -q -s
           tests/integration/test_restic_export_container.py
+
+  recovery-rebirth-disposable-hosts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: AlterMundi/daimon-matrix
+          ref: 24a0ac665088550ec91529cdbd92af7721ba2adb
+          path: matrix-source
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13.5"
+      - run: python -m pip install pytest==9.0.2
+      - name: Verify disposable proof prerequisites
+        run: |
+          set -eu
+          for tool in docker git; do
+            command -v "$tool"
+          done
+          docker version
+          test "$(git -C matrix-source rev-parse HEAD)" = \
+            24a0ac665088550ec91529cdbd92af7721ba2adb
+      - name: Prove isolated recovery roles and read-only snapshot restore
+        env:
+          DAIMON_RUN_DOCKER_RECOVERY_TESTS: "1"
+          DAIMON_MATRIX_SOURCE: ${{ github.workspace }}/matrix-source
+        run: >-
+          python -W error::ResourceWarning -m pytest -q -s
+          tests/integration/test_recovery_rebirth_containers.py

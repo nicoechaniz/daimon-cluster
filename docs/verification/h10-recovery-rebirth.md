@@ -22,8 +22,10 @@ external host was used. Mona was categorically excluded.
 
 The synthetic recovery quorum revoked every active predecessor, rotated to
 fresh root custody with no old root seed retained, and authorized exactly one
-fresh embodiment with no peer targets. Cluster accepted only a portable
-snapshot whose exact Matrix commit, manifest, origin, file names, sizes and
+fresh embodiment with no peer targets. The source first verified its complete
+portable snapshot, then derived a custody-free recovery transfer containing
+only the public runtime bundle and canonical ledger. Cluster accepted only a
+transfer whose exact Matrix commit, manifest, origin, file names, sizes and
 SHA-256 values matched the recovery activation.
 
 The target installed stopped. A direct start before restore failed with
@@ -40,6 +42,11 @@ bound public runtime bundle and canonical ledger into owner-only scratch using
 stable `O_NOFOLLOW` descriptors, inode/device checks and streaming SHA-256.
 An injected ledger-to-symlink swap between verification and staging was
 rejected before the state directory existed, and scratch cleanup was proven.
+The scratch is a process-owned private directory outside both the imported
+snapshot and the prospective Cluster state (using the target parent only when
+it is already owner-only and writable), so a snapshot transfer mounted
+read-only remains a valid recovery source without mutating target state before
+verification.
 
 An intentionally wrong target password left a resumable journal. Retrying the
 same operation with the correct descriptor completed once; a terminal replay
@@ -56,10 +63,24 @@ Matrix ruff/strict mypy/compile/generators: clean (56 checked files)
 Matrix complete partition: 531 tests, 4 skipped + 30 tests, 1 skipped
 Matrix installed conformance: 98/98, release_ready=true, two byte-identical runs
 Cluster lint/type/compile: clean
-Cluster complete suite: 473 passed, 3 skipped
-Installed recovery boundary on Python 3.11/3.12/3.14: Matrix 18 + Cluster 3 each
+Cluster complete suite: 477 passed, 4 skipped
+Installed recovery boundary on Python 3.11/3.12/3.14: Matrix 18 + Cluster 7 each
 Disposable encrypted exporter/offline restore: 1 passed
+Disposable no-network recovery roles/read-only restore: 1 passed
 ```
+
+The disposable recovery-host job builds a pinned Python 3.13.5 image from an
+exact verified Git bundle of Matrix `24a0ac`, then runs trusted bootstrap,
+source full-snapshot verification/custody-free export, offline-root
+recovery/authorization, target preparation and target restore as separate
+containers. Every container has a read-only root
+filesystem, no network, no Linux capabilities and only its explicit role
+mounts. The bootstrap staging is destroyed before recovery begins; the target
+receives only the two-file recovery transfer read-only, starts with exactly one fresh active
+embodiment, retains the old canonical event and signs a new event. Passwords
+and custody files are absent from the public exchange. This is strong
+filesystem/process isolation on disposable infrastructure, not evidence of
+independent physical hardware or a live custody ceremony.
 
 Matrix reproducible artifacts were byte-identical across two isolated builds:
 

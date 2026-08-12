@@ -29,11 +29,23 @@ from .operation_journal import (
 from .rebirth import _owner_directory, _read_json, _sha, install_rebirth_package
 
 RESULT_SCHEMA: Final = "dm.cluster.recovery-rebirth-result/v1"
+RECOVERY_SNAPSHOT_EXPORT_SCHEMA: Final = "dm.cluster.recovery-snapshot-export/v1"
 MAX_RECOVERY_BUNDLE_BYTES: Final = 4 * 1024 * 1024
 
 
 class RecoveryRebirthError(RuntimeError):
     """Stable refusal at the recovery restore boundary."""
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _stage_snapshot_file(
@@ -117,9 +129,107 @@ def _stage_snapshot_file(
         os.close(source_descriptor)
 
 
+def export_recovery_snapshot(
+    snapshot_dir: str | Path, destination: str | Path
+) -> dict[str, Any]:
+    """Derive a custody-free recovery transfer from a verified full snapshot."""
+
+    source = _owner_directory(Path(snapshot_dir))
+    snapshot, payload, _verified = verify_portable_snapshot(source)
+    target = Path(os.path.abspath(destination))
+    parent = _owner_directory(target.parent)
+    if target.exists() or target.is_symlink():
+        raise RecoveryRebirthError("recovery_snapshot_destination_exists")
+    temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.recovery-", dir=parent))
+    try:
+        temporary.chmod(0o700)
+        target_payload = temporary / "payload"
+        target_payload.mkdir(mode=0o700)
+        files = {row["name"]: row for row in snapshot["files"]}
+        bundle_name = snapshot["bundle"]
+        bundle_row = files[bundle_name]
+        bundle_raw = _stage_snapshot_file(
+            payload / bundle_name,
+            target_payload / bundle_name,
+            bundle_row,
+            capture=True,
+        )
+        if bundle_raw is None:
+            raise RecoveryRebirthError("recovery_snapshot_source_rejected")
+        bundle = json.loads(bundle_raw)
+        if not isinstance(bundle, dict) or canonical_bytes(bundle) != bundle_raw.rstrip(
+            b"\n"
+        ):
+            raise RecoveryRebirthError("recovery_snapshot_source_rejected")
+        ledger_name = bundle.get("ledger")
+        if (
+            not isinstance(ledger_name, str)
+            or ledger_name == bundle_name
+            or ledger_name not in files
+        ):
+            raise RecoveryRebirthError("recovery_snapshot_source_rejected")
+        ledger_row = files[ledger_name]
+        _stage_snapshot_file(
+            payload / ledger_name,
+            target_payload / ledger_name,
+            ledger_row,
+        )
+        selected = [dict(files[name]) for name in sorted((bundle_name, ledger_name))]
+        recovery_snapshot = {
+            "schema": snapshot["schema"],
+            "matrix_contract_commit": snapshot["matrix_contract_commit"],
+            "bundle": bundle_name,
+            "origin": snapshot["origin"],
+            "files": selected,
+        }
+        manifest = temporary / "snapshot.json"
+        descriptor = os.open(
+            manifest,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            value = canonical_bytes(recovery_snapshot) + b"\n"
+            offset = 0
+            while offset < len(value):
+                written = os.write(descriptor, value[offset:])
+                if written == 0:
+                    raise RecoveryRebirthError("recovery_snapshot_export_failed")
+                offset += written
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _fsync_directory(target_payload)
+        _fsync_directory(temporary)
+        os.replace(temporary, target)
+        _fsync_directory(parent)
+        return {
+            "schema": RECOVERY_SNAPSHOT_EXPORT_SCHEMA,
+            "source_snapshot_sha256": _sha(snapshot),
+            "recovery_snapshot_sha256": _sha(recovery_snapshot),
+            "origin": snapshot["origin"],
+            "files": [row["name"] for row in selected],
+            "omitted_file_count": len(files) - len(selected),
+            "custody_files_exported": False,
+        }
+    except RecoveryRebirthError:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    except (KeyError, TypeError, json.JSONDecodeError, OSError) as exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise RecoveryRebirthError("recovery_snapshot_export_failed") from exception
+
+
 def _load_inputs(
     package_dir: Path, snapshot_dir: Path, staged_payload: Path
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], Path, dict[str, Any]]:
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    Path,
+    dict[str, Any],
+    bool,
+]:
     package = _owner_directory(package_dir)
     activation = _read_json(package / "activation.json")
     request = _read_json(package / "request.json")
@@ -153,6 +263,10 @@ def _load_inputs(
             "bundle_size": bundle_row["size"],
             "ledger_sha256": ledger_row["sha256"],
             "ledger_size": ledger_row["size"],
+        }
+        custody_free_transfer = len(files) == 2 and set(files) == {
+            snapshot["bundle"],
+            source_bundle["ledger"],
         }
     except RecoveryRebirthError:
         raise
@@ -193,7 +307,14 @@ def _load_inputs(
         )
     ):
         raise RecoveryRebirthError("recovery_rebirth_input_rejected")
-    return activation, receipt, snapshot, staged_payload, source_evidence
+    return (
+        activation,
+        receipt,
+        snapshot,
+        staged_payload,
+        source_evidence,
+        custody_free_transfer,
+    )
 
 
 def _install_recovery_rebirth_from_inputs(
@@ -204,6 +325,7 @@ def _install_recovery_rebirth_from_inputs(
     snapshot: dict[str, Any],
     payload: Path,
     source_evidence: dict[str, Any],
+    custody_free_transfer: bool,
     password_reader: Callable[[], bytearray],
     *,
     idempotency_key: str,
@@ -221,6 +343,7 @@ def _install_recovery_rebirth_from_inputs(
         "previous_manifest_hash": receipt["previous_manifest_hash"],
         "successor_manifest_hash": receipt["successor_manifest_hash"],
         "snapshot_sha256": snapshot_sha256,
+        "custody_free_transfer": custody_free_transfer,
         "package_receipt_sha256": _sha(receipt),
         "runtime_call": {
             "operation": "restore-recovery-canonical-ledger",
@@ -270,6 +393,7 @@ def _install_recovery_rebirth_from_inputs(
                 expected_precondition={
                     "target_install_state": "installed-stopped",
                     "snapshot_sha256": snapshot_sha256,
+                    "custody_free_transfer": custody_free_transfer,
                 },
                 intended_transition={
                     "canonical_ledger": "restored",
@@ -309,6 +433,7 @@ def _install_recovery_rebirth_from_inputs(
                     "embodiment_id": embodiment_id,
                     "event_count": matrix_receipt["event_count"],
                     "event_set_sha256": matrix_receipt["event_set_sha256"],
+                    "custody_free_transfer": custody_free_transfer,
                     "status": "stopped",
                 },
             )
@@ -323,6 +448,7 @@ def _install_recovery_rebirth_from_inputs(
                 "event_count": matrix_receipt["event_count"],
                 "event_set_sha256": matrix_receipt["event_set_sha256"],
                 "snapshot_sha256": snapshot_sha256,
+                "custody_free_transfer": custody_free_transfer,
             },
             idempotency_key=idempotency_key,
             event_id=record["audit_event_id"],
@@ -339,6 +465,7 @@ def _install_recovery_rebirth_from_inputs(
             "predecessor_manifest_hash": receipt["previous_manifest_hash"],
             "successor_manifest_hash": receipt["successor_manifest_hash"],
             "snapshot_sha256": snapshot_sha256,
+            "custody_free_transfer": custody_free_transfer,
             "event_count": matrix_receipt["event_count"],
             "event_set_sha256": matrix_receipt["event_set_sha256"],
             "state": "installed-restored-stopped",
@@ -363,22 +490,41 @@ def install_recovery_rebirth(
 
     package = _owner_directory(Path(package_dir))
     snapshot_root = _owner_directory(Path(snapshot_dir))
+    state = Path(os.path.abspath(state_dir))
+    staging_parent: Path | None = None
+    try:
+        parent_info = state.parent.lstat()
+        if (
+            stat.S_ISDIR(parent_info.st_mode)
+            and parent_info.st_uid == os.geteuid()
+            and not stat.S_IMODE(parent_info.st_mode) & 0o077
+            and os.access(state.parent, os.W_OK | os.X_OK)
+        ):
+            staging_parent = state.parent
+    except OSError:
+        pass
     staged = Path(
-        tempfile.mkdtemp(prefix=".recovery-rebirth-snapshot-", dir=snapshot_root.parent)
+        tempfile.mkdtemp(prefix=".recovery-rebirth-snapshot-", dir=staging_parent)
     )
     try:
         staged.chmod(0o700)
-        activation, receipt, snapshot, payload, source_evidence = _load_inputs(
-            package, snapshot_root, staged
-        )
+        (
+            activation,
+            receipt,
+            snapshot,
+            payload,
+            source_evidence,
+            custody_free_transfer,
+        ) = _load_inputs(package, snapshot_root, staged)
         return _install_recovery_rebirth_from_inputs(
-            state_dir,
+            state,
             package,
             activation,
             receipt,
             snapshot,
             payload,
             source_evidence,
+            custody_free_transfer,
             password_reader,
             idempotency_key=idempotency_key,
             actor=actor,
@@ -387,4 +533,10 @@ def install_recovery_rebirth(
         shutil.rmtree(staged)
 
 
-__all__ = ["RESULT_SCHEMA", "RecoveryRebirthError", "install_recovery_rebirth"]
+__all__ = [
+    "RECOVERY_SNAPSHOT_EXPORT_SCHEMA",
+    "RESULT_SCHEMA",
+    "RecoveryRebirthError",
+    "export_recovery_snapshot",
+    "install_recovery_rebirth",
+]

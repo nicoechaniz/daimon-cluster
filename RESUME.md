@@ -55,10 +55,13 @@ Last reconciled: 2026-08-12.
 - Matrix successor `24a0ac665088550ec91529cdbd92af7721ba2adb` and this H10
   branch complete the
   local recovery-quorum Journey C. Every predecessor is revoked, exactly one
-  fresh body is active, only canonical snapshot events cross the boundary and
-  a distinct restore journal gates first start. Full suites, deterministic
-  installed conformance, crash retry, hostile snapshot refusal and a second
-  disaster rebuild are green. Nothing was deployed or contacted remotely.
+  fresh body is active, a source-verified custody-free bundle-plus-ledger
+  transfer carries only canonical snapshot events across the boundary and a
+  distinct restore journal gates first start. Full suites, deterministic
+  installed conformance, crash retry, hostile snapshot refusal, a second
+  disaster rebuild and a no-network multi-container role-separation journey
+  with read-only snapshot transfer are green. Nothing was deployed or
+  contacted remotely.
 - Cluster PR #85 at `9e6100b` adds the second-mirror software boundary on top
   of H9. Its dedicated export identity, content-addressed disposable
   provisioning, atomic repository exchange and real encrypted offline restore

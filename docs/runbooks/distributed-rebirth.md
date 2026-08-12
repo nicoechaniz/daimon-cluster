@@ -277,25 +277,43 @@ root custody and authorize exactly one fresh target with no peer targets. Do
 not run the predecessor acknowledgement rollout for this case.
 
 After the target-only package and a quiesced `dm.cluster-matrix-snapshot/v1`
-are independently available, keep the target password on an inherited file
-descriptor and run:
+are independently available, derive the target transfer on the source side:
+
+```sh
+clusterctl rebirth-recovery-export \
+  --snapshot-dir VERIFIED_FULL_SNAPSHOT \
+  --output RECOVERY_TRANSFER --json
+```
+
+The export first verifies every file in the full snapshot, then emits a new
+valid `dm.cluster-matrix-snapshot/v1` containing exactly the public runtime
+bundle and canonical ledger. Require `custody_files_exported=false`, record
+both source and recovery snapshot hashes, and transfer only
+`RECOVERY_TRANSFER`. The full backup, predecessor custody, runtime journals,
+derived stores and host-local capabilities remain at the source/backup
+boundary.
+
+On the target, keep the target password on an inherited file descriptor and
+run:
 
 ```sh
 clusterctl --state-dir TARGET_STATE rebirth-recovery-restore \
   --package-dir RECOVERY_PACKAGE \
-  --snapshot-dir VERIFIED_SNAPSHOT \
+  --snapshot-dir RECOVERY_TRANSFER \
   --password-fd 3 \
   --idempotency-key RECOVERY_RESTORE_UUID --json \
   3<TARGET_PASSWORD
 ```
 
-The command verifies every snapshot file and the exact Matrix source pin
+The restore command verifies every transferred file and the exact Matrix source pin
 before mutating Cluster state. It installs the fresh runtime stopped, opens
 the predecessor ledger under its old authority, and re-ingests only canonical
 events through the recovery successor's historical authority. It never copies
 the old runtime bundle, custody, local RPC/transport journals or derived
 stores. Require `installed-restored-stopped`, preserve the content-addressed
-snapshot and retry with the same UUID after interruption.
+recovery transfer and retry with the same UUID after interruption. General
+portable snapshots remain accepted during the compatibility period, but new
+recovery journeys must use the custody-free export.
 
 The H8 supervisor refuses a recovery target until the separate restore journal
 is complete. After bounded start, require the old event set and one newly

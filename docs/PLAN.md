@@ -44,9 +44,10 @@ bytes. Matrix.org is excluded.
     exact closed acknowledgement set before target start, and recover only
     forward after a signed successor is accepted.
 17. Recovery-quorum rebirth: revoke every predecessor, install exactly one
-    fresh target, restore only snapshot-bound canonical events through signed
+    fresh target, derive a custody-free public-bundle-plus-ledger transfer from
+    a fully verified snapshot, restore only its canonical events through signed
     historical authority, gate first start on the restore journal and prove
-    crash retry plus disaster rebuild without restoring predecessor custody.
+    crash retry plus disaster rebuild without transferring predecessor custody.
 
 ## Acceptance
 

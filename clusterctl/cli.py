@@ -344,6 +344,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_admit.add_argument("--ack", action="append", required=True)
     p_admit.add_argument("--json", action="store_true", help="emit JSON")
 
+    p_recovery_export = sub.add_parser(
+        "rebirth-recovery-export",
+        help="derive a custody-free runtime-and-ledger recovery snapshot",
+    )
+    p_recovery_export.add_argument("--snapshot-dir", required=True)
+    p_recovery_export.add_argument("--output", required=True)
+    p_recovery_export.add_argument("--json", action="store_true", help="emit JSON")
+
     p_recovery = sub.add_parser(
         "rebirth-recovery-restore",
         help="install a recovery target and restore only canonical ledger events",
@@ -567,6 +575,19 @@ def run(argv=None, adapter=None) -> int:
                 json.dumps(result, indent=2)
                 if args.json
                 else f"{result['admission_id']} admitted"
+            )
+            return EXIT_OK
+
+        if args.command == "rebirth-recovery-export":
+            result = recovery_rebirth.export_recovery_snapshot(
+                args.snapshot_dir, args.output
+            )
+            print(
+                json.dumps(result, indent=2)
+                if args.json
+                else (
+                    f"{result['recovery_snapshot_sha256']} {args.output} custody-free"
+                )
             )
             return EXIT_OK
 

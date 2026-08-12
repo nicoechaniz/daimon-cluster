@@ -8,14 +8,16 @@ start, then resume from the first open item.
 The local Journey C successor is complete on the H10 branch, pinned to Matrix
 recovery commit `24a0ac665088550ec91529cdbd92af7721ba2adb`. A recovery quorum now bridges a
 verified predecessor snapshot to one fresh embodiment while restoring only
-canonical events, never old custody or runtime bytes. First start is gated on
+canonical events. A source-side verified derivative carries only the public
+runtime bundle and ledger, never old custody or journal bytes. First start is gated on
 a separate durable restore receipt; wrong-password resume, exact terminal
 replay, old-event continuity, fresh-event authorship, second-state disaster
 rebuild and hostile-snapshot refusal pass locally. Matrix passes its 531-test
 general partition with 4 intentional skips, its 30-test exact-CPython-3.13.5
 partition with 1 intentional skip, and deterministic 98-scenario installed
 conformance; Cluster passes its complete suite plus the real
-disposable encrypted restore proof. See
+disposable encrypted restore proof and a separate no-network, multi-container
+recovery-role journey consuming its snapshot read-only. See
 [`verification/h10-recovery-rebirth.md`](verification/h10-recovery-rebirth.md).
 
 This successor is not deployed or independently reviewed. Mona remains

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import time
 import uuid
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 
 import pytest
 from daimon_matrix.keystore import EncryptedKeystore
@@ -34,7 +36,10 @@ def short_tmp_path():
 
 
 def _recovery_fixture(tmp_path: Path) -> dict:
-    now_ms = time.time_ns() // 1_000_000
+    # Bootstrap timestamps its generated credentials from the live clock. Keep
+    # this journey explicitly after that instant instead of relying on a
+    # sub-millisecond race between the test clock read and credential creation.
+    now_ms = time.time_ns() // 1_000_000 + 1_000
     fixture = _ceremony(tmp_path, now_ms=now_ms)
     source_id = sorted(fixture["peers"])[0]
     source_root = fixture["peers"][source_id]
@@ -182,6 +187,7 @@ def test_recovery_restore_is_gated_idempotent_and_reproducible(short_tmp_path, c
         if path.is_file()
     }
     assert result["state"] == "installed-restored-stopped"
+    assert result["custody_free_transfer"] is False
     assert Registry(state).status(result["embodiment_id"])["status"] == "stopped"
     hosted = load_runtime(
         matrix_root(state, result["embodiment_id"]),
@@ -274,6 +280,152 @@ def test_tampered_snapshot_refuses_before_cluster_state_mutation(short_tmp_path)
             idempotency_key=str(uuid.uuid4()),
         )
     assert list(state.iterdir()) == []
+
+
+def test_recovery_snapshot_export_contains_only_public_bundle_and_ledger(
+    short_tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fixture = _recovery_fixture(short_tmp_path)
+    transfer = short_tmp_path / "custody-free-transfer"
+    assert (
+        cli.run(
+            [
+                "--state-dir",
+                str(short_tmp_path / "unused-state"),
+                "rebirth-recovery-export",
+                "--snapshot-dir",
+                str(fixture["snapshot"]),
+                "--output",
+                str(transfer),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["custody_files_exported"] is False
+    assert receipt["omitted_file_count"] > 0
+    assert set(receipt["files"]) == {"ledger.sqlite", "runtime.json"}
+    manifest, payload, verified = recovery_rebirth.verify_portable_snapshot(transfer)
+    assert receipt["recovery_snapshot_sha256"] == recovery_rebirth._sha(manifest)
+    assert {name for _path, name in verified} == {"ledger.sqlite", "runtime.json"}
+    assert {path.name for path in payload.iterdir()} == {
+        "ledger.sqlite",
+        "runtime.json",
+    }
+    assert (fixture["snapshot"] / "payload/custody.json").is_file()
+    assert not any("custody" in path.name for path in transfer.rglob("*"))
+    restored = recovery_rebirth.install_recovery_rebirth(
+        short_tmp_path / "filtered-target-state",
+        fixture["package"],
+        transfer,
+        lambda: bytearray(fixture["password"]),
+        idempotency_key=str(uuid.uuid4()),
+    )
+    assert restored["custody_free_transfer"] is True
+    with pytest.raises(
+        recovery_rebirth.RecoveryRebirthError,
+        match="recovery_snapshot_destination_exists",
+    ):
+        recovery_rebirth.export_recovery_snapshot(fixture["snapshot"], transfer)
+
+
+def test_recovery_snapshot_export_rejects_replacement_race(
+    short_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _recovery_fixture(short_tmp_path)
+    source_ledger = fixture["snapshot"] / "payload/ledger.sqlite"
+    original_ledger = fixture["snapshot"] / "payload/ledger-original.sqlite"
+    outside = short_tmp_path / "outside-export-ledger.sqlite"
+    outside.write_bytes(b"must-not-cross-recovery-export")
+    outside.chmod(0o600)
+    transfer = short_tmp_path / "race-rejected-transfer"
+    real_stage = recovery_rebirth._stage_snapshot_file
+    swapped = False
+
+    def swap_before_stage(
+        source: Path,
+        destination: Path,
+        row: dict[str, Any],
+        *,
+        capture: bool = False,
+    ) -> bytes | None:
+        nonlocal swapped
+        if source == source_ledger:
+            swapped = True
+            source_ledger.rename(original_ledger)
+            source_ledger.symlink_to(outside)
+        return real_stage(source, destination, row, capture=capture)
+
+    monkeypatch.setattr(recovery_rebirth, "_stage_snapshot_file", swap_before_stage)
+    with pytest.raises(
+        recovery_rebirth.RecoveryRebirthError,
+        match="recovery_rebirth_snapshot_rejected",
+    ):
+        recovery_rebirth.export_recovery_snapshot(fixture["snapshot"], transfer)
+    assert swapped is True
+    assert not transfer.exists()
+    assert not list(short_tmp_path.glob(".race-rejected-transfer.recovery-*"))
+
+
+def test_read_only_snapshot_parent_restores_via_target_owned_scratch(
+    short_tmp_path: Path,
+) -> None:
+    fixture = _recovery_fixture(short_tmp_path)
+    transfer = short_tmp_path / "read-only-transfer"
+    transfer.mkdir(mode=0o700)
+    snapshot = transfer / "canonical"
+    shutil.copytree(fixture["snapshot"], snapshot)
+    state_parent = short_tmp_path / "target-owned"
+    state_parent.mkdir(mode=0o700)
+    state = state_parent / "cluster-state"
+    transfer.chmod(0o500)
+    try:
+        result = recovery_rebirth.install_recovery_rebirth(
+            state,
+            fixture["package"],
+            snapshot,
+            lambda: bytearray(fixture["password"]),
+            idempotency_key=str(uuid.uuid4()),
+        )
+    finally:
+        transfer.chmod(0o700)
+    assert result["state"] == "installed-restored-stopped"
+    assert not list(state_parent.glob(".recovery-rebirth-snapshot-*"))
+
+
+def test_non_private_state_parent_uses_process_temp_before_state_creation(
+    short_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _recovery_fixture(short_tmp_path)
+    shared_parent = short_tmp_path / "shared-parent"
+    shared_parent.mkdir(mode=0o755)
+    shared_parent.chmod(0o755)
+    state = shared_parent / "cluster-state"
+    real_mkdtemp = recovery_rebirth.tempfile.mkdtemp
+    observed_staging: list[tuple[str, str | os.PathLike[str] | None]] = []
+
+    def capture_mkdtemp(
+        *, prefix: str, dir: str | os.PathLike[str] | None = None
+    ) -> str:
+        observed_staging.append((prefix, dir))
+        return real_mkdtemp(prefix=prefix, dir=dir)
+
+    monkeypatch.setattr(recovery_rebirth.tempfile, "mkdtemp", capture_mkdtemp)
+    result = recovery_rebirth.install_recovery_rebirth(
+        state,
+        fixture["package"],
+        fixture["snapshot"],
+        lambda: bytearray(fixture["password"]),
+        idempotency_key=str(uuid.uuid4()),
+    )
+    assert result["state"] == "installed-restored-stopped"
+    assert [
+        parent
+        for prefix, parent in observed_staging
+        if prefix == ".recovery-rebirth-snapshot-"
+    ] == [None]
+    assert not list(shared_parent.glob(".recovery-rebirth-snapshot-*"))
 
 
 def test_snapshot_replacement_race_refuses_before_state_creation(

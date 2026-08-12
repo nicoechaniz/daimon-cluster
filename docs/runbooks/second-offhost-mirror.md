@@ -5,6 +5,12 @@ repository. It does not give the mirror host the restic password, Matrix
 custody, Cluster authority, a general source shell, or access outside the
 repository. Target 2 must be in a failure domain independent from target 1.
 
+The source export must use a dedicated `daimon-backup-export` identity. This
+workflow must never add, remove, rewrite or otherwise inspect-as-candidate an
+existing administrator's `authorized_keys`; in particular it must not operate
+as `root`, `debian` or another established login. Breaking or deleting the
+export identity must leave administrative access unchanged.
+
 ## Preflight
 
 Record the source repository size and latest snapshot ID, a successful source
@@ -33,33 +39,34 @@ sudo ssh-keygen -q -t ed25519 -N '' \
 sudo chmod 0600 /etc/daimon-backup/daimonmatrix.key
 ```
 
-Transfer only the `.pub` line to the source through the approved operator
-channel. Pin the source host key independently into
+Transfer only the `.pub` line to the source's separately reviewed
+`daimon-backup-export` bootstrap through the approved operator channel. Pin
+the source host key independently into
 `/etc/daimon-backup/daimonmatrix.known-hosts`; do not use `accept-new`.
 
 ## Source read-only authorization
 
-Keep the current source session open for recovery. Build a sibling candidate
-from the complete existing `authorized_keys` plus exactly one target-specific
-key; never overwrite the file from only the new public fragment. The forced
-command must preserve the original rsync request across `sudo` so `rrsync` can
-validate it:
+Provision a new source-only system identity through reviewed host bootstrap,
+with no password, no provider/Matrix/Cluster credentials and no sudo command
+except the fixed exporter wrapper. Its owner-only key file contains exactly
+one target-specific public key. Do not implement this by editing an existing
+login or by copying an administrator's SSH configuration.
+
+The dedicated key's forced command must pass the original rsync request as one
+quoted argument to a root-owned exporter wrapper. The wrapper accepts exactly
+one argument, reconstructs `SSH_ORIGINAL_COMMAND`, and execs only:
 
 ```text
-restrict,command="sudo -n env SSH_ORIGINAL_COMMAND=\"$SSH_ORIGINAL_COMMAND\" /usr/bin/rrsync -ro /var/lib/daimon-cluster/restic-repo"
+/usr/bin/rrsync -ro /var/lib/daimon-cluster/restic-repo
 ```
 
-Before the atomic rename, require the candidate line count to equal the old
-count plus one, preserve owner/mode, and keep a byte-identical backup beside
-it. From a second fresh connection, prove both that the operator's original
-key still opens the host and that the mirror key rejects `id`/shell while an
-rsync sender request succeeds. Restore the backup through the first open
-session on any failure. Only then close that session.
-
-The mirror key must have no other authorization. `rrsync -ro` constrains every
-request to sender mode below that exact repository. Revoke only this exact
-line to remove target access; do not grant a shell or a broad rsync sudo
-command.
+The mirror key must have `restrict` and no other authorization. `rrsync -ro`
+constrains every request to sender mode below that exact repository. Prove
+shell, TTY, forwarding, receiver mode and paths outside the repo fail closed.
+Revoke or destroy only the dedicated export account to remove target access.
+The repository currently contains no authorized installer for that source
+identity: do not improvise one in a live shell. Its reviewed implementation and
+disposable-host lockout test are deployment gates for this runbook.
 
 ## Install and verify
 

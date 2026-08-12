@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -348,6 +349,57 @@ def test_mirror_systemd_assets_are_unprivileged_and_secret_free() -> None:
     subprocess.run(
         ["bash", "-n", str(ROOT / "scripts/restic-mirror-pull.sh")], check=True
     )
+
+
+def test_executable_assets_cannot_mutate_administrative_ssh_access() -> None:
+    protected_roots = (
+        "/root/.ssh",
+        "/home/root/.ssh",
+        "/home/debian/.ssh",
+        "/home/nicolas/.ssh",
+    )
+    executable_roots = (
+        ROOT / "scripts",
+        ROOT / "configs",
+        ROOT / "clusterctl",
+        ROOT / "clusterd",
+        ROOT / "steward_tools",
+    )
+
+    for directory in executable_roots:
+        for path in directory.rglob("*"):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            assert "authorized_keys" not in content, path
+            for line in content.splitlines():
+                if not any(protected in line for protected in protected_roots):
+                    continue
+                assert re.search(r"(?<![012])>(?!&)", line) is None, (path, line)
+                for mutation in (
+                    "tee ",
+                    "sed -i",
+                    "cp ",
+                    "mv ",
+                    "install ",
+                    "chmod ",
+                    "chown ",
+                    "truncate ",
+                ):
+                    assert mutation not in line, (path, line)
+
+    rules = " ".join((ROOT / "AGENTS.md").read_text().split())
+    assert "must not modify an existing administrative login path" in rules
+    assert "timed automatic rollback" in rules
+    assert "second fresh session" in rules
+
+    runbook = (ROOT / "docs/runbooks/second-offhost-mirror.md").read_text()
+    assert "dedicated `daimon-backup-export` identity" in runbook
+    assert "must never add, remove, rewrite" in runbook
+    assert "contains no authorized installer" in runbook
 
 
 def test_private_bind_wait_is_bounded_and_disclosure_safe() -> None:

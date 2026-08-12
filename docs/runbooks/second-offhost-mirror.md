@@ -53,26 +53,56 @@ the source host key independently into
 ## Source read-only authorization
 
 Provision a new source-only system identity through reviewed host bootstrap,
-with no password, no provider/Matrix/Cluster credentials and no sudo command
-except the fixed exporter wrapper. Its owner-only key file contains exactly
-one target-specific public key. Do not implement this by editing an existing
-login or by copying an administrator's SSH configuration.
+with no password, no provider/Matrix/Cluster credentials and no sudo. Give it
+`/bin/sh` only because sshd needs a command interpreter; the identity's
+`Match User` block forces every request through the root-owned exporter and
+disables forwarding and TTY allocation. Its key material lives only at
+`/etc/daimon-backup/export-keys`, outside every established login's home. Do
+not implement this by editing an existing login or by copying an
+administrator's SSH configuration.
 
-The dedicated key's forced command must pass the original rsync request as one
-quoted argument to a root-owned exporter wrapper. The wrapper accepts exactly
-one argument, reconstructs `SSH_ORIGINAL_COMMAND`, and execs only:
+Install `configs/70-daimon-backup-export.conf` as an sshd drop-in only after
+`sshd -t` accepts the candidate. The drop-in supplies `ForceCommand`; the key
+file contains an unadorned, target-specific public key rather than improvised
+per-key shell syntax. The wrapper preserves the sshd-provided
+`SSH_ORIGINAL_COMMAND` and execs only:
 
 ```text
 /usr/bin/rrsync -ro /var/lib/daimon-cluster/restic-repo
 ```
 
-The mirror key must have `restrict` and no other authorization. `rrsync -ro`
-constrains every request to sender mode below that exact repository. Prove
-shell, TTY, forwarding, receiver mode and paths outside the repo fail closed.
-Revoke or destroy only the dedicated export account to remove target access.
-The repository currently contains no authorized installer for that source
-identity: do not improvise one in a live shell. Its reviewed implementation and
-disposable-host lockout test are deployment gates for this runbook.
+The sshd Match block is the restriction boundary. `rrsync -ro` constrains every
+request to sender mode below that exact repository. Prove shell, TTY,
+forwarding, receiver mode and paths outside the repo fail closed. Revoke or
+destroy only the dedicated export account to remove target access. The source
+identity remains undeployable on live infrastructure until the
+content-addressed preflight and disposable-host lockout test are reviewed and
+a production-specific same-plan gate exists; do not improvise it in a live
+shell.
+
+## Disposable provisioning proof
+
+`scripts/restic-export-preflight.py` renders an immutable bundle containing
+only the dedicated key file, sshd Match block and exporter wrapper. Its
+`verify` command requires the exact bundle SHA-256 and rejects altered content,
+modes or paths. It has no apply mode.
+
+`scripts/restic-export-apply-disposable.py` is deliberately not a production
+installer. It refuses to run without the exact root-owned disposable marker,
+allowlists all three target paths, creates only `daimon-backup-export`, runs
+`sshd -t`, emits a receipt and never reloads sshd. The container proof exercises
+that exact applicator:
+
+```sh
+DAIMON_RUN_DOCKER_TESTS=1 python -m pytest -q -s \
+  tests/integration/test_restic_export_container.py
+```
+
+Acceptance requires a read-only repository pull plus denials for shell, TTY,
+forwarding, upload and path escape. It then revokes the export key and deletes
+the export account, requiring a fresh administrative login after each action
+and an unchanged synthetic administrative-key hash. The Dockerfile pins its
+base image digest and the test destroys its named container and image.
 
 ## Install and verify
 

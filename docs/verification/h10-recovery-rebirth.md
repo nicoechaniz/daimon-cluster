@@ -57,6 +57,7 @@ Matrix complete partition: 531 tests, 4 skipped + 30 tests, 1 skipped
 Matrix installed conformance: 98/98, release_ready=true, two byte-identical runs
 Cluster lint/type/compile: clean
 Cluster complete suite: 473 passed, 3 skipped
+Installed recovery boundary on Python 3.11/3.12/3.14: Matrix 18 + Cluster 3 each
 Disposable encrypted exporter/offline restore: 1 passed
 ```
 
@@ -76,6 +77,14 @@ report summary hash
 and transcript hash
 `f777b397f3bbb95cd0c5500c57cc6952f5579f9602e294ab97c9e84343f938ba`.
 Artifact and report secret scans were clean.
+
+The installed conformance also exercises two-being recipient encryption,
+authenticated intake, route ACK versus semantic-delivery separation, signed
+terminal receipts, bilateral relationship consent and replay-safe native peer
+transport. That is the reproducible replacement boundary; it is not evidence
+that the separately consented real cross-being canary has happened. Tribe
+Bridge therefore remains a transitional human-message carrier until that
+external canary, review and explicit migration/archive decisions complete.
 
 This qualifies the automated local Journey C boundary. It does not authorize
 a live recovery or deployment. Independent review, an approved real custody

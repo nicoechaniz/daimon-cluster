@@ -192,7 +192,8 @@ Missing, extra, duplicate-different, wrong-rollout, wrong-manifest or wrong-
 incarnation rows must fail before Registry or password access. Repeating with
 an exact duplicate returns byte-identical admission.
 
-Start the target through H8, not by directly invoking `daimon-matrixd`:
+Perform the first bounded foreground start through H8, not by directly invoking
+`daimon-matrixd`:
 
 ```sh
 umask 077
@@ -204,11 +205,29 @@ exec python -m clusterctl.rebirth_host \
   3<TARGET_PASSWORD
 ```
 
-The long-running supervisor owns the child. A service unit must reproduce the
-same descriptor-only call and hardened cgroup/filesystem policy. Ready is valid
-only when authenticated `runtime.status`, `/me` and `/we` prove integrity,
-exact target origin, successor manifest and the complete participant-plus-
-target active set.
+After that check, stop the foreground supervisor cleanly and install the
+reviewed template. Keep the source password root-only; systemd exposes a
+private copy to the unprivileged service and the shell opens only descriptor 3:
+
+```sh
+install -o root -g root -m 0644 \
+  configs/daimon-matrix-rebirth@.service \
+  /etc/systemd/system/daimon-matrix-rebirth@.service
+install -d -o root -g root -m 0700 /etc/daimon-matrix/rebirth
+INSTANCE=$(systemd-escape "TARGET_EMBODIMENT")
+install -o root -g root -m 0600 TARGET_PASSWORD \
+  "/etc/daimon-matrix/rebirth/${INSTANCE}.password"
+systemctl daemon-reload
+systemctl enable --now "daimon-matrix-rebirth@${INSTANCE}.service"
+```
+
+Do not substitute an environment file, inline secret, readable service-account
+file or command-line password. Verify the installed unit with `systemctl cat`,
+confirm the credential source is `0600 root:root`, and confirm the process runs
+as `clusterd`. The long-running H8 supervisor owns the Matrix child. Ready is
+valid only when authenticated `runtime.status`, `/me` and `/we` prove
+integrity, exact target origin, successor manifest and the complete
+participant-plus-target active set.
 
 ## Convergence and postflight
 

@@ -165,6 +165,40 @@ def test_deploy_and_unit_assets_pin_the_final_release_boundary() -> None:
     ) in clusterd_unit
 
 
+def test_rebirth_unit_preserves_admission_and_credential_boundaries() -> None:
+    unit = (ROOT / "configs/daimon-matrix-rebirth@.service").read_text()
+
+    assert "User=clusterd" in unit
+    assert "Group=clusterd" in unit
+    assert (
+        "LoadCredential=matrix-password:"
+        "/etc/daimon-matrix/rebirth/%i.password"
+    ) in unit
+    assert "-m clusterctl.rebirth_host" in unit
+    assert '--embodiment-id "$1"' in unit
+    assert "--password-fd 3" in unit
+    assert "--production-fence-verifier" in unit
+    assert '3<"$CREDENTIALS_DIRECTORY/matrix-password"' in unit
+    assert "Requires=clusterd.service" in unit
+
+    for boundary in (
+        "UMask=0077",
+        "NoNewPrivileges=true",
+        "ProtectSystem=strict",
+        "ProtectHome=true",
+        "ReadOnlyPaths=/opt/daimon-cluster",
+        "ReadWritePaths=/var/lib/daimon-cluster",
+        "RestrictSUIDSGID=true",
+        "LockPersonality=true",
+    ):
+        assert boundary in unit
+
+    assert "EnvironmentFile=" not in unit
+    assert "--password " not in unit
+    assert "-m clusterctl.matrix_host" not in unit
+    assert "daimon-matrixd" not in unit
+
+
 def test_private_bind_wait_is_bounded_and_disclosure_safe() -> None:
     script = ROOT / "scripts/wait-private-bind.py"
     ready = subprocess.run(

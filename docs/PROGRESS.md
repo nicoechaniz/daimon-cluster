@@ -11,9 +11,10 @@ verified predecessor snapshot to one fresh embodiment while restoring only
 canonical events, never old custody or runtime bytes. First start is gated on
 a separate durable restore receipt; wrong-password resume, exact terminal
 replay, old-event continuity, fresh-event authorship, second-state disaster
-rebuild and hostile-snapshot refusal pass locally. Matrix passes its complete
-561-test partition with 5 intentional skips and deterministic 98-scenario
-installed conformance; Cluster passes its complete suite plus the real
+rebuild and hostile-snapshot refusal pass locally. Matrix passes its 531-test
+general partition with 4 intentional skips, its 30-test exact-CPython-3.13.5
+partition with 1 intentional skip, and deterministic 98-scenario installed
+conformance; Cluster passes its complete suite plus the real
 disposable encrypted restore proof. See
 [`verification/h10-recovery-rebirth.md`](verification/h10-recovery-rebirth.md).
 
@@ -34,13 +35,14 @@ now a separate required CI job, not manual evidence. Mona is excluded; no
 remote evidence was used. Selecting and authorizing a genuinely independent
 physical target remains external.
 
-H7-H9 now form a stacked fresh-embodiment candidate. Matrix PR #116 packages
-the exact DM-078 operator surface at
-`0a5fd3383aeb391488888d397a3d3296a71f98db`; Cluster PRs #80, #82 and #84 add
+H7-H9 now form a stacked fresh-embodiment candidate. The Matrix PR #116
+publication predecessor is `a58115895fb890db6dbae83d68b014352093868f`; the
+qualified local recovery successor is separately recorded above at `24a0ac`.
+Cluster PRs #80, #82 and #84 add
 journaled target install, authenticated foreground supervision and a closed
 distributed predecessor rollout. Matrix package, conformance, Hermes and
 Python 3.11-3.14 CI are green. The final Cluster H9 head
-`a53517178e9ed19b3392a739a793d1a1e0c39bdf` passes 455 tests with 2 intentional
+`ca65650a45331a7f313da97d1240eb4aacf383fd` passes 455 tests with 2 intentional
 skips plus Python 3.11-3.14 CI.
 
 A disposable Legion-daimonmatrix journey created a distinct embodiment of one

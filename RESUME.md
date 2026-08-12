@@ -43,7 +43,10 @@ Last reconciled: 2026-08-12.
   `915c56c`. Its clean Python 3.13 gate passed 436 tests with 2 skips, lint,
   type, compile, pin/license checks and real-storage H5/H6 drills. It is not
   deployed or independently reviewed.
-- Matrix PR #116 at `0a5fd338` and Cluster PRs #80, #82 and #84 form the
+- Matrix PR #116 publication predecessor
+  `a58115895fb890db6dbae83d68b014352093868f` and Cluster PRs #80, #82 and #84
+  through H9 head
+  `ca65650a45331a7f313da97d1240eb4aacf383fd` form the
   root-authorized fresh-embodiment candidate. The current stack converges three
   local processes, keeps target custody separate, requires the closed
   predecessor acknowledgement set and passes Python 3.11–3.14 CI. It creates a

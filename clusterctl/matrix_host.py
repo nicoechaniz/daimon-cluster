@@ -28,7 +28,7 @@ from typing import Any
 from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
-MATRIX_CONTRACT_COMMIT = "ac34305f01e01d23a61855b3bb8a096336dc2926"
+MATRIX_CONTRACT_COMMIT = "6f622f8b592168d769b7af4319712b5b6ca254c5"
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
 MATRIX_STATUS_SCHEMA = "dm.cluster-matrix-status/v1"

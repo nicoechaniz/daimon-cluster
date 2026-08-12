@@ -49,14 +49,14 @@ Last reconciled: 2026-08-12.
   predecessor acknowledgement set and passes Python 3.11–3.14 CI. It creates a
   new embodiment; it never copies an existing embodiment's custody or writable
   database.
-- Matrix successor `ac34305f01e01d23a61855b3bb8a096336dc2926` and Cluster
-  implementation `6985b239051348534030994db792c5455761a340` complete the
+- Matrix successor `6f622f8b592168d769b7af4319712b5b6ca254c5` and this H10
+  branch complete the
   local recovery-quorum Journey C. Every predecessor is revoked, exactly one
   fresh body is active, only canonical snapshot events cross the boundary and
   a distinct restore journal gates first start. Full suites, deterministic
   installed conformance, crash retry, hostile snapshot refusal and a second
   disaster rebuild are green. Nothing was deployed or contacted remotely.
-- Cluster PR #85 at `cdf0651` adds the second-mirror software boundary on top
+- Cluster PR #85 at `9e6100b` adds the second-mirror software boundary on top
   of H9. Its dedicated export identity, content-addressed disposable
   provisioning, atomic repository exchange and real encrypted offline restore
   pass `470 tests, 3 skips` plus all four CI versions. The adversarial Docker

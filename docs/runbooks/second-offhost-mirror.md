@@ -5,6 +5,11 @@ repository. It does not give the mirror host the restic password, Matrix
 custody, Cluster authority, a general source shell, or access outside the
 repository. Target 2 must be in a failure domain independent from target 1.
 
+Mona is explicitly excluded: it is a production server, not a candidate
+target, test source, staging host or discovery surface. Pre-production work
+uses purpose-created disposable infrastructure only. Selecting any eventual
+live target is a separate owner approval and is not inferred from SSH access.
+
 The source export must use a dedicated `daimon-backup-export` identity. This
 workflow must never add, remove, rewrite or otherwise inspect-as-candidate an
 existing administrator's `authorized_keys`; in particular it must not operate
@@ -18,6 +23,7 @@ Record the source repository size and latest snapshot ID, a successful source
 target account, paths and deployed commit. Stop if target ownership or storage
 approval is absent, either host is untrusted, the target shares target 1's
 site/power/network failure domain, or the source check is not green.
+Reject Mona by hostname or resolved inventory identity before any connection.
 
 The mirror is only a recovery copy. Keep the repository password in the
 separate offline recovery escrow; never install it on a ciphertext-only mirror.

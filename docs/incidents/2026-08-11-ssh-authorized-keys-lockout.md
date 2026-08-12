@@ -5,11 +5,18 @@ Severity: high operational availability; no confidentiality or integrity loss
 
 ## Summary and impact
 
-During a disposable second-backup-target rehearsal, an operator automation
+During a second-backup-target rehearsal, an operator automation
 replaced `/home/debian/.ssh/authorized_keys` with one temporary restricted
 mirror key instead of appending it to the existing administrative key. New SSH
 sessions using the normal key were rejected until the original key was
 restored through the already-running daimonmatrix agent.
+
+The rehearsal also incorrectly used Mona, a production server that the owner
+had not authorized for experiments. It created an owner-local scratch tree and
+temporary mirror key under `/tmp` on Mona. The exact scratch tree, including
+the private key, was later destroyed and no account, authorization, service,
+timer or configuration had been installed there. This still violated the
+production boundary; none of its results count as backup acceptance evidence.
 
 The VPS, SSH daemon, Cluster, Matrix and Tribe services remained running. No
 private key, Matrix custody, repository password or restored content was
@@ -82,6 +89,8 @@ operational risk.
 5. Any exceptional future access change requires exact user authorization, a
    reviewed tool, open recovery session, timed rollback and a fresh-session
    test of the pre-existing access before rollback cancellation.
+6. Mona is recorded as categorically excluded from experiments. Pre-production
+   proof uses fixtures, containers or purpose-created disposable hosts only.
 
 ## Closure criteria
 

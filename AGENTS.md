@@ -32,6 +32,21 @@ If any condition is missing, stop before mutation. See
 `docs/incidents/2026-08-11-ssh-authorized-keys-lockout.md` for the incident that
 established this invariant.
 
+## Production-host exclusion
+
+`mona` / `mona.altermundi.net` is a production server and is categorically out
+of scope for this repository's experiments, rehearsals, backup targets,
+restore drills, synthetic journeys, staging, probes and temporary files. Do
+not connect to it for discovery or verification. Its presence in the user's
+SSH inventory is not authorization. Only an exact future request from the
+owner naming Mona and the production action can change this boundary; broad
+roadmap or autonomous-work permission cannot.
+
+All pre-production mirror and recovery work must run on local fixtures,
+containers or purpose-created disposable hosts. Evidence from the invalid
+2026-08-11 Mona rehearsal is incident evidence only and must not satisfy any
+acceptance criterion.
+
 ## Live authority and review
 
 Do not create Matrix root/embodiment custody, sign governance artifacts,

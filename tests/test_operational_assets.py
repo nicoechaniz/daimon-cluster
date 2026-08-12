@@ -395,11 +395,15 @@ def test_executable_assets_cannot_mutate_administrative_ssh_access() -> None:
     assert "must not modify an existing administrative login path" in rules
     assert "timed automatic rollback" in rules
     assert "second fresh session" in rules
+    assert "mona.altermundi.net" in rules
+    assert "categorically out of scope" in rules
 
     runbook = (ROOT / "docs/runbooks/second-offhost-mirror.md").read_text()
     assert "dedicated `daimon-backup-export` identity" in runbook
     assert "must never add, remove, rewrite" in runbook
     assert "contains no authorized installer" in runbook
+    assert "Mona is explicitly excluded" in runbook
+    assert "purpose-created disposable infrastructure only" in runbook
 
 
 def test_private_bind_wait_is_bounded_and_disclosure_safe() -> None:

@@ -1,0 +1,11 @@
+[Unit]
+Description=daily encrypted Daimon restic mirror from %I
+
+[Timer]
+OnCalendar=*-*-* 05:47:00
+RandomizedDelaySec=900
+Persistent=true
+Unit=daimon-restic-mirror@%i.service
+
+[Install]
+WantedBy=timers.target

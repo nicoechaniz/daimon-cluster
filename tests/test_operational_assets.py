@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -197,6 +198,156 @@ def test_rebirth_unit_preserves_admission_and_credential_boundaries() -> None:
     assert "--password " not in unit
     assert "-m clusterctl.matrix_host" not in unit
     assert "daimon-matrixd" not in unit
+
+
+def _mirror_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, str]:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    receipts = tmp_path / "receipts"
+    credentials = tmp_path / "credentials"
+    for path in (
+        source / "data",
+        source / "index",
+        source / "keys",
+        source / "locks",
+        source / "snapshots" / "ab",
+        destination,
+        receipts,
+        credentials,
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+    destination.chmod(0o700)
+    (source / "config").write_text("synthetic encrypted repo\n")
+    (source / "data" / "payload").write_bytes(b"ciphertext")
+    snapshot_id = "ab" + ("c" * 62)
+    (source / "snapshots" / "ab" / ("c" * 62)).write_bytes(b"snapshot")
+    key = credentials / "source-key"
+    key.write_text("fixture-private-key\n")
+    key.chmod(0o600)
+    (credentials / "source-known-hosts").write_text(
+        "source.example ssh-ed25519 AAAAfixture\n"
+    )
+    fake_rsync = _executable(
+        tmp_path / "rsync",
+        """#!/usr/bin/env bash
+set -eu
+printf 'RSH=%s\nARGS=%s\n' "$RSYNC_RSH" "$*" > "$MIRROR_RSYNC_LOG"
+if [[ "${MIRROR_RSYNC_FAIL:-0}" == 1 ]]; then exit 9; fi
+dest="${!#}"
+cp -a "$MIRROR_FIXTURE_SOURCE/." "$dest"
+""",
+    )
+    env = {
+        **os.environ,
+        "MIRROR_SOURCE": "mirror@source.example",
+        "MIRROR_DEST": str(destination),
+        "MIRROR_RECEIPT": str(receipts / "source.json"),
+        "MIRROR_CREDENTIALS_DIR": str(credentials),
+        "MIRROR_FIXTURE_SOURCE": str(source),
+        "MIRROR_RSYNC_LOG": str(tmp_path / "rsync.log"),
+        "RSYNC_BIN": str(fake_rsync),
+        "SSH_BIN": "/usr/bin/ssh",
+    }
+    return env, destination, snapshot_id
+
+
+def test_mirror_pull_is_read_only_pinned_and_content_addressed(tmp_path: Path) -> None:
+    env, destination, snapshot_id = _mirror_fixture(tmp_path)
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/restic-mirror-pull.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(Path(env["MIRROR_RECEIPT"]).read_text())
+    assert receipt["schema"] == "dm.cluster-mirror-receipt/v1"
+    assert receipt["latest_snapshot_id"] == snapshot_id
+    assert receipt["status"] == "ok"
+    assert receipt["file_count"] == 3
+    assert receipt["byte_count"] > 0
+    assert len(receipt["tree_sha256"]) == 64
+    assert (destination / "data" / "payload").read_bytes() == b"ciphertext"
+
+    rsync = Path(env["MIRROR_RSYNC_LOG"]).read_text()
+    assert "--delete-delay" in rsync
+    assert "--delay-updates" in rsync
+    assert "--partial-dir=.rsync-partial" in rsync
+    assert f"--link-dest={destination}" in rsync
+    assert "mirror@source.example:/" in rsync
+    assert f"-i {env['MIRROR_CREDENTIALS_DIR']}/source-key" in rsync
+    assert "StrictHostKeyChecking=yes" in rsync
+    assert "UserKnownHostsFile=" in rsync
+
+
+def test_mirror_failure_preserves_last_good_receipt_and_marks_error(tmp_path: Path) -> None:
+    env, _destination, _snapshot_id = _mirror_fixture(tmp_path)
+    receipt = Path(env["MIRROR_RECEIPT"])
+    receipt.write_text('{"status":"previous-ok"}\n')
+    env["MIRROR_RSYNC_FAIL"] = "1"
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/restic-mirror-pull.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 9
+    assert json.loads(receipt.read_text()) == {"status": "previous-ok"}
+    error = json.loads(Path(f"{receipt}.last-error").read_text())
+    assert error == {
+        "schema": "dm.cluster-mirror-error/v1",
+        "status": "failed",
+        "exit_code": 9,
+    }
+
+
+def test_mirror_rejects_unsafe_key_and_mirrored_symlink(tmp_path: Path) -> None:
+    env, destination, _snapshot_id = _mirror_fixture(tmp_path)
+    key = Path(env["MIRROR_CREDENTIALS_DIR"]) / "source-key"
+    key.chmod(0o644)
+    unsafe_key = subprocess.run(
+        ["bash", str(ROOT / "scripts/restic-mirror-pull.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert unsafe_key.returncode == 2
+    assert unsafe_key.stderr == "mirror_key_permissions_unsafe\n"
+    assert not Path(env["MIRROR_RSYNC_LOG"]).exists()
+
+    key.chmod(0o600)
+    source = Path(env["MIRROR_FIXTURE_SOURCE"])
+    (source / "data" / "escape").symlink_to("/etc/passwd")
+    unsafe_tree = subprocess.run(
+        ["bash", str(ROOT / "scripts/restic-mirror-pull.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert unsafe_tree.returncode == 3
+    assert "mirror_repository_symlink_rejected" in unsafe_tree.stderr
+    assert not (destination / "data" / "escape").exists()
+
+
+def test_mirror_systemd_assets_are_unprivileged_and_secret_free() -> None:
+    service = (ROOT / "configs/daimon-restic-mirror@.service").read_text()
+    timer = (ROOT / "configs/daimon-restic-mirror@.timer").read_text()
+    assert "User=daimon-backup" in service
+    assert "Group=daimon-backup" in service
+    assert "LoadCredential=source-key:" in service
+    assert "LoadCredential=source-known-hosts:" in service
+    assert "ReadWritePaths=/srv/daimon-backups" in service
+    assert "CapabilityBoundingSet=" in service
+    assert "RESTIC_PASSWORD" not in service
+    assert "PrivateDevices=true" in service
+    assert "Persistent=true" in timer
+    subprocess.run(
+        ["bash", "-n", str(ROOT / "scripts/restic-mirror-pull.sh")], check=True
+    )
 
 
 def test_private_bind_wait_is_bounded_and_disclosure_safe() -> None:

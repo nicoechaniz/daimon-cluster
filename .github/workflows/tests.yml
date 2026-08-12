@@ -149,6 +149,7 @@ jobs:
           repository: AlterMundi/daimon-matrix
           ref: 24a0ac665088550ec91529cdbd92af7721ba2adb
           path: matrix-source
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:

@@ -82,6 +82,12 @@ and custody files are absent from the public exchange. This is strong
 filesystem/process isolation on disposable infrastructure, not evidence of
 independent physical hardware or a live custody ceremony.
 
+The Matrix checkout used to construct that offline bundle must contain full
+history (`fetch-depth: 0`). The integration proof explicitly rejects a shallow
+source before bundle construction. This prevents a checkout that names the
+right Matrix head but omits a required ancestor from producing a locally
+unclonable bundle inside the build container.
+
 Matrix reproducible artifacts were byte-identical across two isolated builds:
 
 - wheel:

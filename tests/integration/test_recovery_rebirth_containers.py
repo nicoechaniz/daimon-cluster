@@ -155,6 +155,12 @@ def test_recovery_roles_cross_only_closed_mounts(tmp_path: Path) -> None:
     )
     _require_ok(matrix_head, "matrix-source-head")
     assert matrix_head.stdout.strip() == MATRIX_COMMIT
+    matrix_shallow = _run(
+        ["git", "-C", str(matrix_source), "rev-parse", "--is-shallow-repository"],
+        check=False,
+    )
+    _require_ok(matrix_shallow, "matrix-source-shallow-check")
+    assert matrix_shallow.stdout.strip() == "false"
     build_context = tmp_path / "build-context"
     build_context.mkdir(mode=0o700)
     shutil.copy2(

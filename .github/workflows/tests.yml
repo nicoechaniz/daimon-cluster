@@ -70,6 +70,7 @@ jobs:
           clusterctl/reconcile.py
           clusterctl/rebirth.py
           clusterctl/rebirth_host.py
+          clusterctl/recovery_rebirth.py
           clusterctl/transfer.py
           clusterd/__main__.py
           clusterd/handlers.py
@@ -81,6 +82,7 @@ jobs:
           tests/test_park.py
           tests/test_production_fences.py
           tests/test_rebirth.py
+          tests/test_recovery_rebirth.py
           tests/test_transfer.py
           tests/test_volume_relocation.py
           scripts/h3-volume-drill.py
@@ -100,9 +102,11 @@ jobs:
           clusterctl/transfer.py
           clusterctl/rebirth.py
           clusterctl/rebirth_host.py
+          clusterctl/recovery_rebirth.py
           clusterctl/cli.py
           clusterctl/distributed_rebirth.py
           tests/test_rebirth.py
+          tests/test_recovery_rebirth.py
       - run: >-
           python -m compileall -q clusterctl clusterd steward_tools tests
           scripts/h3-volume-drill.py

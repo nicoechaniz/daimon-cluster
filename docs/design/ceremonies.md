@@ -101,6 +101,12 @@ leave/expel operations are separate signed membership artifacts.
 Provider, transport, backup, embodiment, and Matrix root/recovery keys have
 distinct custody and recovery paths.
 
+When a Matrix recovery quorum intentionally replaces every active embodiment,
+Cluster installs the fresh target and restores only events that verify through
+the signed recovery history. Predecessor custody and runtime configuration are
+never restored. A distinct completed restore journal gates first start, and an
+exact retry must reproduce the same canonical event-set hash.
+
 ## 7. Testable invariants
 
 - No provider credential enters git, audit, Weave, or steward payloads.

@@ -1,0 +1,278 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import time
+import uuid
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import pytest
+from daimon_matrix.keystore import EncryptedKeystore
+from daimon_matrix.ledger import Ledger
+from daimon_matrix.operator_rebirth import (
+    activate_recovery_target_runtime,
+    authority_from_runtime_bundle,
+    authorize_recovery_from_root_custody,
+    create_recovery_custody,
+    create_recovery_target_preparation,
+)
+from daimon_matrix.runtime import load_runtime
+from daimon_matrix.weave import EventSigner
+
+from clusterctl import cli, rebirth, rebirth_host, recovery_rebirth
+from clusterctl.embodiments import Registry
+from clusterctl.matrix_host import create_portable_snapshot, matrix_root
+from tests.test_rebirth import _ceremony, _descriptor
+
+
+@pytest.fixture
+def short_tmp_path():
+    with TemporaryDirectory(prefix="dmc-recovery-") as value:
+        yield Path(value)
+
+
+def _recovery_fixture(tmp_path: Path) -> dict:
+    now_ms = time.time_ns() // 1_000_000
+    fixture = _ceremony(tmp_path, now_ms=now_ms)
+    source_id = sorted(fixture["peers"])[0]
+    source_root = fixture["peers"][source_id]
+    source_password = fixture["peer_passwords"][source_id]
+    bundle = json.loads((source_root / "runtime.json").read_bytes())
+    authority = authority_from_runtime_bundle(bundle)
+    contents = EncryptedKeystore(source_root / "custody.json").open(
+        lambda: bytearray(source_password),
+        required_control_head=authority.state.head,
+    )
+    signing_slot = bundle["keystore"]["signing_slot"]
+    member = next(
+        row
+        for row in authority.manifest.value["embodiments"]
+        if row["embodiment_id"] == source_id
+    )
+    credential = authority.credentials[member["embodiment_credential_id"]]
+    signer = EventSigner(
+        credential["body"]["signing_key"]["key_id"], contents.secrets[signing_slot]
+    )
+    old_event = Ledger(
+        source_root / bundle["ledger"],
+        authority=authority,
+        local_origin=bundle["local_origin"],
+    ).append_local(
+        kind="experience.observed",
+        subject="before-recovery",
+        payload={"summary": "survives recovery"},
+        signer=signer,
+        occurred_at_ms=now_ms + 1,
+    )
+    snapshot = tmp_path / "canonical-snapshot"
+    create_portable_snapshot(source_root, snapshot)
+
+    ceremony = tmp_path / "recovery-ceremony"
+    ceremony.mkdir(mode=0o700)
+    old_root_password = b"h7-offline-root-password"
+    new_root_password = b"cluster-recovery-new-root-password"
+    create_recovery_custody(
+        ceremony / "successor-root",
+        authority,
+        tmp_path / "source/bootstrap/offline/root-custody.json",
+        lambda: bytearray(old_root_password),
+        lambda: bytearray(new_root_password),
+    )
+    recovery = json.loads((ceremony / "successor-root/recovery.json").read_bytes())
+    target_password = b"cluster-recovery-target-password"
+    preparation = create_recovery_target_preparation(
+        ceremony / "preparation",
+        authority,
+        recovery,
+        {
+            "schema": "dm.operator.rebirth-target-profile/v1",
+            "label": "recovered-host",
+            "body_ref": "cluster:recovered-host:compaii",
+            "principal_id": "compaii@recovered-host",
+            "listen_host": "127.0.0.1",
+            "listen_port": 21686,
+            "advertised_endpoint": "http://127.0.0.1:21686/dm-peer/v1",
+            "targets": [],
+        },
+        lambda: bytearray(target_password),
+        created_at_ms=now_ms + 10,
+        expires_at_ms=now_ms + 60_010,
+    )
+    request = json.loads((ceremony / "preparation/request.json").read_bytes())
+    activation = authorize_recovery_from_root_custody(
+        request,
+        authority,
+        recovery,
+        ceremony / "successor-root/root-custody.json",
+        lambda: bytearray(new_root_password),
+        issued_at_ms=now_ms + 20,
+    )
+    package = ceremony / "package"
+    activate_recovery_target_runtime(
+        package,
+        ceremony / "preparation",
+        preparation,
+        request,
+        activation,
+        bundle,
+        lambda: bytearray(target_password),
+    )
+    return {
+        "package": package,
+        "snapshot": snapshot,
+        "password": target_password,
+        "old_event": old_event,
+        "now_ms": now_ms,
+    }
+
+
+def test_recovery_restore_is_gated_idempotent_and_reproducible(short_tmp_path, capsys):
+    fixture = _recovery_fixture(short_tmp_path)
+    snapshot_before = {
+        path.relative_to(fixture["snapshot"]).as_posix(): hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+        for path in fixture["snapshot"].rglob("*")
+        if path.is_file()
+    }
+    state = short_tmp_path / "cluster-state"
+    state.mkdir(mode=0o700)
+    direct = rebirth.install_rebirth_package(
+        state,
+        fixture["package"],
+        {},
+        idempotency_key=str(uuid.uuid4()),
+    )
+    with pytest.raises(rebirth_host.RebirthHostError, match="recovery_restore_missing"):
+        rebirth_host.launch_rebirth_host(
+            state, direct["embodiment_id"], _descriptor(fixture["password"])
+        )
+
+    restore_key = str(uuid.uuid4())
+    with pytest.raises(
+        recovery_rebirth.RecoveryRebirthError, match="restore_rejected"
+    ):
+        recovery_rebirth.install_recovery_rebirth(
+            state,
+            fixture["package"],
+            fixture["snapshot"],
+            lambda: bytearray(b"wrong-recovery-password"),
+            idempotency_key=restore_key,
+        )
+    result = recovery_rebirth.install_recovery_rebirth(
+        state,
+        fixture["package"],
+        fixture["snapshot"],
+        lambda: bytearray(fixture["password"]),
+        idempotency_key=restore_key,
+    )
+    replay = recovery_rebirth.install_recovery_rebirth(
+        state,
+        fixture["package"],
+        fixture["snapshot"],
+        lambda: (_ for _ in ()).throw(AssertionError("password reread")),
+        idempotency_key=str(uuid.uuid4()),
+    )
+    assert replay == result
+    assert snapshot_before == {
+        path.relative_to(fixture["snapshot"]).as_posix(): hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+        for path in fixture["snapshot"].rglob("*")
+        if path.is_file()
+    }
+    assert result["state"] == "installed-restored-stopped"
+    assert Registry(state).status(result["embodiment_id"])["status"] == "stopped"
+    hosted = load_runtime(
+        matrix_root(state, result["embodiment_id"]),
+        "runtime.json",
+        lambda: bytearray(fixture["password"]),
+        clock=lambda: fixture["now_ms"] + 30,
+    )
+    assert hosted.service.ledger.events() == [fixture["old_event"]]
+
+    process, started = rebirth_host.launch_rebirth_host(
+        state, result["embodiment_id"], _descriptor(fixture["password"])
+    )
+    try:
+        assert started["state"] == "running-ready"
+        assert started["active_embodiment_ids"] == [result["embodiment_id"]]
+    finally:
+        process.terminate()
+        _stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr
+    recovered = load_runtime(
+        matrix_root(state, result["embodiment_id"]),
+        "runtime.json",
+        lambda: bytearray(fixture["password"]),
+        clock=lambda: fixture["now_ms"] + 40,
+    )
+    fresh_event = recovered.service.ledger.append_local(
+        kind="experience.observed",
+        subject="after-recovery",
+        payload={"summary": "fresh embodiment writes forward"},
+        signer=recovered.service.signer,
+        occurred_at_ms=fixture["now_ms"] + 40,
+    )
+    assert {event["event_id"] for event in recovered.service.ledger.events()} == {
+        fixture["old_event"]["event_id"],
+        fresh_event["event_id"],
+    }
+
+    # A fresh target rebuilt from the same package and snapshot has the exact
+    # same restored canonical event set: this is the disaster-restore path,
+    # never a rollback to predecessor custody or authority bytes.
+    second_state = short_tmp_path / "second-cluster-state"
+    assert (
+        cli.run(
+            [
+                "--state-dir",
+                str(second_state),
+                "rebirth-recovery-restore",
+                "--package-dir",
+                str(fixture["package"]),
+                "--snapshot-dir",
+                str(fixture["snapshot"]),
+                "--password-fd",
+                str(_descriptor(fixture["password"])),
+                "--idempotency-key",
+                str(uuid.uuid4()),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    second = json.loads(capsys.readouterr().out)
+    assert second["event_set_sha256"] == result["event_set_sha256"]
+    second_hosted = load_runtime(
+        matrix_root(second_state, second["embodiment_id"]),
+        "runtime.json",
+        lambda: bytearray(fixture["password"]),
+        clock=lambda: fixture["now_ms"] + 30,
+    )
+    assert second_hosted.service.ledger.events() == [fixture["old_event"]]
+
+
+def test_tampered_snapshot_refuses_before_cluster_state_mutation(short_tmp_path):
+    fixture = _recovery_fixture(short_tmp_path)
+    tampered = short_tmp_path / "tampered-snapshot"
+    shutil.copytree(fixture["snapshot"], tampered)
+    ledger = next(
+        path
+        for path in (tampered / "payload").iterdir()
+        if path.name == "ledger.sqlite"
+    )
+    ledger.write_bytes(ledger.read_bytes() + b"tampered")
+    state = short_tmp_path / "rejected-state"
+    state.mkdir(mode=0o700)
+    with pytest.raises(Exception, match="matrix_snapshot_payload_rejected"):
+        recovery_rebirth.install_recovery_rebirth(
+            state,
+            fixture["package"],
+            tampered,
+            lambda: bytearray(fixture["password"]),
+            idempotency_key=str(uuid.uuid4()),
+        )
+    assert list(state.iterdir()) == []

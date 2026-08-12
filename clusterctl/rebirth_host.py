@@ -82,12 +82,23 @@ def _installed_identity(state: Path, embodiment_id: str) -> dict[str, Any]:
             "rollout_id": rollout_id,
             "participant_embodiment_ids": participants,
         }
+    history = bundle.get("authority_history")
+    last_successor = (
+        history[-1].get("successor")
+        if isinstance(history, list) and history and isinstance(history[-1], dict)
+        else None
+    )
+    recovery_gate = bool(
+        isinstance(last_successor, dict)
+        and last_successor.get("schema") == "dm.we.recovery-rebirth/v1"
+    )
     return {
         "activation_id": activation_id,
         "being_ref": authority.manifest.being_ref,
         "manifest_hash": authority.manifest.digest,
         "origin": dict(origin),
         "rollout_gate": rollout_gate,
+        "recovery_gate": recovery_gate,
     }
 
 
@@ -205,6 +216,20 @@ def launch_rebirth_host(
             raise RebirthHostError(
                 "rebirth_host_rollout_admission_missing"
             ) from exception
+    if identity["recovery_gate"]:
+        recovery = OperationJournal(state).latest_completed_for_result(
+            "rebirth-recovery-restore", "activation_id", identity["activation_id"]
+        )
+        recovery_result = None if recovery is None else recovery.get("result")
+        if (
+            not isinstance(recovery_result, dict)
+            or recovery_result.get("embodiment_id") != embodiment_id
+            or recovery_result.get("successor_manifest_hash")
+            != identity["manifest_hash"]
+            or recovery_result.get("state") != "installed-restored-stopped"
+        ):
+            os.close(password_descriptor)
+            raise RebirthHostError("rebirth_host_recovery_restore_missing")
     journal = OperationJournal(state)
     target = f"rebirth-start:{embodiment_id}:{identity['activation_id']}"
     with acquire(state, embodiment_id, "rebirth-start"):

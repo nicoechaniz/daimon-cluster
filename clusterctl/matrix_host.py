@@ -28,7 +28,7 @@ from typing import Any
 from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
-MATRIX_CONTRACT_COMMIT = "0a5fd3383aeb391488888d397a3d3296a71f98db"
+MATRIX_CONTRACT_COMMIT = "ac34305f01e01d23a61855b3bb8a096336dc2926"
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
 MATRIX_STATUS_SCHEMA = "dm.cluster-matrix-status/v1"
@@ -275,11 +275,14 @@ def _matrix_api() -> dict[str, Any]:
         "ACTIVATION_SCHEMA": "dm.operator.embodiment-activation/v1",
         "PREPARATION_SCHEMA": "dm.operator.rebirth-preparation/v1",
         "TARGET_PROFILE_SCHEMA": "dm.operator.rebirth-target-profile/v1",
+        "RECOVERY_ACTIVATION_SCHEMA": "dm.operator.recovery-activation/v1",
     }
     if any(
         getattr(operator_rebirth, name, None) != value
         for name, value in rebirth_expected.items()
     ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if not callable(getattr(operator_rebirth, "restore_recovery_ledger", None)):
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     return {
         "canonical": canonical,
@@ -759,10 +762,31 @@ def restore_portable_snapshot(
 ) -> dict[str, Any]:
     """Verify and restore a portable snapshot to a fresh owner-only root."""
 
-    source = _owner_directory(Path(snapshot))
+    manifest, _payload, verified = verify_portable_snapshot(snapshot)
     target = Path(os.path.abspath(destination))
     if target.exists() or target.is_symlink():
         raise MatrixHostError("matrix_restore_destination_exists")
+    temporary = target.with_name(f".{target.name}.restore-{uuid.uuid4()}")
+    temporary.mkdir(parents=True, mode=0o700)
+    temporary.chmod(0o700)
+    try:
+        for path, name in verified:
+            copied = temporary / name
+            shutil.copyfile(path, copied)
+            copied.chmod(0o600)
+        os.replace(temporary, target)
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return manifest
+
+
+def verify_portable_snapshot(
+    snapshot: str | Path,
+) -> tuple[dict[str, Any], Path, list[tuple[Path, str]]]:
+    """Verify a snapshot without copying predecessor runtime or custody bytes."""
+
+    source = _owner_directory(Path(snapshot))
     try:
         manifest = json.loads((source / "snapshot.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exception:
@@ -811,19 +835,7 @@ def restore_portable_snapshot(
         verified.append((path, row["name"]))
     if {path.name for path in payload.iterdir()} != names:
         raise MatrixHostError("matrix_snapshot_payload_rejected")
-    temporary = target.with_name(f".{target.name}.restore-{uuid.uuid4()}")
-    temporary.mkdir(parents=True, mode=0o700)
-    temporary.chmod(0o700)
-    try:
-        for path, name in verified:
-            copied = temporary / name
-            shutil.copyfile(path, copied)
-            copied.chmod(0o600)
-        os.replace(temporary, target)
-    except BaseException:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise
-    return manifest
+    return manifest, payload, verified
 
 
 def _password_reader(descriptor: int) -> Any:
@@ -936,4 +948,5 @@ __all__ = [
     "matrix_curator_client_root",
     "matrix_root",
     "restore_portable_snapshot",
+    "verify_portable_snapshot",
 ]

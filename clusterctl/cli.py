@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 import yaml
 
-from . import audit, distributed_rebirth, lifecycle, rebirth
+from . import audit, distributed_rebirth, lifecycle, rebirth, recovery_rebirth
 from .adapters import IncusAdapter, IncusError
 from .config import Config, ConfigError, load_config
 from .inventory import SpecError, find_record, load_specs, reconcile
@@ -342,6 +343,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_admit.add_argument("--rollout", required=True)
     p_admit.add_argument("--ack", action="append", required=True)
     p_admit.add_argument("--json", action="store_true", help="emit JSON")
+
+    p_recovery = sub.add_parser(
+        "rebirth-recovery-restore",
+        help="install a recovery target and restore only canonical ledger events",
+    )
+    p_recovery.add_argument("--package-dir", required=True)
+    p_recovery.add_argument("--snapshot-dir", required=True)
+    p_recovery.add_argument("--password-fd", required=True, type=int)
+    p_recovery.add_argument("--idempotency-key", required=True)
+    p_recovery.add_argument("--json", action="store_true", help="emit JSON")
     return parser
 
 
@@ -559,6 +570,45 @@ def run(argv=None, adapter=None) -> int:
             )
             return EXIT_OK
 
+        if args.command == "rebirth-recovery-restore":
+            used = False
+
+            def read_password() -> bytearray:
+                nonlocal used
+                if used or args.password_fd < 0:
+                    raise recovery_rebirth.RecoveryRebirthError(
+                        "recovery_rebirth_password_rejected"
+                    )
+                used = True
+                try:
+                    value = os.read(args.password_fd, 4097)
+                finally:
+                    os.close(args.password_fd)
+                if not 12 <= len(value) <= 4096:
+                    raise recovery_rebirth.RecoveryRebirthError(
+                        "recovery_rebirth_password_rejected"
+                    )
+                return bytearray(value)
+
+            try:
+                result = recovery_rebirth.install_recovery_rebirth(
+                    cfg.state_dir,
+                    args.package_dir,
+                    args.snapshot_dir,
+                    read_password,
+                    idempotency_key=args.idempotency_key,
+                    actor=args.actor,
+                )
+            finally:
+                if not used:
+                    os.close(args.password_fd)
+            print(
+                json.dumps(result, indent=2)
+                if args.json
+                else f"{result['embodiment_id']} {result['state']}"
+            )
+            return EXIT_OK
+
         if adapter is not None:
             specs = load_specs(cfg.instances_dir)
             records = reconcile(specs, adapter, cfg.host_id)
@@ -597,6 +647,7 @@ def run(argv=None, adapter=None) -> int:
         IncusError,
         rebirth.RebirthInstallError,
         distributed_rebirth.DistributedRebirthError,
+        recovery_rebirth.RecoveryRebirthError,
     ) as exc:
         print(f"clusterctl: error: {exc}", file=sys.stderr)
         return EXIT_INTERNAL

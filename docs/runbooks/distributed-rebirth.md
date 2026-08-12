@@ -268,3 +268,38 @@ Before declaring success:
 
 The synthetic qualification receipt is
 [`../verification/h9-distributed-rebirth.md`](../verification/h9-distributed-rebirth.md).
+
+## Recovery-quorum rebirth from a verified snapshot
+
+Recovery is a different transition from adding a concurrent embodiment. The
+Matrix recovery quorum must revoke every active predecessor, rotate to fresh
+root custody and authorize exactly one fresh target with no peer targets. Do
+not run the predecessor acknowledgement rollout for this case.
+
+After the target-only package and a quiesced `dm.cluster-matrix-snapshot/v1`
+are independently available, keep the target password on an inherited file
+descriptor and run:
+
+```sh
+clusterctl --state-dir TARGET_STATE rebirth-recovery-restore \
+  --package-dir RECOVERY_PACKAGE \
+  --snapshot-dir VERIFIED_SNAPSHOT \
+  --password-fd 3 \
+  --idempotency-key RECOVERY_RESTORE_UUID --json \
+  3<TARGET_PASSWORD
+```
+
+The command verifies every snapshot file and the exact Matrix source pin
+before mutating Cluster state. It installs the fresh runtime stopped, opens
+the predecessor ledger under its old authority, and re-ingests only canonical
+events through the recovery successor's historical authority. It never copies
+the old runtime bundle, custody, local RPC/transport journals or derived
+stores. Require `installed-restored-stopped`, preserve the content-addressed
+snapshot and retry with the same UUID after interruption.
+
+The H8 supervisor refuses a recovery target until the separate restore journal
+is complete. After bounded start, require the old event set and one newly
+signed event from the fresh embodiment. Release rollback may restore old code
+that understands the new successor, but signed authority never rolls back;
+disaster retry rebuilds another fresh target root from the same package and
+snapshot and must reproduce the same canonical event-set hash.

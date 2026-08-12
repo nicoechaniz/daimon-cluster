@@ -43,12 +43,16 @@ bytes. Matrix.org is excluded.
     host, update and authenticate every predecessor independently, require the
     exact closed acknowledgement set before target start, and recover only
     forward after a signed successor is accepted.
+17. Recovery-quorum rebirth: revoke every predecessor, install exactly one
+    fresh target, restore only snapshot-bound canonical events through signed
+    historical authority, gate first start on the restore journal and prove
+    crash retry plus disaster rebuild without restoring predecessor custody.
 
 ## Acceptance
 
 Two embodiments of one root-authorized being run simultaneously in separate
 Matrix processes on separate physical hosts, exchange origin-marked events
-through Tribe Bridge, report
+through the native Matrix peer carrier, report
 unapplied differences, choose independently, reverse a choice, answer `/me`
 and `/we` separately, advance to a signed incarnation N+1, relocate without
 duplicates or secrets, and still reject stale writers against the same

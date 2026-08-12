@@ -6,6 +6,8 @@ installed contract checks, rollback, encrypted backup/mirror and the final cold
 host reboot all passed. The forward candidate adds the reviewed-stack gates for
 a fresh embodiment plus a purpose-built-only second-mirror implementation. No
 forward candidate is deployed; all remain unmerged pending independent review.
+The local-only H10 successor now completes recovery-quorum rebirth and
+canonical-event restore; it does not change the deployed pair.
 
 Last reconciled: 2026-08-12.
 
@@ -47,6 +49,13 @@ Last reconciled: 2026-08-12.
   predecessor acknowledgement set and passes Python 3.11–3.14 CI. It creates a
   new embodiment; it never copies an existing embodiment's custody or writable
   database.
+- Matrix successor `ac34305f01e01d23a61855b3bb8a096336dc2926` and Cluster
+  implementation `6985b239051348534030994db792c5455761a340` complete the
+  local recovery-quorum Journey C. Every predecessor is revoked, exactly one
+  fresh body is active, only canonical snapshot events cross the boundary and
+  a distinct restore journal gates first start. Full suites, deterministic
+  installed conformance, crash retry, hostile snapshot refusal and a second
+  disaster rebuild are green. Nothing was deployed or contacted remotely.
 - Cluster PR #85 at `cdf0651` adds the second-mirror software boundary on top
   of H9. Its dedicated export identity, content-addressed disposable
   provisioning, atomic repository exchange and real encrypted offline restore
@@ -65,8 +74,9 @@ Last reconciled: 2026-08-12.
 1. Read Matrix `RESUME.md`, issue #111 and PRs #112/#116.
 2. Preserve Matrix runtime code `915c56c` and Cluster runtime code `94d80ba` as
    the exact deployed pair. Documentation-only successors do not move the pin.
-3. Obtain independent review for Matrix PRs #112/#116, the Cluster stack through
-   #84, safety PR #86, mirror PR #85 and Tribe PR #61. Respect stack order; do
+3. Publish the H10 successors for independent review, then obtain review for
+   Matrix PRs #112/#116, the Cluster stack through #84, H10, safety PR #86,
+   mirror PR #85 and Tribe PR #61. Respect stack order; do
    not self-merge or treat CI as independent review.
 4. Keep all mirror/export/restore rehearsals on local fixtures or purpose-built
    disposable infrastructure. Never contact Mona for discovery or proof.

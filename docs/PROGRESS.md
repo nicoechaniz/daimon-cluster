@@ -5,6 +5,23 @@ start, then resume from the first open item.
 
 ## Active checkpoint (2026-08-12)
 
+The local Journey C successor is complete at Cluster implementation
+`6985b239051348534030994db792c5455761a340`, pinned to Matrix recovery commit
+`ac34305f01e01d23a61855b3bb8a096336dc2926`. A recovery quorum now bridges a
+verified predecessor snapshot to one fresh embodiment while restoring only
+canonical events, never old custody or runtime bytes. First start is gated on
+a separate durable restore receipt; wrong-password resume, exact terminal
+replay, old-event continuity, fresh-event authorship, second-state disaster
+rebuild and hostile-snapshot refusal pass locally. Matrix passes its complete
+594-test partition with 5 intentional skips and deterministic 102-scenario
+installed conformance; Cluster passes 474 tests with 3 skips plus the real
+disposable encrypted restore proof. See
+[`verification/h10-recovery-rebirth.md`](verification/h10-recovery-rebirth.md).
+
+This successor is not deployed or independently reviewed. Mona remains
+categorically excluded. A live ceremony still requires reviewed commits, real
+custody policy, content-addressed preflight and exact same-plan human GO.
+
 The #15/#16 software gate is now a ready-for-review candidate in PR #85 at
 `cdf0651`, stacked on H9 without deployment. A dedicated
 `daimon-backup-export` identity, content-addressed disposable-only

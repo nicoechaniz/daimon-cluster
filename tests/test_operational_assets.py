@@ -351,6 +351,63 @@ def test_mirror_systemd_assets_are_unprivileged_and_secret_free() -> None:
     )
 
 
+def test_atomic_directory_exchange_swaps_complete_trees(tmp_path: Path) -> None:
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+    (left / "marker").write_text("left\n")
+    (right / "marker").write_text("right\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/atomic-directory-exchange.py"),
+            str(left),
+            str(right),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (left / "marker").read_text() == "right\n"
+    assert (right / "marker").read_text() == "left\n"
+
+
+def test_atomic_directory_exchange_fails_without_partial_move(tmp_path: Path) -> None:
+    present = tmp_path / "present"
+    missing = tmp_path / "missing"
+    present.mkdir()
+    (present / "marker").write_text("unchanged\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/atomic-directory-exchange.py"),
+            str(present),
+            str(missing),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert (present / "marker").read_text() == "unchanged\n"
+    assert not missing.exists()
+
+
+def test_mirror_uses_portable_atomic_exchange_helper() -> None:
+    mirror = (ROOT / "scripts/restic-mirror-pull.sh").read_text()
+    helper = (ROOT / "scripts/atomic-directory-exchange.py").read_text()
+    assert "mv --exchange" not in mirror
+    assert '"$ATOMIC_EXCHANGE_BIN" "$STAGING" "$DEST"' in mirror
+    assert "renameat2" in helper
+    assert "RENAME_EXCHANGE" in helper
+
+
 def test_executable_assets_cannot_mutate_administrative_ssh_access() -> None:
     protected_roots = (
         "/root/.ssh",

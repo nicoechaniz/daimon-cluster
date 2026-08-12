@@ -10,6 +10,7 @@ RECEIPT="${MIRROR_RECEIPT:-}"
 CREDENTIAL_DIR="${MIRROR_CREDENTIALS_DIR:-${CREDENTIALS_DIRECTORY:-}}"
 RSYNC_BIN="${RSYNC_BIN:-rsync}"
 SSH_BIN="${SSH_BIN:-ssh}"
+ATOMIC_EXCHANGE_BIN="${ATOMIC_EXCHANGE_BIN:-$(dirname "$0")/atomic-directory-exchange.py}"
 
 fail() {
     printf '%s\n' "$1" >&2
@@ -116,10 +117,11 @@ printf '{"schema":"dm.cluster-mirror-receipt/v1","source":"%s","latest_snapshot_
     "$SOURCE" "$snapshot_id" "$config_sha256" "$tree_sha256" \
     "$file_count" "$byte_count" "$completed_at" >"$receipt_tmp"
 
-# Both paths are siblings on one filesystem. GNU mv maps --exchange to an
-# atomic renameat2 exchange: readers see either the complete old tree or the
-# complete verified new tree, never an incomplete repository.
-mv --exchange --no-copy --no-target-directory "$STAGING" "$DEST"
+# Both paths are siblings on one filesystem. The helper invokes Linux
+# renameat2(RENAME_EXCHANGE) directly: readers see either the complete old tree
+# or the complete verified new tree, never an incomplete repository. It fails
+# closed without moving either name when the kernel or filesystem lacks it.
+"$ATOMIC_EXCHANGE_BIN" "$STAGING" "$DEST"
 rm -rf "$STAGING"
 STAGING=""
 mv -f "$receipt_tmp" "$RECEIPT"

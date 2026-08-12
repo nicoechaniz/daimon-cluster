@@ -151,9 +151,7 @@ def test_recovery_restore_is_gated_idempotent_and_reproducible(short_tmp_path, c
         )
 
     restore_key = str(uuid.uuid4())
-    with pytest.raises(
-        recovery_rebirth.RecoveryRebirthError, match="restore_rejected"
-    ):
+    with pytest.raises(recovery_rebirth.RecoveryRebirthError, match="restore_rejected"):
         recovery_rebirth.install_recovery_rebirth(
             state,
             fixture["package"],
@@ -276,3 +274,40 @@ def test_tampered_snapshot_refuses_before_cluster_state_mutation(short_tmp_path)
             idempotency_key=str(uuid.uuid4()),
         )
     assert list(state.iterdir()) == []
+
+
+def test_snapshot_replacement_race_refuses_before_state_creation(
+    short_tmp_path, monkeypatch
+):
+    fixture = _recovery_fixture(short_tmp_path)
+    source_ledger = fixture["snapshot"] / "payload/ledger.sqlite"
+    original_ledger = fixture["snapshot"] / "payload/ledger-original.sqlite"
+    outside = short_tmp_path / "outside-ledger.sqlite"
+    outside.write_bytes(b"must-not-be-read")
+    outside.chmod(0o600)
+    state = short_tmp_path / "race-rejected-state"
+    real_stage = recovery_rebirth._stage_snapshot_file
+    swapped = False
+
+    def swap_before_stage(source, destination, row, *, capture=False):
+        nonlocal swapped
+        if source == source_ledger:
+            swapped = True
+            source_ledger.rename(original_ledger)
+            source_ledger.symlink_to(outside)
+        return real_stage(source, destination, row, capture=capture)
+
+    monkeypatch.setattr(recovery_rebirth, "_stage_snapshot_file", swap_before_stage)
+    with pytest.raises(
+        recovery_rebirth.RecoveryRebirthError, match="snapshot_rejected"
+    ):
+        recovery_rebirth.install_recovery_rebirth(
+            state,
+            fixture["package"],
+            fixture["snapshot"],
+            lambda: bytearray(fixture["password"]),
+            idempotency_key=str(uuid.uuid4()),
+        )
+    assert swapped is True
+    assert not state.exists()
+    assert not list(short_tmp_path.glob(".recovery-rebirth-snapshot-*"))

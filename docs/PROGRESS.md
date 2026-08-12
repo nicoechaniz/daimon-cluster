@@ -6,7 +6,7 @@ start, then resume from the first open item.
 ## Active checkpoint (2026-08-12)
 
 The local Journey C successor is complete on the H10 branch, pinned to Matrix
-recovery commit `6f622f8b592168d769b7af4319712b5b6ca254c5`. A recovery quorum now bridges a
+recovery commit `24a0ac665088550ec91529cdbd92af7721ba2adb`. A recovery quorum now bridges a
 verified predecessor snapshot to one fresh embodiment while restoring only
 canonical events, never old custody or runtime bytes. First start is gated on
 a separate durable restore receipt; wrong-password resume, exact terminal

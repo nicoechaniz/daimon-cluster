@@ -28,7 +28,7 @@ from typing import Any
 from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
-MATRIX_CONTRACT_COMMIT = "6f622f8b592168d769b7af4319712b5b6ca254c5"
+MATRIX_CONTRACT_COMMIT = "24a0ac665088550ec91529cdbd92af7721ba2adb"
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
 MATRIX_STATUS_SCHEMA = "dm.cluster-matrix-status/v1"
@@ -370,13 +370,68 @@ def _owner_file_descriptor(path: Path) -> int:
     try:
         descriptor = os.open(absolute, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         after = os.fstat(descriptor)
-        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        if (
+            (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            or not stat.S_ISREG(after.st_mode)
+            or after.st_uid != os.geteuid()
+            or stat.S_IMODE(after.st_mode) & 0o077
+        ):
             raise MatrixHostError("matrix_client_material_replaced")
         return descriptor
     except BaseException:
         if "descriptor" in locals():
             os.close(descriptor)
         raise
+
+
+def _owner_file_bytes(path: Path, code: str, *, maximum_size: int) -> bytes:
+    try:
+        descriptor = _owner_file_descriptor(path)
+    except (MatrixHostError, OSError) as exception:
+        raise MatrixHostError(code) from exception
+    try:
+        info = os.fstat(descriptor)
+        if not 1 <= info.st_size <= maximum_size:
+            raise MatrixHostError(code)
+        chunks: list[bytes] = []
+        size = 0
+        while chunk := os.read(descriptor, 1024 * 1024):
+            size += len(chunk)
+            if size > maximum_size:
+                raise MatrixHostError(code)
+            chunks.append(chunk)
+        if size != info.st_size:
+            raise MatrixHostError(code)
+        return b"".join(chunks)
+    except OSError as exception:
+        raise MatrixHostError(code) from exception
+    finally:
+        os.close(descriptor)
+
+
+def _owner_file_digest(
+    path: Path, code: str, *, expected_size: int
+) -> tuple[os.stat_result, str, int]:
+    try:
+        descriptor = _owner_file_descriptor(path)
+    except (MatrixHostError, OSError) as exception:
+        raise MatrixHostError(code) from exception
+    try:
+        info = os.fstat(descriptor)
+        if info.st_size > expected_size:
+            return info, "", info.st_size
+        digest = hashlib.sha256()
+        size = 0
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+            size += len(chunk)
+            if size > expected_size:
+                return info, "", size
+        return info, digest.hexdigest(), size
+    except OSError as exception:
+        raise MatrixHostError(code) from exception
+    finally:
+        os.close(descriptor)
 
 
 def _public_bundle(root: Path, bundle_name: str) -> dict[str, Any]:
@@ -788,8 +843,13 @@ def verify_portable_snapshot(
 
     source = _owner_directory(Path(snapshot))
     try:
-        manifest = json.loads((source / "snapshot.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exception:
+        manifest_raw = _owner_file_bytes(
+            source / "snapshot.json",
+            "matrix_snapshot_manifest_unreadable",
+            maximum_size=16 * 1024 * 1024,
+        )
+        manifest = json.loads(manifest_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exception:
         raise MatrixHostError("matrix_snapshot_manifest_unreadable") from exception
     if (
         not isinstance(manifest, dict)
@@ -818,18 +878,14 @@ def verify_portable_snapshot(
             raise MatrixHostError("matrix_snapshot_manifest_rejected")
         path = payload / row["name"]
         try:
-            info = path.lstat()
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        except (FileNotFoundError, OSError) as exception:
+            _info, digest, size = _owner_file_digest(
+                path,
+                "matrix_snapshot_payload_unreadable",
+                expected_size=row["size"],
+            )
+        except MatrixHostError as exception:
             raise MatrixHostError("matrix_snapshot_payload_unreadable") from exception
-        if (
-            stat.S_ISLNK(info.st_mode)
-            or not stat.S_ISREG(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) & 0o077
-            or info.st_size != row["size"]
-            or digest != row["sha256"]
-        ):
+        if size != row["size"] or digest != row["sha256"]:
             raise MatrixHostError("matrix_snapshot_payload_rejected")
         names.add(row["name"])
         verified.append((path, row["name"]))

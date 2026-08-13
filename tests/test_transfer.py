@@ -63,6 +63,9 @@ def adapter():
 
 def _parked(state_dir, cfg, adapter):
     """Park NAME with a lease, leaving a verified manifest behind."""
+    volume = adapter.volume_observation(f"{NAME}-home")
+    if not volume.get("present"):
+        adapter.ensure_volume(NAME)
     store = leases.LeaseStore(state_dir)
     store.acquire(DAIMON_ID, PUBKEY, FINGERPRINT)
     result = park.run_park(NAME, cfg, adapter, actor="test")
@@ -334,10 +337,24 @@ def test_cli_wake_handoff_and_transfer(state_dir, cfg, adapter):
 
     # park again, then transfer via CLI
     park.run_park(NAME, cfg, adapter, actor="test")
+    # The direct inner-workflow helper reuses its terminal step journal; H3
+    # requires the source runtime to be observably stopped at entry.
+    adapter.stop(NAME)
     code, out, _ = _cli(state_dir, "transfer", NAME, "--to", NEW,
                         "--json", adapter=adapter)
     assert code == 0
-    assert json.loads(out)["target"] == NEW
+    result = json.loads(out)
+    assert result["target"] == NEW
+    events = [
+        json.loads(line)
+        for line in (state_dir / "audit.jsonl").read_text().splitlines()
+    ]
+    success = next(
+        event
+        for event in events
+        if event["action"] == "transfer" and "operation_id" in event["detail"]
+    )
+    assert success["action_digest"] == result["manifest_hash"]
 
 
 def test_announcement_strings_distinct():

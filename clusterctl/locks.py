@@ -86,3 +86,22 @@ def acquire(state_dir: str | Path, name: str, operation: str, stale_ms: int = ST
         yield AcquiredLock(path=path, stale_holder=stale_holder)
     finally:
         path.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def acquire_many(
+    state_dir: str | Path,
+    requests: list[tuple[str, str]],
+    stale_ms: int = STALE_MS,
+):
+    """Acquire distinct target locks in stable order or release them all."""
+    names = [name for name, _operation in requests]
+    if len(set(names)) != len(names):
+        raise ValueError("multi-target lock names must be distinct")
+    acquired = {}
+    with contextlib.ExitStack() as stack:
+        for name, operation in sorted(requests):
+            acquired[name] = stack.enter_context(
+                acquire(state_dir, name, operation, stale_ms=stale_ms)
+            )
+        yield acquired

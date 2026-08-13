@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import json
+import re
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -155,3 +158,547 @@ def test_deploy_and_unit_assets_pin_the_final_release_boundary() -> None:
     subprocess.run(
         ["bash", "-n", str(ROOT / "scripts/restic-backup.sh")], check=True
     )
+
+    clusterd_unit = (ROOT / "configs/clusterd.service").read_text()
+    assert (
+        "ExecStartPre=/usr/bin/python3 "
+        "/opt/daimon-cluster/scripts/wait-private-bind.py "
+        "--address 10.105.93.1 --timeout 30"
+    ) in clusterd_unit
+
+
+def test_rebirth_unit_preserves_admission_and_credential_boundaries() -> None:
+    unit = (ROOT / "configs/daimon-matrix-rebirth@.service").read_text()
+
+    assert "User=clusterd" in unit
+    assert "Group=clusterd" in unit
+    assert (
+        "LoadCredential=matrix-password:"
+        "/etc/daimon-matrix/rebirth/%i.password"
+    ) in unit
+    assert "-m clusterctl.rebirth_host" in unit
+    assert '--embodiment-id "$1"' in unit
+    assert "--password-fd 3" in unit
+    assert "--production-fence-verifier" in unit
+    assert '3<"$CREDENTIALS_DIRECTORY/matrix-password"' in unit
+    assert "Requires=clusterd.service" in unit
+
+    for boundary in (
+        "UMask=0077",
+        "NoNewPrivileges=true",
+        "ProtectSystem=strict",
+        "ProtectHome=true",
+        "ReadOnlyPaths=/opt/daimon-cluster",
+        "ReadWritePaths=/var/lib/daimon-cluster",
+        "RestrictSUIDSGID=true",
+        "LockPersonality=true",
+    ):
+        assert boundary in unit
+
+    assert "EnvironmentFile=" not in unit
+    assert "--password " not in unit
+    assert "-m clusterctl.matrix_host" not in unit
+    assert "daimon-matrixd" not in unit
+
+
+def _mirror_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, str]:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    receipts = tmp_path / "receipts"
+    credentials = tmp_path / "credentials"
+    for path in (
+        source / "data",
+        source / "index",
+        source / "keys",
+        source / "locks",
+        source / "snapshots" / "ab",
+        destination,
+        receipts,
+        credentials,
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+    destination.chmod(0o700)
+    (source / "config").write_text("synthetic encrypted repo\n")
+    (source / "data" / "payload").write_bytes(b"ciphertext")
+    snapshot_id = "ab" + ("c" * 62)
+    (source / "snapshots" / "ab" / ("c" * 62)).write_bytes(b"snapshot")
+    key = credentials / "source-key"
+    key.write_text("fixture-private-key\n")
+    key.chmod(0o600)
+    (credentials / "source-known-hosts").write_text(
+        "source.example ssh-ed25519 AAAAfixture\n"
+    )
+    fake_rsync = _executable(
+        tmp_path / "rsync",
+        """#!/usr/bin/env bash
+set -eu
+printf 'RSH=%s\nARGS=%s\n' "$RSYNC_RSH" "$*" > "$MIRROR_RSYNC_LOG"
+if [[ "${MIRROR_RSYNC_FAIL:-0}" == 1 ]]; then exit 9; fi
+dest="${!#}"
+cp -a "$MIRROR_FIXTURE_SOURCE/." "$dest"
+""",
+    )
+    env = {
+        **os.environ,
+        "MIRROR_SOURCE": "mirror@source.example",
+        "MIRROR_DEST": str(destination),
+        "MIRROR_RECEIPT": str(receipts / "source.json"),
+        "MIRROR_CREDENTIALS_DIR": str(credentials),
+        "MIRROR_FIXTURE_SOURCE": str(source),
+        "MIRROR_RSYNC_LOG": str(tmp_path / "rsync.log"),
+        "RSYNC_BIN": str(fake_rsync),
+        "SSH_BIN": "/usr/bin/ssh",
+    }
+    return env, destination, snapshot_id
+
+
+def test_mirror_pull_is_read_only_pinned_and_content_addressed(tmp_path: Path) -> None:
+    env, destination, snapshot_id = _mirror_fixture(tmp_path)
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/restic-mirror-pull.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(Path(env["MIRROR_RECEIPT"]).read_text())
+    assert receipt["schema"] == "dm.cluster-mirror-receipt/v1"
+    assert receipt["latest_snapshot_id"] == snapshot_id
+    assert receipt["status"] == "ok"
+    assert receipt["file_count"] == 3
+    assert receipt["byte_count"] > 0
+    assert len(receipt["tree_sha256"]) == 64
+    assert (destination / "data" / "payload").read_bytes() == b"ciphertext"
+
+    rsync = Path(env["MIRROR_RSYNC_LOG"]).read_text()
+    assert "--delete-delay" in rsync
+    assert "--delay-updates" in rsync
+    assert "--partial-dir=.rsync-partial" in rsync
+    assert f"--link-dest={destination}" in rsync
+    assert "mirror@source.example:/" in rsync
+    assert f"-i {env['MIRROR_CREDENTIALS_DIR']}/source-key" in rsync
+    assert "StrictHostKeyChecking=yes" in rsync
+    assert "UserKnownHostsFile=" in rsync
+
+
+def test_mirror_failure_preserves_last_good_receipt_and_marks_error(tmp_path: Path) -> None:
+    env, _destination, _snapshot_id = _mirror_fixture(tmp_path)
+    receipt = Path(env["MIRROR_RECEIPT"])
+    receipt.write_text('{"status":"previous-ok"}\n')
+    env["MIRROR_RSYNC_FAIL"] = "1"
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/restic-mirror-pull.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 9
+    assert json.loads(receipt.read_text()) == {"status": "previous-ok"}
+    error = json.loads(Path(f"{receipt}.last-error").read_text())
+    assert error == {
+        "schema": "dm.cluster-mirror-error/v1",
+        "status": "failed",
+        "exit_code": 9,
+    }
+
+
+def test_mirror_rejects_unsafe_key_and_mirrored_symlink(tmp_path: Path) -> None:
+    env, destination, _snapshot_id = _mirror_fixture(tmp_path)
+    key = Path(env["MIRROR_CREDENTIALS_DIR"]) / "source-key"
+    key.chmod(0o644)
+    unsafe_key = subprocess.run(
+        ["bash", str(ROOT / "scripts/restic-mirror-pull.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert unsafe_key.returncode == 2
+    assert unsafe_key.stderr == "mirror_key_permissions_unsafe\n"
+    assert not Path(env["MIRROR_RSYNC_LOG"]).exists()
+
+    key.chmod(0o600)
+    source = Path(env["MIRROR_FIXTURE_SOURCE"])
+    (source / "data" / "escape").symlink_to("/etc/passwd")
+    unsafe_tree = subprocess.run(
+        ["bash", str(ROOT / "scripts/restic-mirror-pull.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert unsafe_tree.returncode == 3
+    assert "mirror_repository_symlink_rejected" in unsafe_tree.stderr
+    assert not (destination / "data" / "escape").exists()
+
+
+def test_mirror_systemd_assets_are_unprivileged_and_secret_free() -> None:
+    service = (ROOT / "configs/daimon-restic-mirror@.service").read_text()
+    timer = (ROOT / "configs/daimon-restic-mirror@.timer").read_text()
+    assert "User=daimon-backup" in service
+    assert "Group=daimon-backup" in service
+    assert "LoadCredential=source-key:" in service
+    assert "LoadCredential=source-known-hosts:" in service
+    assert "ReadWritePaths=/srv/daimon-backups" in service
+    assert "CapabilityBoundingSet=" in service
+    assert "RESTIC_PASSWORD" not in service
+    assert "PrivateDevices=true" in service
+    assert "Persistent=true" in timer
+    subprocess.run(
+        ["bash", "-n", str(ROOT / "scripts/restic-mirror-pull.sh")], check=True
+    )
+
+
+def test_atomic_directory_exchange_swaps_complete_trees(tmp_path: Path) -> None:
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+    (left / "marker").write_text("left\n")
+    (right / "marker").write_text("right\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/atomic-directory-exchange.py"),
+            str(left),
+            str(right),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (left / "marker").read_text() == "right\n"
+    assert (right / "marker").read_text() == "left\n"
+
+
+def test_atomic_directory_exchange_fails_without_partial_move(tmp_path: Path) -> None:
+    present = tmp_path / "present"
+    missing = tmp_path / "missing"
+    present.mkdir()
+    (present / "marker").write_text("unchanged\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/atomic-directory-exchange.py"),
+            str(present),
+            str(missing),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert (present / "marker").read_text() == "unchanged\n"
+    assert not missing.exists()
+
+
+def test_mirror_uses_portable_atomic_exchange_helper() -> None:
+    mirror = (ROOT / "scripts/restic-mirror-pull.sh").read_text()
+    helper = (ROOT / "scripts/atomic-directory-exchange.py").read_text()
+    assert "mv --exchange" not in mirror
+    assert '"$ATOMIC_EXCHANGE_BIN" "$STAGING" "$DEST"' in mirror
+    assert "renameat2" in helper
+    assert "RENAME_EXCHANGE" in helper
+
+
+def test_backup_export_wrapper_is_fixed_read_only_rrsync(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    log = tmp_path / "rrsync.log"
+    fake_rrsync = _executable(
+        tmp_path / "rrsync",
+        """#!/usr/bin/env bash
+set -eu
+printf 'args=%s\noriginal=%s\n' "$*" "$SSH_ORIGINAL_COMMAND" > "$EXPORT_LOG"
+""",
+    )
+    env = {
+        **os.environ,
+        "DAIMON_RESTIC_EXPORT_ROOT": str(repository),
+        "RRSYNC_BIN": str(fake_rrsync),
+        "SSH_ORIGINAL_COMMAND": "rsync --server --sender -logDtpre.iLsfxCIvu . /",
+        "EXPORT_LOG": str(log),
+    }
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/restic-export-command.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == [
+        f"args=-ro {repository}",
+        f"original={env['SSH_ORIGINAL_COMMAND']}",
+    ]
+
+
+def test_backup_export_wrapper_rejects_missing_command_and_symlink_root(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    linked_repository = tmp_path / "linked-repository"
+    linked_repository.symlink_to(repository, target_is_directory=True)
+    fake_rrsync = _executable(tmp_path / "rrsync", "#!/bin/sh\nexit 99\n")
+    env = {
+        **os.environ,
+        "DAIMON_RESTIC_EXPORT_ROOT": str(repository),
+        "RRSYNC_BIN": str(fake_rrsync),
+    }
+
+    missing_command = subprocess.run(
+        ["bash", str(ROOT / "scripts/restic-export-command.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert missing_command.returncode == 126
+    assert missing_command.stderr == "backup_export_command_missing\n"
+
+    env["DAIMON_RESTIC_EXPORT_ROOT"] = str(linked_repository)
+    env["SSH_ORIGINAL_COMMAND"] = "rsync --server --sender . /"
+    unsafe_root = subprocess.run(
+        ["bash", str(ROOT / "scripts/restic-export-command.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert unsafe_root.returncode == 126
+    assert unsafe_root.stderr == "backup_export_root_unsafe\n"
+
+
+def test_backup_export_sshd_match_isolated_from_administrators() -> None:
+    config = (ROOT / "configs/70-daimon-backup-export.conf").read_text()
+    assert "Match User daimon-backup-export" in config
+    assert "AuthorizedKeysFile /etc/daimon-backup/export-keys" in config
+    assert "ForceCommand /opt/daimon-cluster/scripts/restic-export-command.sh" in config
+    assert "DisableForwarding yes" in config
+    assert "PermitTTY no" in config
+    assert "PasswordAuthentication no" in config
+    for administrator in ("root", "debian", "nicolas"):
+        assert f"Match User {administrator}" not in config
+
+    subprocess.run(
+        ["bash", "-n", str(ROOT / "scripts/restic-export-command.sh")], check=True
+    )
+
+
+def test_backup_export_preflight_is_content_addressed_and_tamper_evident(
+    tmp_path: Path,
+) -> None:
+    key = tmp_path / "export-key"
+    subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+        check=True,
+    )
+    bundle = tmp_path / "bundle"
+    render_result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/restic-export-preflight.py"),
+            "render",
+            "--public-key",
+            str(key.with_suffix(".pub")),
+            "--output",
+            str(bundle),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert render_result.returncode == 0, render_result.stderr
+    digest = render_result.stdout.strip().removeprefix("bundle_sha256=")
+    assert len(digest) == 64
+
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    assert manifest["bundle_sha256"] == digest
+    assert manifest["account"] == "daimon-backup-export"
+    install_paths = {
+        candidate["install_path"]
+        for candidate in manifest["candidates"].values()
+    }
+    assert install_paths == {
+        "/etc/daimon-backup/export-keys",
+        "/etc/ssh/sshd_config.d/70-daimon-backup-export.conf",
+        "/opt/daimon-cluster/scripts/restic-export-command.sh",
+    }
+    assert all("/.ssh" not in path for path in install_paths)
+
+    verified = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/restic-export-preflight.py"),
+            "verify",
+            "--bundle",
+            str(bundle),
+            "--expect-sha256",
+            digest,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert verified.returncode == 0, verified.stderr
+
+    (bundle / "export-keys").write_text("tampered\n")
+    tampered = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/restic-export-preflight.py"),
+            "verify",
+            "--bundle",
+            str(bundle),
+            "--expect-sha256",
+            digest,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert tampered.returncode != 0
+    assert "candidate_hash_mismatch:export-keys" in tampered.stderr
+
+
+def test_backup_export_preflight_rejects_key_options_without_output(
+    tmp_path: Path,
+) -> None:
+    public_key = tmp_path / "invalid.pub"
+    public_key.write_text("command=unsafe ssh-ed25519 AAAAinvalid\n")
+    bundle = tmp_path / "bundle"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/restic-export-preflight.py"),
+            "render",
+            "--public-key",
+            str(public_key),
+            "--output",
+            str(bundle),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "public_key_must_be_unadorned_ed25519" in result.stderr
+    assert not bundle.exists()
+
+
+def test_backup_export_apply_is_disposable_only_and_never_reloads_sshd() -> None:
+    apply_tool = (ROOT / "scripts/restic-export-apply-disposable.py").read_text()
+    assert "require_disposable_marker" in apply_tool
+    assert "purpose-built disposable" in apply_tool
+    assert "candidate_allowlist_mismatch" in apply_tool
+    assert '"sshd_reloaded": False' in apply_tool
+    assert "systemctl" not in apply_tool
+    assert "service" not in apply_tool
+
+
+def test_executable_assets_cannot_mutate_administrative_ssh_access() -> None:
+    protected_roots = (
+        "/root/.ssh",
+        "/home/root/.ssh",
+        "/home/debian/.ssh",
+        "/home/nicolas/.ssh",
+    )
+    executable_roots = (
+        ROOT / "scripts",
+        ROOT / "configs",
+        ROOT / "clusterctl",
+        ROOT / "clusterd",
+        ROOT / "steward_tools",
+    )
+
+    for directory in executable_roots:
+        for path in directory.rglob("*"):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            assert "authorized_keys" not in content, path
+            for line in content.splitlines():
+                if not any(protected in line for protected in protected_roots):
+                    continue
+                assert re.search(r"(?<![012])>(?!&)", line) is None, (path, line)
+                for mutation in (
+                    "tee ",
+                    "sed -i",
+                    "cp ",
+                    "mv ",
+                    "install ",
+                    "chmod ",
+                    "chown ",
+                    "truncate ",
+                ):
+                    assert mutation not in line, (path, line)
+
+    rules = " ".join((ROOT / "AGENTS.md").read_text().split())
+    assert "must not modify an existing administrative login path" in rules
+    assert "timed automatic rollback" in rules
+    assert "second fresh session" in rules
+    assert "mona.altermundi.net" in rules
+    assert "categorically out of scope" in rules
+
+    runbook = " ".join(
+        (ROOT / "docs/runbooks/second-offhost-mirror.md").read_text().split()
+    )
+    assert "dedicated `daimon-backup-export` identity" in runbook
+    assert "must never add, remove, rewrite" in runbook
+    assert "content-addressed preflight" in runbook
+    assert "not a production installer" in runbook
+    assert "remains undeployable" in runbook
+    assert "Mona is explicitly excluded" in runbook
+    assert "purpose-created disposable infrastructure only" in runbook
+
+
+def test_private_bind_wait_is_bounded_and_disclosure_safe() -> None:
+    script = ROOT / "scripts/wait-private-bind.py"
+    ready = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--address",
+            "127.0.0.1",
+            "--timeout",
+            "0.1",
+            "--interval",
+            "0.01",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert ready.returncode == 0, ready.stderr
+
+    missing = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--address",
+            "192.0.2.1",
+            "--timeout",
+            "0.05",
+            "--interval",
+            "0.01",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert missing.returncode == 1
+    assert missing.stdout == ""
+    assert missing.stderr == "bind_address_unavailable\n"

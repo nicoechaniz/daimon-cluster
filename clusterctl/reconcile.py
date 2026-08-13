@@ -34,13 +34,13 @@ inventory reconcile): names classified ``missing`` / ``drifted`` /
 
 from __future__ import annotations
 
-from . import audit, inventory
+from . import audit, inventory, operation_journal
 from .adapters import Adapter
 from .config import Config
 
 REPORT_SCHEMA = "clusterctl-reconcile-report/v1"
 
-_CREATE_ACTIONS = {"create", "provision"}  # actions that declare a target
+_CREATE_ACTIONS = {"create", "provision", "provision-prepare"}
 _LIFECYCLE_ACTIONS = {"start", "stop", "restart", "delete"}
 
 
@@ -68,6 +68,35 @@ def run_reconcile(cfg: Config, adapter: Adapter) -> dict:
         volumes = []  # adapter cannot enumerate volumes — treat as unknown
 
     findings: list[dict] = []
+
+    journal_unavailable = False
+    try:
+        journal = operation_journal.OperationJournal.existing(cfg.state_dir)
+        if journal is not None:
+            journal.validate()
+        open_operations = [] if journal is None else journal.open_operations()
+    except operation_journal.JournalError:
+        journal_unavailable = True
+        open_operations = []
+        findings.append(
+            _finding(
+                "operation_journal_unavailable",
+                "error",
+                cfg.host_id,
+                "operation journal is unreadable or corrupt; mutations must remain disabled",
+            )
+        )
+    for record in open_operations:
+        state = record["state"]
+        findings.append(
+            _finding(
+                "degraded_operation" if state == "degraded" else "pending_operation",
+                "error" if state == "degraded" else "warning",
+                record["target"],
+                f"operation {record['operation_id']} ({record['operation']}) "
+                f"is {state}; unsafe follow-on mutation is blocked",
+            )
+        )
 
     # (a) untracked containers: in incus, never in audit creates.
     for name in sorted(actual_names - created_in_audit):
@@ -99,7 +128,6 @@ def run_reconcile(cfg: Config, adapter: Adapter) -> dict:
                 "impossible_transition", "error", target,
                 f"audit shows {target_events[0].get('action')!r} ok for "
                 f"{target!r} which the audit log never created"))
-        last_start_seq: int | None = None
         stopped_since = True
         for e in sorted(target_events,
                         key=lambda ev: (ev.get("seq") is None, ev.get("seq") or 0)):
@@ -111,7 +139,6 @@ def run_reconcile(cfg: Config, adapter: Adapter) -> dict:
                         f"two successful starts for {target!r} without an "
                         f"intervening stop"))
                 stopped_since = False
-                last_start_seq = e.get("seq")
             elif action in ("stop", "delete"):
                 stopped_since = True
 
@@ -132,6 +159,8 @@ def run_reconcile(cfg: Config, adapter: Adapter) -> dict:
             "specs": len(specs),
             "incus_instances": len(actual_names),
             "custom_volumes": len(volumes),
+            "open_operations": len(open_operations),
+            "operation_journal": "unavailable" if journal_unavailable else "available",
         },
         "drift_summary": drift_summary,
         "findings": findings,
@@ -146,6 +175,7 @@ def render_human(report: dict) -> str:
         f"specs={report['counts']['specs']} "
         f"incus={report['counts']['incus_instances']} "
         f"volumes={report['counts']['custom_volumes']}",
+        f"  open_operations={report['counts'].get('open_operations', 0)}",
         f"  drift: missing={report['drift_summary']['missing']} "
         f"drifted={report['drift_summary']['drifted']} "
         f"undeclared={report['drift_summary']['undeclared']}",

@@ -1,0 +1,46 @@
+# daimon-matrix-rebirth@.service — admitted H8/H9 embodiment supervisor
+#
+# Install this template in /etc/systemd/system, then create the root-only
+# credential named by the escaped instance:
+#   instance=$(systemd-escape 'embodiment:...')
+#   install -o root -g root -m 0600 TARGET_PASSWORD \
+#     "/etc/daimon-matrix/rebirth/${instance}.password"
+#   systemctl enable --now "daimon-matrix-rebirth@${instance}.service"
+[Unit]
+Description=admitted Daimon Matrix rebirth embodiment %I
+After=clusterd.service zerotier-one.service network-online.target
+Wants=network-online.target
+Requires=clusterd.service
+
+[Service]
+Type=simple
+User=clusterd
+Group=clusterd
+WorkingDirectory=/opt/daimon-cluster
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONPATH=/opt/daimon-cluster
+LoadCredential=matrix-password:/etc/daimon-matrix/rebirth/%i.password
+ExecStart=/bin/sh -c 'exec /opt/daimon-cluster/venv/bin/python -m clusterctl.rebirth_host --state-dir /var/lib/daimon-cluster --embodiment-id "$1" --password-fd 3 --production-fence-verifier 3<"$CREDENTIALS_DIRECTORY/matrix-password"' sh %I
+Restart=on-failure
+RestartSec=3
+UMask=0077
+
+# Keep target custody outside the service account and expose it only through
+# systemd's per-invocation credential directory and descriptor 3.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/daimon-cluster
+ReadWritePaths=/var/lib/daimon-cluster
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryMax=384M
+TasksMax=96
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

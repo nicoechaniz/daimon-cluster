@@ -1,17 +1,18 @@
-"""Compatibility import name for resource-scoped fencing.
+"""Synthetic resource-fence fixtures for isolated legacy test scenarios.
 
-Callers still importing ``clusterctl.leases`` receive resource fences. The
-store never fences a being or Daimon identity.
+Runtime code must import :mod:`clusterctl.fences` and receives only the
+authenticated SQLite authority or its query-only verifier.
 """
 
 from .fences import (
     FENCE_SCHEMA as LEASE_SCHEMA,
+    Ed25519Signer,
     FakeSigner,
     FenceConflict as LeaseConflict,
     FenceError as LeaseError,
     FenceNotFound as LeaseNotFound,
     InvalidSignature,
-    ResourceFenceStore as LeaseStore,
+    SyntheticResourceFenceStore as LeaseStore,
     SSHSigner,
     Signer,
     _canonical,
@@ -19,7 +20,7 @@ from .fences import (
 )
 
 __all__ = [
-    "FakeSigner", "InvalidSignature", "LEASE_SCHEMA", "LeaseConflict",
+    "Ed25519Signer", "FakeSigner", "InvalidSignature", "LEASE_SCHEMA", "LeaseConflict",
     "LeaseError", "LeaseNotFound", "LeaseStore", "SSHSigner", "Signer",
     "_canonical", "now_ms",
 ]

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from daimon_matrix import client, runtime
+from daimon_matrix import client, curator, operator_bootstrap, runtime, service
 from clusterctl import matrix_host
 from clusterctl.matrix_host import MATRIX_CONTRACT_COMMIT, MatrixHostError
 from daimon_matrix.canonical import canonical_bytes
@@ -87,5 +87,35 @@ def test_host_refuses_matrix_without_v7_contract(monkeypatch) -> None:
 
 def test_host_refuses_matrix_without_client_v2_contract(monkeypatch) -> None:
     monkeypatch.delattr(client, "CLIENT_CONFIG_SCHEMA_V2")
+    with pytest.raises(MatrixHostError, match="daimon_matrix_contract_mismatch"):
+        matrix_host._matrix_api()
+
+
+def test_host_refuses_matrix_without_exact_curator_contract(monkeypatch) -> None:
+    monkeypatch.setattr(curator, "ITEM_SCHEMA", "dm.curator.item/substituted")
+    with pytest.raises(MatrixHostError, match="daimon_matrix_contract_mismatch"):
+        matrix_host._matrix_api()
+
+
+def test_host_refuses_matrix_with_expanded_curator_worker_authority(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        service,
+        "CURATOR_METHODS",
+        frozenset({*service.CURATOR_METHODS, "identity.rotate"}),
+    )
+    with pytest.raises(MatrixHostError, match="daimon_matrix_contract_mismatch"):
+        matrix_host._matrix_api()
+
+
+def test_host_refuses_matrix_without_exact_status_observer_contract(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        operator_bootstrap,
+        "STATUS_OBSERVER_METHODS",
+        frozenset({"runtime.status", "scope.me"}),
+    )
     with pytest.raises(MatrixHostError, match="daimon_matrix_contract_mismatch"):
         matrix_host._matrix_api()

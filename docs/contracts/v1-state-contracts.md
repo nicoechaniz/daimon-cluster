@@ -225,11 +225,65 @@ incarnation segment. Many embodiments in one being may be running.
 CAS is scoped to the exact `resource_ref`. A stale writer for that resource is
 rejected; unrelated resources and embodiments never conflict by identity.
 
+V1 is now the synthetic/offline fixture contract. Production uses the
+additive but deliberately distinct `resource-fence/v2`: it binds `body_ref`,
+`holder_incarnation_id`, `holder_key_id`, `state`, `operation`,
+`signing_key_id` and `authorization_ref`. Its current record, monotonic
+high-water/proof, append-only event and release/migration tombstone commit in
+one SQLite transaction. Every mutation requires a holder-signed exact expected
+epoch/proof; expiry is observed without deleting history. See
+`docs/design/production-resource-fences.md`.
+
 ### 1.9 `dm.we.status/v1`
 
 The read model reports `being_ref`, installed manifest hash, local origin,
 per-incarnation heads, and durable peer cursors. It contains no private key or
 provider-store contents. `/we.sync` event bytes are defined by Daimon Matrix.
+
+### 1.10 `cluster-operation-journal/v1`
+
+The owner-only SQLite journal closes substrate mutation intent before effect
+dispatch. Each row binds an operation id, optional idempotency key, exact
+`cluster-operation-intent/v1` bytes, expected precondition, intended logical
+transition, stable audit event id, runtime/logical observations and result.
+
+States are `planned`, `runtime-dispatching`, `runtime-applied`,
+`logical-committed`, `idempotency-persisted`, `audited`, `completed`,
+`compensated` and `degraded`. `completed` and `compensated` are terminal.
+One open row per target is permitted; a degraded row blocks new mutation until
+an operation-specific repair policy authorizes a bounded resume. See
+`docs/design/operation-journal.md`.
+
+### 1.11 `cluster-volume-observation/v1`
+
+```json
+{
+  "schema": "cluster-volume-observation/v1",
+  "present": true,
+  "pool": "default",
+  "project": "default",
+  "name": "eko-home",
+  "identity": "volume:<sha256>",
+  "type": "custom",
+  "content_type": "filesystem",
+  "created_at": "2026-08-10T00:00:00Z",
+  "attachments": [{
+    "instance": "eko-next",
+    "device": "home",
+    "path": "/home/agent",
+    "writable": true
+  }]
+}
+```
+
+For Incus 6.0 custom volumes, `identity` closes pool, project, name, type,
+content type and immutable creation timestamp. It is an operational identity,
+not a content hash or a claim about being identity. A relocation journal also
+closes source/target, mount/device, manifest hash and the current fence
+`{resource_ref, epoch, proof, current}` coordinate. The target is created
+stopped without a home device; detach and attach are observe-first and
+idempotent. At every writable stage the attachment list must contain exactly
+one allowlisted `home` mount, or the workflow fails closed.
 
 ## 2. Acceptance matrix (issue → evidence required to close)
 

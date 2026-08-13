@@ -199,9 +199,10 @@ def test_list_matches_cli(server):
     assert code == 0
     cli_records = json.loads(out)
 
-    status, _, http_records = _get(srv, "/v1/instances")
+    status, _, http_page = _get(srv, "/v1/instances")
     assert status == 200
-    assert isinstance(http_records, list)
+    assert http_page["schema"] == "clusterd-page/v1"
+    http_records = http_page["items"]
     assert [(r["name"], r["state"]) for r in http_records] == \
            [(r["name"], r["state"]) for r in cli_records]
 
@@ -398,12 +399,17 @@ def test_backups_empty(server):
 
 def test_ontology_read_routes(server):
     from clusterctl.embodiments import Registry
-    from clusterctl.fences import ResourceFenceStore
+    from clusterctl.fences import SyntheticResourceFenceStore
 
     srv, _, state_dir = server
+    object.__setattr__(
+        srv.deps,
+        "fence_store_factory",
+        lambda root: SyntheticResourceFenceStore(root),
+    )
     embodiment = Registry(state_dir).register(body_ref="cluster:test:compaii")
     Registry(state_dir).start(embodiment["embodiment_id"])
-    ResourceFenceStore(state_dir).acquire(
+    SyntheticResourceFenceStore(state_dir).acquire(
         "volume:compaii-state", "test-public-key", "SHA256:test",
         holder_embodiment_id=embodiment["embodiment_id"],
     )
@@ -420,15 +426,15 @@ def test_ontology_read_routes(server):
 
     status, _, weave = _get(srv, "/v1/weave/status")
     assert status == 200
-    assert weave == {
-        "schema": "dm.cluster-matrix-status/v1",
-        "configured": False,
-        "implementation": "installed-daimon-matrix",
-        "matrix_contract_commit": (
-            "f0181f7117859f3f9cc4afc7dfbdaf9b06e74754"
-        ),
-        "embodiments": [],
-    }
+    assert weave["schema"] == "dm.cluster-matrix-status/v1"
+    assert weave["read_model_version"] == 2
+    assert weave["configured"] is False
+    assert weave["implementation"] == "installed-daimon-matrix"
+    assert weave["matrix_contract_commit"] == (
+        "c1364e76471cbcf69a4c37eb0ee37a577d28ee67"
+    )
+    assert weave["embodiments"][0]["matrix_process"]["state"] == \
+        "not-configured"
 
 
 # --------------------------------------------------------------------------
@@ -550,8 +556,8 @@ def test_two_bind_equivalent_reads(two_bind_server):
     status_a, _, body_a = _get(srv_a, "/v1/instances")
     status_b, _, body_b = _get(srv_b, "/v1/instances")
     assert status_a == status_b == 200
-    assert [(r["name"], r["state"]) for r in body_a] == \
-           [(r["name"], r["state"]) for r in body_b]
+    assert [(r["name"], r["state"]) for r in body_a["items"]] == \
+           [(r["name"], r["state"]) for r in body_b["items"]]
 
 
 def test_two_bind_token_works_on_both(two_bind_server):
@@ -609,9 +615,9 @@ def test_audit_returns_json_list(server):
 
     status, _, body = _get(srv, "/v1/audit")
     assert status == 200
-    assert isinstance(body, list)
-    assert len(body) >= 2
-    for event in body:
+    assert body["schema"] == "clusterd-page/v1"
+    assert len(body["items"]) >= 2
+    for event in body["items"]:
         assert event["schema"] == "audit-event/v1"
         assert "event_id" in event
         assert "ts_ms" in event
@@ -635,28 +641,28 @@ def test_audit_filtered_by_params(server):
     # Filter by actor.
     status, _, body = _get(srv, "/v1/audit?actor=tester")
     assert status == 200
-    assert all(e["actor"] == "tester" for e in body)
+    assert all(e["actor"] == "tester" for e in body["items"])
 
     # Filter by action.
     status, _, body = _get(srv, "/v1/audit?action=stop")
     assert status == 200
-    assert all(e["action"] == "stop" for e in body)
+    assert all(e["action"] == "stop" for e in body["items"])
 
     # Filter by target.
     status, _, body = _get(srv, "/v1/audit?target=daimon-y")
     assert status == 200
-    assert all(e.get("target") == "daimon-y" for e in body)
+    assert all(e.get("target") == "daimon-y" for e in body["items"])
 
     # Combined filter.
     status, _, body = _get(srv, "/v1/audit?actor=tester&action=restart")
     assert status == 200
     assert all(e["actor"] == "tester" and e["action"] == "restart"
-               for e in body)
+               for e in body["items"])
 
     # Limit.
     status, _, body = _get(srv, "/v1/audit?limit=1")
     assert status == 200
-    assert len(body) == 1
+    assert len(body["items"]) == 1
 
 
 def test_audit_owner_scoped(server):
@@ -708,8 +714,8 @@ def test_audit_owner_scoped(server):
 
     assert status == 200
     # Alice should only see her own daimon's events.
-    assert len(body) >= 1
-    for event in body:
+    assert len(body["items"]) >= 1
+    for event in body["items"]:
         assert event["target"] == "alice-daimon", \
             f"alice must not see {event['target']}"
 
@@ -736,9 +742,9 @@ def test_audit_redaction(server):
 
     status, _, body = _get(srv, "/v1/audit")
     assert status == 200
-    assert len(body) >= 1
+    assert len(body["items"]) >= 1
     # The detail field must be redacted.
-    found = [e for e in body if e.get("request_id") == "req-1"]
+    found = [e for e in body["items"] if e.get("request_id") == "req-1"]
     assert found, "redaction test event not found"
     detail = found[0].get("detail", {})
     detail_str = _json.dumps(detail)

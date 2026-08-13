@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import hashlib
 import json
 import os
+import socket
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -12,12 +15,16 @@ import time
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 pytest.importorskip("daimon_matrix")
 
 from daimon_matrix.authority_epochs import create_authority_epoch
 from daimon_matrix.canonical import canonical_bytes
 from daimon_matrix.client import ClientConfig, LocalClient
+from daimon_matrix.cluster import resource_fence_position
+from daimon_matrix.curator import create_curator_item
 from daimon_matrix.identity import (
     create_embodiment_credential,
     create_genesis,
@@ -28,18 +35,26 @@ from daimon_matrix.identity import (
     x25519_public,
 )
 from daimon_matrix.keystore import EncryptedKeystore
-from daimon_matrix.local_api import create_capability
-from daimon_matrix.service import METHODS, SCOPE_METHODS
+from daimon_matrix.local_api import LocalApiError, create_capability, encode_frame
+from daimon_matrix.service import CURATOR_METHODS, METHODS, SCOPE_METHODS
 from daimon_matrix.weave import BeingManifest
 
 from clusterctl.embodiments import Registry
+from clusterctl.fences import Ed25519Signer, ResourceFenceStore
 from clusterctl.matrix_host import (
+    MatrixHostAdapter,
     MatrixHostError,
     create_portable_snapshot,
     matrix_client_factory,
     matrix_client_root,
+    matrix_curator_client,
+    matrix_curator_client_root,
     matrix_root,
     restore_portable_snapshot,
+)
+from clusterctl.production_fences import (
+    create_holder_authorization,
+    ed25519_fingerprint,
 )
 
 PASSWORD = b"cluster-matrix-process-password"
@@ -60,6 +75,29 @@ def short_tmp_path():
 
 def _seed(label: str) -> bytes:
     return hashlib.sha256(f"cluster-matrix-process:{label}".encode()).digest()
+
+
+def _fence_signer(root: Path, label: str, key_id: str) -> Ed25519Signer:
+    path = root / f"{label}.pem"
+    private = Ed25519PrivateKey.from_private_bytes(_seed(f"fence:{label}"))
+    path.write_bytes(
+        private.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    path.chmod(0o600)
+    return Ed25519Signer(path, key_id)
+
+
+def _ensure_production_fences(state_dir: Path) -> None:
+    if (state_dir / "resource-fences.sqlite3").is_file():
+        return
+    owner = _fence_signer(
+        state_dir, ".matrix-host-test-fence-owner", "matrix-host-test-owner"
+    )
+    ResourceFenceStore.production(state_dir, signer=owner, key_id=owner.key_id)
 
 
 def _transport(label: str, principal_id: str) -> dict:
@@ -170,9 +208,17 @@ def _write_runtime(state_dir: Path, authority: dict, label: str, now_ms: int):
         not_before_ms=now_ms - 60_000,
         not_after_ms=now_ms + 3_600_000,
     )
+    curator_capability = create_capability(
+        _seed(f"{label}-curator-capability"),
+        client_id=f"client:curator-worker:{label}",
+        methods=sorted(CURATOR_METHODS),
+        not_before_ms=now_ms - 60_000,
+        not_after_ms=now_ms + 3_600_000,
+    )
     signing_slot = f"runtime.signing.v1:{label}"
     capability_slot = f"runtime.capability.v1:{label}"
     status_capability_slot = f"runtime.capability.v1:status:{label}"
+    curator_capability_slot = f"runtime.capability.v1:curator:{label}"
     EncryptedKeystore.create(
         root / "custody.json",
         lambda: bytearray(PASSWORD),
@@ -181,6 +227,7 @@ def _write_runtime(state_dir: Path, authority: dict, label: str, now_ms: int):
             signing_slot: authority["signing_seeds"][label],
             capability_slot: capability.key,
             status_capability_slot: status_capability.key,
+            curator_capability_slot: curator_capability.key,
         },
     )
     bundle = {
@@ -207,6 +254,10 @@ def _write_runtime(state_dir: Path, authority: dict, label: str, now_ms: int):
                 "descriptor": status_capability.descriptor,
                 "secret_slot": status_capability_slot,
             },
+            {
+                "descriptor": curator_capability.descriptor,
+                "secret_slot": curator_capability_slot,
+            },
         ],
         "routing": None,
         "scopes": {
@@ -217,7 +268,7 @@ def _write_runtime(state_dir: Path, authority: dict, label: str, now_ms: int):
     path = root / "runtime.json"
     path.write_bytes(canonical_bytes(bundle))
     path.chmod(0o600)
-    return root, bundle, capability, status_capability
+    return root, bundle, capability, status_capability, curator_capability
 
 
 def _rewrite_bundle(root: Path, bundle: dict) -> None:
@@ -232,8 +283,13 @@ def _write_client_config(
     origin: dict,
     *,
     historical_servers: list[dict] | None = None,
+    curator: bool = False,
 ) -> Path:
-    root = matrix_client_root(state_dir, origin["embodiment_id"])
+    root = (
+        matrix_curator_client_root(state_dir, origin["embodiment_id"])
+        if curator
+        else matrix_client_root(state_dir, origin["embodiment_id"])
+    )
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     root.chmod(0o700)
     config = root / "client.json"
@@ -256,7 +312,14 @@ def _write_client_config(
     return root
 
 
-def _spawn(state_dir: Path, embodiment_id: str):
+def _spawn(
+    state_dir: Path,
+    embodiment_id: str,
+    *,
+    production_fence_verifier: bool = False,
+):
+    _ensure_production_fences(state_dir)
+    production_fence_verifier = True
     password_read, password_write = os.pipe()
     ready_read, ready_write = os.pipe()
     command = [
@@ -272,6 +335,8 @@ def _spawn(state_dir: Path, embodiment_id: str):
         "--ready-fd",
         str(ready_write),
     ]
+    if production_fence_verifier:
+        command.append("--production-fence-verifier")
     process = subprocess.Popen(
         command,
         pass_fds=(password_read, ready_write),
@@ -334,7 +399,9 @@ def test_two_real_hosts_restart_and_relocate_without_secret_leaks(short_tmp_path
             processes[label] = process
             commands[label] = command
         for label in ("legion", "daimonmatrix"):
-            root, _, capability, _status_capability = runtimes[label]
+            root, _, capability, _status_capability, _curator_capability = runtimes[
+                label
+            ]
             origin = authority["origins"][label]
             me_response = _client(root, capability, origin).scope_me()[1]
             we_response = _client(root, capability, origin).scope_we()[1]
@@ -399,7 +466,9 @@ def test_two_real_hosts_restart_and_relocate_without_secret_leaks(short_tmp_path
     assert PASSWORD not in logs
 
     label = "legion"
-    root, old_bundle, capability, status_capability = runtimes[label]
+    root, old_bundle, capability, status_capability, _curator_capability = runtimes[
+        label
+    ]
     old_origin = authority["origins"][label]
     credential = next(
         item
@@ -655,10 +724,11 @@ def test_production_client_factory_rejects_host_local_key_and_origin_drift(
         incarnation_id=origin["incarnation_id"],
         started_at_ms=now_ms - 1_000,
     )
-    _root, _bundle, _capability, status_capability = _write_runtime(
-        state_dir, authority, "legion", now_ms
+    _root, _bundle, _capability, status_capability, _curator_capability = (
+        _write_runtime(state_dir, authority, "legion", now_ms)
     )
     client_root = _write_client_config(state_dir, status_capability, origin)
+    _ensure_production_fences(state_dir)
     factory = matrix_client_factory(state_dir)
     assert factory(origin["embodiment_id"]).config.expected_server == origin
 
@@ -700,3 +770,220 @@ def test_production_client_factory_rejects_host_local_key_and_origin_drift(
     )
     with pytest.raises(MatrixHostError, match="matrix_client_origin_mismatch"):
         factory(origin["embodiment_id"])
+
+
+def test_real_host_keeps_curator_worker_separate_and_replays_one_result(
+    short_tmp_path,
+):
+    now_ms = time.time_ns() // 1_000_000
+    state_dir = short_tmp_path / "cluster"
+    authority = _authority(now_ms)
+    origin = authority["origins"]["legion"]
+    registry = Registry(state_dir)
+    registry.register(
+        body_ref=origin["body_ref"], embodiment_id=origin["embodiment_id"]
+    )
+    registry.start(
+        origin["embodiment_id"],
+        incarnation_id=origin["incarnation_id"],
+        started_at_ms=now_ms - 1_000,
+    )
+    root, _bundle, _broad, status_capability, curator_capability = _write_runtime(
+        state_dir, authority, "legion", now_ms
+    )
+    _write_client_config(state_dir, status_capability, origin)
+    _write_client_config(state_dir, curator_capability, origin, curator=True)
+    assert matrix_client_root(
+        state_dir, origin["embodiment_id"]
+    ) != matrix_curator_client_root(state_dir, origin["embodiment_id"])
+    assert status_capability.key != curator_capability.key
+
+    item = create_curator_item(
+        subject_me_id=authority["state"].being_ref,
+        resource_ref="queue:cluster-real-process",
+        work_kind="memory-evaluation",
+        input_ref="memory:cluster-real-process",
+        input_hash="a" * 64,
+        coordination_mode="queue-item",
+        required_authority="daimon",
+        effect_intent_hash=None,
+        queued_at_ms=now_ms,
+    )
+    shared_intent = {"operation": "publish", "value": "must-stay-disabled"}
+    shared_item = create_curator_item(
+        subject_me_id=authority["state"].being_ref,
+        resource_ref="volume:cluster-real-process",
+        work_kind="publication",
+        input_ref="proposal:cluster-resource-effect",
+        input_hash="b" * 64,
+        coordination_mode="resource-fence",
+        required_authority="daimon",
+        effect_intent_hash=hashlib.sha256(canonical_bytes(shared_intent)).hexdigest(),
+        queued_at_ms=now_ms,
+    )
+    owner_signer = _fence_signer(
+        short_tmp_path, "cluster-fence-owner", "cluster-fence-test-owner"
+    )
+    holder_signer = _fence_signer(
+        short_tmp_path, "cluster-fence-holder", "cluster-fence-test-holder"
+    )
+    fences = ResourceFenceStore.production(
+        state_dir,
+        signer=owner_signer,
+        key_id=owner_signer.key_id,
+    )
+    fence_position = fences.position(shared_item["resource_ref"])
+    fence_authorization = create_holder_authorization(
+        holder_signer,
+        operation="acquire",
+        body_ref=origin["body_ref"],
+        embodiment_id=origin["embodiment_id"],
+        incarnation_id=origin["incarnation_id"],
+        resource_ref=shared_item["resource_ref"],
+        expected_epoch=fence_position["epoch"],
+        expected_proof=fence_position["proof"],
+        issued_ms=now_ms - 1,
+        ttl_s=60,
+        nonce="real-process-production-fence",
+    )
+    fences.acquire(
+        shared_item["resource_ref"],
+        holder_signer.public_key,
+        ed25519_fingerprint(holder_signer.public_key),
+        holder_embodiment_id=origin["embodiment_id"],
+        body_ref=origin["body_ref"],
+        holder_incarnation_id=origin["incarnation_id"],
+        holder_key_id=holder_signer.key_id,
+        expected_epoch=fence_position["epoch"],
+        expected_proof=fence_position["proof"],
+        authorization=fence_authorization,
+        observed_at_ms=now_ms,
+    )
+    fence_evidence = MatrixHostAdapter(
+        state_dir, origin["embodiment_id"], fence_store=fences
+    ).fence_evidence(shared_item["resource_ref"])
+    assert fence_evidence is not None
+    process, _ = _spawn(
+        state_dir,
+        origin["embodiment_id"],
+        production_fence_verifier=True,
+    )
+    completion_request = None
+    try:
+        status_client = matrix_client_factory(state_dir)(origin["embodiment_id"])
+        with pytest.raises(LocalApiError, match="authentication_failed"):
+            status_client.curator_inspect(item["item_id"])
+
+        curator_client = matrix_curator_client(state_dir, origin["embodiment_id"])
+        enqueued = curator_client.curator_enqueue(
+            item, request_id="33000000-0000-4000-8000-000000000001"
+        )[1]
+        assert enqueued["ok"] is True
+        claim = curator_client.curator_claim(
+            {
+                "item_id": item["item_id"],
+                "claim_id": "33000000-0000-4000-8000-000000000002",
+                "expected_generation": 0,
+                "lease_until_ms": now_ms + 30_000,
+                "fence_evidence": None,
+            },
+            request_id="33000000-0000-4000-8000-000000000003",
+        )[1]
+        assert claim["ok"] is True
+
+        shared_enqueue = curator_client.curator_enqueue(
+            shared_item,
+            request_id="33000000-0000-4000-8000-000000000005",
+        )[1]
+        assert shared_enqueue["ok"] is True
+        shared_claim = curator_client.curator_claim(
+            {
+                "item_id": shared_item["item_id"],
+                "claim_id": "33000000-0000-4000-8000-000000000006",
+                "expected_generation": 0,
+                "lease_until_ms": now_ms + 30_000,
+                "fence_evidence": fence_evidence,
+            },
+            request_id="33000000-0000-4000-8000-000000000007",
+        )[1]
+        assert shared_claim["ok"] is True
+        shared_receipt = MatrixHostAdapter.create_effect_receipt(
+            effect_id="33000000-0000-4000-8000-000000000008",
+            target_event_id="33000000-0000-4000-8000-000000000009",
+            decision_event_id="33000000-0000-4000-8000-000000000010",
+            adapter="unregistered-production-adapter/v1",
+            preview_hash="c" * 64,
+            intent_hash=shared_item["effect_intent_hash"],
+            actor=origin["principal_id"],
+            authority="daimon",
+            resource_fence=resource_fence_position(fence_evidence),
+            result="applied",
+            observed_postcondition={"state": "present"},
+            started_at_ms=now_ms,
+            completed_at_ms=now_ms + 1,
+        )
+        refused_effect = curator_client.curator_complete(
+            {
+                "claim_id": shared_claim["result"]["claim_id"],
+                "expected_generation": 1,
+                "outcome": "completed",
+                "output_refs": ["publication:must-stay-disabled"],
+                "effect_receipt": shared_receipt,
+            },
+            request_id="33000000-0000-4000-8000-000000000011",
+        )[1]
+        assert refused_effect["ok"] is False
+        assert refused_effect["error"]["code"] == "effect_truth_unverifiable"
+        completion_request = curator_client.prepare(
+            "curator.complete",
+            {
+                "claim_id": "33000000-0000-4000-8000-000000000002",
+                "expected_generation": 1,
+                "outcome": "completed",
+                "output_refs": ["proposal:cluster-real-process"],
+                "effect_receipt": None,
+            },
+            request_id="33000000-0000-4000-8000-000000000004",
+        )
+        # Dispatch the exact request and intentionally discard the response.
+        # Poll only the durable semantic row, then restart the daemon.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.connect(str(root / "matrix.sock"))
+            connection.sendall(encode_frame(completion_request))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            with contextlib.closing(
+                sqlite3.connect(root / "ledger.sqlite")
+            ) as database:
+                committed = database.execute(
+                    "SELECT COUNT(*) FROM curator_items "
+                    "WHERE item_id=? AND result_json IS NOT NULL",
+                    (item["item_id"],),
+                ).fetchone()[0]
+            if committed == 1:
+                break
+            time.sleep(0.01)
+        assert committed == 1
+    finally:
+        assert PASSWORD not in _stop(process)
+
+    assert completion_request is not None
+    restarted, _ = _spawn(state_dir, origin["embodiment_id"])
+    try:
+        curator_client = matrix_curator_client(state_dir, origin["embodiment_id"])
+        replayed_result = curator_client.send(completion_request)
+        assert replayed_result["ok"] is True
+        inspection = curator_client.curator_inspect(item["item_id"])[1]
+        assert inspection["ok"] is True
+        assert inspection["result"]["state"] == "completed"
+        assert inspection["result"]["result"] == replayed_result["result"]
+    finally:
+        assert PASSWORD not in _stop(restarted)
+
+    with contextlib.closing(sqlite3.connect(root / "ledger.sqlite")) as database:
+        assert (
+            database.execute(
+                "SELECT COUNT(*) FROM curator_items WHERE result_json IS NOT NULL"
+            ).fetchone()[0]
+            == 1
+        )

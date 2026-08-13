@@ -1,4 +1,4 @@
-"""The steward's four read-only tools (issue #22).
+"""The steward's fixed read-only tools (issues #22 and #67).
 
 Each tool is a thin function over ONE fixed clusterd read route. Every
 result is a steward-tool-result/v1 dict::
@@ -23,7 +23,6 @@ Design rules:
 
 from __future__ import annotations
 
-import re
 import time
 
 from .client import (
@@ -87,19 +86,31 @@ def _call(tool: str, fn):
 
 
 def cluster_list(client: ClusterdClient | None = None) -> dict:
-    """GET /v1/instances — per-daimon name/state/image/uptime."""
+    """GET one bounded /v1/instances snapshot page with honest observations."""
     tool = "cluster_list"
-    payload, headers, err = _call(tool, lambda: _client(client).instances())
+    payload, headers, err = _call(
+        tool, lambda: _client(client).instances(limit=200)
+    )
     if err is not None:
         return err
-    records = payload if isinstance(payload, list) else []
-    data = [{
+    page = payload.get("page", {}) if isinstance(payload, dict) else {}
+    records = payload.get("items", []) if isinstance(payload, dict) else []
+    records = records if isinstance(records, list) else []
+    items = [{
         "name": rec.get("name"),
         "state": rec.get("state"),
         "image_version": rec.get("image_version"),
         "uptime_s": rec.get("uptime_s"),
+        "observed_at_ms": rec.get("observed_at_ms"),
+        "observations": rec.get("observations"),
     } for rec in records]
-    return _result(tool, True, data, False, [],
+    degraded = []
+    if page.get("has_more"):
+        degraded.append("more-instance-pages")
+    if page.get("truncated"):
+        degraded.append("instance-snapshot-truncated")
+    data = {"items": items, "page": page}
+    return _result(tool, True, data, False, degraded,
                    source_ts_ms(headers, _now_ms()))
 
 
@@ -123,6 +134,37 @@ def cluster_health(client: ClusterdClient | None = None) -> dict:
     ok = payload.get("status") == "ok"
     return _result(tool, ok, payload, False, degraded,
                    source_ts_ms(headers, _now_ms()))
+
+
+def cluster_weave_status(client: ClusterdClient | None = None) -> dict:
+    """GET /v1/weave/status without conflating local and peer state."""
+    tool = "cluster_weave_status"
+    payload, headers, err = _call(
+        tool, lambda: _client(client).weave_status()
+    )
+    if err is not None:
+        return err
+    if not isinstance(payload, dict):
+        return _result(
+            tool, False, None, False, ["invalid-weave-read-model"], _now_ms()
+        )
+    degraded = []
+    if not payload.get("configured", False):
+        degraded.append("matrix-not-configured")
+    for row in payload.get("embodiments", []):
+        if not isinstance(row, dict):
+            continue
+        identifier = row.get("embodiment_id") or "unknown"
+        for alert in row.get("alerts", []):
+            if (
+                isinstance(alert, dict)
+                and alert.get("severity") in {"warning", "critical"}
+            ):
+                degraded.append(f"{alert.get('code')}:{identifier}")
+    return _result(
+        tool, True, payload, False, degraded,
+        source_ts_ms(headers, _now_ms()),
+    )
 
 
 def cluster_backups(client: ClusterdClient | None = None) -> dict:

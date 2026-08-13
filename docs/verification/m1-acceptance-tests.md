@@ -43,20 +43,30 @@ The nftables rule stays as defense-in-depth for routed cases.
   RSS suggests real usage well under budget — supports revising cohort up
   after pilot (per ADR D7 "budgets by measurement").
 
-## Pending: host reboot drill
+## Host reboot drill — PASS 2026-08-11
 
-Acceptance criterion "after host reboot, test container and required host
-services reach the documented state" requires rebooting daimonmatrix —
-that interrupts the tribe broker v1 hub, this incarnation, and any active
-bridges. Per the standing rule (no disruption of running host Tribe
-services without explicit approval) the drill is staged but NOT executed:
+Nicolás explicitly authorized autonomous reversible SSH testing, including the
+host reboot, for this unused infrastructure. Two reboot stages were useful:
+the first recovered all enabled services but exposed a missing least-authority
+Matrix status client and an Incus private-bridge bind race. Matrix `915c56c`
+and Cluster `94d80ba` repaired those findings. The final cold reboot then
+passed the complete gate:
 
-- Services enabled at boot (verified via `systemctl is-enabled`): incus,
-  nftables, zramswap, tribe broker (existing unit), ssh, zerotier.
-- Boot-order verified by design: nftables (sysinit) loads before incus adds
-  its NAT table; my config only `destroy`s its own table — coexistence
-  proven live across `systemctl restart incus` (#6).
-- Expected post-reboot state documented in the M1 runbook.
+| Check | Result |
+|---|---|
+| Boot transition | boot ID changed; SSH returned after observed downtime |
+| Units | zero failed; Incus, nftables, zramswap, SSH, ZeroTier, Tribe v1, clusterd and Matrix active |
+| Containers | `iso-a`, `iso-b` and `steward` running |
+| Isolation | iso-a egress HTTP 200; iso-a→iso-b ICMP still denied |
+| Network boundary | ZeroTier ONLINE; `inet daimon-fw` and `inet incus` loaded; clusterd only on loopback and the private Incus bridge, never public |
+| zram | `/dev/zram0` active at 4,194,300 KiB (~4 GiB) |
+| Cluster durability | audit and idempotency file hashes byte-identical before/after; same five known reconcile findings and no inventory drift |
+| Startup race | private-bridge `ExecStartPre` exited 0; clusterd started once, `NRestarts=0`, no `EADDRNOTAVAIL` |
+| Matrix | exact pin `915c56c`; configured, integrity `ok`, 9 known, 0 incomplete, epoch 2, no partial view |
+| Tribe | `tribe-bridge-v1.service` healthy, protocol `tribe/v1`, directory epoch 5 |
+| Recovery | restic timer active; snapshot `89d801b1` previously checked and mirrored to Legion; prior release rollback preserved |
+| Public ingress | authorized off-mesh/no-ZeroTier helper reached public SSH only; Incus API, Tribe broker and clusterd ports were closed |
 
-Drill executes the moment Nicolás approves a reboot window; iso-a/iso-b
-are left running as the drill subjects.
+This completes issue #9's reboot criterion and issue #6's separate off-mesh
+public-ingress probe. It does not satisfy the pilot, second independent backup
+target, independent code review or human cutover gates.

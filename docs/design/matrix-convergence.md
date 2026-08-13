@@ -27,18 +27,38 @@ Cluster pins `daimon-matrix` by full Git commit in
 An unpinned wheel, editable checkout, wrong commit or schema downgrade fails
 closed. Cluster does not carry a fallback implementation.
 
-The current pin is audited Matrix DM-083 successor-retry candidate
-`f0181f7117859f3f9cc4afc7dfbdaf9b06e74754`.
+The V0 recovery candidate pin is Matrix commit
+`c1364e76471cbcf69a4c37eb0ee37a577d28ee67`, consolidating the additive
+fresh-embodiment draft and the
+audited DM-055/DM-083 reboot/status candidate
+`915c56c8899fd53d683bd7c7c81c3465b600bed9`. It is not a release pin until
+both reviews and the cross-repository acceptance gate complete.
 The adapter accepts the additive runtime bundle line V1 through V7 and checks
-every corresponding public schema constant before opening state. Bundle
-contents remain Matrix authority; Cluster only validates the hosting envelope.
+every corresponding public schema constant before opening state. It also
+checks the closed DM-031 item/claim/result/inspection schemas, work kinds,
+coordination modes, exact four-method curator capability and the complete
+DM-034 profile/intent/receipt/reconciliation/rebuild schema line introduced at
+Matrix merge `1b133976932cbbc0914ba4ecc403020c647f53c1`; the current pin is an
+audited additive descendant of that merge. Bundle contents remain Matrix
+authority; Cluster only validates the hosting envelope.
 
-DM-083 gate (2026-08-10): Matrix draft PR #112 is frozen at the exact commit
-above after real succession exposed a duplicate-free historical-response
-verification failure. Cluster issue #61 owns source and installed-process
-verification of this pin plus the additive client config V2 constant. Cluster
-does not interpret the historical-server list. Any later Matrix candidate
+DM-083 gate (2026-08-11): Matrix PR #112 is frozen at the exact commit above
+after the live-canary preflight exposed a rolling-deadline conflict during
+post-commit peer-response recovery and the first full host reboot exposed a
+missing least-authority clusterd status client. Cluster owns source and
+installed-process verification of this pin, the additive client config V2
+constant and the exact five-method status-observer set. Cluster does not
+interpret historical servers or Matrix custody. Any later Matrix candidate
 change requires another exact repin and complete downstream gate.
+
+H7 adds the Matrix `operator_rebirth` contract to the same closed import gate.
+Cluster accepts only the root-authorized package produced by the exact pin,
+installs new target custody without opening it, and forward-updates prior peers
+with the signed activation. See `docs/design/fresh-embodiment-rebirth.md`.
+The recovery successor additionally exposes a canonical-ledger-only restore
+boundary. Cluster verifies the portable snapshot, journals installation and
+restore separately, and gates first start on the exact restore receipt; it
+does not restore predecessor custody or public runtime bytes.
 
 For each running embodiment Cluster starts one Matrix daemon with:
 
@@ -64,6 +84,41 @@ Idempotency is not evidence that an effect remains true: replay is accepted
 only when intent, observed postcondition and current fence position still
 agree. A stale holder or epoch yields an effect-truth discrepancy.
 
+The hosted process injects `MatrixHostAdapter.verify_fence` into Matrix's
+DM-031 coordinator. Effect truth passes through a closed router selected by
+the exact receipt adapter, curator work kind and first `resource_ref`
+namespace. Unknown, duplicate, unavailable or throwing routes are
+`effect_truth_unverifiable`; there is no receipt-trusting fallback.
+
+H5 provides the exact personal-memory route:
+`(cluster-dm034-hmk/v1, memory-projection, hmk)`. It is created only together
+with a fixed per-embodiment executor; the generic Matrix host still has no
+ambient/default route. The executor accepts no queue-selected path, database,
+process or operation. It re-resolves Matrix's current payload-free intent,
+checks the exact DM-034 profile and preview/plan hash, current actor and any
+independent source-review reference, verifies the production fence before and
+after the effect, and invokes only `MemoryProjectionAdapter.project`,
+`rebuild_plan`, `rebuild_apply`, `inspect`, `verify`, and `reconcile`. Its
+observer repeats inner effect observation and returns current fence evidence.
+See `docs/contracts/dm034-hmk-executor-v1.md`.
+
+H6 adds the separate exact reviewed-publication route
+`(cluster-dm035-publisher/v1, publication, publication)`. Matrix DM-035 still
+owns final-byte rendering, explicit consent, purpose-separated human signature,
+source checkpoint, predecessor, claim, provider receipt and signed canonical
+acceptance. Cluster projects those decisions into a payload-free current
+intent, verifies the outer production fence, and invokes only the complete
+Matrix `PublicationCoordinator`. The pinned provider runs in a minimal-env
+subprocess with six closed operations and fixed Wiki/state/runtime/HMK roots;
+it cannot inspect Matrix custody or choose configuration from queue bytes.
+Cached outer observation re-enters DM-035 exact replay/reconciliation and
+reconstructs the complete Cluster receipt instead of trusting it. See
+`docs/contracts/dm035-reviewed-publisher-v1.md`.
+
+DM-036 remains unavailable until its own exact route and acceptance evidence
+land. Queue-item coordination remains available because it represents no
+shared external effect.
+
 ## clusterd read projection
 
 `clusterd` receives a least-authority local Matrix capability from an
@@ -78,6 +133,13 @@ All underlying errors collapse to `matrix-status-unavailable`.
 
 The sidecar is deliberately host-local. It is not part of portable state and
 must be provisioned anew after relocation.
+
+Curator workers use a second owner-only sidecar below
+`state_dir/matrix-curator-clients/`. Its capability must contain exactly
+`curator.enqueue`, `curator.claim`, `curator.complete`, and `curator.inspect`.
+It is never reused by clusterd and the five-method status capability is never
+expanded. Both sidecars bind the exact current origin and remain host-local;
+neither is identity, review, fence or effect authority by itself.
 
 ## Portability and rebirth
 

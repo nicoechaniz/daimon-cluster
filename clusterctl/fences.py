@@ -7,13 +7,17 @@ Only contenders for the exact same ``resource_ref`` exclude one another.
 from __future__ import annotations
 
 import copy
+import base64
 import hashlib
 import json
 import logging
 import os
+import stat
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 FENCE_SCHEMA = "resource-fence/v1"
 logger = logging.getLogger("clusterctl.fences")
@@ -58,6 +62,90 @@ class SSHSigner(Signer):
         raise NotImplementedError("SSH verification not yet implemented")
 
 
+class Ed25519Signer(Signer):
+    """Real Ed25519 signer backed by one owner-only private key file."""
+
+    PREFIX = "ED25519:"
+
+    def __init__(self, privkey_path: str | Path, key_id: str):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey,
+        )
+
+        if not key_id or any(character.isspace() for character in key_id):
+            raise FenceError("invalid production signing key id")
+        path = Path(os.path.abspath(privkey_path))
+        descriptor: int | None = None
+        try:
+            before = path.lstat()
+            if stat.S_ISLNK(before.st_mode):
+                raise FenceError("production signing key cannot be a symlink")
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            metadata = os.fstat(descriptor)
+            if (before.st_dev, before.st_ino) != (metadata.st_dev, metadata.st_ino):
+                raise FenceError("production signing key was replaced")
+            if metadata.st_size <= 0 or metadata.st_size > 64 * 1024:
+                raise FenceError("production signing key size is invalid")
+            chunks: list[bytes] = []
+            size = 0
+            while chunk := os.read(descriptor, 16 * 1024):
+                size += len(chunk)
+                if size > 64 * 1024:
+                    raise FenceError("production signing key size is invalid")
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+        except OSError as exc:
+            raise FenceError("cannot read production signing key") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise FenceError("production signing key is not a regular file")
+        if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise FenceError("production signing key must be owner-only")
+        try:
+            if raw.startswith(b"-----BEGIN OPENSSH PRIVATE KEY-----"):
+                private_key = serialization.load_ssh_private_key(raw, password=None)
+            else:
+                private_key = serialization.load_pem_private_key(raw, password=None)
+        except (TypeError, ValueError) as exc:
+            raise FenceError("invalid production signing key") from exc
+        if not isinstance(private_key, Ed25519PrivateKey):
+            raise FenceError("production signing key must be Ed25519")
+        self._private_key = private_key
+        self.key_id = key_id
+        public_bytes = private_key.public_key().public_bytes(
+            serialization.Encoding.OpenSSH,
+            serialization.PublicFormat.OpenSSH,
+        )
+        self.public_key = public_bytes.decode("ascii")
+
+    def sign(self, data: bytes) -> str:
+        return self.PREFIX + base64.b64encode(self._private_key.sign(data)).decode(
+            "ascii"
+        )
+
+    def verify(self, data: bytes, signature: str, pubkey: str) -> bool:
+        from cryptography.exceptions import InvalidSignature as CryptoInvalidSignature
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+        if not signature.startswith(self.PREFIX):
+            return False
+        try:
+            decoded = base64.b64decode(
+                signature[len(self.PREFIX) :], validate=True
+            )
+            verifier = serialization.load_ssh_public_key(pubkey.encode("ascii"))
+            if not isinstance(verifier, Ed25519PublicKey):
+                return False
+            verifier.verify(decoded, data)
+        except (ValueError, TypeError, CryptoInvalidSignature, UnicodeError):
+            return False
+        return True
+
+
 class FenceError(Exception):
     pass
 
@@ -74,7 +162,7 @@ class InvalidSignature(FenceError):
     pass
 
 
-class ResourceFenceStore:
+class _LegacyFileFenceStore:
     FENCE_SCHEMA = FENCE_SCHEMA
     LEASE_SCHEMA = FENCE_SCHEMA
 
@@ -400,3 +488,79 @@ class ResourceFenceStore:
                 path.unlink()
                 removed += 1
         return removed
+
+
+class SyntheticResourceFenceStore(_LegacyFileFenceStore):
+    """Explicit test fixture; never selected by runtime code."""
+
+
+class ResourceFenceStore:
+    """Authenticated SQLite fence authority, or query-only verifier."""
+
+    FENCE_SCHEMA = "resource-fence/v2"
+    LEASE_SCHEMA = "resource-fence/v2"
+
+    def __init__(
+        self,
+        state_dir: str | Path,
+        signer: Signer | None = None,
+        *,
+        key_id: str | None = None,
+        database_path: str | Path | None = None,
+        fault_hook: Callable[[str], None] | None = None,
+    ):
+        from .production_fences import ProductionFenceStore
+
+        if isinstance(signer, FakeSigner):
+            raise FenceError("synthetic signer is restricted to explicit fixtures")
+        verifier_only = signer is None
+        if signer is not None and key_id is None:
+            key_id = getattr(signer, "key_id", None)
+        self._backend: Any = ProductionFenceStore(
+            state_dir,
+            signer=signer,
+            key_id=key_id,
+            database_path=database_path,
+            fault_hook=fault_hook,
+            verifier_only=verifier_only,
+        )
+
+    @classmethod
+    def production(
+        cls,
+        state_dir: str | Path,
+        *,
+        signer: Signer,
+        key_id: str,
+        database_path: str | Path | None = None,
+        fault_hook: Callable[[str], None] | None = None,
+    ) -> ResourceFenceStore:
+        return cls(
+            state_dir,
+            signer,
+            key_id=key_id,
+            database_path=database_path,
+            fault_hook=fault_hook,
+        )
+
+    @classmethod
+    def production_verifier(
+        cls,
+        state_dir: str | Path,
+        *,
+        database_path: str | Path | None = None,
+    ) -> ResourceFenceStore:
+        from .production_fences import ProductionFenceStore
+
+        value = cls.__new__(cls)
+        value._backend = ProductionFenceStore(
+            state_dir,
+            signer=None,
+            key_id=None,
+            database_path=database_path,
+            verifier_only=True,
+        )
+        return value
+
+    def __getattr__(self, name: str):
+        return getattr(self._backend, name)

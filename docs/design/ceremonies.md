@@ -41,12 +41,18 @@ one writer requires a current `resource-fence/v1` for its exact
 Relocation moves one body's durable volume to a replacement container or host:
 
 1. Park and checkpoint the source.
-2. Acquire/renew fences for each concrete resource being moved.
-3. Restore and verify the target before starting writers.
-4. Preserve `body_ref` and `embodiment_id`; open a new `incarnation_id`.
-5. Emit `embodiment-relocation` with source, target, manifest digest, resource
+2. Lock both names and bind the exact checkpoint, volume identity, attachment
+   and production fence position in a durable operation journal.
+3. Create the target stopped without a new home, detach the stopped source,
+   and attach that same existing volume to the stopped target.
+4. Verify one writable target attachment and commit the exact fence successor
+   before the target can start.
+5. Start the target, verify the same volume/bytes again, preserve `body_ref`
+   and `embodiment_id`, and open one preallocated `incarnation_id`.
+6. Emit `embodiment-relocation` with source, target, manifest digest, resource
    fence generations, and outcome.
-6. Retain the old volume cold for the rollback window.
+7. Retain the old source container cold for the rollback window; the volume is
+   not copied and exists as one attached object.
 
 A clone is different: it receives a new body and embodiment, separate keys,
 ledger, cursors, and local adoption state.
@@ -94,6 +100,12 @@ leave/expel operations are separate signed membership artifacts.
 
 Provider, transport, backup, embodiment, and Matrix root/recovery keys have
 distinct custody and recovery paths.
+
+When a Matrix recovery quorum intentionally replaces every active embodiment,
+Cluster installs the fresh target and restores only events that verify through
+the signed recovery history. Predecessor custody and runtime configuration are
+never restored. A distinct completed restore journal gates first start, and an
+exact retry must reproduce the same canonical event-set hash.
 
 ## 7. Testable invariants
 

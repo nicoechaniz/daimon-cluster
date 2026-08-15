@@ -1,0 +1,34 @@
+# Read-only encrypted-repository pull for one off-host backup target.
+# Requires a non-login `daimon-backup` user and owner-only destination.
+[Unit]
+Description=encrypted Daimon restic mirror from %I
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=daimon-backup
+Group=daimon-backup
+EnvironmentFile=/etc/daimon-backup/%i.env
+LoadCredential=source-key:/etc/daimon-backup/%i.key
+LoadCredential=source-known-hosts:/etc/daimon-backup/%i.known-hosts
+ExecStart=/opt/daimon-cluster/scripts/restic-mirror-pull.sh
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/daimon-cluster
+ReadWritePaths=/srv/daimon-backups
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=256M
+TasksMax=64
+LimitNOFILE=1024

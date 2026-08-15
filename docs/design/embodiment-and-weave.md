@@ -23,10 +23,18 @@ Cluster callback, so an honest read cannot become “future” across a clock
 tick.
 
 `GET /v1/weave/status` calls the owner-local authenticated Matrix client and
-projects `/me`, `/we`, difference and sync-plan data. It omits payloads,
-routes, endpoints, requests, secrets and private paths; any underlying error
-collapses to one membership-safe failure. The old Cluster `weave/` runtime is
-not an alternate status source.
+reports Matrix-process availability, owner-local ledger integrity/queue state,
+and peer reachability/difference state separately. A clean local queue never
+means a peer is reachable or caught up. A row can therefore say local-clean +
+peer-offline, or local-clean + peer-available + known-differences, without
+collapsing either into “healthy”. Per-embodiment process failures are explicit
+and do not erase observations from other embodiments.
+
+Raw redacted differences are available only from the bounded snapshot endpoint
+`GET /v1/weave/differences?embodiment_id=...`. Both status endpoints omit
+payloads, routes, endpoints, requests, secrets and private paths. The old
+Cluster `weave/` runtime is not an alternate status source. The complete read
+contract is `docs/contracts/read-models-v2.md`.
 
 ## Resource fences
 

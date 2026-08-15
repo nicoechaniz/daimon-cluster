@@ -102,8 +102,28 @@ def _read_lines(path: Path) -> list[str]:
 
 def _atomic_write(path: Path, text: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
+    descriptor = os.open(
+        tmp,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        raw = text.encode()
+        written = 0
+        while written < len(raw):
+            written += os.write(descriptor, raw[written:])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
     os.replace(tmp, path)
+    directory = os.open(
+        path.parent,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def _next_seq(state_dir: Path, lines: list[str]) -> tuple[int, str]:
@@ -177,6 +197,7 @@ def append_event(
     idempotency_key: str | None = None,
     request_id: str | None = None,
     action_digest: str | None = None,
+    event_id: str | None = None,
 ) -> dict:
     """Append one chained ``audit-event/v1`` line and return the event."""
     if result not in ("ok", "denied", "error"):
@@ -189,10 +210,37 @@ def append_event(
     with lock_path.open("r+", encoding="utf-8") as lock_fh:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
         lines = _read_lines(path)
+        identifier = event_id or str(uuid.uuid4())
+        if event_id is not None:
+            try:
+                if str(uuid.UUID(event_id)) != event_id:
+                    raise ValueError
+            except ValueError as exc:
+                raise ValueError("invalid audit event id") from exc
+            for raw in lines:
+                try:
+                    existing = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if existing.get("event_id") != event_id:
+                    continue
+                binding = {
+                    "actor": actor,
+                    "action": action,
+                    "target": target,
+                    "result": result,
+                    "idempotency_key": idempotency_key,
+                    "request_id": request_id,
+                    "action_digest": action_digest,
+                    "detail": dict(detail or {}),
+                }
+                if any(existing.get(key) != value for key, value in binding.items()):
+                    raise ValueError("audit event id is bound to different bytes")
+                return existing
         seq, prev_sha256 = _next_seq(state_dir, lines)
         event = {
             "schema": AUDIT_SCHEMA,
-            "event_id": str(uuid.uuid4()),
+            "event_id": identifier,
             "ts_ms": now_ms(),
             "seq": seq,
             "prev_sha256": prev_sha256,

@@ -22,7 +22,7 @@ budgets or image differ from actual incus config).
 
 ### `clusterctl list [--json]`
 
-Plain aligned table (default) or a JSON array of `instance-status/v1`
+Plain aligned table (default) or a JSON array of `instance-status/v2`
 records.
 
 ```
@@ -40,13 +40,13 @@ present in incus. When drifted, the record includes a `drift` array of
 
 Resolved configuration (YAML by default, JSON with `--json`).
 
-## JSON schema: `instance-status/v1`
+## JSON schema: `instance-status/v2`
 
 Example (`clusterctl status iso-a --json`):
 
 ```json
 {
-  "schema": "instance-status/v1",
+  "schema": "instance-status/v2",
   "name": "iso-a",
   "species": "unknown",
   "host": "daimonmatrix",
@@ -61,9 +61,22 @@ Example (`clusterctl status iso-a --json`):
   "durable_bytes": null,
   "hmk_integrity": "unknown",
   "uptime_s": 3600,
-  "last_audit_event": null
+  "last_audit_event": null,
+  "observed_at_ms": 1786412400000,
+  "observations": {
+    "declared": {"state": "absent", "observed_at_ms": 1786412400000, "created_by": null},
+    "runtime": {"state": "running", "present": true, "observed_at_ms": 1786412400000},
+    "embodiment": {"state": "unavailable", "observed_at_ms": 1786412400000, "reason": "registry-not-observed-by-inventory"},
+    "incarnation": {"state": "unavailable", "observed_at_ms": 1786412400000, "reason": "registry-not-observed-by-inventory"},
+    "matrix_process": {"state": "unavailable", "observed_at_ms": 1786412400000, "reason": "matrix-process-not-observed-by-inventory"}
+  }
 }
 ```
+
+The aggregate `state` remains the CLI reconciliation classification. It is
+not evidence of embodiment identity, incarnation continuity, Matrix process
+availability, fence ownership, or peer convergence. Those are distinct
+observations and may honestly disagree.
 
 Notes for v0.1.0: `resource_fence_state` and `hmk_integrity` are pinned to
 `"unknown"`; `durable_bytes` and `last_audit_event` are `null` until the
@@ -179,3 +192,20 @@ path — never file contents.
 `scripts/clusterctl` is a thin wrapper that execs the repo venv
 (`repo/.venv/bin/python -m clusterctl.cli "$@"`). Runtime deps: Python
 3.13 stdlib + PyYAML only.
+
+## Mutation recovery (issue #65)
+
+Create, power, provision-prepare and handoff mutations persist an exact
+operation intent before their first substrate call. `clusterctl reconcile
+--json` reports `counts.open_operations` plus pending/degraded findings.
+Clusterd health reports an `operation_journal` object and degrades while a
+record needs attention.
+
+```console
+clusterctl repair --operation-id operation:<uuid> --json
+```
+
+Repair accepts only a journaled start, stop or restart with a bounded,
+observable runtime state. It never clears arbitrary create, provision,
+handoff or future destroy ambiguity. The full state and rollback contract is
+`docs/design/operation-journal.md`.

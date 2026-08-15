@@ -14,8 +14,8 @@ Scenarios NOT already covered by test_park.py / test_transfer.py:
   restore-files → TransferError → rollback leaves the target destroyed
   and the source parked.
 - failure after CAS but before start (transfer) — adapter.start raising
-  → rollback restores the pre-renew lease EXACTLY (epoch back to 0 via
-  store.restore).
+  → rollback restores volume custody and preserves the exact monotonic
+  fence successor.
 - hmk checkpoint failure during park (during-checkpoint injection).
 - audit chain — after a failed park + a failed transfer,
   clusterctl.audit.verify_chain still verifies and the failures are
@@ -217,15 +217,16 @@ def test_transfer_network_partition_during_restore_rolls_back(
     assert load_spec_raw(cfg.instances_dir, NEW) is None  # spec deleted
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "parked"
 
-    # the fence WAS taken (epoch 1) before the partition — rollback must
-    # restore the pre-renew lease EXACTLY (epoch back to 0)
+    # The fence WAS taken before the partition. Rollback preserves that
+    # exact successor; lowering the high-water would create stale truth.
     st = leases.LeaseStore(state_dir).status(DAIMON_ID)
-    assert st["last_epoch"] == 0
+    assert st["last_epoch"] == 1
     assert st["expired"] is False
 
     state = json.loads(
         transfer._transfer_state_path(cfg, NAME, NEW).read_text())
     assert state["rollback"]["target_destroyed"] is True
+    assert state["rollback"]["fence_safe"] is True
     assert "wake --handoff" in state["rollback"]["resume_hint"]
 
     # CONVERGENT STATE: both parked — nothing awake; the operator
@@ -233,13 +234,12 @@ def test_transfer_network_partition_during_restore_rolls_back(
 
 
 # ---------------------------------------------------------------------------
-# failure after CAS but before start — fence restored EXACTLY
+# failure after CAS but before start — successor preserved monotonically
 # ---------------------------------------------------------------------------
 
-def test_transfer_start_failure_restores_pre_renew_lease(
+def test_transfer_start_failure_preserves_safe_fence_successor(
         state_dir, cfg, adapter):
-    """adapter.start raising AFTER the fence CAS → rollback restores the
-    pre-renew lease EXACTLY (epoch back to 0 via store.restore)."""
+    """A post-CAS failure restores volume custody without lowering epoch."""
     _write_spec(state_dir)
     _parked(state_dir, cfg, adapter)
     pre_renew = leases.LeaseStore(state_dir).get(DAIMON_ID)
@@ -252,29 +252,30 @@ def test_transfer_start_failure_restores_pre_renew_lease(
     with pytest.raises(transfer.TransferError):
         transfer.run_transfer(NAME, NEW, cfg, adapter, actor="test")
 
-    # the lease is back EXACTLY at its pre-renew state: epoch 0, same
-    # acquisition, still valid
-    restored = leases.LeaseStore(state_dir).get(DAIMON_ID)
-    assert restored is not None
-    assert restored["epoch"] == 0
-    assert restored["acquired_ms"] == pre_renew["acquired_ms"]
-    assert restored["created_ms"] == pre_renew["created_ms"]
+    # The exact successor stays current. Restoring epoch 0 would contradict
+    # the monotonic high-water and is forbidden by the H1 production backend.
+    preserved = leases.LeaseStore(state_dir).verify_current(DAIMON_ID)
+    assert preserved is not None
+    assert preserved["epoch"] == 1
+    assert preserved["acquired_ms"] == pre_renew["acquired_ms"]
     st = leases.LeaseStore(state_dir).status(DAIMON_ID)
     assert st["expired"] is False
-    assert st["last_epoch"] == 0
+    assert st["last_epoch"] == 1
 
-    # target destroyed, source parked; rollback recorded fence_restored
+    # target destroyed, source parked; rollback records safe monotonic fence
     log = adapter.mutation_log
     assert ("delete", NEW) in log
     assert load_spec_raw(cfg.instances_dir, NEW) is None
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "parked"
     state = json.loads(
         transfer._transfer_state_path(cfg, NAME, NEW).read_text())
-    assert state["rollback"]["fence_restored"] is True
+    assert state["rollback"]["fence_restored"] is False
+    assert state["rollback"]["fence_advanced"] is True
+    assert state["rollback"]["fence_safe"] is True
     assert state["rollback"]["target_destroyed"] is True
 
-    # CONVERGENT STATE: both parked — no valid second holder was left
-    # behind; the source resumes with `wake --handoff` from epoch 0.
+    # CONVERGENT STATE: source parked, target absent and exact successor
+    # retained; re-entry must advance from epoch 1 rather than regressing.
 
 
 # ---------------------------------------------------------------------------
@@ -310,9 +311,8 @@ def test_hmk_checkpoint_failure_rolls_back_to_active(
 
 def test_audit_chain_intact_after_failed_park_and_transfer(
         state_dir, cfg, adapter, capsys):
-    """A failed park (no lease) + a failed transfer (lease vanished at
-    the CAS step) are both recorded as audit events and the hash chain
-    still verifies."""
+    """A failed park plus a transfer whose bound fence vanished are both
+    recorded as audit events and the hash chain still verifies."""
     _write_spec(state_dir)
 
     # failed park — no lease held → verification failure (exit 10)
@@ -321,6 +321,7 @@ def test_audit_chain_intact_after_failed_park_and_transfer(
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "active"
 
     # park for real, then make the transfer fail at the fence CAS
+    adapter.ensure_volume(NAME)
     leases.LeaseStore(state_dir).acquire(DAIMON_ID, PUBKEY, FINGERPRINT)
     code, adapter = _cli(state_dir, "park", "--handoff", NAME,
                          adapter=adapter)
@@ -329,14 +330,14 @@ def test_audit_chain_intact_after_failed_park_and_transfer(
         f.unlink()  # identity lease vanishes before the CAS
     code, _ = _cli(state_dir, "transfer", NAME, "--to", NEW,
                    adapter=adapter)
-    assert code == 10
+    assert code == 6
     capsys.readouterr()
 
     # failures recorded as audit events...
     events = audit.read_events(state_dir)
     assert any(e["action"] == "park" and e["result"] == "error"
                for e in events)
-    assert any(e["action"] == "transfer" and e["result"] == "error"
+    assert any(e["action"] == "transfer" and e["result"] == "denied"
                for e in events)
     assert any(e["action"] == "park" and e["result"] == "ok"
                for e in events)

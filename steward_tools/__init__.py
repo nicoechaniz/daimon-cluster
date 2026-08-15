@@ -7,7 +7,7 @@ Read path (issue #22):
   token file; urllib only, GET only, 5s timeout, cross-origin redirects
   refused. There is no arbitrary-URL parameter anywhere: only the four
   fixed read routes exist.
-- ``tools`` — the four steward read tools. Each returns a
+- ``tools`` — the steward read tools. Each returns a
   steward-tool-result/v1 dict and NEVER raises a transport failure to
   the agent: unreachable daemon or an HTTP error becomes
   ``ok=False`` with an explicit ``degraded`` reason.
@@ -53,6 +53,7 @@ from .tools import (
     cluster_health,
     cluster_list,
     cluster_logs,
+    cluster_weave_status,
 )
 
 __all__ = [
@@ -68,6 +69,7 @@ __all__ = [
     "cluster_health",
     "cluster_list",
     "cluster_logs",
+    "cluster_weave_status",
     "confirm_plan",
     "propose_destroy",
     "propose_park",

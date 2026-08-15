@@ -159,8 +159,11 @@ def test_status_uses_matrix_client_and_redacts_routes_payloads_and_paths(tmp_pat
     assert response.status == 200
     assert response.body["schema"] == "dm.cluster-matrix-status/v1"
     assert response.body["implementation"] == "installed-daimon-matrix"
-    assert response.body["embodiments"][0]["me"]["body"]["state"] == "running"
-    assert response.body["embodiments"][0]["runtime"]["authority_epoch"] == {
+    row = response.body["embodiments"][0]
+    assert row["identity_view"]["body"]["state"] == "running"
+    assert row["matrix_process"]["state"] == "available"
+    assert row["owner_local"]["ledger_integrity"] == "ok"
+    assert row["owner_local"]["authority_epoch"] == {
         "schema": "dm.we.authority-epoch-status/v1",
         "active_manifest_hash": "a" * 64,
         "accepted_manifest_hashes": ["a" * 64],
@@ -195,8 +198,10 @@ def test_status_failure_is_membership_safe(tmp_path):
         ),
         _context(),
     )
-    assert response.status == 503
-    assert response.body["error"] == "matrix-status-unavailable"
+    assert response.status == 200
+    assert response.body["embodiments"][0]["matrix_process"]["state"] == "down"
+    assert response.body["embodiments"][0]["owner_local"]["state"] == \
+        "unavailable"
     assert "/private/socket" not in json.dumps(response.body)
 
 

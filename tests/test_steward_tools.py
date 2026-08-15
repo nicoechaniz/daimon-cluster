@@ -269,6 +269,7 @@ def test_cluster_logs_404_becomes_degraded_not_exception(server, client):
 @pytest.mark.parametrize("tool_call", [
     lambda c: tools.cluster_list(client=c),
     lambda c: tools.cluster_health(client=c),
+    lambda c: tools.cluster_weave_status(client=c),
     lambda c: tools.cluster_backups(client=c),
     lambda c: tools.cluster_logs(NAME, client=c),
 ])
@@ -294,12 +295,17 @@ def test_cluster_list_projects_fleet(server, client):
     assert res["ok"] is True
     assert res["stale"] is False
     assert res["degraded"] == []
-    assert res["data"] == [{
+    assert res["data"]["page"]["has_more"] is False
+    assert res["data"]["items"] == [{
         "name": NAME,
         "state": "running",
         "image_version": "tribe-base/2026-08-01.1",
         "uptime_s": 42,
+        "observed_at_ms": res["data"]["items"][0]["observed_at_ms"],
+        "observations": res["data"]["items"][0]["observations"],
     }]
+    assert res["data"]["items"][0]["observations"]["runtime"]["state"] == \
+        "running"
 
 
 def test_cluster_health_ok(server, client):
@@ -308,6 +314,16 @@ def test_cluster_health_ok(server, client):
     assert res["data"]["status"] == "ok"
     assert res["data"]["audit_chain_ok"] is True
     assert res["degraded"] == []
+
+
+def test_cluster_weave_status_preserves_not_configured_as_explicit_state(
+    server, client,
+):
+    res = tools.cluster_weave_status(client=client)
+    assert res["ok"] is True
+    assert res["data"]["read_model_version"] == 2
+    assert res["data"]["configured"] is False
+    assert res["degraded"] == ["matrix-not-configured"]
 
 
 def test_cluster_health_degraded_names_subsystems(state_dir, tmp_path,
@@ -419,6 +435,7 @@ def test_every_tool_result_carries_envelope_source_ts(server, client):
         tools.cluster_health(client=client),
         tools.cluster_backups(client=client),
         tools.cluster_logs(NAME, client=client),
+        tools.cluster_weave_status(client=client),
     ]
     now_ms = int(time.time() * 1000)
     for res in results:

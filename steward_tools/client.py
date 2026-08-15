@@ -13,7 +13,7 @@ Hard rules:
 - Redirects to a different origin are REFUSED, never followed — a
   misconfigured or hostile endpoint cannot bounce the steward's token
   at another host.
-- Only the four fixed read routes exist as methods; there is no way to
+- Only the fixed read routes exist as methods; there is no way to
   request an arbitrary path.
 """
 
@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 DEFAULT_BASE_URL = "http://10.105.93.1:8785"
 DEFAULT_TOKEN_PATH = "/home/agent/.clusterd/read-token"
@@ -118,13 +118,25 @@ class ClusterdClient:
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
             raise ClusterdUnreachable(str(exc)) from exc
 
-    # -- the four fixed read routes (no arbitrary paths anywhere) ------
+    # -- fixed read routes (no arbitrary paths anywhere) ----------------
 
-    def instances(self) -> tuple[int, object, dict]:
-        return self._get("/v1/instances")
+    def instances(
+        self, *, limit: int = 200, cursor: str | None = None
+    ) -> tuple[int, object, dict]:
+        if isinstance(limit, bool) or not 1 <= int(limit) <= 200:
+            raise ValueError("instances limit must be in 1..200")
+        query: dict[str, object] = {"limit": int(limit)}
+        if cursor is not None:
+            if not isinstance(cursor, str) or not cursor or len(cursor) > 512:
+                raise ValueError("invalid instances cursor")
+            query["cursor"] = cursor
+        return self._get("/v1/instances?" + urlencode(query))
 
     def health(self) -> tuple[int, object, dict]:
         return self._get("/v1/health")
+
+    def weave_status(self) -> tuple[int, object, dict]:
+        return self._get("/v1/weave/status")
 
     def backups(self) -> tuple[int, object, dict]:
         return self._get("/v1/backups")

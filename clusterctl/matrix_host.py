@@ -20,14 +20,15 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
-MATRIX_CONTRACT_COMMIT = "f0181f7117859f3f9cc4afc7dfbdaf9b06e74754"
+MATRIX_CONTRACT_COMMIT = "306900c64aac5b0aa6ca062e777ca5ea2686d84e"
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
 MATRIX_STATUS_SCHEMA = "dm.cluster-matrix-status/v1"
@@ -44,6 +45,86 @@ _CLUSTERD_MATRIX_METHODS = frozenset(
         "scope.we.sync-plan",
     }
 )
+_CURATOR_WORKER_METHODS = frozenset(
+    {"curator.claim", "curator.complete", "curator.enqueue", "curator.inspect"}
+)
+_EFFECT_OBSERVATION_FIELDS = frozenset(
+    {"intent", "observed_postcondition", "current_fence_evidence"}
+)
+
+EffectObserver = Callable[
+    [Mapping[str, Any], Mapping[str, Any], int], Mapping[str, Any]
+]
+
+
+@dataclass(frozen=True)
+class EffectObserverRoute:
+    """One explicit effect-truth adapter binding.
+
+    A route is selected by all three authority coordinates.  The namespace is
+    the first component of ``resource_ref`` (for example ``wiki`` in
+    ``wiki:page:home``); it is not a prefix or wildcard.
+    """
+
+    adapter: str
+    work_kind: str
+    resource_namespace: str
+    observer: EffectObserver | None
+
+    def __post_init__(self) -> None:
+        for value in (self.adapter, self.work_kind, self.resource_namespace):
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value.encode("utf-8")) > 256
+                or any(ord(character) < 0x21 for character in value)
+            ):
+                raise MatrixHostError("effect_observer_route_rejected")
+        if ":" in self.resource_namespace:
+            raise MatrixHostError("effect_observer_route_rejected")
+
+
+class EffectObserverRouter:
+    """Fail-closed router for concrete downstream effect observers."""
+
+    def __init__(self, routes: Sequence[EffectObserverRoute] = ()) -> None:
+        self._routes = tuple(routes)
+        coordinates = [
+            (route.adapter, route.work_kind, route.resource_namespace)
+            for route in self._routes
+        ]
+        if len(coordinates) != len(set(coordinates)):
+            raise MatrixHostError("effect_observer_route_ambiguous")
+
+    def __call__(
+        self,
+        item: Mapping[str, Any],
+        receipt: Mapping[str, Any],
+        at_ms: int,
+    ) -> Mapping[str, Any]:
+        resource_ref = item.get("resource_ref")
+        namespace = (
+            resource_ref.split(":", 1)[0]
+            if isinstance(resource_ref, str) and ":" in resource_ref
+            else None
+        )
+        coordinate = (receipt.get("adapter"), item.get("work_kind"), namespace)
+        matches = [
+            route
+            for route in self._routes
+            if (route.adapter, route.work_kind, route.resource_namespace) == coordinate
+        ]
+        if len(matches) != 1 or not callable(matches[0].observer):
+            raise MatrixHostError("effect_truth_unverifiable")
+        try:
+            observed = matches[0].observer(item, receipt, at_ms)
+        except Exception as exception:
+            raise MatrixHostError("effect_truth_unverifiable") from exception
+        if not isinstance(observed, Mapping) or set(observed) != set(
+            _EFFECT_OBSERVATION_FIELDS
+        ):
+            raise MatrixHostError("effect_truth_unverifiable")
+        return observed
 
 
 class MatrixHostError(RuntimeError):
@@ -55,7 +136,18 @@ def _matrix_api() -> dict[str, Any]:
 
     try:
         from daimon_matrix import cluster as cluster_api
-        from daimon_matrix import client, daemon, runtime
+        from daimon_matrix import (
+            canonical,
+            client,
+            curator,
+            daemon,
+            memory_projection,
+            operator_bootstrap,
+            operator_rebirth,
+            publication,
+            runtime,
+            service,
+        )
     except ImportError as exception:  # base clusterctl remains usable without it
         raise MatrixHostError("daimon_matrix_dependency_unavailable") from exception
     try:
@@ -101,11 +193,108 @@ def _matrix_api() -> dict[str, Any]:
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     if getattr(client, "CLIENT_CONFIG_SCHEMA_V2", None) != "dm.local.client-config/v2":
         raise MatrixHostError("daimon_matrix_contract_mismatch")
+    curator_expected = {
+        "ITEM_SCHEMA": "dm.curator.item/v1",
+        "CLAIM_SCHEMA": "dm.curator.claim/v1",
+        "RESULT_SCHEMA": "dm.curator.result/v1",
+        "ENQUEUE_SCHEMA": "dm.curator.enqueue-result/v1",
+        "INSPECTION_SCHEMA": "dm.curator.inspection/v1",
+    }
+    if any(
+        getattr(curator, name, None) != value
+        for name, value in curator_expected.items()
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if frozenset(getattr(curator, "WORK_KINDS", ())) != frozenset(
+        {
+            "memory-evaluation",
+            "memory-proposal",
+            "memory-projection",
+            "publication",
+        }
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if frozenset(getattr(curator, "COORDINATION_MODES", ())) != frozenset(
+        {"queue-item", "resource-fence"}
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if frozenset(getattr(service, "CURATOR_METHODS", ())) != _CURATOR_WORKER_METHODS:
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    projection_expected = {
+        "PROFILE_SCHEMA": "dm.memory-projection.profile/v1",
+        "INTENT_SCHEMA": "dm.memory-projection.intent/v1",
+        "RECEIPT_SCHEMA": "dm.memory-projection.receipt/v1",
+        "RECONCILIATION_SCHEMA": "dm.memory-projection.reconciliation/v1",
+        "REBUILD_PLAN_SCHEMA": "dm.memory-projection.rebuild-plan/v1",
+        "REBUILD_RECEIPT_SCHEMA": "dm.memory-projection.rebuild-receipt/v1",
+        "HMK_COMMIT": "f10fd5c3089c0962920314c97e14bc024feffa7a",
+        "HMK_API_VERSION": "1.0.0",
+        "HMK_SCHEMA_VERSION": 1,
+        "PROJECTOR_ID": "matrix:personal-memory-projector",
+        "PROJECTOR_VERSION": "1.0.0",
+    }
+    if any(
+        getattr(memory_projection, name, None) != value
+        for name, value in projection_expected.items()
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    publication_expected = {
+        "POLICY_SCHEMA": "dm.publication.policy/v1",
+        "PROFILE_SCHEMA": "dm.publication.profile/v1",
+        "PROPOSAL_SCHEMA": "dm.publication.proposal/v1",
+        "REVIEW_SCHEMA": "dm.publication.review/v1",
+        "REQUEST_SCHEMA": "dm.publication.request/v1",
+        "CLAIM_SCHEMA": "dm.publication.claim/v1",
+        "ACCEPTANCE_SCHEMA": "dm.publication.acceptance/v1",
+        "RECONCILIATION_SCHEMA": "dm.publication.reconciliation/v1",
+        "PROVIDER_REQUEST_SCHEMA": "dm.publisher.request/v1",
+        "PROVIDER_PLAN_SCHEMA": "dm.publisher.plan/v1",
+        "PROVIDER_RECEIPT_SCHEMA": "dm.publisher.receipt/v1",
+        "COMPAII_STATE_COMMIT": "cf56e9de703f68f44b85fdf21f503d55a5557984",
+        "HMK_COMMIT": "f10fd5c3089c0962920314c97e14bc024feffa7a",
+        "PROVIDER_API_VERSION": "1.0.0",
+        "PROVIDER_ADAPTER_ID": (
+            "dm:adapter:v0:OnDIAMjSu2T_8EqLG_wxxygVXCPGXaTJsA41-IMcpSo"
+        ),
+        "PROVIDER_POLICY_HASH": (
+            "800929a4d56687ca224c5df767ab05c4c259acc75904530848683a92e2484b88"
+        ),
+    }
+    if any(
+        getattr(publication, name, None) != value
+        for name, value in publication_expected.items()
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if (
+        frozenset(getattr(operator_bootstrap, "STATUS_OBSERVER_METHODS", ()))
+        != _CLUSTERD_MATRIX_METHODS
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    rebirth_expected = {
+        "REQUEST_SCHEMA": "dm.operator.embodiment-request/v1",
+        "ACTIVATION_SCHEMA": "dm.operator.embodiment-activation/v1",
+        "PREPARATION_SCHEMA": "dm.operator.rebirth-preparation/v1",
+        "TARGET_PROFILE_SCHEMA": "dm.operator.rebirth-target-profile/v1",
+        "RECOVERY_ACTIVATION_SCHEMA": "dm.operator.recovery-activation/v1",
+    }
+    if any(
+        getattr(operator_rebirth, name, None) != value
+        for name, value in rebirth_expected.items()
+    ):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if not callable(getattr(operator_rebirth, "restore_recovery_ledger", None)):
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
     return {
+        "canonical": canonical,
         "client": client,
         "cluster": cluster_api,
+        "curator": curator,
         "daemon": daemon,
+        "memory_projection": memory_projection,
+        "operator_rebirth": operator_rebirth,
+        "publication": publication,
         "runtime": runtime,
+        "service": service,
     }
 
 
@@ -131,6 +320,17 @@ def matrix_client_root(state_dir: str | Path, embodiment_id: str) -> Path:
         raise MatrixHostError("invalid_embodiment_id")
     key = hashlib.sha256(embodiment_id.encode("utf-8")).hexdigest()[:32]
     return Path(os.path.abspath(state_dir)) / "matrix-clients" / key
+
+
+def matrix_curator_client_root(state_dir: str | Path, embodiment_id: str) -> Path:
+    """Return the separate host-local root for one curator worker capability."""
+
+    if not isinstance(embodiment_id, str) or not embodiment_id.startswith(
+        "embodiment:"
+    ):
+        raise MatrixHostError("invalid_embodiment_id")
+    key = hashlib.sha256(embodiment_id.encode("utf-8")).hexdigest()[:32]
+    return Path(os.path.abspath(state_dir)) / "matrix-curator-clients" / key
 
 
 def _owner_directory(path: Path, *, create: bool = False) -> Path:
@@ -170,13 +370,120 @@ def _owner_file_descriptor(path: Path) -> int:
     try:
         descriptor = os.open(absolute, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         after = os.fstat(descriptor)
-        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        if (
+            (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            or not stat.S_ISREG(after.st_mode)
+            or after.st_uid != os.geteuid()
+            or stat.S_IMODE(after.st_mode) & 0o077
+        ):
             raise MatrixHostError("matrix_client_material_replaced")
         return descriptor
     except BaseException:
         if "descriptor" in locals():
             os.close(descriptor)
         raise
+
+
+def _owner_file_bytes(path: Path, code: str, *, maximum_size: int) -> bytes:
+    try:
+        descriptor = _owner_file_descriptor(path)
+    except (MatrixHostError, OSError) as exception:
+        raise MatrixHostError(code) from exception
+    try:
+        info = os.fstat(descriptor)
+        if not 1 <= info.st_size <= maximum_size:
+            raise MatrixHostError(code)
+        chunks: list[bytes] = []
+        size = 0
+        while chunk := os.read(descriptor, 1024 * 1024):
+            size += len(chunk)
+            if size > maximum_size:
+                raise MatrixHostError(code)
+            chunks.append(chunk)
+        if size != info.st_size:
+            raise MatrixHostError(code)
+        return b"".join(chunks)
+    except OSError as exception:
+        raise MatrixHostError(code) from exception
+    finally:
+        os.close(descriptor)
+
+
+def _owner_file_digest(
+    path: Path, code: str, *, expected_size: int
+) -> tuple[os.stat_result, str, int]:
+    try:
+        descriptor = _owner_file_descriptor(path)
+    except (MatrixHostError, OSError) as exception:
+        raise MatrixHostError(code) from exception
+    try:
+        info = os.fstat(descriptor)
+        if info.st_size > expected_size:
+            return info, "", info.st_size
+        digest = hashlib.sha256()
+        size = 0
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+            size += len(chunk)
+            if size > expected_size:
+                return info, "", size
+        return info, digest.hexdigest(), size
+    except OSError as exception:
+        raise MatrixHostError(code) from exception
+    finally:
+        os.close(descriptor)
+
+
+def _copy_owner_file(
+    source: Path,
+    destination: Path,
+    code: str,
+    *,
+    expected_size: int | None = None,
+    expected_sha256: str | None = None,
+) -> tuple[str, int]:
+    """Copy from one inode-stable owner-only descriptor and hash those bytes."""
+
+    try:
+        source_descriptor = _owner_file_descriptor(source)
+    except (MatrixHostError, OSError) as exception:
+        raise MatrixHostError(code) from exception
+    destination_descriptor: int | None = None
+    try:
+        before = os.fstat(source_descriptor)
+        if expected_size is not None and before.st_size != expected_size:
+            raise MatrixHostError(code)
+        destination_descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        digest = hashlib.sha256()
+        size = 0
+        while chunk := os.read(source_descriptor, 1024 * 1024):
+            digest.update(chunk)
+            size += len(chunk)
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination_descriptor, view)
+                view = view[written:]
+        after = os.fstat(source_descriptor)
+        value = digest.hexdigest()
+        if (
+            (before.st_dev, before.st_ino, before.st_size)
+            != (after.st_dev, after.st_ino, after.st_size)
+            or size != before.st_size
+            or (expected_sha256 is not None and value != expected_sha256)
+        ):
+            raise MatrixHostError(code)
+        os.fsync(destination_descriptor)
+        return value, size
+    except OSError as exception:
+        raise MatrixHostError(code) from exception
+    finally:
+        os.close(source_descriptor)
+        if destination_descriptor is not None:
+            os.close(destination_descriptor)
 
 
 def _public_bundle(root: Path, bundle_name: str) -> dict[str, Any]:
@@ -237,12 +544,14 @@ class MatrixHostAdapter:
         embodiment_id: str,
         *,
         fence_store: ResourceFenceStore | None = None,
+        effect_observer_routes: Sequence[EffectObserverRoute] = (),
         clock: Any = lambda: time.time_ns() // 1_000_000,
     ) -> None:
         self.state_dir = Path(os.path.abspath(state_dir))
         self.embodiment_id = embodiment_id
         self.registry = Registry(self.state_dir)
         self.fences = fence_store or ResourceFenceStore(self.state_dir)
+        self.effect_observer = EffectObserverRouter(effect_observer_routes)
         self.clock = clock
 
     def require_origin(self, value: Mapping[str, Any]) -> dict[str, Any]:
@@ -398,13 +707,14 @@ class MatrixHostAdapter:
         }
 
 
-def matrix_client(state_dir: str | Path, embodiment_id: str) -> Any:
-    """Load clusterd's least-authority local client for a running Matrix host.
-
-    The descriptor and 32-byte capability key live outside the portable Matrix
-    root.  Snapshots therefore carry encrypted Matrix custody and ledger state,
-    but never the host-local capability used by clusterd's status projection.
-    """
+def _matrix_client(
+    state_dir: str | Path,
+    embodiment_id: str,
+    *,
+    client_root: Path,
+    required_methods: frozenset[str],
+) -> Any:
+    """Load one exact least-authority local client."""
 
     api = _matrix_api()
     adapter = MatrixHostAdapter(state_dir, embodiment_id)
@@ -420,7 +730,7 @@ def matrix_client(state_dir: str | Path, embodiment_id: str) -> Any:
         or len(os.fsencode(root / socket_name)) > _MAX_UNIX_SOCKET_BYTES
     ):
         raise MatrixHostError("matrix_socket_path_rejected")
-    client_root = _owner_directory(matrix_client_root(state_dir, embodiment_id))
+    client_root = _owner_directory(client_root)
     key_descriptor = _owner_file_descriptor(client_root / "capability.key")
     try:
         key = api["client"].read_capability_key(key_descriptor)
@@ -430,11 +740,38 @@ def matrix_client(state_dir: str | Path, embodiment_id: str) -> Any:
         config = api["client"].ClientConfig.load(client_root / "client.json", key)
     except Exception as exception:
         raise MatrixHostError("matrix_client_config_rejected") from exception
-    if frozenset(config.capability.methods) != _CLUSTERD_MATRIX_METHODS:
+    if frozenset(config.capability.methods) != required_methods:
         raise MatrixHostError("matrix_client_authority_rejected")
     if dict(config.expected_server) != origin:
         raise MatrixHostError("matrix_client_origin_mismatch")
     return api["client"].LocalClient(root / socket_name, config)
+
+
+def matrix_client(state_dir: str | Path, embodiment_id: str) -> Any:
+    """Load clusterd's read-only five-method Matrix status client.
+
+    The descriptor and 32-byte capability key live outside the portable Matrix
+    root.  Snapshots therefore carry encrypted Matrix custody and ledger state,
+    but never the host-local capability used by clusterd's status projection.
+    """
+
+    return _matrix_client(
+        state_dir,
+        embodiment_id,
+        client_root=matrix_client_root(state_dir, embodiment_id),
+        required_methods=_CLUSTERD_MATRIX_METHODS,
+    )
+
+
+def matrix_curator_client(state_dir: str | Path, embodiment_id: str) -> Any:
+    """Load a separate exact curator-worker capability for one embodiment."""
+
+    return _matrix_client(
+        state_dir,
+        embodiment_id,
+        client_root=matrix_curator_client_root(state_dir, embodiment_id),
+        required_methods=_CURATOR_WORKER_METHODS,
+    )
 
 
 def matrix_client_factory(state_dir: str | Path) -> Any:
@@ -492,13 +829,14 @@ def create_portable_snapshot(
         entries = []
         for path in files:
             copied = payload / path.name
-            shutil.copyfile(path, copied)
-            copied.chmod(0o600)
+            digest, size = _copy_owner_file(
+                path, copied, "matrix_snapshot_source_replaced"
+            )
             entries.append(
                 {
                     "name": path.name,
-                    "sha256": hashlib.sha256(copied.read_bytes()).hexdigest(),
-                    "size": copied.stat().st_size,
+                    "sha256": digest,
+                    "size": size,
                 }
             )
         manifest = {
@@ -532,13 +870,46 @@ def restore_portable_snapshot(
 ) -> dict[str, Any]:
     """Verify and restore a portable snapshot to a fresh owner-only root."""
 
-    source = _owner_directory(Path(snapshot))
+    manifest, _payload, verified = verify_portable_snapshot(snapshot)
     target = Path(os.path.abspath(destination))
     if target.exists() or target.is_symlink():
         raise MatrixHostError("matrix_restore_destination_exists")
+    temporary = target.with_name(f".{target.name}.restore-{uuid.uuid4()}")
+    temporary.mkdir(parents=True, mode=0o700)
+    temporary.chmod(0o700)
     try:
-        manifest = json.loads((source / "snapshot.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exception:
+        rows = {row["name"]: row for row in manifest["files"]}
+        for path, name in verified:
+            copied = temporary / name
+            row = rows[name]
+            _copy_owner_file(
+                path,
+                copied,
+                "matrix_snapshot_payload_replaced",
+                expected_size=row["size"],
+                expected_sha256=row["sha256"],
+            )
+        os.replace(temporary, target)
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return manifest
+
+
+def verify_portable_snapshot(
+    snapshot: str | Path,
+) -> tuple[dict[str, Any], Path, list[tuple[Path, str]]]:
+    """Verify a snapshot without copying predecessor runtime or custody bytes."""
+
+    source = _owner_directory(Path(snapshot))
+    try:
+        manifest_raw = _owner_file_bytes(
+            source / "snapshot.json",
+            "matrix_snapshot_manifest_unreadable",
+            maximum_size=16 * 1024 * 1024,
+        )
+        manifest = json.loads(manifest_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exception:
         raise MatrixHostError("matrix_snapshot_manifest_unreadable") from exception
     if (
         not isinstance(manifest, dict)
@@ -567,36 +938,20 @@ def restore_portable_snapshot(
             raise MatrixHostError("matrix_snapshot_manifest_rejected")
         path = payload / row["name"]
         try:
-            info = path.lstat()
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        except (FileNotFoundError, OSError) as exception:
+            _info, digest, size = _owner_file_digest(
+                path,
+                "matrix_snapshot_payload_unreadable",
+                expected_size=row["size"],
+            )
+        except MatrixHostError as exception:
             raise MatrixHostError("matrix_snapshot_payload_unreadable") from exception
-        if (
-            stat.S_ISLNK(info.st_mode)
-            or not stat.S_ISREG(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) & 0o077
-            or info.st_size != row["size"]
-            or digest != row["sha256"]
-        ):
+        if size != row["size"] or digest != row["sha256"]:
             raise MatrixHostError("matrix_snapshot_payload_rejected")
         names.add(row["name"])
         verified.append((path, row["name"]))
     if {path.name for path in payload.iterdir()} != names:
         raise MatrixHostError("matrix_snapshot_payload_rejected")
-    temporary = target.with_name(f".{target.name}.restore-{uuid.uuid4()}")
-    temporary.mkdir(parents=True, mode=0o700)
-    temporary.chmod(0o700)
-    try:
-        for path, name in verified:
-            copied = temporary / name
-            shutil.copyfile(path, copied)
-            copied.chmod(0o600)
-        os.replace(temporary, target)
-    except BaseException:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise
-    return manifest
+    return manifest, payload, verified
 
 
 def _password_reader(descriptor: int) -> Any:
@@ -630,12 +985,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--bundle", default="runtime.json")
     parser.add_argument("--password-fd", type=int, required=True)
     parser.add_argument("--ready-fd", type=int)
+    parser.add_argument(
+        "--production-fence-verifier",
+        action="store_true",
+        help="verify Cluster's production fence database without signing custody",
+    )
     args = parser.parse_args(argv)
     lock_descriptor: int | None = None
     stopping = threading.Event()
     try:
         api = _matrix_api()
-        adapter = MatrixHostAdapter(args.state_dir, args.embodiment_id)
+        fence_store = (
+            ResourceFenceStore.production_verifier(args.state_dir)
+            if args.production_fence_verifier
+            else None
+        )
+        adapter = MatrixHostAdapter(
+            args.state_dir, args.embodiment_id, fence_store=fence_store
+        )
         root = _owner_directory(matrix_root(args.state_dir, args.embodiment_id))
         bundle = _public_bundle(root, args.bundle)
         adapter.require_origin(_origin(bundle.get("local_origin")))
@@ -654,6 +1021,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _password_reader(args.password_fd),
             clock=lambda: time.time_ns() // 1_000_000,
             body_reader=adapter.body_snapshot,
+            curator_fence_verifier=adapter.verify_fence,
+            curator_effect_observer=adapter.effect_observer,
         )
 
         def request_stop(_number: int, _frame: object) -> None:
@@ -679,6 +1048,8 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "EffectObserverRoute",
+    "EffectObserverRouter",
     "MATRIX_CONTRACT_COMMIT",
     "MATRIX_SNAPSHOT_SCHEMA",
     "MATRIX_STATUS_SCHEMA",
@@ -689,6 +1060,9 @@ __all__ = [
     "matrix_client",
     "matrix_client_factory",
     "matrix_client_root",
+    "matrix_curator_client",
+    "matrix_curator_client_root",
     "matrix_root",
     "restore_portable_snapshot",
+    "verify_portable_snapshot",
 ]

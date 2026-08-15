@@ -39,11 +39,11 @@ def short_tmp_path():
 
 
 def _recovery_fixture(tmp_path: Path) -> dict:
-    # Bootstrap timestamps its generated credentials from the live clock. Keep
-    # this journey explicitly after that instant instead of relying on a
-    # sub-millisecond race between the test clock read and credential creation.
-    now_ms = time.time_ns() // 1_000_000 + 1_000
-    fixture = _ceremony(tmp_path, now_ms=now_ms)
+    # Bootstrap timestamps its generated credentials from the live clock. Read
+    # the recovery ceremony instant only after bootstrap has completed, and do
+    # not place the new credential in the future relative to the restore path.
+    fixture = _ceremony(tmp_path)
+    now_ms = time.time_ns() // 1_000_000
     source_id = sorted(fixture["peers"])[0]
     source_root = fixture["peers"][source_id]
     source_password = fixture["peer_passwords"][source_id]
@@ -105,8 +105,8 @@ def _recovery_fixture(tmp_path: Path) -> dict:
             "targets": [],
         },
         lambda: bytearray(target_password),
-        created_at_ms=now_ms + 10,
-        expires_at_ms=now_ms + 60_010,
+        created_at_ms=now_ms,
+        expires_at_ms=now_ms + 60_000,
     )
     request = json.loads((ceremony / "preparation/request.json").read_bytes())
     activation = authorize_recovery_from_root_custody(
@@ -115,7 +115,7 @@ def _recovery_fixture(tmp_path: Path) -> dict:
         recovery,
         ceremony / "successor-root/root-custody.json",
         lambda: bytearray(new_root_password),
-        issued_at_ms=now_ms + 20,
+        issued_at_ms=now_ms,
     )
     package = ceremony / "package"
     activate_recovery_target_runtime(
@@ -272,7 +272,7 @@ def test_recovery_restore_is_gated_idempotent_and_reproducible(short_tmp_path, c
                 "--package-dir",
                 str(fixture["package"]),
                 "--snapshot-dir",
-                    str(transfer),
+                str(transfer),
                 "--password-fd",
                 str(_descriptor(fixture["password"])),
                 "--idempotency-key",

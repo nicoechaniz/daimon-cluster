@@ -28,7 +28,7 @@ An unpinned wheel, editable checkout, wrong commit or schema downgrade fails
 closed. Cluster does not carry a fallback implementation.
 
 The V0 recovery candidate pin is Matrix commit
-`cc2b25b0f011d60b3e3a92ab10a5bc94e652e035`, consolidating the additive
+`306900c64aac5b0aa6ca062e777ca5ea2686d84e`, consolidating the additive
 fresh-embodiment draft and the
 audited DM-055/DM-083 reboot/status candidate
 `915c56c8899fd53d683bd7c7c81c3465b600bed9`. It is not a release pin until

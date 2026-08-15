@@ -52,7 +52,7 @@ Last reconciled: 2026-08-12.
   predecessor acknowledgement set and passes Python 3.11–3.14 CI. It creates a
   new embodiment; it never copies an existing embodiment's custody or writable
   database.
-- Matrix V0 candidate `cc2b25b0f011d60b3e3a92ab10a5bc94e652e035` and this H10
+- Matrix V0 candidate `306900c64aac5b0aa6ca062e777ca5ea2686d84e` and this H10
   branch complete the
   local recovery-quorum Journey C. Every predecessor is revoked, exactly one
   fresh body is active, a source-verified custody-free bundle-plus-ledger

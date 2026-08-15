@@ -6,7 +6,7 @@ start, then resume from the first open item.
 ## Active checkpoint (2026-08-12)
 
 The local Journey C successor is complete on the H10 branch, pinned to Matrix
-V0 commit `cc2b25b0f011d60b3e3a92ab10a5bc94e652e035`. A recovery quorum now bridges a
+V0 commit `306900c64aac5b0aa6ca062e777ca5ea2686d84e`. A recovery quorum now bridges a
 verified predecessor snapshot to one fresh embodiment while restoring only
 canonical events. A source-side verified derivative carries only the public
 runtime bundle and ledger, never old custody or journal bytes. First start is gated on

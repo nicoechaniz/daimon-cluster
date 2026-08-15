@@ -6,7 +6,7 @@ independently reviewed.
 ## Exact boundary
 
 - Matrix recovery and canonical-ledger restore:
-  `71910c95471c7d96510a195a4b8e3cdd1c68dabc`.
+  `cc2b25b0f011d60b3e3a92ab10a5bc94e652e035`.
 - Cluster install/restore/start gate: this H10 branch, stacked directly on
   PR #85 at `9e6100baba705394ad9dc40ffbd38d721bc7e41d`.
 - Collective-memory contract:

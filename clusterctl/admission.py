@@ -410,6 +410,8 @@ class AdmissionAuthority:
                             authorization if isinstance(authorization, dict) else None
                         ),
                     )
+            if evidence is None:
+                raise AdmissionError("fence mutation returned no evidence")
             return self._resource_receipt(
                 operation, binding, evidence, session_id,
                 resource_ref=fence_resource_ref, schema=FENCE_RECEIPT_SCHEMA,

@@ -315,7 +315,7 @@ def _check_stale_acquisition(manifest: dict, fence: dict | None,
             f"resource after this checkpoint; refusing")
 
 
-def _acquire_fence(store: fences.ResourceFenceStore, resource_ref: str) -> dict:
+def _acquire_fence(store: Any, resource_ref: str) -> dict:
     """Renew one concrete resource fence (epoch+1 CAS)."""
     renewed = store.renew(resource_ref, "")
     if renewed is None:
@@ -870,7 +870,7 @@ def _save_transfer_state(cfg, name: str, new_name: str, state: dict) -> None:
     _atomic_write(_transfer_state_path(cfg, name, new_name), state)
 
 
-def _rollback_transfer(cfg, adapter, store: fences.ResourceFenceStore,
+def _rollback_transfer(cfg, adapter, store: Any,
                        name: str, new_name: str, resource_ref: str,
                        state: dict) -> dict:
     """Restore one stopped source attachment or report degraded custody."""
@@ -1025,7 +1025,7 @@ def run_transfer(
     expected_fence_position: dict | None = None,
     expected_manifest_hash: str | None = None,
     expected_volume_identity: str | None = None,
-    fence_transition: Callable[[fences.ResourceFenceStore, str, dict], dict]
+    fence_transition: Callable[[Any, str, dict], dict]
     | None = None,
     on_step=None,
 ) -> dict:

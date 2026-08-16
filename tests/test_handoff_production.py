@@ -24,7 +24,9 @@ from clusterctl.production_fences import create_holder_enrollment
 
 
 def _production_handoff(tmp_path: Path):
-    clock = lambda: time.time_ns() // 1_000_000
+    def clock() -> int:
+        return time.time_ns() // 1_000_000
+
     authority_signer = _key(tmp_path / "keys/authority.pem", "authority")
     registrar = _key(tmp_path / "keys/registrar.pem", "registrar")
     holder = _key(tmp_path / "keys/holder.pem", "holder")
@@ -50,16 +52,28 @@ def _production_handoff(tmp_path: Path):
         holder_signer=holder,
         authority_key_id=authority_signer.key_id,
         authority_public_key=authority_signer.public_key,
-        **identity,
+        being_ref=identity["being_ref"],
+        body_ref=identity["body_ref"],
+        embodiment_id=identity["embodiment_id"],
+        incarnation_id=identity["incarnation_id"],
+        activation_id=identity["activation_id"],
+        credential_id=identity["credential_id"],
+        manifest_hash=identity["manifest_hash"],
     )
     client.enroll(
         create_holder_enrollment(
             registrar,
             holder_key_id=holder.key_id,
             holder_pubkey=holder.public_key,
+            being_ref=identity["being_ref"],
+            body_ref=identity["body_ref"],
+            embodiment_id=identity["embodiment_id"],
+            incarnation_id=identity["incarnation_id"],
+            activation_id=identity["activation_id"],
+            credential_id=identity["credential_id"],
+            manifest_hash=identity["manifest_hash"],
             issued_ms=clock(),
             nonce=str(uuid.uuid4()),
-            **identity,
         )
     )
     state = tmp_path / "host"

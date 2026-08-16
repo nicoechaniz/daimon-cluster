@@ -94,7 +94,13 @@ def _fence_client(
         holder_signer=holder,
         authority_key_id=authority.key_id,
         authority_public_key=authority.public_key,
-        **coordinates,
+        being_ref=coordinates["being_ref"],
+        body_ref=coordinates["body_ref"],
+        embodiment_id=coordinates["embodiment_id"],
+        incarnation_id=coordinates["incarnation_id"],
+        activation_id=coordinates["activation_id"],
+        credential_id=coordinates["credential_id"],
+        manifest_hash=coordinates["manifest_hash"],
     )
 
 

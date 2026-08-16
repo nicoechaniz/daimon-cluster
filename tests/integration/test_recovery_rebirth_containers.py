@@ -236,7 +236,7 @@ def test_recovery_roles_cross_only_closed_mounts(tmp_path: Path) -> None:
                 (root, "/offline-root", False),
                 (source, "/source-host", False),
             ],
-            "daimon-bootstrap --output /bootstrap/out "
+            "daimon-synthetic-bootstrap --output /bootstrap/out "
             "--profile /public/bootstrap-profile.json --root-password-fd 3 "
             "--runtime-password-fd discarded=4 --runtime-password-fd source=5 "
             "3</offline-root/old.password "
@@ -287,7 +287,8 @@ def test_recovery_roles_cross_only_closed_mounts(tmp_path: Path) -> None:
         recovered = _container(
             image,
             [(public, "/public", False), (root, "/offline-root", False)],
-            "daimon-rebirth recover --authority /public/authority.json "
+            "daimon-rebirth synthetic-single-store-recover "
+            "--authority /public/authority.json "
             "--root-custody /offline-root/old-root-custody.json "
             "--current-password-fd 3 --replacement-password-fd 4 "
             "--output /offline-root/recovered "
@@ -318,7 +319,8 @@ def test_recovery_roles_cross_only_closed_mounts(tmp_path: Path) -> None:
         authorized = _container(
             image,
             [(public, "/public", False), (root, "/offline-root", False)],
-            "daimon-rebirth authorize-recovery --authority /public/authority.json "
+            "daimon-rebirth synthetic-single-store-authorize-recovery "
+            "--authority /public/authority.json "
             "--recovery /public/recovery.json --request /public/request.json "
             "--recovered-root-custody /offline-root/recovered/root-custody.json "
             "--root-password-fd 3 --output /public/activation.json "

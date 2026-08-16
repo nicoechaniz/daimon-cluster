@@ -19,6 +19,7 @@ import socket
 import socketserver
 import stat
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from typing import Any
 
 from .fences import Ed25519Signer, FenceError
 from .production_fences import (
+    AUTHORIZATION_SCHEMA,
     MAX_FENCE_TTL_S,
     ProductionFenceStore,
     _verify_ed25519,
@@ -38,6 +40,10 @@ REQUEST_SCHEMA = "dm.cluster.admission-request/v1"
 RESPONSE_SCHEMA = "dm.cluster.admission-response/v1"
 RECEIPT_SCHEMA = "dm.cluster.admission-receipt/v1"
 FENCE_RECEIPT_SCHEMA = "dm.cluster.fence-mutation-receipt/v1"
+FENCE_MUTATION_PREPARED_SCHEMA = "dm.cluster.fence-mutation-prepared/v2"
+FENCE_RECOVERY_CHALLENGE_SCHEMA = "dm.cluster.fence-recovery-challenge/v1"
+FENCE_RECOVERY_PROOF_SCHEMA = "dm.cluster.fence-recovery-proof/v1"
+FENCE_RECOVERY_CHALLENGE_TTL_MS = 30_000
 MAX_MESSAGE_BYTES = 1024 * 1024
 DEFAULT_LEASE_TTL_S = 15
 
@@ -60,6 +66,90 @@ def _canonical(value: Mapping[str, Any]) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _validate_release_recovery(
+    recovery: Any, binding: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Recompute every signed release-recovery binding at the authority."""
+
+    if not isinstance(recovery, dict) or set(recovery) != {
+        "schema",
+        "operation",
+        "resource_ref",
+        "expected_position",
+        "successor_epoch",
+        "authorization",
+        "authorization_ref",
+        "ttl_s",
+    }:
+        raise AdmissionError("release recovery binding is malformed")
+    position = recovery.get("expected_position")
+    authorization = recovery.get("authorization")
+    resource_ref = recovery.get("resource_ref")
+    authorization_fields = {
+        "schema",
+        "operation",
+        "body_ref",
+        "embodiment_id",
+        "incarnation_id",
+        "resource_ref",
+        "holder_key_id",
+        "holder_pubkey",
+        "expected_epoch",
+        "expected_proof",
+        "expected_current",
+        "fence_ttl_s",
+        "issued_ms",
+        "expires_at_ms",
+        "nonce",
+        "signature",
+    }
+    if (
+        recovery.get("schema") != FENCE_MUTATION_PREPARED_SCHEMA
+        or recovery.get("operation") != "release"
+        or not isinstance(resource_ref, str)
+        or not resource_ref
+        or recovery.get("ttl_s") is not None
+        or not isinstance(position, dict)
+        or set(position) != {"resource_ref", "epoch", "proof", "current"}
+        or position.get("resource_ref") != resource_ref
+        or position.get("current") is not True
+        or isinstance(position.get("epoch"), bool)
+        or not isinstance(position.get("epoch"), int)
+        or (
+            position.get("proof") is not None
+            and not isinstance(position.get("proof"), str)
+        )
+        or isinstance(recovery.get("successor_epoch"), bool)
+        or recovery.get("successor_epoch") != position.get("epoch", -2) + 1
+        or not isinstance(authorization, dict)
+        or set(authorization) != authorization_fields
+        or authorization.get("schema") != AUTHORIZATION_SCHEMA
+        or authorization.get("operation") != "release"
+        or authorization.get("body_ref") != binding.get("body_ref")
+        or authorization.get("embodiment_id") != binding.get("embodiment_id")
+        or authorization.get("incarnation_id") != binding.get("incarnation_id")
+        or authorization.get("resource_ref") != resource_ref
+        or authorization.get("holder_key_id") != binding.get("holder_key_id")
+        or authorization.get("holder_pubkey") != binding.get("holder_pubkey")
+        or authorization.get("expected_epoch") != position.get("epoch")
+        or authorization.get("expected_proof") != position.get("proof")
+        or authorization.get("expected_current") is not True
+        or authorization.get("fence_ttl_s") is not None
+        or not isinstance(authorization.get("nonce"), str)
+        or not authorization.get("nonce")
+        or not isinstance(authorization.get("signature"), str)
+        or not _verify_ed25519(
+            _canonical(authorization),
+            str(authorization.get("signature")),
+            str(binding.get("holder_pubkey")),
+        )
+        or recovery.get("authorization_ref")
+        != ProductionFenceStore.proof_ref(authorization)
+    ):
+        raise AdmissionError("release recovery binding is invalid")
+    return dict(recovery)
 
 
 def _session_public(private_key: Any) -> str:
@@ -164,6 +254,8 @@ class AdmissionAuthority:
         if clock is not None:
             arguments["clock"] = clock
         self._store = ProductionFenceStore(state_dir, **arguments)
+        self._recovery_challenges: dict[str, dict[str, Any]] = {}
+        self._recovery_challenges_lock = threading.Lock()
 
     @property
     def authority_key_id(self) -> str:
@@ -311,6 +403,92 @@ class AdmissionAuthority:
             raise AdmissionError("admission session proof is invalid")
         return session_id
 
+    def _issue_recovery_challenge(
+        self,
+        recovery: Any,
+        binding: Mapping[str, Any],
+        session_id: str,
+    ) -> dict[str, Any]:
+        exact = _validate_release_recovery(recovery, binding)
+        observed = time.time_ns() // 1_000_000
+        challenge_id = str(uuid.uuid4())
+        challenge_nonce = str(uuid.uuid4())
+        expires_at_ms = observed + FENCE_RECOVERY_CHALLENGE_TTL_MS
+        stored = {
+            "session_id": session_id,
+            "holder_key_id": binding["holder_key_id"],
+            "challenge_nonce": challenge_nonce,
+            "expires_at_ms": expires_at_ms,
+            "recovery": exact,
+        }
+        with self._recovery_challenges_lock:
+            self._recovery_challenges = {
+                key: value
+                for key, value in self._recovery_challenges.items()
+                if value["expires_at_ms"] > observed
+            }
+            if len(self._recovery_challenges) >= 1024:
+                raise AdmissionError("too many pending fence recovery challenges")
+            self._recovery_challenges[challenge_id] = stored
+        return {
+            "schema": FENCE_RECOVERY_CHALLENGE_SCHEMA,
+            "challenge_id": challenge_id,
+            "challenge_nonce": challenge_nonce,
+            "expires_at_ms": expires_at_ms,
+            "session_id": session_id,
+            "resource_ref": exact["resource_ref"],
+            "successor_epoch": exact["successor_epoch"],
+            "operation": "release",
+            "authorization_ref": exact["authorization_ref"],
+        }
+
+    def _consume_recovery_proof(
+        self,
+        proof: Any,
+        binding: Mapping[str, Any],
+        session_id: str,
+    ) -> dict[str, Any]:
+        if not isinstance(proof, dict) or set(proof) != {
+            "schema",
+            "challenge_id",
+            "challenge_nonce",
+            "session_id",
+            "recovery",
+            "signature",
+        }:
+            raise AdmissionError("fence recovery proof is malformed")
+        challenge_id = proof.get("challenge_id")
+        if (
+            proof.get("schema") != FENCE_RECOVERY_PROOF_SCHEMA
+            or not isinstance(challenge_id, str)
+            or not challenge_id
+            or proof.get("session_id") != session_id
+        ):
+            raise AdmissionError("fence recovery proof binding is invalid")
+        observed = time.time_ns() // 1_000_000
+        with self._recovery_challenges_lock:
+            challenge = self._recovery_challenges.get(challenge_id)
+            if challenge is None:
+                raise AdmissionError("fence recovery challenge is absent or replayed")
+            if (
+                challenge["session_id"] != session_id
+                or challenge["holder_key_id"] != binding["holder_key_id"]
+            ):
+                raise AdmissionError("fence recovery challenge session mismatch")
+            self._recovery_challenges.pop(challenge_id)
+        if (
+            challenge["expires_at_ms"] <= observed
+            or proof.get("challenge_nonce") != challenge["challenge_nonce"]
+            or proof.get("recovery") != challenge["recovery"]
+        ):
+            raise AdmissionError("fence recovery challenge binding is invalid")
+        signature = proof.get("signature")
+        if not isinstance(signature, str) or not _verify_ed25519(
+            _canonical(proof), signature, str(binding["holder_pubkey"])
+        ):
+            raise AdmissionError("fence recovery holder proof is invalid")
+        return _validate_release_recovery(proof.get("recovery"), binding)
+
     def dispatch(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if request.get("schema") != REQUEST_SCHEMA:
             raise AdmissionError("admission request schema is unsupported")
@@ -321,6 +499,11 @@ class AdmissionAuthority:
                 raise AdmissionError("admission enrollment is missing")
             return self._store.admit_holder(enrollment)
         session_id = self._verify_session(request)
+        if action == "fence-recovery-challenge":
+            binding = self._binding(request)
+            return self._issue_recovery_challenge(
+                request.get("recovery"), binding, session_id
+            )
         if action == "position":
             resource_ref = admission_resource_ref(
                 str(request.get("being_ref", "")),
@@ -338,6 +521,11 @@ class AdmissionAuthority:
             if action == "fence-position":
                 return self._store.position(fence_resource_ref)
             if action == "fence-last":
+                recovery = self._consume_recovery_proof(
+                    request.get("recovery_proof"), binding, session_id
+                )
+                if recovery["resource_ref"] != fence_resource_ref:
+                    raise AdmissionError("fence recovery resource mismatch")
                 evidence = self._store.last(fence_resource_ref)
                 if evidence is None or any(
                     evidence.get(field) != binding[binding_field]
@@ -348,10 +536,27 @@ class AdmissionAuthority:
                         ("holder_key_id", "holder_key_id"),
                     )
                 ):
-                    return {"present": False, "resource_ref": fence_resource_ref}
+                    raise AdmissionConflict("release recovery holder does not match")
                 evidence_operation = evidence.get("operation")
                 if evidence_operation not in {"acquire", "renew", "release"}:
                     raise AdmissionError("last fence evidence operation is invalid")
+                position = recovery["expected_position"]
+                predecessor_matches = (
+                    evidence.get("epoch") == position["epoch"]
+                    and self._store.proof_ref(evidence) == position["proof"]
+                    and evidence.get("state") == "held"
+                )
+                successor_matches = (
+                    evidence.get("epoch") == recovery["successor_epoch"]
+                    and evidence_operation == "release"
+                    and evidence.get("state") == "released"
+                    and evidence.get("authorization_ref")
+                    == recovery["authorization_ref"]
+                )
+                if not predecessor_matches and not successor_matches:
+                    raise AdmissionConflict(
+                        "authority position is not the exact release recovery binding"
+                    )
                 return {
                     "present": True,
                     "resource_ref": fence_resource_ref,
@@ -852,7 +1057,7 @@ class FenceMutationClient(AdmissionClient):
     bound to the exact prepared holder signature.
     """
 
-    PREPARED_SCHEMA = "dm.cluster.fence-mutation-prepared/v2"
+    PREPARED_SCHEMA = FENCE_MUTATION_PREPARED_SCHEMA
 
     def embodiment_current(self) -> dict[str, Any] | None:
         return AdmissionClient.current(self)
@@ -1034,7 +1239,7 @@ class FenceMutationClient(AdmissionClient):
             prepared
         )
         receipt = (
-            self._last(resource_ref)
+            self._last(prepared)
             if operation == "release"
             else self.current(resource_ref)
         )
@@ -1133,9 +1338,60 @@ class FenceMutationClient(AdmissionClient):
             raise AdmissionUnavailable("fence mutation receipt evidence is inconsistent")
         return dict(receipt)
 
-    def _last(self, resource_ref: str) -> dict[str, Any] | None:
+    def _last(self, prepared: Mapping[str, Any]) -> dict[str, Any] | None:
+        resource_ref = str(prepared["resource_ref"])
+        recovery = dict(prepared)
+        challenge = self._call(
+            "fence-recovery-challenge",
+            **self._coordinates(),
+            resource_ref=resource_ref,
+            recovery=recovery,
+        )
+        if (
+            not isinstance(challenge, dict)
+            or set(challenge)
+            != {
+                "schema",
+                "challenge_id",
+                "challenge_nonce",
+                "expires_at_ms",
+                "session_id",
+                "resource_ref",
+                "successor_epoch",
+                "operation",
+                "authorization_ref",
+            }
+            or challenge.get("schema") != FENCE_RECOVERY_CHALLENGE_SCHEMA
+            or challenge.get("session_id") != self.session_id
+            or challenge.get("resource_ref") != resource_ref
+            or challenge.get("successor_epoch") != prepared.get("successor_epoch")
+            or challenge.get("operation") != "release"
+            or challenge.get("authorization_ref")
+            != prepared.get("authorization_ref")
+            or not isinstance(challenge.get("challenge_id"), str)
+            or not isinstance(challenge.get("challenge_nonce"), str)
+            or isinstance(challenge.get("expires_at_ms"), bool)
+            or not isinstance(challenge.get("expires_at_ms"), int)
+        ):
+            raise AdmissionUnavailable("fence recovery challenge is invalid")
+        proof = {
+            "schema": FENCE_RECOVERY_PROOF_SCHEMA,
+            "challenge_id": challenge["challenge_id"],
+            "challenge_nonce": challenge["challenge_nonce"],
+            "session_id": self.session_id,
+            "recovery": recovery,
+        }
+        try:
+            proof["signature"] = self.holder_signer.sign(_canonical(proof))
+        except Exception as exception:
+            raise AdmissionError(
+                "fence recovery holder proof of possession is unavailable"
+            ) from exception
         result = self._call(
-            "fence-last", **self._coordinates(), resource_ref=resource_ref
+            "fence-last",
+            **self._coordinates(),
+            resource_ref=resource_ref,
+            recovery_proof=proof,
         )
         if not isinstance(result, dict) or not isinstance(result.get("present"), bool):
             raise AdmissionUnavailable("fence last response is invalid")

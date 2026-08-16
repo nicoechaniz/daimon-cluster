@@ -22,7 +22,9 @@ from clusterctl.admission import (
     AdmissionServer,
     AdmissionTCPServer,
     AdmissionUnavailable,
+    FENCE_RECOVERY_PROOF_SCHEMA,
     FenceMutationClient,
+    _canonical,
     admission_resource_ref,
     serve_in_thread,
 )
@@ -710,7 +712,7 @@ def test_release_response_loss_recovers_exact_tombstone_after_client_restart(
     altered["authorization_ref"] = "cluster:fence-proof:v1:altered"
     with pytest.raises(AdmissionError, match="binding"):
         restarted.commit(altered)
-    with pytest.raises(AdmissionConflict, match="exact prepared successor"):
+    with pytest.raises(AdmissionConflict, match="exact release recovery binding"):
         restarted.commit(different_request)
     assert release_calls == 1
 
@@ -752,7 +754,7 @@ def test_release_response_loss_recovers_exact_tombstone_after_client_restart(
         "authorization_ref": impostor_client.proof_ref(impostor_authorization),
         "ttl_s": None,
     }
-    with pytest.raises(AdmissionConflict, match="no longer current"):
+    with pytest.raises(AdmissionConflict, match="holder does not match"):
         impostor_client.commit(impostor_prepared)
     assert release_calls == 1
 
@@ -762,3 +764,125 @@ def test_release_response_loss_recovers_exact_tombstone_after_client_restart(
     assert reacquired["fencing_token"] == prepared["successor_epoch"] + 1
     assert restarted.position(resource_ref)["current"] is True
     assert acquired["fencing_token"] == predecessor["epoch"]
+
+
+def test_release_recovery_requires_fresh_holder_proof_and_rejects_replay(
+    authority_fixture: dict[str, Any], tmp_path: Path
+) -> None:
+    authority = authority_fixture["authority"]
+    registrar = authority_fixture["registrar"]
+    coordinates = _coordinates("release-proof")
+    holder = _key(tmp_path / "holder/release-proof.pem", "holder-release-proof")
+    enrollment_client = _client(
+        authority_fixture["socket"], holder, authority, coordinates
+    )
+    _enroll(
+        enrollment_client,
+        registrar,
+        holder,
+        coordinates,
+        authority_fixture["clock"].value,
+    )
+    client = _fence_client(
+        authority_fixture["socket"], holder, authority, coordinates
+    )
+    resource_ref = "cluster:exclusive-volume:release-proof-home"
+    client.commit(client.prepare(resource_ref, operation="acquire", ttl_s=60))
+    prepared = client.prepare(resource_ref, operation="release")
+    released = client.commit(prepared)
+
+    class PublicOnlySigner:
+        key_id = holder.key_id
+        public_key = holder.public_key
+
+        @staticmethod
+        def verify(data: bytes, signature: str, public_key: str) -> bool:
+            return holder.verify(data, signature, public_key)
+
+        @staticmethod
+        def sign(_data: bytes) -> str:
+            raise RuntimeError("holder private key is unavailable")
+
+    public_only = _fence_client(
+        authority_fixture["socket"], PublicOnlySigner(), authority, coordinates  # type: ignore[arg-type]
+    )
+    public_calls: list[str] = []
+    public_call = public_only._call
+
+    def observe_public_call(action: str, **values):
+        public_calls.append(action)
+        return public_call(action, **values)
+
+    public_only._call = observe_public_call  # type: ignore[method-assign]
+    with pytest.raises(AdmissionError, match="proof of possession"):
+        public_only.commit(prepared)
+    assert public_calls == ["fence-recovery-challenge"]
+
+    legitimate = _fence_client(
+        authority_fixture["socket"], holder, authority, coordinates
+    )
+    recovery = copy.deepcopy(prepared)
+    challenge = legitimate._call(
+        "fence-recovery-challenge",
+        **legitimate._coordinates(),
+        resource_ref=resource_ref,
+        recovery=recovery,
+    )
+    proof = {
+        "schema": FENCE_RECOVERY_PROOF_SCHEMA,
+        "challenge_id": challenge["challenge_id"],
+        "challenge_nonce": challenge["challenge_nonce"],
+        "session_id": legitimate.session_id,
+        "recovery": recovery,
+    }
+    proof["signature"] = holder.sign(_canonical(proof))
+
+    substituted_session = _fence_client(
+        authority_fixture["socket"], holder, authority, coordinates
+    )
+    with pytest.raises(AdmissionError, match="proof binding"):
+        substituted_session._call(
+            "fence-last",
+            **substituted_session._coordinates(),
+            resource_ref=resource_ref,
+            recovery_proof=proof,
+        )
+    observed = legitimate._call(
+        "fence-last",
+        **legitimate._coordinates(),
+        resource_ref=resource_ref,
+        recovery_proof=proof,
+    )
+    receipt = legitimate.verify_fence_receipt(
+        observed["receipt"], resource_ref=resource_ref, expected_action="release"
+    )
+    assert receipt["proof_ref"] == released["proof_ref"]
+    with pytest.raises(AdmissionError, match="absent or replayed"):
+        legitimate._call(
+            "fence-last",
+            **legitimate._coordinates(),
+            resource_ref=resource_ref,
+            recovery_proof=proof,
+        )
+
+    challenge = legitimate._call(
+        "fence-recovery-challenge",
+        **legitimate._coordinates(),
+        resource_ref=resource_ref,
+        recovery=recovery,
+    )
+    altered_proof = {
+        "schema": FENCE_RECOVERY_PROOF_SCHEMA,
+        "challenge_id": challenge["challenge_id"],
+        "challenge_nonce": "altered-challenge",
+        "session_id": legitimate.session_id,
+        "recovery": recovery,
+    }
+    altered_proof["signature"] = holder.sign(_canonical(altered_proof))
+    with pytest.raises(AdmissionError, match="challenge binding"):
+        legitimate._call(
+            "fence-last",
+            **legitimate._coordinates(),
+            resource_ref=resource_ref,
+            recovery_proof=altered_proof,
+        )

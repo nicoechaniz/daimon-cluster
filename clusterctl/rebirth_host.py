@@ -340,10 +340,11 @@ class _AdmissionSupervisor:
                 if not isinstance(expiry_ms, int):
                     _terminate_without_consuming_output(self.process)
                     return
-                # Renewal begins after one third of the lease and leaves two
-                # thirds for a fail-closed SIGKILL.  There is no TERM grace
+                # Renewal begins after one quarter of the lease and leaves
+                # three quarters for two bounded network round trips plus a
+                # fail-closed SIGKILL.  There is no TERM grace
                 # period that could extend execution past signed authority.
-                renew_at_ms = expiry_ms - (self.ttl_s * 2000 // 3)
+                renew_at_ms = expiry_ms - (self.ttl_s * 3000 // 4)
                 interval = max(
                     0.01,
                     min(0.25, (renew_at_ms - time.time_ns() // 1_000_000) / 1000),

@@ -357,6 +357,30 @@ def test_client_has_no_authority_signer_or_database(
     assert os.stat(authority_fixture["socket"]).st_mode & 0o777 == 0o600
 
 
+def test_client_network_budget_cannot_consume_lease_failure_margin(
+    authority_fixture: dict[str, Any], tmp_path: Path
+) -> None:
+    coordinates = _coordinates("timeout-budget")
+    holder = _key(tmp_path / "budget/holder.pem", "holder-budget")
+    client = AdmissionClient(
+        authority_fixture["socket"],
+        holder_signer=holder,
+        authority_key_id=authority_fixture["authority"].key_id,
+        authority_public_key=authority_fixture["authority"].public_key,
+        being_ref=coordinates["being_ref"],
+        body_ref=coordinates["body_ref"],
+        embodiment_id=coordinates["embodiment_id"],
+        incarnation_id=coordinates["incarnation_id"],
+        activation_id=coordinates["activation_id"],
+        credential_id=coordinates["credential_id"],
+        manifest_hash=coordinates["manifest_hash"],
+        timeout_s=30,
+        lease_ttl_s=3,
+    )
+    assert client.timeout_s == pytest.approx(0.3)
+    assert 2 * client.timeout_s < client.lease_ttl_s / 2
+
+
 def test_authenticated_tcp_endpoint_is_network_capable_and_pinned(
     tmp_path: Path,
 ) -> None:

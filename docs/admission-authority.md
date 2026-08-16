@@ -30,10 +30,11 @@ records revocation before a process can reopen with the new exact set.
 `clusterctl.rebirth_host` fails before registry or process effects if
 the client configuration, enrollment, authority, authorization or lease is
 missing. Its supervisor renews after one third of the lease and terminates the
-runtime with SIGKILL on the first failed renewal, with two thirds of the last
-verified lease remaining. The runtime continuously verifies its exact guardian
-PID and kills itself if reparented, so a killed launcher cannot leave an
-unsupervised child.
+runtime with SIGKILL on the first failed renewal. Renewal begins after one
+quarter of the lease; each of its two possible network round trips is capped at
+one tenth, leaving more than half of the signed lease as a hard failure margin.
+The runtime continuously verifies its exact guardian PID and kills itself if
+reparented, so a killed launcher cannot leave an unsupervised child.
 Normal process exit releases the lease. Authority database restart preserves
 the monotonic token and trusted-clock high-water.
 

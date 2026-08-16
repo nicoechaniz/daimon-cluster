@@ -522,7 +522,10 @@ class AdmissionClient:
         self.activation_id = activation_id
         self.credential_id = credential_id
         self.manifest_hash = manifest_hash
-        self.timeout_s = timeout_s
+        # Renew performs at most two authority round trips (position + CAS).
+        # Bounding each round trip to one tenth of the lease makes network
+        # failure observable well before the supervisor's hard kill margin.
+        self.timeout_s = min(timeout_s, lease_ttl_s / 10)
         self.lease_ttl_s = lease_ttl_s
 
     def _coordinates(self) -> dict[str, Any]:

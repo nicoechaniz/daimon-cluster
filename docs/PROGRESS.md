@@ -6,8 +6,8 @@ start, then resume from the first open item.
 ## Active checkpoint (2026-08-16)
 
 The current candidate functional boundary is Cluster
-`4949a0c9c45bd4a277e54565ef0bdd7d476393c5` (tree
-`a8b09afb70116bc90938e9f055c4623e0ca4cc86`) with Matrix merged at
+`939efb2029745ca5b30b42e5e6e2dc7501e86fc7` (tree
+`8b9e41d5488f28e863099ad18c26f87b6e1687ef`) with Matrix merged at
 `09414d6edd9586f539be8272c4979d0b36c86b87` (tree
 `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`). This exact Cluster successor is
 locally qualified and awaiting independent review. A documentation/pin
@@ -22,7 +22,7 @@ Completed locally on the exact code boundary:
 - a distinct recovery transfer limited to the public runtime bundle and
   canonical ledger, rejected by the generic full-snapshot restore;
 - V7 exact twelve-profile snapshot gate with every client tree excluded;
-- `590 passed, 4 skipped` with resource/unraisable warnings fatal;
+- `592 passed, 4 skipped` with resource/unraisable warnings fatal;
 - network-disabled recovery/rebirth container E2E: 1 passed; and
 - encrypted backup/export, offline check and restore container E2E: 1 passed.
 

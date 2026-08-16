@@ -25,8 +25,8 @@ The current Matrix dependency is merged on `main` at
 unpinned runtime fallback.
 
 The current Cluster candidate functional boundary is
-`4949a0c9c45bd4a277e54565ef0bdd7d476393c5`, tree
-`a8b09afb70116bc90938e9f055c4623e0ca4cc86`. It contains the reviewed shared
+`939efb2029745ca5b30b42e5e6e2dc7501e86fc7`, tree
+`8b9e41d5488f28e863099ad18c26f87b6e1687ef`. It contains the reviewed shared
 admission/fencing, authenticated handoff and recovery/rebirth components plus
 the final V7 snapshot, preflight and qualification corrections. This exact
 successor still requires independent review before publication. Later

@@ -10,11 +10,12 @@ a local handoff park:
   1. load + verify the checkpoint manifest (signature; fence epoch must
      match the resource's fence history — a newer epoch means another
      holder won that resource, refuse)
-  2. restore state files back into the container (inverse of park step
-     5), sha256 of each file verified BEFORE writing, restored shas
-     recorded in the wake record
-  3. acquire a NEW fence via ``ResourceFenceStore.renew`` (epoch+1 CAS)
-  4. spec status parked → waking → active; container start
+  2. persist a signed prepared successor and commit it through the shared
+     authority (epoch+1 CAS)
+  3. for generic instances, spec status parked → waking and container start;
+     Matrix-managed successors use the separately supervised rebirth path
+  4. restore state files back into the container (inverse of park step
+     5), sha256 of each file verified BEFORE writing, then mark active
   5. signed ``wake-record/v1`` at ``state_dir/park/<name>/wake-<epoch>.json``
 
 On ANY failure the resource remains fenced safely, the container stays stopped, the
@@ -29,13 +30,14 @@ verified checkpoint manifest exists (else exit 6 with guidance to run
   a. verify manifest signature + hashes again (provenance gate)
   b. close manifest hash, exact volume identity/attachment and immutable
      fence epoch/proof in the operation journal; lock source and target
-  c. create the target spec and container STOPPED, without a home device
-  d. detach the source and attach that same existing durable volume to the
+  c. persist the exact prepared successor and commit its CAS
+  d. create the generic target spec and container STOPPED, without a home
+     device
+  e. detach the source and attach that same existing durable volume to the
      target, observing exact identity and one writable attachment after each
      response (including response loss)
-  e. verify the bound fence position and commit its exact CAS successor
-  f. start the target, reconcile one preallocated incarnation, and verify the
-     same volume identity/bytes again
+  f. start the generic target and verify the same volume identity/bytes again;
+     Matrix-managed successors use the separately supervised rebirth path
   g. restore state files into the running target, sha256 verified per file
   h. signed ``transfer-record/v1`` at
      ``state_dir/transfer/<name>-to-<new-name>-<epoch>.json``
@@ -43,8 +45,8 @@ verified checkpoint manifest exists (else exit 6 with guidance to run
      hash
 
 ROLLBACK: stop the target, move the exact volume back to one stopped source
-attachment, close the intended target incarnation, and only then destroy the
-target/spec. A committed fence successor is preserved and verified; no
+attachment and only then destroy the target/spec. A committed fence successor
+is preserved and verified; no
 backend may lower the epoch or restore predecessor bytes. On success the old
 source spec is marked ``transferred``
 (kept for audit; destroy is a separate human decision).
@@ -66,15 +68,16 @@ import json
 import logging
 import os
 import shlex
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from . import audit, embodiments, fences, locks, operation_journal, park
+from . import audit, fences, handoff_auth, locks, operation_journal, park
 from .adapters import FakeAdapter
+from .admission import AdmissionError
 from .inventory import load_spec_raw, load_specs, update_spec
 from .lifecycle import (
-    EXIT_CONFLICT,  # noqa: F401  (re-exported for callers/tests)
+    EXIT_CONFLICT,
     EXIT_INTERNAL,
     EXIT_NOT_FOUND,
     EXIT_OK,
@@ -101,6 +104,7 @@ ANNOUNCEMENT_CREATION = "incarnation-creation"  # used by provision
 
 WAKE_STEPS = (
     "verify-manifest",
+    "fence-prepared",
     "fence",
     "start",
     "restore-files",
@@ -109,12 +113,13 @@ WAKE_STEPS = (
 
 TRANSFER_STEPS = (
     "verify-manifest",
+    "fence-prepared",
+    "fence",
     "target-spec",
     "target-create",
     "detach-source-volume",
     "attach-target-volume",
     "verify-volume",
-    "fence",
     "start",
     "post-start-volume",
     "restore-files",
@@ -311,7 +316,7 @@ def _check_stale_acquisition(manifest: dict, fence: dict | None,
             f"resource after this checkpoint; refusing")
 
 
-def _acquire_fence(store: fences.ResourceFenceStore, resource_ref: str) -> dict:
+def _acquire_fence(store: Any, resource_ref: str) -> dict:
     """Renew one concrete resource fence (epoch+1 CAS)."""
     renewed = store.renew(resource_ref, "")
     if renewed is None:
@@ -364,10 +369,11 @@ def _require_fence_position(
 
 
 def _recover_fence_successor(
-    store: fences.ResourceFenceStore,
+    store: Any,
     resource_ref: str,
     before_position: dict,
     before_record: dict | None,
+    expected_authorization_ref: str | None = None,
 ) -> tuple[dict, dict] | None:
     """Adopt only the exact next position for the same signed holder.
 
@@ -402,39 +408,157 @@ def _recover_fence_successor(
         return None
     if after_record.get("operation", "renew") != "renew":
         return None
+    if (
+        expected_authorization_ref is not None
+        and after_record.get("authorization_ref") != expected_authorization_ref
+    ):
+        return None
     return after_record, after_position
 
 
-def _open_incarnation(
-    cfg, name: str, spec: dict, incarnation_id: str | None = None
-) -> str | None:
-    embodiment_id = spec.get("embodiment_id")
-    if not embodiment_id:
-        return None
-    incarnation_id = incarnation_id or embodiments.new_id("incarnation")
-    registry = embodiments.Registry(cfg.state_dir)
-    current = registry.status(embodiment_id)
-    if current["status"] == "stopped":
-        registry.start(embodiment_id, incarnation_id=incarnation_id)
-    elif (
-        current["status"] != "running"
-        or current.get("current_incarnation_id") != incarnation_id
-    ):
-        raise TransferError("embodiment registry contradicts target incarnation")
-    update_spec(
-        cfg.instances_dir, name,
-        {"current_incarnation_id": incarnation_id},
+def _require_external_matrix_successor(spec: dict) -> None:
+    """Refuse Matrix starts that bypass the authorized successor supervisor.
+
+    Handoff's generic adapter cannot mint an incarnation authorization or keep
+    a shared admission alive after this command exits.  Matrix-managed
+    successors must therefore be installed from a root/activation-authorized
+    rebirth artifact and launched by ``python -m clusterctl.rebirth_host``.
+    That caller owns the successor-bound enrollment plus its renewer and
+    monotonic watchdog.
+    """
+
+    if spec.get("instance_kind") == "matrix-embodiment":
+        raise TransferRefused(
+            "Matrix-managed handoff requires a new root/activation-authorized "
+            "successor installed by `clusterctl rebirth-install` and launched "
+            "by the `python -m clusterctl.rebirth_host` admission supervisor"
+        )
+
+
+def _persisted_prepared_fence(
+    cfg,
+    *,
+    operation: str,
+    name: str,
+    new_name: str | None,
+    manifest_path: Path,
+    manifest_epoch: int,
+    signer: fences.Signer,
+) -> dict | None:
+    """Read the exact durable prepared successor for an interrupted command."""
+
+    path = (
+        _wake_record_path(cfg, name, manifest_epoch + 1)
+        if operation == "wake"
+        else _transfer_state_path(cfg, name, str(new_name))
     )
-    return incarnation_id
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    if operation == "wake":
+        signature = value.get("signature")
+        public_key = getattr(signer, "public_key", "")
+        if (
+            value.get("schema") != WAKE_RECORD_SCHEMA
+            or value.get("name") != name
+            or value.get("manifest_path") != str(manifest_path)
+            or not isinstance(signature, str)
+            or not signer.verify(fences._canonical(value), signature, public_key)
+        ):
+            return None
+    elif (
+        value.get("schema") != TRANSFER_STATE_SCHEMA
+        or value.get("source") != name
+        or value.get("target") != new_name
+    ):
+        return None
+    outputs = value.get("outputs")
+    prepared = outputs.get("prepared_fence") if isinstance(outputs, dict) else None
+    return dict(prepared) if isinstance(prepared, dict) else None
 
 
-def _close_incarnation(cfg, name: str, spec: dict) -> None:
-    embodiment_id = spec.get("embodiment_id")
-    if not embodiment_id:
-        return
-    embodiments.Registry(cfg.state_dir).stop(embodiment_id)
-    if load_spec_raw(cfg.instances_dir, name) is not None:
-        update_spec(cfg.instances_dir, name, {"current_incarnation_id": None})
+def _authorize_manifest_position(
+    client: handoff_auth.FenceMutationClient,
+    manifest: dict,
+    resource_ref: str,
+    *,
+    prepared: dict | None,
+) -> dict | None:
+    """Accept the manifest predecessor or its exact persisted successor."""
+
+    expected_epoch = manifest.get("resource_fence_epoch")
+    expected_proof = manifest.get("resource_fence_proof")
+    current = client.current(resource_ref)
+    if (
+        current is not None
+        and current.get("fencing_token") == expected_epoch
+        and current.get("proof_ref") == expected_proof
+    ):
+        return None
+    if prepared is not None:
+        position = prepared.get("expected_position")
+        if (
+            prepared.get("operation") == "renew"
+            and prepared.get("resource_ref") == resource_ref
+            and isinstance(position, dict)
+            and position == {
+                "resource_ref": resource_ref,
+                "epoch": expected_epoch,
+                "proof": expected_proof,
+                "current": True,
+            }
+        ):
+            recovered = client.recover(prepared)
+            if recovered is not None:
+                return recovered
+    raise handoff_auth.HandoffAuthorizationError(
+        "checkpoint is not bound to its predecessor or exact prepared successor"
+    )
+
+
+def _journaled_handoff_retry(
+    cfg,
+    args,
+    *,
+    operation: str,
+    name: str,
+    new_name: str | None = None,
+) -> dict | None:
+    """Return only an exact open/idempotent handoff journal intent."""
+
+    journal = operation_journal.OperationJournal.existing(cfg.state_dir)
+    if journal is None:
+        return None
+    record = journal.open_for_target(name)
+    key = getattr(args, "idempotency_key", None)
+    if record is None and isinstance(key, str) and key:
+        record = journal.latest_for_idempotency_key(key)
+    if (
+        not isinstance(record, dict)
+        or record.get("operation") != operation
+        or record.get("target") != name
+    ):
+        return None
+    intent = record.get("intent")
+    runtime_call = intent.get("runtime_call") if isinstance(intent, Mapping) else None
+    if operation == "wake":
+        expected = {"method": "wake-handoff", "name": name}
+    elif new_name is not None:
+        expected = {
+            "method": "transfer-handoff",
+            "source": name,
+            "target": new_name,
+        }
+    else:
+        return None
+    if not isinstance(runtime_call, dict) or any(
+        runtime_call.get(field) != value for field, value in expected.items()
+    ):
+        return None
+    return runtime_call
 
 
 # ---------------------------------------------------------------------------
@@ -490,10 +614,27 @@ def run_wake(
     failure the resource remains fenced, the container stays stopped, the
     spec rolls back to ``parked`` and the failure is recorded.
     """
-    signer = signer or fences.FakeSigner()
+    if signer is None or fence_store is None:
+        if isinstance(adapter, FakeAdapter):
+            signer = signer or fences.FakeSigner()
+            fence_store = fence_store or fences.SyntheticResourceFenceStore(
+                cfg.state_dir, signer
+            )
+        else:
+            raise TransferRefused(
+                "signed handoff holder/authority configuration is required"
+            )
+    if not isinstance(adapter, FakeAdapter) and (
+        not isinstance(signer, fences.Ed25519Signer)
+        or not isinstance(fence_store, handoff_auth.FenceMutationClient)
+    ):
+        raise TransferRefused(
+            "live wake requires Ed25519 custody and a shared FenceMutationClient"
+        )
     spec = load_spec_raw(cfg.instances_dir, name)
     if spec is None:
         raise TransferError(f"instance {name!r} is not declared")
+    _require_external_matrix_successor(spec)
     status = spec.get("status")
     if status not in ("parked", "waking"):
         raise TransferRefused(
@@ -512,16 +653,13 @@ def run_wake(
     fence_epoch = manifest.get("fence_epoch")
     if fence_epoch is None:
         raise TransferRefused(
-            f"manifest for {name!r} was parked with --no-fence; "
-            f"handoff wake requires a resource-fenced checkpoint")
+            f"manifest for {name!r} has no resource-fenced position; "
+            "handoff wake requires a current authority checkpoint"
+        )
     intended_epoch = int(fence_epoch) + 1
 
     resource_ref = _resource_ref(spec, name)
     store = fence_store
-    if store is None and isinstance(adapter, FakeAdapter):
-        store = fences.SyntheticResourceFenceStore(cfg.state_dir, signer)
-    if store is None:
-        store = fences.ResourceFenceStore(cfg.state_dir)
     record = _load_wake_record(cfg, name, intended_epoch, actor, manifest_path)
     record_path = _wake_record_path(cfg, name, intended_epoch)
     outputs = record.setdefault("outputs", {})
@@ -541,29 +679,63 @@ def run_wake(
         #    the epoch must match this resource's fence history. On resume
         #    after the fence step this check is skipped: this run IS the
         #    newer holder.
-        if "verify-manifest" not in completed:
-            if "fence" not in completed:
-                st = store.status(resource_ref)
-                if not st["present"] or st["expired"]:
-                    raise TransferRefused(
-                        f"no active resource fence for {resource_ref!r}; cannot "
-                        f"acquire a new fence")
-                if st["last_epoch"] != fence_epoch:
-                    raise TransferRefused(
-                        f"stale fence for {resource_ref!r}: manifest epoch "
-                        f"{fence_epoch} but the resource fence is epoch "
-                        f"{st['last_epoch']} — another holder renewed "
-                        f"first; refusing to wake")
-                # Also bind to the acquisition recorded in the manifest.
-                _check_stale_acquisition(manifest, store.get(resource_ref),
-                                         resource_ref)
+        prepared_fence = outputs.get("prepared_fence")
+        recovered_receipt = None
+        recover = getattr(store, "recover", None)
+        if isinstance(prepared_fence, dict) and callable(recover):
+            recovered_receipt = recover(prepared_fence)
+        if (
+            "verify-manifest" not in completed
+            and "fence" not in completed
+            and recovered_receipt is None
+        ):
+            st = store.status(resource_ref)
+            if not st["present"] or st["expired"]:
+                raise TransferRefused(
+                    f"no active resource fence for {resource_ref!r}; cannot "
+                    f"acquire a new fence")
+            if st["last_epoch"] != fence_epoch:
+                raise TransferRefused(
+                    f"stale fence for {resource_ref!r}: manifest epoch "
+                    f"{fence_epoch} but the resource fence is epoch "
+                    f"{st['last_epoch']} — another holder renewed "
+                    f"first; refusing to wake")
+            # Also bind to the acquisition recorded in the manifest.
+            _check_stale_acquisition(manifest, store.get(resource_ref),
+                                     resource_ref)
         _done("verify-manifest")
 
-        # 2. fence — epoch+1 CAS. Refuses if a newer fence exists.
+        # 2. prepare the exact signed successor and persist it before CAS.
+        if "fence-prepared" not in completed:
+            prepare = getattr(store, "prepare", None)
+            prepared_fence = (
+                prepare(resource_ref, operation="renew")
+                if callable(prepare)
+                else None
+            )
+            _done("fence-prepared", prepared_fence=prepared_fence)
+        else:
+            _done("fence-prepared")
+
+        # 3. commit the prepared CAS before any spec or runtime write.
         if "fence" not in completed:
-            renewed = _acquire_fence(store, resource_ref)
+            commit = getattr(store, "commit", None)
+            if recovered_receipt is not None:
+                receipt = recovered_receipt
+                renewed = receipt["evidence"]
+                fence_receipt = receipt
+            elif callable(commit):
+                receipt = commit(outputs["prepared_fence"])
+                renewed = receipt["evidence"]
+                fence_receipt = receipt
+            else:
+                renewed = _acquire_fence(store, resource_ref)
+                fence_receipt = None
             record["fence_epoch"] = renewed["epoch"]
-            _done("fence", fence_epoch=renewed["epoch"])
+            _done(
+                "fence", fence_epoch=renewed["epoch"],
+                fence_receipt=fence_receipt,
+            )
         else:
             _done("fence")
 
@@ -574,10 +746,9 @@ def run_wake(
             update_spec(cfg.instances_dir, name, {"status": "waking"})
             try:
                 adapter.start(name)
-                incarnation_id = _open_incarnation(cfg, name, spec)
             except Exception as exc:
                 raise TransferError(f"wake start failed: {exc}") from exc
-            _done("start", incarnation_id=incarnation_id)
+            _done("start", incarnation_id=None)
         else:
             _done("start")
 
@@ -601,7 +772,7 @@ def run_wake(
                                             record.get("fence_epoch"))
         _done("record")
 
-    except TransferError as exc:
+    except (TransferError, AdmissionError) as exc:
         record["status"] = "failed"
         record["error"] = str(exc)
         _atomic_write(record_path, _sign(record, signer))
@@ -612,9 +783,10 @@ def run_wake(
             update_spec(cfg.instances_dir, name, {"status": "parked"})
             if "start" in completed:
                 adapter.stop(name)
-                _close_incarnation(cfg, name, spec)
         except Exception:  # pragma: no cover - defensive
             logger.exception("wake rollback failed for %s", name)
+        if isinstance(exc, AdmissionError):
+            raise TransferRefused(f"fence authority refused: {exc}") from exc
         raise
 
     return {
@@ -639,6 +811,45 @@ def cmd_wake(args, cfg, adapter) -> int:
         return _fail(args, cfg, operation, name,
                      f"instance {name!r} is not declared", EXIT_NOT_FOUND)
 
+    raw_spec = load_spec_raw(cfg.instances_dir, name) or {}
+    try:
+        _require_external_matrix_successor(raw_spec)
+        manifest_path = _latest_manifest_path(cfg, name)
+        if manifest_path is None:
+            raise handoff_auth.HandoffAuthorizationError("checkpoint manifest is absent")
+        manifest_bytes = json.loads(manifest_path.read_text(encoding="utf-8"))
+        fence_client = handoff_auth.configured_client(
+            cfg.state_dir, raw_spec, manifest=manifest_bytes
+        )
+        manifest_signer = fence_client.holder_signer
+        manifest = park.load_manifest(manifest_path, manifest_signer)
+        resource_ref = _resource_ref(raw_spec, name)
+        retry = _journaled_handoff_retry(
+            cfg, args, operation=operation, name=name
+        )
+        prepared_fence = (
+            _persisted_prepared_fence(
+                cfg,
+                operation=operation,
+                name=name,
+                new_name=None,
+                manifest_path=manifest_path,
+                manifest_epoch=int(manifest["resource_fence_epoch"]),
+                signer=manifest_signer,
+            )
+            if retry is not None
+            else None
+        )
+        _authorize_manifest_position(
+            fence_client, manifest, resource_ref, prepared=prepared_fence
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort rollback observation
+        return _fail(
+            args, cfg, operation, name,
+            f"handoff authorization refused: {exc}", EXIT_CONFLICT,
+            detail={"authorization": "missing-or-invalid"},
+        )
+
     lock_ctx = _lock_or_fail(args, cfg, operation, name)
     if isinstance(lock_ctx, int):
         return lock_ctx
@@ -658,7 +869,10 @@ def cmd_wake(args, cfg, adapter) -> int:
         journal, record, _recovered = prepared
         try:
             if record["state"] == "runtime-dispatching":
-                result = run_wake(name, cfg, adapter, actor=_actor(args))
+                result = run_wake(
+                    name, cfg, adapter, actor=_actor(args),
+                    signer=manifest_signer, fence_store=fence_client,
+                )
             else:
                 result = dict(record.get("result") or {})
         except TransferRefused as exc:
@@ -752,7 +966,7 @@ def _save_transfer_state(cfg, name: str, new_name: str, state: dict) -> None:
     _atomic_write(_transfer_state_path(cfg, name, new_name), state)
 
 
-def _rollback_transfer(cfg, adapter, store: fences.ResourceFenceStore,
+def _rollback_transfer(cfg, adapter, store: Any,
                        name: str, new_name: str, resource_ref: str,
                        state: dict) -> dict:
     """Restore one stopped source attachment or report degraded custody."""
@@ -763,21 +977,8 @@ def _rollback_transfer(cfg, adapter, store: fences.ResourceFenceStore,
     device = outputs.get("volume_device") or "home"
     mount = outputs.get("volume_mount") or "/home/agent"
 
-    # 1. close any incarnation and stop the target before touching storage.
-    intended_incarnation = (
-        outputs.get("incarnation_id") or outputs.get("intended_incarnation_id")
-    )
-    if intended_incarnation:
-        try:
-            target_spec = load_spec_raw(cfg.instances_dir, new_name) or {}
-            embodiment_id = target_spec.get("embodiment_id")
-            if embodiment_id:
-                current = embodiments.Registry(cfg.state_dir).status(embodiment_id)
-                if current.get("current_incarnation_id") == intended_incarnation:
-                    _close_incarnation(cfg, new_name, target_spec)
-            outputs["incarnation_id"] = None
-        except Exception as exc:
-            errors.append(f"close target incarnation: {exc}")
+    # 1. stop the generic target before touching storage. Matrix-managed
+    # execution never enters this path; rebirth_host owns its incarnation.
     try:
         present = {
             item["name"]: item for item in adapter.list_instances()
@@ -786,7 +987,7 @@ def _rollback_transfer(cfg, adapter, store: fences.ResourceFenceStore,
             outputs["target_created"] = True
         if present.get(new_name, {}).get("state") == "running":
             adapter.stop(new_name, START_TIMEOUT_S)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - best-effort rollback observation
         errors.append(f"stop target: {exc}")
 
     # 2. move the exact volume back before deleting the target.
@@ -816,7 +1017,7 @@ def _rollback_transfer(cfg, adapter, store: fences.ResourceFenceStore,
             )
             attachment_safe = True
             outputs["volume_attached_to"] = name
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - compensation records all failures
             errors.append(f"restore source volume: {exc}")
     else:
         errors.append("restore source volume: missing closed volume identity")
@@ -828,7 +1029,7 @@ def _rollback_transfer(cfg, adapter, store: fences.ResourceFenceStore,
             if new_name in present_names:
                 adapter.delete(new_name)
             outputs["target_created"] = False
-        except Exception as exc:  # best effort — recorded, never masks
+        except Exception as exc:  # noqa: BLE001 - best-effort compensation
             errors.append(f"destroy target: {exc}")
 
     # 4. delete the target spec only when its container is gone.
@@ -837,7 +1038,7 @@ def _rollback_transfer(cfg, adapter, store: fences.ResourceFenceStore,
             (Path(cfg.instances_dir) / f"{new_name}.yaml").unlink(
                 missing_ok=True)
             outputs["target_spec"] = False
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - compensation records all failures
             errors.append(f"delete target spec: {exc}")
 
     # 5. Never lower a fence epoch.  When this transfer committed a
@@ -864,14 +1065,14 @@ def _rollback_transfer(cfg, adapter, store: fences.ResourceFenceStore,
             ):
                 raise TransferError("committed fence successor is not current")
             outputs["fence_successor_preserved"] = True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - compensation records all failures
             fence_safe = False
             errors.append(f"preserve fence successor: {exc}")
 
     # 6. the source stays parked and non-writable until an explicit wake.
     try:
         update_spec(cfg.instances_dir, name, {"status": "parked"})
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:  # noqa: BLE001  # pragma: no cover - defensive
         errors.append(f"source spec: {exc}")
 
     rollback = {
@@ -907,7 +1108,7 @@ def run_transfer(
     expected_fence_position: dict | None = None,
     expected_manifest_hash: str | None = None,
     expected_volume_identity: str | None = None,
-    fence_transition: Callable[[fences.ResourceFenceStore, str, dict], dict]
+    fence_transition: Callable[[Any, str, dict], dict]
     | None = None,
     on_step=None,
 ) -> dict:
@@ -919,10 +1120,27 @@ def run_transfer(
     marked ``transferred`` (kept for audit — destroy is a separate
     human decision).
     """
-    signer = signer or fences.FakeSigner()
+    if signer is None or fence_store is None:
+        if isinstance(adapter, FakeAdapter):
+            signer = signer or fences.FakeSigner()
+            fence_store = fence_store or fences.SyntheticResourceFenceStore(
+                cfg.state_dir, signer
+            )
+        else:
+            raise TransferRefused(
+                "signed handoff holder/authority configuration is required"
+            )
+    if not isinstance(adapter, FakeAdapter) and (
+        not isinstance(signer, fences.Ed25519Signer)
+        or not isinstance(fence_store, handoff_auth.FenceMutationClient)
+    ):
+        raise TransferRefused(
+            "live transfer requires Ed25519 custody and a shared FenceMutationClient"
+        )
     spec = load_spec_raw(cfg.instances_dir, name)
     if spec is None:
         raise TransferError(f"instance {name!r} is not declared")
+    _require_external_matrix_successor(spec)
     state = _load_transfer_state(cfg, name, new_name, actor)
     resuming = bool(state.get("completed"))
     status = spec.get("status")
@@ -945,10 +1163,6 @@ def run_transfer(
 
     resource_ref = _resource_ref(spec, name)
     store = fence_store
-    if store is None and isinstance(adapter, FakeAdapter):
-        store = fences.SyntheticResourceFenceStore(cfg.state_dir, signer)
-    if store is None:
-        store = fences.ResourceFenceStore(cfg.state_dir)
     outputs = state.setdefault("outputs", {})
     completed = state.setdefault("completed", [])
 
@@ -995,6 +1209,9 @@ def run_transfer(
                         resource_ref,
                         expected_fence_position,
                         outputs.get("previous_resource_fence"),
+                        (outputs.get("prepared_fence") or {}).get(
+                            "authorization_ref"
+                        ),
                     )
                     if outputs.get("fence_transition_prepared")
                     else None
@@ -1067,6 +1284,79 @@ def run_transfer(
             verify_outputs["volume_content_sha256"] = volume.get("content_sha256")
         _done("verify-manifest", **verify_outputs)
 
+        # Prepare and commit the exact successor before target spec/create or
+        # any detach/attach/start effect.  The signed authorization bytes are
+        # durable, so response-loss recovery cannot perform a second logical
+        # transition or adopt somebody else's successor.
+        previous_fence = outputs.get("previous_resource_fence")
+        if "fence-prepared" not in completed:
+            previous_fence = store.get(resource_ref)
+            prepare = getattr(store, "prepare", None)
+            prepared_fence = (
+                prepare(resource_ref, operation="renew")
+                if callable(prepare)
+                else None
+            )
+            _done(
+                "fence-prepared",
+                previous_resource_fence=previous_fence,
+                fence_transition_prepared=True,
+                prepared_fence=prepared_fence,
+            )
+        else:
+            _done("fence-prepared")
+        if not outputs.get("fence_acquired"):
+            try:
+                _require_fence_position(
+                    _closed_fence_position(store, resource_ref),
+                    outputs["fence_before"],
+                    context="before fence transition",
+                )
+                commit = getattr(store, "commit", None)
+                try:
+                    if callable(commit):
+                        fence_receipt = commit(outputs["prepared_fence"])
+                        renewed = fence_receipt["evidence"]
+                    else:
+                        fence_receipt = None
+                        renewed = (
+                            fence_transition(store, resource_ref, outputs["fence_before"])
+                            if fence_transition is not None
+                            else _acquire_fence(store, resource_ref)
+                        )
+                except Exception:
+                    recovered = _recover_fence_successor(
+                        store,
+                        resource_ref,
+                        outputs["fence_before"],
+                        previous_fence,
+                        (outputs.get("prepared_fence") or {}).get(
+                            "authorization_ref"
+                        ),
+                    )
+                    if recovered is None:
+                        raise
+                    renewed, fence_after = recovered
+                    fence_receipt = None
+                else:
+                    fence_after = _closed_fence_position(store, resource_ref)
+                if (
+                    not fence_after["current"]
+                    or fence_after["epoch"] != outputs["fence_before"]["epoch"] + 1
+                    or fence_after["proof"] != store.proof_ref(renewed)
+                ):
+                    raise TransferRefused(
+                        "fence transition did not commit the exact expected successor"
+                    )
+            except (TransferRefused, fences.FenceError) as exc:
+                raise TransferRefused(f"fence CAS failed before relocation: {exc}") from exc
+            _done(
+                "fence", fence_acquired=True, fence_epoch=renewed["epoch"],
+                fence_after=fence_after, fence_receipt=fence_receipt,
+            )
+        else:
+            _done("fence")
+
         # b. target-spec — copy of the source spec, status
         #    ``transferring``, same image_version/budgets, SAME durable
         #    volume name (embodiment keys travel WITH the volume — never
@@ -1084,15 +1374,15 @@ def run_transfer(
                 "created_by": actor,
             })
             target_spec.pop("idempotency_key", None)
+            if target_spec.get("instance_kind") != "matrix-embodiment":
+                for identity_field in (
+                    "being_ref", "body_ref", "embodiment_id",
+                    "current_incarnation_id", "activation_id", "credential_id",
+                    "manifest_hash",
+                ):
+                    target_spec.pop(identity_field, None)
             _write_spec(cfg.instances_dir, target_spec)
-        intended_incarnation_id = outputs.get("intended_incarnation_id")
-        if spec.get("embodiment_id") and intended_incarnation_id is None:
-            intended_incarnation_id = embodiments.new_id("incarnation")
-        _done(
-            "target-spec",
-            target_spec=True,
-            intended_incarnation_id=intended_incarnation_id,
-        )
+        _done("target-spec", target_spec=True)
 
         # c. target-create — STOPPED and deliberately without a home device.
         if not outputs.get("target_created"):
@@ -1101,7 +1391,7 @@ def run_transfer(
             if new_name not in runtime:
                 try:
                     adapter.create_instance(new_name, image_version, cfg.profile)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - observe response loss
                     create_error = exc
                 runtime = {
                     item["name"]: item for item in adapter.list_instances()
@@ -1182,70 +1472,6 @@ def run_transfer(
         )
         _done("verify-volume", volume_verified=observed)
 
-        # e. fence — renew the concrete body-volume resource (CAS epoch+1).
-        #    The exact predecessor/successor are journaled; rollback never
-        #    lowers the epoch and preserves a committed successor. The fence runs BEFORE
-        #    start: the target must not become reachable before the new
-        #    fence is held (live drill 1: restoring into a STOPPED
-        #    container is impossible — incus exec requires running — so
-        #    restore moved after start, and start after the fence).
-        if not outputs.get("fence_acquired"):
-            previous_fence = outputs.get("previous_resource_fence")
-            if not outputs.get("fence_transition_prepared"):
-                previous_fence = store.get(resource_ref)
-                outputs.update(
-                    {
-                        "previous_resource_fence": previous_fence,
-                        "fence_transition_prepared": True,
-                    }
-                )
-                _save_transfer_state(cfg, name, new_name, state)
-            try:
-                _require_fence_position(
-                    _closed_fence_position(store, resource_ref),
-                    outputs["fence_before"],
-                    context="before fence transition",
-                )
-                try:
-                    renewed = (
-                        fence_transition(
-                            store, resource_ref, outputs["fence_before"]
-                        )
-                        if fence_transition is not None
-                        else _acquire_fence(store, resource_ref)
-                    )
-                except Exception:
-                    recovered = _recover_fence_successor(
-                        store,
-                        resource_ref,
-                        outputs["fence_before"],
-                        previous_fence,
-                    )
-                    if recovered is None:
-                        raise
-                    renewed, fence_after = recovered
-                else:
-                    fence_after = _closed_fence_position(store, resource_ref)
-                if (
-                    not fence_after["current"]
-                    or fence_after["epoch"] != outputs["fence_before"]["epoch"] + 1
-                    or fence_after["proof"] != store.proof_ref(renewed)
-                ):
-                    raise TransferRefused(
-                        "fence transition did not commit the exact expected successor"
-                    )
-            except (TransferRefused, fences.FenceError) as exc:
-                # CAS failure AFTER the target exists → rollback (the
-                # source stays parked with its resource fence intact).
-                raise TransferError(
-                    f"fence CAS failed ({exc}); rolling back the target"
-                ) from exc
-            _done("fence", fence_acquired=True,
-                  fence_epoch=renewed["epoch"],
-                  fence_after=fence_after)
-        else:
-            _done("fence")
-
         # f. start — target spec transferring → waking; start the target
         #    container ONLY after the fence is held (before this step the
         #    target is network-unreachable; the spec goes active only
@@ -1257,7 +1483,7 @@ def run_transfer(
             if runtime.get(new_name, {}).get("state") == "stopped":
                 try:
                     adapter.start(new_name)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - observe response loss
                     start_error = exc
                 runtime = {
                     item["name"]: item for item in adapter.list_instances()
@@ -1267,17 +1493,7 @@ def run_transfer(
                 if start_error is not None:
                     message += f": {start_error}"
                 raise TransferError(message)
-            try:
-                target_spec = load_spec_raw(cfg.instances_dir, new_name) or {}
-                incarnation_id = _open_incarnation(
-                    cfg,
-                    new_name,
-                    target_spec,
-                    outputs.get("intended_incarnation_id"),
-                )
-            except Exception as exc:
-                raise TransferError(f"target incarnation failed: {exc}") from exc
-            _done("start", incarnation_id=incarnation_id)
+            _done("start", incarnation_id=None)
         else:
             _done("start")
 
@@ -1349,7 +1565,12 @@ def run_transfer(
                 raise TransferRefused("durable transfer record changed after commit")
             _done("record")
 
-    except TransferRefused as exc:
+    except (TransferRefused, AdmissionError) as exc:
+        refusal = (
+            exc
+            if isinstance(exc, TransferRefused)
+            else TransferRefused(f"fence authority refused: {exc}")
+        )
         state["failed_step"] = next(
             (s for s in TRANSFER_STEPS if s not in completed), None)
         state["error"] = "refused"
@@ -1364,12 +1585,12 @@ def run_transfer(
             rollback = _rollback_transfer(
                 cfg, adapter, store, name, new_name, resource_ref, state
             )
-            detail = dict(exc.detail)
+            detail = dict(refusal.detail)
             detail["rollback"] = rollback
             raise TransferError(
-                f"transfer verification failed after mutation: {exc}", detail
-            ) from exc
-        raise
+                f"transfer verification failed after mutation: {refusal}", detail
+            ) from refusal
+        raise refusal
     except TransferError as exc:
         state["failed_step"] = next(
             (s for s in TRANSFER_STEPS if s not in completed), None)
@@ -1416,6 +1637,52 @@ def cmd_transfer(args, cfg, adapter) -> int:
         return _fail(args, cfg, operation, name,
                      f"instance {name!r} is not declared", EXIT_NOT_FOUND)
 
+    source_spec = load_spec_raw(cfg.instances_dir, name) or {}
+    try:
+        _require_external_matrix_successor(source_spec)
+        manifest_path = _latest_manifest_path(cfg, name)
+        if manifest_path is None:
+            raise handoff_auth.HandoffAuthorizationError("checkpoint manifest is absent")
+        manifest_bytes = json.loads(manifest_path.read_text(encoding="utf-8"))
+        fence_client = handoff_auth.configured_client(
+            cfg.state_dir, source_spec, manifest=manifest_bytes
+        )
+        manifest_signer = fence_client.holder_signer
+        manifest = park.load_manifest(manifest_path, manifest_signer)
+        resource_ref = _resource_ref(source_spec, name)
+        retry = _journaled_handoff_retry(
+            cfg, args, operation=operation, name=name, new_name=new_name
+        )
+        prepared_fence = (
+            _persisted_prepared_fence(
+                cfg,
+                operation=operation,
+                name=name,
+                new_name=new_name,
+                manifest_path=manifest_path,
+                manifest_epoch=int(manifest["resource_fence_epoch"]),
+                signer=manifest_signer,
+            )
+            if retry is not None
+            else None
+        )
+        _authorize_manifest_position(
+            fence_client, manifest, resource_ref, prepared=prepared_fence
+        )
+    except (
+        AdmissionError,
+        TransferRefused,
+        fences.FenceError,
+        handoff_auth.HandoffAuthorizationError,
+        json.JSONDecodeError,
+        OSError,
+    ) as exc:
+        return _fail(
+            args, cfg, operation, name,
+            f"handoff authorization refused: {exc}", EXIT_CONFLICT,
+            detail={"authorization": "missing-or-invalid"},
+        )
+
     lock_ctx = locks.acquire_many(
         cfg.state_dir,
         [(name, operation), (new_name, "transfer-target")],
@@ -1444,7 +1711,7 @@ def cmd_transfer(args, cfg, adapter) -> int:
                     volume_name=runtime_call["volume_name"],
                     identity=runtime_call["volume_identity"],
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - stable preflight refusal
                 return _fail(
                     args, cfg, operation, name,
                     f"pending transfer volume cannot be verified: {exc}",
@@ -1452,7 +1719,6 @@ def cmd_transfer(args, cfg, adapter) -> int:
                 )
         else:
             try:
-                source_spec = load_spec_raw(cfg.instances_dir, name) or {}
                 volume_name, volume_device, volume_mount = _volume_contract(
                     source_spec, name
                 )
@@ -1466,13 +1732,8 @@ def cmd_transfer(args, cfg, adapter) -> int:
                     raise TransferRefused("verified checkpoint manifest is absent")
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 resource_ref = _resource_ref(source_spec, name)
-                preflight_store = (
-                    fences.SyntheticResourceFenceStore(cfg.state_dir)
-                    if isinstance(adapter, FakeAdapter)
-                    else fences.ResourceFenceStore(cfg.state_dir)
-                )
                 fence_position = _closed_fence_position(
-                    preflight_store, resource_ref
+                    fence_client, resource_ref
                 )
                 runtime_call = {
                     "method": "transfer-handoff",
@@ -1485,7 +1746,7 @@ def cmd_transfer(args, cfg, adapter) -> int:
                     "manifest_hash": _manifest_hash(manifest),
                     "fence_position": fence_position,
                 }
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - stable preflight refusal
                 return _fail(
                     args, cfg, operation, name,
                     f"transfer preflight refused: {exc}", EXIT_CONFLICT,
@@ -1510,6 +1771,8 @@ def cmd_transfer(args, cfg, adapter) -> int:
                     cfg,
                     adapter,
                     actor=_actor(args),
+                    signer=manifest_signer,
+                    fence_store=fence_client,
                     expected_fence_position=runtime_call["fence_position"],
                     expected_manifest_hash=runtime_call["manifest_hash"],
                     expected_volume_identity=runtime_call["volume_identity"],

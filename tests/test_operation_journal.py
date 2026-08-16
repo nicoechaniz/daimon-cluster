@@ -7,7 +7,7 @@ import sqlite3
 
 import pytest
 
-from clusterctl import audit, embodiments, idempotency, lifecycle
+from clusterctl import audit, idempotency, lifecycle
 from clusterctl.adapters import FakeAdapter
 from clusterctl.cli import run
 from clusterctl.inventory import load_spec_raw
@@ -55,7 +55,6 @@ def _created(state_dir, adapter):
         "after-runtime-dispatch-persist",
         "after-runtime-call",
         "after-runtime-observation",
-        "after-registry",
         "after-spec",
         "after-logical-commit",
         "after-idempotency",
@@ -63,12 +62,12 @@ def _created(state_dir, adapter):
         "after-completed",
     ],
 )
-def test_start_crash_at_every_boundary_returns_one_incarnation_and_result(
+def test_start_crash_at_every_boundary_returns_one_generic_result(
     tmp_path, monkeypatch, capsys, boundary
 ):
     state_dir = tmp_path / "state"
     adapter = FakeAdapter()
-    spec = _created(state_dir, adapter)
+    _created(state_dir, adapter)
     capsys.readouterr()
 
     def crash(observed, _record):
@@ -103,12 +102,12 @@ def test_start_crash_at_every_boundary_returns_one_incarnation_and_result(
     assert record["state"] == "completed"
     result = record["result"]
     assert result["operation_id"] == record["operation_id"]
-    registry = embodiments.Registry(state_dir).status(spec["embodiment_id"])
-    assert registry["status"] == "running"
-    assert registry["current_incarnation_id"] == result["incarnation_id"]
-    assert len(registry["incarnations"]) == 1
     final_spec = load_spec_raw(state_dir / "instances", "daimon-x")
-    assert final_spec["current_incarnation_id"] == result["incarnation_id"]
+    assert result["instance_kind"] == "generic-instance"
+    assert final_spec["state"] == "running"
+    assert final_spec["instance_kind"] == "generic-instance"
+    assert not {"body_ref", "embodiment_id", "current_incarnation_id"} & final_spec.keys()
+    assert not (state_dir / "embodiments.json").exists()
     events = [
         json.loads(line)
         for line in (state_dir / "audit.jsonl").read_text().splitlines()
@@ -132,7 +131,6 @@ def test_start_crash_at_every_boundary_returns_one_incarnation_and_result(
         "after-runtime-call",
         "after-runtime-observation",
         "after-spec",
-        "after-registry",
         "after-logical-commit",
         "after-idempotency",
         "after-audit",
@@ -178,9 +176,9 @@ def test_create_crash_never_leaves_untracked_or_duplicate_container(
     )
     assert [row["name"] for row in adapter.list_instances()] == ["daimon-x"]
     spec = load_spec_raw(state_dir / "instances", "daimon-x")
-    registry = embodiments.Registry(state_dir).status(spec["embodiment_id"])
-    assert registry["body_ref"] == spec["body_ref"]
-    assert registry["status"] == "stopped"
+    assert spec["instance_kind"] == "generic-instance"
+    assert not {"body_ref", "embodiment_id", "current_incarnation_id"} & spec.keys()
+    assert not (state_dir / "embodiments.json").exists()
     record = OperationJournal(state_dir).list_all(limit=10)[0]
     assert record["state"] == "completed"
     events = [
@@ -259,12 +257,10 @@ def test_provision_crash_converges_one_container_volume_credential_and_token(
 
 
 @pytest.mark.parametrize("operation", ["start", "stop", "restart"])
-def test_registry_write_failure_resumes_exact_logical_transition(
-    tmp_path, monkeypatch, capsys, operation
-):
+def test_generic_lifecycle_never_mints_matrix_identity(tmp_path, capsys, operation):
     state_dir = tmp_path / "state"
     adapter = FakeAdapter()
-    spec = _created(state_dir, adapter)
+    _created(state_dir, adapter)
     if operation in {"stop", "restart"}:
         assert (
             _invoke(
@@ -277,36 +273,7 @@ def test_registry_write_failure_resumes_exact_logical_transition(
             )
             == 0
         )
-    capsys.readouterr()
-    original_save = embodiments.Registry._save
-    failed = False
-
-    def fail_once(self, value):
-        nonlocal failed
-        if not failed:
-            failed = True
-            raise embodiments.RegistryError("injected registry persistence failure")
-        return original_save(self, value)
-
-    monkeypatch.setattr(embodiments.Registry, "_save", fail_once)
     key = {"start": START_KEY, "stop": STOP_KEY, "restart": RESTART_KEY}[operation]
-    if operation == "start":
-        # The setup did not consume START_KEY in this parameter.
-        pass
-    assert (
-        _invoke(
-            state_dir,
-            adapter,
-            operation,
-            "daimon-x",
-            "--idempotency-key",
-            key,
-        )
-        == 10
-    )
-    pending = OperationJournal(state_dir).open_for_target("daimon-x")
-    assert pending is not None and pending["state"] == "runtime-applied"
-    intended = pending["intended_transition"]["incarnation_id"]
     capsys.readouterr()
     assert (
         _invoke(
@@ -319,76 +286,50 @@ def test_registry_write_failure_resumes_exact_logical_transition(
         )
         == 0
     )
-    registry = embodiments.Registry(state_dir).status(spec["embodiment_id"])
-    if operation == "stop":
-        assert registry["status"] == "stopped"
-        assert registry["current_incarnation_id"] is None
-    else:
-        assert registry["status"] == "running"
-        assert registry["current_incarnation_id"] == intended
-        assert sum(
-            row["incarnation_id"] == intended for row in registry["incarnations"]
-        ) == 1
+    final_spec = load_spec_raw(state_dir / "instances", "daimon-x")
+    assert final_spec["instance_kind"] == "generic-instance"
+    assert not {"body_ref", "embodiment_id", "current_incarnation_id"} & final_spec.keys()
+    assert not (state_dir / "embodiments.json").exists()
 
 
-def test_restart_failure_between_registry_stop_and_start_reuses_intended_id(
-    tmp_path, monkeypatch, capsys
+@pytest.mark.parametrize("operation", ["start", "stop", "restart"])
+@pytest.mark.parametrize(
+    "matrix_marker",
+    [
+        {"instance_kind": "matrix-embodiment"},
+        {"instance_kind": None},
+        {"body_ref": "matrix:being:body"},
+        {"body_ref": None},
+        {"embodiment_id": "embodiment-hostile"},
+        {"current_incarnation_id": "incarnation-hostile"},
+    ],
+)
+def test_matrix_looking_spec_fails_before_runtime_effect(
+    tmp_path, capsys, operation, matrix_marker
 ):
     state_dir = tmp_path / "state"
     adapter = FakeAdapter()
     spec = _created(state_dir, adapter)
-    assert (
-        _invoke(
-            state_dir,
-            adapter,
-            "start",
-            "daimon-x",
-            "--idempotency-key",
-            START_KEY,
-        )
-        == 0
-    )
-    original_save = embodiments.Registry._save
-    calls = 0
-
-    def fail_second(self, value):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise embodiments.RegistryError("injected between stop and start")
-        return original_save(self, value)
-
-    monkeypatch.setattr(embodiments.Registry, "_save", fail_second)
+    spec.update(matrix_marker)
+    lifecycle._write_spec(state_dir / "instances", spec)
+    adapter.mutation_log.clear()
     capsys.readouterr()
+
+    key = {"start": START_KEY, "stop": STOP_KEY, "restart": RESTART_KEY}[operation]
     assert (
         _invoke(
             state_dir,
             adapter,
-            "restart",
+            operation,
             "daimon-x",
             "--idempotency-key",
-            RESTART_KEY,
+            key,
         )
-        == 10
+        == 6
     )
-    pending = OperationJournal(state_dir).open_for_target("daimon-x")
-    assert pending is not None
-    intended = pending["intended_transition"]["incarnation_id"]
-    capsys.readouterr()
-    assert (
-        _invoke(
-            state_dir,
-            adapter,
-            "restart",
-            "daimon-x",
-            "--idempotency-key",
-            RESTART_KEY,
-        )
-        == 0
-    )
-    registry = embodiments.Registry(state_dir).status(spec["embodiment_id"])
-    assert registry["current_incarnation_id"] == intended
-    assert sum(row["incarnation_id"] == intended for row in registry["incarnations"]) == 1
+    assert adapter.mutation_log == []
+    error = json.loads(capsys.readouterr().err)
+    assert error["matrix_managed"] is True
 
 
 def test_spec_idempotency_and_audit_failures_resume_without_second_runtime_effect(
@@ -673,7 +614,7 @@ def test_terminal_identity_requires_explicit_effect_truth_successor(tmp_path):
 def test_bounded_repair_resumes_degraded_power_intent(tmp_path, monkeypatch, capsys):
     state_dir = tmp_path / "state"
     adapter = FakeAdapter()
-    spec = _created(state_dir, adapter)
+    _created(state_dir, adapter)
 
     def crash(boundary, _record):
         if boundary == "after-plan":
@@ -711,8 +652,9 @@ def test_bounded_repair_resumes_degraded_power_intent(tmp_path, monkeypatch, cap
     )
     final = journal.get(pending["operation_id"])
     assert final is not None and final["state"] == "completed"
-    registry = embodiments.Registry(state_dir).status(spec["embodiment_id"])
-    assert registry["current_incarnation_id"] == final["result"]["incarnation_id"]
+    spec = load_spec_raw(state_dir / "instances", "daimon-x")
+    assert spec["state"] == "running"
+    assert final["result"]["instance_kind"] == "generic-instance"
     events = [
         json.loads(line)
         for line in (state_dir / "audit.jsonl").read_text().splitlines()

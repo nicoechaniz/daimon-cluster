@@ -67,10 +67,11 @@ Fence epochs incremented exactly once each (0 → 1).
   (signed, `announcement: embodiment-relocation`, `volume: moved`)
 - audit chain: `verify_chain ok`, 71 events
 
-## Known v1 limits (recorded, not hidden)
+## Historical v1 limits (superseded)
 
-- Signatures in this drill use FakeSigner (the production wiring
-  default); SSHSigner is covered by unit tests (test_leases.py).
+- This historical drill used FakeSigner. It is not production evidence; the
+  release wiring now requires enrolled Ed25519 custody and signed receipts
+  from a separately running authority.
 - The durable volume is not yet attached to the target on create
   (TODO(#29) in transfer.py) — `volume: moved` records the intent.
 - `state_commit` is null here (no state_repo in the drill spec).

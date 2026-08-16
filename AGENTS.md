@@ -1,7 +1,8 @@
 # Repository operating rules
 
-Read `RESUME.md` before roadmap work. Preserve the exact deployed Matrix and
-Cluster pins recorded there until their explicit successor gates close.
+Read `RESUME.md` before roadmap work. Preserve the exact reviewed RC pins and
+the access/production boundaries recorded there. Historical deployed-pair
+receipts are evidence only and do not authorize contact with those systems.
 
 ## Administrative-access invariant
 

@@ -16,7 +16,11 @@ from . import audit
 from .locks import acquire
 from .matrix_host import (
     MATRIX_CONTRACT_COMMIT,
+    MATRIX_RECOVERY_SNAPSHOT_SCHEMA,
+    MatrixHostError,
+    _destination_parent,
     _matrix_api,
+    _publish_directory_noreplace,
     matrix_root,
     verify_portable_snapshot,
 )
@@ -136,12 +140,16 @@ def export_recovery_snapshot(
 
     source = _owner_directory(Path(snapshot_dir))
     snapshot, payload, _verified = verify_portable_snapshot(source)
-    target = Path(os.path.abspath(destination))
-    parent = _owner_directory(target.parent)
-    if target.exists() or target.is_symlink():
-        raise RecoveryRebirthError("recovery_snapshot_destination_exists")
-    temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.recovery-", dir=parent))
+    parent_descriptor = -1
+    temporary: Path | None = None
     try:
+        target, parent, parent_descriptor = _destination_parent(
+            destination,
+            exists_code="recovery_snapshot_destination_exists",
+        )
+        temporary = Path(
+            tempfile.mkdtemp(prefix=f".{target.name}.recovery-", dir=parent)
+        )
         temporary.chmod(0o700)
         target_payload = temporary / "payload"
         target_payload.mkdir(mode=0o700)
@@ -176,7 +184,7 @@ def export_recovery_snapshot(
         )
         selected = [dict(files[name]) for name in sorted((bundle_name, ledger_name))]
         recovery_snapshot = {
-            "schema": snapshot["schema"],
+            "schema": MATRIX_RECOVERY_SNAPSHOT_SCHEMA,
             "matrix_contract_commit": snapshot["matrix_contract_commit"],
             "bundle": bundle_name,
             "origin": snapshot["origin"],
@@ -201,8 +209,13 @@ def export_recovery_snapshot(
             os.close(descriptor)
         _fsync_directory(target_payload)
         _fsync_directory(temporary)
-        os.replace(temporary, target)
-        _fsync_directory(parent)
+        _publish_directory_noreplace(
+            parent_descriptor,
+            temporary.name,
+            target.name,
+            exists_code="recovery_snapshot_destination_exists",
+        )
+        temporary = None
         return {
             "schema": RECOVERY_SNAPSHOT_EXPORT_SCHEMA,
             "source_snapshot_sha256": _sha(snapshot),
@@ -213,11 +226,22 @@ def export_recovery_snapshot(
             "custody_files_exported": False,
         }
     except RecoveryRebirthError:
-        shutil.rmtree(temporary, ignore_errors=True)
+        if temporary is not None:
+            shutil.rmtree(temporary, ignore_errors=True)
         raise
-    except (KeyError, TypeError, json.JSONDecodeError, OSError) as exception:
-        shutil.rmtree(temporary, ignore_errors=True)
+    except MatrixHostError as exception:
+        if temporary is not None:
+            shutil.rmtree(temporary, ignore_errors=True)
+        if str(exception) == "recovery_snapshot_destination_exists":
+            raise RecoveryRebirthError(str(exception)) from exception
         raise RecoveryRebirthError("recovery_snapshot_export_failed") from exception
+    except (KeyError, TypeError, json.JSONDecodeError, OSError) as exception:
+        if temporary is not None:
+            shutil.rmtree(temporary, ignore_errors=True)
+        raise RecoveryRebirthError("recovery_snapshot_export_failed") from exception
+    finally:
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
 
 
 def _load_inputs(
@@ -235,7 +259,21 @@ def _load_inputs(
     request = _read_json(package / "request.json")
     receipt = _read_json(package / "receipt.json")
     target_bundle = _read_json(_owner_directory(package / "runtime") / "runtime.json")
-    snapshot, payload, _verified = verify_portable_snapshot(snapshot_dir)
+    try:
+        snapshot, payload, _verified = verify_portable_snapshot(
+            snapshot_dir,
+            _custody_free=True,
+        )
+    except MatrixHostError as exception:
+        try:
+            verify_portable_snapshot(snapshot_dir)
+        except MatrixHostError:
+            raise RecoveryRebirthError(
+                "recovery_rebirth_snapshot_rejected"
+            ) from exception
+        raise RecoveryRebirthError(
+            "recovery_rebirth_requires_custody_free_snapshot"
+        ) from exception
     try:
         files = {row["name"]: row for row in snapshot["files"]}
         bundle_row = files[snapshot["bundle"]]

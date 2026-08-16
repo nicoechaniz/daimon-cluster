@@ -21,6 +21,7 @@ import json
 import re
 import threading
 import time
+import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -54,6 +55,7 @@ def _declare(state_dir, name=NAME):
     inst_dir.mkdir(parents=True, exist_ok=True)
     (inst_dir / f"{name}.yaml").write_text(yaml.safe_dump({
         "schema": "instance-spec/v1",
+        "instance_kind": "generic-instance",
         "name": name,
         "image_version": "tribe-base/2026-08-01.1",
     }), encoding="utf-8")
@@ -96,7 +98,7 @@ def server(state_dir, tmp_path, monkeypatch):
     _declare(state_dir)
     ad = _adapter(log_lines={NAME: [f"log line {i}" for i in range(250)]})
     _, raw_token = clusterd_auth.create_token(
-        state_dir, actor="steward@daimonmatrix", scopes=["read"],
+        state_dir, actor="steward@daimonmatrix", scopes=["fleet:read"],
         owner="*", ttl_days=1)
     token_file = tmp_path / "read-token"
     token_file.write_text(raw_token, encoding="utf-8")
@@ -262,6 +264,14 @@ def test_cluster_logs_404_becomes_degraded_not_exception(server, client):
     assert res["degraded"] == ["clusterd-http-404"]
 
 
+def test_read_client_closes_http_error_response(server, client):
+    with pytest.raises(steward_client.ClusterdHTTPError) as exc_info:
+        client.logs("no-such-daimon", 50)
+    cause = exc_info.value.__cause__
+    assert isinstance(cause, urllib.error.HTTPError)
+    assert cause.fp is None or cause.fp.closed
+
+
 # --------------------------------------------------------------------------
 # unreachable clusterd: explicit unknown state, never an exception
 # --------------------------------------------------------------------------
@@ -334,7 +344,7 @@ def test_cluster_health_degraded_names_subsystems(state_dir, tmp_path,
 
     _declare(state_dir)
     _, raw_token = clusterd_auth.create_token(
-        state_dir, actor="steward@daimonmatrix", scopes=["read"],
+        state_dir, actor="steward@daimonmatrix", scopes=["fleet:read"],
         owner="*", ttl_days=1)
     token_file = tmp_path / "read-token"
     token_file.write_text(raw_token, encoding="utf-8")
@@ -400,7 +410,7 @@ def test_logs_route_redaction_end_to_end(state_dir, tmp_path, monkeypatch):
     _declare(state_dir)
     ad = _adapter(log_lines={NAME: secret_lines})
     _, raw_token = clusterd_auth.create_token(
-        state_dir, actor="steward@daimonmatrix", scopes=["read"],
+        state_dir, actor="steward@daimonmatrix", scopes=["fleet:read"],
         owner="*", ttl_days=1)
     token_file = tmp_path / "read-token"
     token_file.write_text(raw_token, encoding="utf-8")

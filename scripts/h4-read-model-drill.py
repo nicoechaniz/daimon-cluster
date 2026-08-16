@@ -162,11 +162,11 @@ def run() -> dict:
             },
         ])
         _, alice_token = auth.create_token(
-            state_dir, actor="alice", scopes=["read"], owner="alice",
+            state_dir, actor="alice", scopes=["fleet:read"], owner="alice",
             ttl_days=1,
         )
         _, bob_token = auth.create_token(
-            state_dir, actor="bob", scopes=["read"], owner="bob", ttl_days=1,
+            state_dir, actor="bob", scopes=["fleet:read"], owner="bob", ttl_days=1,
         )
         deps = handlers.Deps(
             config_path="configs/clusterctl.yaml",

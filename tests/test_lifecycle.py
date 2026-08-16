@@ -1,7 +1,6 @@
 """Lifecycle mutation tests (issue #11) — fake adapter only, no incus needed."""
 import json
 import time
-from pathlib import Path
 
 import pytest
 
@@ -162,7 +161,7 @@ def test_audit_on_success_and_denial(state_dir, capsys):
     code, _ = _run(state_dir, "start", "ghost", adapter=ad)  # unknown -> denial (exit 3)
     assert code == 3
     log = (state_dir / "audit.jsonl").read_text().strip().splitlines()
-    events = [json.loads(l) for l in log]
+    events = [json.loads(line) for line in log]
     assert any(e["action"] == "start" and e["result"] == "ok" for e in events)
     assert any(e["result"] in ("denied", "error") for e in events)
     assert all(e["schema"] == "audit-event/v1" for e in events)

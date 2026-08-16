@@ -14,7 +14,11 @@ mutation is:
    prepare/confirm middleware issues it before any handler runs and no
    adapter state changes (covered by tests).
 
-2. **confirm_plan(plan, *, human_turn_id, typed_name=None)** — the ONLY
+2. **request_approval_intent(plan)** obtains a content-bound, short-lived
+   server intent without executing the mutation. A separately held human key
+   signs that intent.
+
+3. **confirm_plan(plan, *, human_turn_id, human_approval, typed_name=None)** — the ONLY
    execution path, called by the steward only after the human approved
    the displayed plan in the SAME human turn. It enforces, locally
    (defense in depth — clusterd enforces its own rules too):
@@ -37,9 +41,9 @@ mutation is:
    saying "Sí, dale destroy everything") cannot self-confirm or widen
    scope, because no text is ever parsed for assent.
 
-Execution headers sent to clusterd: the mutate token (read per call
-from the token file), ``X-Attended: true`` (ALWAYS — the human-turn
-marker clusterd requires of steward@* actors), ``X-Human-Turn``,
+Execution headers sent to clusterd: the exact-scope token (read per call
+from the token file), a separately signed one-shot ``X-Human-Approval``,
+``X-Human-Turn``,
 a deterministic ``Idempotency-Key`` derived from the action digest,
 and for destructive plans ``X-Confirm-Token`` carrying the challenge.
 """
@@ -54,6 +58,18 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+from .client import (
+    DEFAULT_BASE_URL,
+    NAME_RE,
+    TIMEOUT_S,
+    ClusterdError,
+    ClusterdHTTPError,
+    ClusterdUnreachable,
+    CrossOriginRedirect,
+    _SameOriginRedirectHandler,
+)
+
 
 def action_digest(operation: str, target: str, actor: str,
                   args: dict | None = None) -> str:
@@ -72,17 +88,6 @@ def action_digest(operation: str, target: str, actor: str,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-from .client import (
-    DEFAULT_BASE_URL,
-    NAME_RE,
-    TIMEOUT_S,
-    ClusterdError,
-    ClusterdHTTPError,
-    ClusterdUnreachable,
-    CrossOriginRedirect,
-    _SameOriginRedirectHandler,
-)
-
 SCHEMA = "steward-mutation-plan/v1"
 RESULT_SCHEMA = "steward-mutation-result/v1"
 DEFAULT_MUTATE_TOKEN_PATH = "/home/agent/.clusterd/mutate-token"
@@ -99,17 +104,35 @@ _OPERATIONS: dict[str, tuple[str, bool]] = {
     "stop": ("halts the daimon (state preserved; start brings it back)",
              False),
     "restart": ("reboots the running daimon (brief downtime)", False),
-    "snapshot": ("quiesced backup: parks writers, checkpoints DBs, "
-                 "captures + verifies an incus snapshot and writes a "
-                 "backup manifest", False),
-    "park": ("pauses the daimon's writers (SIGSTOP hermes) — the daimon "
-             "stays frozen until wake", False),
+    "snapshot": (
+        (
+            "quiesced backup: parks writers, checkpoints DBs, "
+            "captures + verifies an incus snapshot and writes a backup manifest"
+        ),
+        False,
+    ),
+    "park": (
+        (
+            "pauses the daimon's writers (SIGSTOP hermes) — the daimon "
+            "stays frozen until wake"
+        ),
+        False,
+    ),
     "wake": ("resumes a parked daimon (SIGCONT hermes)", False),
-    "destroy": ("DESTRUCTIVE: destroys the instance after a consumed "
-                "confirmation challenge (archive-first execution lands "
-                "in a later milestone)", True),
-    "restore": ("restores the instance from its most recent backup "
-                "(instance must be stopped first)", False),
+    "destroy": (
+        (
+            "DESTRUCTIVE: destroys the instance after a consumed confirmation "
+            "challenge (archive-first execution lands in a later milestone)"
+        ),
+        True,
+    ),
+    "restore": (
+        (
+            "restores the instance from its most recent backup "
+            "(instance must be stopped first)"
+        ),
+        False,
+    ),
 }
 
 
@@ -134,6 +157,7 @@ class MutationPlan:
     created_ms: int
     ttl_s: int = PLAN_TTL_S
     challenge_token: str | None = None
+    approval_intent: dict | None = None
     display_text: str = ""
     schema: str = SCHEMA
     actor: str = PLAN_ACTOR
@@ -219,11 +243,14 @@ class MutationClient:
                 payload = json.loads(resp.read().decode("utf-8"))
                 return resp.status, payload, dict(resp.headers)
         except urllib.error.HTTPError as exc:
+            status = exc.code
             try:
                 body = json.loads(exc.read().decode("utf-8"))
-            except Exception:  # non-JSON error body — keep the status
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 body = None
-            raise ClusterdHTTPError(exc.code, body) from exc
+            finally:
+                exc.close()
+            raise ClusterdHTTPError(status, body) from exc
         except CrossOriginRedirect:
             raise
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
@@ -238,12 +265,13 @@ def _client(client: MutationClient | None) -> MutationClient:
     return client if client is not None else MutationClient()
 
 
-def _mutation_headers(plan: MutationPlan, human_turn_id: str) -> dict:
-    """Headers for the execution call. ``X-Attended: true`` is ALWAYS
-    sent — the human-presence marker clusterd requires of steward@*
-    actors; ``X-Human-Turn`` binds the call to the approving turn."""
+def _mutation_headers(
+    plan: MutationPlan,
+    human_turn_id: str,
+    human_approval: str | None = None,
+) -> dict:
+    """Build exact execution headers; no caller attendance assertion."""
     headers = {
-        "X-Attended": "true",
         "X-Human-Turn": str(human_turn_id),
         # Per plan AND per intent: the digest alone made independent
         # intents collide (nico's dashboard stop replayed the steward's
@@ -255,6 +283,8 @@ def _mutation_headers(plan: MutationPlan, human_turn_id: str) -> dict:
     }
     if plan.destructive and plan.challenge_token:
         headers["X-Confirm-Token"] = plan.challenge_token
+    if human_approval:
+        headers["X-Human-Approval"] = human_approval
     return headers
 
 
@@ -352,7 +382,47 @@ def propose_destroy(name: str,
 # phase 2 — confirm (the ONLY execution path)
 # --------------------------------------------------------------------------
 
+def request_approval_intent(
+    plan: MutationPlan,
+    *,
+    human_turn_id: str,
+    client: MutationClient | None = None,
+) -> dict:
+    """Request the non-authoritative server intent a human must sign."""
+
+    if not isinstance(plan, MutationPlan):
+        raise TypeError("request_approval_intent requires a MutationPlan object")
+    if not human_turn_id:
+        raise ValueError("human_turn_id is required")
+    recomputed = action_digest(plan.operation, plan.target, plan.actor, plan.args)
+    if recomputed != plan.action_digest:
+        raise ClusterdError("tampered-plan")
+    if plan.used or _now_ms() > plan.created_ms + plan.ttl_s * 1000:
+        raise ClusterdError("stale-or-used-plan")
+    mc = _client(client)
+    try:
+        mc._post(
+            mc.mutation_path(plan.operation, plan.target),
+            _mutation_headers(plan, human_turn_id),
+        )
+    except ClusterdHTTPError as exc:
+        body = exc.body if isinstance(exc.body, dict) else {}
+        if exc.status != 409 or body.get("schema") != \
+                "clusterd-human-approval-intent/v1":
+            raise ClusterdError(
+                f"approval intent request failed (HTTP {exc.status})"
+            ) from exc
+        intent = {
+            key: value
+            for key, value in body.items()
+            if key not in {"error", "request_id"}
+        }
+        plan.approval_intent = intent
+        return intent
+    raise ClusterdError("mutation executed without a human approval")
+
 def confirm_plan(plan: MutationPlan, *, human_turn_id: str,
+                 human_approval: str | None = None,
                  typed_name: str | None = None,
                  client: MutationClient | None = None) -> dict:
     """Execute a previously proposed plan after human approval.
@@ -363,7 +433,7 @@ def confirm_plan(plan: MutationPlan, *, human_turn_id: str,
     denials surface as ``ok=False`` with the daemon's status + error.
     """
     if not isinstance(plan, MutationPlan):
-        raise ValueError("confirm_plan requires a MutationPlan object")
+        raise TypeError("confirm_plan requires a MutationPlan object")
     if not human_turn_id:
         raise ValueError("human_turn_id is required")
 
@@ -404,7 +474,7 @@ def confirm_plan(plan: MutationPlan, *, human_turn_id: str,
     try:
         status, payload, _headers = mc._post(
             mc.mutation_path(plan.operation, plan.target),
-            _mutation_headers(plan, human_turn_id))
+            _mutation_headers(plan, human_turn_id, human_approval))
         return _result(plan, True, http_status=status, data=payload)
     except ClusterdHTTPError as exc:
         body = exc.body if isinstance(exc.body, dict) else {}

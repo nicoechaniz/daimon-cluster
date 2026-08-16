@@ -153,6 +153,7 @@ class RequestContext:
     idempotency_key: str | None = None
     token_record: dict | None = None
     action_digest: str | None = None  # consumed confirmation digest (#19)
+    approved_target_state_hash: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -196,6 +197,11 @@ def _run_cli(deps: Deps, ctx: RequestContext, argv: list[str]) -> Response:
     full_argv += ["--request-id", ctx.request_id]
     if ctx.action_digest:
         full_argv += ["--action-digest", ctx.action_digest]
+    if ctx.approved_target_state_hash:
+        full_argv += [
+            "--approved-target-state-hash",
+            ctx.approved_target_state_hash,
+        ]
     full_argv += argv
 
     out_buf, err_buf = io.StringIO(), io.StringIO()

@@ -51,6 +51,7 @@ jobs:
       - name: Lint the Matrix, fence and mutation-journal boundaries
         run: >-
           python -m ruff check
+          clusterctl/admission.py
           clusterctl/audit.py
           clusterctl/adapters.py
           clusterctl/cli.py
@@ -73,8 +74,16 @@ jobs:
           clusterctl/recovery_rebirth.py
           clusterctl/transfer.py
           clusterd/__main__.py
+          clusterd/approvals.py
+          clusterd/auth.py
+          clusterd/confirm.py
           clusterd/handlers.py
+          clusterd/openapi.py
+          clusterd/routes.py
+          clusterd/server.py
+          steward_tools/mutations.py
           tests/test_matrix_host.py
+          tests/test_admission.py
           tests/test_matrix_host_process.py
           tests/test_matrix_parity.py
           tests/test_matrix_status.py
@@ -87,34 +96,21 @@ jobs:
           tests/integration/test_recovery_rebirth_containers.py
           tests/test_transfer.py
           tests/test_volume_relocation.py
+          tests/test_human_approvals.py
+          tests/test_physical_preflight.py
+          tests/test_rc_manifest.py
           scripts/h3-volume-drill.py
+          tools/build_physical_preflight.py
+          tools/build_rc_manifest.py
+          tools/check_rc_types.py
       - name: Type-check the Matrix, fence and mutation-journal boundaries
-        run: >-
-          python -m mypy --follow-imports=skip --ignore-missing-imports
-          --disable-error-code=import-untyped
-          clusterctl/adapters.py
-          clusterctl/embodiments.py
-          clusterctl/fences.py
-          clusterctl/idempotency.py
-          clusterctl/inventory.py
-          clusterctl/locks.py
-          clusterctl/operation_journal.py
-          clusterctl/production_fences.py
-          clusterctl/matrix_host.py
-          clusterctl/transfer.py
-          clusterctl/rebirth.py
-          clusterctl/rebirth_host.py
-          clusterctl/recovery_rebirth.py
-          clusterctl/cli.py
-          clusterctl/distributed_rebirth.py
-          tests/test_rebirth.py
-          tests/test_recovery_rebirth.py
-          tests/integration/recovery-rebirth/role.py
-          tests/integration/test_recovery_rebirth_containers.py
+        run: python tools/check_rc_types.py
       - run: >-
-          python -m compileall -q clusterctl clusterd steward_tools tests
-          scripts/h3-volume-drill.py
-      - run: python -W error::ResourceWarning -m pytest -q
+          python -m compileall -q clusterctl clusterd steward_tools tests tools
+      - run: >-
+          python -m pytest -q
+          -W error::ResourceWarning
+          -W error::pytest.PytestUnraisableExceptionWarning
 
   backup-export-disposable:
     runs-on: ubuntu-latest
@@ -136,7 +132,9 @@ jobs:
         env:
           DAIMON_RUN_DOCKER_TESTS: "1"
         run: >-
-          python -W error::ResourceWarning -m pytest -q -s
+          python -m pytest -q -s
+          -W error::ResourceWarning
+          -W error::pytest.PytestUnraisableExceptionWarning
           tests/integration/test_restic_export_container.py
 
   recovery-rebirth-disposable-hosts:
@@ -147,7 +145,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: AlterMundi/daimon-matrix
-          ref: 306900c64aac5b0aa6ca062e777ca5ea2686d84e
+          ref: 09414d6edd9586f539be8272c4979d0b36c86b87
           path: matrix-source
           fetch-depth: 0
           persist-credentials: false
@@ -163,11 +161,13 @@ jobs:
           done
           docker version
           test "$(git -C matrix-source rev-parse HEAD)" = \
-            306900c64aac5b0aa6ca062e777ca5ea2686d84e
+            09414d6edd9586f539be8272c4979d0b36c86b87
       - name: Prove isolated recovery roles and read-only snapshot restore
         env:
           DAIMON_RUN_DOCKER_RECOVERY_TESTS: "1"
           DAIMON_MATRIX_SOURCE: ${{ github.workspace }}/matrix-source
         run: >-
-          python -W error::ResourceWarning -m pytest -q -s
+          python -m pytest -q -s
+          -W error::ResourceWarning
+          -W error::pytest.PytestUnraisableExceptionWarning
           tests/integration/test_recovery_rebirth_containers.py

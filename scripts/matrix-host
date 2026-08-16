@@ -1,4 +1,22 @@
-#!/usr/bin/env python3
-from clusterctl.matrix_host import main
+#!/usr/bin/env bash
+# Run the repository module from an active, repository-local or explicit Python.
+set -euo pipefail
 
-raise SystemExit(main())
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -n "${DAIMON_MATRIX_HOST_PYTHON:-}" ]]; then
+    PYTHON="$DAIMON_MATRIX_HOST_PYTHON"
+elif [[ -n "${VIRTUAL_ENV:-}" && -x "$VIRTUAL_ENV/bin/python" ]]; then
+    PYTHON="$VIRTUAL_ENV/bin/python"
+elif [[ -x "$REPO_DIR/.venv/bin/python" ]]; then
+    PYTHON="$REPO_DIR/.venv/bin/python"
+else
+    PYTHON="$(command -v python3)"
+fi
+
+if [[ "$PYTHON" != /* || ! -x "$PYTHON" ]]; then
+    echo "matrix-host Python must be an absolute executable path" >&2
+    exit 2
+fi
+
+cd "$REPO_DIR"
+exec "$PYTHON" -m clusterctl.matrix_host "$@"

@@ -1,5 +1,28 @@
 # Runbook: clusterd deploy (issue #20 evidence)
 
+> Historical deployment evidence follows. The 2026-08-16 RC changes are
+> source-only and authorize no service, token or host mutation.
+
+## RC authorization boundary
+
+Create narrowly scoped tokens; never use the removed `read,mutate` pair. A
+read client normally receives `fleet:read`. Lifecycle, backup, restore,
+destroy and dashboard confirmation are separate scopes.
+
+An unattended steward cannot authorize itself with `X-Attended`. Its first
+execution request returns `clusterd-human-approval-intent/v1`. Give only that
+public intent to an independent human authority, sign it offline with:
+
+    python -m clusterd.approvals --intent INTENT.json \
+      --key /offline/path/human-ed25519.pem --key-id HUMAN_KEY_ID
+
+The output is the base64url `X-Human-Approval` value. The server must be
+provisioned with only the corresponding public descriptor through
+`clusterd.approvals.register_authority`; it must never receive the private key.
+The approval is single-use, expires within five minutes, and is invalid after
+the target spec changes. This repository work does not provision a real
+authority or rotate any live token.
+
 How clusterd runs as a hardened host service on daimonmatrix.
 
 ## Topology (decided 2026-08-01)

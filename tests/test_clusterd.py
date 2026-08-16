@@ -41,6 +41,7 @@ def _declare(state_dir, name=NAME, image_version="tribe-base/2026-08-01.1"):
     inst_dir.mkdir(parents=True, exist_ok=True)
     (inst_dir / f"{name}.yaml").write_text(yaml.safe_dump({
         "schema": "instance-spec/v1",
+        "instance_kind": "generic-instance",
         "name": name,
         "image_version": image_version,
     }), encoding="utf-8")
@@ -59,7 +60,7 @@ def server(state_dir):
     _declare(state_dir)
     ad = _adapter()
     _, raw_token = clusterd_auth.create_token(
-        state_dir, actor="tester", scopes=["read", "mutate"], owner="*",
+        state_dir, actor="tester", scopes=list(clusterd_auth.VALID_SCOPES), owner="*",
         ttl_days=1)
     deps = handlers.Deps(config_path=CONFIG_PATH, state_dir=str(state_dir),
                          adapter_factory=lambda: ad)
@@ -92,7 +93,10 @@ def _req(server, method, path, headers=None, auth=True):
             body = resp.read().decode("utf-8")
             return resp.status, dict(resp.headers), body
     except urllib.error.HTTPError as exc:
-        return exc.code, dict(exc.headers), exc.read().decode("utf-8")
+        try:
+            return exc.code, dict(exc.headers), exc.read().decode("utf-8")
+        finally:
+            exc.close()
 
 
 def _get(server, path, headers=None, auth=True):
@@ -120,7 +124,10 @@ def _post_json(server, path, body_dict, headers=None, auth=True):
             body = resp.read().decode("utf-8")
             return resp.status, dict(resp.headers), json.loads(body)
     except urllib.error.HTTPError as exc:
-        return exc.code, dict(exc.headers), json.loads(exc.read().decode("utf-8"))
+        try:
+            return exc.code, dict(exc.headers), json.loads(exc.read().decode("utf-8"))
+        finally:
+            exc.close()
 
 
 def _cli(state_dir, *argv, adapter=None):
@@ -226,7 +233,7 @@ def test_get_instance_404_mirrors_exit_3(server):
 
     status, _, body = _get(srv, "/v1/instances/ghost")
     assert status == 404
-    assert body["error"] == f"clusterctl: instance 'ghost' not found" or \
+    assert body["error"] == "clusterctl: instance 'ghost' not found" or \
         "ghost" in body["error"]
     assert "request_id" in body
 
@@ -261,7 +268,7 @@ def test_power_matches_cli(tmp_path, operation, expected_state):
     cli_result = json.loads(out)
 
     _, raw_token = clusterd_auth.create_token(
-        http_dir, actor="tester", scopes=["read", "mutate"], owner="*",
+        http_dir, actor="tester", scopes=list(clusterd_auth.VALID_SCOPES), owner="*",
         ttl_days=1)
     deps = handlers.Deps(config_path=CONFIG_PATH, state_dir=str(http_dir),
                          adapter_factory=lambda: http_ad)
@@ -345,8 +352,8 @@ def test_token_actor_is_authoritative_for_audit(server):
                          headers={"Idempotency-Key": UUID1,
                                   "X-Actor": "agent:spoofed"})
     assert status == 200
-    events = [json.loads(l)
-              for l in (state_dir / "audit.jsonl").read_text().splitlines()]
+    events = [json.loads(line)
+              for line in (state_dir / "audit.jsonl").read_text().splitlines()]
     assert any(e["actor"] == "tester" for e in events)
     assert not any(e["actor"] == "agent:spoofed" for e in events)
 
@@ -431,7 +438,7 @@ def test_ontology_read_routes(server):
     assert weave["configured"] is False
     assert weave["implementation"] == "installed-daimon-matrix"
     assert weave["matrix_contract_commit"] == (
-        "306900c64aac5b0aa6ca062e777ca5ea2686d84e"
+        "09414d6edd9586f539be8272c4979d0b36c86b87"
     )
     assert weave["embodiments"][0]["matrix_process"]["state"] == \
         "not-configured"
@@ -517,7 +524,7 @@ def two_bind_server(state_dir):
     _declare(state_dir, image_version="v1")
     ad = _adapter()
     _, raw_token = clusterd_auth.create_token(
-        state_dir, actor="tester", scopes=["read", "mutate"], owner="*",
+        state_dir, actor="tester", scopes=list(clusterd_auth.VALID_SCOPES), owner="*",
         ttl_days=1)
     deps = handlers.Deps(config_path=CONFIG_PATH, state_dir=str(state_dir),
                          adapter_factory=lambda: ad)
@@ -693,10 +700,10 @@ def test_audit_owner_scoped(server):
 
     # Create an alice-scoped token and a fresh server with it.
     _, alice_token = clusterd_auth.create_token(
-        state_dir, actor="alice", scopes=["read"], owner="alice",
+        state_dir, actor="alice", scopes=["fleet:read"], owner="alice",
         ttl_days=1)
-    from clusterd.server import make_server
     from clusterd import handlers
+    from clusterd.server import make_server
     deps_alice = handlers.Deps(config_path=srv.deps.config_path,
                                state_dir=str(state_dir),
                                adapter_factory=srv.deps.adapter_factory)
@@ -725,7 +732,9 @@ def test_audit_redaction(server):
     srv, _, state_dir = server
     # Write a fake audit line with a secret directly into the log.
     audit_file = state_dir / "audit.jsonl"
-    import json as _json, time as _time, uuid as _uuid
+    import json as _json
+    import time as _time
+    import uuid as _uuid
     event = {
         "schema": "audit-event/v1",
         "event_id": str(_uuid.uuid4()),
@@ -751,7 +760,7 @@ def test_audit_redaction(server):
     assert "[REDACTED]" in detail_str, \
         f"detail should contain [REDACTED], got: {detail_str}"
     assert "PRIVATE KEY" not in detail_str, \
-        f"'PRIVATE KEY' must not appear in response"
+        "'PRIVATE KEY' must not appear in response"
 
 
 # --------------------------------------------------------------------------
@@ -759,21 +768,15 @@ def test_audit_redaction(server):
 # --------------------------------------------------------------------------
 
 def test_dashboard_returns_html_200(server):
-    """GET /v1/dashboard serves the public app shell (no auth for the HTML;
-    every DATA route stays auth-gated — the shell carries no data)."""
+    """GET /v1/dashboard is authenticated like every route but health."""
     srv, _, _ = server
 
-    # Without token: 200 HTML shell (browser navigations send no
-    # Authorization header; the JS token prompt happens client-side).
+    # Without token: default deny.
     status_noauth, hdrs_noauth, body_noauth = _req(
         srv, "GET", "/v1/dashboard", auth=False)
-    assert status_noauth == 200
-    assert "text/html" in hdrs_noauth.get("Content-Type", "")
-    assert "htmx" in body_noauth
-    assert "sessionStorage" in body_noauth
-    # The shell must not embed any fleet data (names, states, audit rows).
-    assert "daimon-x" not in body_noauth
-    assert "\"instances\"" not in body_noauth
+    assert status_noauth == 401
+    assert "application/json" in hdrs_noauth.get("Content-Type", "")
+    assert "unauthorized" in body_noauth
 
     # With read-scoped token: same 200 HTML.
     status, hdrs, body = _req(srv, "GET", "/v1/dashboard")
@@ -839,7 +842,7 @@ def test_dashboard_prepare_restore_on_running_409(server):
     ad._instances = [{"name": NAME, "state": "running", "image_version": "tribe-base/2026-08-01.1",
                       "budgets": {}, "uptime_s": 600}]
     # Verify the adapter change took effect before the handler runs
-    from clusterd.handlers import get_instance, Deps, RequestContext
+    from clusterd.handlers import RequestContext, get_instance
     ctx = RequestContext(request_id="rid", actor=srv.test_token or "tester",
                          scope_token=srv.test_token)
     stat_resp = get_instance(srv.deps, ctx, NAME)
@@ -1006,12 +1009,12 @@ def test_dashboard_confirm_requires_mutate_scope(server):
     """confirm route requires mutate scope."""
     srv, _, state_dir = server
     from clusterd import auth as clusterd_auth
-    from clusterd.server import make_server
     from clusterd import handlers as _h
+    from clusterd.server import make_server
 
     # Create a read-only token.
     _, ro_token = clusterd_auth.create_token(
-        state_dir, actor="reader", scopes=["read"], owner="*",
+        state_dir, actor="reader", scopes=["dashboard:read"], owner="*",
         ttl_days=1)
 
     plan_payload = {"operation": "start", "target": NAME}

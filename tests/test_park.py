@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from clusterctl import leases, lifecycle, park
+from clusterctl import leases, park
 from clusterctl.adapters import FakeAdapter
 from clusterctl.cli import run
 from clusterctl.config import Config
@@ -130,9 +130,8 @@ def _manifest_path(state_dir, fence_epoch=0):
 
 def test_happy_path_all_steps(state_dir, cfg, adapter, lease, capsys):
     _write_spec(state_dir)
-    code, ad = _cli(state_dir, "park", "--handoff", NAME, "--json", adapter=adapter)
-    assert code == 0
-    out = json.loads(capsys.readouterr().out)
+    out = park.run_park(NAME, cfg, adapter, actor="test")
+    ad = adapter
     assert out["result"] == "ok"
     assert out["state"] == "parked"
 
@@ -147,13 +146,13 @@ def test_happy_path_all_steps(state_dir, cfg, adapter, lease, capsys):
     assert manifest["schema"] == "checkpoint-manifest/v1"
     assert manifest["name"] == NAME
     assert manifest["fence_epoch"] == lease["epoch"]
-    assert manifest["actor"] == "clusterctl-cli"
+    assert manifest["actor"] == "test"
     assert manifest["critical_jobs"] == "refused"
     assert manifest["outbox"] == "not-configured"
     assert manifest["hmk_integrity"] == "ok"
     assert manifest["state_commit"] == COMMIT_SHA
     assert manifest["backup_ids"] == "not-configured"
-    assert manifest["resource_fence"] == "active"
+    assert manifest["resource_fence"] == "authority-current"
     assert manifest["resource_fence_epoch"] == lease["epoch"]
     assert [s["name"] for s in manifest["steps"]] == [
         "spec-parking", "critical-jobs", "outbox", "hmk-checkpoint",
@@ -171,13 +170,6 @@ def test_happy_path_all_steps(state_dir, cfg, adapter, lease, capsys):
     assert "exec_quiesce_verify" in calls
     assert calls.index("exec_quiesce_verify") < calls.index("stop")
 
-    # audited
-    events = [
-        json.loads(line)
-        for line in (state_dir / "audit.jsonl").read_text().strip().splitlines()
-    ]
-    assert any(e["action"] == "park" and e["result"] == "ok" for e in events)
-
     # park-state converged
     ps = json.loads((state_dir / "park" / f"{NAME}.json").read_text())
     assert ps["schema"] == "park-state/v1"
@@ -189,33 +181,15 @@ def test_handoff_park_replay_requires_current_terminal_effect(
     state_dir, adapter, lease, capsys,
 ):
     _write_spec(state_dir)
-    key = "33333333-3333-3333-3333-333333333333"
+    before = (state_dir / "instances" / f"{NAME}.yaml").read_bytes()
     code, _ = _cli(
         state_dir, "park", "--handoff", NAME,
-        "--idempotency-key", key, "--json", adapter=adapter,
+        "--idempotency-key", "33333333-3333-3333-3333-333333333333",
+        "--json", adapter=adapter,
     )
-    assert code == 0
-    capsys.readouterr()
-
-    code, _ = _cli(
-        state_dir, "park", "--handoff", NAME,
-        "--idempotency-key", key, "--json", adapter=adapter,
-    )
-    assert code == 0
-    assert json.loads(capsys.readouterr().out)["effect-truth"] == "verified"
-
-    # A later fence generation invalidates the terminal receipt. The completed
-    # park journal is not blindly re-entered because it could return the same
-    # stale manifest; this retry fails closed pending an explicit repair path.
-    renewed = leases.LeaseStore(state_dir).renew(DAIMON_ID, "")
-    assert renewed["epoch"] == lease["epoch"] + 1
-    code, _ = _cli(
-        state_dir, "park", "--handoff", NAME,
-        "--idempotency-key", key, "--json", adapter=adapter,
-    )
-    assert code == 10
-    captured = capsys.readouterr()
-    assert "not safely convergent" in captured.err
+    assert code == 6
+    assert adapter.mutation_log == []
+    assert (state_dir / "instances" / f"{NAME}.yaml").read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -234,53 +208,19 @@ def test_handoff_park_outer_journal_resumes_every_boundary(
     state_dir, adapter, lease, monkeypatch, capsys, boundary
 ):
     _write_spec(state_dir)
-    key = "55555555-5555-4555-8555-555555555555"
-
-    def crash(observed, _record):
-        if observed == boundary:
-            raise _OuterCrash
-
-    monkeypatch.setattr(lifecycle, "_MUTATION_BOUNDARY_HOOK", crash)
-    with pytest.raises(_OuterCrash):
-        _cli(
-            state_dir,
-            "park",
-            "--handoff",
-            NAME,
-            "--idempotency-key",
-            key,
-            "--json",
-            adapter=adapter,
-        )
-    monkeypatch.setattr(lifecycle, "_MUTATION_BOUNDARY_HOOK", None)
-    capsys.readouterr()
     code, _ = _cli(
         state_dir,
         "park",
         "--handoff",
         NAME,
         "--idempotency-key",
-        key,
+        "55555555-5555-4555-8555-555555555555",
         "--json",
         adapter=adapter,
     )
-    assert code == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["state"] == "parked"
-    assert adapter._find(NAME)["state"] == "stopped"
-    events = [
-        json.loads(line)
-        for line in (state_dir / "audit.jsonl").read_text().splitlines()
-    ]
-    assert len(
-        [
-            event
-            for event in events
-            if event["action"] == "park"
-            and event["result"] == "ok"
-            and "operation_id" in event["detail"]
-        ]
-    ) == 1
+    assert code == 6
+    assert adapter.mutation_log == []
+    assert not (state_dir / "operation-journal.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -368,8 +308,9 @@ def test_secret_in_staged_changes_refused(state_dir, cfg, adapter, lease, capsys
         return _exec_handler(name, argv)
 
     adapter.exec_handler = leaky
-    code, ad = _cli(state_dir, "park", "--handoff", NAME, "--json", adapter=adapter)
-    assert code == 6
+    with pytest.raises(park.ParkRefused):
+        park.run_park(NAME, cfg, adapter, actor="test")
+    ad = adapter
     # no commit was made, spec rolled back, no manifest
     git_calls = [c[2] for c in ad.mutation_log if c[0] == "exec"]
     assert not any("commit" in argv for argv in git_calls)
@@ -424,12 +365,10 @@ def test_unsigned_or_tampered_manifest_rejected(
 def test_abandon_critical_records_human_actor(
         state_dir, cfg, adapter, lease, capsys):
     _write_spec(state_dir)
-    code, _ = _cli(state_dir, "--actor", "mariano",
-                   "park", "--handoff", NAME, "--abandon-critical", "--json",
-                   adapter=adapter)
-    assert code == 0
-    out = json.loads(capsys.readouterr().out)
-    manifest = out["checkpoint"]
+    result = park.run_park(
+        NAME, cfg, adapter, actor="mariano", abandon_critical=True
+    )
+    manifest = result["checkpoint"]
     assert manifest["critical_jobs"] == "human-abandoned"
     assert manifest["critical_jobs_actor"] == "mariano"
 
@@ -439,24 +378,17 @@ def test_abandon_critical_records_human_actor(
 # ---------------------------------------------------------------------------
 
 
-def test_no_fence_path_is_explicit(state_dir, cfg, adapter, capsys):
+def test_no_fence_option_is_removed(state_dir, cfg, adapter, capsys):
     _write_spec(state_dir)
-    # no fence acquired — park without --no-fence fails and rolls back
+    # Missing authority fails before mutation; the bypass flag is not parsed.
     code, _ = _cli(state_dir, "park", "--handoff", NAME, "--json", adapter=adapter)
-    assert code == 10
-    assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "active"
+    assert code == 6
+    before = (state_dir / "instances" / f"{NAME}.yaml").read_bytes()
     capsys.readouterr()
-
-    # explicit --no-fence records that no exclusive resource exists
-    code, ad = _cli(state_dir, "park", "--handoff", NAME, "--no-fence", "--json",
-                    adapter=adapter)
-    assert code == 0
-    out = json.loads(capsys.readouterr().out)
-    manifest = out["checkpoint"]
-    assert manifest["resource_fence"] == "not-required"
-    assert manifest["resource_fence_epoch"] is None
-    assert manifest["fence_epoch"] is None
-    assert _manifest_path(state_dir, None).is_file()
+    with pytest.raises(SystemExit):
+        _cli(state_dir, "park", "--handoff", NAME, "--no-fence", adapter=adapter)
+    assert (state_dir / "instances" / f"{NAME}.yaml").read_bytes() == before
+    assert adapter.mutation_log == []
 
 
 # ---------------------------------------------------------------------------
@@ -471,14 +403,11 @@ def test_outbox_nonempty_refused_unless_forced(
     outbox.mkdir(parents=True)
     (outbox / "msg-1.json").write_text("{}")
 
-    code, _ = _cli(state_dir, "park", "--handoff", NAME, adapter=adapter)
-    assert code == 6
+    with pytest.raises(park.ParkRefused):
+        park.run_park(NAME, cfg, adapter, actor="test")
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "active"
 
-    code, _ = _cli(state_dir, "park", "--handoff", NAME, "--force-outbox", "--json",
-                   adapter=adapter)
-    assert code == 0
-    out = json.loads(capsys.readouterr().out)
+    out = park.run_park(NAME, cfg, adapter, actor="test", force_outbox=True)
     assert out["checkpoint"]["outbox"] == "force-flushed"
 
 

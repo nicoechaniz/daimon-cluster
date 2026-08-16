@@ -1,3 +1,9 @@
+# Historical receipt notice
+
+This file preserves the exact 2026-08-12 H10 evidence and hashes. It is not the
+current RC receipt. See `rc-recovery-rebirth-2026-08-16.md` for the current
+boundary.
+
 # H10 recovery-quorum rebirth verification receipt
 
 Date: 2026-08-12. Candidate only; local, synthetic, not deployed or

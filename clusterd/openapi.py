@@ -71,14 +71,15 @@ def _operation(route) -> dict:
         })
     if route.mutation:
         parameters.append({
-            "name": "X-Attended",
+            "name": "X-Human-Approval",
             "in": "header",
             "required": False,
-            "description": "Human presence marker REQUIRED for tokens "
-                           "whose actor is steward@* (v1 unattended-"
-                           "steward denial; real presence flow lands in "
-                           "M5). Missing -> 403 unattended-steward-denied.",
-            "schema": {"type": "string", "enum": ["true"]},
+            "description": "Base64url clusterd-human-approval/v1 artifact. "
+                           "Required for steward@* execution and signed by "
+                           "a separately provisioned human authority over "
+                           "the exact 409 intent. Caller attendance headers "
+                           "carry no authority.",
+            "schema": {"type": "string", "maxLength": 16384},
         })
         parameters.append({
             "name": "X-Confirm",
@@ -291,8 +292,9 @@ def build_openapi() -> dict:
                         "sha256-hashed at rest in "
                         "state_dir/auth/tokens.json (auth-token/v1); "
                         "manage via `scripts/clusterd --token-create | "
-                        "--token-revoke | --token-list`. Scopes: read, "
-                        "mutate. Owner-scoped tokens may only touch their "
+                        "--token-revoke | --token-list`. Scopes are exact "
+                        "operation classes (fleet:read, lifecycle:write, "
+                        "backup:write, etc.). Owner-scoped tokens may only touch their "
                         "own daimons. Revocation takes effect without "
                         "restart. Every route except GET /v1/health "
                         "requires a token (default-deny)."

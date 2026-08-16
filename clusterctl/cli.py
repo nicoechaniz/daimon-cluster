@@ -72,6 +72,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="confirmation action digest recorded in audit events "
         "(clusterd cluster-confirmation/v1 passthrough, issue #19)",
     )
+    parser.add_argument(
+        "--approved-target-state-hash",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_list = sub.add_parser("list", help="list all instances with reconciled state")
@@ -171,13 +176,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="force_outbox",
         help="override a non-empty bridge outbox (refused by default, fail-closed)",
-    )
-    p_park.add_argument(
-        "--no-fence",
-        action="store_true",
-        dest="no_fence",
-        help="park a body with no fenced writable resource "
-        "(recorded explicitly in the manifest)",
     )
     _mutation("wake", "wake a parked daimon (SIGCONT hermes, issue #23)")
     p_wake = sub.choices["wake"]
@@ -672,7 +670,7 @@ def run(argv=None, adapter=None) -> int:
     ) as exc:
         print(f"clusterctl: error: {exc}", file=sys.stderr)
         return EXIT_INTERNAL
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:  # noqa: BLE001  # pragma: no cover - defensive
         print(f"clusterctl: internal error: {exc!r}", file=sys.stderr)
         return EXIT_INTERNAL
 

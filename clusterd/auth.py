@@ -15,7 +15,7 @@ the file's mtime changes, so ``--token-revoke`` takes effect on the very
 next request.
 
 Default-deny: every route except GET /v1/health requires a valid token
-(enforced in ``clusterd.server``). Scopes: ``read`` / ``mutate``. Owner:
+(enforced in ``clusterd.server``). Scopes name exact operation classes. Owner:
 if a token's ``owner`` is not ``"*"``, requests targeting ``{name}``
 require the instance spec's ``created_by`` to equal the owner.
 
@@ -40,7 +40,17 @@ import yaml
 
 TOKEN_SCHEMA = "auth-token/v1"
 TOKEN_PREFIX = "dcd_"
-VALID_SCOPES = ("read", "mutate")
+VALID_SCOPES = (
+    "metadata:read",
+    "fleet:read",
+    "dashboard:read",
+    "dashboard:prepare",
+    "dashboard:confirm",
+    "lifecycle:write",
+    "backup:write",
+    "restore:write",
+    "destroy:write",
+)
 
 MUTATION_RATE_LIMIT = 60          # mutations ...
 MUTATION_RATE_WINDOW_S = 60       # ... per minute, per token
@@ -221,11 +231,12 @@ def instance_owner(state_dir: str | Path, name: str) -> str | None:
         return None
     try:
         raw = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
-    except yaml.YAMLError:
+    except (OSError, yaml.YAMLError):
         return None
     if not isinstance(raw, dict):
         return None
-    return raw.get("created_by")
+    owner = raw.get("created_by")
+    return owner if isinstance(owner, str) and owner else None
 
 
 # --------------------------------------------------------------------------

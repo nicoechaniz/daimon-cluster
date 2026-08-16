@@ -35,7 +35,7 @@ def state_dir(tmp_path):
 def test_chain_links_and_monotonic_seq(state_dir):
     for i in range(3):
         _append(state_dir, f"op{i}")
-    events = [json.loads(l) for l in _lines(state_dir)]
+    events = [json.loads(line) for line in _lines(state_dir)]
     assert [e["seq"] for e in events] == [0, 1, 2]
     assert events[0]["prev_sha256"] == "0" * 64
     for e in events:
@@ -85,7 +85,7 @@ def test_prechain_migration_anchoring(state_dir):
         "action": "create", "target": "x", "result": "ok",
         "detail": {}}) + "\n")
     _append(state_dir, "chained-op")
-    events = [json.loads(l) for l in _lines(state_dir)]
+    events = [json.loads(line) for line in _lines(state_dir)]
     assert "seq" not in events[0] and events[1]["seq"] == 1
     assert events[1]["prev_sha256"] != "0" * 64  # anchored on legacy tail
     assert audit.verify_chain(str(state_dir))["ok"]

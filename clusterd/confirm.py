@@ -25,11 +25,8 @@ challenge; ``X-Confirm: none`` executes them directly. ``X-Confirm:
 none`` does NOT bypass the destructive class — confirmation is
 mandatory there.
 
-Unattended steward denial (v1 mechanism for "mutation attempts from
-unattended steward ticks are denied"): tokens whose actor matches
-``steward@*`` must carry ``X-Attended: true`` on mutations, a human
-presence marker; missing -> 403 ``unattended-steward-denied``. The real
-presence flow lands in M5 — see docs/design/clusterd.md.
+Unattended steward detection is shared with ``clusterd.approvals``.  A
+caller-controlled attendance header is deliberately not accepted.
 """
 
 from __future__ import annotations
@@ -49,7 +46,6 @@ CONFIRMATION_TOKEN_PREFIX = "cfm_"
 DEFAULT_TTL_S = 900
 
 STWARD_ACTOR_PREFIX = "steward@"
-ATTENDED_HEADER_VALUE = "true"
 
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -151,6 +147,5 @@ def _digests_equal(a: str, b: str) -> bool:
 
 
 def steward_requires_attendance(actor: str) -> bool:
-    """v1 unattended-steward guard: actor ``steward@*`` must prove a
-    human marker (X-Attended: true) on mutations. Real presence flow: M5."""
+    """Return whether this actor requires a separate human approval."""
     return actor.startswith(STWARD_ACTOR_PREFIX)

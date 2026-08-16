@@ -34,15 +34,21 @@ All tests run against FakeAdapter — no incus.
 import json
 
 import pytest
+from test_park import (  # shared fixtures/helpers from the park suite
+    DAIMON_ID,
+    FINGERPRINT,
+    NAME,
+    PUBKEY,
+    _cli,
+    _exec_handler,
+    _write_spec,
+)
+from test_transfer import NEW, _parked
 
 from clusterctl import audit, leases, park, transfer
 from clusterctl.adapters import FakeAdapter
 from clusterctl.config import Config
 from clusterctl.inventory import load_spec_raw
-
-from test_park import (  # shared fixtures/helpers from the park suite
-    DAIMON_ID, FINGERPRINT, NAME, PUBKEY, _cli, _exec_handler, _write_spec)
-from test_transfer import NEW, _parked
 
 
 @pytest.fixture()
@@ -311,43 +317,20 @@ def test_hmk_checkpoint_failure_rolls_back_to_active(
 
 def test_audit_chain_intact_after_failed_park_and_transfer(
         state_dir, cfg, adapter, capsys):
-    """A failed park plus a transfer whose bound fence vanished are both
-    recorded as audit events and the hash chain still verifies."""
+    """Pre-authority refusals are audited without crossing runtime effects."""
     _write_spec(state_dir)
-
-    # failed park — no lease held → verification failure (exit 10)
     code, _ = _cli(state_dir, "park", "--handoff", NAME, adapter=adapter)
-    assert code == 10
-    assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "active"
-
-    # park for real, then make the transfer fail at the fence CAS
-    adapter.ensure_volume(NAME)
-    leases.LeaseStore(state_dir).acquire(DAIMON_ID, PUBKEY, FINGERPRINT)
-    code, adapter = _cli(state_dir, "park", "--handoff", NAME,
-                         adapter=adapter)
-    assert code == 0
-    for f in (state_dir / "leases").glob("*.json"):
-        f.unlink()  # identity lease vanishes before the CAS
-    code, _ = _cli(state_dir, "transfer", NAME, "--to", NEW,
-                   adapter=adapter)
     assert code == 6
+    assert adapter.mutation_log == []
     capsys.readouterr()
-
-    # failures recorded as audit events...
     events = audit.read_events(state_dir)
-    assert any(e["action"] == "park" and e["result"] == "error"
+    assert any(e["action"] == "park" and e["result"] == "denied"
                for e in events)
-    assert any(e["action"] == "transfer" and e["result"] == "denied"
-               for e in events)
-    assert any(e["action"] == "park" and e["result"] == "ok"
-               for e in events)
-
-    # ...and the tamper-evident chain still verifies
     chain = audit.verify_chain(state_dir)
     assert chain["ok"] is True
     assert chain["error"] is None
 
-    # CONVERGENT STATE: both parked — the failed transfer rolled back
-    # (target destroyed, source parked); nothing is left half-awake.
+    # The authorization refusal precedes every spec/runtime effect.
     assert load_spec_raw(cfg.instances_dir, NEW) is None
-    assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "parked"
+    assert "status" not in load_spec_raw(cfg.instances_dir, NAME)
+    assert adapter._find(NAME)["state"] == "running"

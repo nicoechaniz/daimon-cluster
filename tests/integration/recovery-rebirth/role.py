@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -15,9 +16,20 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from daimon_matrix.canonical import canonical_bytes
 from daimon_matrix.runtime import load_runtime
 
+from clusterctl.admission import (
+    AdmissionAuthority,
+    AdmissionClient,
+    AdmissionServer,
+    serve_in_thread,
+)
 from clusterctl.fences import Ed25519Signer, ResourceFenceStore
 from clusterctl.matrix_host import create_portable_snapshot, matrix_root
-from clusterctl.rebirth_host import launch_rebirth_host
+from clusterctl.production_fences import create_holder_enrollment
+from clusterctl.rebirth_host import (
+    ADMISSION_CLIENT_SCHEMA,
+    _installed_identity,
+    launch_rebirth_host,
+)
 from clusterctl.recovery_rebirth import export_recovery_snapshot
 
 
@@ -156,7 +168,9 @@ def _descriptor(value: bytes) -> int:
     return reader
 
 
-def _provision_disposable_fence_authority(state: Path) -> None:
+def _provision_disposable_fence_authority(
+    state: Path, embodiment_id: str
+) -> tuple[AdmissionServer, threading.Thread]:
     """Provision the real verifier DB that a cluster operator normally supplies."""
 
     key = state / ".disposable-fence-owner.pem"
@@ -171,6 +185,84 @@ def _provision_disposable_fence_authority(state: Path) -> None:
     signer = Ed25519Signer(key, "disposable-recovery-cluster-owner")
     ResourceFenceStore.production(state, signer=signer, key_id=signer.key_id)
     key.unlink()
+
+    identity = _installed_identity(state, embodiment_id)
+    admission_root = state.parent / "synthetic-admission-authority"
+
+    def admission_signer(name: str) -> tuple[Path, Ed25519Signer]:
+        path = admission_root / f"{name}.pem"
+        _write_new(
+            path,
+            Ed25519PrivateKey.generate().private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            ),
+        )
+        return path, Ed25519Signer(path, f"synthetic-recovery-{name}")
+
+    _authority_path, authority_signer = admission_signer("authority")
+    _registrar_path, registrar = admission_signer("registrar")
+    holder_path, holder = admission_signer("holder")
+    authority = AdmissionAuthority(
+        admission_root / "state",
+        signer=authority_signer,
+        holder_registrars={registrar.key_id: registrar.public_key},
+    )
+    socket_path = admission_root / "run/admission.sock"
+    server = AdmissionServer(socket_path, authority)
+    thread = serve_in_thread(server)
+    origin = identity["origin"]
+    client = AdmissionClient(
+        socket_path,
+        holder_signer=holder,
+        authority_key_id=authority_signer.key_id,
+        authority_public_key=authority_signer.public_key,
+        being_ref=identity["being_ref"],
+        body_ref=origin["body_ref"],
+        embodiment_id=origin["embodiment_id"],
+        incarnation_id=origin["incarnation_id"],
+        activation_id=identity["activation_id"],
+        credential_id=identity["credential_id"],
+        manifest_hash=identity["manifest_hash"],
+        lease_ttl_s=3,
+    )
+    client.enroll(
+        create_holder_enrollment(
+            registrar,
+            holder_key_id=holder.key_id,
+            holder_pubkey=holder.public_key,
+            being_ref=identity["being_ref"],
+            body_ref=origin["body_ref"],
+            embodiment_id=origin["embodiment_id"],
+            incarnation_id=origin["incarnation_id"],
+            activation_id=identity["activation_id"],
+            credential_id=identity["credential_id"],
+            manifest_hash=identity["manifest_hash"],
+            issued_ms=time.time_ns() // 1_000_000,
+            nonce="synthetic-recovery-holder-enrollment",
+        )
+    )
+    _write_new(
+        state / "admission-client.json",
+        json.dumps(
+            {
+                "schema": ADMISSION_CLIENT_SCHEMA,
+                "endpoint": {
+                    "transport": "unix-local-fixture",
+                    "path": str(socket_path),
+                },
+                "holder_key_path": str(holder_path),
+                "holder_key_id": holder.key_id,
+                "authority_key_id": authority_signer.key_id,
+                "authority_public_key": authority_signer.public_key,
+                "lease_ttl_s": 3,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8"),
+    )
+    return server, thread
 
 
 def verify_target(arguments: argparse.Namespace) -> dict:
@@ -194,7 +286,9 @@ def verify_target(arguments: argparse.Namespace) -> dict:
     if [row["event_id"] for row in before] != [source_evidence["event_id"]]:
         raise RuntimeError("restored_event_set_mismatch")
 
-    _provision_disposable_fence_authority(target / "state")
+    admission_server, admission_thread = _provision_disposable_fence_authority(
+        target / "state", embodiment_id
+    )
     descriptor = _descriptor(password)
     process, started = launch_rebirth_host(target / "state", embodiment_id, descriptor)
     try:
@@ -203,6 +297,9 @@ def verify_target(arguments: argparse.Namespace) -> dict:
     finally:
         process.terminate()
         _stdout, stderr = process.communicate(timeout=10)
+        admission_server.shutdown()
+        admission_server.server_close()
+        admission_thread.join(timeout=5)
         if process.returncode != 0:
             diagnostic = stderr.decode("utf-8", errors="replace")[:4096]
             raise RuntimeError(f"recovered_runtime_stop_failed:{diagnostic}")

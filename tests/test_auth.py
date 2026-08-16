@@ -27,7 +27,8 @@ def _declare(state_dir, name=NAME, created_by="tester"):
     inst_dir.mkdir(parents=True, exist_ok=True)
     (inst_dir / f"{name}.yaml").write_text(yaml.safe_dump({
         "schema": "instance-spec/v1", "name": name,
-        "image_version": "v1", "created_by": created_by,
+        "instance_kind": "generic-instance", "image_version": "v1",
+        "created_by": created_by,
     }), encoding="utf-8")
 
 
@@ -58,11 +59,15 @@ def _req(srv, method, path, token=None, headers=None):
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode()
-        return exc.code, json.loads(body) if body else {}
+        try:
+            body = exc.read().decode()
+            return exc.code, json.loads(body) if body else {}
+        finally:
+            exc.close()
 
 
-def _token(state_dir, actor="tester", scopes=("read", "mutate"), owner="*", ttl_days=1):
+def _token(state_dir, actor="tester", scopes=None, owner="*", ttl_days=1):
+    scopes = tuple(clusterd_auth.VALID_SCOPES) if scopes is None else scopes
     _, raw = clusterd_auth.create_token(state_dir, actor=actor,
                                         scopes=list(scopes), owner=owner,
                                         ttl_days=ttl_days)
@@ -89,7 +94,7 @@ def test_valid_token_reads(server):
 
 def test_read_scope_cannot_mutate(server):
     srv, _, state_dir = server
-    tok = _token(state_dir, scopes=("read",))
+    tok = _token(state_dir, scopes=("fleet:read",))
     status, body = _req(srv, "POST", f"/v1/instances/{NAME}/stop", token=tok,
                         headers={"Idempotency-Key": IDEM})
     assert status == 403 and body["error"] == "insufficient-scope"
@@ -111,15 +116,24 @@ def test_owner_cannot_touch_anothers_daimon(server):
     assert _req(srv, "GET", f"/v1/instances/{NAME}", token=tok)[0] == 403
 
 
-def test_unattended_steward_denied_attended_allowed(server):
+def test_unattended_steward_requires_cryptographic_approval(server):
     srv, _, state_dir = server
-    tok = _token(state_dir, actor="steward@daimonmatrix", scopes=("mutate",))
+    tok = _token(
+        state_dir,
+        actor="steward@daimonmatrix",
+        scopes=("lifecycle:write",),
+    )
     status, body = _req(srv, "POST", f"/v1/instances/{NAME}/stop", token=tok,
                         headers={"Idempotency-Key": IDEM})
-    assert status == 403 and body["error"] == "unattended-steward-denied"
-    status, _ = _req(srv, "POST", f"/v1/instances/{NAME}/stop", token=tok,
-                     headers={"Idempotency-Key": IDEM, "X-Attended": "true"})
-    assert status == 200
+    assert status == 409 and body["error"] == "human-approval-required"
+    status, body = _req(
+        srv,
+        "POST",
+        f"/v1/instances/{NAME}/stop",
+        token=tok,
+        headers={"Idempotency-Key": IDEM, "X-Attended": "true"},
+    )
+    assert status == 409 and body["error"] == "human-approval-required"
 
 
 def test_destroy_challenge_and_confirm_binding(server):
@@ -157,7 +171,7 @@ def test_audit_denials_without_token_material(server):
     _req(srv, "GET", "/v1/instances", token="dcd_nonexistent")
     log = (state_dir / "audit.jsonl").read_text()
     assert "dcd_nonexistent" not in log and secret not in log
-    events = [json.loads(l) for l in log.strip().splitlines()]
+    events = [json.loads(line) for line in log.strip().splitlines()]
     denied = [e for e in events if e["result"] == "denied"]
     assert denied and all("request_id" in (e.get("detail") or {}) for e in denied)
 

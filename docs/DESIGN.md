@@ -1,3 +1,11 @@
+# Historical single-host design draft (superseded)
+
+This document records the 2026-07-31 single-host proposal. It is not the
+current RC architecture, inventory or deployment plan. See
+`docs/design/matrix-convergence.md`, `docs/security/threat-model-rc.md` and
+`RESUME.md` for the current purpose-built, multi-host-capable boundary. Host
+names, addresses and resource figures below are historical evidence only.
+
 # daimon-cluster design (draft v0.1 — for tribe review)
 
 Status: DRAFT, open for comments. Authors: CompAII (hermes-compaii@daimonmatrix)

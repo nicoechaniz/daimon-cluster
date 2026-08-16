@@ -10,12 +10,13 @@ generated uuid4). Auth is ENFORCED (issue #18, design §2/§3) in
 
 - default-deny: every route except GET /v1/health requires a valid
   bearer token (missing/unknown/expired/revoked -> 401);
-- scope check per route (read/mutate -> 403);
+- exact operation-class scope check per route (for example
+  ``fleet:read`` or ``lifecycle:write`` -> 403);
 - owner check: non-``*`` owners may only touch daimons whose spec
   ``created_by`` matches (-> 403 "not your daimon");
-- unattended steward denial: ``steward@*`` actors need
-  ``X-Attended: true`` on mutations (-> 403, v1 mechanism; real
-  presence flow lands in M5);
+- unattended steward mutations require a one-shot Ed25519 approval from a
+  separately provisioned human authority, bound to the token, route, body,
+  target and current spec bytes;
 - per-token sliding-window rate limit: 60 mutations/minute -> 429;
 - destructive-class routes require a consumed confirmation challenge
   (``clusterd.confirm``) — otherwise 409 with the challenge JSON.
@@ -37,7 +38,7 @@ from urllib.parse import parse_qs, urlsplit
 from clusterctl import audit
 from clusterctl.config import load_config
 
-from . import __version__, auth, confirm, handlers, routes
+from . import __version__, approvals, auth, confirm, handlers, routes
 
 DEFAULT_BIND = "127.0.0.1"
 DEFAULT_PORT = 8785
@@ -123,7 +124,7 @@ class ClusterdHandler(BaseHTTPRequestHandler):
         return handlers.Response(status, body)
 
     def _enforce(self, ctx: handlers.RequestContext, route,
-                 params: dict, path: str):
+                 params: dict, path: str, method: str, body: dict):
         """Return (ctx, None) when allowed, else (ctx, denial Response)."""
         if route.public:
             return ctx, None
@@ -149,13 +150,14 @@ class ClusterdHandler(BaseHTTPRequestHandler):
         name = params.get("name")
         if owner != "*" and name is not None:
             spec_owner = auth.instance_owner(srv.state_dir, name)
-            if spec_owner is not None and spec_owner != owner:
+            if spec_owner != owner:
                 return ctx, self._deny(ctx, route, path, 403,
                                        "not your daimon",
-                                       "owner-mismatch")
+                                       "owner-missing-or-mismatch")
 
-        # 4. unattended steward denial (403) — v1 mechanism; M5 lands
-        #    the real presence flow (see clusterd.confirm docstring).
+        # 4. unattended steward approval. A caller-controlled boolean is not
+        #    evidence of human presence. Challenge-only requests on a
+        #    destructive route still do not execute and may proceed.
         #    Challenge-only requests on confirmation-gated routes are
         #    PREPARATION, not execution: an unattended steward may obtain
         #    a challenge (it mutates nothing — execution still requires
@@ -166,17 +168,51 @@ class ClusterdHandler(BaseHTTPRequestHandler):
         )
         if route.mutation and not challenge_only and \
                 confirm.steward_requires_attendance(record["actor"]):
-            if (self.headers.get("X-Attended") or "").lower() != \
-                    confirm.ATTENDED_HEADER_VALUE:
-                return ctx, self._deny(ctx, route, path, 403,
-                                       "unattended-steward-denied",
-                                       "steward-missing-x-attended")
+            encoded_approval = self.headers.get("X-Human-Approval")
+            if not encoded_approval:
+                intent = approvals.issue_intent(
+                    srv.state_dir,
+                    token_id=record["token_id"],
+                    actor=record["actor"],
+                    operation=route.operation_id,
+                    method=method,
+                    path=path,
+                    target=name,
+                    args=body,
+                )
+                return ctx, handlers.Response(
+                    409,
+                    {**intent, "error": "human-approval-required",
+                     "request_id": ctx.request_id},
+                )
+            try:
+                approval = approvals.consume_approval(
+                    srv.state_dir,
+                    encoded_approval,
+                    token_id=record["token_id"],
+                    actor=record["actor"],
+                    operation=route.operation_id,
+                    method=method,
+                    path=path,
+                    target=name,
+                    args=body,
+                )
+            except approvals.ApprovalError as exc:
+                return ctx, self._deny(
+                    ctx, route, path, 403, "human-approval-denied", exc.reason
+                )
+            ctx = dataclasses.replace(
+                ctx,
+                action_digest=approval["intent"]["intent_id"],
+                approved_target_state_hash=approval["intent"][
+                    "target_state_hash"
+                ],
+            )
 
         # 5. per-token mutation rate limit (429) ------------------------
-        if route.mutation:
-            if not srv.rate_limiter.allow(record["token_id"]):
-                return ctx, self._deny(ctx, route, path, 429,
-                                       "rate-limited", "mutation-rate-limit")
+        if route.mutation and not srv.rate_limiter.allow(record["token_id"]):
+            return ctx, self._deny(ctx, route, path, 429,
+                                   "rate-limited", "mutation-rate-limit")
 
         # 6. destructive-class prepare/confirm (409) --------------------
         if route.confirmation_required:
@@ -220,8 +256,8 @@ class ClusterdHandler(BaseHTTPRequestHandler):
             if 0 < cl < 65536:
                 try:
                     _body = json.loads(self.rfile.read(cl))
-                except (json.JSONDecodeError, Exception):
-                    pass
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    _body = {}
         try:
             route, params = routes.match(method, path)
         except routes.MethodNotAllowed:
@@ -240,7 +276,7 @@ class ClusterdHandler(BaseHTTPRequestHandler):
                 "request_id": ctx.request_id,
             }))
             return
-        ctx, denial = self._enforce(ctx, route, params, path)
+        ctx, denial = self._enforce(ctx, route, params, path, method, _body)
         if denial is not None:
             self._respond(ctx, denial)
             return
@@ -248,7 +284,7 @@ class ClusterdHandler(BaseHTTPRequestHandler):
         try:
             resp = handler(self.server.deps, ctx, route=route, query=query,
                            _body=_body, **params)
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:  # noqa: BLE001  # pragma: no cover - defensive
             resp = handlers.Response(500, {
                 "error": f"clusterd internal error: {exc!r}",
                 "action": route.operation_id,

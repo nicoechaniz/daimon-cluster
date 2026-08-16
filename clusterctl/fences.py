@@ -6,8 +6,8 @@ Only contenders for the exact same ``resource_ref`` exclude one another.
 
 from __future__ import annotations
 
-import copy
 import base64
+import copy
 import hashlib
 import json
 import logging
@@ -15,7 +15,7 @@ import os
 import stat
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -134,9 +134,7 @@ class Ed25519Signer(Signer):
         if not signature.startswith(self.PREFIX):
             return False
         try:
-            decoded = base64.b64decode(
-                signature[len(self.PREFIX) :], validate=True
-            )
+            decoded = base64.b64decode(signature[len(self.PREFIX) :], validate=True)
             verifier = serialization.load_ssh_public_key(pubkey.encode("ascii"))
             if not isinstance(verifier, Ed25519PublicKey):
                 return False
@@ -508,6 +506,8 @@ class ResourceFenceStore:
         key_id: str | None = None,
         database_path: str | Path | None = None,
         fault_hook: Callable[[str], None] | None = None,
+        clock: Callable[[], int] = now_ms,
+        holder_registrars: Mapping[str, str] | None = None,
     ):
         from .production_fences import ProductionFenceStore
 
@@ -522,6 +522,8 @@ class ResourceFenceStore:
             key_id=key_id,
             database_path=database_path,
             fault_hook=fault_hook,
+            clock=clock,
+            holder_registrars=holder_registrars,
             verifier_only=verifier_only,
         )
 
@@ -534,6 +536,8 @@ class ResourceFenceStore:
         key_id: str,
         database_path: str | Path | None = None,
         fault_hook: Callable[[str], None] | None = None,
+        clock: Callable[[], int] = now_ms,
+        holder_registrars: Mapping[str, str] | None = None,
     ) -> ResourceFenceStore:
         return cls(
             state_dir,
@@ -541,6 +545,8 @@ class ResourceFenceStore:
             key_id=key_id,
             database_path=database_path,
             fault_hook=fault_hook,
+            clock=clock,
+            holder_registrars=holder_registrars,
         )
 
     @classmethod

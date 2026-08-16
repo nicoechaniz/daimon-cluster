@@ -23,23 +23,64 @@ Ed25519 keys and real SQLite processes:
   a verifier-only production store, with no signing custody, for a fenced
   claim/effect refusal and exact response-loss replay.
 
-The compatibility suite continues to cover park, wake, transfer and V1
-fixtures. Production operations do not silently fall back to that backend.
+`tests/test_handoff_production.py` now covers park, wake and transfer through
+the shared authority with an enrolled holder, real Ed25519 manifest/evidence
+signatures and an exact prepared CAS successor. Production handoff commands
+never open the authority SQLite database and never select the V1 fixture.
+`FakeSigner`, `SSHSigner` and the file store remain test-fixture surfaces only.
+
+Missing configuration, a fake/unregistered holder, a revoked holder, replay or
+a wrong predecessor position refuses before any adapter mutation or spec
+write. Park additionally revalidates the exact current holder under its target
+lock before its first adapter call, so revocation at lock entry leaves the spec
+byte-identical and the adapter untouched.
+The former `--no-fence` assertion was removed: a handoff is accepted only with
+authority-signed current evidence for the exact holder and resource.
+
+Crash recovery after a committed fence reads the durable prepared
+authorization and authority position before attempting a CAS. Only the exact
+`successor_epoch` plus `authorization_ref` is adopted, so a post-commit retry
+does not send a second mutation. Release uses the authority-signed high-water
+tombstone, which remains recoverable across client restart but is hidden from a
+different holder and rejected for any other authorization. Adoption additionally
+requires a fresh enrolled-holder signature over a one-use authority challenge
+bound to session, resource, predecessor/successor and `authorization_ref`;
+public-only custody, session substitution and replay fail before receipt
+adoption. The holder-signed authorization and its hash also bind the operation,
+resource, full predecessor, nonce and requested fence TTL; client-side and
+authority-side recalculation reject field substitution.
+Matrix-managed wake/transfer is deliberately
+refused before fencing; its supported successor caller is `clusterctl
+rebirth-install` followed by the long-running `python -m
+clusterctl.rebirth_host` admission supervisor, not the old incarnation's
+handoff client.
 
 ## Reproduction
 
 ```console
 python -W error::ResourceWarning -m pytest -q tests/test_production_fences.py
+python -W error::ResourceWarning -m pytest -q tests/test_handoff_production.py \
+  tests/test_admission.py
 python -W error::ResourceWarning -m pytest -q
 python -m ruff check clusterctl/fences.py clusterctl/production_fences.py \
-  clusterctl/leases.py tests/test_production_fences.py
+  clusterctl/admission.py clusterctl/handoff_auth.py clusterctl/park.py \
+  clusterctl/transfer.py tests/test_production_fences.py \
+  tests/test_admission.py tests/test_handoff_production.py
 python -m mypy --follow-imports=skip --ignore-missing-imports \
-  clusterctl/fences.py clusterctl/production_fences.py clusterctl/matrix_host.py
+  clusterctl/fences.py clusterctl/production_fences.py clusterctl/admission.py \
+  clusterctl/handoff_auth.py clusterctl/park.py clusterctl/transfer.py
 python -m compileall -q clusterctl clusterd steward_tools tests
 ```
 
 No live host configuration or private key was copied into the evidence. The
 candidate remains subject to independent review before merge or deployment.
+
+On 2026-08-16 the production handoff wiring, prepared-mutation binding and
+post-review adversarial fixes passed 140 focused tests and the complete
+Cluster/Matrix V0 suite: 549 passed, 4 intentional skips. Ruff, mypy,
+compileall and `git diff --check` were clean. This is local pre-release
+qualification only: no host, SSH path, physical shared resource or deployment
+was exercised or claimed.
 
 ## Candidate result
 

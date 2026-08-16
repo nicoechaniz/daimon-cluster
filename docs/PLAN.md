@@ -1,60 +1,61 @@
-# Daimon Cluster delivery plan
+# Daimon Cluster release-candidate plan
 
 ## Release target
 
-Ship the first operational root-authorized `/me`, `/we`, and `/we.sync` by
-hosting the exact installed `daimon-matrix` runtime. Cluster owns physical
-bodies, lifecycle, snapshots and resource fences; Matrix owns being identity,
-signed history, scopes and adoption; Tribe Bridge carries exact encrypted
-bytes. Matrix.org is excluded.
+Provide the reproducible software path for creating a fresh root-authorized
+embodiment of an existing being without copying predecessor private custody or
+writable runtime state. Cluster owns bodies, lifecycle, storage, shared launch
+admission and concrete-resource fences. Matrix owns identity, authority,
+canonical events and semantic receipts. Tribe Bridge remains transitional.
 
-## Work packages
+## Automated acceptance
 
-1. Body/embodiment/incarnation registry integrated into lifecycle operations.
-2. Resource-scoped fence registry replacing identity-wide exclusion.
-3. Exact source-pinned `daimon-matrix` host process with encrypted custody and
-   transactional origin chains.
-4. Preview/pull, difference navigation, local successor decisions, and
-   projection receipts.
-5. Live Matrix `/we` fan-out, deduplication, deadlines, and partial results.
-6. Tribe typed transport and founded-membership protocol.
-7. HMK and external-identity adapters with preview and confirmation policy.
-8. Redacted Cluster dashboard/read APIs and Legion–daimonmatrix acceptance.
-9. Quiesced portable Matrix snapshot/restore with host-local capabilities
-   reprovisioned after relocation.
-10. Reproducible dependency pin, cross-version CI, deployment runbook and
-    retirement of the provisional Cluster `weave/` executable.
-11. DM-031 resource-scoped curator hosting with exact fence injection,
-    separate worker capability and fail-closed adapter/work-kind/resource
-    effect-observer routing.
-12. Exact DM-034 HMK executor with a payload-free Matrix intent, fixed
-    per-embodiment custody, crash recovery, fresh effect observation and
-    disposable SQLite snapshot/restore/rebuild.
-13. Exact DM-035 reviewed publisher with signed final-byte approval, fixed
-    least-authority provider subprocess, monotonic predecessor/tombstone
-    semantics and fresh Wiki/state/HMK effect observation.
-14. Root-authorized fresh-embodiment installation: distinct target custody,
-    exact Matrix package pin, forward peer-manifest update, stopped admission,
-    durable retry and one audit receipt per activation.
-15. Rebirth runtime supervision: admit the exact signed initial incarnation,
-    descriptor-only password delivery, authenticated readiness, restartable
-    startup journal and native three-process convergence evidence.
-16. Distributed fresh-embodiment rollout: keep target custody on its physical
-    host, update and authenticate every predecessor independently, require the
-    exact closed acknowledgement set before target start, and recover only
-    forward after a signed successor is accepted.
-17. Recovery-quorum rebirth: revoke every predecessor, install exactly one
-    fresh target, derive a custody-free public-bundle-plus-ledger transfer from
-    a fully verified snapshot, restore only its canonical events through signed
-    historical authority, gate first start on the restore journal and prove
-    crash retry plus disaster rebuild without transferring predecessor custody.
+The RC is software-complete only when all of the following hold on exact
+content-addressed commits:
 
-## Acceptance
+1. Matrix is installed from the full Git pin in `requirements-weave.txt` and
+   startup verifies that same `direct_url.json` commit. Operational loading
+   accepts only the final V7 bundle and V3 client configuration; earlier
+   undeployed iterations are removed or synthetic-only.
+2. Recovery/genesis holders use separate stores/processes and a keyless
+   threshold aggregator; all-seed ceremonies are named synthetic fixtures.
+3. Shared admission permits distinct authorized embodiments but exactly one
+   launch of a given embodiment authority across independent state roots.
+4. Park/wake/transfer and rebirth require real enrolled holder authorization,
+   trusted time and exact crash-recoverable fence successors before effects.
+5. New embodiment custody, operator/host capabilities and incarnation are
+   fresh. Predecessor custody, client keys and writable databases are absent.
+6. Transfer is exactly the signed public runtime bundle plus canonical ledger;
+   descriptor-stable staging and journals survive every injected crash point.
+7. Backup/export, restore, recovery/rebirth, rollback and double-launch refusal
+   pass from clean installs on supported Python versions and disposable
+   containers with resource warnings fatal.
+8. The three-repository manifest records exact commits, trees, archive hashes,
+   dependency pins, artifacts, suite receipts and limitations.
+9. Independent review passes on every final code hash and normal branch
+   protection is respected.
 
-Two embodiments of one root-authorized being run simultaneously in separate
-Matrix processes on separate physical hosts, exchange origin-marked events
-through the native Matrix peer carrier, report
-unapplied differences, choose independently, reverse a choice, answer `/me`
-and `/we` separately, advance to a signed incarnation N+1, relocate without
-duplicates or secrets, and still reject stale writers against the same
-resource.
+## Physical rehearsal preparation
+
+The repository may generate a content-addressed preflight that names proposed
+purpose-built non-production hosts, commands, effects, rollback, artifact
+hashes and required observations. Generating that plan is automated work;
+executing it is not.
+
+No host may be contacted until the owner selects the hosts/backup target and
+provides an exact GO for the reviewed preflight hash. The production exclusion
+and access invariant in `AGENTS.md` remain binding.
+
+## External gates after software RC
+
+- real independent holder assignment and live custody;
+- consent and independent custody for the other being in the cross-being
+  canary;
+- any Tribe participant contact, provisioning, key rotation or service change;
+- physical rehearsal GO, publication, cutover and eventual Tribe retirement.
+
+Passing CI or a local adversarial review cannot satisfy any of these gates.
+
+The manifest and physical-plan procedures are defined in
+`docs/runbooks/release-candidate-freeze.md` and
+`docs/runbooks/physical-rc-rehearsal.md` respectively.

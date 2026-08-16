@@ -3,10 +3,48 @@
 Living tracking file. Updated after every work session. Read FIRST on session
 start, then resume from the first open item.
 
-## Active checkpoint (2026-08-12)
+## Active checkpoint (2026-08-16)
+
+The current candidate functional boundary is Cluster
+`f03d9a471f5768bc89e6f70492829bf33ddfbc57` (tree
+`a4b225631ec551c7c52edf8bbc8b371ab74c7689`) with Matrix merged at
+`09414d6edd9586f539be8272c4979d0b36c86b87` (tree
+`d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`). This exact Cluster successor is
+locally qualified and awaiting independent review. A documentation/pin
+successor may advance the Cluster commit without changing that code boundary;
+the final generated RC manifest is authoritative for repository heads.
+
+Completed locally on the exact code boundary:
+
+- shared signed admission/fencing across independent state directories;
+- real signer/holder authorization and fail-before-effect handoff;
+- separated recovery holders and fresh-embodiment custody;
+- a distinct recovery transfer limited to the public runtime bundle and
+  canonical ledger, rejected by the generic full-snapshot restore;
+- V7 exact twelve-profile snapshot gate with every client tree excluded;
+- `594 passed, 4 skipped` with resource/unraisable warnings fatal;
+- network-disabled recovery/rebirth container E2E: 1 passed; and
+- encrypted backup/export, offline check and restore container E2E: 1 passed.
+
+Matrix PR #121 is merged. Cluster issue #90 owns the consolidated successor.
+Tribe PR #65 has an independently reviewed exact candidate and still awaits
+its required human approval. Nothing in this checkpoint was deployed and no
+existing host or real custody was used.
+
+Current remaining work is RC metadata, exact final pinning, independent review,
+clean CI/main merges, the content-addressed manifest/artifacts and an offline
+physical preflight. Real custody, participant consent/contact, host selection,
+physical execution, publication and cutover remain human gates.
+
+## Historical chronology (not the current baseline)
+
+The entries below preserve dated design/deployment evidence. Their hosts, PRs,
+commits and test counts must not be used as current RC evidence.
+
+### Checkpoint recorded 2026-08-12
 
 The local Journey C successor is complete on the H10 branch, pinned to Matrix
-V0 commit `306900c64aac5b0aa6ca062e777ca5ea2686d84e`. A recovery quorum now bridges a
+V0 merge `09414d6edd9586f539be8272c4979d0b36c86b87`. A recovery quorum now bridges a
 verified predecessor snapshot to one fresh embodiment while restoring only
 canonical events. A source-side verified derivative carries only the public
 runtime bundle and ledger, never old custody or journal bytes. First start is gated on

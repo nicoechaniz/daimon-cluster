@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
+import multiprocessing
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -27,33 +30,138 @@ from daimon_matrix.operator_rebirth import (
 )
 from daimon_matrix.runtime import load_runtime
 
+from clusterctl import audit, cli, distributed_rebirth, rebirth, rebirth_host
+from clusterctl.admission import (
+    AdmissionAuthority,
+    AdmissionClient,
+    AdmissionServer,
+    serve_in_thread,
+)
 from clusterctl.embodiments import Registry
 from clusterctl.fences import Ed25519Signer, ResourceFenceStore
-from clusterctl.matrix_host import matrix_client_root, matrix_root
-from clusterctl.operation_journal import OperationJournal
-from clusterctl import audit, cli, distributed_rebirth, rebirth, rebirth_host
+from clusterctl.matrix_host import (
+    MatrixHostError,
+    create_portable_snapshot,
+    matrix_client_root,
+    matrix_curator_client_root,
+    matrix_root,
+)
+from clusterctl.operation_journal import OperationJournal, canonical_bytes
+from clusterctl.production_fences import create_holder_enrollment
 
 
 class SimulatedCrash(BaseException):
     pass
 
 
-def _ensure_production_fences(state: Path) -> None:
-    if (state / "resource-fences.sqlite3").is_file():
-        return
+_DISPOSABLE_ADMISSION_SERVERS: list[tuple[AdmissionServer, threading.Thread]] = []
+
+
+def _close_disposable_admission_servers() -> None:
+    for server, thread in _DISPOSABLE_ADMISSION_SERVERS:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    _DISPOSABLE_ADMISSION_SERVERS.clear()
+
+
+atexit.register(_close_disposable_admission_servers)
+
+
+def _ensure_production_fences(state: Path, embodiment_id: str | None = None) -> None:
     state.mkdir(parents=True, mode=0o700, exist_ok=True)
     state.chmod(0o700)
-    key = state / ".rebirth-test-fence-owner.pem"
-    key.write_bytes(
-        Ed25519PrivateKey.generate().private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
+    if not (state / "resource-fences.sqlite3").is_file():
+        key = state / ".rebirth-test-fence-owner.pem"
+        key.write_bytes(
+            Ed25519PrivateKey.generate().private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+        key.chmod(0o600)
+        signer = Ed25519Signer(key, "rebirth-test-cluster-owner")
+        ResourceFenceStore.production(state, signer=signer, key_id=signer.key_id)
+    if embodiment_id is None or (state / "admission-client.json").is_file():
+        return
+    identity = rebirth_host._installed_identity(state, embodiment_id)
+    fixture = state.parent / f".synthetic-admission-{uuid.uuid4()}"
+    fixture.mkdir(mode=0o700)
+
+    def new_signer(name: str) -> Ed25519Signer:
+        path = fixture / f"{name}.pem"
+        path.write_bytes(
+            Ed25519PrivateKey.generate().private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+        path.chmod(0o600)
+        return Ed25519Signer(path, f"synthetic-{name}")
+
+    authority_signer = new_signer("admission-authority")
+    registrar = new_signer("matrix-registrar")
+    holder = new_signer("embodiment-holder")
+    authority = AdmissionAuthority(
+        fixture / "authority-state",
+        signer=authority_signer,
+        holder_registrars={registrar.key_id: registrar.public_key},
+    )
+    socket_path = fixture / "run/admission.sock"
+    server = AdmissionServer(socket_path, authority)
+    thread = serve_in_thread(server)
+    _DISPOSABLE_ADMISSION_SERVERS.append((server, thread))
+    origin = identity["origin"]
+    client = AdmissionClient(
+        socket_path,
+        holder_signer=holder,
+        authority_key_id=authority_signer.key_id,
+        authority_public_key=authority_signer.public_key,
+        being_ref=identity["being_ref"],
+        body_ref=origin["body_ref"],
+        embodiment_id=origin["embodiment_id"],
+        incarnation_id=origin["incarnation_id"],
+        activation_id=identity["activation_id"],
+        credential_id=identity["credential_id"],
+        manifest_hash=identity["manifest_hash"],
+        lease_ttl_s=3,
+    )
+    now_ms = time.time_ns() // 1_000_000
+    client.enroll(
+        create_holder_enrollment(
+            registrar,
+            holder_key_id=holder.key_id,
+            holder_pubkey=holder.public_key,
+            being_ref=identity["being_ref"],
+            body_ref=origin["body_ref"],
+            embodiment_id=origin["embodiment_id"],
+            incarnation_id=origin["incarnation_id"],
+            activation_id=identity["activation_id"],
+            credential_id=identity["credential_id"],
+            manifest_hash=identity["manifest_hash"],
+            issued_ms=now_ms,
+            nonce=str(uuid.uuid4()),
         )
     )
-    key.chmod(0o600)
-    signer = Ed25519Signer(key, "rebirth-test-cluster-owner")
-    ResourceFenceStore.production(state, signer=signer, key_id=signer.key_id)
+    config = {
+        "schema": rebirth_host.ADMISSION_CLIENT_SCHEMA,
+        "endpoint": {
+            "transport": "unix-local-fixture",
+            "path": str(socket_path),
+        },
+        "holder_key_path": str(fixture / "embodiment-holder.pem"),
+        "holder_key_id": holder.key_id,
+        "authority_key_id": authority_signer.key_id,
+        "authority_public_key": authority_signer.public_key,
+        "lease_ttl_s": 3,
+    }
+    config_path = state / "admission-client.json"
+    config_path.write_text(
+        json.dumps(config, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+    )
+    config_path.chmod(0o600)
 
 
 @pytest.fixture
@@ -67,6 +175,42 @@ def _descriptor(value: bytes) -> int:
     os.write(writer, value)
     os.close(writer)
     return reader
+
+
+def _rebirth_race_worker(
+    state: str,
+    embodiment_id: str,
+    password: bytes,
+    gate,
+    stop,
+    results,
+) -> None:
+    gate.wait()
+    try:
+        process, ready = rebirth_host.launch_rebirth_host(
+            state, embodiment_id, _descriptor(password), admission_lease_ttl_s=3
+        )
+    except rebirth_host.RebirthHostError as exception:
+        results.put(("refused", str(exception)))
+        return
+    results.put(("ready", ready["admission"]["fencing_token"]))
+    stop.wait(timeout=10)
+    process.terminate()
+    process.communicate(timeout=10)
+
+
+def _launcher_kill_worker(
+    state: str, embodiment_id: str, password: bytes, results
+) -> None:
+    process, ready = rebirth_host.launch_rebirth_host(
+        state,
+        embodiment_id,
+        _descriptor(password),
+        admission_lease_ttl_s=3,
+    )
+    results.put((process.pid, ready["admission"]["lease_expires_at_ms"]))
+    while True:
+        time.sleep(1)
 
 
 def _ceremony(tmp_path: Path, *, now_ms: int = 1_800_000_000_000) -> dict:
@@ -216,9 +360,136 @@ def _spawn_matrix_host(state: Path, embodiment_id: str, password: bytes):
     return process
 
 
-def _operator_client(root: Path) -> LocalClient:
-    config = ClientConfig.load(root / "client.json", (root / "client.key").read_bytes())
+def _operator_client(root: Path, profile: str = "observe") -> LocalClient:
+    client_root = root if profile == "observe" else root / "operator-clients" / profile
+    key_name = "client.key" if profile == "observe" else "capability.key"
+    config = ClientConfig.load(
+        client_root / "client.json", (client_root / key_name).read_bytes()
+    )
     return LocalClient(root / "matrix.sock", config)
+
+
+def test_recursive_package_install_preserves_owner_only_tree(short_tmp_path):
+    source = short_tmp_path / "source"
+    nested = source / "operator-clients" / "observe"
+    nested.mkdir(parents=True, mode=0o700)
+    source.chmod(0o700)
+    nested.parent.chmod(0o700)
+    nested.chmod(0o700)
+    payload = nested / "client.json"
+    payload.write_bytes(b"{}")
+    payload.chmod(0o600)
+    transient = nested / ".custody.json.lock"
+    transient.write_bytes(b"")
+    transient.chmod(0o600)
+
+    target = short_tmp_path / "target"
+    expected = rebirth._install_directory(source, target)
+
+    assert expected == {
+        "operator-clients/observe/client.json": hashlib.sha256(b"{}").hexdigest()
+    }
+    assert not (target / "operator-clients/observe/.custody.json.lock").exists()
+    for directory in (
+        target,
+        target / "operator-clients",
+        target / "operator-clients/observe",
+    ):
+        assert directory.stat().st_mode & 0o077 == 0
+    assert (target / "operator-clients/observe/client.json").stat().st_mode & 0o077 == 0
+    assert rebirth._install_directory(source, target) == expected
+
+
+@pytest.mark.parametrize("unsafe_kind", ["symlink", "group-readable", "too-deep"])
+def test_recursive_package_install_rejects_unsafe_source(short_tmp_path, unsafe_kind):
+    source = short_tmp_path / "source"
+    source.mkdir(mode=0o700)
+    if unsafe_kind == "too-deep":
+        parent = source
+        for index in range(rebirth._MAX_PACKAGE_DEPTH + 1):
+            parent = parent / f"level-{index}"
+            parent.mkdir(mode=0o700)
+        payload = parent / "client.json"
+        payload.write_bytes(b"{}")
+        payload.chmod(0o600)
+    else:
+        payload = source / "client.json"
+        payload.write_bytes(b"{}")
+        payload.chmod(0o640 if unsafe_kind == "group-readable" else 0o600)
+        if unsafe_kind == "symlink":
+            link = source / "linked.json"
+            link.symlink_to(payload)
+
+    with pytest.raises(
+        rebirth.RebirthInstallError, match="rebirth_package_file_rejected"
+    ):
+        rebirth._install_directory(source, short_tmp_path / "target")
+
+
+def test_recursive_package_install_rehashes_source_before_commit(
+    short_tmp_path, monkeypatch
+):
+    source = short_tmp_path / "source"
+    source.mkdir(mode=0o700)
+    payload = source / "client.json"
+    payload.write_bytes(b'{"version":1}')
+    payload.chmod(0o600)
+    original = rebirth._directory_files
+    calls = 0
+
+    def replace_after_manifest(path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            payload.write_bytes(b'{"version":2}')
+            payload.chmod(0o600)
+        return original(path)
+
+    monkeypatch.setattr(rebirth, "_directory_files", replace_after_manifest)
+    with pytest.raises(
+        rebirth.RebirthInstallError, match="rebirth_package_file_replaced"
+    ):
+        rebirth._install_directory(source, short_tmp_path / "target")
+    assert not (short_tmp_path / "target").exists()
+
+
+def test_v7_snapshot_rejects_incomplete_profiles_and_excludes_all_client_keys(
+    short_tmp_path,
+):
+    fixture = _ceremony(short_tmp_path)
+    source = fixture["peers"][min(fixture["peers"])]
+    bundle_path = source / "runtime.json"
+    original_bundle = bundle_path.read_bytes()
+    incomplete = json.loads(original_bundle)
+    incomplete["capabilities"] = []
+    bundle_path.write_bytes(canonical_bytes(incomplete))
+    bundle_path.chmod(0o600)
+    rejected = short_tmp_path / "incomplete-v7-snapshot"
+    with pytest.raises(MatrixHostError, match="matrix_snapshot_source_unsafe"):
+        create_portable_snapshot(source, rejected)
+    assert not rejected.exists()
+    bundle_path.write_bytes(original_bundle)
+    bundle_path.chmod(0o600)
+
+    client_secrets = [
+        path.read_bytes()
+        for path in source.rglob("*")
+        if path.is_file() and path.name in {"client.key", "capability.key"}
+    ]
+    assert len(client_secrets) == 12
+    restored_bundle = json.loads(original_bundle)
+    ledger = source / restored_bundle["ledger"]
+    ledger.write_bytes(b"")
+    ledger.chmod(0o600)
+    snapshot = short_tmp_path / "v7-snapshot"
+    manifest = create_portable_snapshot(source, snapshot)
+    copied = b"".join(
+        path.read_bytes() for path in snapshot.rglob("*") if path.is_file()
+    )
+    assert all(secret not in copied for secret in client_secrets)
+    assert {row["name"] for row in manifest["files"]}.isdisjoint(
+        {"client.json", "client.key", "operator-clients", "host-clients"}
+    )
 
 
 def test_journaled_install_adds_stopped_target_and_loadable_empty_runtime(tmp_path):
@@ -327,7 +598,7 @@ def test_supervisor_starts_exact_authorized_incarnation_and_restarts(short_tmp_p
         short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
     )
     installed = rebirth.install_rebirth_package(**values)
-    _ensure_production_fences(state)
+    _ensure_production_fences(state, installed["embodiment_id"])
     process, ready = rebirth_host.launch_rebirth_host(
         state,
         installed["embodiment_id"],
@@ -351,13 +622,25 @@ def test_supervisor_starts_exact_authorized_incarnation_and_restarts(short_tmp_p
         _stdout, stderr = process.communicate(timeout=10)
         assert process.returncode == 0, stderr
 
+    client = rebirth_host._configured_admission_client(
+        state, rebirth_host._installed_identity(state, installed["embodiment_id"])
+    )
+    deadline = time.monotonic() + 5
+    while client.position()["current"] is True and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert client.position()["current"] is False
     restarted, replay = rebirth_host.launch_rebirth_host(
         state,
         installed["embodiment_id"],
         _descriptor(fixture["password"]),
     )
     try:
-        assert replay == ready
+        assert {key: value for key, value in replay.items() if key != "admission"} == {
+            key: value for key, value in ready.items() if key != "admission"
+        }
+        assert (
+            replay["admission"]["fencing_token"] > ready["admission"]["fencing_token"]
+        )
         assert len(OperationJournal(state).list_all(limit=10)) == 2
         assert (
             sum(
@@ -371,12 +654,275 @@ def test_supervisor_starts_exact_authorized_incarnation_and_restarts(short_tmp_p
         assert restarted.returncode == 0, stderr
 
 
+def test_supervisor_fails_closed_without_shared_admission(short_tmp_path):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    descriptor = _descriptor(fixture["password"])
+    with pytest.raises(rebirth_host.RebirthHostError, match="admission_config_missing"):
+        rebirth_host.launch_rebirth_host(state, installed["embodiment_id"], descriptor)
+    with pytest.raises(OSError):
+        os.read(descriptor, 1)
+    assert Registry(state).status(installed["embodiment_id"])["status"] == "stopped"
+
+
+def test_repeated_clean_restart_has_no_socket_or_admission_race(short_tmp_path):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(state, installed["embodiment_id"])
+    identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
+    tokens = []
+    for _iteration in range(8):
+        process, ready = rebirth_host.launch_rebirth_host(
+            state,
+            installed["embodiment_id"],
+            _descriptor(fixture["password"]),
+            admission_lease_ttl_s=3,
+        )
+        tokens.append(ready["admission"]["fencing_token"])
+        process.terminate()
+        _stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr
+        observer = rebirth_host._configured_admission_client(state, identity)
+        deadline = time.monotonic() + 3
+        while observer.position()["current"] is True and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert observer.position()["current"] is False
+    assert tokens == sorted(tokens)
+    assert len(set(tokens)) == len(tokens)
+
+
+def test_shared_admission_allows_only_one_ready_across_state_dirs(short_tmp_path):
+    fixture, state_a, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    state_b = short_tmp_path / "cloned-state"
+    shutil.copytree(state_a, state_b)
+    _ensure_production_fences(state_a, installed["embodiment_id"])
+    _ensure_production_fences(state_b)
+    config_b = state_b / "admission-client.json"
+    config_b.write_bytes((state_a / "admission-client.json").read_bytes())
+    config_b.chmod(0o600)
+
+    context = multiprocessing.get_context("spawn")
+    gate = context.Barrier(3)
+    stop = context.Event()
+    results = context.Queue()
+    workers = [
+        context.Process(
+            target=_rebirth_race_worker,
+            args=(
+                str(state),
+                installed["embodiment_id"],
+                fixture["password"],
+                gate,
+                stop,
+                results,
+            ),
+        )
+        for state in (state_a, state_b)
+    ]
+    for worker in workers:
+        worker.start()
+    gate.wait()
+    outcomes = [results.get(timeout=20) for _ in workers]
+    stop.set()
+    for worker in workers:
+        worker.join(timeout=15)
+        assert worker.exitcode == 0
+    assert sorted(outcome[0] for outcome in outcomes) == ["ready", "refused"]
+    refusal = next(value for outcome, value in outcomes if outcome == "refused")
+    assert refusal == "rebirth_host_admission_refused"
+
+
+def test_supervisor_stops_runtime_before_lease_expiry_on_authority_loss(
+    short_tmp_path, monkeypatch
+):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(state, installed["embodiment_id"])
+    process, ready = rebirth_host.launch_rebirth_host(
+        state,
+        installed["embodiment_id"],
+        _descriptor(fixture["password"]),
+        admission_lease_ttl_s=3,
+    )
+    server, thread = _DISPOSABLE_ADMISSION_SERVERS.pop()
+    started = time.monotonic()
+    real_time_ns = time.time_ns
+    # Simulate the host wall clock stepping ten seconds backwards after READY.
+    # Lease supervision must use elapsed monotonic time only.
+    monkeypatch.setattr(time, "time_ns", lambda: real_time_ns() - 10_000_000_000)
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
+    _stdout, stderr = process.communicate(timeout=5)
+    assert process.returncode == -signal.SIGKILL, stderr
+    assert time.monotonic() - started < 2.25
+    assert ready["admission"]["lease_expires_at_ms"] > 0
+
+
+def test_monotonic_watchdog_kills_while_renew_round_trip_is_stuck():
+    class StuckClient:
+        session_id = "test-session"
+
+        def renew(self, *, ttl_s):
+            del ttl_s
+            time.sleep(1.5)
+            raise rebirth_host.AdmissionError("stuck authority")
+
+        def release(self):
+            raise rebirth_host.AdmissionError("stuck authority")
+
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    started = time.monotonic()
+    supervisor = rebirth_host._AdmissionSupervisor(
+        process,
+        StuckClient(),  # type: ignore[arg-type]
+        {"lease_expires_at_ms": -10_000_000},
+        1,
+        lease_started_monotonic=started,
+    )
+    supervisor.start()
+    _stdout, _stderr = process.communicate(timeout=2)
+    assert process.returncode == -signal.SIGKILL
+    assert time.monotonic() - started < 0.9
+    supervisor.thread.join(timeout=3)
+
+
+def test_launcher_sigkill_cannot_leave_executing_orphan_beyond_lease(
+    short_tmp_path,
+):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(state, installed["embodiment_id"])
+    context = multiprocessing.get_context("spawn")
+    results = context.Queue()
+    launcher = context.Process(
+        target=_launcher_kill_worker,
+        args=(
+            str(state),
+            installed["embodiment_id"],
+            fixture["password"],
+            results,
+        ),
+    )
+    launcher.start()
+    child_pid, lease_expires_at_ms = results.get(timeout=20)
+    os.kill(launcher.pid, signal.SIGKILL)
+    launcher.join(timeout=5)
+    assert launcher.exitcode == -signal.SIGKILL
+    deadline = time.monotonic() + 2
+    executing = True
+    while time.monotonic() < deadline:
+        stat_path = Path(f"/proc/{child_pid}/stat")
+        if not stat_path.exists():
+            executing = False
+            break
+        try:
+            executing = stat_path.read_text().split()[2] != "Z"
+        except FileNotFoundError:
+            executing = False
+        if not executing:
+            break
+        time.sleep(0.02)
+    assert executing is False
+    assert time.time_ns() // 1_000_000 < lease_expires_at_ms
+
+
+def test_admission_is_rechecked_before_first_runtime_effect(
+    short_tmp_path, monkeypatch
+):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(state, installed["embodiment_id"])
+    identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
+    client = rebirth_host._configured_admission_client(state, identity)
+    monkeypatch.setattr(client, "current", lambda: None)
+
+    def forbidden_spawn(*_args, **_kwargs):
+        raise AssertionError("runtime spawn crossed a lost admission boundary")
+
+    monkeypatch.setattr(rebirth_host.subprocess, "Popen", forbidden_spawn)
+    with pytest.raises(rebirth_host.RebirthHostError, match="lost_before_effect"):
+        rebirth_host.launch_rebirth_host(
+            state,
+            installed["embodiment_id"],
+            _descriptor(fixture["password"]),
+            admission_client=client,
+            admission_lease_ttl_s=3,
+        )
+    assert Registry(state).status(installed["embodiment_id"])["status"] == "stopped"
+
+
+def test_registry_start_is_compensated_if_admission_is_lost_in_race(
+    short_tmp_path, monkeypatch
+):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(state, installed["embodiment_id"])
+    identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
+    client = rebirth_host._configured_admission_client(state, identity)
+    original_start = Registry.start
+
+    def start_then_lose_admission(self, *args, **kwargs):
+        result = original_start(self, *args, **kwargs)
+        client.release()
+        return result
+
+    monkeypatch.setattr(Registry, "start", start_then_lose_admission)
+
+    def forbidden_spawn(*_args, **_kwargs):
+        raise AssertionError("runtime spawned after admission loss")
+
+    monkeypatch.setattr(rebirth_host.subprocess, "Popen", forbidden_spawn)
+    with pytest.raises(rebirth_host.RebirthHostError, match="lost_after_registry"):
+        rebirth_host.launch_rebirth_host(
+            state,
+            installed["embodiment_id"],
+            _descriptor(fixture["password"]),
+            admission_client=client,
+            admission_lease_ttl_s=3,
+        )
+    registered = Registry(state).status(installed["embodiment_id"])
+    assert registered["status"] == "stopped"
+    assert registered["current_incarnation_id"] is None
+    assert all(
+        row["incarnation_id"] != installed["incarnation_id"]
+        for row in registered["incarnations"]
+    )
+    journaled = OperationJournal(state).open_operations()[0]
+    assert journaled["state"] == "runtime-dispatching"
+    assert journaled["runtime_observation"] == {
+        "registry_start_compensated": True,
+        "embodiment_id": installed["embodiment_id"],
+        "incarnation_id": installed["incarnation_id"],
+        "reason": "rebirth_host_admission_lost_after_registry",
+    }
+
+
 def test_failed_password_resumes_same_admitted_incarnation(short_tmp_path):
     fixture, state, values = _install(
         short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
     )
     installed = rebirth.install_rebirth_package(**values)
-    _ensure_production_fences(state)
+    _ensure_production_fences(state, installed["embodiment_id"])
     with pytest.raises(rebirth_host.RebirthHostError, match="startup"):
         rebirth_host.launch_rebirth_host(
             state,
@@ -429,7 +975,7 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
         hosted_peers[embodiment_id] = target
     values["peer_roots"] = hosted_peers
     installed = rebirth.install_rebirth_package(**values)
-    _ensure_production_fences(state)
+    _ensure_production_fences(state, installed["embodiment_id"])
 
     processes = []
     try:
@@ -451,8 +997,10 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
         processes.append(target_process)
         target_root = matrix_root(state, installed["embodiment_id"])
         target_client = _operator_client(target_root)
-        peer_id = sorted(hosted_peers)[0]
+        target_weave_client = _operator_client(target_root, "weave")
+        peer_id = min(hosted_peers)
         peer_client = _operator_client(hosted_peers[peer_id])
+        peer_weave_client = _operator_client(hosted_peers[peer_id], "weave")
         assert ready["active_embodiment_ids"] == sorted(
             [*hosted_peers, installed["embodiment_id"]]
         )
@@ -475,13 +1023,13 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
             "limit": 16,
         }
         request_id = str(uuid.uuid4())
-        prepared_pull = peer_client.prepare(
+        prepared_pull = peer_weave_client.prepare(
             "we.sync.peer-pull", pull_params, request_id=request_id
         )
-        first_pull = peer_client.send(prepared_pull)
+        first_pull = peer_weave_client.send(prepared_pull)
         assert first_pull["ok"] is True
         assert first_pull["result"]["events"] == 1
-        assert peer_client.send(prepared_pull) == first_pull
+        assert peer_weave_client.send(prepared_pull) == first_pull
 
         peer_observation = peer_client.we_observe(
             {
@@ -494,7 +1042,7 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
             },
             request_id=str(uuid.uuid4()),
         )[1]["result"]["event"]
-        reverse = target_client.sync_peer_pull(
+        reverse = target_weave_client.sync_peer_pull(
             {
                 "sync_request_id": str(uuid.uuid4()),
                 "target_embodiment_id": peer_id,
@@ -504,8 +1052,8 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
         )[1]
         assert reverse["ok"] is True
         assert reverse["result"]["events"] >= 1
-        target_projection = target_client.projection_rebuild()[1]["result"]
-        peer_projection = peer_client.projection_rebuild()[1]["result"]
+        target_projection = target_weave_client.projection_rebuild()[1]["result"]
+        peer_projection = peer_weave_client.projection_rebuild()[1]["result"]
         assert (
             next(
                 row
@@ -546,7 +1094,7 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
 def test_crash_and_response_loss_resume_one_exact_install(
     tmp_path, monkeypatch, boundary
 ):
-    fixture, state, values = _install(tmp_path)
+    _fixture, state, values = _install(tmp_path)
     crashed = False
 
     def fail(name, _record):
@@ -638,7 +1186,7 @@ def test_peer_rollout_waits_for_authenticated_restarted_daemon(short_tmp_path):
     fixture, state, _values = _install(short_tmp_path, ceremony_now_ms=now_ms)
     _ensure_production_fences(state)
     rollout = distributed_rebirth.create_rollout_bundle(fixture["package"])
-    peer_id = sorted(fixture["peers"])[0]
+    peer_id = min(fixture["peers"])
     source = fixture["peers"][peer_id]
     target = matrix_root(state, peer_id)
     target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -646,7 +1194,10 @@ def test_peer_rollout_waits_for_authenticated_restarted_daemon(short_tmp_path):
     shutil.copytree(source, target)
     client_target = matrix_client_root(state, peer_id)
     client_target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    shutil.copytree(source.parents[1] / "host-clients" / source.name, client_target)
+    shutil.copytree(source / "host-clients/status", client_target)
+    curator_target = matrix_curator_client_root(state, peer_id)
+    curator_target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    shutil.copytree(source / "host-clients/curator", curator_target)
     origin = json.loads((target / "runtime.json").read_bytes())["local_origin"]
     registry = Registry(state)
     registry.register(body_ref=origin["body_ref"], embodiment_id=peer_id)
@@ -752,7 +1303,7 @@ def test_distributed_target_cannot_start_before_exact_all_peer_admission(
     admission = distributed_rebirth.record_target_admission(
         state, rollout, acknowledgements
     )
-    _ensure_production_fences(state)
+    _ensure_production_fences(state, installed["embodiment_id"])
     assert (
         distributed_rebirth.record_target_admission(
             state, rollout, [*acknowledgements, acknowledgements[0]]

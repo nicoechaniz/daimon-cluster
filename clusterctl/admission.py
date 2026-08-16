@@ -328,7 +328,7 @@ class AdmissionAuthority:
             )
             return self._store.position(resource_ref)
         if action in {
-            "fence-position", "fence-current", "fence-acquire",
+            "fence-position", "fence-current", "fence-last", "fence-acquire",
             "fence-renew", "fence-release",
         }:
             binding = self._binding(request)
@@ -337,6 +337,33 @@ class AdmissionAuthority:
                 raise AdmissionError("fence resource reference is invalid")
             if action == "fence-position":
                 return self._store.position(fence_resource_ref)
+            if action == "fence-last":
+                evidence = self._store.last(fence_resource_ref)
+                if evidence is None or any(
+                    evidence.get(field) != binding[binding_field]
+                    for field, binding_field in (
+                        ("body_ref", "body_ref"),
+                        ("holder_embodiment_id", "embodiment_id"),
+                        ("holder_incarnation_id", "incarnation_id"),
+                        ("holder_key_id", "holder_key_id"),
+                    )
+                ):
+                    return {"present": False, "resource_ref": fence_resource_ref}
+                evidence_operation = evidence.get("operation")
+                if evidence_operation not in {"acquire", "renew", "release"}:
+                    raise AdmissionError("last fence evidence operation is invalid")
+                return {
+                    "present": True,
+                    "resource_ref": fence_resource_ref,
+                    "receipt": self._resource_receipt(
+                        str(evidence_operation),
+                        binding,
+                        evidence,
+                        session_id,
+                        resource_ref=fence_resource_ref,
+                        schema=FENCE_RECEIPT_SCHEMA,
+                    ),
+                }
             if action == "fence-current":
                 evidence = self._store.verify_current(fence_resource_ref)
                 if evidence is None:
@@ -977,6 +1004,10 @@ class FenceMutationClient(AdmissionClient):
             or isinstance(prepared.get("successor_epoch"), bool)
             or prepared.get("successor_epoch") != position.get("epoch", -2) + 1
             or (
+                operation in {"renew", "release"}
+                and position.get("current") is not True
+            )
+            or (
                 operation == "release" and ttl_s is not None
             )
             or (
@@ -1002,9 +1033,11 @@ class FenceMutationClient(AdmissionClient):
         operation, resource_ref, position, _authorization = self._validate_prepared(
             prepared
         )
-        if operation == "release":
-            return None
-        receipt = self.current(resource_ref)
+        receipt = (
+            self._last(resource_ref)
+            if operation == "release"
+            else self.current(resource_ref)
+        )
         if receipt is None:
             if position.get("current") is False:
                 return None
@@ -1019,6 +1052,7 @@ class FenceMutationClient(AdmissionClient):
             receipt.get("fencing_token") == prepared.get("successor_epoch")
             and evidence.get("authorization_ref") == prepared.get("authorization_ref")
             and evidence.get("operation") == operation
+            and (operation != "release" or evidence.get("state") == "released")
         ):
             return receipt
         raise AdmissionConflict("authority position is not the exact prepared successor")
@@ -1063,7 +1097,7 @@ class FenceMutationClient(AdmissionClient):
         return receipt
 
     def verify_fence_receipt(
-        self, receipt: Any, *, resource_ref: str, expected_action: str
+        self, receipt: Any, *, resource_ref: str, expected_action: str | None
     ) -> dict[str, Any]:
         if not isinstance(receipt, dict) or receipt.get("schema") != FENCE_RECEIPT_SCHEMA:
             raise AdmissionUnavailable("fence mutation receipt is malformed")
@@ -1078,7 +1112,10 @@ class FenceMutationClient(AdmissionClient):
         }
         if any(receipt.get(key) != value for key, value in expected.items()):
             raise AdmissionUnavailable("fence mutation receipt binding mismatch")
-        if receipt.get("action") != expected_action:
+        if expected_action is None:
+            if receipt.get("action") not in {"acquire", "renew", "release"}:
+                raise AdmissionUnavailable("fence mutation receipt action mismatch")
+        elif receipt.get("action") != expected_action:
             raise AdmissionUnavailable("fence mutation receipt action mismatch")
         signature = receipt.get("signature")
         if not isinstance(signature, str) or not _verify_ed25519(
@@ -1095,6 +1132,20 @@ class FenceMutationClient(AdmissionClient):
         ):
             raise AdmissionUnavailable("fence mutation receipt evidence is inconsistent")
         return dict(receipt)
+
+    def _last(self, resource_ref: str) -> dict[str, Any] | None:
+        result = self._call(
+            "fence-last", **self._coordinates(), resource_ref=resource_ref
+        )
+        if not isinstance(result, dict) or not isinstance(result.get("present"), bool):
+            raise AdmissionUnavailable("fence last response is invalid")
+        if result.get("resource_ref") != resource_ref:
+            raise AdmissionUnavailable("fence last resource binding mismatch")
+        if result["present"] is False:
+            return None
+        return self.verify_fence_receipt(
+            result.get("receipt"), resource_ref=resource_ref, expected_action=None
+        )
 
     # Read facade used by handoff code.  No local database is ever consulted.
     @staticmethod

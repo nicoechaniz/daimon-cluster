@@ -27,7 +27,10 @@ from clusterctl.admission import (
     serve_in_thread,
 )
 from clusterctl.fences import Ed25519Signer
-from clusterctl.production_fences import create_holder_enrollment
+from clusterctl.production_fences import (
+    create_holder_authorization,
+    create_holder_enrollment,
+)
 
 
 class MutableClock:
@@ -626,3 +629,136 @@ def test_every_prepared_semantic_field_is_exactly_bound_before_mutation(
         assert raised.value, label
         assert renew_calls == 0, label
         assert client.position(resource_ref) == before, label
+
+
+def test_release_response_loss_recovers_exact_tombstone_after_client_restart(
+    authority_fixture: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority = authority_fixture["authority"]
+    registrar = authority_fixture["registrar"]
+    coordinates = _coordinates("release-recovery")
+    holder = _key(
+        tmp_path / "holder/release-recovery.pem", "holder-release-recovery"
+    )
+    enrollment_client = _client(
+        authority_fixture["socket"], holder, authority, coordinates
+    )
+    _enroll(
+        enrollment_client,
+        registrar,
+        holder,
+        coordinates,
+        authority_fixture["clock"].value,
+    )
+    client = _fence_client(
+        authority_fixture["socket"], holder, authority, coordinates
+    )
+    resource_ref = "cluster:exclusive-volume:release-recovery-home"
+    acquired = client.commit(
+        client.prepare(resource_ref, operation="acquire", ttl_s=60)
+    )
+    predecessor = client.position(resource_ref)
+    prepared = client.prepare(resource_ref, operation="release")
+    different_request = client.prepare(resource_ref, operation="release")
+    release_calls = 0
+    store = authority_fixture["server"].authority._store
+    real_release = store.release
+
+    def counted_release(*args, **kwargs):
+        nonlocal release_calls
+        release_calls += 1
+        return real_release(*args, **kwargs)
+
+    monkeypatch.setattr(store, "release", counted_release)
+    real_call = client._call
+
+    class LostReleaseResponse(BaseException):
+        pass
+
+    def lose_release_response(action: str, **values):
+        result = real_call(action, **values)
+        if action == "fence-release":
+            raise LostReleaseResponse
+        return result
+
+    monkeypatch.setattr(client, "_call", lose_release_response)
+    with pytest.raises(LostReleaseResponse):
+        client.commit(prepared)
+    assert release_calls == 1
+    assert client.position(resource_ref) == {
+        "resource_ref": resource_ref,
+        "epoch": predecessor["epoch"] + 1,
+        "proof": store.position(resource_ref)["proof"],
+        "current": False,
+    }
+
+    restarted = _fence_client(
+        authority_fixture["socket"], holder, authority, coordinates
+    )
+    recovered = restarted.commit(prepared)
+    replay = restarted.commit(prepared)
+    assert release_calls == 1
+    assert recovered["action"] == "release"
+    assert replay["proof_ref"] == recovered["proof_ref"]
+    assert recovered["fencing_token"] == prepared["successor_epoch"]
+    assert (
+        recovered["evidence"]["authorization_ref"]
+        == prepared["authorization_ref"]
+    )
+
+    altered = copy.deepcopy(prepared)
+    altered["authorization_ref"] = "cluster:fence-proof:v1:altered"
+    with pytest.raises(AdmissionError, match="binding"):
+        restarted.commit(altered)
+    with pytest.raises(AdmissionConflict, match="exact prepared successor"):
+        restarted.commit(different_request)
+    assert release_calls == 1
+
+    impostor_coordinates = _coordinates("release-impostor")
+    impostor = _key(tmp_path / "holder/release-impostor.pem", "release-impostor")
+    impostor_enrollment = _client(
+        authority_fixture["socket"], impostor, authority, impostor_coordinates
+    )
+    _enroll(
+        impostor_enrollment,
+        registrar,
+        impostor,
+        impostor_coordinates,
+        authority_fixture["clock"].value,
+    )
+    impostor_client = _fence_client(
+        authority_fixture["socket"], impostor, authority, impostor_coordinates
+    )
+    impostor_authorization = create_holder_authorization(
+        impostor,
+        operation="release",
+        body_ref=impostor_coordinates["body_ref"],
+        embodiment_id=impostor_coordinates["embodiment_id"],
+        incarnation_id=impostor_coordinates["incarnation_id"],
+        resource_ref=resource_ref,
+        expected_epoch=predecessor["epoch"],
+        expected_proof=predecessor["proof"],
+        expected_current=True,
+        fence_ttl_s=None,
+        nonce="release-impostor-request",
+    )
+    impostor_prepared = {
+        "schema": FenceMutationClient.PREPARED_SCHEMA,
+        "operation": "release",
+        "resource_ref": resource_ref,
+        "expected_position": predecessor,
+        "successor_epoch": predecessor["epoch"] + 1,
+        "authorization": impostor_authorization,
+        "authorization_ref": impostor_client.proof_ref(impostor_authorization),
+        "ttl_s": None,
+    }
+    with pytest.raises(AdmissionConflict, match="no longer current"):
+        impostor_client.commit(impostor_prepared)
+    assert release_calls == 1
+
+    reacquired = restarted.commit(
+        restarted.prepare(resource_ref, operation="acquire", ttl_s=60)
+    )
+    assert reacquired["fencing_token"] == prepared["successor_epoch"] + 1
+    assert restarted.position(resource_ref)["current"] is True
+    assert acquired["fencing_token"] == predecessor["epoch"]

@@ -54,7 +54,10 @@ epoch/proof/current state, requested fence TTL, holder authorization, nonce and
 derived successor before asking the authority to commit it. Both client and
 authority recalculate those bindings; editing any prepared semantic is refused.
 Before any retry submits a CAS, it reads the authority and adopts only the
-already-signed successor with that exact `authorization_ref`. Park
+already-signed successor with that exact `authorization_ref`. Release recovery
+uses an authority-signed last-evidence receipt, so a committed tombstone remains
+recoverable after response loss or client restart while a different holder,
+predecessor or authorization cannot claim it. Park
 records the authority receipt in its Ed25519-signed checkpoint manifest;
 wake/transfer commit that successor before spec, create, volume or start
 effects. A verifier-only local database is never a handoff mutator.

@@ -1317,6 +1317,20 @@ class ProductionFenceStore:
             if "connection" in locals():
                 connection.close()
 
+    def last(self, resource_ref: str) -> dict[str, Any] | None:
+        """Return the verified high-water evidence, including a tombstone."""
+
+        self._validate_resource(resource_ref)
+        try:
+            connection = self._read_connection()
+            row = self._position(connection, resource_ref)
+            if row is None:
+                return None
+            return copy.deepcopy(self._verify_position(connection, row))
+        finally:
+            if "connection" in locals():
+                connection.close()
+
     @staticmethod
     def proof_ref(value: dict[str, Any]) -> str:
         return _proof_ref(value)

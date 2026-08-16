@@ -37,6 +37,11 @@ atomically replaces every position held by that key with an owner-signed
 revocation tombstone, then marks the key revoked; it can no longer mutate or
 appear current.
 
+Authenticated readers may request an authority-signed receipt for the verified
+high-water evidence, including a release tombstone. This observation is used
+only to recover the same successor epoch, release operation and
+`authorization_ref`; it cannot mutate or resurrect the resource.
+
 ## Transaction and crash model
 
 `resource-fences.sqlite3` is owner-controlled (`0600`), WAL-backed and uses

@@ -14,13 +14,27 @@ from typing import Any
 from . import audit
 from .embodiments import Registry
 from .locks import acquire_many
-from .matrix_host import _matrix_api, matrix_client_root, matrix_root
+from .matrix_host import (
+    MatrixHostError,
+    _copy_owner_file,
+    _matrix_api,
+    _owner_file_bytes,
+    matrix_client_root,
+    matrix_curator_client_root,
+    matrix_root,
+)
 from .matrix_host import MATRIX_CONTRACT_COMMIT
 from .operation_journal import JournalConflict, OperationJournal, canonical_bytes
 
 INSTALL_SCHEMA = "dm.cluster.rebirth-install/v1"
 RESULT_SCHEMA = "dm.cluster.rebirth-result/v1"
 _MUTATION_BOUNDARY_HOOK: Callable[[str, Mapping[str, Any]], None] | None = None
+_MAX_PACKAGE_FILE_BYTES = 64 * 1024 * 1024
+_MAX_PACKAGE_FILES = 512
+_MAX_PACKAGE_DEPTH = 4
+_PACKAGE_TRANSIENT_NAMES = frozenset(
+    {".custody.json.lock", ".transport-custody.json.lock", ".daimon-matrixd.lock"}
+)
 
 
 class RebirthInstallError(RuntimeError):
@@ -107,22 +121,66 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
         os.close(directory)
 
 
-def _directory_manifest(path: Path) -> dict[str, str]:
+def _directory_files(path: Path) -> list[tuple[str, Path]]:
     root = _owner_directory(path)
-    result: dict[str, str] = {}
-    for item in sorted(root.iterdir(), key=lambda candidate: candidate.name):
-        info = item.lstat()
-        if (
-            stat.S_ISLNK(info.st_mode)
-            or not stat.S_ISREG(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) & 0o077
-        ):
+    files: list[tuple[str, Path]] = []
+
+    def visit(directory: Path, prefix: Path, depth: int) -> None:
+        if depth > _MAX_PACKAGE_DEPTH:
             raise RebirthInstallError("rebirth_package_file_rejected")
-        result[item.name] = hashlib.sha256(item.read_bytes()).hexdigest()
+        _owner_directory(directory)
+        for item in sorted(directory.iterdir(), key=lambda candidate: candidate.name):
+            if item.name in _PACKAGE_TRANSIENT_NAMES:
+                continue
+            info = item.lstat()
+            relative = prefix / item.name
+            if stat.S_ISDIR(info.st_mode):
+                visit(item, relative, depth + 1)
+                continue
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o077
+            ):
+                raise RebirthInstallError("rebirth_package_file_rejected")
+            files.append((relative.as_posix(), item))
+            if len(files) > _MAX_PACKAGE_FILES:
+                raise RebirthInstallError("rebirth_package_file_rejected")
+
+    visit(root, Path(), 0)
+    return files
+
+
+def _directory_manifest(path: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    try:
+        for relative, item in _directory_files(path):
+            raw = _owner_file_bytes(
+                item,
+                "rebirth_package_file_rejected",
+                maximum_size=_MAX_PACKAGE_FILE_BYTES,
+            )
+            result[relative] = hashlib.sha256(raw).hexdigest()
+    except MatrixHostError as exception:
+        raise RebirthInstallError("rebirth_package_file_rejected") from exception
     if not result:
         raise RebirthInstallError("rebirth_package_empty")
     return result
+
+
+def _create_staging_parent(staging: Path, relative: str) -> Path:
+    """Create every package parent owner-only without inheriting umask modes."""
+
+    parent = staging
+    for part in Path(relative).parent.parts:
+        parent = parent / part
+        try:
+            parent.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        _owner_directory(parent)
+    return parent
 
 
 def _install_directory(source: Path, target: Path) -> dict[str, str]:
@@ -137,15 +195,29 @@ def _install_directory(source: Path, target: Path) -> dict[str, str]:
         raise RebirthInstallError("rebirth_staging_collision")
     staging.mkdir(mode=0o700)
     try:
-        for item in source.iterdir():
-            destination = staging / item.name
-            shutil.copyfile(item, destination)
-            destination.chmod(0o600)
-        descriptor = os.open(staging, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        for relative, item in _directory_files(source):
+            destination = staging / relative
+            _create_staging_parent(staging, relative)
+            try:
+                _copy_owner_file(
+                    item,
+                    destination,
+                    "rebirth_package_file_replaced",
+                    expected_sha256=expected[relative],
+                )
+            except MatrixHostError as exception:
+                raise RebirthInstallError(
+                    "rebirth_package_file_replaced"
+                ) from exception
+        directories = [staging, *(path for path in staging.rglob("*") if path.is_dir())]
+        for directory in sorted(
+            directories, key=lambda path: len(path.parts), reverse=True
+        ):
+            descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
         os.replace(staging, target)
         descriptor = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
@@ -196,7 +268,9 @@ def install_rebirth_package(
     state = _owner_directory(Path(state_dir), create=True)
     package = _owner_directory(Path(package_dir))
     runtime_source = _owner_directory(package / "runtime")
-    client_source = _owner_directory(package / "host-client")
+    host_clients = _owner_directory(runtime_source / "host-clients")
+    client_source = _owner_directory(host_clients / "status")
+    curator_client_source = _owner_directory(host_clients / "curator")
     receipt = _read_json(package / "receipt.json")
     request = _read_json(package / "request.json")
     activation = _read_json(package / "activation.json")
@@ -320,6 +394,9 @@ def install_rebirth_package(
         client_manifest = _install_directory(
             client_source, matrix_client_root(state, target_id)
         )
+        curator_client_manifest = _install_directory(
+            curator_client_source, matrix_curator_client_root(state, target_id)
+        )
         _boundary("after-target-install", record)
         updated_peers: dict[str, str] = {}
         for embodiment_id, (bundle_path, bundle, authority) in peer_bundles.items():
@@ -343,6 +420,7 @@ def install_rebirth_package(
         runtime_observation = {
             "target_files": target_manifest,
             "client_files": client_manifest,
+            "curator_client_files": curator_client_manifest,
             "peer_bundle_sha256": updated_peers,
             "successor_manifest_hash": successor.manifest.digest,
         }

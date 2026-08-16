@@ -18,8 +18,8 @@ from daimon_matrix.ledger import Ledger
 from daimon_matrix.operator_rebirth import (
     activate_recovery_target_runtime,
     authority_from_runtime_bundle,
-    authorize_recovery_from_root_custody,
-    create_recovery_custody,
+    authorize_synthetic_single_store_recovery,
+    create_synthetic_single_store_recovery_custody,
     create_recovery_target_preparation,
 )
 from daimon_matrix.runtime import load_runtime
@@ -81,7 +81,7 @@ def _recovery_fixture(tmp_path: Path) -> dict:
     ceremony.mkdir(mode=0o700)
     old_root_password = b"h7-offline-root-password"
     new_root_password = b"cluster-recovery-new-root-password"
-    create_recovery_custody(
+    create_synthetic_single_store_recovery_custody(
         ceremony / "successor-root",
         authority,
         tmp_path / "source/bootstrap/offline/root-custody.json",
@@ -109,7 +109,7 @@ def _recovery_fixture(tmp_path: Path) -> dict:
         expires_at_ms=now_ms + 60_000,
     )
     request = json.loads((ceremony / "preparation/request.json").read_bytes())
-    activation = authorize_recovery_from_root_custody(
+    activation = authorize_synthetic_single_store_recovery(
         request,
         authority,
         recovery,

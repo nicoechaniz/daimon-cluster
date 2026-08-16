@@ -200,8 +200,12 @@ class AdmissionEndpoint:
             target = (self.address, self.port)
         else:
             raise AdmissionError("admission endpoint transport is unsupported")
-        connection.settimeout(timeout_s)
-        connection.connect(target)
+        try:
+            connection.settimeout(timeout_s)
+            connection.connect(target)
+        except BaseException:
+            connection.close()
+            raise
         return connection
 
 

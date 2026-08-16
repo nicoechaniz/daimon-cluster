@@ -17,6 +17,7 @@ from .matrix_host import (
     _matrix_api,
     matrix_client,
     matrix_client_root,
+    matrix_curator_client_root,
     matrix_root,
 )
 from .operation_journal import OperationJournal, canonical_bytes
@@ -534,7 +535,9 @@ def install_distributed_target(
     if create_rollout_bundle(package) != rollout:
         raise DistributedRebirthError("distributed_target_package_mismatch")
     runtime_source = _owner_directory(package / "runtime")
-    client_source = _owner_directory(package / "host-client")
+    host_clients = _owner_directory(runtime_source / "host-clients")
+    client_source = _owner_directory(host_clients / "status")
+    curator_client_source = _owner_directory(host_clients / "curator")
     target = rollout["target"]
     embodiment_id = target["embodiment_id"]
     journal_target = f"rebirth:{target['being_ref']}:{rollout['activation_id']}"
@@ -576,6 +579,10 @@ def install_distributed_target(
             client_source,
             matrix_client_root(state, embodiment_id),
         )
+        curator_client_manifest = _install_directory(
+            curator_client_source,
+            matrix_curator_client_root(state, embodiment_id),
+        )
         if record["state"] == "runtime-dispatching":
             record = journal.advance(
                 record["operation_id"],
@@ -583,6 +590,7 @@ def install_distributed_target(
                 runtime_observation={
                     "target_files": target_manifest,
                     "client_files": client_manifest,
+                    "curator_client_files": curator_client_manifest,
                     "target_runtime_sha256": rollout["target_runtime_sha256"],
                 },
             )

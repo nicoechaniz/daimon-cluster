@@ -27,7 +27,7 @@ from daimon_matrix.cluster import resource_fence_position
 from daimon_matrix.curator import create_curator_item
 from daimon_matrix.identity import (
     create_embodiment_credential,
-    create_genesis,
+    create_synthetic_genesis_in_process,
     create_incarnation_authorization,
     ed25519_public,
     key_descriptor,
@@ -111,7 +111,7 @@ def _transport(label: str, principal_id: str) -> dict:
 
 def _authority(now_ms: int):
     root_seeds = [_seed("root-a"), _seed("root-b"), _seed("root-c")]
-    genesis = create_genesis(
+    genesis = create_synthetic_genesis_in_process(
         root_seeds,
         2,
         [_seed("recovery-a"), _seed("recovery-b"), _seed("recovery-c")],

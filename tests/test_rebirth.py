@@ -39,7 +39,11 @@ from clusterctl.admission import (
 )
 from clusterctl.embodiments import Registry
 from clusterctl.fences import Ed25519Signer, ResourceFenceStore
-from clusterctl.matrix_host import matrix_client_root, matrix_root
+from clusterctl.matrix_host import (
+    matrix_client_root,
+    matrix_curator_client_root,
+    matrix_root,
+)
 from clusterctl.operation_journal import OperationJournal
 from clusterctl.production_fences import create_holder_enrollment
 
@@ -354,9 +358,97 @@ def _spawn_matrix_host(state: Path, embodiment_id: str, password: bytes):
     return process
 
 
-def _operator_client(root: Path) -> LocalClient:
-    config = ClientConfig.load(root / "client.json", (root / "client.key").read_bytes())
+def _operator_client(root: Path, profile: str = "observe") -> LocalClient:
+    client_root = root if profile == "observe" else root / "operator-clients" / profile
+    key_name = "client.key" if profile == "observe" else "capability.key"
+    config = ClientConfig.load(
+        client_root / "client.json", (client_root / key_name).read_bytes()
+    )
     return LocalClient(root / "matrix.sock", config)
+
+
+def test_recursive_package_install_preserves_owner_only_tree(short_tmp_path):
+    source = short_tmp_path / "source"
+    nested = source / "operator-clients" / "observe"
+    nested.mkdir(parents=True, mode=0o700)
+    source.chmod(0o700)
+    nested.parent.chmod(0o700)
+    nested.chmod(0o700)
+    payload = nested / "client.json"
+    payload.write_bytes(b"{}")
+    payload.chmod(0o600)
+    transient = nested / ".custody.json.lock"
+    transient.write_bytes(b"")
+    transient.chmod(0o600)
+
+    target = short_tmp_path / "target"
+    expected = rebirth._install_directory(source, target)
+
+    assert expected == {
+        "operator-clients/observe/client.json": hashlib.sha256(b"{}").hexdigest()
+    }
+    assert not (target / "operator-clients/observe/.custody.json.lock").exists()
+    for directory in (
+        target,
+        target / "operator-clients",
+        target / "operator-clients/observe",
+    ):
+        assert directory.stat().st_mode & 0o077 == 0
+    assert (target / "operator-clients/observe/client.json").stat().st_mode & 0o077 == 0
+    assert rebirth._install_directory(source, target) == expected
+
+
+@pytest.mark.parametrize("unsafe_kind", ["symlink", "group-readable", "too-deep"])
+def test_recursive_package_install_rejects_unsafe_source(short_tmp_path, unsafe_kind):
+    source = short_tmp_path / "source"
+    source.mkdir(mode=0o700)
+    if unsafe_kind == "too-deep":
+        parent = source
+        for index in range(rebirth._MAX_PACKAGE_DEPTH + 1):
+            parent = parent / f"level-{index}"
+            parent.mkdir(mode=0o700)
+        payload = parent / "client.json"
+        payload.write_bytes(b"{}")
+        payload.chmod(0o600)
+    else:
+        payload = source / "client.json"
+        payload.write_bytes(b"{}")
+        payload.chmod(0o640 if unsafe_kind == "group-readable" else 0o600)
+        if unsafe_kind == "symlink":
+            link = source / "linked.json"
+            link.symlink_to(payload)
+
+    with pytest.raises(
+        rebirth.RebirthInstallError, match="rebirth_package_file_rejected"
+    ):
+        rebirth._install_directory(source, short_tmp_path / "target")
+
+
+def test_recursive_package_install_rehashes_source_before_commit(
+    short_tmp_path, monkeypatch
+):
+    source = short_tmp_path / "source"
+    source.mkdir(mode=0o700)
+    payload = source / "client.json"
+    payload.write_bytes(b'{"version":1}')
+    payload.chmod(0o600)
+    original = rebirth._directory_files
+    calls = 0
+
+    def replace_after_manifest(path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            payload.write_bytes(b'{"version":2}')
+            payload.chmod(0o600)
+        return original(path)
+
+    monkeypatch.setattr(rebirth, "_directory_files", replace_after_manifest)
+    with pytest.raises(
+        rebirth.RebirthInstallError, match="rebirth_package_file_replaced"
+    ):
+        rebirth._install_directory(source, short_tmp_path / "target")
+    assert not (short_tmp_path / "target").exists()
 
 
 def test_journaled_install_adds_stopped_target_and_loadable_empty_runtime(tmp_path):
@@ -506,8 +598,7 @@ def test_supervisor_starts_exact_authorized_incarnation_and_restarts(short_tmp_p
             key: value for key, value in ready.items() if key != "admission"
         }
         assert (
-            replay["admission"]["fencing_token"]
-            > ready["admission"]["fencing_token"]
+            replay["admission"]["fencing_token"] > ready["admission"]["fencing_token"]
         )
         assert len(OperationJournal(state).list_all(limit=10)) == 2
         assert (
@@ -528,12 +619,8 @@ def test_supervisor_fails_closed_without_shared_admission(short_tmp_path):
     )
     installed = rebirth.install_rebirth_package(**values)
     descriptor = _descriptor(fixture["password"])
-    with pytest.raises(
-        rebirth_host.RebirthHostError, match="admission_config_missing"
-    ):
-        rebirth_host.launch_rebirth_host(
-            state, installed["embodiment_id"], descriptor
-        )
+    with pytest.raises(rebirth_host.RebirthHostError, match="admission_config_missing"):
+        rebirth_host.launch_rebirth_host(state, installed["embodiment_id"], descriptor)
     with pytest.raises(OSError):
         os.read(descriptor, 1)
     assert Registry(state).status(installed["embodiment_id"])["status"] == "stopped"
@@ -869,8 +956,10 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
         processes.append(target_process)
         target_root = matrix_root(state, installed["embodiment_id"])
         target_client = _operator_client(target_root)
+        target_weave_client = _operator_client(target_root, "weave")
         peer_id = min(hosted_peers)
         peer_client = _operator_client(hosted_peers[peer_id])
+        peer_weave_client = _operator_client(hosted_peers[peer_id], "weave")
         assert ready["active_embodiment_ids"] == sorted(
             [*hosted_peers, installed["embodiment_id"]]
         )
@@ -893,13 +982,13 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
             "limit": 16,
         }
         request_id = str(uuid.uuid4())
-        prepared_pull = peer_client.prepare(
+        prepared_pull = peer_weave_client.prepare(
             "we.sync.peer-pull", pull_params, request_id=request_id
         )
-        first_pull = peer_client.send(prepared_pull)
+        first_pull = peer_weave_client.send(prepared_pull)
         assert first_pull["ok"] is True
         assert first_pull["result"]["events"] == 1
-        assert peer_client.send(prepared_pull) == first_pull
+        assert peer_weave_client.send(prepared_pull) == first_pull
 
         peer_observation = peer_client.we_observe(
             {
@@ -912,7 +1001,7 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
             },
             request_id=str(uuid.uuid4()),
         )[1]["result"]["event"]
-        reverse = target_client.sync_peer_pull(
+        reverse = target_weave_client.sync_peer_pull(
             {
                 "sync_request_id": str(uuid.uuid4()),
                 "target_embodiment_id": peer_id,
@@ -922,8 +1011,8 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
         )[1]
         assert reverse["ok"] is True
         assert reverse["result"]["events"] >= 1
-        target_projection = target_client.projection_rebuild()[1]["result"]
-        peer_projection = peer_client.projection_rebuild()[1]["result"]
+        target_projection = target_weave_client.projection_rebuild()[1]["result"]
+        peer_projection = peer_weave_client.projection_rebuild()[1]["result"]
         assert (
             next(
                 row
@@ -1064,7 +1153,10 @@ def test_peer_rollout_waits_for_authenticated_restarted_daemon(short_tmp_path):
     shutil.copytree(source, target)
     client_target = matrix_client_root(state, peer_id)
     client_target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    shutil.copytree(source.parents[1] / "host-clients" / source.name, client_target)
+    shutil.copytree(source / "host-clients/status", client_target)
+    curator_target = matrix_curator_client_root(state, peer_id)
+    curator_target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    shutil.copytree(source / "host-clients/curator", curator_target)
     origin = json.loads((target / "runtime.json").read_bytes())["local_origin"]
     registry = Registry(state)
     registry.register(body_ref=origin["body_ref"], embodiment_id=peer_id)

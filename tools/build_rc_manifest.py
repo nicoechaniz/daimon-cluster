@@ -16,7 +16,6 @@ import os
 import re
 import stat
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -77,10 +76,10 @@ def _closed_repository(component: Component) -> dict[str, str]:
     shallow = str(_git(repository, "rev-parse", "--is-shallow-repository")).strip()
     if shallow != "false":
         raise ManifestError(f"shallow_repository:{component.name}")
-    commit = str(_git(repository, "rev-parse", "HEAD")).strip()
-    tree = str(_git(repository, "rev-parse", "HEAD^{tree}")).strip()
+    commit = str(_git(repository, "rev-parse", "--verify", "HEAD^{commit}")).strip()
+    tree = str(_git(repository, "rev-parse", f"{commit}^{{tree}}")).strip()
     archive_value = _git(
-        repository, "archive", "--format=tar", "HEAD", text=False
+        repository, "archive", "--format=tar", commit, text=False
     )
     if not isinstance(archive_value, bytes):
         raise ManifestError(f"git_archive_not_binary:{component.name}")
@@ -92,12 +91,13 @@ def _closed_repository(component: Component) -> dict[str, str]:
     }
 
 
-def _matrix_pin(cluster: Path) -> str:
+def _matrix_pin(cluster: Path, commit: str) -> str:
     try:
-        lines = (cluster / "requirements-weave.txt").read_text(
-            encoding="utf-8"
-        ).splitlines()
-    except OSError as exception:
+        raw = _git(cluster, "show", f"{commit}:requirements-weave.txt")
+        if not isinstance(raw, str):
+            raise ManifestError("cluster_matrix_pin_not_text")
+        lines = raw.splitlines()
+    except ManifestError as exception:
         raise ManifestError("cluster_matrix_pin_unreadable") from exception
     matches = [match for line in lines if (match := PIN_PATTERN.fullmatch(line))]
     if len(matches) != 1:
@@ -112,9 +112,22 @@ def build_manifest(matrix: Path, cluster: Path, tribe: Path) -> dict[str, object
         Component("tribe-bridge", tribe),
     )
     frozen = {item.name: _closed_repository(item) for item in components}
-    pin = _matrix_pin(cluster.resolve(strict=True))
+    cluster_repository = cluster.resolve(strict=True)
+    pin = _matrix_pin(
+        cluster_repository, frozen["daimon-cluster"]["commit"]
+    )
     if pin != frozen["daimon-matrix"]["commit"]:
         raise ManifestError("cluster_matrix_pin_mismatch")
+    for component in components:
+        repository = component.repository.resolve(strict=True)
+        final_commit = str(
+            _git(repository, "rev-parse", "--verify", "HEAD^{commit}")
+        ).strip()
+        final_status = str(
+            _git(repository, "status", "--porcelain=v1", "--untracked-files=all")
+        )
+        if final_commit != frozen[component.name]["commit"] or final_status:
+            raise ManifestError(f"repository_changed_during_freeze:{component.name}")
     return {
         "schema": SCHEMA,
         "baseline": BASELINES,
@@ -134,9 +147,11 @@ def canonical_manifest(value: dict[str, object]) -> bytes:
 
 
 def write_manifest(path: Path, raw: bytes) -> None:
-    target = path.resolve()
+    target = Path(os.path.abspath(path))
     parent = target.parent
     parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if parent.resolve(strict=True) != parent:
+        raise ManifestError("manifest_parent_contains_symlink")
     info = parent.lstat()
     if (
         stat.S_ISLNK(info.st_mode)
@@ -144,9 +159,30 @@ def write_manifest(path: Path, raw: bytes) -> None:
         or info.st_uid != os.geteuid()
     ):
         raise ManifestError("manifest_parent_not_owner_controlled")
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=parent)
-    temporary = Path(temporary_name)
+    directory = os.open(
+        parent,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    temporary_name = f".{target.name}.{os.urandom(16).hex()}.tmp"
+    descriptor = -1
     try:
+        try:
+            target_info = os.stat(target.name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            target_info = None
+        if target_info is not None and stat.S_ISLNK(target_info.st_mode):
+            raise ManifestError("manifest_target_is_symlink")
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory,
+        )
         os.fchmod(descriptor, 0o600)
         written = 0
         while written < len(raw):
@@ -154,17 +190,21 @@ def write_manifest(path: Path, raw: bytes) -> None:
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = -1
-        os.replace(temporary, target)
-        directory = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        os.rename(
+            temporary_name,
+            target.name,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+        )
+        os.fsync(directory)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        if temporary.exists():
-            temporary.unlink()
+        try:
+            os.unlink(temporary_name, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+        os.close(directory)
 
 
 def main() -> int:

@@ -27,6 +27,7 @@ def _declare(state_dir: Path, *, owner: str | None = "alice") -> None:
     directory.mkdir(parents=True, exist_ok=True)
     value = {
         "schema": "instance-spec/v1",
+        "instance_kind": "generic-instance",
         "name": NAME,
         "image_version": "v1",
     }

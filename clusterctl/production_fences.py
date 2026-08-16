@@ -14,7 +14,7 @@ import json
 import os
 import sqlite3
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -30,10 +30,14 @@ from .fences import (
 )
 
 AUTHORIZATION_SCHEMA = "resource-fence-holder-authorization/v1"
+HOLDER_ENROLLMENT_SCHEMA = "resource-fence-holder-enrollment/v1"
 SUPPORT_SCHEMA = "resource-fence-support/v1"
-DATABASE_SCHEMA = "resource-fence-sqlite/v1"
+DATABASE_SCHEMA = "resource-fence-sqlite/v2"
 PRODUCTION_FENCE_SCHEMA = "resource-fence/v2"
 _OPERATIONS = frozenset({"acquire", "renew", "release"})
+MAX_AUTHORIZATION_TTL_S = 300
+MAX_FENCE_TTL_S = 3600
+MAX_CLOCK_SKEW_MS = 5_000
 
 
 def _json(value: dict[str, Any]) -> str:
@@ -41,9 +45,10 @@ def _json(value: dict[str, Any]) -> str:
 
 
 def _proof_ref(value: dict[str, Any]) -> str:
-    return "cluster:fence-proof:v1:" + hashlib.sha256(
-        _json(value).encode("utf-8")
-    ).hexdigest()
+    return (
+        "cluster:fence-proof:v1:"
+        + hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
+    )
 
 
 def ed25519_fingerprint(public_key: str) -> str:
@@ -97,8 +102,12 @@ def create_holder_authorization(
     if operation not in _OPERATIONS:
         raise FenceError("invalid holder operation")
     timestamp = now_ms() if issued_ms is None else issued_ms
-    if ttl_s <= 0:
-        raise FenceError("holder authorization TTL must be positive")
+    if (
+        isinstance(ttl_s, bool)
+        or not isinstance(ttl_s, int)
+        or not 1 <= ttl_s <= MAX_AUTHORIZATION_TTL_S
+    ):
+        raise FenceError("holder authorization TTL is out of bounds")
     value: dict[str, Any] = {
         "schema": AUTHORIZATION_SCHEMA,
         "operation": operation,
@@ -118,6 +127,51 @@ def create_holder_authorization(
     return value
 
 
+def create_holder_enrollment(
+    registrar: Ed25519Signer,
+    *,
+    holder_key_id: str,
+    holder_pubkey: str,
+    being_ref: str,
+    body_ref: str,
+    embodiment_id: str,
+    incarnation_id: str,
+    activation_id: str,
+    credential_id: str,
+    manifest_hash: str,
+    issued_ms: int | None = None,
+    ttl_s: int = 300,
+    nonce: str,
+) -> dict[str, Any]:
+    """Create one registrar-signed binding from Matrix authority to a holder key."""
+
+    timestamp = now_ms() if issued_ms is None else issued_ms
+    if (
+        isinstance(ttl_s, bool)
+        or not isinstance(ttl_s, int)
+        or not 1 <= ttl_s <= MAX_AUTHORIZATION_TTL_S
+    ):
+        raise FenceError("holder enrollment TTL is out of bounds")
+    value: dict[str, Any] = {
+        "schema": HOLDER_ENROLLMENT_SCHEMA,
+        "registrar_key_id": registrar.key_id,
+        "holder_key_id": holder_key_id,
+        "holder_pubkey": holder_pubkey,
+        "being_ref": being_ref,
+        "body_ref": body_ref,
+        "embodiment_id": embodiment_id,
+        "incarnation_id": incarnation_id,
+        "activation_id": activation_id,
+        "credential_id": credential_id,
+        "manifest_hash": manifest_hash,
+        "issued_ms": timestamp,
+        "expires_at_ms": timestamp + ttl_s * 1000,
+        "nonce": nonce,
+    }
+    value["signature"] = registrar.sign(_canonical(value))
+    return value
+
+
 class ProductionFenceStore:
     """One transactional, signed fence authority for a Cluster state root."""
 
@@ -132,6 +186,8 @@ class ProductionFenceStore:
         key_id: str | None,
         database_path: str | Path | None = None,
         fault_hook: Callable[[str], None] | None = None,
+        clock: Callable[[], int] = now_ms,
+        holder_registrars: Mapping[str, str] | None = None,
         verifier_only: bool = False,
     ):
         self._state_dir = Path(os.path.abspath(state_dir))
@@ -150,14 +206,16 @@ class ProductionFenceStore:
             self._key_id = None
         else:
             if not isinstance(signer, Ed25519Signer):
-                raise FenceError(
-                    "production resource fences require an Ed25519 signer"
-                )
+                raise FenceError("production resource fences require an Ed25519 signer")
             if key_id is None or signer.key_id != key_id:
                 raise FenceError("production signing key id mismatch")
             self._signer = signer
             self._key_id = key_id
         self._fault_hook = fault_hook
+        self._clock = clock
+        self._holder_registrars = dict(holder_registrars or {})
+        if verifier_only and self._holder_registrars:
+            raise FenceError("verifier-only fences cannot configure registrars")
         if verifier_only:
             self._open_verifier()
         else:
@@ -166,6 +224,26 @@ class ProductionFenceStore:
     def _hook(self, boundary: str) -> None:
         if self._fault_hook is not None:
             self._fault_hook(boundary)
+
+    def _clock_now(self) -> int:
+        observed = self._clock()
+        if isinstance(observed, bool) or not isinstance(observed, int) or observed < 0:
+            raise FenceError("production fence clock is invalid")
+        return observed
+
+    def _trusted_time(self, connection: sqlite3.Connection) -> int:
+        observed = self._clock_now()
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE name='clock_high_water_ms'"
+        ).fetchone()
+        if row is not None and observed < int(row["value"]):
+            raise FenceError("production fence clock rolled back")
+        connection.execute(
+            "INSERT INTO metadata(name,value) VALUES('clock_high_water_ms',?) "
+            "ON CONFLICT(name) DO UPDATE SET value=excluded.value",
+            (str(observed),),
+        )
+        return observed
 
     def _connect(self) -> sqlite3.Connection:
         self._validate_database_path(require_exists=True)
@@ -281,6 +359,21 @@ class ProductionFenceStore:
                 CREATE TABLE IF NOT EXISTS holder_keys (
                     key_id TEXT PRIMARY KEY,
                     public_key TEXT NOT NULL,
+                    being_ref TEXT NOT NULL,
+                    body_ref TEXT NOT NULL,
+                    embodiment_id TEXT NOT NULL,
+                    incarnation_id TEXT NOT NULL,
+                    activation_id TEXT NOT NULL,
+                    credential_id TEXT NOT NULL,
+                    manifest_hash TEXT NOT NULL,
+                    enrollment_json TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('active','revoked')),
+                    created_ms INTEGER NOT NULL,
+                    revoked_ms INTEGER
+                ) STRICT;
+                CREATE TABLE IF NOT EXISTS holder_registrars (
+                    key_id TEXT PRIMARY KEY,
+                    public_key TEXT NOT NULL,
                     state TEXT NOT NULL CHECK (state IN ('active','revoked')),
                     created_ms INTEGER NOT NULL,
                     revoked_ms INTEGER
@@ -304,6 +397,7 @@ class ProductionFenceStore:
                 ) STRICT;
                 """
             )
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "INSERT OR IGNORE INTO metadata(name,value) VALUES('schema',?)",
                 (DATABASE_SCHEMA,),
@@ -313,6 +407,7 @@ class ProductionFenceStore:
             ).fetchone()
             if schema is None or schema["value"] != DATABASE_SCHEMA:
                 raise FenceError("unsupported production fence database schema")
+            created_ms = self._trusted_time(connection)
             existing = connection.execute(
                 "SELECT public_key,state FROM signing_keys WHERE key_id=?",
                 (self._key_id,),
@@ -320,15 +415,43 @@ class ProductionFenceStore:
             if existing is None:
                 connection.execute(
                     "INSERT INTO signing_keys VALUES(?,?,?,?,NULL)",
-                    (self._key_id, self._signer.public_key, "active", now_ms()),
+                    (self._key_id, self._signer.public_key, "active", created_ms),
                 )
             elif (
                 existing["public_key"] != self._signer.public_key
                 or existing["state"] != "active"
             ):
                 raise FenceError("production signing key is mismatched or inactive")
+            for registrar_id, public_key in sorted(self._holder_registrars.items()):
+                if (
+                    not registrar_id
+                    or not public_key
+                    or ed25519_fingerprint(public_key) == ""
+                ):
+                    raise FenceError("invalid holder registrar")
+                existing_registrar = connection.execute(
+                    "SELECT public_key,state FROM holder_registrars WHERE key_id=?",
+                    (registrar_id,),
+                ).fetchone()
+                if existing_registrar is None:
+                    connection.execute(
+                        "INSERT INTO holder_registrars VALUES(?,?,?,?,NULL)",
+                        (registrar_id, public_key, "active", created_ms),
+                    )
+                elif (
+                    existing_registrar["public_key"] != public_key
+                    or existing_registrar["state"] != "active"
+                ):
+                    raise FenceError("holder registrar is mismatched or inactive")
+            connection.commit()
         except sqlite3.Error as exc:
+            if "connection" in locals():
+                connection.rollback()
             raise FenceError("cannot initialize production fence database") from exc
+        except Exception:
+            if "connection" in locals():
+                connection.rollback()
+            raise
         finally:
             if "connection" in locals():
                 connection.close()
@@ -373,7 +496,9 @@ class ProductionFenceStore:
                 continue
 
     @staticmethod
-    def _position(connection: sqlite3.Connection, resource_ref: str) -> sqlite3.Row | None:
+    def _position(
+        connection: sqlite3.Connection, resource_ref: str
+    ) -> sqlite3.Row | None:
         return connection.execute(
             "SELECT * FROM positions WHERE resource_ref=?", (resource_ref,)
         ).fetchone()
@@ -389,7 +514,11 @@ class ProductionFenceStore:
         expected_epoch: int | None,
         expected_proof: str | None,
     ) -> tuple[int, str | None]:
-        if expected_epoch is None or isinstance(expected_epoch, bool) or expected_epoch < -1:
+        if (
+            expected_epoch is None
+            or isinstance(expected_epoch, bool)
+            or expected_epoch < -1
+        ):
             raise FenceError("an exact expected fence epoch is required")
         actual_epoch = -1 if row is None else int(row["high_water"])
         actual_proof = None if row is None else str(row["last_proof"])
@@ -446,13 +575,16 @@ class ProductionFenceStore:
         if current != evidence or current.get("state") != "held":
             raise FenceError("production current fence is inconsistent")
         holder = connection.execute(
-            "SELECT public_key,state FROM holder_keys WHERE key_id=?",
+            "SELECT * FROM holder_keys WHERE key_id=?",
             (current.get("holder_key_id"),),
         ).fetchone()
         if (
             holder is None
             or holder["state"] == "revoked"
             or holder["public_key"] != current.get("holder_pubkey")
+            or holder["body_ref"] != current.get("body_ref")
+            or holder["embodiment_id"] != current.get("holder_embodiment_id")
+            or holder["incarnation_id"] != current.get("holder_incarnation_id")
         ):
             raise InvalidSignature("current holder key is unknown or revoked")
         return current
@@ -472,8 +604,7 @@ class ProductionFenceStore:
         expected_epoch: int,
         expected_proof: str | None,
         observed_at_ms: int,
-        allow_register: bool,
-    ) -> None:
+    ) -> sqlite3.Row:
         if not isinstance(authorization, dict):
             raise InvalidSignature("holder authorization is required")
         expected = {
@@ -500,9 +631,11 @@ class ProductionFenceStore:
             or not isinstance(expires_at_ms, int)
             or not isinstance(nonce, str)
             or not nonce
-            or issued_ms > observed_at_ms
+            or issued_ms > observed_at_ms + MAX_CLOCK_SKEW_MS
+            or observed_at_ms - issued_ms > MAX_AUTHORIZATION_TTL_S * 1000
             or expires_at_ms <= observed_at_ms
             or expires_at_ms <= issued_ms
+            or expires_at_ms - issued_ms > MAX_AUTHORIZATION_TTL_S * 1000
         ):
             raise InvalidSignature("holder authorization time or nonce is invalid")
         signature = authorization.get("signature")
@@ -511,17 +644,19 @@ class ProductionFenceStore:
         ):
             raise InvalidSignature("holder authorization signature is invalid")
         holder = connection.execute(
-            "SELECT public_key,state FROM holder_keys WHERE key_id=?", (holder_key_id,)
+            "SELECT * FROM holder_keys WHERE key_id=?", (holder_key_id,)
         ).fetchone()
         if holder is None:
-            if not allow_register:
-                raise InvalidSignature("holder key is unknown")
-            connection.execute(
-                "INSERT INTO holder_keys VALUES(?,?,?,?,NULL)",
-                (holder_key_id, holder_pubkey, "active", observed_at_ms),
-            )
-        elif holder["public_key"] != holder_pubkey or holder["state"] == "revoked":
+            raise InvalidSignature("holder key is unknown")
+        if (
+            holder["public_key"] != holder_pubkey
+            or holder["state"] == "revoked"
+            or holder["body_ref"] != body_ref
+            or holder["embodiment_id"] != embodiment_id
+            or holder["incarnation_id"] != incarnation_id
+        ):
             raise InvalidSignature("holder key is mismatched or revoked")
+        return holder
 
     def _signed_evidence(self, fields: dict[str, Any]) -> dict[str, Any]:
         if self._signer is None or self._key_id is None:
@@ -591,7 +726,9 @@ class ProductionFenceStore:
             ),
         )
 
-    def _mutate(self, callback: Callable[[sqlite3.Connection], dict[str, Any]]) -> dict[str, Any]:
+    def _mutate(
+        self, callback: Callable[[sqlite3.Connection], dict[str, Any]]
+    ) -> dict[str, Any]:
         self._hook("before-begin")
         try:
             connection = self._connect()
@@ -617,6 +754,122 @@ class ProductionFenceStore:
                 connection.close()
             self._secure_database_files()
 
+    def admit_holder(self, enrollment: dict[str, Any]) -> dict[str, Any]:
+        """Register a Matrix-bound holder only through a trusted registrar."""
+
+        required = {
+            "schema",
+            "registrar_key_id",
+            "holder_key_id",
+            "holder_pubkey",
+            "being_ref",
+            "body_ref",
+            "embodiment_id",
+            "incarnation_id",
+            "activation_id",
+            "credential_id",
+            "manifest_hash",
+            "issued_ms",
+            "expires_at_ms",
+            "nonce",
+            "signature",
+        }
+        if not isinstance(enrollment, dict) or set(enrollment) != required:
+            raise InvalidSignature("holder enrollment is malformed")
+        if enrollment["schema"] != HOLDER_ENROLLMENT_SCHEMA:
+            raise InvalidSignature("holder enrollment schema is unsupported")
+        coordinates = (
+            "registrar_key_id",
+            "holder_key_id",
+            "holder_pubkey",
+            "being_ref",
+            "body_ref",
+            "embodiment_id",
+            "incarnation_id",
+            "activation_id",
+            "credential_id",
+            "manifest_hash",
+            "nonce",
+        )
+        if not all(
+            isinstance(enrollment.get(field), str) and enrollment[field]
+            for field in coordinates
+        ):
+            raise InvalidSignature("holder enrollment coordinates are invalid")
+        if ed25519_fingerprint(enrollment["holder_pubkey"]) == "":
+            raise InvalidSignature("holder enrollment key is invalid")
+
+        def mutation(connection: sqlite3.Connection) -> dict[str, Any]:
+            timestamp = self._trusted_time(connection)
+            issued_ms = enrollment["issued_ms"]
+            expires_at_ms = enrollment["expires_at_ms"]
+            if (
+                isinstance(issued_ms, bool)
+                or not isinstance(issued_ms, int)
+                or isinstance(expires_at_ms, bool)
+                or not isinstance(expires_at_ms, int)
+                or issued_ms > timestamp + MAX_CLOCK_SKEW_MS
+                or timestamp - issued_ms > MAX_AUTHORIZATION_TTL_S * 1000
+                or expires_at_ms <= timestamp
+                or expires_at_ms <= issued_ms
+                or expires_at_ms - issued_ms > MAX_AUTHORIZATION_TTL_S * 1000
+            ):
+                raise InvalidSignature("holder enrollment time is invalid")
+            registrar = connection.execute(
+                "SELECT public_key,state FROM holder_registrars WHERE key_id=?",
+                (enrollment["registrar_key_id"],),
+            ).fetchone()
+            if (
+                registrar is None
+                or registrar["state"] != "active"
+                or not _verify_ed25519(
+                    _canonical(enrollment),
+                    enrollment["signature"],
+                    registrar["public_key"],
+                )
+            ):
+                raise InvalidSignature("holder enrollment registrar is unauthorized")
+            encoded = _json(enrollment)
+            existing = connection.execute(
+                "SELECT * FROM holder_keys WHERE key_id=?",
+                (enrollment["holder_key_id"],),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["state"] == "active"
+                    and existing["enrollment_json"] == encoded
+                ):
+                    return {
+                        "admitted": True,
+                        "idempotent": True,
+                        "holder_key_id": enrollment["holder_key_id"],
+                    }
+                raise FenceConflict("holder key enrollment conflicts")
+            connection.execute(
+                "INSERT INTO holder_keys VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL)",
+                (
+                    enrollment["holder_key_id"],
+                    enrollment["holder_pubkey"],
+                    enrollment["being_ref"],
+                    enrollment["body_ref"],
+                    enrollment["embodiment_id"],
+                    enrollment["incarnation_id"],
+                    enrollment["activation_id"],
+                    enrollment["credential_id"],
+                    enrollment["manifest_hash"],
+                    encoded,
+                    "active",
+                    timestamp,
+                ),
+            )
+            return {
+                "admitted": True,
+                "idempotent": False,
+                "holder_key_id": enrollment["holder_key_id"],
+            }
+
+        return self._mutate(mutation)
+
     def acquire(
         self,
         resource_ref: str,
@@ -632,21 +885,29 @@ class ProductionFenceStore:
         expected_epoch: int | None = None,
         expected_proof: str | None = None,
         authorization: dict[str, Any] | None = None,
-        observed_at_ms: int | None = None,
     ) -> dict[str, Any]:
         self._validate_resource(resource_ref)
-        if ttl_s <= 0:
-            raise FenceError("production fence TTL must be positive")
+        if (
+            isinstance(ttl_s, bool)
+            or not isinstance(ttl_s, int)
+            or not 1 <= ttl_s <= MAX_FENCE_TTL_S
+        ):
+            raise FenceError("production fence TTL is out of bounds")
         if not all(
             isinstance(value, str) and value
-            for value in (body_ref, holder_embodiment_id, holder_incarnation_id, holder_key_id)
+            for value in (
+                body_ref,
+                holder_embodiment_id,
+                holder_incarnation_id,
+                holder_key_id,
+            )
         ):
             raise FenceError("exact holder coordinates are required")
         if fingerprint != ed25519_fingerprint(pubkey):
             raise InvalidSignature("holder key fingerprint mismatch")
-        timestamp = now_ms() if observed_at_ms is None else observed_at_ms
 
         def mutation(connection: sqlite3.Connection) -> dict[str, Any]:
+            timestamp = self._trusted_time(connection)
             row = self._position(connection, resource_ref)
             actual_epoch, actual_proof = self._validate_expected(
                 row, expected_epoch, expected_proof
@@ -670,7 +931,6 @@ class ProductionFenceStore:
                 expected_epoch=actual_epoch,
                 expected_proof=actual_proof,
                 observed_at_ms=timestamp,
-                allow_register=True,
             )
             evidence = self._signed_evidence(
                 {
@@ -705,13 +965,12 @@ class ProductionFenceStore:
         expected_epoch: int | None = None,
         expected_proof: str | None = None,
         authorization: dict[str, Any] | None = None,
-        observed_at_ms: int | None = None,
     ) -> dict[str, Any] | None:
         del privkey_path
         self._validate_resource(resource_ref)
-        timestamp = now_ms() if observed_at_ms is None else observed_at_ms
 
         def mutation(connection: sqlite3.Connection) -> dict[str, Any]:
+            timestamp = self._trusted_time(connection)
             row = self._position(connection, resource_ref)
             actual_epoch, actual_proof = self._validate_expected(
                 row, expected_epoch, expected_proof
@@ -734,17 +993,21 @@ class ProductionFenceStore:
                 expected_epoch=actual_epoch,
                 expected_proof=actual_proof,
                 observed_at_ms=timestamp,
-                allow_register=False,
             )
             ttl_s = current["ttl_s"] if new_ttl_s is None else new_ttl_s
-            if isinstance(ttl_s, bool) or not isinstance(ttl_s, int) or ttl_s <= 0:
-                raise FenceError("production fence TTL must be positive")
+            if (
+                isinstance(ttl_s, bool)
+                or not isinstance(ttl_s, int)
+                or not 1 <= ttl_s <= MAX_FENCE_TTL_S
+            ):
+                raise FenceError("production fence TTL is out of bounds")
             evidence = self._signed_evidence(
                 {
                     **{
                         key: value
                         for key, value in current.items()
-                        if key not in {"signature", "signing_key_id", "authorization_ref"}
+                        if key
+                        not in {"signature", "signing_key_id", "authorization_ref"}
                     },
                     "operation": "renew",
                     "epoch": actual_epoch + 1,
@@ -765,12 +1028,11 @@ class ProductionFenceStore:
         expected_epoch: int | None = None,
         expected_proof: str | None = None,
         authorization: dict[str, Any] | None = None,
-        observed_at_ms: int | None = None,
     ) -> dict[str, Any]:
         self._validate_resource(resource_ref)
-        timestamp = now_ms() if observed_at_ms is None else observed_at_ms
 
         def mutation(connection: sqlite3.Connection) -> dict[str, Any]:
+            timestamp = self._trusted_time(connection)
             row = self._position(connection, resource_ref)
             actual_epoch, actual_proof = self._validate_expected(
                 row, expected_epoch, expected_proof
@@ -779,7 +1041,9 @@ class ProductionFenceStore:
                 raise FenceNotFound("resource has no current holder")
             current = self._verify_position(connection, row)
             if self._is_expired(current, timestamp):
-                raise FenceConflict("expired resource fence cannot be released by its holder")
+                raise FenceConflict(
+                    "expired resource fence cannot be released by its holder"
+                )
             self._verify_authorization(
                 connection,
                 authorization,
@@ -793,7 +1057,6 @@ class ProductionFenceStore:
                 expected_epoch=actual_epoch,
                 expected_proof=actual_proof,
                 observed_at_ms=timestamp,
-                allow_register=False,
             )
             evidence = self._signed_evidence(
                 {
@@ -857,7 +1120,12 @@ class ProductionFenceStore:
             connection = self._read_connection()
             row = self._position(connection, resource_ref)
             if row is None:
-                return {"resource_ref": resource_ref, "epoch": -1, "proof": None, "current": False}
+                return {
+                    "resource_ref": resource_ref,
+                    "epoch": -1,
+                    "proof": None,
+                    "current": False,
+                }
             self._verify_position(connection, row)
             return {
                 "resource_ref": resource_ref,
@@ -873,7 +1141,7 @@ class ProductionFenceStore:
         self, resource_ref: str, *, at_ms: int | None = None
     ) -> dict[str, Any] | None:
         self._validate_resource(resource_ref)
-        observed = now_ms() if at_ms is None else at_ms
+        observed = self._clock_now() if at_ms is None else at_ms
         if isinstance(observed, bool) or not isinstance(observed, int) or observed < 0:
             raise FenceError("invalid fence observation time")
         try:
@@ -892,7 +1160,7 @@ class ProductionFenceStore:
     def current_for_holder(
         self, holder_embodiment_id: str, *, at_ms: int | None = None
     ) -> list[dict[str, Any]]:
-        observed = now_ms() if at_ms is None else at_ms
+        observed = self._clock_now() if at_ms is None else at_ms
         try:
             connection = self._read_connection()
             rows = connection.execute(
@@ -901,12 +1169,36 @@ class ProductionFenceStore:
             result = []
             for row in rows:
                 current = self._verify_position(connection, row)
-                if (
-                    current.get("holder_embodiment_id") == holder_embodiment_id
-                    and not self._is_expired(current, observed)
-                ):
+                if current.get(
+                    "holder_embodiment_id"
+                ) == holder_embodiment_id and not self._is_expired(current, observed):
                     result.append(copy.deepcopy(current))
             return result
+        finally:
+            if "connection" in locals():
+                connection.close()
+
+    def holder_binding(self, key_id: str) -> dict[str, Any]:
+        if not isinstance(key_id, str) or not key_id:
+            raise FenceError("holder key id is invalid")
+        try:
+            connection = self._read_connection()
+            row = connection.execute(
+                "SELECT * FROM holder_keys WHERE key_id=?", (key_id,)
+            ).fetchone()
+            if row is None or row["state"] != "active":
+                raise FenceNotFound("holder key is absent or revoked")
+            return {
+                "holder_key_id": row["key_id"],
+                "holder_pubkey": row["public_key"],
+                "being_ref": row["being_ref"],
+                "body_ref": row["body_ref"],
+                "embodiment_id": row["embodiment_id"],
+                "incarnation_id": row["incarnation_id"],
+                "activation_id": row["activation_id"],
+                "credential_id": row["credential_id"],
+                "manifest_hash": row["manifest_hash"],
+            }
         finally:
             if "connection" in locals():
                 connection.close()
@@ -925,7 +1217,10 @@ class ProductionFenceStore:
                 "acquired_ms": None,
                 "holder_embodiment_id": None,
             }
-        remaining = max(0, current["created_ms"] + current["ttl_s"] * 1000 - now_ms())
+        remaining = max(
+            0,
+            current["created_ms"] + current["ttl_s"] * 1000 - self._clock_now(),
+        )
         return {
             "resource_ref": resource_ref,
             "present": True,
@@ -967,12 +1262,14 @@ class ProductionFenceStore:
             raise FenceError("replacement signing key id must be new")
 
         def mutation(connection: sqlite3.Connection) -> dict[str, Any]:
+            timestamp = self._trusted_time(connection)
             existing = connection.execute(
                 "SELECT public_key,state FROM signing_keys WHERE key_id=?",
                 (signer.key_id,),
             ).fetchone()
             if existing is not None and (
-                existing["public_key"] != signer.public_key or existing["state"] == "revoked"
+                existing["public_key"] != signer.public_key
+                or existing["state"] == "revoked"
             ):
                 raise FenceError("replacement signing key is mismatched or revoked")
             connection.execute(
@@ -982,7 +1279,7 @@ class ProductionFenceStore:
             connection.execute(
                 "INSERT INTO signing_keys VALUES(?,?,?,?,NULL) "
                 "ON CONFLICT(key_id) DO UPDATE SET state='active'",
-                (signer.key_id, signer.public_key, "active", now_ms()),
+                (signer.key_id, signer.public_key, "active", timestamp),
             )
             return {"rotated": True}
 
@@ -992,10 +1289,11 @@ class ProductionFenceStore:
 
     def revoke_signing_key(self, key_id: str) -> None:
         def mutation(connection: sqlite3.Connection) -> dict[str, Any]:
+            timestamp = self._trusted_time(connection)
             changed = connection.execute(
                 "UPDATE signing_keys SET state='revoked',revoked_ms=? "
                 "WHERE key_id=? AND state!='revoked'",
-                (now_ms(), key_id),
+                (timestamp, key_id),
             ).rowcount
             if changed != 1:
                 raise FenceNotFound("signing key is absent or already revoked")
@@ -1005,6 +1303,7 @@ class ProductionFenceStore:
 
     def revoke_holder_key(self, key_id: str) -> None:
         def mutation(connection: sqlite3.Connection) -> dict[str, Any]:
+            timestamp = self._trusted_time(connection)
             holder = connection.execute(
                 "SELECT public_key,state FROM holder_keys WHERE key_id=?", (key_id,)
             ).fetchone()
@@ -1018,7 +1317,6 @@ class ProductionFenceStore:
             retired = 0
             for row in rows:
                 current = self._verify_position(connection, row)
-                timestamp = now_ms()
                 evidence = self._signed_evidence(
                     {
                         "state": "holder-key-revoked",
@@ -1042,7 +1340,7 @@ class ProductionFenceStore:
             changed = connection.execute(
                 "UPDATE holder_keys SET state='revoked',revoked_ms=? "
                 "WHERE key_id=? AND state!='revoked'",
-                (now_ms(), key_id),
+                (timestamp, key_id),
             ).rowcount
             if changed != 1:
                 raise FenceNotFound("holder key is absent or already revoked")
@@ -1080,9 +1378,8 @@ class ProductionFenceStore:
             "signing_key_id": self._key_id,
             "signer_ready": signer_ready,
             "verifier_ready": verifier_ready,
-            "production_ready": verifier_ready and (
-                self._signer is None or signer_ready
-            ),
+            "production_ready": verifier_ready
+            and (self._signer is None or signer_ready),
             "interprocess_cas": True,
             "cas_mode": "sqlite-begin-immediate-full-sync",
         }

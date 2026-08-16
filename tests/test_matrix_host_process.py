@@ -54,6 +54,7 @@ from clusterctl.matrix_host import (
 )
 from clusterctl.production_fences import (
     create_holder_authorization,
+    create_holder_enrollment,
     ed25519_fingerprint,
 )
 
@@ -831,6 +832,23 @@ def test_real_host_keeps_curator_worker_separate_and_replays_one_result(
         state_dir,
         signer=owner_signer,
         key_id=owner_signer.key_id,
+        holder_registrars={owner_signer.key_id: owner_signer.public_key},
+    )
+    fences.admit_holder(
+        create_holder_enrollment(
+            owner_signer,
+            holder_key_id=holder_signer.key_id,
+            holder_pubkey=holder_signer.public_key,
+            being_ref="dm:being:matrix-host-process-test",
+            body_ref=origin["body_ref"],
+            embodiment_id=origin["embodiment_id"],
+            incarnation_id=origin["incarnation_id"],
+            activation_id="dm:activation:matrix-host-process-test",
+            credential_id="dm:credential:matrix-host-process-test",
+            manifest_hash="sha256:" + "b" * 64,
+            issued_ms=now_ms - 1,
+            nonce="matrix-host-process-holder-enrollment",
+        )
     )
     fence_position = fences.position(shared_item["resource_ref"])
     fence_authorization = create_holder_authorization(
@@ -857,7 +875,6 @@ def test_real_host_keeps_curator_worker_separate_and_replays_one_result(
         expected_epoch=fence_position["epoch"],
         expected_proof=fence_position["proof"],
         authorization=fence_authorization,
-        observed_at_ms=now_ms,
     )
     fence_evidence = MatrixHostAdapter(
         state_dir, origin["embodiment_id"], fence_store=fences

@@ -29,7 +29,7 @@ from clusterctl import cli, rebirth, rebirth_host, recovery_rebirth
 from clusterctl.embodiments import Registry
 from clusterctl.fences import Ed25519Signer, ResourceFenceStore
 from clusterctl.matrix_host import create_portable_snapshot, matrix_root
-from tests.test_rebirth import _ceremony, _descriptor
+from tests.test_rebirth import _ceremony, _descriptor, _ensure_production_fences
 
 
 @pytest.fixture
@@ -44,7 +44,7 @@ def _recovery_fixture(tmp_path: Path) -> dict:
     # not place the new credential in the future relative to the restore path.
     fixture = _ceremony(tmp_path)
     now_ms = time.time_ns() // 1_000_000
-    source_id = sorted(fixture["peers"])[0]
+    source_id = min(fixture["peers"])
     source_root = fixture["peers"][source_id]
     source_password = fixture["peer_passwords"][source_id]
     bundle = json.loads((source_root / "runtime.json").read_bytes())
@@ -228,6 +228,7 @@ def test_recovery_restore_is_gated_idempotent_and_reproducible(short_tmp_path, c
     assert hosted.service.ledger.events() == [fixture["old_event"]]
 
     _production_fence_verifier(state, short_tmp_path / "cluster-fence-owner.pem")
+    _ensure_production_fences(state, result["embodiment_id"])
     process, started = rebirth_host.launch_rebirth_host(
         state,
         result["embodiment_id"],

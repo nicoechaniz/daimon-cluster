@@ -19,6 +19,7 @@ from clusterctl.fences import Ed25519Signer, ResourceFenceStore
 from clusterctl.operation_journal import OperationJournal
 from clusterctl.production_fences import (
     create_holder_authorization,
+    create_holder_enrollment,
     ed25519_fingerprint,
 )
 from test_park import NAME, _Kill, _exec_handler, _write_spec
@@ -357,9 +358,26 @@ def test_transfer_binds_and_advances_exact_production_fence_position(
         state_dir / "production-fence",
         signer=owner,
         key_id=owner.key_id,
+        holder_registrars={owner.key_id: owner.public_key},
     )
     resource_ref = NAME + "@daimonmatrix"
     now_ms = int(time.time() * 1000)
+    store.admit_holder(
+        create_holder_enrollment(
+            owner,
+            holder_key_id=holder.key_id,
+            holder_pubkey=holder.public_key,
+            being_ref="dm:being:volume-relocation-test",
+            body_ref=resource_ref,
+            embodiment_id="embodiment:11111111-1111-4111-8111-111111111111",
+            incarnation_id="incarnation:22222222-2222-4222-8222-222222222222",
+            activation_id="dm:activation:volume-relocation-test",
+            credential_id="dm:credential:volume-relocation-test",
+            manifest_hash="sha256:" + "a" * 64,
+            issued_ms=now_ms - 1,
+            nonce="volume-relocation-holder-enrollment",
+        )
+    )
     empty = store.position(resource_ref)
     acquire_auth = create_holder_authorization(
         holder,
@@ -385,7 +403,6 @@ def test_transfer_binds_and_advances_exact_production_fence_position(
         expected_epoch=empty["epoch"],
         expected_proof=empty["proof"],
         authorization=acquire_auth,
-        observed_at_ms=now_ms,
     )
     before = store.position(resource_ref)
 
@@ -409,7 +426,6 @@ def test_transfer_binds_and_advances_exact_production_fence_position(
             expected_epoch=expected["epoch"],
             expected_proof=expected["proof"],
             authorization=authorization,
-            observed_at_ms=issued + 1,
         )
         if fault == "response-loss":
             raise RuntimeError("lost fence response")

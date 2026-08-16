@@ -24,15 +24,26 @@ from clusterctl.fences import (
 )
 from clusterctl.production_fences import (
     create_holder_authorization,
+    create_holder_enrollment,
     ed25519_fingerprint,
 )
 
 BODY = "cluster:being:compaii"
+BEING = "dm:being:test"
 EMBODIMENT = "embodiment:11111111-1111-4111-8111-111111111111"
 INCARNATION = "incarnation:22222222-2222-4222-8222-222222222222"
 RESOURCE = "volume:compaii-state"
 OWNER_KEY_ID = "cluster-fence-2026-08"
 HOLDER_KEY_ID = "embodiment-key-2026-08"
+NOW_MS = 1_800_000_000_001
+
+
+class MutableClock:
+    def __init__(self, value: int = NOW_MS):
+        self.value = value
+
+    def __call__(self) -> int:
+        return self.value
 
 
 def _key(path: Path, key_id: str) -> Ed25519Signer:
@@ -57,9 +68,39 @@ def keys(tmp_path):
 
 
 def _store(tmp_path: Path, owner: Ed25519Signer, **kwargs) -> ResourceFenceStore:
+    kwargs.setdefault("clock", MutableClock())
+    kwargs.setdefault("holder_registrars", {owner.key_id: owner.public_key})
     return ResourceFenceStore.production(
         tmp_path / "state", signer=owner, key_id=owner.key_id, **kwargs
     )
+
+
+def _admit(
+    store: ResourceFenceStore,
+    owner: Ed25519Signer,
+    holder: Ed25519Signer,
+    *,
+    issued_ms: int = NOW_MS - 1,
+    body_ref: str = BODY,
+    embodiment_id: str = EMBODIMENT,
+    incarnation_id: str = INCARNATION,
+) -> dict:
+    enrollment = create_holder_enrollment(
+        owner,
+        holder_key_id=holder.key_id,
+        holder_pubkey=holder.public_key,
+        being_ref=BEING,
+        body_ref=body_ref,
+        embodiment_id=embodiment_id,
+        incarnation_id=incarnation_id,
+        activation_id="dm:activation:test",
+        credential_id="dm:credential:test",
+        manifest_hash="sha256:" + "a" * 64,
+        issued_ms=issued_ms,
+        ttl_s=60,
+        nonce=f"enroll:{holder.key_id}:{incarnation_id}",
+    )
+    return store.admit_holder(enrollment)
 
 
 def _authorization(
@@ -90,12 +131,14 @@ def _authorization(
 
 def _acquire(
     store: ResourceFenceStore,
+    owner: Ed25519Signer,
     holder: Ed25519Signer,
     *,
     resource_ref: str = RESOURCE,
     observed_at_ms: int = 1_800_000_000_001,
     ttl_s: int = 120,
 ) -> dict:
+    _admit(store, owner, holder)
     position = store.position(resource_ref)
     authorization = _authorization(
         holder,
@@ -116,7 +159,6 @@ def _acquire(
         expected_epoch=position["epoch"],
         expected_proof=position["proof"],
         authorization=authorization,
-        observed_at_ms=observed_at_ms,
     )
 
 
@@ -132,8 +174,13 @@ def _race_worker(
         owner = Ed25519Signer(owner_path, OWNER_KEY_ID)
         holder = Ed25519Signer(holder_path, HOLDER_KEY_ID)
         store = ResourceFenceStore.production(
-            state_dir, signer=owner, key_id=OWNER_KEY_ID
+            state_dir,
+            signer=owner,
+            key_id=OWNER_KEY_ID,
+            clock=MutableClock(),
+            holder_registrars={owner.key_id: owner.public_key},
         )
+        _admit(store, owner, holder)
         store.acquire(
             resource_ref,
             holder.public_key,
@@ -145,7 +192,6 @@ def _race_worker(
             expected_epoch=-1,
             expected_proof=None,
             authorization=authorization,
-            observed_at_ms=1_800_000_000_001,
         )
         queue.put("won")
     except FenceConflict:
@@ -173,6 +219,8 @@ def _kill_worker(
         signer=owner,
         key_id=OWNER_KEY_ID,
         fault_hook=kill,
+        clock=MutableClock(),
+        holder_registrars={owner.key_id: owner.public_key},
     )
     store.acquire(
         RESOURCE,
@@ -185,7 +233,6 @@ def _kill_worker(
         expected_epoch=-1,
         expected_proof=None,
         authorization=authorization,
-        observed_at_ms=1_800_000_000_001,
     )
 
 
@@ -201,13 +248,15 @@ def _renew_release_worker(
     try:
         owner = Ed25519Signer(owner_path, OWNER_KEY_ID)
         store = ResourceFenceStore.production(
-            state_dir, signer=owner, key_id=OWNER_KEY_ID
+            state_dir,
+            signer=owner,
+            key_id=OWNER_KEY_ID,
+            clock=MutableClock(NOW_MS + 9),
         )
         kwargs = {
             "expected_epoch": expected_epoch,
             "expected_proof": expected_proof,
             "authorization": authorization,
-            "observed_at_ms": 1_800_000_000_010,
         }
         if operation == "renew":
             store.renew(RESOURCE, **kwargs)
@@ -244,18 +293,14 @@ def test_production_refuses_open_or_symlinked_database_roots(tmp_path, keys):
     open_root.mkdir(mode=0o755)
     open_root.chmod(0o755)
     with pytest.raises(FenceError, match="owner-only"):
-        ResourceFenceStore.production(
-            open_root, signer=owner, key_id=owner.key_id
-        )
+        ResourceFenceStore.production(open_root, signer=owner, key_id=owner.key_id)
 
     actual = tmp_path / "actual-state"
     actual.mkdir(mode=0o700)
     linked = tmp_path / "linked-state"
     linked.symlink_to(actual, target_is_directory=True)
     with pytest.raises(FenceError, match="owner-only"):
-        ResourceFenceStore.production(
-            linked, signer=owner, key_id=owner.key_id
-        )
+        ResourceFenceStore.production(linked, signer=owner, key_id=owner.key_id)
 
 
 def test_signed_acquire_is_exact_and_matrix_verifier_compatible(tmp_path, keys):
@@ -264,7 +309,7 @@ def test_signed_acquire_is_exact_and_matrix_verifier_compatible(tmp_path, keys):
 
     owner, holder = keys
     store = _store(tmp_path, owner)
-    held = _acquire(store, holder)
+    held = _acquire(store, owner, holder)
     registry = Registry(tmp_path / "state")
     registry.register(body_ref=BODY, embodiment_id=EMBODIMENT)
     registry.start(
@@ -286,7 +331,10 @@ def test_signed_acquire_is_exact_and_matrix_verifier_compatible(tmp_path, keys):
     assert held["holder_incarnation_id"] == INCARNATION
     assert held["signing_key_id"] == OWNER_KEY_ID
     assert held["signature"].startswith("ED25519:")
-    assert stat.S_IMODE((tmp_path / "state" / "resource-fences.sqlite3").stat().st_mode) == 0o600
+    assert (
+        stat.S_IMODE((tmp_path / "state" / "resource-fences.sqlite3").stat().st_mode)
+        == 0o600
+    )
     support = store.support_status()
     assert support["production_ready"] is True
     assert support["interprocess_cas"] is True
@@ -309,7 +357,6 @@ def test_signed_acquire_is_exact_and_matrix_verifier_compatible(tmp_path, keys):
             expected_epoch=-1,
             expected_proof=None,
             authorization={},
-            observed_at_ms=held["created_ms"] + 1,
         )
 
 
@@ -351,7 +398,152 @@ def test_wrong_authorization_binding_fails_closed(tmp_path, keys, field, replace
             expected_epoch=-1,
             expected_proof=None,
             authorization=authorization,
-            observed_at_ms=1_800_000_000_001,
+        )
+
+
+def test_holder_enrollment_is_explicit_root_bound_and_not_tofu(tmp_path, keys):
+    owner, holder = keys
+    store = _store(tmp_path, owner)
+    position = store.position(RESOURCE)
+    authorization = _authorization(holder, operation="acquire", position=position)
+    with pytest.raises(InvalidSignature, match="unknown"):
+        store.acquire(
+            RESOURCE,
+            holder.public_key,
+            ed25519_fingerprint(holder.public_key),
+            holder_embodiment_id=EMBODIMENT,
+            body_ref=BODY,
+            holder_incarnation_id=INCARNATION,
+            holder_key_id=holder.key_id,
+            expected_epoch=-1,
+            expected_proof=None,
+            authorization=authorization,
+        )
+
+    attacker = _key(tmp_path / "attacker.pem", "attacker-key")
+    forged = create_holder_enrollment(
+        attacker,
+        holder_key_id=attacker.key_id,
+        holder_pubkey=attacker.public_key,
+        being_ref="dm:being:invented",
+        body_ref="cluster:invented",
+        embodiment_id="embodiment:invented",
+        incarnation_id="incarnation:invented",
+        activation_id="dm:activation:invented",
+        credential_id="dm:credential:invented",
+        manifest_hash="sha256:" + "b" * 64,
+        issued_ms=NOW_MS - 1,
+        nonce="attacker-self-enrollment",
+    )
+    with pytest.raises(InvalidSignature, match="registrar"):
+        store.admit_holder(forged)
+
+    enrollment = create_holder_enrollment(
+        owner,
+        holder_key_id=holder.key_id,
+        holder_pubkey=holder.public_key,
+        being_ref=BEING,
+        body_ref=BODY,
+        embodiment_id=EMBODIMENT,
+        incarnation_id=INCARNATION,
+        activation_id="dm:activation:test",
+        credential_id="dm:credential:test",
+        manifest_hash="sha256:" + "a" * 64,
+        issued_ms=NOW_MS - 1,
+        nonce=f"enroll:{holder.key_id}:{INCARNATION}",
+    )
+    assert store.admit_holder(enrollment)["idempotent"] is False
+    assert store.admit_holder(enrollment)["idempotent"] is True
+    conflict = {**enrollment, "activation_id": "dm:activation:substituted"}
+    conflict["signature"] = owner.sign(
+        json.dumps(
+            {key: value for key, value in conflict.items() if key != "signature"},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    )
+    with pytest.raises(FenceConflict, match="conflicts"):
+        store.admit_holder(conflict)
+
+
+def test_mutation_time_is_authority_owned_bounded_and_rollback_safe(tmp_path, keys):
+    owner, holder = keys
+    clock = MutableClock()
+    store = _store(tmp_path, owner, clock=clock)
+    held = _acquire(store, owner, holder, ttl_s=1)
+    position = store.position(RESOURCE)
+
+    future = _authorization(
+        holder,
+        operation="renew",
+        position=position,
+        issued_ms=NOW_MS + 100_000,
+    )
+    with pytest.raises(InvalidSignature, match="time"):
+        store.renew(
+            RESOURCE,
+            expected_epoch=position["epoch"],
+            expected_proof=position["proof"],
+            authorization=future,
+        )
+    with pytest.raises(TypeError, match="observed_at_ms"):
+        store.renew(
+            RESOURCE,
+            expected_epoch=position["epoch"],
+            expected_proof=position["proof"],
+            authorization=future,
+            observed_at_ms=NOW_MS + 100_000,
+        )
+    with pytest.raises(FenceError, match="out of bounds"):
+        create_holder_authorization(
+            holder,
+            operation="renew",
+            body_ref=BODY,
+            embodiment_id=EMBODIMENT,
+            incarnation_id=INCARNATION,
+            resource_ref=RESOURCE,
+            expected_epoch=position["epoch"],
+            expected_proof=position["proof"],
+            issued_ms=NOW_MS,
+            ttl_s=301,
+            nonce="overlong",
+        )
+    with pytest.raises(FenceError, match="out of bounds"):
+        store.acquire(
+            "volume:overlong",
+            holder.public_key,
+            ed25519_fingerprint(holder.public_key),
+            ttl_s=3601,
+            holder_embodiment_id=EMBODIMENT,
+            body_ref=BODY,
+            holder_incarnation_id=INCARNATION,
+            holder_key_id=holder.key_id,
+            expected_epoch=-1,
+            expected_proof=None,
+            authorization={},
+        )
+
+    clock.value = held["created_ms"] - 1
+    valid = _authorization(
+        holder,
+        operation="renew",
+        position=position,
+        issued_ms=held["created_ms"] - 1,
+    )
+    with pytest.raises(FenceError, match="rolled back"):
+        store.renew(
+            RESOURCE,
+            expected_epoch=position["epoch"],
+            expected_proof=position["proof"],
+            authorization=valid,
+        )
+    clock.value = held["created_ms"] + 1_000
+    with pytest.raises(FenceConflict, match="expired"):
+        store.renew(
+            RESOURCE,
+            expected_epoch=position["epoch"],
+            expected_proof=position["proof"],
+            authorization=valid,
         )
 
 
@@ -377,7 +569,6 @@ def test_signature_fingerprint_future_expiry_and_revocation_fail_closed(tmp_path
             expected_epoch=-1,
             expected_proof=None,
             authorization=future,
-            observed_at_ms=1_800_000_000_001,
         )
     valid = _authorization(holder, operation="acquire", position=position)
     with pytest.raises(InvalidSignature, match="fingerprint"):
@@ -392,7 +583,6 @@ def test_signature_fingerprint_future_expiry_and_revocation_fail_closed(tmp_path
             expected_epoch=-1,
             expected_proof=None,
             authorization=valid,
-            observed_at_ms=1_800_000_000_001,
         )
     authorization = _authorization(holder, operation="acquire", position=position)
     authorization["signature"] = "ED25519:" + "A" * 88
@@ -408,9 +598,8 @@ def test_signature_fingerprint_future_expiry_and_revocation_fail_closed(tmp_path
             expected_epoch=-1,
             expected_proof=None,
             authorization=authorization,
-            observed_at_ms=1_800_000_000_001,
         )
-    held = _acquire(store, holder, ttl_s=1)
+    held = _acquire(store, owner, holder, ttl_s=1)
     with pytest.raises(FenceError, match="precedes"):
         store.verify_current(RESOURCE, at_ms=held["created_ms"] - 1)
     assert store.verify_current(RESOURCE, at_ms=held["created_ms"] + 1_000) is None
@@ -422,7 +611,7 @@ def test_signature_fingerprint_future_expiry_and_revocation_fail_closed(tmp_path
 def test_renew_release_and_reacquire_keep_one_monotonic_position(tmp_path, keys):
     owner, holder = keys
     store = _store(tmp_path, owner)
-    held = _acquire(store, holder)
+    held = _acquire(store, owner, holder)
     first_position = store.position(RESOURCE)
     renew_auth = _authorization(
         holder,
@@ -435,7 +624,6 @@ def test_renew_release_and_reacquire_keep_one_monotonic_position(tmp_path, keys)
         expected_epoch=first_position["epoch"],
         expected_proof=first_position["proof"],
         authorization=renew_auth,
-        observed_at_ms=held["created_ms"] + 2,
     )
     assert renewed is not None and renewed["epoch"] == 1
     with pytest.raises(FenceConflict, match="stale"):
@@ -444,7 +632,6 @@ def test_renew_release_and_reacquire_keep_one_monotonic_position(tmp_path, keys)
             expected_epoch=first_position["epoch"],
             expected_proof=first_position["proof"],
             authorization=renew_auth,
-            observed_at_ms=held["created_ms"] + 3,
         )
     renewed_position = store.position(RESOURCE)
     release_auth = _authorization(
@@ -458,26 +645,21 @@ def test_renew_release_and_reacquire_keep_one_monotonic_position(tmp_path, keys)
         expected_epoch=renewed_position["epoch"],
         expected_proof=renewed_position["proof"],
         authorization=release_auth,
-        observed_at_ms=held["created_ms"] + 4,
     )
     assert released["state"] == "released"
     assert released["epoch"] == 2
     assert store.verify_current(RESOURCE, at_ms=held["created_ms"] + 5) is None
     with pytest.raises(FenceError, match="cannot be restored"):
         store.restore(RESOURCE, held)
-    reacquired = _acquire(
-        store, holder, observed_at_ms=held["created_ms"] + 10
-    )
+    reacquired = _acquire(store, owner, holder, observed_at_ms=held["created_ms"] + 10)
     assert reacquired["epoch"] == 3
 
 
 def test_concurrent_renew_release_race_has_one_signed_winner(tmp_path, keys):
     owner, holder = keys
     state_dir = tmp_path / "state"
-    store = ResourceFenceStore.production(
-        state_dir, signer=owner, key_id=OWNER_KEY_ID
-    )
-    _acquire(store, holder)
+    store = _store(tmp_path, owner)
+    _acquire(store, owner, holder)
     position = store.position(RESOURCE)
     authorizations = {
         operation: _authorization(
@@ -516,11 +698,13 @@ def test_concurrent_renew_release_race_has_one_signed_winner(tmp_path, keys):
     assert store.position(RESOURCE)["epoch"] == 1
 
 
-def test_signer_rotation_verifies_old_records_and_revocation_fails_closed(tmp_path, keys):
+def test_signer_rotation_verifies_old_records_and_revocation_fails_closed(
+    tmp_path, keys
+):
     owner, holder = keys
     store = _store(tmp_path, owner)
     stale_process = _store(tmp_path, owner)
-    held = _acquire(store, holder)
+    held = _acquire(store, owner, holder)
     replacement = _key(tmp_path / "replacement.pem", "cluster-fence-2026-09")
     store.rotate_signer(replacement)
     assert store.verify_current(RESOURCE, at_ms=held["created_ms"] + 1) == held
@@ -543,11 +727,14 @@ def test_signer_rotation_verifies_old_records_and_revocation_fails_closed(tmp_pa
             expected_epoch=-1,
             expected_proof=None,
             authorization=stale_authorization,
-            observed_at_ms=1_800_000_000_001,
         )
     with pytest.raises(FenceError, match="inactive"):
         ResourceFenceStore.production(
-            tmp_path / "state", signer=owner, key_id=OWNER_KEY_ID
+            tmp_path / "state",
+            signer=owner,
+            key_id=OWNER_KEY_ID,
+            clock=MutableClock(),
+            holder_registrars={owner.key_id: owner.public_key},
         )
     store.revoke_signing_key(OWNER_KEY_ID)
     with pytest.raises(InvalidSignature, match="revoked"):
@@ -557,9 +744,8 @@ def test_signer_rotation_verifies_old_records_and_revocation_fails_closed(tmp_pa
 def test_multiprocess_contenders_have_exactly_one_winner(tmp_path, keys):
     owner, holder = keys
     state_dir = tmp_path / "state"
-    store = ResourceFenceStore.production(
-        state_dir, signer=owner, key_id=OWNER_KEY_ID
-    )
+    store = _store(tmp_path, owner)
+    _admit(store, owner, holder)
     authorization = _authorization(
         holder, operation="acquire", position=store.position(RESOURCE)
     )
@@ -593,9 +779,8 @@ def test_multiprocess_contenders_have_exactly_one_winner(tmp_path, keys):
 def test_different_resources_do_not_conflict(tmp_path, keys):
     owner, holder = keys
     state_dir = tmp_path / "state"
-    store = ResourceFenceStore.production(
-        state_dir, signer=owner, key_id=OWNER_KEY_ID
-    )
+    store = _store(tmp_path, owner)
+    _admit(store, owner, holder)
     resources = ["volume:one", "volume:two"]
     authorizations = [
         _authorization(
@@ -646,8 +831,13 @@ def test_process_kill_at_commit_boundaries_recovers_honestly(
     owner, holder = keys
     state_dir = tmp_path / boundary
     initial = ResourceFenceStore.production(
-        state_dir, signer=owner, key_id=OWNER_KEY_ID
+        state_dir,
+        signer=owner,
+        key_id=OWNER_KEY_ID,
+        clock=MutableClock(),
+        holder_registrars={owner.key_id: owner.public_key},
     )
+    _admit(initial, owner, holder)
     authorization = _authorization(
         holder, operation="acquire", position=initial.position(RESOURCE)
     )
@@ -666,7 +856,11 @@ def test_process_kill_at_commit_boundaries_recovers_honestly(
     process.join(20)
     assert process.exitcode == 71
     recovered = ResourceFenceStore.production(
-        state_dir, signer=owner, key_id=OWNER_KEY_ID
+        state_dir,
+        signer=owner,
+        key_id=OWNER_KEY_ID,
+        clock=MutableClock(),
+        holder_registrars={owner.key_id: owner.public_key},
     )
     assert recovered.position(RESOURCE)["epoch"] == (0 if committed else -1)
     assert bool(recovered.get(RESOURCE)) is committed
@@ -684,5 +878,5 @@ def test_second_write_failure_rolls_back_position_and_high_water(tmp_path, keys)
     connection.commit()
     connection.close()
     with pytest.raises(FenceError, match="transaction failed"):
-        _acquire(store, holder)
+        _acquire(store, owner, holder)
     assert store.position(RESOURCE)["epoch"] == -1

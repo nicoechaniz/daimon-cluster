@@ -612,7 +612,7 @@ def test_shared_admission_allows_only_one_ready_across_state_dirs(short_tmp_path
 
 
 def test_supervisor_stops_runtime_before_lease_expiry_on_authority_loss(
-    short_tmp_path,
+    short_tmp_path, monkeypatch
 ):
     fixture, state, values = _install(
         short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
@@ -626,14 +626,50 @@ def test_supervisor_stops_runtime_before_lease_expiry_on_authority_loss(
         admission_lease_ttl_s=3,
     )
     server, thread = _DISPOSABLE_ADMISSION_SERVERS.pop()
-    stopped_at = time.time_ns() // 1_000_000
+    started = time.monotonic()
+    real_time_ns = time.time_ns
+    # Simulate the host wall clock stepping ten seconds backwards after READY.
+    # Lease supervision must use elapsed monotonic time only.
+    monkeypatch.setattr(time, "time_ns", lambda: real_time_ns() - 10_000_000_000)
     server.shutdown()
     server.server_close()
     thread.join(timeout=5)
     _stdout, stderr = process.communicate(timeout=5)
     assert process.returncode == -signal.SIGKILL, stderr
-    assert time.time_ns() // 1_000_000 < ready["admission"]["lease_expires_at_ms"]
-    assert stopped_at < ready["admission"]["lease_expires_at_ms"]
+    assert time.monotonic() - started < 2.25
+    assert ready["admission"]["lease_expires_at_ms"] > 0
+
+
+def test_monotonic_watchdog_kills_while_renew_round_trip_is_stuck():
+    class StuckClient:
+        session_id = "test-session"
+
+        def renew(self, *, ttl_s):
+            del ttl_s
+            time.sleep(1.5)
+            raise rebirth_host.AdmissionError("stuck authority")
+
+        def release(self):
+            raise rebirth_host.AdmissionError("stuck authority")
+
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    started = time.monotonic()
+    supervisor = rebirth_host._AdmissionSupervisor(
+        process,
+        StuckClient(),  # type: ignore[arg-type]
+        {"lease_expires_at_ms": -10_000_000},
+        1,
+        lease_started_monotonic=started,
+    )
+    supervisor.start()
+    _stdout, _stderr = process.communicate(timeout=2)
+    assert process.returncode == -signal.SIGKILL
+    assert time.monotonic() - started < 0.9
+    supervisor.thread.join(timeout=3)
 
 
 def test_launcher_sigkill_cannot_leave_executing_orphan_beyond_lease(
@@ -703,6 +739,54 @@ def test_admission_is_rechecked_before_first_runtime_effect(
             admission_lease_ttl_s=3,
         )
     assert Registry(state).status(installed["embodiment_id"])["status"] == "stopped"
+
+
+def test_registry_start_is_compensated_if_admission_is_lost_in_race(
+    short_tmp_path, monkeypatch
+):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(state, installed["embodiment_id"])
+    identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
+    client = rebirth_host._configured_admission_client(state, identity)
+    original_start = Registry.start
+
+    def start_then_lose_admission(self, *args, **kwargs):
+        result = original_start(self, *args, **kwargs)
+        client.release()
+        return result
+
+    monkeypatch.setattr(Registry, "start", start_then_lose_admission)
+
+    def forbidden_spawn(*_args, **_kwargs):
+        raise AssertionError("runtime spawned after admission loss")
+
+    monkeypatch.setattr(rebirth_host.subprocess, "Popen", forbidden_spawn)
+    with pytest.raises(rebirth_host.RebirthHostError, match="lost_after_registry"):
+        rebirth_host.launch_rebirth_host(
+            state,
+            installed["embodiment_id"],
+            _descriptor(fixture["password"]),
+            admission_client=client,
+            admission_lease_ttl_s=3,
+        )
+    registered = Registry(state).status(installed["embodiment_id"])
+    assert registered["status"] == "stopped"
+    assert registered["current_incarnation_id"] is None
+    assert all(
+        row["incarnation_id"] != installed["incarnation_id"]
+        for row in registered["incarnations"]
+    )
+    journaled = OperationJournal(state).open_operations()[0]
+    assert journaled["state"] == "runtime-dispatching"
+    assert journaled["runtime_observation"] == {
+        "registry_start_compensated": True,
+        "embodiment_id": installed["embodiment_id"],
+        "incarnation_id": installed["incarnation_id"],
+        "reason": "rebirth_host_admission_lost_after_registry",
+    }
 
 
 def test_failed_password_resumes_same_admitted_incarnation(short_tmp_path):

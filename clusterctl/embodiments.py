@@ -168,6 +168,33 @@ class Registry:
         self._save(state)
         return dict(record)
 
+    def rollback_start(self, embodiment_id: str, *, incarnation_id: str) -> dict[str, Any]:
+        """Compensate an unlaunched incarnation after admission is lost.
+
+        This is deliberately narrower than ``stop``: it only removes the exact
+        current incarnation and therefore cannot erase a body that reached the
+        runtime boundary or a later incarnation created by another operation.
+        """
+
+        state = self.load()
+        try:
+            record = state["embodiments"][embodiment_id]
+        except KeyError as exc:
+            raise RegistryError(f"unknown embodiment: {embodiment_id}") from exc
+        if (
+            record.get("status") != "running"
+            or record.get("current_incarnation_id") != incarnation_id
+            or not record.get("incarnations")
+            or record["incarnations"][-1].get("incarnation_id") != incarnation_id
+            or record["incarnations"][-1].get("stopped_at_ms") is not None
+        ):
+            raise RegistryError("registry start compensation precondition failed")
+        record["incarnations"].pop()
+        record["current_incarnation_id"] = None
+        record["status"] = "stopped"
+        self._save(state)
+        return dict(record)
+
     def status(self, embodiment_id: str) -> dict[str, Any]:
         state = self.load()
         try:

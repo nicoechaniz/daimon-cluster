@@ -317,55 +317,106 @@ class _AdmissionSupervisor:
         client: AdmissionClient,
         receipt: dict[str, Any],
         ttl_s: int,
+        *,
+        lease_started_monotonic: float,
     ):
         self.process = process
         self.client = client
         self.receipt = receipt
         self.ttl_s = ttl_s
+        self._lease_deadline = lease_started_monotonic + ttl_s
+        self._condition = threading.Condition()
+        self._client_lock = threading.Lock()
+        self._finished = threading.Event()
         self.thread = threading.Thread(
             target=self._run,
             name=f"rebirth-admission-{process.pid}",
+            daemon=True,
+        )
+        self.watchdog = threading.Thread(
+            target=self._watchdog,
+            name=f"rebirth-admission-hard-deadline-{process.pid}",
             daemon=True,
         )
 
     def start(self) -> None:
         with _SUPERVISORS_LOCK:
             _SUPERVISORS[self.process.pid] = self
+        self.watchdog.start()
         self.thread.start()
+
+    def _hard_kill_at(self) -> float:
+        return self._lease_deadline - self.ttl_s / 4
+
+    def _watchdog(self) -> None:
+        """Kill independently of renew I/O or either host's wall clock."""
+
+        while not self._finished.is_set() and self.process.poll() is None:
+            with self._condition:
+                remaining = self._hard_kill_at() - time.monotonic()
+                if remaining > 0:
+                    self._condition.wait(timeout=min(remaining, 0.25))
+                    continue
+            _terminate_without_consuming_output(self.process)
+            return
+
+    def verify_current(self, *, minimum_remaining_s: float) -> dict[str, Any] | None:
+        with self._client_lock:
+            current = self.client.current()
+        with self._condition:
+            enough_budget = (
+                self._lease_deadline - time.monotonic() > minimum_remaining_s
+            )
+        if (
+            not enough_budget
+            or current is None
+            or current.get("session_id") != self.client.session_id
+        ):
+            return None
+        return current
 
     def _run(self) -> None:
         try:
             while self.process.poll() is None:
-                expiry_ms = self.receipt.get("lease_expires_at_ms")
-                if not isinstance(expiry_ms, int):
-                    _terminate_without_consuming_output(self.process)
-                    return
-                # Renewal begins after one quarter of the lease and leaves
-                # three quarters for two bounded network round trips plus a
-                # fail-closed SIGKILL.  There is no TERM grace
-                # period that could extend execution past signed authority.
-                renew_at_ms = expiry_ms - (self.ttl_s * 3000 // 4)
+                with self._condition:
+                    renew_at = self._lease_deadline - self.ttl_s * 3 / 4
                 interval = max(
                     0.01,
-                    min(0.25, (renew_at_ms - time.time_ns() // 1_000_000) / 1000),
+                    min(0.25, renew_at - time.monotonic()),
                 )
                 try:
                     self.process.wait(timeout=interval)
                     break
                 except subprocess.TimeoutExpired:
                     pass
-                if time.time_ns() // 1_000_000 < renew_at_ms:
+                if time.monotonic() < renew_at:
                     continue
                 try:
-                    self.receipt = self.client.renew(ttl_s=self.ttl_s)
+                    renew_started = time.monotonic()
+                    with self._client_lock:
+                        receipt = self.client.renew(ttl_s=self.ttl_s)
                 except AdmissionError:
                     _terminate_without_consuming_output(self.process)
                     return
+                with self._condition:
+                    self.receipt = receipt
+                    # The remote authority can only create this TTL after the
+                    # local request began, so request-start + TTL is a safe,
+                    # conservative deadline independent of wall-clock skew.
+                    self._lease_deadline = renew_started + self.ttl_s
+                    if time.monotonic() >= self._hard_kill_at():
+                        _terminate_without_consuming_output(self.process)
+                        return
+                    self._condition.notify_all()
             try:
-                self.client.release()
+                with self._client_lock:
+                    self.client.release()
             except AdmissionError:
                 pass
         finally:
+            self._finished.set()
+            with self._condition:
+                self._condition.notify_all()
             with _SUPERVISORS_LOCK:
                 _SUPERVISORS.pop(self.process.pid, None)
 
@@ -495,31 +546,100 @@ def launch_rebirth_host(
             # Acquire only after the local operation lock and durable intent,
             # but before registry or process effects.
             try:
+                lease_started_monotonic = time.monotonic()
                 admission_receipt = client.acquire(ttl_s=admission_lease_ttl_s)
             except AdmissionError as exception:
                 raise RebirthHostError("rebirth_host_admission_refused") from exception
-            acquired_current = client.current()
-            if (
-                acquired_current is None
-                or acquired_current.get("session_id") != client.session_id
-                or acquired_current.get("proof_ref")
-                != admission_receipt.get("proof_ref")
-            ):
-                raise RebirthHostError("rebirth_host_admission_lost_before_effect")
+            conservative_deadline = (
+                lease_started_monotonic + admission_lease_ttl_s
+            )
+
+            def require_current_admission(
+                code: str, *, minimum_remaining_s: float
+            ) -> dict[str, Any]:
+                try:
+                    current = client.current()
+                except AdmissionError as exception:
+                    raise RebirthHostError(code) from exception
+                if (
+                    current is None
+                    or current.get("session_id") != client.session_id
+                    or current.get("proof_ref")
+                    != admission_receipt.get("proof_ref")
+                    or conservative_deadline - time.monotonic()
+                    <= minimum_remaining_s
+                ):
+                    raise RebirthHostError(code)
+                return current
+
+            require_current_admission(
+                "rebirth_host_admission_lost_before_effect",
+                minimum_remaining_s=admission_lease_ttl_s / 2,
+            )
             registry = Registry(state)
+            registry_started_here = False
+            operation_id = record["operation_id"]
+
+            def compensate_registry_start(code: str) -> None:
+                nonlocal record, registry_started_here
+                if not registry_started_here:
+                    return
+                try:
+                    registry.rollback_start(
+                        embodiment_id,
+                        incarnation_id=origin["incarnation_id"],
+                    )
+                    record = journal.advance(
+                        operation_id,
+                        "runtime-dispatching",
+                        runtime_observation={
+                            "registry_start_compensated": True,
+                            "embodiment_id": embodiment_id,
+                            "incarnation_id": origin["incarnation_id"],
+                            "reason": code,
+                        },
+                        last_error=code,
+                    )
+                    registry_started_here = False
+                except Exception as exception:
+                    journal.advance(
+                        operation_id,
+                        "degraded",
+                        last_error="rebirth_host_registry_compensation_failed",
+                    )
+                    raise RebirthHostError(
+                        "rebirth_host_registry_compensation_failed"
+                    ) from exception
+
             try:
                 registered = registry.status(embodiment_id)
                 if (
                     registered["status"] == "stopped"
                     and registered["current_incarnation_id"] is None
                 ):
+                    require_current_admission(
+                        "rebirth_host_admission_lost_before_registry",
+                        minimum_remaining_s=admission_lease_ttl_s / 2,
+                    )
                     registry.start(
                         embodiment_id,
                         incarnation_id=origin["incarnation_id"],
                         started_at_ms=int(time.time_ns() // 1_000_000),
                     )
+                    registry_started_here = True
+                    try:
+                        require_current_admission(
+                            "rebirth_host_admission_lost_after_registry",
+                            minimum_remaining_s=admission_lease_ttl_s / 3,
+                        )
+                    except RebirthHostError:
+                        compensate_registry_start(
+                            "rebirth_host_admission_lost_after_registry"
+                        )
+                        raise
                     registered = registry.status(embodiment_id)
             except RegistryError as exception:
+                compensate_registry_start("rebirth_host_registry_rejected")
                 raise RebirthHostError("rebirth_host_registry_rejected") from exception
             if (
                 registered.get("body_ref") != origin["body_ref"]
@@ -527,21 +647,19 @@ def launch_rebirth_host(
                 or registered.get("current_incarnation_id")
                 != origin["incarnation_id"]
             ):
+                compensate_registry_start("rebirth_host_registry_rejected")
                 raise RebirthHostError("rebirth_host_registry_rejected")
 
             # The shared lease is acquired inside the local operation lock,
             # after all recovery/journal checks.  Its signed current position is
             # re-read at the last boundary before the runtime effect.
-            current_admission = client.current()
-            minimum_remaining_ms = admission_lease_ttl_s * 1000 // 2
-            if (
-                current_admission is None
-                or current_admission.get("session_id") != client.session_id
-                or current_admission.get("proof_ref")
-                != admission_receipt.get("proof_ref")
-                or current_admission.get("lease_expires_at_ms", 0)
-                <= time.time_ns() // 1_000_000 + minimum_remaining_ms
-            ):
+            try:
+                require_current_admission(
+                    "rebirth_host_admission_lost_before_spawn",
+                    minimum_remaining_s=admission_lease_ttl_s / 3,
+                )
+            except RebirthHostError:
+                compensate_registry_start("rebirth_host_admission_lost_before_spawn")
                 raise RebirthHostError("rebirth_host_admission_lost_before_spawn")
             ready_read, ready_write = os.pipe()
             command = [
@@ -572,25 +690,26 @@ def launch_rebirth_host(
                 )
             except BaseException:
                 os.close(ready_read)
+                compensate_registry_start("rebirth_host_spawn_failed")
                 raise
             finally:
                 os.close(password_descriptor)
                 os.close(ready_write)
             assert process is not None
             supervisor = _AdmissionSupervisor(
-                process, client, admission_receipt, admission_lease_ttl_s
+                process,
+                client,
+                admission_receipt,
+                admission_lease_ttl_s,
+                lease_started_monotonic=lease_started_monotonic,
             )
             supervisor.start()
             try:
                 _wait_ready(ready_read, process, timeout_s)
-                ready_admission = client.current()
-                if (
-                    ready_admission is None
-                    or ready_admission.get("session_id") != client.session_id
-                    or ready_admission.get("lease_expires_at_ms", 0)
-                    <= time.time_ns() // 1_000_000
-                    + admission_lease_ttl_s * 1000 // 3
-                ):
+                ready_admission = supervisor.verify_current(
+                    minimum_remaining_s=admission_lease_ttl_s / 4
+                )
+                if ready_admission is None:
                     raise RebirthHostError("rebirth_host_admission_lost_at_ready")
                 observation = _verify_ready(state, identity)
                 if record["state"] == "runtime-dispatching":

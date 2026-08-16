@@ -29,14 +29,23 @@ records revocation before a process can reopen with the new exact set.
 
 `clusterctl.rebirth_host` fails before registry or process effects if
 the client configuration, enrollment, authority, authorization or lease is
-missing. Its supervisor renews after one third of the lease and terminates the
-runtime with SIGKILL on the first failed renewal. Renewal begins after one
-quarter of the lease; each of its two possible network round trips is capped at
-one tenth, leaving more than half of the signed lease as a hard failure margin.
+missing. Its supervisor terminates the runtime with SIGKILL on the first failed
+renewal. Each successful authority round trip establishes a conservative local
+deadline from its monotonic start plus the signed TTL; the remote absolute
+expiry is evidence, never a scheduling clock. Renewal begins after one quarter
+of that interval, each of its two possible network round trips is capped at one
+tenth, and an independent monotonic watchdog kills at three quarters even if
+renewal I/O is stuck.
 The runtime continuously verifies its exact guardian PID and kills itself if
 reparented, so a killed launcher cannot leave an unsupervised child.
 Normal process exit releases the lease. Authority database restart preserves
 the monotonic token and trusted-clock high-water.
+
+Admission is rechecked immediately before and after the registry start and at
+the spawn boundary. If it is lost before spawn, the exact just-created
+incarnation is removed with a guarded compensation and that compensation is
+persisted in the open operation journal. A compensation precondition failure
+marks the operation degraded instead of leaving a false stopped claim.
 
 This is a cooperative software guarantee, not a claim that a malicious host
 cannot ignore fencing. Writable external resources must reject stale fencing

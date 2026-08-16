@@ -7,8 +7,8 @@ Date: 2026-08-16. Software-only candidate; not deployed.
 - Matrix main merge: `09414d6edd9586f539be8272c4979d0b36c86b87`,
   tree `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`.
 - Cluster candidate code boundary:
-  `939efb2029745ca5b30b42e5e6e2dc7501e86fc7`, tree
-  `8b9e41d5488f28e863099ad18c26f87b6e1687ef`; independent exact-hash review
+  `f03d9a471f5768bc89e6f70492829bf33ddfbc57`, tree
+  `a4b225631ec551c7c52edf8bbc8b371ab74c7689`; independent exact-hash review
   is still pending.
 - Tribe reviewed PR head:
   `418900a9d3732689d6a309336c467623637fe8d4`, tree
@@ -82,7 +82,7 @@ are absent from the payload.
 Matrix source-isolated suite: 640 passed, 22 declared skips
 Matrix Python CI: 3.11, 3.12, 3.13, 3.14 passed
 Matrix package/conformance/Hermes contract: passed
-Cluster suite with resource/unraisable warnings fatal: 592 passed, 4 skipped
+Cluster suite with resource/unraisable warnings fatal: 594 passed, 4 skipped
 Cluster workflow lint/type/compile: passed
 Disposable no-network recovery/rebirth: 1 passed
 Disposable encrypted export/offline check/restore: 1 passed

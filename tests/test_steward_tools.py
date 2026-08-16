@@ -21,6 +21,7 @@ import json
 import re
 import threading
 import time
+import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -261,6 +262,14 @@ def test_cluster_logs_404_becomes_degraded_not_exception(server, client):
     assert res["ok"] is False
     assert res["data"] is None
     assert res["degraded"] == ["clusterd-http-404"]
+
+
+def test_read_client_closes_http_error_response(server, client):
+    with pytest.raises(steward_client.ClusterdHTTPError) as exc_info:
+        client.logs("no-such-daimon", 50)
+    cause = exc_info.value.__cause__
+    assert isinstance(cause, urllib.error.HTTPError)
+    assert cause.fp is None or cause.fp.closed
 
 
 # --------------------------------------------------------------------------

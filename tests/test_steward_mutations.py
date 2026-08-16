@@ -198,6 +198,17 @@ def test_propose_destroy_fetches_challenge_only(server, mclient):
     assert "DESTRUCTIVE" in plan.display_text
 
 
+def test_mutation_client_closes_http_error_response(server, mclient):
+    with pytest.raises(mutations.ClusterdHTTPError) as exc_info:
+        mclient._post(
+            mclient.mutation_path("destroy", NAME),
+            {"Idempotency-Key": "closed-http-error-response"},
+        )
+    cause = exc_info.value.__cause__
+    assert isinstance(cause, urllib.error.HTTPError)
+    assert cause.fp is None or cause.fp.closed
+
+
 def test_propose_rejects_invalid_names():
     for bad in ("../etc", "a;b", "Abc", "", "x y"):
         with pytest.raises(ValueError):

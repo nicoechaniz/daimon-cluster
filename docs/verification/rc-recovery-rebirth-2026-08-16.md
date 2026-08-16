@@ -6,8 +6,10 @@ Date: 2026-08-16. Software-only candidate; not deployed.
 
 - Matrix main merge: `09414d6edd9586f539be8272c4979d0b36c86b87`,
   tree `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`.
-- Cluster code boundary: `93230a890ffad78aa1d10af2b68a33a45ff9845c`,
-  tree `598f502df42408d3f6e0dc788e765461fb54081b`.
+- Cluster candidate code boundary:
+  `4949a0c9c45bd4a277e54565ef0bdd7d476393c5`, tree
+  `a8b09afb70116bc90938e9f055c4623e0ca4cc86`; independent exact-hash review
+  is still pending.
 - Tribe reviewed PR head:
   `418900a9d3732689d6a309336c467623637fe8d4`, tree
   `d5b50379b1d9abe781ef92d0a50390559eed17c1`; content-addressed source boundary
@@ -43,7 +45,8 @@ crash-at-publication retries are covered.
 
 The target gets a new root-authorized embodiment credential, incarnation,
 signing/capability material and writable stores. No predecessor custody or
-writable database is copied. The recovery derivative contains exactly:
+writable database is copied. The distinct
+`dm.cluster-matrix-recovery-snapshot/v1` derivative contains exactly:
 
 ```text
 ledger.sqlite
@@ -77,7 +80,7 @@ are absent from the payload.
 Matrix source-isolated suite: 640 passed, 22 declared skips
 Matrix Python CI: 3.11, 3.12, 3.13, 3.14 passed
 Matrix package/conformance/Hermes contract: passed
-Cluster suite with resource/unraisable warnings fatal: 584 passed, 4 skipped
+Cluster suite with resource/unraisable warnings fatal: 590 passed, 4 skipped
 Cluster workflow lint/type/compile: passed
 Disposable no-network recovery/rebirth: 1 passed
 Disposable encrypted export/offline check/restore: 1 passed

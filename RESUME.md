@@ -24,12 +24,14 @@ The current Matrix dependency is merged on `main` at
 `requirements-weave.txt`, verifies `direct_url.json` at startup and has no
 unpinned runtime fallback.
 
-Cluster functional boundary `93230a890ffad78aa1d10af2b68a33a45ff9845c`,
-tree `598f502df42408d3f6e0dc788e765461fb54081b`, contains the reviewed shared
-admission/fencing, authenticated handoff, recovery/rebirth, V7 capability
-layout and snapshot boundary. Later documentation or exact-pin commits do not
-change those semantics; the generated RC manifest records the final repository
-head and tree.
+The current Cluster candidate functional boundary is
+`4949a0c9c45bd4a277e54565ef0bdd7d476393c5`, tree
+`a8b09afb70116bc90938e9f055c4623e0ca4cc86`. It contains the reviewed shared
+admission/fencing, authenticated handoff and recovery/rebirth components plus
+the final V7 snapshot, preflight and qualification corrections. This exact
+successor still requires independent review before publication. Later
+documentation or exact-pin commits do not change those semantics; the generated
+RC manifest records the final repository head and tree.
 
 Tribe Bridge transitional work is qualified on exact PR head
 `418900a9d3732689d6a309336c467623637fe8d4`, tree
@@ -58,9 +60,10 @@ Matrix intake or semantic-delivery authority.
   release recovery. Park/wake/transfer fail before effects when authorization
   is missing or revoked.
 - A fresh embodiment receives new root-authorized identity and fresh private
-  custody. Recovery transfer contains only the public runtime bundle and
-  canonical ledger; predecessor keys, client capabilities, writable databases
-  and journals are not copied.
+  custody. The distinct recovery-snapshot contract contains only the public
+  runtime bundle and canonical ledger; predecessor keys, client capabilities,
+  writable databases and journals are not copied, and the generic full restore
+  rejects that derivative.
 - V7 snapshots require the complete canonical twelve-profile table and exclude
   root, operator and host client material unconditionally. Incomplete,
   duplicated, relabelled or unsafe layouts fail before a destination exists.

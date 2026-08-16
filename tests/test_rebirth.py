@@ -167,7 +167,13 @@ def _ensure_production_fences(state: Path, embodiment_id: str | None = None) -> 
 @pytest.fixture
 def short_tmp_path():
     with tempfile.TemporaryDirectory(prefix="dmc-rebirth-") as value:
-        yield Path(value)
+        try:
+            yield Path(value)
+        finally:
+            # Admission handlers may still be completing the supervisor's
+            # final release.  Stop and join them before TemporaryDirectory
+            # removes their SQLite state, never concurrently with teardown.
+            _close_disposable_admission_servers()
 
 
 def _descriptor(value: bytes) -> int:
@@ -800,6 +806,45 @@ def test_monotonic_watchdog_kills_while_renew_round_trip_is_stuck():
     supervisor.thread.join(timeout=3)
 
 
+def test_committed_renew_response_loss_releases_after_runtime_stops(
+    short_tmp_path, monkeypatch
+):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(state, installed["embodiment_id"])
+    identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
+    client = rebirth_host._configured_admission_client(state, identity)
+    real_renew = client.renew
+    renew_committed = threading.Event()
+
+    def renew_then_lose_response(*, ttl_s):
+        real_renew(ttl_s=ttl_s)
+        renew_committed.set()
+        raise rebirth_host.AdmissionError("renew response lost")
+
+    monkeypatch.setattr(client, "renew", renew_then_lose_response)
+    process, _ready = rebirth_host.launch_rebirth_host(
+        state,
+        installed["embodiment_id"],
+        _descriptor(fixture["password"]),
+        admission_client=client,
+        admission_lease_ttl_s=3,
+    )
+    supervisor = rebirth_host._SUPERVISORS[process.pid]
+    _stdout, stderr = process.communicate(timeout=5)
+    supervisor.thread.join(timeout=2)
+    assert renew_committed.is_set()
+    assert process.returncode == -signal.SIGKILL, stderr
+    assert not supervisor.thread.is_alive()
+    observer = rebirth_host._configured_admission_client(state, identity)
+    deadline = time.monotonic() + 2
+    while observer.position()["current"] is True and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert observer.position()["current"] is False
+
+
 def test_launcher_sigkill_cannot_leave_executing_orphan_beyond_lease(
     short_tmp_path,
 ):
@@ -978,6 +1023,7 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
     _ensure_production_fences(state, installed["embodiment_id"])
 
     processes = []
+    target_supervisor = None
     try:
         for embodiment_id, root in hosted_peers.items():
             processes.append(
@@ -994,6 +1040,7 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
             installed["embodiment_id"],
             _descriptor(fixture["password"]),
         )
+        target_supervisor = rebirth_host._SUPERVISORS[target_process.pid]
         processes.append(target_process)
         target_root = matrix_root(state, installed["embodiment_id"])
         target_client = _operator_client(target_root)
@@ -1076,6 +1123,9 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
         for process in reversed(processes):
             _stdout, stderr = process.communicate(timeout=10)
             assert process.returncode == 0, stderr
+        if target_supervisor is not None:
+            target_supervisor.thread.join(timeout=2)
+            assert not target_supervisor.thread.is_alive()
 
 
 @pytest.mark.parametrize(

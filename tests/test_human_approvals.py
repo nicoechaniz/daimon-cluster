@@ -106,7 +106,10 @@ def _request(srv, method: str, path: str, token: str, *, headers=None, body=None
         with urllib.request.urlopen(request, timeout=5) as response:
             return response.status, json.loads(response.read())
     except urllib.error.HTTPError as exc:
-        return exc.code, json.loads(exc.read())
+        try:
+            return exc.code, json.loads(exc.read())
+        finally:
+            exc.close()
 
 
 def _approval_for(response: dict, signer: Ed25519Signer) -> str:

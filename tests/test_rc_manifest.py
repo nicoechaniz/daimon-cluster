@@ -285,6 +285,18 @@ def test_manifest_output_rejects_target_and_parent_symlinks(tmp_path: Path) -> N
     with pytest.raises(ManifestError, match="manifest_parent_contains_symlink"):
         write_manifest(linked_parent / "manifest.json", b"no")
 
+    nested = linked_parent / "created-before-refusal"
+    with pytest.raises(ManifestError, match="manifest_parent_contains_symlink"):
+        write_manifest(nested / "manifest.json", b"no")
+    assert not (real_parent / nested.name).exists()
+
+
+def test_manifest_output_requires_an_existing_parent(tmp_path: Path) -> None:
+    missing = tmp_path / "missing"
+    with pytest.raises(ManifestError, match="manifest_parent_missing"):
+        write_manifest(missing / "manifest.json", b"no")
+    assert not missing.exists()
+
 
 def test_manifest_output_never_overwrites_existing_file(tmp_path: Path) -> None:
     target = tmp_path / "manifest.json"

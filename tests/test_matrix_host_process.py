@@ -759,6 +759,7 @@ def test_two_real_hosts_restart_and_relocate_without_secret_leaks(short_tmp_path
         started_at_ms=now_ms,
     )
     relocated_root = matrix_root(relocated_state, old_origin["embodiment_id"])
+    relocated_root.parent.mkdir(mode=0o700)
     restore_portable_snapshot(snapshot, relocated_root)
     assert not matrix_client_root(relocated_state, old_origin["embodiment_id"]).exists()
     _write_profile_clients(

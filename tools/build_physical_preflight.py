@@ -30,6 +30,16 @@ _STAGES: Final = (
     "loss-fence",
     "rollback",
 )
+_STAGE_ROLES: Final = (
+    "source",
+    "backup",
+    "source",
+    "target",
+    "target",
+    "target",
+    "source",
+)
+_RC_SCHEMA: Final = "daimon-release-candidate/v1"
 _MAX_DOCUMENT = 1024 * 1024
 
 
@@ -62,7 +72,81 @@ def _strings(value: Any, code: str) -> list[str]:
     return list(value)
 
 
-def validate_plan(value: Any) -> dict[str, Any]:
+def _release_manifest(value: Any) -> tuple[dict[str, dict[str, str]], list[dict[str, str]]]:
+    manifest = _closed(
+        value,
+        {"baseline", "components", "cross_repository", "qualification", "schema"},
+        "physical_rc_manifest_malformed",
+    )
+    if manifest["schema"] != _RC_SCHEMA:
+        raise PhysicalPreflightError("physical_rc_manifest_malformed")
+    components = _closed(
+        manifest["components"], set(_COMPONENTS), "physical_rc_manifest_malformed"
+    )
+    component_refs: dict[str, dict[str, str]] = {}
+    for name in _COMPONENTS:
+        row = _closed(
+            components[name],
+            {"archive_bytes", "archive_sha256", "commit", "tree"},
+            "physical_rc_manifest_malformed",
+        )
+        commit = row["commit"]
+        tree = row["tree"]
+        if (
+            not isinstance(commit, str)
+            or _HEX.fullmatch(commit) is None
+            or not isinstance(tree, str)
+            or _HEX.fullmatch(tree) is None
+            or not isinstance(row["archive_bytes"], int)
+            or isinstance(row["archive_bytes"], bool)
+            or row["archive_bytes"] <= 0
+            or not isinstance(row["archive_sha256"], str)
+            or _SHA256.fullmatch(row["archive_sha256"]) is None
+        ):
+            raise PhysicalPreflightError("physical_rc_manifest_malformed")
+        component_refs[name] = {"commit": commit, "tree": tree}
+    qualification = manifest["qualification"]
+    if not isinstance(qualification, Mapping):
+        raise PhysicalPreflightError("physical_rc_manifest_malformed")
+    artifact_map = _closed(
+        qualification.get("artifacts"),
+        set(_COMPONENTS),
+        "physical_rc_manifest_malformed",
+    )
+    artifact_refs: list[dict[str, str]] = []
+    for component in sorted(_COMPONENTS):
+        rows = artifact_map[component]
+        if not isinstance(rows, list) or not rows:
+            raise PhysicalPreflightError("physical_rc_artifacts_incomplete")
+        for value_row in rows:
+            row = _closed(
+                value_row,
+                {"bytes", "name", "path", "sha256"},
+                "physical_rc_manifest_malformed",
+            )
+            if (
+                not isinstance(row["name"], str)
+                or not row["name"]
+                or not isinstance(row["path"], str)
+                or not row["path"]
+                or not isinstance(row["bytes"], int)
+                or isinstance(row["bytes"], bool)
+                or row["bytes"] <= 0
+                or not isinstance(row["sha256"], str)
+                or _SHA256.fullmatch(row["sha256"]) is None
+            ):
+                raise PhysicalPreflightError("physical_rc_manifest_malformed")
+            artifact_refs.append(
+                {"name": f"{component}:{row['name']}", "sha256": row["sha256"]}
+            )
+    if len({row["name"] for row in artifact_refs}) != len(artifact_refs):
+        raise PhysicalPreflightError("physical_rc_manifest_malformed")
+    return component_refs, artifact_refs
+
+
+def validate_plan(value: Any, rc_manifest: Any) -> dict[str, Any]:
+    manifest_components, manifest_artifacts = _release_manifest(rc_manifest)
+    manifest_sha256 = hashlib.sha256(_canonical(rc_manifest) + b"\n").hexdigest()
     plan = _closed(
         value,
         {
@@ -72,6 +156,7 @@ def validate_plan(value: Any) -> dict[str, Any]:
             "gates",
             "hosts",
             "limitations",
+            "rc_manifest_sha256",
             "schema",
             "steps",
         },
@@ -79,6 +164,12 @@ def validate_plan(value: Any) -> dict[str, Any]:
     )
     if plan["schema"] != REQUEST_SCHEMA or plan["execution_authorized"] is not False:
         raise PhysicalPreflightError("physical_execution_must_remain_unauthorized")
+    if (
+        not isinstance(plan["rc_manifest_sha256"], str)
+        or _SHA256.fullmatch(plan["rc_manifest_sha256"]) is None
+        or plan["rc_manifest_sha256"] != manifest_sha256
+    ):
+        raise PhysicalPreflightError("physical_rc_manifest_mismatch")
 
     components = _closed(
         plan["components"], set(_COMPONENTS), "physical_components_malformed"
@@ -87,10 +178,15 @@ def validate_plan(value: Any) -> dict[str, Any]:
         row = _closed(
             components[name], {"commit", "tree"}, "physical_component_malformed"
         )
-        if not _HEX.fullmatch(str(row["commit"])) or not _HEX.fullmatch(
-            str(row["tree"])
+        if (
+            not isinstance(row["commit"], str)
+            or _HEX.fullmatch(row["commit"]) is None
+            or not isinstance(row["tree"], str)
+            or _HEX.fullmatch(row["tree"]) is None
         ):
             raise PhysicalPreflightError("physical_component_hash_invalid")
+    if components != manifest_components:
+        raise PhysicalPreflightError("physical_component_manifest_mismatch")
 
     artifacts = plan["artifacts"]
     if not isinstance(artifacts, list) or len(artifacts) < 3:
@@ -109,6 +205,8 @@ def validate_plan(value: Any) -> dict[str, Any]:
         ):
             raise PhysicalPreflightError("physical_artifact_invalid")
         artifact_names.add(name)
+    if artifacts != manifest_artifacts:
+        raise PhysicalPreflightError("physical_artifact_manifest_mismatch")
 
     hosts = plan["hosts"]
     if not isinstance(hosts, list) or len(hosts) != len(_HOST_ROLES):
@@ -124,7 +222,8 @@ def validate_plan(value: Any) -> dict[str, Any]:
         role = row["role"]
         host_ref = row["host_ref"]
         if (
-            role not in _HOST_ROLES
+            not isinstance(role, str)
+            or role not in _HOST_ROLES
             or role in observed_roles
             or not isinstance(host_ref, str)
             or _HOST_REF.fullmatch(host_ref) is None
@@ -141,7 +240,9 @@ def validate_plan(value: Any) -> dict[str, Any]:
     steps = plan["steps"]
     if not isinstance(steps, list) or len(steps) != len(_STAGES):
         raise PhysicalPreflightError("physical_steps_incomplete")
-    for sequence, (value_row, stage) in enumerate(zip(steps, _STAGES, strict=True), 1):
+    for sequence, (value_row, stage, required_role) in enumerate(
+        zip(steps, _STAGES, _STAGE_ROLES, strict=True), 1
+    ):
         row = _closed(
             value_row,
             {
@@ -158,9 +259,12 @@ def validate_plan(value: Any) -> dict[str, Any]:
         argv = _strings(row["argv"], "physical_step_argv_invalid")
         rollback = _strings(row["rollback_argv"], "physical_step_rollback_invalid")
         if (
-            row["sequence"] != sequence
+            not isinstance(row["sequence"], int)
+            or isinstance(row["sequence"], bool)
+            or row["sequence"] != sequence
             or row["stage"] != stage
-            or row["host_role"] not in _HOST_ROLES
+            or not isinstance(row["host_role"], str)
+            or row["host_role"] != required_role
             or any("\x00" in item or "\n" in item for item in [*argv, *rollback])
             or Path(argv[0]).name in _SHELLS
             or Path(rollback[0]).name in _SHELLS
@@ -184,14 +288,15 @@ def validate_plan(value: Any) -> dict[str, Any]:
     return json.loads(_canonical(plan))
 
 
-def build_preflight(value: Any) -> dict[str, Any]:
-    plan = validate_plan(value)
+def build_preflight(value: Any, rc_manifest: Any) -> dict[str, Any]:
+    plan = validate_plan(value, rc_manifest)
     digest = hashlib.sha256(_DOMAIN + _canonical(plan)).hexdigest()
     return {
         "schema": PREFLIGHT_SCHEMA,
         "execution_authorized": False,
         "plan": plan,
         "plan_sha256": digest,
+        "rc_manifest_sha256": plan["rc_manifest_sha256"],
         "required_go": f"GO {digest}",
     }
 
@@ -299,9 +404,12 @@ def _write_new(path: Path, value: Mapping[str, Any]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", required=True, type=Path)
+    parser.add_argument("--rc-manifest", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     arguments = parser.parse_args()
-    preflight = build_preflight(_read_document(arguments.plan))
+    preflight = build_preflight(
+        _read_document(arguments.plan), _read_document(arguments.rc_manifest)
+    )
     _write_new(arguments.output, preflight)
     print(preflight["plan_sha256"])
     return 0

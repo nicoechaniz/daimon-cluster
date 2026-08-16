@@ -138,7 +138,10 @@ jobs:
           scripts/h3-volume-drill.py
       - run: >-
           python -m compileall -q clusterctl clusterd steward_tools tests tools
-      - run: python -W error::ResourceWarning -m pytest -q
+      - run: >-
+          python -m pytest -q
+          -W error::ResourceWarning
+          -W error::pytest.PytestUnraisableExceptionWarning
 
   backup-export-disposable:
     runs-on: ubuntu-latest
@@ -160,7 +163,9 @@ jobs:
         env:
           DAIMON_RUN_DOCKER_TESTS: "1"
         run: >-
-          python -W error::ResourceWarning -m pytest -q -s
+          python -m pytest -q -s
+          -W error::ResourceWarning
+          -W error::pytest.PytestUnraisableExceptionWarning
           tests/integration/test_restic_export_container.py
 
   recovery-rebirth-disposable-hosts:
@@ -193,5 +198,7 @@ jobs:
           DAIMON_RUN_DOCKER_RECOVERY_TESTS: "1"
           DAIMON_MATRIX_SOURCE: ${{ github.workspace }}/matrix-source
         run: >-
-          python -W error::ResourceWarning -m pytest -q -s
+          python -m pytest -q -s
+          -W error::ResourceWarning
+          -W error::pytest.PytestUnraisableExceptionWarning
           tests/integration/test_recovery_rebirth_containers.py

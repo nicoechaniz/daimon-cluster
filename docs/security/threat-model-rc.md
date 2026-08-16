@@ -62,8 +62,12 @@ spawn, READY, snapshot staging and restore.
 ### Snapshot substitution and credential exfiltration
 
 Source files are opened with no-follow descriptors, bounded, hashed while read
-and checked for stable inode/device/size. V7 export requires the complete exact
-twelve-profile table and always excludes root, operator and host client trees.
+and checked for stable inode/device/size. V7 export verifies the active
+root-authorized origin plus the signed exact twelve-profile binding and always
+excludes root, operator and host client trees. Runtime filenames are selected
+by exact bundle semantics rather than broad suffixes. Source/destination parent
+chains reject symlinks; directory publication is descriptor-relative and
+atomic no-replace.
 Recovery accepts exactly `runtime.json` plus `ledger.sqlite`; it never transfers
 custody, writable derived databases or journals. A second descriptor-stable
 stage rechecks the manifest before target mutation.
@@ -100,7 +104,9 @@ mutation is journaled and audited.
 - stale/revoked/wrong holder and public-only recovery attempts rejected;
 - clock skew, overlong TTL, replay and crash/restart matrix;
 - zero adapter/spec effects after late revocation;
-- V7 incomplete/relabelled profile snapshot rejected before destination;
+- V7 incomplete/relabelled/invalidly signed profile snapshot rejected before
+  destination, with required custody/ledger bytes retained regardless of
+  filename suffix;
 - client/custody bytes absent from recovery transfer;
 - clean full suite with resource leaks fatal; and
 - network-disabled recovery/rebirth plus encrypted backup/offline restore.

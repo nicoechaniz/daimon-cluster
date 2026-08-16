@@ -86,7 +86,10 @@ def test_snapshot_create_happy_path_order(state_dir, capsys):
     assert ad._instances[0]["snapshots"] == [out["snap_name"]]
 
     # audit ok carries snap name + quiesce summary + manifest path
-    events = [json.loads(l) for l in (state_dir / "audit.jsonl").read_text().splitlines()]
+    events = [
+        json.loads(line)
+        for line in (state_dir / "audit.jsonl").read_text().splitlines()
+    ]
     ok = [e for e in events if e["action"] == "snapshot-create" and e["result"] == "ok"]
     assert ok
     det = ok[-1]["detail"]
@@ -135,8 +138,11 @@ def test_park_failure_fails_closed(state_dir, capsys):
     assert "manifest_write" not in calls
     assert _manifests(state_dir) == []
     assert ad._instances[0].get("snapshots", []) == []
-    err = [json.loads(l) for l in (state_dir / "audit.jsonl").read_text().splitlines()
-           if '"error"' in l or True]
+    err = [
+        json.loads(line)
+        for line in (state_dir / "audit.jsonl").read_text().splitlines()
+        if '"error"' in line or True
+    ]
     ev = [e for e in err if e["action"] == "snapshot-create"]
     assert ev[-1]["result"] == "error"
 

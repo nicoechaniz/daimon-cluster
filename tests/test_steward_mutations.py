@@ -424,8 +424,11 @@ def test_unattended_mutation_yields_non_executing_intent(server):
                  "Idempotency-Key": "unattended-probe"})
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(req, timeout=5)
-    assert exc_info.value.code == 409
-    body = json.loads(exc_info.value.read().decode("utf-8"))
+    try:
+        assert exc_info.value.code == 409
+        body = json.loads(exc_info.value.read().decode("utf-8"))
+    finally:
+        exc_info.value.close()
     assert body["error"] == "human-approval-required"
     assert ad.mutation_log == []
 

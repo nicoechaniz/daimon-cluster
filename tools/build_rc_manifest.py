@@ -494,10 +494,12 @@ def read_qualification(path: Path) -> Mapping[str, Any]:
 def write_manifest(path: Path, raw: bytes) -> None:
     target = Path(os.path.abspath(path))
     parent = target.parent
-    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if parent.resolve(strict=True) != parent:
+    if parent.resolve(strict=False) != parent:
         raise ManifestError("manifest_parent_contains_symlink")
-    info = parent.lstat()
+    try:
+        info = parent.lstat()
+    except FileNotFoundError as exception:
+        raise ManifestError("manifest_parent_missing") from exception
     if (
         stat.S_ISLNK(info.st_mode)
         or not stat.S_ISDIR(info.st_mode)

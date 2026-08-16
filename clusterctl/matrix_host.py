@@ -9,6 +9,8 @@ adapter between those authorities; it does not duplicate Matrix protocol code.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
 import importlib.metadata
 import json
@@ -328,12 +330,11 @@ def matrix_curator_client_root(state_dir: str | Path, embodiment_id: str) -> Pat
     return Path(os.path.abspath(state_dir)) / "matrix-curator-clients" / key
 
 
-def _owner_directory(path: Path, *, create: bool = False) -> Path:
+def _owner_directory(path: Path) -> Path:
     absolute = Path(os.path.abspath(path))
-    if create:
-        absolute.mkdir(parents=True, mode=0o700, exist_ok=True)
-        absolute.chmod(0o700)
     try:
+        if absolute.resolve(strict=True) != absolute:
+            raise MatrixHostError("matrix_root_not_owner_only")
         info = absolute.lstat()
     except FileNotFoundError as exception:
         raise MatrixHostError("matrix_root_missing") from exception
@@ -345,6 +346,119 @@ def _owner_directory(path: Path, *, create: bool = False) -> Path:
     ):
         raise MatrixHostError("matrix_root_not_owner_only")
     return absolute
+
+
+def _stable_owner_directory(path: Path) -> tuple[Path, int]:
+    """Open an already validated directory and retain its exact inode."""
+
+    absolute = _owner_directory(path)
+    before = absolute.lstat()
+    try:
+        descriptor = os.open(
+            absolute,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        after = os.fstat(descriptor)
+        if (
+            (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            or not stat.S_ISDIR(after.st_mode)
+            or after.st_uid != os.geteuid()
+            or stat.S_IMODE(after.st_mode) & 0o077
+        ):
+            raise MatrixHostError("matrix_root_replaced")
+        return Path(f"/proc/self/fd/{descriptor}"), descriptor
+    except BaseException:
+        if "descriptor" in locals():
+            os.close(descriptor)
+        raise
+
+
+def _destination_parent(
+    destination: str | Path, *, exists_code: str
+) -> tuple[Path, Path, int]:
+    """Return a stable owner-only parent for one new directory target."""
+
+    target = Path(os.path.abspath(destination))
+    if not target.name or Path(target.name).name != target.name:
+        raise MatrixHostError(exists_code)
+    requested_parent = target.parent
+    try:
+        resolved_parent = requested_parent.resolve(strict=True)
+        before = requested_parent.lstat()
+    except FileNotFoundError as exception:
+        raise MatrixHostError(exists_code) from exception
+    if (
+        resolved_parent != requested_parent
+        or stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISDIR(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or stat.S_IMODE(before.st_mode) & 0o077
+    ):
+        raise MatrixHostError(exists_code)
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            requested_parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        after = os.fstat(descriptor)
+        if (
+            (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            or not stat.S_ISDIR(after.st_mode)
+            or after.st_uid != os.geteuid()
+            or stat.S_IMODE(after.st_mode) & 0o077
+        ):
+            raise MatrixHostError(exists_code)
+        try:
+            os.stat(target.name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise MatrixHostError(exists_code)
+        return target, Path(f"/proc/self/fd/{descriptor}"), descriptor
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+
+
+def _publish_directory_noreplace(
+    parent_descriptor: int,
+    temporary_name: str,
+    target_name: str,
+    *,
+    exists_code: str,
+) -> None:
+    """Atomically publish a directory without replacing a concurrent target."""
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise MatrixHostError("matrix_directory_publication_unsupported")
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        parent_descriptor,
+        os.fsencode(temporary_name),
+        parent_descriptor,
+        os.fsencode(target_name),
+        1,  # Linux RENAME_NOREPLACE
+    )
+    if result == 0:
+        os.fsync(parent_descriptor)
+        return
+    observed_errno = ctypes.get_errno()
+    if observed_errno in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise MatrixHostError(exists_code)
+    raise MatrixHostError("matrix_directory_publication_failed") from OSError(
+        observed_errno, os.strerror(observed_errno)
+    )
 
 
 def _owner_file_descriptor(path: Path) -> int:
@@ -776,10 +890,81 @@ def matrix_client_factory(state_dir: str | Path) -> Any:
     return load
 
 
+def _required_snapshot_runtime_filenames(
+    bundle: Mapping[str, Any], bundle_name: str
+) -> set[str]:
+    """Return V7 files whose absence makes the source incomplete.
+
+    Optional stores are still copied whenever present. Their configured names
+    are validated here so no suffix-based omission or unsafe path can hide
+    existing state.
+    """
+
+    required = {bundle_name}
+
+    def filename(value: Any) -> str:
+        if not isinstance(value, str) or not value or Path(value).name != value:
+            raise MatrixHostError("matrix_snapshot_source_unsafe")
+        return value
+
+    required.add(filename(bundle.get("ledger")))
+    keystore = bundle.get("keystore")
+    if not isinstance(keystore, Mapping):
+        raise MatrixHostError("matrix_snapshot_source_unsafe")
+    required.add(filename(keystore.get("filename")))
+    routing = bundle.get("routing")
+    if routing is not None:
+        if not isinstance(routing, Mapping):
+            raise MatrixHostError("matrix_snapshot_source_unsafe")
+        required.add(filename(routing.get("filename")))
+    peer = bundle.get("peer_transport")
+    if peer is not None:
+        if not isinstance(peer, Mapping):
+            raise MatrixHostError("matrix_snapshot_source_unsafe")
+        for field in ("exchange_filename", "outbox_filename"):
+            filename(peer.get(field))
+        required.add("transport-custody.json")
+    scopes = bundle.get("scopes")
+    if scopes is not None:
+        if not isinstance(scopes, Mapping):
+            raise MatrixHostError("matrix_snapshot_source_unsafe")
+        relationship_name = scopes.get("relationships_filename")
+        if relationship_name is not None:
+            required.add(filename(relationship_name))
+    species = bundle.get("species")
+    if species is not None:
+        if not isinstance(species, Mapping):
+            raise MatrixHostError("matrix_snapshot_source_unsafe")
+        for field in ("cas_filename", "pointer_filename", "registry_filename"):
+            filename(species.get(field))
+    relationships = bundle.get("relationships")
+    if relationships is not None:
+        if not isinstance(relationships, Mapping):
+            raise MatrixHostError("matrix_snapshot_source_unsafe")
+        filename(relationships.get("store_filename"))
+    sources = bundle.get("sources")
+    if sources is not None:
+        if not isinstance(sources, Mapping):
+            raise MatrixHostError("matrix_snapshot_source_unsafe")
+        filename(sources.get("cas_filename"))
+        known_beings = sources.get("known_beings")
+        if not isinstance(known_beings, list):
+            raise MatrixHostError("matrix_snapshot_source_unsafe")
+        for known in known_beings:
+            if not isinstance(known, Mapping):
+                raise MatrixHostError("matrix_snapshot_source_unsafe")
+            required.add(filename(known.get("ledger_filename")))
+    return required
+
+
 def _snapshot_files(root: Path, bundle_name: str) -> tuple[dict[str, Any], list[Path]]:
     bundle = _public_bundle(root, bundle_name)
     socket_name = bundle.get("socket")
     excluded = {_LOCK_NAME, socket_name}
+    required_files = _required_snapshot_runtime_filenames(bundle, bundle_name)
+    ledger_name = bundle["ledger"]
+    assert isinstance(ledger_name, str)
+    sqlite_sidecars = {f"{ledger_name}-wal", f"{ledger_name}-shm"}
     if bundle.get("schema") == "dm.runtime.bundle/v7":
         # These paths are secret-bearing by contract. Exclude them before
         # interpreting public profile metadata, then require the complete exact
@@ -788,7 +973,8 @@ def _snapshot_files(root: Path, bundle_name: str) -> tuple[dict[str, Any], list[
         excluded.update(
             {"client.json", "client.key", "operator-clients", "host-clients"}
         )
-        operator_capabilities = _matrix_api()["operator_capabilities"]
+        api = _matrix_api()
+        operator_capabilities = api["operator_capabilities"]
         capabilities = bundle.get("capabilities")
         runtime_id = bundle.get("runtime_id")
         runtime_label = bundle.get("runtime_label")
@@ -885,9 +1071,26 @@ def _snapshot_files(root: Path, bundle_name: str) -> tuple[dict[str, Any], list[
         }
         if observed != expected_identities:
             raise MatrixHostError("matrix_snapshot_source_unsafe")
+        try:
+            authority = api["operator_rebirth"].authority_from_runtime_bundle(bundle)
+            origin = _origin(bundle.get("local_origin"))
+            member = authority.validate_origin(origin, require_active=True)
+            credential = authority.credentials[member["embodiment_credential_id"]]
+            signing_key = credential["body"]["signing_key"]
+            operator_capabilities.verify_operator_capability_binding(
+                bundle.get("operator_capability_binding"),
+                runtime_id=runtime_id,
+                runtime_label=runtime_label,
+                being_ref=authority.state.being_ref,
+                origin=origin,
+                signing_key=signing_key,
+                capability_rows=capabilities,
+            )
+        except Exception as exception:
+            raise MatrixHostError("matrix_snapshot_source_unsafe") from exception
     files: list[Path] = []
     for path in sorted(root.iterdir(), key=lambda item: item.name):
-        if path.name in excluded or path.name.endswith((".tmp", "-wal", "-shm")):
+        if path.name in excluded or path.name in sqlite_sidecars:
             continue
         info = path.lstat()
         if (
@@ -898,6 +1101,8 @@ def _snapshot_files(root: Path, bundle_name: str) -> tuple[dict[str, Any], list[
         ):
             raise MatrixHostError("matrix_snapshot_source_unsafe")
         files.append(path)
+    if not required_files.issubset({path.name for path in files}):
+        raise MatrixHostError("matrix_snapshot_source_unsafe")
     return bundle, files
 
 
@@ -907,17 +1112,22 @@ def create_portable_snapshot(
     """Copy a quiesced Matrix root into a closed, hashed snapshot directory."""
 
     api = _matrix_api()
-    source = _owner_directory(Path(root))
-    target = Path(os.path.abspath(destination))
-    if target.exists() or target.is_symlink():
-        raise MatrixHostError("matrix_snapshot_destination_exists")
+    source, source_descriptor = _stable_owner_directory(Path(root))
+    try:
+        target, target_parent, parent_descriptor = _destination_parent(
+            destination, exists_code="matrix_snapshot_destination_exists"
+        )
+    except BaseException:
+        os.close(source_descriptor)
+        raise
     lock_descriptor: int | None = None
-    temporary = target.with_name(f".{target.name}.snapshot-{uuid.uuid4()}")
+    temporary_name = f".{target.name}.snapshot-{uuid.uuid4()}"
+    temporary = target_parent / temporary_name
     temporary_created = False
     try:
         lock_descriptor = api["daemon"].acquire_lock(source)
         bundle, files = _snapshot_files(source, bundle_name)
-        temporary.mkdir(parents=True, mode=0o700)
+        os.mkdir(temporary_name, mode=0o700, dir_fd=parent_descriptor)
         temporary_created = True
         temporary.chmod(0o700)
         payload = temporary / "payload"
@@ -948,7 +1158,13 @@ def create_portable_snapshot(
             encoding="utf-8",
         )
         manifest_path.chmod(0o600)
-        os.replace(temporary, target)
+        _publish_directory_noreplace(
+            parent_descriptor,
+            temporary_name,
+            target.name,
+            exists_code="matrix_snapshot_destination_exists",
+        )
+        temporary_created = False
         return manifest
     except BlockingIOError as exception:
         raise MatrixHostError("matrix_runtime_not_quiesced") from exception
@@ -959,6 +1175,8 @@ def create_portable_snapshot(
     finally:
         if lock_descriptor is not None:
             os.close(lock_descriptor)
+        os.close(parent_descriptor)
+        os.close(source_descriptor)
 
 
 def restore_portable_snapshot(
@@ -966,14 +1184,24 @@ def restore_portable_snapshot(
 ) -> dict[str, Any]:
     """Verify and restore a portable snapshot to a fresh owner-only root."""
 
-    manifest, _payload, verified = verify_portable_snapshot(snapshot)
-    target = Path(os.path.abspath(destination))
-    if target.exists() or target.is_symlink():
-        raise MatrixHostError("matrix_restore_destination_exists")
-    temporary = target.with_name(f".{target.name}.restore-{uuid.uuid4()}")
-    temporary.mkdir(parents=True, mode=0o700)
-    temporary.chmod(0o700)
+    source, source_descriptor = _stable_owner_directory(Path(snapshot))
     try:
+        target, target_parent, parent_descriptor = _destination_parent(
+            destination, exists_code="matrix_restore_destination_exists"
+        )
+    except BaseException:
+        os.close(source_descriptor)
+        raise
+    temporary_name = f".{target.name}.restore-{uuid.uuid4()}"
+    temporary = target_parent / temporary_name
+    temporary_created = False
+    try:
+        manifest, _payload, verified = verify_portable_snapshot(
+            source, _stable_root=True
+        )
+        os.mkdir(temporary_name, mode=0o700, dir_fd=parent_descriptor)
+        temporary_created = True
+        temporary.chmod(0o700)
         rows = {row["name"]: row for row in manifest["files"]}
         for path, name in verified:
             copied = temporary / name
@@ -985,19 +1213,31 @@ def restore_portable_snapshot(
                 expected_size=row["size"],
                 expected_sha256=row["sha256"],
             )
-        os.replace(temporary, target)
+        _publish_directory_noreplace(
+            parent_descriptor,
+            temporary_name,
+            target.name,
+            exists_code="matrix_restore_destination_exists",
+        )
+        temporary_created = False
     except BaseException:
-        shutil.rmtree(temporary, ignore_errors=True)
+        if temporary_created:
+            shutil.rmtree(temporary, ignore_errors=True)
         raise
+    finally:
+        os.close(parent_descriptor)
+        os.close(source_descriptor)
     return manifest
 
 
 def verify_portable_snapshot(
     snapshot: str | Path,
+    *,
+    _stable_root: bool = False,
 ) -> tuple[dict[str, Any], Path, list[tuple[Path, str]]]:
     """Verify a snapshot without copying predecessor runtime or custody bytes."""
 
-    source = _owner_directory(Path(snapshot))
+    source = Path(snapshot) if _stable_root else _owner_directory(Path(snapshot))
     try:
         manifest_raw = _owner_file_bytes(
             source / "snapshot.json",
@@ -1017,7 +1257,21 @@ def verify_portable_snapshot(
     ):
         raise MatrixHostError("matrix_snapshot_manifest_rejected")
     _origin(manifest.get("origin"))
-    payload = _owner_directory(source / "payload")
+    payload = source / "payload"
+    if _stable_root:
+        try:
+            payload_info = payload.lstat()
+        except FileNotFoundError as exception:
+            raise MatrixHostError("matrix_root_missing") from exception
+        if (
+            stat.S_ISLNK(payload_info.st_mode)
+            or not stat.S_ISDIR(payload_info.st_mode)
+            or payload_info.st_uid != os.geteuid()
+            or stat.S_IMODE(payload_info.st_mode) & 0o077
+        ):
+            raise MatrixHostError("matrix_root_not_owner_only")
+    else:
+        payload = _owner_directory(payload)
     verified: list[tuple[Path, str]] = []
     names: set[str] = set()
     for row in manifest["files"]:

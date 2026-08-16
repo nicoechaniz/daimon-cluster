@@ -59,8 +59,11 @@ def _req(srv, method, path, token=None, headers=None):
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode()
-        return exc.code, json.loads(body) if body else {}
+        try:
+            body = exc.read().decode()
+            return exc.code, json.loads(body) if body else {}
+        finally:
+            exc.close()
 
 
 def _token(state_dir, actor="tester", scopes=None, owner="*", ttl_days=1):
@@ -168,7 +171,7 @@ def test_audit_denials_without_token_material(server):
     _req(srv, "GET", "/v1/instances", token="dcd_nonexistent")
     log = (state_dir / "audit.jsonl").read_text()
     assert "dcd_nonexistent" not in log and secret not in log
-    events = [json.loads(l) for l in log.strip().splitlines()]
+    events = [json.loads(line) for line in log.strip().splitlines()]
     denied = [e for e in events if e["result"] == "denied"]
     assert denied and all("request_id" in (e.get("detail") or {}) for e in denied)
 

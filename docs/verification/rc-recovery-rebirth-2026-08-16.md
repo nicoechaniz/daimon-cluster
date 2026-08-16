@@ -62,10 +62,14 @@ Matrix requires ten disjoint operator profiles plus separate host `status`
 covers all twelve exact rows. Cluster installs host clients outside the runtime
 snapshot.
 
-V7 snapshot export always excludes root, operator and host client paths and
-requires the complete canonical twelve-profile table. Empty, incomplete,
-duplicated, relabelled, unsafe-path and changed-source cases fail before a
-snapshot destination exists. Raw client keys are absent from the payload.
+V7 snapshot export always excludes root, operator and host client paths,
+requires the complete canonical twelve-profile table and verifies its active
+root-authorized Ed25519 binding. Empty, incomplete, duplicated, relabelled,
+invalidly signed, unsafe-path and changed-source cases fail before a snapshot
+destination exists. Required ledger/custody bytes remain present even when a
+legal filename resembles a transient suffix. Linked source/destination paths
+and concurrent destination claims fail without replacement. Raw client keys
+are absent from the payload.
 
 ## Clean gates
 
@@ -73,7 +77,7 @@ snapshot destination exists. Raw client keys are absent from the payload.
 Matrix source-isolated suite: 640 passed, 22 declared skips
 Matrix Python CI: 3.11, 3.12, 3.13, 3.14 passed
 Matrix package/conformance/Hermes contract: passed
-Cluster suite with resource/unraisable warnings fatal: 574 passed, 4 skipped
+Cluster suite with resource/unraisable warnings fatal: 584 passed, 4 skipped
 Cluster workflow lint/type/compile: passed
 Disposable no-network recovery/rebirth: 1 passed
 Disposable encrypted export/offline check/restore: 1 passed

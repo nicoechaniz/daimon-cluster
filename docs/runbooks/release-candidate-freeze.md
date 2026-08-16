@@ -41,10 +41,13 @@ python tools/build_rc_manifest.py \
   --output daimon-v0.1.0rc1.json
 ```
 
-The output path must not exist. The printed SHA-256 addresses the exact
-manifest bytes. Repeating the command over the same commits and qualification
-input produces identical bytes; a changed repository, evidence file, test
-claim, artifact, limitation or gate produces a different result.
+The output path and its parent must already satisfy separate conditions: the
+file must not exist, while the parent must exist as an owner-controlled real
+directory with no symlink component. The freezer never creates missing parent
+directories and never follows a linked parent. The printed SHA-256 addresses
+the exact manifest bytes. Repeating the command over the same commits and
+qualification input produces identical bytes; a changed repository, evidence
+file, test claim, artifact, limitation or gate produces a different result.
 
 The final manifest is a release artifact. Creating it is automated; publishing
 or cutting over to it remains a human gate. Until that publication gate is

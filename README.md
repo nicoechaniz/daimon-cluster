@@ -62,7 +62,9 @@ Install the exact dependencies from `requirements-dev.txt` under
 ```bash
 python -m ruff check clusterctl clusterd steward_tools tests
 python -m mypy --follow-imports=skip --ignore-missing-imports clusterctl clusterd
-python -W error::ResourceWarning -m pytest -q
+python -m pytest -q \
+  -W error::ResourceWarning \
+  -W error::pytest.PytestUnraisableExceptionWarning
 ```
 
 The workflow contains the authoritative narrower lint/type file lists used by

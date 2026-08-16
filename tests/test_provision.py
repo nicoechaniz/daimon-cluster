@@ -72,7 +72,10 @@ def test_prepare_happy_path(state_dir, capsys):
     assert out["directory_entry"] == entry
 
     # audit carries the fingerprint (never key material)
-    events = [json.loads(l) for l in (state_dir / "audit.jsonl").read_text().splitlines()]
+    events = [
+        json.loads(line)
+        for line in (state_dir / "audit.jsonl").read_text().splitlines()
+    ]
     ok = [e for e in events if e["action"] == "provision-prepare" and e["result"] == "ok"]
     assert ok and ok[-1]["detail"]["key_fingerprint"] == entry["fingerprint"]
     assert ok[-1]["detail"]["requested_by"] == "alice"
@@ -160,7 +163,10 @@ def test_prepare_creation_failure_reverses(state_dir, capsys):
     assert spec["state"] == "creation-failed"
     ops = [m[0] for m in ad.mutation_log]
     assert "delete" in ops and "delete_volume" in ops
-    events = [json.loads(l) for l in (state_dir / "audit.jsonl").read_text().splitlines()]
+    events = [
+        json.loads(line)
+        for line in (state_dir / "audit.jsonl").read_text().splitlines()
+    ]
     assert any(e["action"] == "provision-prepare" and e["result"] == "error" for e in events)
 
 

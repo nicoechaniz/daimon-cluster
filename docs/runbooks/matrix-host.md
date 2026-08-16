@@ -169,13 +169,23 @@ hash.
 
 Stop the daemon, call `create_portable_snapshot`, transfer the resulting closed
 directory, and call `restore_portable_snapshot` into a nonexistent target. The
-snapshot excludes every operator and host client directory/key described by
-the complete signed V7 profile table. Recreate those V3 clients plus
+snapshot first verifies the active root authority and the Ed25519 binding over
+the complete V7 profile table. It copies every owner-only regular runtime file
+except exact host-local locks/sockets, exact SQLite sidecars and the operator
+and host client material named by that signed table; suffixes such as `.tmp` or
+`-wal` are never used as a global omission rule. The configured public bundle,
+ledger and encrypted runtime custody must all be present. Recreate the excluded
+V3 clients plus
 `STATE/matrix-clients/HASH/` and, when applicable,
 `STATE/matrix-curator-clients/HASH/` from separate custody on the destination;
 none may appear in the snapshot. Start the daemon and require authenticated `runtime.status`,
 `/me`, `/we`, cursor, curator queue and authority-epoch checks before routing
 traffic.
+
+Source, snapshot and destination paths may not contain symlink components.
+Create and restore retain directory descriptors and publish with atomic
+no-replace semantics, so a concurrent claimant survives and the operation
+fails rather than overwriting it.
 
 The host boundary accepts only Matrix runtime bundle V7 and local client config
 V3 at the pinned commit. Earlier pre-release schemas fail closed. Matrix owns

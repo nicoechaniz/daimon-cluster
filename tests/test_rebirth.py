@@ -477,6 +477,10 @@ def test_v7_snapshot_rejects_incomplete_profiles_and_excludes_all_client_keys(
         if path.is_file() and path.name in {"client.key", "capability.key"}
     ]
     assert len(client_secrets) == 12
+    restored_bundle = json.loads(original_bundle)
+    ledger = source / restored_bundle["ledger"]
+    ledger.write_bytes(b"")
+    ledger.chmod(0o600)
     snapshot = short_tmp_path / "v7-snapshot"
     manifest = create_portable_snapshot(source, snapshot)
     copied = b"".join(

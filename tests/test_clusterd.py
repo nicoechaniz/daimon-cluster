@@ -93,7 +93,10 @@ def _req(server, method, path, headers=None, auth=True):
             body = resp.read().decode("utf-8")
             return resp.status, dict(resp.headers), body
     except urllib.error.HTTPError as exc:
-        return exc.code, dict(exc.headers), exc.read().decode("utf-8")
+        try:
+            return exc.code, dict(exc.headers), exc.read().decode("utf-8")
+        finally:
+            exc.close()
 
 
 def _get(server, path, headers=None, auth=True):
@@ -121,7 +124,10 @@ def _post_json(server, path, body_dict, headers=None, auth=True):
             body = resp.read().decode("utf-8")
             return resp.status, dict(resp.headers), json.loads(body)
     except urllib.error.HTTPError as exc:
-        return exc.code, dict(exc.headers), json.loads(exc.read().decode("utf-8"))
+        try:
+            return exc.code, dict(exc.headers), json.loads(exc.read().decode("utf-8"))
+        finally:
+            exc.close()
 
 
 def _cli(state_dir, *argv, adapter=None):

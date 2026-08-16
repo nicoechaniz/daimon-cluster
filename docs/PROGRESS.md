@@ -20,7 +20,7 @@ Completed locally on the exact code boundary:
 - separated recovery holders and fresh-embodiment custody;
 - recovery transfer limited to the public runtime bundle and canonical ledger;
 - V7 exact twelve-profile snapshot gate with every client tree excluded;
-- `574 passed, 4 skipped` with resource/unraisable warnings fatal;
+- `584 passed, 4 skipped` with resource/unraisable warnings fatal;
 - network-disabled recovery/rebirth container E2E: 1 passed; and
 - encrypted backup/export, offline check and restore container E2E: 1 passed.
 

@@ -12,13 +12,11 @@ import time
 import pytest
 
 from clusterctl.leases import (
-    FakeSigner,
     InvalidSignature,
     LeaseConflict,
     LeaseNotFound,
     LeaseStore,
     SSHSigner,
-    now_ms,
 )
 
 

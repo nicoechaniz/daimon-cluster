@@ -29,7 +29,7 @@ import uuid
 from types import SimpleNamespace
 from pathlib import Path
 
-from . import audit, embodiments, fences, idempotency, locks, operation_journal
+from . import audit, fences, idempotency, locks, operation_journal
 from .adapters import FakeAdapter
 from .inventory import SPEC_SCHEMA, load_spec_raw, load_specs, update_spec, write_spec
 
@@ -512,67 +512,22 @@ def _observe_runtime(adapter, name: str) -> dict:
     return {"present": True, "state": state}
 
 
-def _power_registry_observation(cfg, raw_spec: dict) -> dict:
-    embodiment_id = raw_spec.get("embodiment_id")
-    if not embodiment_id:
-        return {"managed": False, "status": None, "incarnation_id": None}
-    record = embodiments.Registry(cfg.state_dir).status(embodiment_id)
-    return {
-        "managed": True,
-        "status": record.get("status"),
-        "incarnation_id": record.get("current_incarnation_id"),
-    }
-
-
 def _commit_power_logical(cfg, name: str, transition: dict) -> dict:
     raw_spec = load_spec_raw(cfg.instances_dir, name)
     if raw_spec is None:
         raise operation_journal.JournalConflict("declared spec disappeared")
-    embodiment_id = transition.get("embodiment_id")
-    incarnation_id = transition.get("incarnation_id")
-    operation = transition["operation"]
-    if embodiment_id:
-        registry = embodiments.Registry(cfg.state_dir)
-        observed = registry.status(embodiment_id)
-        current = observed.get("current_incarnation_id")
-        status = observed.get("status")
-        if operation == "stop":
-            if status == "running" or current is not None:
-                registry.stop(embodiment_id)
-            incarnation_id = None
-        else:
-            if status == "running" and current != incarnation_id:
-                if operation != "restart":
-                    raise operation_journal.JournalConflict(
-                        "registry has a contradictory running incarnation"
-                    )
-                registry.stop(embodiment_id)
-                status, current = "stopped", None
-            if status != "running":
-                registry.start(
-                    embodiment_id,
-                    incarnation_id=incarnation_id,
-                    started_at_ms=transition["incarnation_started_at_ms"],
-                )
-            verified = registry.status(embodiment_id)
-            if (
-                verified.get("status") != "running"
-                or verified.get("current_incarnation_id") != incarnation_id
-            ):
-                raise operation_journal.JournalConflict(
-                    "registry transition did not converge"
-                )
-        _mutation_boundary("after-registry", transition)
-        update_spec(
-            cfg.instances_dir, name, {"current_incarnation_id": incarnation_id}
+    if raw_spec.get("instance_kind") != "generic-instance":
+        raise operation_journal.JournalConflict(
+            "generic lifecycle target changed identity class"
         )
-        _mutation_boundary("after-spec", transition)
-        final_spec = load_spec_raw(cfg.instances_dir, name) or {}
-        if final_spec.get("current_incarnation_id") != incarnation_id:
-            raise operation_journal.JournalConflict("spec transition did not converge")
+    desired_state = transition["runtime_state"]
+    final_spec = update_spec(cfg.instances_dir, name, {"state": desired_state})
+    _mutation_boundary("after-spec", transition)
+    if final_spec.get("state") != desired_state:
+        raise operation_journal.JournalConflict("spec state did not converge")
     return {
-        "registry": _power_registry_observation(cfg, load_spec_raw(cfg.instances_dir, name) or {}),
-        "spec_incarnation_id": incarnation_id,
+        "instance_kind": "generic-instance",
+        "spec_state": desired_state,
     }
 
 
@@ -751,13 +706,11 @@ def cmd_create(args, cfg, adapter) -> int:
                 "created_ms": audit.now_ms(),
                 "created_by": _actor(args),
                 "idempotency_key": _idem_key(args),
-                "body_ref": f"cluster:{cfg.host_id}:{name}",
-                "embodiment_id": embodiments.new_id("embodiment"),
-                "current_incarnation_id": None,
+                "instance_kind": "generic-instance",
                 "state": "stopped",
             }
             expected = {"runtime": {"present": False}, "spec_present": False}
-            transition = {"spec": spec, "registry_status": "stopped"}
+            transition = {"spec": spec}
         else:
             if pending["operation"] != operation:
                 return _fail(
@@ -902,27 +855,12 @@ def cmd_create(args, cfg, adapter) -> int:
             if record["state"] == "runtime-applied":
                 _write_spec(cfg.instances_dir, spec)
                 _mutation_boundary("after-spec", record)
-                registry = embodiments.Registry(cfg.state_dir)
-                try:
-                    registered = registry.status(spec["embodiment_id"])
-                except embodiments.RegistryError as exc:
-                    if "unknown embodiment" not in str(exc):
-                        raise
-                    registered = registry.register(
-                        body_ref=spec["body_ref"],
-                        embodiment_id=spec["embodiment_id"],
-                    )
-                if registered.get("body_ref") != spec["body_ref"]:
-                    raise operation_journal.JournalConflict(
-                        "registry embodiment binding contradicts create intent"
-                    )
-                _mutation_boundary("after-registry", record)
                 record = journal.advance(
                     record["operation_id"],
                     "logical-committed",
                     logical_observation={
                         "spec_present": True,
-                        "registry_status": registered.get("status"),
+                        "instance_kind": "generic-instance",
                     },
                 )
                 _mutation_boundary("after-logical-commit", record)
@@ -938,7 +876,7 @@ def cmd_create(args, cfg, adapter) -> int:
                 audit_result="error",
                 detail={"operation_id": record["operation_id"]},
             )
-        except (operation_journal.JournalError, embodiments.RegistryError, OSError) as exc:
+        except (operation_journal.JournalError, OSError) as exc:
             try:
                 journal.advance(record["operation_id"], record["state"], last_error=str(exc))
             except operation_journal.JournalError:
@@ -963,9 +901,7 @@ def cmd_create(args, cfg, adapter) -> int:
             "image_version": image_version,
             "budgets": budgets,
             "state": "stopped",
-            "body_ref": spec["body_ref"],
-            "embodiment_id": spec["embodiment_id"],
-            "incarnation_id": None,
+            "instance_kind": "generic-instance",
             "idempotency_key": _idem_key(args),
             "operation_id": record["operation_id"],
         }
@@ -1057,6 +993,23 @@ def cmd_power(args, cfg, adapter, operation: str) -> int:
                 f"instance {name!r} is not declared",
                 EXIT_NOT_FOUND,
             )
+        matrix_fields = {
+            field: raw_spec[field]
+            for field in ("body_ref", "embodiment_id", "current_incarnation_id")
+            if field in raw_spec
+        }
+        if matrix_fields or raw_spec.get("instance_kind") != "generic-instance":
+            return _fail(
+                args,
+                cfg,
+                operation,
+                name,
+                "Matrix-managed identity requires root-authorized rebirth_host "
+                "and shared admission",
+                EXIT_CONFLICT,
+                detail={"matrix_managed": True},
+                err_extra={"matrix_managed": True},
+            )
         runtime_call = {
             "method": operation,
             "name": name,
@@ -1082,8 +1035,7 @@ def cmd_power(args, cfg, adapter, operation: str) -> int:
         else:
             try:
                 runtime_before = _observe_runtime(adapter, name)
-                registry_before = _power_registry_observation(cfg, raw_spec)
-            except (operation_journal.JournalError, embodiments.RegistryError) as exc:
+            except operation_journal.JournalError as exc:
                 return _fail(
                     args,
                     cfg,
@@ -1103,41 +1055,11 @@ def cmd_power(args, cfg, adapter, operation: str) -> int:
                     EXIT_INTERNAL,
                     audit_result="error",
                 )
-            if (
-                operation in {"start", "restart"}
-                and registry_before["managed"]
-                and operation == "start"
-                and registry_before["status"] == "running"
-                and not convergent_reexecution
-            ):
-                return _fail(
-                    args,
-                    cfg,
-                    operation,
-                    name,
-                    "embodiment is already running",
-                    EXIT_CONFLICT,
-                )
-            incarnation_id = None
-            if operation in {"start", "restart"} and raw_spec.get("embodiment_id"):
-                incarnation_id = (
-                    registry_before["incarnation_id"]
-                    if operation == "start"
-                    and convergent_reexecution
-                    and registry_before["status"] == "running"
-                    else embodiments.new_id("incarnation")
-                )
-            expected = {
-                "runtime": runtime_before,
-                "registry": registry_before,
-                "spec_incarnation_id": raw_spec.get("current_incarnation_id"),
-            }
+            expected = {"runtime": runtime_before}
             transition = {
                 "operation": operation,
                 "runtime_state": "stopped" if operation == "stop" else "running",
-                "embodiment_id": raw_spec.get("embodiment_id"),
-                "incarnation_id": incarnation_id,
-                "incarnation_started_at_ms": audit.now_ms(),
+                "instance_kind": "generic-instance",
             }
         intent = {
             "operation": operation,
@@ -1282,10 +1204,10 @@ def cmd_power(args, cfg, adapter, operation: str) -> int:
                 audit_result="error",
                 detail={"operation_id": record["operation_id"], **stale},
             )
-        except (operation_journal.JournalError, embodiments.RegistryError, OSError) as exc:
+        except (operation_journal.JournalError, OSError) as exc:
             # Runtime truth is already closed and observed. Persistence can
-            # safely resume at the same logical stage with the same intended
-            # incarnation; do not invent a successor or mark a contradiction.
+            # safely resume at the same logical stage without dispatching a
+            # second runtime effect.
             try:
                 record = journal.advance(
                     record["operation_id"], record["state"], last_error=str(exc)
@@ -1304,16 +1226,13 @@ def cmd_power(args, cfg, adapter, operation: str) -> int:
             )
 
         state = desired_state
-        embodiment_id = transition.get("embodiment_id")
-        incarnation_id = transition.get("incarnation_id")
         result = {
             "operation": operation,
             "name": name,
             "result": "ok",
             "state": state,
             "idempotency_key": _idem_key(args),
-            "embodiment_id": embodiment_id,
-            "incarnation_id": incarnation_id,
+            "instance_kind": "generic-instance",
             "operation_id": record["operation_id"],
         }
         if record["state"] == "logical-committed":
@@ -1333,8 +1252,7 @@ def cmd_power(args, cfg, adapter, operation: str) -> int:
                 result="ok",
                 detail={
                     "state": state,
-                    "embodiment_id": embodiment_id,
-                    "incarnation_id": incarnation_id,
+                    "instance_kind": "generic-instance",
                     "operation_id": record["operation_id"],
                     **audit_identity.get("context", {}),
                 },

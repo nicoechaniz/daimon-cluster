@@ -27,7 +27,8 @@ def _declare(state_dir, name=NAME, created_by="tester"):
     inst_dir.mkdir(parents=True, exist_ok=True)
     (inst_dir / f"{name}.yaml").write_text(yaml.safe_dump({
         "schema": "instance-spec/v1", "name": name,
-        "image_version": "v1", "created_by": created_by,
+        "instance_kind": "generic-instance", "image_version": "v1",
+        "created_by": created_by,
     }), encoding="utf-8")
 
 

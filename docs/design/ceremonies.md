@@ -1,31 +1,47 @@
 # Embodiment operations and authority ceremonies
 
-Status: active design, ontology rectified 2026-08-02.
+Status: active design, ontology rectified 2026-08-16.
 
 This document governs bodies hosted by Daimon Cluster. It does not create a
 being, decide whether two embodiments are one being, or manage Tribe
 membership. Those are Matrix and founded-Tribe authorities respectively.
 
-## 1. Provision a new body
+## 1. Generic instances are not embodiments
+
+`clusterctl create|start|stop|restart` manages only an
+`instance_kind: generic-instance`. These commands never mint a `body_ref`,
+`embodiment_id`, incarnation, being binding, Matrix credential, or registry
+entry. A spec containing any Matrix identity marker is rejected before a
+runtime adapter call. Generic runtime state is operational inventory, not
+evidence of identity.
+
+An embodiment is admitted only through the root-authorized installation and
+`rebirth_host` path. That path verifies the Matrix credential and activation,
+acquires shared hosting admission before any spawn, and owns incarnation
+creation. Converting an arbitrary generic instance into an embodiment is not a
+supported lifecycle transition.
+
+## 2. Provision a new body
 
 1. A human requests a body, capacity, species image, and sponsor.
 2. The cluster owner approves concrete host resources.
-3. The steward runs `provision prepare`. The body receives a stable
-   `body_ref` and new `embodiment_id`; keys are born inside its durable volume.
+3. The steward runs `provision prepare` for a generic stopped body and its
+   host-local material. This step does not grant Matrix identity.
 4. The human enters provider credentials directly. Cluster never receives
    their values.
-5. `provision confirm` boots the body. Each boot opens a fresh
-   `incarnation_id` segment in `embodiment-registry/v1`.
-6. If this embodiment belongs in an existing being, an administrator installs
-   a `being-manifest/v1` that binds its principal, body, and embodiment. Until
-   future Matrix root credentials exist, this is explicit provisional trust.
-7. Cluster audits completion and the embodiment may announce lifecycle state
-   through Weave.
+5. `provision confirm` may boot only the generic workload.
+6. A distinct Matrix ceremony creates a root-authorized credential for a new
+   `body_ref` and `embodiment_id`, with keys generated in that embodiment's
+   custody. Cluster installs that exact artifact through `rebirth_host`; no
+   provisional or locally invented identity is accepted.
+7. Shared admission opens the first `incarnation_id`; Cluster audits the
+   admitted launch and the embodiment may announce lifecycle state through
+   Weave.
 
 Creating a body never copies another embodiment's database or private key.
 Several embodiments from one installed being manifest may run concurrently.
 
-## 2. Park and wake
+## 3. Park and wake
 
 Parking quiesces writers, verifies database integrity, drains transport,
 records in-flight work, snapshots durable state, and emits a signed manifest.
@@ -36,7 +52,7 @@ resumes the appropriate embodiment lifecycle. Any resource that can have only
 one writer requires a current `resource-fence/v1` for its exact
 `resource_ref`. No identity-wide fence exists.
 
-## 3. Relocate an embodiment
+## 4. Relocate an embodiment
 
 Relocation moves one body's durable volume to a replacement container or host:
 
@@ -57,7 +73,7 @@ Relocation moves one body's durable volume to a replacement container or host:
 A clone is different: it receives a new body and embodiment, separate keys,
 ledger, cursors, and local adoption state.
 
-## 4. Partition and merge
+## 5. Partition and merge
 
 A network partition is not an identity emergency. Each embodiment continues
 its signed local origin chain. When transport heals:
@@ -72,7 +88,7 @@ its signed local origin chain. When transport heals:
 Conflicting proposals remain visible differences. Every embodiment decides
 locally whether to adopt, reject, defer, or revert them.
 
-## 5. Offboard or retire a body
+## 6. Offboard or retire a body
 
 1. Park, checkpoint, and verify an archive.
 2. Drain/revoke transport routes and cluster tokens for the body.
@@ -84,7 +100,7 @@ locally whether to adopt, reject, defer, or revert them.
 Retiring one embodiment does not dissolve its being or a Tribe. Founded-Tribe
 leave/expel operations are separate signed membership artifacts.
 
-## 6. Recovery classes
+## 7. Recovery classes
 
 - Container lost, volume intact: rebuild around the same body and embodiment;
   open a new incarnation.
@@ -107,7 +123,7 @@ the signed recovery history. Predecessor custody and runtime configuration are
 never restored. A distinct completed restore journal gates first start, and an
 exact retry must reproduce the same canonical event-set hash.
 
-## 7. Testable invariants
+## 8. Testable invariants
 
 - No provider credential enters git, audit, Weave, or steward payloads.
 - No new body reuses an embodiment id or private signing key.

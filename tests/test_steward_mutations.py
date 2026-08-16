@@ -61,6 +61,7 @@ def _declare(state_dir, name=NAME, created_by=None):
     inst_dir.mkdir(parents=True, exist_ok=True)
     spec = {
         "schema": "instance-spec/v1",
+        "instance_kind": "generic-instance",
         "name": name,
         "image_version": "tribe-base/2026-08-01.1",
     }

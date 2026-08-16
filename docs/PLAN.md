@@ -10,7 +10,8 @@ bytes. Matrix.org is excluded.
 
 ## Work packages
 
-1. Body/embodiment/incarnation registry integrated into lifecycle operations.
+1. Generic container lifecycle is identity-free; body/embodiment/incarnation
+   creation is restricted to root-authorized install plus shared admission.
 2. Resource-scoped fence registry replacing identity-wide exclusion.
 3. Exact source-pinned `daimon-matrix` host process with encrypted custody and
    transactional origin chains.

@@ -5,14 +5,16 @@ start, then resume from the first open item.
 
 ## Active checkpoint (2026-08-16)
 
-The current candidate functional boundary is Cluster
-`f03d9a471f5768bc89e6f70492829bf33ddfbc57` (tree
-`a4b225631ec551c7c52edf8bbc8b371ab74c7689`) with Matrix merged at
+Cluster PR #91 is merged on `main` at
+`4b77d2e47f31258d0801bd3a881b8dcf1a7584be` (tree
+`726159a25d6708a8388380f81f7cbec9f51122a9`) with Matrix merged at
 `09414d6edd9586f539be8272c4979d0b36c86b87` (tree
-`d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`). This exact Cluster successor is
-locally qualified and awaiting independent review. A documentation/pin
-successor may advance the Cluster commit without changing that code boundary;
-the final generated RC manifest is authoritative for repository heads.
+`d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`). The first post-merge workflow
+exposed a clean-shutdown response-loss race on Python 3.14. A local successor
+now always publishes a safe final release after the runtime has stopped and
+adds deterministic coverage; it must pass normal review and CI before `main`
+is green. The final generated RC manifest is authoritative for repository
+heads.
 
 Completed locally on the exact code boundary:
 
@@ -22,11 +24,12 @@ Completed locally on the exact code boundary:
 - a distinct recovery transfer limited to the public runtime bundle and
   canonical ledger, rejected by the generic full-snapshot restore;
 - V7 exact twelve-profile snapshot gate with every client tree excluded;
-- `594 passed, 4 skipped` with resource/unraisable warnings fatal;
+- `595 passed, 4 skipped` with resource/unraisable warnings fatal;
 - network-disabled recovery/rebirth container E2E: 1 passed; and
 - encrypted backup/export, offline check and restore container E2E: 1 passed.
 
-Matrix PR #121 is merged. Cluster issue #90 owns the consolidated successor.
+Matrix PR #121 and Cluster PR #91 are merged. Cluster issue #90 preserves the
+consolidated lineage; the post-merge clean-shutdown successor remains open.
 Tribe PR #65 has an independently reviewed exact candidate and still awaits
 its required human approval. Nothing in this checkpoint was deployed and no
 existing host or real custody was used.

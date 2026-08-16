@@ -331,7 +331,11 @@ class _AdmissionSupervisor:
         self.thread = threading.Thread(
             target=self._run,
             name=f"rebirth-admission-{process.pid}",
-            daemon=True,
+            # A launcher must not exit between runtime termination and the
+            # final release attempt.  Admission I/O is already bounded by the
+            # client timeout, so keeping this thread non-daemon closes that
+            # shutdown window without weakening the independent watchdog.
+            daemon=False,
         )
         self.watchdog = threading.Thread(
             target=self._watchdog,
@@ -408,12 +412,19 @@ class _AdmissionSupervisor:
                         _terminate_without_consuming_output(self.process)
                         return
                     self._condition.notify_all()
-            try:
-                with self._client_lock:
-                    self.client.release()
-            except AdmissionError:
-                pass
         finally:
+            # Once the runtime is no longer executing, always attempt to
+            # publish the release.  In particular, a renew may have committed
+            # remotely even when its response is lost while the runtime is
+            # shutting down.  The authority's exact-position checks make this
+            # retry safe; omitting it leaves a stale current lease until a
+            # later contender advances the fence.
+            if self.process.poll() is not None:
+                try:
+                    with self._client_lock:
+                        self.client.release()
+                except AdmissionError:
+                    pass
             self._finished.set()
             with self._condition:
                 self._condition.notify_all()

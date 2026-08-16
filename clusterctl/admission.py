@@ -750,10 +750,19 @@ class _AdmissionRequestHandler(socketserver.StreamRequestHandler):
                 "error": name,
                 "message": str(exception),
             })
-        self.wfile.write(
-            json.dumps(response, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            + b"\n"
-        )
+        try:
+            self.wfile.write(
+                json.dumps(response, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+                + b"\n"
+            )
+        except (BrokenPipeError, ConnectionResetError):
+            # The signed mutation may already be durable when a bounded client
+            # abandons a slow response.  Recovery is handled by the idempotent
+            # client protocol; the fixture server must not leak a thread-level
+            # traceback during that normal response-loss boundary.
+            return
 
 
 class AdmissionServer(socketserver.ThreadingUnixStreamServer):

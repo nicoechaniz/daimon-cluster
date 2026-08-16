@@ -24,6 +24,7 @@ undeclared, 6 conflict (duplicate, idempotency, lock), 10 internal.
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 import uuid
 from types import SimpleNamespace
@@ -468,15 +469,49 @@ def _record_idempotency(args, cfg, operation: str, name: str,
         idempotency.save_store(cfg.state_dir, store)
 
 
-def _lock_or_fail(args, cfg, operation: str, name: str):
-    """Return a lock context manager, or an exit code on conflict."""
+class _EnteredTargetLock:
+    def __init__(self, manager, acquired):
+        self._manager = manager
+        self._acquired = acquired
+
+    def __enter__(self):
+        return self._acquired
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return self._manager.__exit__(exc_type, exc_value, traceback)
+
+
+def _target_state_hash(cfg, name: str) -> str:
+    path = Path(cfg.instances_dir) / f"{name}.yaml"
     try:
-        return locks.acquire(cfg.state_dir, name, operation)
+        raw = path.read_bytes()
+    except OSError:
+        raw = b"<absent>"
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _lock_or_fail(args, cfg, operation: str, name: str):
+    """Acquire the target lock and close any signed state precondition."""
+    manager = locks.acquire(cfg.state_dir, name, operation)
+    try:
+        acquired = manager.__enter__()
     except locks.LockConflict as exc:
         return _fail(
             args, cfg, operation, name, str(exc), EXIT_CONFLICT,
             err_extra={"holder": exc.holder},
         )
+    expected_hash = getattr(args, "approved_target_state_hash", None)
+    if expected_hash is not None and _target_state_hash(cfg, name) != expected_hash:
+        manager.__exit__(None, None, None)
+        return _fail(
+            args,
+            cfg,
+            operation,
+            name,
+            "approved target state changed before mutation",
+            EXIT_CONFLICT,
+        )
+    return _EnteredTargetLock(manager, acquired)
 
 
 def _stale_detail(acquired) -> dict:

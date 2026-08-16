@@ -72,6 +72,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="confirmation action digest recorded in audit events "
         "(clusterd cluster-confirmation/v1 passthrough, issue #19)",
     )
+    parser.add_argument(
+        "--approved-target-state-hash",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_list = sub.add_parser("list", help="list all instances with reconciled state")

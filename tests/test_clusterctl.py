@@ -130,6 +130,22 @@ def test_classification_drifted(state_dir, fake_adapter):
     assert _by_name(_records(state_dir, fake_adapter))["drifty"]["state"] == "drifted"
 
 
+def test_generic_spec_cannot_publish_matrix_identity(state_dir, fake_adapter):
+    _write_spec(
+        state_dir,
+        "forged-generic",
+        instance_kind="generic-instance",
+        body_ref="matrix:body:forged",
+        embodiment_id="embodiment:forged",
+        current_incarnation_id="incarnation:forged",
+    )
+    adapter = FakeAdapter([*fake_adapter.list_instances(), _actual("forged-generic")])
+    record = _by_name(_records(state_dir, adapter))["forged-generic"]
+    assert record["body_ref"] is None
+    assert record["embodiment_id"] is None
+    assert record["incarnation_id"] is None
+
+
 def test_drift_detail_entries(state_dir, fake_adapter):
     rec = _by_name(_records(state_dir, fake_adapter))["drifty"]
     assert rec["drift"] == [{"field": "cpu", "declared": 2, "actual": 1}]

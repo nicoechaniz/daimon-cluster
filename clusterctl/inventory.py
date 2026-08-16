@@ -69,6 +69,7 @@ def load_specs(instances_dir: str | Path) -> dict[str, InstanceSpec]:
         if not name:
             raise SpecError(f"spec {path}: missing 'name'")
         budgets = raw.get("budgets") or {}
+        matrix_managed = raw.get("instance_kind") == "matrix-embodiment"
         specs[str(name)] = InstanceSpec(
             name=str(name),
             species=str(raw.get("species") or "unknown"),
@@ -80,9 +81,11 @@ def load_specs(instances_dir: str | Path) -> dict[str, InstanceSpec]:
             },
             created_ms=raw.get("created_ms"),
             created_by=raw.get("created_by"),
-            body_ref=raw.get("body_ref"),
-            embodiment_id=raw.get("embodiment_id"),
-            current_incarnation_id=raw.get("current_incarnation_id"),
+            body_ref=raw.get("body_ref") if matrix_managed else None,
+            embodiment_id=raw.get("embodiment_id") if matrix_managed else None,
+            current_incarnation_id=(
+                raw.get("current_incarnation_id") if matrix_managed else None
+            ),
         )
     return specs
 

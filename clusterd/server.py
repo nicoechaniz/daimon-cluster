@@ -204,6 +204,9 @@ class ClusterdHandler(BaseHTTPRequestHandler):
             ctx = dataclasses.replace(
                 ctx,
                 action_digest=approval["intent"]["intent_id"],
+                approved_target_state_hash=approval["intent"][
+                    "target_state_hash"
+                ],
             )
 
         # 5. per-token mutation rate limit (429) ------------------------

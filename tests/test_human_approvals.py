@@ -212,6 +212,47 @@ def test_approval_rejects_token_target_body_state_and_revocation(server, tmp_pat
     assert adapter.mutation_log == []
 
 
+def test_target_change_after_approval_consumption_fails_before_effect(
+    server, tmp_path, monkeypatch
+):
+    srv, adapter, state_dir = server
+    _record, token = _token(
+        state_dir, actor="steward@test", scopes=["lifecycle:write"]
+    )
+    signer = _signer(tmp_path / "human.pem")
+    approvals.register_authority(
+        state_dir, key_id=signer.key_id, public_key=signer.public_key
+    )
+    _, intent = _request(
+        srv,
+        "POST",
+        f"/v1/instances/{NAME}/stop",
+        token,
+        headers={"Idempotency-Key": IDEM},
+        body={},
+    )
+    encoded = _approval_for(intent, signer)
+    original = approvals.consume_approval
+
+    def consume_then_change(*args, **kwargs):
+        accepted = original(*args, **kwargs)
+        _declare(state_dir, owner="changed-after-consume")
+        return accepted
+
+    monkeypatch.setattr(approvals, "consume_approval", consume_then_change)
+    status, body = _request(
+        srv,
+        "POST",
+        f"/v1/instances/{NAME}/stop",
+        token,
+        headers={"Idempotency-Key": IDEM, "X-Human-Approval": encoded},
+        body={},
+    )
+    assert status == 409
+    assert body["error"] == "approved target state changed before mutation"
+    assert adapter.mutation_log == []
+
+
 def test_exact_scopes_do_not_cross_operation_classes(server):
     srv, adapter, state_dir = server
     _record, token = _token(

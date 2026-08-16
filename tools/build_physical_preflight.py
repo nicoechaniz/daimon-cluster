@@ -72,6 +72,15 @@ def _strings(value: Any, code: str) -> list[str]:
     return list(value)
 
 
+def _contains_shell(values: list[str]) -> bool:
+    return any(
+        Path(token).name in _SHELLS
+        for value in values
+        for token in value.split()
+        if token
+    )
+
+
 def _release_manifest(value: Any) -> tuple[dict[str, dict[str, str]], list[dict[str, str]]]:
     manifest = _closed(
         value,
@@ -266,8 +275,8 @@ def validate_plan(value: Any, rc_manifest: Any) -> dict[str, Any]:
             or not isinstance(row["host_role"], str)
             or row["host_role"] != required_role
             or any("\x00" in item or "\n" in item for item in [*argv, *rollback])
-            or Path(argv[0]).name in _SHELLS
-            or Path(rollback[0]).name in _SHELLS
+            or _contains_shell(argv)
+            or _contains_shell(rollback)
         ):
             raise PhysicalPreflightError("physical_step_invalid")
         _strings(row["effects"], "physical_step_effects_missing")

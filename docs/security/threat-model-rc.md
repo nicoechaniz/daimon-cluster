@@ -67,10 +67,13 @@ root-authorized origin plus the signed exact twelve-profile binding and always
 excludes root, operator and host client trees. Runtime filenames are selected
 by exact bundle semantics rather than broad suffixes. Source/destination parent
 chains reject symlinks; directory publication is descriptor-relative and
-atomic no-replace.
-Recovery accepts exactly `runtime.json` plus `ledger.sqlite`; it never transfers
-custody, writable derived databases or journals. A second descriptor-stable
-stage rechecks the manifest before target mutation.
+atomic no-replace. Restore derives the required/excluded set again from the
+verified V7 bundle instead of trusting the snapshot manifest's inventory.
+Recovery accepts exactly `runtime.json` plus `ledger.sqlite` under the distinct
+`dm.cluster-matrix-recovery-snapshot/v1` contract; the generic full-snapshot
+restore rejects that derivative. Recovery never transfers custody, writable
+derived databases or journals. A second descriptor-stable stage rechecks the
+manifest before target mutation.
 
 ### Capability widening
 

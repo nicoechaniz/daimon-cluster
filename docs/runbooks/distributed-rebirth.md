@@ -285,13 +285,14 @@ clusterctl rebirth-recovery-export \
   --output RECOVERY_TRANSFER --json
 ```
 
-The export first verifies every file in the full snapshot, then emits a new
-valid `dm.cluster-matrix-snapshot/v1` containing exactly the public runtime
-bundle and canonical ledger. Require `custody_files_exported=false`, record
-both source and recovery snapshot hashes, and transfer only
-`RECOVERY_TRANSFER`. The full backup, predecessor custody, runtime journals,
-derived stores and host-local capabilities remain at the source/backup
-boundary.
+The export first verifies every file in the full snapshot, then emits a
+distinct `dm.cluster-matrix-recovery-snapshot/v1` containing exactly the public
+runtime bundle and canonical ledger. The generic portable-snapshot restore
+rejects this custody-free derivative; only recovery rebirth accepts it. Require
+`custody_files_exported=false`, record both source and recovery snapshot hashes,
+and transfer only `RECOVERY_TRANSFER`. The full backup, predecessor custody,
+runtime journals, derived stores and host-local capabilities remain at the
+source/backup boundary.
 
 On the target, keep the target password on an inherited file descriptor and
 run:

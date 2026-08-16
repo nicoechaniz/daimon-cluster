@@ -61,12 +61,12 @@ Install the exact dependencies from `requirements-dev.txt` under
 
 ```bash
 python -m ruff check clusterctl clusterd steward_tools tests
-python -m mypy --follow-imports=skip --ignore-missing-imports clusterctl clusterd
+python tools/check_rc_types.py
 python -m pytest -q \
   -W error::ResourceWarning \
   -W error::pytest.PytestUnraisableExceptionWarning
 ```
 
-The workflow contains the authoritative narrower lint/type file lists used by
-the current baseline. Docker E2E tests are opt-in and must run only against
-local disposable state.
+`tools/check_rc_types.py` is the single authoritative type-check file list used
+by both this command and CI. Docker E2E tests are opt-in and must run only
+against local disposable state.

@@ -3,7 +3,10 @@ import json
 import os
 import socket
 import stat
+import subprocess
+import sys
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -556,6 +559,48 @@ def test_snapshot_restore_rejects_replacement_after_verification(tmp_path, monke
     assert not (tmp_path / "restored").exists()
 
 
+@pytest.mark.parametrize("mutation", ["remove-ledger", "add-client-key"])
+def test_restore_reapplies_required_and_excluded_v7_file_boundary(
+    tmp_path, mutation
+):
+    source = _signed_snapshot_root(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    create_portable_snapshot(source, snapshot)
+    manifest_path = snapshot / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload = snapshot / "payload"
+    if mutation == "remove-ledger":
+        bundle = json.loads((payload / manifest["bundle"]).read_text(encoding="utf-8"))
+        ledger_name = bundle["ledger"]
+        (payload / ledger_name).unlink()
+        manifest["files"] = [
+            row for row in manifest["files"] if row["name"] != ledger_name
+        ]
+    else:
+        secret = b"must-not-cross-the-portable-boundary"
+        client_key = payload / "client.key"
+        client_key.write_bytes(secret)
+        client_key.chmod(0o600)
+        manifest["files"].append(
+            {
+                "name": client_key.name,
+                "sha256": hashlib.sha256(secret).hexdigest(),
+                "size": len(secret),
+            }
+        )
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    manifest_path.chmod(0o600)
+    destination = tmp_path / "restored"
+
+    with pytest.raises(MatrixHostError, match="matrix_snapshot_payload_rejected"):
+        restore_portable_snapshot(snapshot, destination)
+
+    assert not destination.exists()
+
+
 def test_snapshot_rejects_invalid_binding_before_creating_destination(tmp_path):
     source = _signed_snapshot_root(tmp_path)
     bundle_path = source / "runtime.json"
@@ -705,6 +750,24 @@ def test_snapshot_restore_never_replaces_a_concurrent_target(
 
     assert destination.stat().st_ino == contender_inode
     assert list(destination.iterdir()) == []
+
+
+def test_documented_matrix_host_launcher_works_from_outside_repository(tmp_path):
+    launcher = Path(__file__).resolve().parents[1] / "scripts" / "matrix-host"
+    environment = os.environ.copy()
+    environment["VIRTUAL_ENV"] = sys.prefix
+
+    result = subprocess.run(
+        [launcher, "--help"],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--embodiment-id" in result.stdout
 
 
 def test_support_status_marks_explicit_synthetic_fixture_nonproduction(tmp_path):

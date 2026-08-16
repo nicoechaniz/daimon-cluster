@@ -16,6 +16,8 @@ from . import audit
 from .locks import acquire
 from .matrix_host import (
     MATRIX_CONTRACT_COMMIT,
+    MATRIX_RECOVERY_SNAPSHOT_SCHEMA,
+    MatrixHostError,
     _matrix_api,
     matrix_root,
     verify_portable_snapshot,
@@ -176,7 +178,7 @@ def export_recovery_snapshot(
         )
         selected = [dict(files[name]) for name in sorted((bundle_name, ledger_name))]
         recovery_snapshot = {
-            "schema": snapshot["schema"],
+            "schema": MATRIX_RECOVERY_SNAPSHOT_SCHEMA,
             "matrix_contract_commit": snapshot["matrix_contract_commit"],
             "bundle": bundle_name,
             "origin": snapshot["origin"],
@@ -235,7 +237,21 @@ def _load_inputs(
     request = _read_json(package / "request.json")
     receipt = _read_json(package / "receipt.json")
     target_bundle = _read_json(_owner_directory(package / "runtime") / "runtime.json")
-    snapshot, payload, _verified = verify_portable_snapshot(snapshot_dir)
+    try:
+        snapshot, payload, _verified = verify_portable_snapshot(
+            snapshot_dir,
+            _custody_free=True,
+        )
+    except MatrixHostError as exception:
+        try:
+            verify_portable_snapshot(snapshot_dir)
+        except MatrixHostError:
+            raise RecoveryRebirthError(
+                "recovery_rebirth_snapshot_rejected"
+            ) from exception
+        raise RecoveryRebirthError(
+            "recovery_rebirth_requires_custody_free_snapshot"
+        ) from exception
     try:
         files = {row["name"]: row for row in snapshot["files"]}
         bundle_row = files[snapshot["bundle"]]

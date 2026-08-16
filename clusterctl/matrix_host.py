@@ -33,6 +33,7 @@ from .fences import FenceError, ResourceFenceStore
 MATRIX_CONTRACT_COMMIT = "09414d6edd9586f539be8272c4979d0b36c86b87"
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
+MATRIX_RECOVERY_SNAPSHOT_SCHEMA = "dm.cluster-matrix-recovery-snapshot/v1"
 MATRIX_STATUS_SCHEMA = "dm.cluster-matrix-status/v1"
 _LOCK_NAME = ".daimon-matrixd.lock"
 _MAX_PASSWORD_BYTES = 4096
@@ -957,13 +958,23 @@ def _required_snapshot_runtime_filenames(
     return required
 
 
-def _snapshot_files(root: Path, bundle_name: str) -> tuple[dict[str, Any], list[Path]]:
+def _snapshot_files(
+    root: Path,
+    bundle_name: str,
+    *,
+    custody_free: bool = False,
+) -> tuple[dict[str, Any], list[Path]]:
     bundle = _public_bundle(root, bundle_name)
     socket_name = bundle.get("socket")
     excluded = {_LOCK_NAME, socket_name}
-    required_files = _required_snapshot_runtime_filenames(bundle, bundle_name)
+    configured_required_files = _required_snapshot_runtime_filenames(
+        bundle, bundle_name
+    )
     ledger_name = bundle["ledger"]
     assert isinstance(ledger_name, str)
+    required_files = (
+        {bundle_name, ledger_name} if custody_free else configured_required_files
+    )
     sqlite_sidecars = {f"{ledger_name}-wal", f"{ledger_name}-shm"}
     if bundle.get("schema") == "dm.runtime.bundle/v7":
         # These paths are secret-bearing by contract. Exclude them before
@@ -1101,7 +1112,10 @@ def _snapshot_files(root: Path, bundle_name: str) -> tuple[dict[str, Any], list[
         ):
             raise MatrixHostError("matrix_snapshot_source_unsafe")
         files.append(path)
-    if not required_files.issubset({path.name for path in files}):
+    observed_files = {path.name for path in files}
+    if not required_files.issubset(observed_files) or (
+        custody_free and observed_files != required_files
+    ):
         raise MatrixHostError("matrix_snapshot_source_unsafe")
     return bundle, files
 
@@ -1234,8 +1248,9 @@ def verify_portable_snapshot(
     snapshot: str | Path,
     *,
     _stable_root: bool = False,
+    _custody_free: bool = False,
 ) -> tuple[dict[str, Any], Path, list[tuple[Path, str]]]:
-    """Verify a snapshot without copying predecessor runtime or custody bytes."""
+    """Verify a full or explicitly custody-free snapshot without restoring it."""
 
     source = Path(snapshot) if _stable_root else _owner_directory(Path(snapshot))
     try:
@@ -1247,11 +1262,16 @@ def verify_portable_snapshot(
         manifest = json.loads(manifest_raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exception:
         raise MatrixHostError("matrix_snapshot_manifest_unreadable") from exception
+    expected_schema = (
+        MATRIX_RECOVERY_SNAPSHOT_SCHEMA
+        if _custody_free
+        else MATRIX_SNAPSHOT_SCHEMA
+    )
     if (
         not isinstance(manifest, dict)
         or set(manifest)
         != {"schema", "matrix_contract_commit", "bundle", "origin", "files"}
-        or manifest.get("schema") != MATRIX_SNAPSHOT_SCHEMA
+        or manifest.get("schema") != expected_schema
         or manifest.get("matrix_contract_commit") != MATRIX_CONTRACT_COMMIT
         or not isinstance(manifest.get("files"), list)
     ):
@@ -1300,6 +1320,19 @@ def verify_portable_snapshot(
         names.add(row["name"])
         verified.append((path, row["name"]))
     if {path.name for path in payload.iterdir()} != names:
+        raise MatrixHostError("matrix_snapshot_payload_rejected")
+    try:
+        bundle, portable_files = _snapshot_files(
+            payload,
+            manifest["bundle"],
+            custody_free=_custody_free,
+        )
+    except (MatrixHostError, KeyError, TypeError) as exception:
+        raise MatrixHostError("matrix_snapshot_payload_rejected") from exception
+    if (
+        _origin(bundle.get("local_origin")) != _origin(manifest.get("origin"))
+        or {path.name for path in portable_files} != names
+    ):
         raise MatrixHostError("matrix_snapshot_payload_rejected")
     return manifest, payload, verified
 
@@ -1419,6 +1452,7 @@ __all__ = [
     "EffectObserverRoute",
     "EffectObserverRouter",
     "MATRIX_CONTRACT_COMMIT",
+    "MATRIX_RECOVERY_SNAPSHOT_SCHEMA",
     "MATRIX_SNAPSHOT_SCHEMA",
     "MATRIX_STATUS_SCHEMA",
     "MatrixHostAdapter",

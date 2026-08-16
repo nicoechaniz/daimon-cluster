@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import time
 import uuid
 from pathlib import Path
@@ -28,7 +27,13 @@ from daimon_matrix.weave import EventSigner
 from clusterctl import cli, rebirth, rebirth_host, recovery_rebirth
 from clusterctl.embodiments import Registry
 from clusterctl.fences import Ed25519Signer, ResourceFenceStore
-from clusterctl.matrix_host import create_portable_snapshot, matrix_root
+from clusterctl.matrix_host import (
+    MATRIX_RECOVERY_SNAPSHOT_SCHEMA,
+    MatrixHostError,
+    create_portable_snapshot,
+    matrix_root,
+    restore_portable_snapshot,
+)
 from tests.test_rebirth import _ceremony, _descriptor, _ensure_production_fences
 
 
@@ -297,7 +302,7 @@ def test_recovery_restore_is_gated_idempotent_and_reproducible(short_tmp_path, c
 def test_tampered_snapshot_refuses_before_cluster_state_mutation(short_tmp_path):
     fixture = _recovery_fixture(short_tmp_path)
     tampered = short_tmp_path / "tampered-snapshot"
-    shutil.copytree(fixture["snapshot"], tampered)
+    recovery_rebirth.export_recovery_snapshot(fixture["snapshot"], tampered)
     ledger = next(
         path
         for path in (tampered / "payload").iterdir()
@@ -306,7 +311,10 @@ def test_tampered_snapshot_refuses_before_cluster_state_mutation(short_tmp_path)
     ledger.write_bytes(ledger.read_bytes() + b"tampered")
     state = short_tmp_path / "rejected-state"
     state.mkdir(mode=0o700)
-    with pytest.raises(Exception, match="matrix_snapshot_payload_rejected"):
+    with pytest.raises(
+        recovery_rebirth.RecoveryRebirthError,
+        match="recovery_rebirth_snapshot_rejected",
+    ):
         recovery_rebirth.install_recovery_rebirth(
             state,
             fixture["package"],
@@ -341,7 +349,11 @@ def test_recovery_snapshot_export_contains_only_public_bundle_and_ledger(
     assert receipt["custody_files_exported"] is False
     assert receipt["omitted_file_count"] > 0
     assert set(receipt["files"]) == {"ledger.sqlite", "runtime.json"}
-    manifest, payload, verified = recovery_rebirth.verify_portable_snapshot(transfer)
+    manifest, payload, verified = recovery_rebirth.verify_portable_snapshot(
+        transfer,
+        _custody_free=True,
+    )
+    assert manifest["schema"] == MATRIX_RECOVERY_SNAPSHOT_SCHEMA
     assert receipt["recovery_snapshot_sha256"] == recovery_rebirth._sha(manifest)
     assert {name for _path, name in verified} == {"ledger.sqlite", "runtime.json"}
     assert {path.name for path in payload.iterdir()} == {
@@ -350,6 +362,11 @@ def test_recovery_snapshot_export_contains_only_public_bundle_and_ledger(
     }
     assert (fixture["snapshot"] / "payload/custody.json").is_file()
     assert not any("custody" in path.name for path in transfer.rglob("*"))
+    with pytest.raises(MatrixHostError, match="matrix_snapshot_manifest_rejected"):
+        restore_portable_snapshot(
+            transfer,
+            short_tmp_path / "generic-restore-must-reject",
+        )
     restored = recovery_rebirth.install_recovery_rebirth(
         short_tmp_path / "filtered-target-state",
         fixture["package"],
@@ -363,6 +380,50 @@ def test_recovery_snapshot_export_contains_only_public_bundle_and_ledger(
         match="recovery_snapshot_destination_exists",
     ):
         recovery_rebirth.export_recovery_snapshot(fixture["snapshot"], transfer)
+
+
+@pytest.mark.parametrize("mutation", ["remove-ledger", "add-client-key"])
+def test_recovery_snapshot_verifier_reapplies_exact_custody_free_boundary(
+    short_tmp_path: Path,
+    mutation: str,
+) -> None:
+    fixture = _recovery_fixture(short_tmp_path)
+    transfer = short_tmp_path / f"custody-free-{mutation}"
+    recovery_rebirth.export_recovery_snapshot(fixture["snapshot"], transfer)
+    manifest_path = transfer / "snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload = transfer / "payload"
+    if mutation == "remove-ledger":
+        ledger_name = next(
+            row["name"]
+            for row in manifest["files"]
+            if row["name"] != manifest["bundle"]
+        )
+        (payload / ledger_name).unlink()
+        manifest["files"] = [
+            row for row in manifest["files"] if row["name"] != ledger_name
+        ]
+    else:
+        secret = b"must-not-cross-the-recovery-boundary"
+        client_key = payload / "client.key"
+        client_key.write_bytes(secret)
+        client_key.chmod(0o600)
+        manifest["files"].append(
+            {
+                "name": client_key.name,
+                "sha256": hashlib.sha256(secret).hexdigest(),
+                "size": len(secret),
+            }
+        )
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(MatrixHostError, match="matrix_snapshot_payload_rejected"):
+        recovery_rebirth.verify_portable_snapshot(
+            transfer,
+            _custody_free=True,
+        )
 
 
 def test_recovery_snapshot_export_rejects_replacement_race(
@@ -469,8 +530,10 @@ def test_snapshot_replacement_race_refuses_before_state_creation(
     short_tmp_path, monkeypatch
 ):
     fixture = _recovery_fixture(short_tmp_path)
-    source_ledger = fixture["snapshot"] / "payload/ledger.sqlite"
-    original_ledger = fixture["snapshot"] / "payload/ledger-original.sqlite"
+    transfer = short_tmp_path / "race-transfer"
+    recovery_rebirth.export_recovery_snapshot(fixture["snapshot"], transfer)
+    source_ledger = transfer / "payload/ledger.sqlite"
+    original_ledger = transfer / "payload/ledger-original.sqlite"
     outside = short_tmp_path / "outside-ledger.sqlite"
     outside.write_bytes(b"must-not-be-read")
     outside.chmod(0o600)
@@ -493,7 +556,7 @@ def test_snapshot_replacement_race_refuses_before_state_creation(
         recovery_rebirth.install_recovery_rebirth(
             state,
             fixture["package"],
-            fixture["snapshot"],
+            transfer,
             lambda: bytearray(fixture["password"]),
             idempotency_key=str(uuid.uuid4()),
         )

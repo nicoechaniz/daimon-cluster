@@ -81,6 +81,11 @@ scripts/matrix-host \
   --production-fence-verifier
 ```
 
+Run the launcher from the activated installation virtualenv (or provide its
+absolute interpreter in `DAIMON_MATRIX_HOST_PYTHON`). The launcher changes to
+the repository root before invoking the module, so it is independent of the
+supervisor's working directory.
+
 The production flag requires an initialized, owner-controlled
 `STATE/resource-fences.sqlite3`. It opens that database query-only and loads
 only registered public verification keys. Do not pass the Cluster fence
@@ -185,7 +190,9 @@ traffic.
 Source, snapshot and destination paths may not contain symlink components.
 Create and restore retain directory descriptors and publish with atomic
 no-replace semantics, so a concurrent claimant survives and the operation
-fails rather than overwriting it.
+fails rather than overwriting it. Restore independently re-applies the signed
+V7 required/excluded file boundary; a self-consistent manifest cannot omit the
+ledger or introduce client material.
 
 The host boundary accepts only Matrix runtime bundle V7 and local client config
 V3 at the pinned commit. Earlier pre-release schemas fail closed. Matrix owns

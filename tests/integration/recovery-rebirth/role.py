@@ -248,7 +248,10 @@ def _provision_disposable_fence_authority(
         json.dumps(
             {
                 "schema": ADMISSION_CLIENT_SCHEMA,
-                "socket_path": str(socket_path),
+                "endpoint": {
+                    "transport": "unix-local-fixture",
+                    "path": str(socket_path),
+                },
                 "holder_key_path": str(holder_path),
                 "holder_key_id": holder.key_id,
                 "authority_key_id": authority_signer.key_id,

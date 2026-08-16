@@ -252,6 +252,7 @@ def _renew_release_worker(
             signer=owner,
             key_id=OWNER_KEY_ID,
             clock=MutableClock(NOW_MS + 9),
+            holder_registrars={owner.key_id: owner.public_key},
         )
         kwargs = {
             "expected_epoch": expected_epoch,
@@ -301,6 +302,49 @@ def test_production_refuses_open_or_symlinked_database_roots(tmp_path, keys):
     linked.symlink_to(actual, target_is_directory=True)
     with pytest.raises(FenceError, match="owner-only"):
         ResourceFenceStore.production(linked, signer=owner, key_id=owner.key_id)
+
+
+def test_registrar_config_is_exact_and_revocation_has_cas_high_water(tmp_path, keys):
+    owner, _holder = keys
+    store = _store(tmp_path, owner)
+    position = store.holder_registrar_position()
+    assert position["generation"] == 1
+    assert position["registrars"] == [
+        {
+            "key_id": owner.key_id,
+            "public_key": owner.public_key,
+            "state": "active",
+        }
+    ]
+    with pytest.raises(FenceError, match="configuration mismatch"):
+        ResourceFenceStore.production(
+            tmp_path / "state",
+            signer=owner,
+            key_id=owner.key_id,
+            clock=MutableClock(),
+            holder_registrars={},
+        )
+    successor = _key(tmp_path / "registrar-successor.pem", "registrar-successor")
+    transitioned = store.transition_holder_registrars(
+        {
+            owner.key_id: owner.public_key,
+            successor.key_id: successor.public_key,
+        },
+        expected_generation=position["generation"],
+    )
+    assert transitioned["generation"] == 2
+    with pytest.raises(FenceConflict, match="generation"):
+        store.revoke_holder_registrar(owner.key_id, expected_generation=1)
+    revoked = store.revoke_holder_registrar(owner.key_id, expected_generation=2)
+    assert revoked["generation"] == 3
+    reopened = ResourceFenceStore.production(
+        tmp_path / "state",
+        signer=owner,
+        key_id=owner.key_id,
+        clock=MutableClock(),
+        holder_registrars={successor.key_id: successor.public_key},
+    )
+    assert reopened.holder_registrar_position()["generation"] == 3
 
 
 def test_signed_acquire_is_exact_and_matrix_verifier_compatible(tmp_path, keys):

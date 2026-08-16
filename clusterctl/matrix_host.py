@@ -985,6 +985,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--bundle", default="runtime.json")
     parser.add_argument("--password-fd", type=int, required=True)
     parser.add_argument("--ready-fd", type=int)
+    parser.add_argument("--guardian-pid", type=int)
     parser.add_argument(
         "--production-fence-verifier",
         action="store_true",
@@ -993,7 +994,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     lock_descriptor: int | None = None
     stopping = threading.Event()
+    guardian: threading.Thread | None = None
     try:
+        if args.guardian_pid is not None:
+            if args.guardian_pid <= 1 or os.getppid() != args.guardian_pid:
+                raise MatrixHostError("matrix_guardian_missing")
+
+            def require_guardian() -> None:
+                while not stopping.wait(0.02):
+                    if os.getppid() != args.guardian_pid:
+                        os.kill(os.getpid(), signal.SIGKILL)
+
+            guardian = threading.Thread(
+                target=require_guardian,
+                name=f"matrix-guardian-{args.guardian_pid}",
+                daemon=True,
+            )
+            guardian.start()
         api = _matrix_api()
         fence_store = (
             ResourceFenceStore.production_verifier(args.state_dir)
@@ -1039,6 +1056,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _diagnostic(code if isinstance(code, str) else "matrix_host_startup_refused")
         return 1
     finally:
+        stopping.set()
         if lock_descriptor is not None:
             os.close(lock_descriptor)
 

@@ -422,7 +422,8 @@ class ProductionFenceStore:
                 or existing["state"] != "active"
             ):
                 raise FenceError("production signing key is mismatched or inactive")
-            for registrar_id, public_key in sorted(self._holder_registrars.items()):
+            configured_registrars = sorted(self._holder_registrars.items())
+            for registrar_id, public_key in configured_registrars:
                 if (
                     not registrar_id
                     or not public_key
@@ -443,6 +444,32 @@ class ProductionFenceStore:
                     or existing_registrar["state"] != "active"
                 ):
                     raise FenceError("holder registrar is mismatched or inactive")
+            active_registrars = [
+                (str(row["key_id"]), str(row["public_key"]))
+                for row in connection.execute(
+                    "SELECT key_id,public_key FROM holder_registrars "
+                    "WHERE state='active' ORDER BY key_id"
+                ).fetchall()
+            ]
+            # Configuration is an exact desired set, never an additive hint.
+            # Omission therefore cannot silently preserve an old authority.
+            if active_registrars != configured_registrars:
+                raise FenceError("holder registrar configuration mismatch")
+            registrar_hash = hashlib.sha256(
+                _json({"active": active_registrars}).encode("utf-8")
+            ).hexdigest()
+            stored_hash = connection.execute(
+                "SELECT value FROM metadata WHERE name='holder_registrar_config_hash'"
+            ).fetchone()
+            if stored_hash is None:
+                connection.execute(
+                    "INSERT INTO metadata(name,value) VALUES"
+                    "('holder_registrar_generation','1'),"
+                    "('holder_registrar_config_hash',?)",
+                    (registrar_hash,),
+                )
+            elif stored_hash["value"] != registrar_hash:
+                raise FenceError("holder registrar configuration changed without transition")
             connection.commit()
         except sqlite3.Error as exc:
             if "connection" in locals():
@@ -869,6 +896,155 @@ class ProductionFenceStore:
             }
 
         return self._mutate(mutation)
+
+    def holder_registrar_position(self) -> dict[str, Any]:
+        """Return the explicit registrar-set high-water and content hash."""
+
+        try:
+            connection = self._read_connection()
+            rows = connection.execute(
+                "SELECT key_id,public_key,state FROM holder_registrars ORDER BY key_id"
+            ).fetchall()
+            generation = connection.execute(
+                "SELECT value FROM metadata WHERE name='holder_registrar_generation'"
+            ).fetchone()
+            config_hash = connection.execute(
+                "SELECT value FROM metadata WHERE name='holder_registrar_config_hash'"
+            ).fetchone()
+            if generation is None or config_hash is None:
+                raise FenceError("holder registrar lifecycle metadata is absent")
+            return {
+                "generation": int(generation["value"]),
+                "config_hash": str(config_hash["value"]),
+                "registrars": [dict(row) for row in rows],
+            }
+        finally:
+            if "connection" in locals():
+                connection.close()
+
+    def revoke_holder_registrar(
+        self, key_id: str, *, expected_generation: int
+    ) -> dict[str, Any]:
+        """Explicitly revoke a registrar and advance the durable high-water."""
+
+        if not key_id:
+            raise FenceError("holder registrar key id is invalid")
+
+        def mutation(connection: sqlite3.Connection) -> dict[str, Any]:
+            timestamp = self._trusted_time(connection)
+            generation_row = connection.execute(
+                "SELECT value FROM metadata WHERE name='holder_registrar_generation'"
+            ).fetchone()
+            if (
+                generation_row is None
+                or isinstance(expected_generation, bool)
+                or int(generation_row["value"]) != expected_generation
+            ):
+                raise FenceConflict("holder registrar generation is stale")
+            updated = connection.execute(
+                "UPDATE holder_registrars SET state='revoked',revoked_ms=? "
+                "WHERE key_id=? AND state='active'",
+                (timestamp, key_id),
+            )
+            if updated.rowcount != 1:
+                raise FenceNotFound("holder registrar is absent or already revoked")
+            active = [
+                (str(row["key_id"]), str(row["public_key"]))
+                for row in connection.execute(
+                    "SELECT key_id,public_key FROM holder_registrars "
+                    "WHERE state='active' ORDER BY key_id"
+                ).fetchall()
+            ]
+            config_hash = hashlib.sha256(
+                _json({"active": active}).encode("utf-8")
+            ).hexdigest()
+            generation = expected_generation + 1
+            connection.execute(
+                "UPDATE metadata SET value=? WHERE name='holder_registrar_generation'",
+                (str(generation),),
+            )
+            connection.execute(
+                "UPDATE metadata SET value=? WHERE name='holder_registrar_config_hash'",
+                (config_hash,),
+            )
+            return {
+                "revoked": True,
+                "key_id": key_id,
+                "generation": generation,
+                "config_hash": config_hash,
+            }
+
+        return self._mutate(mutation)
+
+    def transition_holder_registrars(
+        self,
+        desired: Mapping[str, str],
+        *,
+        expected_generation: int,
+    ) -> dict[str, Any]:
+        """CAS-transition the exact registrar set without implicit persistence."""
+
+        requested = dict(desired)
+        for key_id, public_key in requested.items():
+            if not key_id or not public_key or ed25519_fingerprint(public_key) == "":
+                raise FenceError("invalid holder registrar")
+
+        def mutation(connection: sqlite3.Connection) -> dict[str, Any]:
+            timestamp = self._trusted_time(connection)
+            generation_row = connection.execute(
+                "SELECT value FROM metadata WHERE name='holder_registrar_generation'"
+            ).fetchone()
+            if (
+                generation_row is None
+                or isinstance(expected_generation, bool)
+                or int(generation_row["value"]) != expected_generation
+            ):
+                raise FenceConflict("holder registrar generation is stale")
+            existing = {
+                str(row["key_id"]): row
+                for row in connection.execute(
+                    "SELECT * FROM holder_registrars"
+                ).fetchall()
+            }
+            for key_id, public_key in sorted(requested.items()):
+                row = existing.get(key_id)
+                if row is None:
+                    connection.execute(
+                        "INSERT INTO holder_registrars VALUES(?,?,?,?,NULL)",
+                        (key_id, public_key, "active", timestamp),
+                    )
+                elif row["state"] != "active" or row["public_key"] != public_key:
+                    raise FenceError("holder registrar transition conflicts")
+            for key_id, row in existing.items():
+                if row["state"] == "active" and key_id not in requested:
+                    connection.execute(
+                        "UPDATE holder_registrars SET state='revoked',revoked_ms=? "
+                        "WHERE key_id=?",
+                        (timestamp, key_id),
+                    )
+            active = sorted(requested.items())
+            config_hash = hashlib.sha256(
+                _json({"active": active}).encode("utf-8")
+            ).hexdigest()
+            generation = expected_generation + 1
+            connection.execute(
+                "UPDATE metadata SET value=? WHERE name='holder_registrar_generation'",
+                (str(generation),),
+            )
+            connection.execute(
+                "UPDATE metadata SET value=? WHERE name='holder_registrar_config_hash'",
+                (config_hash,),
+            )
+            return {
+                "transitioned": True,
+                "generation": generation,
+                "config_hash": config_hash,
+                "active_registrar_ids": sorted(requested),
+            }
+
+        result = self._mutate(mutation)
+        self._holder_registrars = requested
+        return result
 
     def acquire(
         self,

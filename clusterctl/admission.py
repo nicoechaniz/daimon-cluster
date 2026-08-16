@@ -1,8 +1,9 @@
 """Shared, signed admission authority for embodiment launch fencing.
 
-The authority owns the only mutable database and signing key.  Hosts connect
-through an owner-only Unix socket and prove possession of an explicitly
-enrolled holder key.  The exclusion key is exactly ``(being_ref,
+The authority owns the only mutable database and signing key. Hosts connect
+through an explicitly local Unix fixture or an application-authenticated TCP
+endpoint and prove possession of an explicitly enrolled holder key. The
+exclusion key is exactly ``(being_ref,
 embodiment_id)``: two legitimate embodiments of one being do not contend,
 while two copies of one embodiment do.
 """
@@ -10,6 +11,7 @@ while two copies of one embodiment do.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -19,6 +21,7 @@ import stat
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +59,59 @@ def _canonical(value: Mapping[str, Any]) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _session_public(private_key: Any) -> str:
+    from cryptography.hazmat.primitives import serialization
+
+    return private_key.public_key().public_bytes(
+        serialization.Encoding.OpenSSH,
+        serialization.PublicFormat.OpenSSH,
+    ).decode("ascii")
+
+
+def _session_signature(private_key: Any, request: Mapping[str, Any]) -> str:
+    payload = {key: value for key, value in request.items() if key != "session_signature"}
+    return Ed25519Signer.PREFIX + base64.b64encode(
+        private_key.sign(_canonical(payload))
+    ).decode("ascii")
+
+
+@dataclass(frozen=True)
+class AdmissionEndpoint:
+    """Explicit authority transport.
+
+    Unix sockets are local fixtures only.  TCP is the network-capable transport;
+    application-layer Ed25519 request/response authentication makes it safe to
+    test without relying on host identity or transport locality.
+    """
+
+    transport: str
+    address: str
+    port: int | None = None
+
+    @classmethod
+    def local_fixture(cls, path: str | Path) -> AdmissionEndpoint:
+        return cls("unix-local-fixture", os.path.abspath(path))
+
+    @classmethod
+    def network(cls, host: str, port: int) -> AdmissionEndpoint:
+        if not host or isinstance(port, bool) or not 1 <= port <= 65535:
+            raise AdmissionError("admission network endpoint is invalid")
+        return cls("tcp-authenticated", host, port)
+
+    def connect(self, timeout_s: float) -> socket.socket:
+        if self.transport == "unix-local-fixture" and self.port is None:
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            target: Any = self.address
+        elif self.transport == "tcp-authenticated" and self.port is not None:
+            connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            target = (self.address, self.port)
+        else:
+            raise AdmissionError("admission endpoint transport is unsupported")
+        connection.settimeout(timeout_s)
+        connection.connect(target)
+        return connection
 
 
 def admission_resource_ref(being_ref: str, embodiment_id: str) -> str:
@@ -185,6 +241,57 @@ class AdmissionAuthority:
         value["signature"] = self._signer.sign(_canonical(value))
         return value
 
+    def sign_response(self, response: Mapping[str, Any]) -> dict[str, Any]:
+        value = {
+            **dict(response),
+            "authority_key_id": self._signer.key_id,
+        }
+        value["signature"] = self._signer.sign(_canonical(value))
+        return value
+
+    def registrar_position(self) -> dict[str, Any]:
+        return self._store.holder_registrar_position()
+
+    def transition_registrars(
+        self, desired: Mapping[str, str], *, expected_generation: int
+    ) -> dict[str, Any]:
+        return self._store.transition_holder_registrars(
+            desired, expected_generation=expected_generation
+        )
+
+    def revoke_registrar(
+        self, key_id: str, *, expected_generation: int
+    ) -> dict[str, Any]:
+        return self._store.revoke_holder_registrar(
+            key_id, expected_generation=expected_generation
+        )
+
+    @staticmethod
+    def _verify_session(request: Mapping[str, Any]) -> str:
+        session_id = request.get("session_id")
+        public_key = request.get("session_public_key")
+        signature = request.get("session_signature")
+        if (
+            not isinstance(session_id, str)
+            or not session_id.startswith("SHA256:")
+            or not isinstance(public_key, str)
+            or ed25519_fingerprint(public_key) != session_id
+            or not isinstance(signature, str)
+            or not _verify_ed25519(
+                _canonical(
+                    {
+                        key: value
+                        for key, value in request.items()
+                        if key != "session_signature"
+                    }
+                ),
+                signature,
+                public_key,
+            )
+        ):
+            raise AdmissionError("admission session proof is invalid")
+        return session_id
+
     def dispatch(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if request.get("schema") != REQUEST_SCHEMA:
             raise AdmissionError("admission request schema is unsupported")
@@ -194,6 +301,7 @@ class AdmissionAuthority:
             if not isinstance(enrollment, dict):
                 raise AdmissionError("admission enrollment is missing")
             return self._store.admit_holder(enrollment)
+        session_id = self._verify_session(request)
         if action == "position":
             resource_ref = admission_resource_ref(
                 str(request.get("being_ref", "")),
@@ -202,9 +310,6 @@ class AdmissionAuthority:
             return self._store.position(resource_ref)
         if action == "current":
             binding = self._binding(request)
-            session_id = request.get("session_id")
-            if not isinstance(session_id, str) or not session_id:
-                raise AdmissionError("admission session id is invalid")
             resource_ref = admission_resource_ref(
                 str(binding["being_ref"]), str(binding["embodiment_id"])
             )
@@ -220,9 +325,6 @@ class AdmissionAuthority:
         if action not in {"acquire", "renew", "release"}:
             raise AdmissionError("admission action is unsupported")
         binding = self._binding(request)
-        session_id = request.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
-            raise AdmissionError("admission session id is invalid")
         resource_ref = admission_resource_ref(
             str(binding["being_ref"]), str(binding["embodiment_id"])
         )
@@ -289,21 +391,21 @@ class _AdmissionRequestHandler(socketserver.StreamRequestHandler):
             candidate = request.get("request_id")
             request_id = candidate if isinstance(candidate, str) else None
             result = self.server.authority.dispatch(request)  # type: ignore[attr-defined]
-            response = {
+            response = self.server.authority.sign_response({  # type: ignore[attr-defined]
                 "schema": RESPONSE_SCHEMA,
                 "request_id": request_id,
                 "ok": True,
                 "result": result,
-            }
+            })
         except (AdmissionError, FenceError, KeyError, TypeError, ValueError) as exception:
             name = type(exception).__name__
-            response = {
+            response = self.server.authority.sign_response({  # type: ignore[attr-defined]
                 "schema": RESPONSE_SCHEMA,
                 "request_id": request_id,
                 "ok": False,
                 "error": name,
                 "message": str(exception),
-            }
+            })
         self.wfile.write(
             json.dumps(response, sort_keys=True, separators=(",", ":")).encode("utf-8")
             + b"\n"
@@ -311,7 +413,7 @@ class _AdmissionRequestHandler(socketserver.StreamRequestHandler):
 
 
 class AdmissionServer(socketserver.ThreadingUnixStreamServer):
-    """Owner-only Unix service around one shared admission authority."""
+    """Owner-only, same-host fixture service around an admission authority."""
 
     daemon_threads = True
     allow_reuse_address = False
@@ -355,12 +457,25 @@ class AdmissionServer(socketserver.ThreadingUnixStreamServer):
             pass
 
 
+class AdmissionTCPServer(socketserver.ThreadingTCPServer):
+    """Network-capable authority endpoint with signed application messages."""
+
+    daemon_threads = True
+    allow_reuse_address = False
+
+    def __init__(
+        self, address: tuple[str, int], authority: AdmissionAuthority
+    ) -> None:
+        self.authority = authority
+        super().__init__(address, _AdmissionRequestHandler)
+
+
 class AdmissionClient:
     """Holder-only client; contains neither authority signing key nor database."""
 
     def __init__(
         self,
-        socket_path: str | Path,
+        endpoint: AdmissionEndpoint | str | Path,
         *,
         holder_signer: Ed25519Signer,
         authority_key_id: str,
@@ -374,7 +489,6 @@ class AdmissionClient:
         manifest_hash: str,
         timeout_s: float = 2.0,
         lease_ttl_s: int = DEFAULT_LEASE_TTL_S,
-        session_id: str | None = None,
     ):
         if timeout_s <= 0 or timeout_s > 30:
             raise AdmissionError("admission client timeout is invalid")
@@ -384,7 +498,20 @@ class AdmissionClient:
             or not 3 <= lease_ttl_s <= 300
         ):
             raise AdmissionError("admission client lease TTL is invalid")
-        self.socket_path = Path(os.path.abspath(socket_path))
+        self.endpoint = (
+            endpoint
+            if isinstance(endpoint, AdmissionEndpoint)
+            else AdmissionEndpoint.local_fixture(endpoint)
+        )
+        # A new, in-memory-only session key is created for every launch.  The
+        # identifier is its fingerprint and is never accepted without proof of
+        # possession, so copying holder custody plus a receipt/session id cannot
+        # renew a running body's lease.
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        self._session_private_key = Ed25519PrivateKey.generate()
+        self.session_public_key = _session_public(self._session_private_key)
+        self.session_id = ed25519_fingerprint(self.session_public_key)
         self.holder_signer = holder_signer
         self.authority_key_id = authority_key_id
         self.authority_public_key = authority_public_key
@@ -397,9 +524,6 @@ class AdmissionClient:
         self.manifest_hash = manifest_hash
         self.timeout_s = timeout_s
         self.lease_ttl_s = lease_ttl_s
-        self.session_id = str(uuid.uuid4()) if session_id is None else session_id
-        if not self.session_id or any(character.isspace() for character in self.session_id):
-            raise AdmissionError("admission client session id is invalid")
 
     def _coordinates(self) -> dict[str, Any]:
         return {
@@ -413,6 +537,7 @@ class AdmissionClient:
             "credential_id": self.credential_id,
             "manifest_hash": self.manifest_hash,
             "session_id": self.session_id,
+            "session_public_key": self.session_public_key,
         }
 
     def _call(self, action: str, **values: Any) -> Any:
@@ -423,15 +548,19 @@ class AdmissionClient:
             "action": action,
             **values,
         }
+        if action != "enroll":
+            request["session_id"] = self.session_id
+            request["session_public_key"] = self.session_public_key
+            request["session_signature"] = _session_signature(
+                self._session_private_key, request
+            )
         encoded = json.dumps(request, sort_keys=True, separators=(",", ":")).encode(
             "utf-8"
         ) + b"\n"
         if len(encoded) > MAX_MESSAGE_BYTES:
             raise AdmissionError("admission request is too large")
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.settimeout(self.timeout_s)
-                connection.connect(str(self.socket_path))
+            with self.endpoint.connect(self.timeout_s) as connection:
                 connection.sendall(encoded)
                 chunks = bytearray()
                 while not chunks.endswith(b"\n"):
@@ -451,8 +580,14 @@ class AdmissionClient:
             not isinstance(response, dict)
             or response.get("schema") != RESPONSE_SCHEMA
             or response.get("request_id") != request_id
+            or response.get("authority_key_id") != self.authority_key_id
         ):
             raise AdmissionUnavailable("admission response binding mismatch")
+        signature = response.get("signature")
+        if not isinstance(signature, str) or not _verify_ed25519(
+            _canonical(response), signature, self.authority_public_key
+        ):
+            raise AdmissionUnavailable("admission response signature is invalid")
         if response.get("ok") is not True:
             if response.get("error") in {"AdmissionConflict", "FenceConflict"}:
                 raise AdmissionConflict(str(response.get("message")))
@@ -477,6 +612,11 @@ class AdmissionClient:
         ):
             raise AdmissionUnavailable("admission position response is invalid")
         return result
+
+    def position(self) -> dict[str, Any]:
+        """Return the authority-signed global position for this coordinate."""
+
+        return dict(self._position())
 
     def _mutation(self, action: str, *, ttl_s: int | None = None) -> dict[str, Any]:
         position = self._position()
@@ -531,7 +671,7 @@ class AdmissionClient:
             **{
                 key: value
                 for key, value in self._coordinates().items()
-                if key != "holder_pubkey"
+                if key not in {"holder_pubkey", "session_public_key"}
             },
             "resource_ref": admission_resource_ref(self.being_ref, self.embodiment_id),
             "authority_key_id": self.authority_key_id,
@@ -557,7 +697,9 @@ class AdmissionClient:
         return dict(receipt)
 
 
-def serve_in_thread(server: AdmissionServer) -> threading.Thread:
+def serve_in_thread(
+    server: AdmissionServer | AdmissionTCPServer,
+) -> threading.Thread:
     """Start a disposable authority server; primarily useful to local harnesses."""
 
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -568,7 +710,10 @@ def serve_in_thread(server: AdmissionServer) -> threading.Thread:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, required=True)
-    parser.add_argument("--socket", type=Path, required=True)
+    endpoint = parser.add_mutually_exclusive_group(required=True)
+    endpoint.add_argument("--socket", type=Path)
+    endpoint.add_argument("--listen-host")
+    parser.add_argument("--listen-port", type=int)
     parser.add_argument("--authority-key", type=Path, required=True)
     parser.add_argument("--authority-key-id", required=True)
     parser.add_argument("--registrar-key-id", required=True)
@@ -582,7 +727,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         signer=Ed25519Signer(args.authority_key, args.authority_key_id),
         holder_registrars={args.registrar_key_id: registrar_public_key},
     )
-    server = AdmissionServer(args.socket, authority)
+    if args.socket is not None:
+        if args.listen_port is not None:
+            parser.error("--listen-port requires --listen-host")
+        server: AdmissionServer | AdmissionTCPServer = AdmissionServer(
+            args.socket, authority
+        )
+    else:
+        if args.listen_port is None:
+            parser.error("--listen-host requires --listen-port")
+        server = AdmissionTCPServer((args.listen_host, args.listen_port), authority)
     try:
         server.serve_forever()
     finally:
@@ -600,8 +754,10 @@ __all__ = [
     "AdmissionAuthority",
     "AdmissionClient",
     "AdmissionConflict",
+    "AdmissionEndpoint",
     "AdmissionError",
     "AdmissionServer",
+    "AdmissionTCPServer",
     "AdmissionUnavailable",
     "admission_resource_ref",
     "main",

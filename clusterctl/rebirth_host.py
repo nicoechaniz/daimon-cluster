@@ -20,6 +20,7 @@ from . import audit
 from .admission import (
     DEFAULT_LEASE_TTL_S,
     AdmissionClient,
+    AdmissionEndpoint,
     AdmissionError,
 )
 from .embodiments import Registry, RegistryError
@@ -207,15 +208,11 @@ def _terminate(process: subprocess.Popen[bytes]) -> None:
 
 
 def _terminate_without_consuming_output(process: subprocess.Popen[bytes]) -> None:
-    """Stop a supervised child while leaving its pipes to the owning caller."""
+    """Revoke execution immediately while leaving pipes to the owning caller."""
 
     if process.poll() is None:
-        process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
         process.kill()
-        process.wait(timeout=5)
+    process.wait(timeout=2)
 
 
 def _owner_file(path: Path) -> Path:
@@ -245,7 +242,7 @@ def _configured_admission_client(
         ) from exception
     required = {
         "schema",
-        "socket_path",
+        "endpoint",
         "holder_key_path",
         "holder_key_id",
         "authority_key_id",
@@ -259,7 +256,6 @@ def _configured_admission_client(
     if not all(
         isinstance(config.get(field), str) and config[field]
         for field in (
-            "socket_path",
             "holder_key_path",
             "holder_key_id",
             "authority_key_id",
@@ -267,6 +263,24 @@ def _configured_admission_client(
         )
     ):
         raise RebirthHostError("rebirth_host_admission_config_rejected")
+    endpoint_config = config.get("endpoint")
+    if not isinstance(endpoint_config, dict):
+        raise RebirthHostError("rebirth_host_admission_config_rejected")
+    try:
+        if set(endpoint_config) == {"transport", "path"} and endpoint_config.get(
+            "transport"
+        ) == "unix-local-fixture":
+            endpoint = AdmissionEndpoint.local_fixture(endpoint_config["path"])
+        elif set(endpoint_config) == {"transport", "host", "port"} and endpoint_config.get(
+            "transport"
+        ) == "tcp-authenticated":
+            endpoint = AdmissionEndpoint.network(
+                endpoint_config["host"], endpoint_config["port"]
+            )
+        else:
+            raise AdmissionError("unsupported admission endpoint")
+    except (AdmissionError, KeyError, TypeError):
+        raise RebirthHostError("rebirth_host_admission_config_rejected") from None
     lease_ttl_s = config["lease_ttl_s"]
     if (
         isinstance(lease_ttl_s, bool)
@@ -279,7 +293,7 @@ def _configured_admission_client(
 
         signer = Ed25519Signer(config["holder_key_path"], config["holder_key_id"])
         return AdmissionClient(
-            config["socket_path"],
+            endpoint,
             holder_signer=signer,
             authority_key_id=config["authority_key_id"],
             authority_public_key=config["authority_public_key"],
@@ -321,19 +335,29 @@ class _AdmissionSupervisor:
 
     def _run(self) -> None:
         try:
-            interval = max(0.25, self.ttl_s / 3)
             while self.process.poll() is None:
+                expiry_ms = self.receipt.get("lease_expires_at_ms")
+                if not isinstance(expiry_ms, int):
+                    _terminate_without_consuming_output(self.process)
+                    return
+                # Renewal begins after one third of the lease and leaves two
+                # thirds for a fail-closed SIGKILL.  There is no TERM grace
+                # period that could extend execution past signed authority.
+                renew_at_ms = expiry_ms - (self.ttl_s * 2000 // 3)
+                interval = max(
+                    0.01,
+                    min(0.25, (renew_at_ms - time.time_ns() // 1_000_000) / 1000),
+                )
                 try:
                     self.process.wait(timeout=interval)
                     break
                 except subprocess.TimeoutExpired:
                     pass
+                if time.time_ns() // 1_000_000 < renew_at_ms:
+                    continue
                 try:
                     self.receipt = self.client.renew(ttl_s=self.ttl_s)
                 except AdmissionError:
-                    # Renewal is attempted with two thirds of the signed lease
-                    # still remaining.  Loss of authority therefore removes the
-                    # writer before its last verified token expires.
                     _terminate_without_consuming_output(self.process)
                     return
             try:
@@ -417,7 +441,6 @@ def launch_rebirth_host(
             )
         ):
             raise AdmissionError("admission client identity mismatch")
-        admission_receipt = client.acquire(ttl_s=admission_lease_ttl_s)
     except RebirthHostError:
         os.close(password_descriptor)
         raise
@@ -468,6 +491,20 @@ def launch_rebirth_host(
                 raise RebirthHostError("rebirth_host_journal_conflict")
             if record["state"] == "planned":
                 record = journal.advance(record["operation_id"], "runtime-dispatching")
+            # Acquire only after the local operation lock and durable intent,
+            # but before registry or process effects.
+            try:
+                admission_receipt = client.acquire(ttl_s=admission_lease_ttl_s)
+            except AdmissionError as exception:
+                raise RebirthHostError("rebirth_host_admission_refused") from exception
+            acquired_current = client.current()
+            if (
+                acquired_current is None
+                or acquired_current.get("session_id") != client.session_id
+                or acquired_current.get("proof_ref")
+                != admission_receipt.get("proof_ref")
+            ):
+                raise RebirthHostError("rebirth_host_admission_lost_before_effect")
             registry = Registry(state)
             try:
                 registered = registry.status(embodiment_id)
@@ -491,6 +528,20 @@ def launch_rebirth_host(
             ):
                 raise RebirthHostError("rebirth_host_registry_rejected")
 
+            # The shared lease is acquired inside the local operation lock,
+            # after all recovery/journal checks.  Its signed current position is
+            # re-read at the last boundary before the runtime effect.
+            current_admission = client.current()
+            minimum_remaining_ms = admission_lease_ttl_s * 1000 // 2
+            if (
+                current_admission is None
+                or current_admission.get("session_id") != client.session_id
+                or current_admission.get("proof_ref")
+                != admission_receipt.get("proof_ref")
+                or current_admission.get("lease_expires_at_ms", 0)
+                <= time.time_ns() // 1_000_000 + minimum_remaining_ms
+            ):
+                raise RebirthHostError("rebirth_host_admission_lost_before_spawn")
             ready_read, ready_write = os.pipe()
             command = [
                 sys.executable,
@@ -504,6 +555,8 @@ def launch_rebirth_host(
                 str(password_descriptor),
                 "--ready-fd",
                 str(ready_write),
+                "--guardian-pid",
+                str(os.getpid()),
             ]
             if production_fence_verifier:
                 command.append("--production-fence-verifier")
@@ -529,6 +582,15 @@ def launch_rebirth_host(
             supervisor.start()
             try:
                 _wait_ready(ready_read, process, timeout_s)
+                ready_admission = client.current()
+                if (
+                    ready_admission is None
+                    or ready_admission.get("session_id") != client.session_id
+                    or ready_admission.get("lease_expires_at_ms", 0)
+                    <= time.time_ns() // 1_000_000
+                    + admission_lease_ttl_s * 1000 // 3
+                ):
+                    raise RebirthHostError("rebirth_host_admission_lost_at_ready")
                 observation = _verify_ready(state, identity)
                 if record["state"] == "runtime-dispatching":
                     record = journal.advance(
@@ -583,6 +645,10 @@ def launch_rebirth_host(
                 _terminate(process)
                 raise
     except BaseException:
+        try:
+            os.close(password_descriptor)
+        except OSError:
+            pass
         try:
             client.release()
         except AdmissionError:

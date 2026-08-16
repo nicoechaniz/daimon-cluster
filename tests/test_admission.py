@@ -16,8 +16,10 @@ from clusterctl.admission import (
     AdmissionAuthority,
     AdmissionClient,
     AdmissionConflict,
+    AdmissionEndpoint,
     AdmissionError,
     AdmissionServer,
+    AdmissionTCPServer,
     AdmissionUnavailable,
     admission_resource_ref,
     serve_in_thread,
@@ -60,7 +62,7 @@ def _coordinates(label: str, *, being_ref: str = "dm:being:shared") -> dict[str,
 
 
 def _client(
-    socket_path: Path,
+    socket_path: Path | AdmissionEndpoint,
     holder: Ed25519Signer,
     authority: Ed25519Signer,
     coordinates: Mapping[str, str],
@@ -269,6 +271,9 @@ def test_receipt_tamper_hostile_holder_replay_and_outage_fail_closed(
         copied_session.renew()
     with pytest.raises(AdmissionConflict, match="session"):
         copied_session.release()
+    copied_session.session_id = client.session_id
+    with pytest.raises(AdmissionError, match="session proof"):
+        copied_session.renew()
     tampered = dict(receipt)
     tampered["fencing_token"] += 1
     with pytest.raises(AdmissionUnavailable, match="signature"):
@@ -350,3 +355,36 @@ def test_client_has_no_authority_signer_or_database(
         for value in vars(client).values()
     )
     assert os.stat(authority_fixture["socket"]).st_mode & 0o777 == 0o600
+
+
+def test_authenticated_tcp_endpoint_is_network_capable_and_pinned(
+    tmp_path: Path,
+) -> None:
+    now_ms = time.time_ns() // 1_000_000
+    authority_signer = _key(tmp_path / "authority.pem", "tcp-authority")
+    registrar = _key(tmp_path / "registrar.pem", "tcp-registrar")
+    holder = _key(tmp_path / "holder.pem", "tcp-holder")
+    authority = AdmissionAuthority(
+        tmp_path / "authority-state",
+        signer=authority_signer,
+        holder_registrars={registrar.key_id: registrar.public_key},
+        clock=MutableClock(now_ms),
+    )
+    server = AdmissionTCPServer(("127.0.0.1", 0), authority)
+    thread = serve_in_thread(server)
+    endpoint = AdmissionEndpoint.network("127.0.0.1", server.server_address[1])
+    coordinates = _coordinates("tcp")
+    client = _client(endpoint, holder, authority_signer, coordinates)
+    try:
+        _enroll(client, registrar, holder, coordinates, now_ms)
+        assert client.acquire(ttl_s=10)["resource_ref"] == admission_resource_ref(
+            coordinates["being_ref"], coordinates["embodiment_id"]
+        )
+        wrong_authority = _key(tmp_path / "wrong.pem", "wrong-authority")
+        impostor_view = _client(endpoint, holder, wrong_authority, coordinates)
+        with pytest.raises(AdmissionUnavailable, match="binding|signature"):
+            impostor_view.current()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

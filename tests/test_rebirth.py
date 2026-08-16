@@ -5,6 +5,7 @@ import hashlib
 import json
 import multiprocessing
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -140,7 +141,10 @@ def _ensure_production_fences(state: Path, embodiment_id: str | None = None) -> 
     )
     config = {
         "schema": rebirth_host.ADMISSION_CLIENT_SCHEMA,
-        "socket_path": str(socket_path),
+        "endpoint": {
+            "transport": "unix-local-fixture",
+            "path": str(socket_path),
+        },
         "holder_key_path": str(fixture / "embodiment-holder.pem"),
         "holder_key_id": holder.key_id,
         "authority_key_id": authority_signer.key_id,
@@ -187,6 +191,20 @@ def _rebirth_race_worker(
     stop.wait(timeout=10)
     process.terminate()
     process.communicate(timeout=10)
+
+
+def _launcher_kill_worker(
+    state: str, embodiment_id: str, password: bytes, results
+) -> None:
+    process, ready = rebirth_host.launch_rebirth_host(
+        state,
+        embodiment_id,
+        _descriptor(password),
+        admission_lease_ttl_s=3,
+    )
+    results.put((process.pid, ready["admission"]["lease_expires_at_ms"]))
+    while True:
+        time.sleep(1)
 
 
 def _ceremony(tmp_path: Path, *, now_ms: int = 1_800_000_000_000) -> dict:
@@ -475,8 +493,9 @@ def test_supervisor_starts_exact_authorized_incarnation_and_restarts(short_tmp_p
         state, rebirth_host._installed_identity(state, installed["embodiment_id"])
     )
     deadline = time.monotonic() + 5
-    while client.current() is not None and time.monotonic() < deadline:
+    while client.position()["current"] is True and time.monotonic() < deadline:
         time.sleep(0.01)
+    assert client.position()["current"] is False
     restarted, replay = rebirth_host.launch_rebirth_host(
         state,
         installed["embodiment_id"],
@@ -518,6 +537,34 @@ def test_supervisor_fails_closed_without_shared_admission(short_tmp_path):
     with pytest.raises(OSError):
         os.read(descriptor, 1)
     assert Registry(state).status(installed["embodiment_id"])["status"] == "stopped"
+
+
+def test_repeated_clean_restart_has_no_socket_or_admission_race(short_tmp_path):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(state, installed["embodiment_id"])
+    identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
+    tokens = []
+    for _iteration in range(8):
+        process, ready = rebirth_host.launch_rebirth_host(
+            state,
+            installed["embodiment_id"],
+            _descriptor(fixture["password"]),
+            admission_lease_ttl_s=3,
+        )
+        tokens.append(ready["admission"]["fencing_token"])
+        process.terminate()
+        _stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr
+        observer = rebirth_host._configured_admission_client(state, identity)
+        deadline = time.monotonic() + 3
+        while observer.position()["current"] is True and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert observer.position()["current"] is False
+    assert tokens == sorted(tokens)
+    assert len(set(tokens)) == len(tokens)
 
 
 def test_shared_admission_allows_only_one_ready_across_state_dirs(short_tmp_path):
@@ -584,9 +631,78 @@ def test_supervisor_stops_runtime_before_lease_expiry_on_authority_loss(
     server.server_close()
     thread.join(timeout=5)
     _stdout, stderr = process.communicate(timeout=5)
-    assert process.returncode == 0, stderr
+    assert process.returncode == -signal.SIGKILL, stderr
     assert time.time_ns() // 1_000_000 < ready["admission"]["lease_expires_at_ms"]
     assert stopped_at < ready["admission"]["lease_expires_at_ms"]
+
+
+def test_launcher_sigkill_cannot_leave_executing_orphan_beyond_lease(
+    short_tmp_path,
+):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(state, installed["embodiment_id"])
+    context = multiprocessing.get_context("spawn")
+    results = context.Queue()
+    launcher = context.Process(
+        target=_launcher_kill_worker,
+        args=(
+            str(state),
+            installed["embodiment_id"],
+            fixture["password"],
+            results,
+        ),
+    )
+    launcher.start()
+    child_pid, lease_expires_at_ms = results.get(timeout=20)
+    os.kill(launcher.pid, signal.SIGKILL)
+    launcher.join(timeout=5)
+    assert launcher.exitcode == -signal.SIGKILL
+    deadline = time.monotonic() + 2
+    executing = True
+    while time.monotonic() < deadline:
+        stat_path = Path(f"/proc/{child_pid}/stat")
+        if not stat_path.exists():
+            executing = False
+            break
+        try:
+            executing = stat_path.read_text().split()[2] != "Z"
+        except FileNotFoundError:
+            executing = False
+        if not executing:
+            break
+        time.sleep(0.02)
+    assert executing is False
+    assert time.time_ns() // 1_000_000 < lease_expires_at_ms
+
+
+def test_admission_is_rechecked_before_first_runtime_effect(
+    short_tmp_path, monkeypatch
+):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(state, installed["embodiment_id"])
+    identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
+    client = rebirth_host._configured_admission_client(state, identity)
+    monkeypatch.setattr(client, "current", lambda: None)
+
+    def forbidden_spawn(*_args, **_kwargs):
+        raise AssertionError("runtime spawn crossed a lost admission boundary")
+
+    monkeypatch.setattr(rebirth_host.subprocess, "Popen", forbidden_spawn)
+    with pytest.raises(rebirth_host.RebirthHostError, match="lost_before_effect"):
+        rebirth_host.launch_rebirth_host(
+            state,
+            installed["embodiment_id"],
+            _descriptor(fixture["password"]),
+            admission_client=client,
+            admission_lease_ttl_s=3,
+        )
+    assert Registry(state).status(installed["embodiment_id"])["status"] == "stopped"
 
 
 def test_failed_password_resumes_same_admitted_incarnation(short_tmp_path):

@@ -464,6 +464,51 @@ def test_recovery_snapshot_export_rejects_replacement_race(
     assert not list(short_tmp_path.glob(".race-rejected-transfer.recovery-*"))
 
 
+def test_recovery_snapshot_export_does_not_replace_concurrent_destination(
+    short_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _recovery_fixture(short_tmp_path)
+    transfer = short_tmp_path / "concurrent-destination"
+    real_publish = recovery_rebirth._publish_directory_noreplace
+    contender_inode: int | None = None
+
+    def claim_before_publish(
+        parent_descriptor: int,
+        temporary_name: str,
+        target_name: str,
+        *,
+        exists_code: str,
+    ) -> None:
+        nonlocal contender_inode
+        os.mkdir(target_name, mode=0o700, dir_fd=parent_descriptor)
+        contender_inode = os.stat(
+            target_name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        ).st_ino
+        real_publish(
+            parent_descriptor,
+            temporary_name,
+            target_name,
+            exists_code=exists_code,
+        )
+
+    monkeypatch.setattr(
+        recovery_rebirth,
+        "_publish_directory_noreplace",
+        claim_before_publish,
+    )
+    with pytest.raises(
+        recovery_rebirth.RecoveryRebirthError,
+        match="recovery_snapshot_destination_exists",
+    ):
+        recovery_rebirth.export_recovery_snapshot(fixture["snapshot"], transfer)
+    assert contender_inode is not None
+    assert transfer.is_dir()
+    assert transfer.stat().st_ino == contender_inode
+    assert list(transfer.iterdir()) == []
+
+
 def test_read_only_snapshot_parent_restores_via_target_owned_scratch(
     short_tmp_path: Path,
 ) -> None:

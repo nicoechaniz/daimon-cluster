@@ -155,6 +155,12 @@ def test_preflight_is_deterministic_closed_and_unauthorized() -> None:
             "step_invalid",
         ),
         (
+            lambda value: value["steps"][2].update(
+                argv=["/usr/bin/env", "--split-string=bash -c 'true'"]
+            ),
+            "step_invalid",
+        ),
+        (
             lambda value: value["gates"].update(live_custody_approved=True),
             "gate_widening",
         ),

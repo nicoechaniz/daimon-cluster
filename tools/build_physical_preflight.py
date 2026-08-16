@@ -20,7 +20,10 @@ _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 _HOST_REF: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _COMPONENTS: Final = frozenset({"daimon-matrix", "daimon-cluster", "tribe-bridge"})
 _HOST_ROLES: Final = frozenset({"source", "target", "backup"})
-_SHELLS: Final = frozenset({"ash", "bash", "csh", "dash", "fish", "ksh", "sh", "zsh"})
+_SHELLS: Final = frozenset(
+    {"ash", "bash", "csh", "dash", "fish", "ksh", "sh", "zsh"}
+)
+_SHELL_DISPATCHERS: Final = _SHELLS | {"env"}
 _STAGES: Final = (
     "preflight",
     "backup-export",
@@ -72,9 +75,9 @@ def _strings(value: Any, code: str) -> list[str]:
     return list(value)
 
 
-def _contains_shell(values: list[str]) -> bool:
+def _contains_shell_dispatcher(values: list[str]) -> bool:
     return any(
-        Path(token).name in _SHELLS
+        Path(token).name in _SHELL_DISPATCHERS
         for value in values
         for token in value.split()
         if token
@@ -275,8 +278,8 @@ def validate_plan(value: Any, rc_manifest: Any) -> dict[str, Any]:
             or not isinstance(row["host_role"], str)
             or row["host_role"] != required_role
             or any("\x00" in item or "\n" in item for item in [*argv, *rollback])
-            or _contains_shell(argv)
-            or _contains_shell(rollback)
+            or _contains_shell_dispatcher(argv)
+            or _contains_shell_dispatcher(rollback)
         ):
             raise PhysicalPreflightError("physical_step_invalid")
         _strings(row["effects"], "physical_step_effects_missing")

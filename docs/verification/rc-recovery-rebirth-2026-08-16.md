@@ -46,7 +46,9 @@ crash-at-publication retries are covered.
 The target gets a new root-authorized embodiment credential, incarnation,
 signing/capability material and writable stores. No predecessor custody or
 writable database is copied. The distinct
-`dm.cluster-matrix-recovery-snapshot/v1` derivative contains exactly:
+`dm.cluster-matrix-recovery-snapshot/v1` derivative contains exactly the bundle
+named by the snapshot and the canonical ledger named by that signed bundle. In
+the disposable qualification fixture those names are:
 
 ```text
 ledger.sqlite

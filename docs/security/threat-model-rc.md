@@ -69,7 +69,8 @@ by exact bundle semantics rather than broad suffixes. Source/destination parent
 chains reject symlinks; directory publication is descriptor-relative and
 atomic no-replace. Restore derives the required/excluded set again from the
 verified V7 bundle instead of trusting the snapshot manifest's inventory.
-Recovery accepts exactly `runtime.json` plus `ledger.sqlite` under the distinct
+Recovery accepts exactly the public bundle named by the snapshot plus the
+canonical ledger filename bound inside that bundle, under the distinct
 `dm.cluster-matrix-recovery-snapshot/v1` contract; the generic full-snapshot
 restore rejects that derivative. Recovery never transfers custody, writable
 derived databases or journals. A second descriptor-stable stage rechecks the

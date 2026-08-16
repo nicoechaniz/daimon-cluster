@@ -223,3 +223,192 @@ def test_missing_handoff_authority_has_zero_adapter_calls_and_unchanged_spec(
     ) == 6
     assert adapter.mutation_log == []
     assert spec_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("operation", ["wake", "transfer"])
+@pytest.mark.parametrize("fence_record_persisted", [False, True])
+def test_retry_after_exact_fence_commit_recovers_without_second_cas(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    fence_record_persisted: bool,
+) -> None:
+    server, thread, client, holder, identity, cfg, adapter, _ = _production_handoff(
+        tmp_path
+    )
+    key = "77777777-7777-4777-8777-777777777777"
+    class _FenceCrash(BaseException):
+        pass
+
+    try:
+        park.run_park(
+            NAME, cfg, adapter, actor="test", signer=holder, fence_store=client
+        )
+        adapter.mutation_log.clear()
+        renew_calls = 0
+        original_renew = server.authority._store.renew
+
+        def counted_renew(*args, **kwargs):
+            nonlocal renew_calls
+            renew_calls += 1
+            return original_renew(*args, **kwargs)
+
+        monkeypatch.setattr(server.authority._store, "renew", counted_renew)
+        target = "daimon-y"
+        real_runner = transfer.run_wake if operation == "wake" else transfer.run_transfer
+
+        def crash_after_fence(step: str) -> None:
+            if step == "fence":
+                raise _FenceCrash
+
+        def crashing_runner(*args, **kwargs):
+            kwargs["on_step"] = crash_after_fence
+            return real_runner(*args, **kwargs)
+
+        original_commit = FenceMutationClient.commit
+        commit_crashed = False
+
+        def commit_then_crash(self, prepared):
+            nonlocal commit_crashed
+            receipt = original_commit(self, prepared)
+            if not commit_crashed:
+                commit_crashed = True
+                raise _FenceCrash
+            return receipt
+
+        if fence_record_persisted:
+            monkeypatch.setattr(
+                transfer,
+                "run_wake" if operation == "wake" else "run_transfer",
+                crashing_runner,
+            )
+        else:
+            monkeypatch.setattr(FenceMutationClient, "commit", commit_then_crash)
+        command = (
+            ["wake", "--handoff", NAME]
+            if operation == "wake"
+            else ["transfer", NAME, "--to", target]
+        )
+        argv = [
+            "--state-dir", cfg.state_dir, *command,
+            "--idempotency-key", key, "--json",
+        ]
+        with pytest.raises(_FenceCrash):
+            run(argv, adapter=adapter)
+        assert renew_calls == 1
+        assert client.position(identity["body_ref"])["epoch"] == 1
+
+        if fence_record_persisted:
+            monkeypatch.setattr(
+                transfer,
+                "run_wake" if operation == "wake" else "run_transfer",
+                real_runner,
+            )
+        else:
+            monkeypatch.setattr(FenceMutationClient, "commit", original_commit)
+        assert run(argv, adapter=adapter) == 0
+        assert renew_calls == 1
+        assert client.position(identity["body_ref"])["epoch"] == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("operation", ["wake", "transfer"])
+def test_matrix_handoff_requires_external_authorized_successor_before_fence(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    server, thread, client, holder, identity, cfg, adapter, spec_path = (
+        _production_handoff(tmp_path)
+    )
+    try:
+        park.run_park(
+            NAME, cfg, adapter, actor="test", signer=holder, fence_store=client
+        )
+        spec = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
+        spec.update({
+            "instance_kind": "matrix-embodiment",
+            "being_ref": identity["being_ref"],
+            "body_ref": identity["body_ref"],
+            "embodiment_id": identity["embodiment_id"],
+            "current_incarnation_id": identity["incarnation_id"],
+            "activation_id": identity["activation_id"],
+            "credential_id": identity["credential_id"],
+            "manifest_hash": identity["manifest_hash"],
+        })
+        spec_path.write_text(yaml.safe_dump(spec, sort_keys=False), encoding="utf-8")
+        before = spec_path.read_bytes()
+        before_position = client.position(identity["body_ref"])
+        adapter.mutation_log.clear()
+        command = (
+            ["wake", "--handoff", NAME]
+            if operation == "wake"
+            else ["transfer", NAME, "--to", "daimon-y"]
+        )
+        assert run(
+            ["--state-dir", cfg.state_dir, *command, "--json"], adapter=adapter
+        ) == 6
+        with pytest.raises(
+            transfer.TransferRefused, match="root/activation-authorized successor"
+        ):
+            if operation == "wake":
+                transfer.run_wake(
+                    NAME, cfg, adapter, actor="test",
+                    signer=holder, fence_store=client,
+                )
+            else:
+                transfer.run_transfer(
+                    NAME, "daimon-y", cfg, adapter, actor="test",
+                    signer=holder, fence_store=client,
+                )
+        assert client.position(identity["body_ref"]) == before_position
+        assert adapter.mutation_log == []
+        assert spec_path.read_bytes() == before
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_park_revalidates_revocation_under_lock_before_any_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server, thread, _client, holder, _identity, cfg, adapter, spec_path = (
+        _production_handoff(tmp_path)
+    )
+    real_lock = park._lock_or_fail
+
+    class RevokingLock:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+
+        def __enter__(self):
+            acquired = self.wrapped.__enter__()
+            server.authority._store.revoke_holder_key(holder.key_id)
+            return acquired
+
+        def __exit__(self, *args):
+            return self.wrapped.__exit__(*args)
+
+    def lock_and_revoke(*args, **kwargs):
+        wrapped = real_lock(*args, **kwargs)
+        return wrapped if isinstance(wrapped, int) else RevokingLock(wrapped)
+
+    try:
+        monkeypatch.setattr(park, "_lock_or_fail", lock_and_revoke)
+        before = spec_path.read_bytes()
+        adapter.mutation_log.clear()
+        assert run(
+            ["--state-dir", cfg.state_dir, "park", "--handoff", NAME, "--json"],
+            adapter=adapter,
+        ) == 6
+        assert adapter.mutation_log == []
+        assert spec_path.read_bytes() == before
+        assert not (Path(cfg.state_dir) / "operation-journal.sqlite3").exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

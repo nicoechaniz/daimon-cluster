@@ -50,11 +50,21 @@ marks the operation degraded instead of leaving a false stopped claim.
 The same transport also exposes `FenceMutationClient` for concrete writable
 resources. A host persists a holder-signed prepared mutation (exact resource,
 predecessor epoch/proof, nonce and expected successor) before asking the
-authority to commit it. A retry after response loss adopts only the signed
-successor whose `authorization_ref` hashes those exact prepared bytes. Park
+authority to commit it. Before any retry submits a CAS, it reads the authority
+and adopts only the already-signed successor whose `authorization_ref` hashes
+those exact prepared bytes. Park
 records the authority receipt in its Ed25519-signed checkpoint manifest;
 wake/transfer commit that successor before spec, create, volume or start
 effects. A verifier-only local database is never a handoff mutator.
+
+Generic-instance wake/transfer may use this handoff path. Matrix-managed
+execution may not: a generic adapter cannot mint a new incarnation
+authorization or keep admission alive after `clusterctl` exits. A Matrix
+successor must instead be a root/activation-authorized `clusterctl
+rebirth-install` artifact launched by the `python -m clusterctl.rebirth_host`
+foreground supervisor. That supervisor uses an enrollment/client bound to the
+new incarnation and owns renewal plus the independent monotonic kill watchdog
+for the complete runtime lifetime.
 
 This is a cooperative software guarantee, not a claim that a malicious host
 cannot ignore fencing. Writable external resources must reject stale fencing

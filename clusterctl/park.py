@@ -607,6 +607,34 @@ def cmd_park(args, cfg, adapter) -> int:
         return lock_ctx
     with lock_ctx as acquired:
         stale = _stale_detail(acquired)
+        # The pre-lock proof is only an early refusal.  Re-open every binding
+        # and re-read the signed current holder while the target lock is held,
+        # immediately before journal/spec/adapter effects.  Revocation while
+        # waiting for the lock therefore leaves the spec and runtime untouched.
+        locked_spec = load_spec_raw(cfg.instances_dir, name) or {}
+        try:
+            locked_client = handoff_auth.configured_client(
+                cfg.state_dir, locked_spec
+            )
+            locked_current = locked_client.verify_current(
+                _resource_ref(locked_spec, name)
+            )
+            if locked_current is None:
+                raise handoff_auth.HandoffAuthorizationError(
+                    "shared authority reports no current resource holder under lock"
+                )
+        except (AdmissionError, handoff_auth.HandoffAuthorizationError) as exc:
+            return _fail(
+                args,
+                cfg,
+                operation,
+                name,
+                f"handoff authorization refused under lock: {exc}",
+                EXIT_CONFLICT,
+                detail={"authorization": "revoked-or-changed", **stale},
+            )
+        fence_client = locked_client
+        manifest_signer = locked_client.holder_signer
         prepared = _prepare_resumable_journal(
             args,
             cfg,

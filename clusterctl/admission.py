@@ -885,8 +885,11 @@ class FenceMutationClient(AdmissionClient):
             "ttl_s": None if operation == "release" else ttl_s,
         }
 
-    def commit(self, prepared: Mapping[str, Any]) -> dict[str, Any]:
-        if prepared.get("schema") != self.PREPARED_SCHEMA:
+    @staticmethod
+    def _validate_prepared(
+        prepared: Mapping[str, Any],
+    ) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
+        if prepared.get("schema") != FenceMutationClient.PREPARED_SCHEMA:
             raise AdmissionError("prepared fence mutation is malformed")
         operation = prepared.get("operation")
         resource_ref = prepared.get("resource_ref")
@@ -903,6 +906,47 @@ class FenceMutationClient(AdmissionClient):
             or prepared.get("successor_epoch") != position.get("epoch", -2) + 1
         ):
             raise AdmissionError("prepared fence mutation binding is invalid")
+        return str(operation), resource_ref, position, authorization
+
+    def recover(self, prepared: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Read-only recovery of one exact already-committed successor.
+
+        ``None`` means the signed predecessor is still current and the caller
+        may submit the CAS.  Any other position is a conflict; it is never
+        repaired by sending another mutation.
+        """
+
+        operation, resource_ref, position, _authorization = self._validate_prepared(
+            prepared
+        )
+        if operation == "release":
+            return None
+        receipt = self.current(resource_ref)
+        if receipt is None:
+            if position.get("current") is False:
+                return None
+            raise AdmissionConflict("prepared fence predecessor is no longer current")
+        evidence = receipt["evidence"]
+        if (
+            receipt.get("fencing_token") == position.get("epoch")
+            and receipt.get("proof_ref") == position.get("proof")
+        ):
+            return None
+        if (
+            receipt.get("fencing_token") == prepared.get("successor_epoch")
+            and evidence.get("authorization_ref") == prepared.get("authorization_ref")
+            and evidence.get("operation") == operation
+        ):
+            return receipt
+        raise AdmissionConflict("authority position is not the exact prepared successor")
+
+    def commit(self, prepared: Mapping[str, Any]) -> dict[str, Any]:
+        operation, resource_ref, position, authorization = self._validate_prepared(
+            prepared
+        )
+        recovered = self.recover(prepared)
+        if recovered is not None:
+            return recovered
         values: dict[str, Any] = {
             **self._coordinates(),
             "resource_ref": resource_ref,
@@ -922,7 +966,7 @@ class FenceMutationClient(AdmissionClient):
             # The authority may have committed and lost the response.  Query
             # through the same authenticated channel and accept only the exact
             # successor bound to these prepared authorization bytes.
-            recovered = self.current(resource_ref)
+            recovered = self.recover(prepared)
             if recovered is None:
                 raise
             receipt = recovered

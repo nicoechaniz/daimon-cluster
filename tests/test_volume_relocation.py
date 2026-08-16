@@ -17,6 +17,7 @@ from test_transfer import NEW, _cli, _declare_running_embodiment, _parked
 from clusterctl import transfer
 from clusterctl.adapters import FakeAdapter, IncusAdapter, IncusError
 from clusterctl.config import Config
+from clusterctl.embodiments import Registry
 from clusterctl.fences import Ed25519Signer, ResourceFenceStore
 from clusterctl.operation_journal import OperationJournal
 from clusterctl.production_fences import (
@@ -180,9 +181,7 @@ def test_create_start_response_loss_converges_once(tmp_path, lost):
     assert sum(call == ("create_instance", NEW) for call in adapter.mutation_log) == 1
     assert sum(call == ("start", NEW) for call in adapter.mutation_log) == 1
     if lost.startswith("start"):
-        current = transfer.embodiments.Registry(state_dir).status(
-            embodiment["embodiment_id"]
-        )
+        current = Registry(state_dir).status(embodiment["embodiment_id"])
         assert result["incarnation_id"] is None
         assert current["current_incarnation_id"] == first["incarnation_id"]
 

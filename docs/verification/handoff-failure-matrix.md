@@ -58,8 +58,11 @@ re-verifies the Ed25519 manifest and authority receipt, durably prepares the
 holder-signed exact successor, and commits its CAS before any spec write,
 create, detach, attach or start. Response-loss recovery matches the successor
 epoch, authority proof and `authorization_ref`; it never issues a second
-logical transition. Matrix-managed start additionally requires current shared
-embodiment admission.
+logical transition. Generic handoff cannot provide the shared-admission
+lifetime required by a Matrix-managed start, so Matrix-managed wake/transfer
+refuses before its fence transition and routes the operator to a new
+root/activation-authorized `clusterctl rebirth-install` artifact plus the
+long-running `python -m clusterctl.rebirth_host` admission supervisor.
 
 **(c) Every failure converges.** Park: stop runs ONLY after a verified
 manifest; resume from any step re-verifies (scenarios 1–5, 15).

@@ -30,9 +30,21 @@ never open the authority SQLite database and never select the V1 fixture.
 `FakeSigner`, `SSHSigner` and the file store remain test-fixture surfaces only.
 
 Missing configuration, a fake/unregistered holder, a revoked holder, replay or
-a wrong predecessor position refuses before any adapter call or spec write.
+a wrong predecessor position refuses before any adapter mutation or spec
+write. Park additionally revalidates the exact current holder under its target
+lock before its first adapter call, so revocation at lock entry leaves the spec
+byte-identical and the adapter untouched.
 The former `--no-fence` assertion was removed: a handoff is accepted only with
 authority-signed current evidence for the exact holder and resource.
+
+Crash recovery after a committed fence reads the durable prepared
+authorization and authority position before attempting a CAS. Only the exact
+`successor_epoch` plus `authorization_ref` is adopted, so a post-commit retry
+does not send a second mutation. Matrix-managed wake/transfer is deliberately
+refused before fencing; its supported successor caller is `clusterctl
+rebirth-install` followed by the long-running `python -m
+clusterctl.rebirth_host` admission supervisor, not the old incarnation's
+handoff client.
 
 ## Reproduction
 
@@ -54,8 +66,9 @@ python -m compileall -q clusterctl clusterd steward_tools tests
 No live host configuration or private key was copied into the evidence. The
 candidate remains subject to independent review before merge or deployment.
 
-On 2026-08-16 the production handoff wiring passed 127 focused tests and the
-complete Cluster/Matrix V0 suite: 534 passed, 4 intentional skips. Ruff, mypy,
+On 2026-08-16 the production handoff wiring and post-review adversarial fixes
+passed 136 focused tests and the complete Cluster/Matrix V0 suite: 543 passed,
+4 intentional skips. Ruff, mypy,
 compileall and `git diff --check` were clean. This is local pre-release
 qualification only: no host, SSH path, physical shared resource or deployment
 was exercised or claimed.

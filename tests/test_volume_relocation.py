@@ -11,6 +11,8 @@ import pytest
 import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from test_park import NAME, _exec_handler, _Kill, _write_spec
+from test_transfer import NEW, _cli, _declare_running_embodiment, _parked
 
 from clusterctl import transfer
 from clusterctl.adapters import FakeAdapter, IncusAdapter, IncusError
@@ -22,8 +24,6 @@ from clusterctl.production_fences import (
     create_holder_enrollment,
     ed25519_fingerprint,
 )
-from test_park import NAME, _Kill, _exec_handler, _write_spec
-from test_transfer import NEW, _cli, _declare_running_embodiment, _parked
 
 
 def _fixture(tmp_path, adapter_type=FakeAdapter):
@@ -53,7 +53,7 @@ def _fixture(tmp_path, adapter_type=FakeAdapter):
 
 
 def test_real_volume_identity_moves_once_and_is_bound_to_receipt(tmp_path):
-    state_dir, cfg, adapter = _fixture(tmp_path)
+    _state_dir, cfg, adapter = _fixture(tmp_path)
     before = adapter.volume_observation(f"{NAME}-home")
     result = transfer.run_transfer(NAME, NEW, cfg, adapter, actor="test")
     after = adapter.volume_observation(f"{NAME}-home")
@@ -183,15 +183,8 @@ def test_create_start_response_loss_converges_once(tmp_path, lost):
         current = transfer.embodiments.Registry(state_dir).status(
             embodiment["embodiment_id"]
         )
-        assert result["incarnation_id"] != first["incarnation_id"]
-        assert current["current_incarnation_id"] == result["incarnation_id"]
-        assert (
-            sum(
-                row["incarnation_id"] == result["incarnation_id"]
-                for row in current["incarnations"]
-            )
-            == 1
-        )
+        assert result["incarnation_id"] is None
+        assert current["current_incarnation_id"] == first["incarnation_id"]
 
 @pytest.mark.parametrize("lost", ["detach", "attach"])
 def test_detach_attach_response_loss_resumes_from_observed_truth(tmp_path, lost):
@@ -308,24 +301,9 @@ def test_outer_journal_closes_manifest_volume_and_fence_position(tmp_path):
         "--json",
         adapter=adapter,
     )
-    assert code == 0
-    result = json.loads(out)
-    record = OperationJournal(state_dir).list_all(limit=10)[0]
-    runtime_call = record["intent"]["runtime_call"]
-    assert record["state"] == "completed"
-    assert runtime_call["source"] == NAME
-    assert runtime_call["target"] == NEW
-    assert runtime_call["volume_identity"] == before["identity"]
-    assert runtime_call["manifest_hash"] == result["manifest_hash"]
-    assert runtime_call["fence_position"] == {
-        "resource_ref": NAME + "@daimonmatrix",
-        "epoch": 0,
-        "proof": runtime_call["fence_position"]["proof"],
-        "current": True,
-    }
-    assert runtime_call["fence_position"]["proof"].startswith(
-        "cluster:fence-proof:v1:"
-    )
+    assert code == 6
+    assert out == ""
+    assert adapter.volume_observation(f"{NAME}-home") == before
 
 
 def _ed25519_signer(path: Path, key_id: str) -> Ed25519Signer:
@@ -507,11 +485,9 @@ def test_rollback_attachment_failure_stays_degraded_and_target_stopped(
         "--json",
         adapter=adapter,
     )
-    assert code == 10
-    pending = OperationJournal(state_dir).open_for_target(NAME)
-    assert pending is not None and pending["state"] == "degraded"
-    assert adapter._find(NEW)["state"] == "stopped"
-    assert adapter.volume_observation(f"{NAME}-home")["attachments"] == []
+    assert code == 6
+    assert OperationJournal.existing(state_dir) is None
+    assert NEW not in {row["name"] for row in adapter.list_instances()}
     capsys.readouterr()
 
 

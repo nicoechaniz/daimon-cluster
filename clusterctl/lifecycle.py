@@ -23,12 +23,12 @@ undeclared, 6 conflict (duplicate, idempotency, lock), 10 internal.
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import sys
 import uuid
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 from . import audit, fences, idempotency, locks, operation_journal
 from .adapters import FakeAdapter
@@ -209,7 +209,7 @@ def _verify_effect(cfg, adapter, operation: str, name: str,
             return "unverifiable", {"reason": "missing recorded snapshot"}
         try:
             present = bool(adapter.incus_snapshot_verify(name, snap_name))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- effect-truth probes must fail closed
             return "unverifiable", {"error": str(exc)}
         manifest = _path_observation(recorded.get("manifest"))
         observed = {
@@ -228,7 +228,7 @@ def _verify_effect(cfg, adapter, operation: str, name: str,
             present = any(
                 item.get("name") == name for item in adapter.list_instances()
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- effect-truth probes must fail closed
             return "unverifiable", {"error": str(exc)}
         token = _confirmation_observation(cfg, name, recorded.get("token"))
         observed = {
@@ -298,7 +298,7 @@ def _runtime_state_observation(adapter, observed_name: str, operation: str,
             item.get("name"): item for item in adapter.list_instances()
             if item.get("name")
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- effect-truth probes must fail closed
         return "unverifiable", {"name": observed_name, "error": str(exc)}
     observed_instance = actual.get(observed_name)
     observed_state = str((observed_instance or {}).get("state") or "").lower()
@@ -408,6 +408,40 @@ def _resource_fence_observation(cfg, adapter, name: str, recorded: dict) -> dict
         spec.get("body_ref") or spec.get("daimon_id")
         or f"resource:body:{name}"
     )
+    authority_receipt = checkpoint.get("resource_fence_receipt")
+    if isinstance(authority_receipt, dict):
+        try:
+            from . import handoff_auth
+
+            client = handoff_auth.configured_client(
+                cfg.state_dir, spec, manifest=checkpoint
+            )
+            current_receipt = client.current(resource_ref)
+        except Exception as exc:  # noqa: BLE001 - stable effect-truth refusal
+            return {
+                "required": True,
+                "resource_ref": resource_ref,
+                "expected_epoch": expected_epoch,
+                "matches": False,
+                "error": str(exc),
+            }
+        matches = (
+            current_receipt is not None
+            and current_receipt.get("fencing_token") == expected_epoch
+            and current_receipt.get("proof_ref")
+            == authority_receipt.get("proof_ref")
+        )
+        return {
+            "required": True,
+            "resource_ref": resource_ref,
+            "expected_epoch": expected_epoch,
+            "observed_epoch": (
+                None if current_receipt is None
+                else current_receipt.get("fencing_token")
+            ),
+            "matches": matches,
+            "authority_receipt": True,
+        }
     try:
         store = (
             fences.SyntheticResourceFenceStore(cfg.state_dir)
@@ -826,7 +860,7 @@ def cmd_create(args, cfg, adapter) -> int:
                 if not current["present"]:
                     try:
                         adapter.create_instance(name, args.image, cfg.profile)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 -- classify via observed truth
                         runtime_error = str(exc)
                 _mutation_boundary("after-runtime-call", record)
                 observed = _observe_runtime(adapter, name)
@@ -834,7 +868,7 @@ def cmd_create(args, cfg, adapter) -> int:
                     cleanup_error = None
                     try:
                         adapter.delete(name)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 -- classify via observed truth
                         cleanup_error = str(exc)
                     observed = _observe_runtime(adapter, name)
                     if observed["present"]:
@@ -1178,7 +1212,7 @@ def cmd_power(args, cfg, adapter, operation: str) -> int:
                             adapter.stop(name, runtime_call["timeout"])
                         else:
                             adapter.restart(name)
-                except Exception as exc:  # observe truth before classifying
+                except Exception as exc:  # noqa: BLE001 -- observe truth before classifying
                     runtime_error = str(exc)
                 _mutation_boundary("after-runtime-call", record)
                 after_runtime = _observe_runtime(adapter, name)
@@ -1433,7 +1467,7 @@ def cmd_parkwake(args, cfg, adapter, operation: str) -> int:
                     name, PARK_QUIESCE_TIMEOUT_S))
             else:  # wake
                 ok = bool(adapter.exec_unpark(name))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- stable CLI error boundary
             return _fail(args, cfg, operation, name,
                          f"{operation} failed: {exc}", EXIT_INTERNAL,
                          audit_result="error", detail=stale)
@@ -1478,7 +1512,7 @@ def cmd_logs(args, cfg, adapter) -> int:
     max_lines = max(1, min(requested, LOGS_MAX_LINES))
     try:
         raw = adapter.logs(name, max_lines)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- stable CLI error boundary
         return _fail(args, cfg, operation, name,
                      f"logs failed: {exc}", EXIT_INTERNAL, audit_result="error")
 
@@ -1546,8 +1580,10 @@ def cmd_destroy_plan(args, cfg, adapter) -> int:
     _audit_ok(args, cfg, operation, name, {"delete_volumes": delete_volumes})
     human = "\n".join([
         f"destroy plan for {name} (PLAN ONLY — nothing deleted)",
-        "  archive evidence required: cluster-backup-manifest/v1 id "
-        "(verified archived backup)",
+        (
+            "  archive evidence required: cluster-backup-manifest/v1 id "
+            "(verified archived backup)"
+        ),
         "  confirmation: single-use token, operation \"destroy\", TTL 900s",
         f"  deletion order: {' -> '.join(deletion_order)}",
         f"  volumes: {'deleted' if delete_volumes else 'kept'}",

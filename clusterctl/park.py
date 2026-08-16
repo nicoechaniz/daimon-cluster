@@ -25,7 +25,7 @@ Sequence:
      REDACT_PATTERNS — any match refuses (fail-closed)
   7. verification — recompute every recorded hash, sqlite integrity must
      be ok, commit sha must resolve via git rev-parse, backup ids listed,
-     active resource fence required (or explicit ``--no-fence``)
+     an authority-signed current fence for the exact enrolled holder is required
   8. resource-fence transition + manifest — spec status parking → parked ONLY after
      all verifications pass; signed ``checkpoint-manifest/v1`` written to
      ``state_dir/park/<name>/manifest-<resource_fence_epoch>.json``
@@ -51,11 +51,12 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import audit, embodiments, fences
+from . import audit, embodiments, fences, handoff_auth
 from .adapters import FakeAdapter
+from .admission import AdmissionError
 from .inventory import load_spec_raw, load_specs, update_spec
 from .lifecycle import (
-    EXIT_CONFLICT,  # noqa: F401  (re-exported for callers/tests)
+    EXIT_CONFLICT,
     EXIT_INTERNAL,
     EXIT_NOT_FOUND,
     EXIT_OK,
@@ -173,7 +174,9 @@ def verify_manifest(manifest: dict, signer: fences.Signer) -> bool:
         return False
     if manifest.get("schema") != MANIFEST_SCHEMA:
         return False
-    return signer.verify(fences._canonical(manifest), sig, "")
+    return signer.verify(
+        fences._canonical(manifest), sig, str(getattr(signer, "public_key", ""))
+    )
 
 
 def load_manifest(path: str | Path, signer: fences.Signer) -> dict:
@@ -249,9 +252,8 @@ def run_park(
     actor: str,
     abandon_critical: bool = False,
     force_outbox: bool = False,
-    no_fence: bool = False,
     signer: fences.Signer | None = None,
-    fence_store: fences.ResourceFenceStore | None = None,
+    fence_store: Any | None = None,
     stop_timeout: int = STOP_TIMEOUT_S,
     on_step=None,
 ) -> dict:
@@ -267,7 +269,23 @@ def run_park(
     (verification/internal failure, exit 10); both roll the spec status
     back to its pre-park value.
     """
-    signer = signer or fences.FakeSigner()
+    # Direct FakeAdapter calls are an explicit unit-fixture boundary.  Every
+    # live caller must inject production custody and the signed remote client.
+    if signer is None or fence_store is None:
+        if isinstance(adapter, FakeAdapter):
+            signer = signer or fences.FakeSigner()
+            fence_store = fence_store or fences.SyntheticResourceFenceStore(
+                cfg.state_dir, signer
+            )
+        else:
+            raise ParkRefused("signed handoff holder/authority configuration is required")
+    if not isinstance(adapter, FakeAdapter) and (
+        not isinstance(signer, fences.Ed25519Signer)
+        or not isinstance(fence_store, handoff_auth.FenceMutationClient)
+    ):
+        raise ParkRefused(
+            "live handoff requires Ed25519 custody and a shared FenceMutationClient"
+        )
     state = _load_state(cfg, name)
     outputs = state.setdefault("outputs", {})
     completed = state.setdefault("completed", [])
@@ -422,31 +440,46 @@ def run_park(
             if current != outputs["state_commit"]:
                 problems.append("state repo commit sha does not resolve")
         backup_ids = _read_backup_ids(cfg.state_dir, name)
-        if no_fence:
-            fence_epoch, fence_state = None, "not-required"
-            fence_acquired_ms = None
-        else:
-            store: Any = fence_store
-            if store is None and isinstance(adapter, FakeAdapter):
-                store = fences.SyntheticResourceFenceStore(cfg.state_dir, signer)
-            if store is None:
-                store = fences.ResourceFenceStore(cfg.state_dir)
-            st = store.status(
-                _resource_ref(_spec(), name))
-            if not st["present"] or st["expired"]:
-                problems.append("no active resource fence held by the embodiment "
-                                "(or pass --no-fence when no exclusive resource exists)")
-            fence_epoch = st["last_epoch"]
-            fence_state = "active"
-            # Acquisition binding complements the monotonic epoch and catches
-            # restored or manually replaced fence bytes (issue #30).
-            fence_acquired_ms = st.get("acquired_ms")
+        store: Any = fence_store
+        resource_ref = _resource_ref(_spec(), name)
+        current = store.verify_current(resource_ref)
+        if current is None:
+            problems.append("shared authority reports no current resource holder")
+            current = {}
+        expected_holder = None
+        try:
+            expected_holder = handoff_auth.holder_identity(_spec())
+        except handoff_auth.HandoffAuthorizationError:
+            if not isinstance(adapter, FakeAdapter):
+                problems.append("exact enrolled fence holder identity is missing")
+        if expected_holder is not None and any(
+            current.get(field) != expected_holder[identity_field]
+            for field, identity_field in (
+                ("body_ref", "body_ref"),
+                ("holder_embodiment_id", "embodiment_id"),
+                ("holder_incarnation_id", "incarnation_id"),
+            )
+        ):
+            problems.append("shared authority current holder is not the exact enrolled holder")
+        expected_key_id = getattr(signer, "key_id", None)
+        if expected_key_id is not None and current.get("holder_key_id") != expected_key_id:
+            problems.append("shared authority current holder key is not the configured holder")
+        fence_epoch = current.get("epoch")
+        fence_state = "authority-current"
+        fence_acquired_ms = current.get("acquired_ms")
+        fence_proof = store.proof_ref(current) if current else None
+        receipt_reader = getattr(store, "current", None)
+        fence_receipt = (
+            receipt_reader(resource_ref) if callable(receipt_reader) else None
+        )
         if problems:
             raise ParkError("park verification failed: " + "; ".join(problems),
                             {"problems": problems})
         _done("verify", backup_ids=backup_ids,
               resource_fence_epoch=fence_epoch,
-              resource_fence=fence_state)
+              resource_fence=fence_state,
+              resource_fence_proof=fence_proof,
+              resource_fence_receipt=fence_receipt)
 
         # 8. resource-fence transition parking → parked, then signed manifest.
         fence_epoch = outputs.get("resource_fence_epoch")
@@ -477,7 +510,10 @@ def run_park(
                 "outbox": outputs.get("outbox"),
                 "resource_fence_epoch": fence_epoch,
                 "resource_fence": outputs.get("resource_fence"),
+                "resource_fence_proof": outputs.get("resource_fence_proof"),
+                "resource_fence_receipt": outputs.get("resource_fence_receipt"),
                 "resource_fence_acquired_ms": fence_acquired_ms,
+                "fence_holder": expected_holder,
             }, signer)
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = manifest_path.with_name(manifest_path.name + ".tmp")
@@ -491,7 +527,12 @@ def run_park(
         # 9. stop — only after the manifest is written and verified.
         if "stop" not in completed:
             adapter.stop(name, stop_timeout)
-            embodiment_id = _spec().get("embodiment_id")
+            stopped_spec = _spec()
+            embodiment_id = (
+                stopped_spec.get("embodiment_id")
+                if stopped_spec.get("instance_kind") == "matrix-embodiment"
+                else None
+            )
             if embodiment_id:
                 try:
                     embodiments.Registry(cfg.state_dir).stop(embodiment_id)
@@ -544,6 +585,23 @@ def cmd_park(args, cfg, adapter) -> int:
         return _fail(args, cfg, operation, name,
                      f"instance {name!r} is not declared", EXIT_NOT_FOUND)
 
+    # Resolve custody and prove the exact current holder before any journal,
+    # spec, staging, or adapter mutation.
+    raw_spec = load_spec_raw(cfg.instances_dir, name) or {}
+    try:
+        fence_client = handoff_auth.configured_client(cfg.state_dir, raw_spec)
+        manifest_signer = fence_client.holder_signer
+        if fence_client.verify_current(_resource_ref(raw_spec, name)) is None:
+            raise handoff_auth.HandoffAuthorizationError(
+                "shared authority reports no current resource holder"
+            )
+    except (AdmissionError, handoff_auth.HandoffAuthorizationError) as exc:
+        return _fail(
+            args, cfg, operation, name,
+            f"handoff authorization refused: {exc}", EXIT_CONFLICT,
+            detail={"authorization": "missing-or-invalid"},
+        )
+
     lock_ctx = _lock_or_fail(args, cfg, operation, name)
     if isinstance(lock_ctx, int):
         return lock_ctx
@@ -560,7 +618,6 @@ def cmd_park(args, cfg, adapter) -> int:
                 "name": name,
                 "abandon_critical": bool(getattr(args, "abandon_critical", False)),
                 "force_outbox": bool(getattr(args, "force_outbox", False)),
-                "no_fence": bool(getattr(args, "no_fence", False)),
                 "stop_timeout": int(getattr(args, "timeout", STOP_TIMEOUT_S)),
             },
             audit_context=stale,
@@ -575,7 +632,8 @@ def cmd_park(args, cfg, adapter) -> int:
                     actor=_actor(args),
                     abandon_critical=bool(getattr(args, "abandon_critical", False)),
                     force_outbox=bool(getattr(args, "force_outbox", False)),
-                    no_fence=bool(getattr(args, "no_fence", False)),
+                    signer=manifest_signer,
+                    fence_store=fence_client,
                     stop_timeout=int(getattr(args, "timeout", STOP_TIMEOUT_S)),
                 )
             else:

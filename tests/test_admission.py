@@ -21,6 +21,7 @@ from clusterctl.admission import (
     AdmissionServer,
     AdmissionTCPServer,
     AdmissionUnavailable,
+    FenceMutationClient,
     admission_resource_ref,
     serve_in_thread,
 )
@@ -79,6 +80,21 @@ def _client(
         activation_id=coordinates["activation_id"],
         credential_id=coordinates["credential_id"],
         manifest_hash=coordinates["manifest_hash"],
+    )
+
+
+def _fence_client(
+    socket_path: Path | AdmissionEndpoint,
+    holder: Ed25519Signer,
+    authority: Ed25519Signer,
+    coordinates: Mapping[str, str],
+) -> FenceMutationClient:
+    return FenceMutationClient(
+        socket_path,
+        holder_signer=holder,
+        authority_key_id=authority.key_id,
+        authority_public_key=authority.public_key,
+        **coordinates,
     )
 
 
@@ -412,3 +428,40 @@ def test_authenticated_tcp_endpoint_is_network_capable_and_pinned(
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_fence_client_commits_and_recovers_one_exact_signed_successor(
+    authority_fixture: dict[str, Any], tmp_path: Path
+) -> None:
+    authority = authority_fixture["authority"]
+    registrar = authority_fixture["registrar"]
+    coordinates = _coordinates("handoff")
+    holder = _key(tmp_path / "holder/handoff.pem", "holder-handoff")
+    enrollment_client = _client(
+        authority_fixture["socket"], holder, authority, coordinates
+    )
+    _enroll(
+        enrollment_client, registrar, holder, coordinates,
+        authority_fixture["clock"].value,
+    )
+    client = _fence_client(
+        authority_fixture["socket"], holder, authority, coordinates
+    )
+    resource_ref = "cluster:exclusive-volume:handoff-home"
+
+    acquire = client.prepare(resource_ref, operation="acquire", ttl_s=30)
+    acquired = client.commit(acquire)
+    assert acquired["fencing_token"] == 0
+    assert acquired["evidence"]["authorization_ref"] == acquire["authorization_ref"]
+
+    renew = client.prepare(resource_ref, operation="renew", ttl_s=30)
+    renewed = client.commit(renew)
+    replay = client.commit(renew)
+    assert replay["proof_ref"] == renewed["proof_ref"]
+    assert replay["fencing_token"] == 1
+    assert client.position(resource_ref) == {
+        "resource_ref": resource_ref,
+        "epoch": 1,
+        "proof": renewed["proof_ref"],
+        "current": True,
+    }

@@ -47,6 +47,15 @@ incarnation is removed with a guarded compensation and that compensation is
 persisted in the open operation journal. A compensation precondition failure
 marks the operation degraded instead of leaving a false stopped claim.
 
+The same transport also exposes `FenceMutationClient` for concrete writable
+resources. A host persists a holder-signed prepared mutation (exact resource,
+predecessor epoch/proof, nonce and expected successor) before asking the
+authority to commit it. A retry after response loss adopts only the signed
+successor whose `authorization_ref` hashes those exact prepared bytes. Park
+records the authority receipt in its Ed25519-signed checkpoint manifest;
+wake/transfer commit that successor before spec, create, volume or start
+effects. A verifier-only local database is never a handoff mutator.
+
 This is a cooperative software guarantee, not a claim that a malicious host
 cannot ignore fencing. Writable external resources must reject stale fencing
 tokens, and a physical trial needs a purpose-built shared authority with

@@ -14,6 +14,19 @@ import json
 from pathlib import Path
 
 import pytest
+from test_park import (  # shared fixtures/helpers from the park suite
+    COMMIT_SHA,
+    DAIMON_ID,
+    FINGERPRINT,
+    HANDOFF_CONTENT,
+    NAME,
+    NOW_CONTENT,
+    PUBKEY,
+    _exec_handler,
+    _Kill,
+    _manifest_path,
+    _write_spec,
+)
 
 from clusterctl import leases, park, transfer
 from clusterctl.adapters import FakeAdapter
@@ -21,11 +34,6 @@ from clusterctl.cli import run
 from clusterctl.config import Config
 from clusterctl.embodiments import Registry
 from clusterctl.inventory import load_spec_raw
-
-from test_park import (  # shared fixtures/helpers from the park suite
-    COMMIT_SHA, DAIMON_ID, FINGERPRINT, HANDOFF_CONTENT, NAME,
-    NOW_CONTENT, PUBKEY, _Kill, _exec_handler, _manifest_path,
-    _write_spec)
 
 NEW = "daimon-y"
 
@@ -109,16 +117,15 @@ def test_wake_happy_path(state_dir, cfg, adapter):
     assert ("start", NAME) in adapter.mutation_log
 
 
-def test_park_and_wake_close_then_open_incarnation(state_dir, cfg, adapter):
+def test_generic_park_and_wake_do_not_fabricate_incarnation(state_dir, cfg, adapter):
     embodiment, first = _declare_running_embodiment(state_dir)
     _parked(state_dir, cfg, adapter)
-    assert Registry(state_dir).status(embodiment["embodiment_id"])["status"] == "stopped"
-    assert load_spec_raw(cfg.instances_dir, NAME)["current_incarnation_id"] is None
+    assert Registry(state_dir).status(embodiment["embodiment_id"])["status"] == "running"
 
     result = transfer.run_wake(NAME, cfg, adapter, actor="test")
-    assert result["incarnation_id"] != first["incarnation_id"]
+    assert result["incarnation_id"] is None
     current = Registry(state_dir).status(embodiment["embodiment_id"])
-    assert current["current_incarnation_id"] == result["incarnation_id"]
+    assert current["current_incarnation_id"] == first["incarnation_id"]
 
 
 def test_wake_stale_fence_refused(state_dir, cfg, adapter):
@@ -137,12 +144,9 @@ def test_wake_stale_fence_refused(state_dir, cfg, adapter):
 def test_wake_no_fence_manifest_refused(state_dir, cfg, adapter):
     """A --no-fence checkpoint cannot drive a resource-moving wake."""
     _write_spec(state_dir)
-    park.run_park(NAME, cfg, adapter, actor="test", no_fence=True)
-    adapter.mutation_log.clear()
-
-    with pytest.raises(transfer.TransferRefused):
-        transfer.run_wake(NAME, cfg, adapter, actor="test")
-    assert not any(c[0] == "start" for c in adapter.mutation_log)
+    with pytest.raises(TypeError):
+        park.run_park(NAME, cfg, adapter, actor="test", no_fence=True)
+    assert adapter.mutation_log == []
 
 
 def test_wake_without_park_refused(state_dir, cfg, adapter):
@@ -224,14 +228,17 @@ def test_transfer_happy_path_order(state_dir, cfg, adapter):
     assert record["signature"]
 
 
-def test_transfer_preserves_embodiment_and_opens_incarnation(state_dir, cfg, adapter):
+def test_generic_transfer_strips_accidental_identity_and_opens_no_incarnation(
+        state_dir, cfg, adapter):
     embodiment, first = _declare_running_embodiment(state_dir)
     _parked(state_dir, cfg, adapter)
     result = transfer.run_transfer(NAME, NEW, cfg, adapter, actor="test")
     target = load_spec_raw(cfg.instances_dir, NEW)
-    assert target["embodiment_id"] == embodiment["embodiment_id"]
-    assert result["incarnation_id"] != first["incarnation_id"]
-    assert target["current_incarnation_id"] == result["incarnation_id"]
+    assert "embodiment_id" not in target
+    assert result["incarnation_id"] is None
+    assert Registry(state_dir).status(embodiment["embodiment_id"])[
+        "current_incarnation_id"
+    ] == first["incarnation_id"]
 
 
 def test_transfer_requires_parked_source(state_dir, cfg, adapter):
@@ -256,9 +263,7 @@ def test_transfer_tampered_manifest_refused(state_dir, cfg, adapter):
     assert load_spec_raw(cfg.instances_dir, NEW) is None
 
 
-def test_transfer_cas_failure_rolls_back(state_dir, cfg, adapter):
-    """Fence CAS failure after target create → full rollback, source
-    parked with its lease intact."""
+def test_transfer_cas_failure_precedes_all_target_effects(state_dir, cfg, adapter):
     _write_spec(state_dir)
     _parked(state_dir, cfg, adapter)
     for f in _lease_files(state_dir):  # identity lease vanished
@@ -267,17 +272,12 @@ def test_transfer_cas_failure_rolls_back(state_dir, cfg, adapter):
     with pytest.raises(transfer.TransferError):
         transfer.run_transfer(NAME, NEW, cfg, adapter, actor="test")
 
-    log = adapter.mutation_log
-    assert ("create_instance", NEW) in log   # target existed...
-    assert ("delete", NEW) in log            # ...and was destroyed
-    assert not any(c == ("start", NEW) for c in log)  # never started
-    assert load_spec_raw(cfg.instances_dir, NEW) is None  # spec deleted
+    assert adapter.mutation_log == []
+    assert load_spec_raw(cfg.instances_dir, NEW) is None
     assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "parked"
-    # transfer-state records the rollback with a resume hint
     state = json.loads(
         transfer._transfer_state_path(cfg, NAME, NEW).read_text())
-    assert state["rollback"]["attempted"] is True
-    assert "wake --handoff" in state["rollback"]["resume_hint"]
+    assert state["completed"] == ["verify-manifest", "fence-prepared"]
 
 
 def test_transfer_restored_sha_mismatch_rolls_back(state_dir, cfg, adapter):
@@ -332,29 +332,8 @@ def test_cli_wake_handoff_and_transfer(state_dir, cfg, adapter):
 
     code, out, _ = _cli(state_dir, "wake", "--handoff", NAME, "--json",
                         adapter=adapter)
-    assert code == 0
-    assert json.loads(out)["announcement"] == "embodiment-relocation"
-
-    # park again, then transfer via CLI
-    park.run_park(NAME, cfg, adapter, actor="test")
-    # The direct inner-workflow helper reuses its terminal step journal; H3
-    # requires the source runtime to be observably stopped at entry.
-    adapter.stop(NAME)
-    code, out, _ = _cli(state_dir, "transfer", NAME, "--to", NEW,
-                        "--json", adapter=adapter)
-    assert code == 0
-    result = json.loads(out)
-    assert result["target"] == NEW
-    events = [
-        json.loads(line)
-        for line in (state_dir / "audit.jsonl").read_text().splitlines()
-    ]
-    success = next(
-        event
-        for event in events
-        if event["action"] == "transfer" and "operation_id" in event["detail"]
-    )
-    assert success["action_digest"] == result["manifest_hash"]
+    assert code == 6
+    assert out == ""
 
 
 def test_announcement_strings_distinct():

@@ -96,7 +96,7 @@ def server(state_dir, tmp_path, monkeypatch):
     _declare(state_dir)
     ad = _adapter(log_lines={NAME: [f"log line {i}" for i in range(250)]})
     _, raw_token = clusterd_auth.create_token(
-        state_dir, actor="steward@daimonmatrix", scopes=["read"],
+        state_dir, actor="steward@daimonmatrix", scopes=["fleet:read"],
         owner="*", ttl_days=1)
     token_file = tmp_path / "read-token"
     token_file.write_text(raw_token, encoding="utf-8")
@@ -334,7 +334,7 @@ def test_cluster_health_degraded_names_subsystems(state_dir, tmp_path,
 
     _declare(state_dir)
     _, raw_token = clusterd_auth.create_token(
-        state_dir, actor="steward@daimonmatrix", scopes=["read"],
+        state_dir, actor="steward@daimonmatrix", scopes=["fleet:read"],
         owner="*", ttl_days=1)
     token_file = tmp_path / "read-token"
     token_file.write_text(raw_token, encoding="utf-8")
@@ -400,7 +400,7 @@ def test_logs_route_redaction_end_to_end(state_dir, tmp_path, monkeypatch):
     _declare(state_dir)
     ad = _adapter(log_lines={NAME: secret_lines})
     _, raw_token = clusterd_auth.create_token(
-        state_dir, actor="steward@daimonmatrix", scopes=["read"],
+        state_dir, actor="steward@daimonmatrix", scopes=["fleet:read"],
         owner="*", ttl_days=1)
     token_file = tmp_path / "read-token"
     token_file.write_text(raw_token, encoding="utf-8")

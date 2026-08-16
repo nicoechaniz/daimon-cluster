@@ -1,6 +1,6 @@
 # clusterd design (M4: issues #17-#20 input)
 
-Status: design v0.1 (2026-08-01). Inputs: ADR-001 D2 (steward holds scoped
+Status: pre-release RC design (2026-08-16). Inputs: ADR-001 D2 (steward holds scoped
 clusterd credentials; clusterd wraps clusterctl wraps incus), contracts #4
 (idempotency, confirmations, audit events, error classes), threat model
 B6/B7 (stolen bearer, clusterd compromise).
@@ -28,29 +28,36 @@ dashboard (M7, later) ─────────┘                     │
 |----------|-----------|-------|
 | GET /v1/instances | list --json | fleet:read |
 | GET /v1/instances/{name} | status --json | fleet:read |
-| POST /v1/instances | provision prepare | provision:write |
-| POST /v1/instances/{name}/confirmations | confirm (any op) | per-op scope + token |
 | POST /v1/instances/{name}/stop /start /restart | stop/start/restart | lifecycle:write |
 | POST /v1/instances/{name}/snapshot | snapshot (M3) | backup:write |
-| POST /v1/instances/{name}/updates | update prepare (M5) | update:write |
-| DELETE /v1/instances/{name} | destroy (archive-first, #8 §3) | destroy:write + token |
-| GET /v1/audit?since= | audit tail | audit:read |
+| POST /v1/instances/{name}/restore | restore placeholder | restore:write |
+| POST /v1/instances/{name}/destroy | destroy placeholder | destroy:write + confirmation |
+| GET /v1/audit | audit tail | fleet:read |
 
 All mutations: idempotency-key header required; two-step prepare/confirm
 for anything destructive per contracts #4; responses are the clusterctl
 JSON verbatim plus `{audit_id}`.
 
-## 3. Auth (issue #18) — anyVPN + scoped bearer, replay-resistant
+## 3. Auth and human authority
 
-- Bearer tokens: ed25519-signed JWT-like macaroons, issued by the cluster
-  owner offline (no OIDC until product phase — ADR D4). Claims: sub
-  (identity), scopes[], exp (short), jti.
-- Replay resistance: jti cache with exp horizon + strict clock check +
-  per-mutation idempotency-key uniqueness (#18 acceptance). TLS optional
-  inside anyVPN (the mesh is already encrypted); add TLS when any
-  non-mesh path appears.
-- Confirmation tokens (#4 §5) are single-use and bound to one operation
-  fingerprint; a stop-confirmation never authorizes destroy.
+- Bearer tokens are opaque random values stored only as SHA-256 digests. A
+  token receives exact operation scopes. There is no generic `mutate` scope:
+  `lifecycle:write` cannot snapshot, restore, destroy or confirm a dashboard
+  mutation, and `fleet:read` cannot mutate.
+- Owner-scoped tokens fail closed unless the target spec has a non-empty
+  `created_by` equal to the token owner. Missing or malformed ownership never
+  widens access.
+- `X-Attended` and similar caller assertions carry no authority. A
+  `steward@*` mutation without a cryptographic approval returns a persisted
+  `clusterd-human-approval-intent/v1` and performs no adapter call.
+- A separate process/key holder signs that exact intent. It binds token id,
+  actor, route, method, target, request body hash, current target-spec hash,
+  nonce and expiry. The server stores public authority keys only and consumes
+  each approval exactly once under a lock. Replay, substitution, stale target,
+  expiry and revocation fail before effects.
+- Destructive confirmation remains an additional single-use gate; it never
+  substitutes for the separate human approval required by an unattended
+  steward.
 
 ## 4. Audit (issue #19)
 
@@ -77,6 +84,8 @@ JSON verbatim plus `{audit_id}`.
 
 ## 6. Explicit non-goals (v1)
 
-- No dashboard (M7). No multi-host (fleet phase). No OIDC (product).
+- No OIDC. No claim that bearer auth or human approval alone provides
+  cross-host resource fencing; shared embodiment admission is a separate
+  authority.
 - No agent-specific logic: clusterd knows containers and manifests, not
   Hermes, HMK, or tribe semantics beyond health probes.

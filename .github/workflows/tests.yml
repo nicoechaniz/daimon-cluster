@@ -73,7 +73,14 @@ jobs:
           clusterctl/recovery_rebirth.py
           clusterctl/transfer.py
           clusterd/__main__.py
+          clusterd/approvals.py
+          clusterd/auth.py
+          clusterd/confirm.py
           clusterd/handlers.py
+          clusterd/openapi.py
+          clusterd/routes.py
+          clusterd/server.py
+          steward_tools/mutations.py
           tests/test_matrix_host.py
           tests/test_matrix_host_process.py
           tests/test_matrix_parity.py
@@ -87,6 +94,7 @@ jobs:
           tests/integration/test_recovery_rebirth_containers.py
           tests/test_transfer.py
           tests/test_volume_relocation.py
+          tests/test_human_approvals.py
           scripts/h3-volume-drill.py
       - name: Type-check the Matrix, fence and mutation-journal boundaries
         run: >-
@@ -107,13 +115,19 @@ jobs:
           clusterctl/recovery_rebirth.py
           clusterctl/cli.py
           clusterctl/distributed_rebirth.py
+          clusterd/approvals.py
+          clusterd/auth.py
+          clusterd/confirm.py
+          clusterd/routes.py
+          steward_tools/mutations.py
+          tests/test_human_approvals.py
           tests/test_rebirth.py
           tests/test_recovery_rebirth.py
           tests/integration/recovery-rebirth/role.py
           tests/integration/test_recovery_rebirth_containers.py
+          scripts/h3-volume-drill.py
       - run: >-
           python -m compileall -q clusterctl clusterd steward_tools tests
-          scripts/h3-volume-drill.py
       - run: python -W error::ResourceWarning -m pytest -q
 
   backup-export-disposable:

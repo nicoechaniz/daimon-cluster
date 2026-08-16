@@ -12,7 +12,7 @@ Options:
                            (default docs/contracts/clusterd-openapi-v1.yaml)
 
 Token management (issue #18):
-    --token-create --actor A --scopes read,mutate --owner O --ttl-days N
+    --token-create --actor A --scopes fleet:read,lifecycle:write --owner O --ttl-days N
                            create a token; the RAW token (dcd_<uuid4hex>)
                            is printed ONCE — only its sha256 is stored.
     --token-revoke --token-id ID
@@ -77,8 +77,8 @@ def main(argv=None) -> int:
                         help="list token metadata (never hashes/material)")
     parser.add_argument("--token-id", default=None, help="token id to revoke")
     parser.add_argument("--actor", default=None, help="token actor identity")
-    parser.add_argument("--scopes", default="read",
-                        help="comma-separated scopes: read,mutate")
+    parser.add_argument("--scopes", default="fleet:read",
+                        help="comma-separated exact operation scopes")
     parser.add_argument("--owner", default="*",
                         help="human identity owning daimons, or '*'")
     parser.add_argument("--ttl-days", type=int, default=30,

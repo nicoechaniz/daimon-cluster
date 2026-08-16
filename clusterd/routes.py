@@ -7,7 +7,7 @@ table. Adding a route means adding one ``Route`` entry here plus one handler fun
 
 ``required_scope`` is ENFORCED (issue #18): every route except
 GET /v1/health requires a valid bearer token with the declared scope
-(``read`` | ``mutate``); owner and confirmation checks are declared
+(``fleet:read``, ``lifecycle:write``, etc.); owner and confirmation checks are declared
 here too and enforced in ``clusterd.server``.
 """
 
@@ -28,7 +28,7 @@ class Route:
     clusterctl: str             # CLI equivalent ("same code path")
     idempotency_required: bool = False
     mutation: bool = False
-    required_scope: str | None = "read"  # None -> public (health only)
+    required_scope: str | None = None  # None is allowed only for health
     confirmation_required: bool = False  # destructive class (design §2)
     query_params: tuple = ()             # OpenAPI query parameter dicts
 
@@ -61,8 +61,9 @@ ROUTES: list[Route] = [
         operation_id="getOpenapi",
         summary="OpenAPI 3.0 document generated from the route table",
         handler="openapi_yaml",
-        scope="none",
+        scope="metadata:read",
         clusterctl="n/a (generated from clusterd.routes)",
+        required_scope="metadata:read",
     ),
     Route(
         method="GET",
@@ -72,6 +73,7 @@ ROUTES: list[Route] = [
         handler="list_instances",
         scope="fleet:read",
         clusterctl="clusterctl list --json",
+        required_scope="fleet:read",
         query_params=(
             {
                 "name": "limit", "in": "query", "required": False,
@@ -94,6 +96,7 @@ ROUTES: list[Route] = [
         handler="get_instance",
         scope="fleet:read",
         clusterctl="clusterctl status <name> --json",
+        required_scope="fleet:read",
     ),
     Route(
         method="GET",
@@ -104,6 +107,7 @@ ROUTES: list[Route] = [
         scope="fleet:read",
         clusterctl="reads state_dir/backups/*/ newest .json (same files "
                    "clusterctl snapshot create writes)",
+        required_scope="fleet:read",
     ),
     Route(
         method="GET",
@@ -114,6 +118,7 @@ ROUTES: list[Route] = [
         handler="logs",
         scope="fleet:read",
         clusterctl="clusterctl logs <name> --lines <n> --json",
+        required_scope="fleet:read",
         query_params=({
             "name": "lines",
             "in": "query",
@@ -135,7 +140,7 @@ ROUTES: list[Route] = [
         clusterctl="clusterctl start <name> --idempotency-key <key> --json",
         idempotency_required=True,
         mutation=True,
-        required_scope="mutate",
+        required_scope="lifecycle:write",
     ),
     Route(
         method="POST",
@@ -147,7 +152,7 @@ ROUTES: list[Route] = [
         clusterctl="clusterctl stop <name> --idempotency-key <key> --json",
         idempotency_required=True,
         mutation=True,
-        required_scope="mutate",
+        required_scope="lifecycle:write",
     ),
     Route(
         method="POST",
@@ -159,7 +164,7 @@ ROUTES: list[Route] = [
         clusterctl="clusterctl restart <name> --idempotency-key <key> --json",
         idempotency_required=True,
         mutation=True,
-        required_scope="mutate",
+        required_scope="lifecycle:write",
     ),
     Route(
         method="POST",
@@ -171,7 +176,7 @@ ROUTES: list[Route] = [
         scope="destroy:write",
         clusterctl="clusterctl destroy <name> (archive-first; future milestone)",
         mutation=True,
-        required_scope="mutate",
+        required_scope="destroy:write",
         confirmation_required=True,
     ),
     Route(
@@ -185,7 +190,7 @@ ROUTES: list[Route] = [
         clusterctl="clusterctl snapshot create <name> "
                    "--idempotency-key <key> --json",
         mutation=True,
-        required_scope="mutate",
+        required_scope="backup:write",
     ),
     Route(
         method="POST",
@@ -197,7 +202,7 @@ ROUTES: list[Route] = [
         clusterctl="clusterctl park <name> --idempotency-key <key> --json",
         idempotency_required=True,
         mutation=True,
-        required_scope="mutate",
+        required_scope="lifecycle:write",
     ),
     Route(
         method="POST",
@@ -209,7 +214,7 @@ ROUTES: list[Route] = [
         clusterctl="clusterctl wake <name> --idempotency-key <key> --json",
         idempotency_required=True,
         mutation=True,
-        required_scope="mutate",
+        required_scope="lifecycle:write",
     ),
     Route(
         method="GET",
@@ -219,6 +224,7 @@ ROUTES: list[Route] = [
         handler="audit_tail",
         scope="fleet:read",
         clusterctl="reads audit.jsonl directly (same file clusterctl appends to)",
+        required_scope="fleet:read",
         query_params=(
             {
                 "name": "limit",
@@ -262,15 +268,11 @@ ROUTES: list[Route] = [
         method="GET",
         path="/v1/dashboard",
         operation_id="getDashboard",
-        summary="HTMX fleet dashboard shell (public static app; ALL data "
-                "fetches go through the auth-gated read routes — the shell "
-                "itself carries no data)",
+        summary="Authenticated HTMX fleet dashboard shell",
         handler="dashboard",
-        scope="fleet:read",
+        scope="dashboard:read",
         clusterctl="thin client of GET /v1/{instances,health,backups,audit}",
-        required_scope=None,  # public shell: a browser navigation sends no
-                             # Authorization header; the JS prompts for the
-                             # token and attaches it to every HTMX data call
+        required_scope="dashboard:read",
     ),
     Route(
         method="GET",
@@ -280,6 +282,7 @@ ROUTES: list[Route] = [
         handler="list_embodiments",
         scope="fleet:read",
         clusterctl="reads state_dir/embodiments.json (same registry clusterctl writes)",
+        required_scope="fleet:read",
     ),
     Route(
         method="GET",
@@ -289,6 +292,7 @@ ROUTES: list[Route] = [
         handler="list_resource_fences",
         scope="fleet:read",
         clusterctl="reads state_dir/leases/*.json resource-fence/v1 records",
+        required_scope="fleet:read",
     ),
     Route(
         method="GET",
@@ -298,6 +302,7 @@ ROUTES: list[Route] = [
         handler="weave_status",
         scope="fleet:read",
         clusterctl="reads state_dir/weave/{being-manifest.json,runtime.json,ledger.sqlite}",
+        required_scope="fleet:read",
     ),
     Route(
         method="GET",
@@ -307,6 +312,7 @@ ROUTES: list[Route] = [
         handler="weave_differences",
         scope="fleet:read",
         clusterctl="uses the installed daimon-matrix scope_diff client",
+        required_scope="fleet:read",
         query_params=(
             {
                 "name": "embodiment_id", "in": "query", "required": True,
@@ -334,6 +340,7 @@ ROUTES: list[Route] = [
         handler="dashboard_prepare",
         scope="dashboard:prepare",
         clusterctl="n/a (local plan proposal; calls steward_tools.mutations.propose_<op>)",
+        required_scope="dashboard:prepare",
     ),
     Route(
         method="POST",
@@ -344,7 +351,7 @@ ROUTES: list[Route] = [
         scope="dashboard:confirm",
         clusterctl="n/a (execution; calls steward_tools.mutations.confirm_plan)",
         mutation=True,
-        required_scope="mutate",
+        required_scope="dashboard:confirm",
     ),
     Route(
         method="POST",
@@ -355,7 +362,7 @@ ROUTES: list[Route] = [
         scope="restore:write",
         clusterctl="clusterctl restore <name> (placeholder; future milestone)",
         mutation=True,
-        required_scope="mutate",
+        required_scope="restore:write",
     ),
 ]
 

@@ -62,7 +62,8 @@ def _req(srv, method, path, token=None, headers=None):
         return exc.code, json.loads(body) if body else {}
 
 
-def _token(state_dir, actor="tester", scopes=("read", "mutate"), owner="*", ttl_days=1):
+def _token(state_dir, actor="tester", scopes=None, owner="*", ttl_days=1):
+    scopes = tuple(clusterd_auth.VALID_SCOPES) if scopes is None else scopes
     _, raw = clusterd_auth.create_token(state_dir, actor=actor,
                                         scopes=list(scopes), owner=owner,
                                         ttl_days=ttl_days)
@@ -89,7 +90,7 @@ def test_valid_token_reads(server):
 
 def test_read_scope_cannot_mutate(server):
     srv, _, state_dir = server
-    tok = _token(state_dir, scopes=("read",))
+    tok = _token(state_dir, scopes=("fleet:read",))
     status, body = _req(srv, "POST", f"/v1/instances/{NAME}/stop", token=tok,
                         headers={"Idempotency-Key": IDEM})
     assert status == 403 and body["error"] == "insufficient-scope"
@@ -111,15 +112,24 @@ def test_owner_cannot_touch_anothers_daimon(server):
     assert _req(srv, "GET", f"/v1/instances/{NAME}", token=tok)[0] == 403
 
 
-def test_unattended_steward_denied_attended_allowed(server):
+def test_unattended_steward_requires_cryptographic_approval(server):
     srv, _, state_dir = server
-    tok = _token(state_dir, actor="steward@daimonmatrix", scopes=("mutate",))
+    tok = _token(
+        state_dir,
+        actor="steward@daimonmatrix",
+        scopes=("lifecycle:write",),
+    )
     status, body = _req(srv, "POST", f"/v1/instances/{NAME}/stop", token=tok,
                         headers={"Idempotency-Key": IDEM})
-    assert status == 403 and body["error"] == "unattended-steward-denied"
-    status, _ = _req(srv, "POST", f"/v1/instances/{NAME}/stop", token=tok,
-                     headers={"Idempotency-Key": IDEM, "X-Attended": "true"})
-    assert status == 200
+    assert status == 409 and body["error"] == "human-approval-required"
+    status, body = _req(
+        srv,
+        "POST",
+        f"/v1/instances/{NAME}/stop",
+        token=tok,
+        headers={"Idempotency-Key": IDEM, "X-Attended": "true"},
+    )
+    assert status == 409 and body["error"] == "human-approval-required"
 
 
 def test_destroy_challenge_and_confirm_binding(server):

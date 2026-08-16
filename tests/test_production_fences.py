@@ -113,7 +113,12 @@ def _authorization(
     embodiment_id: str = EMBODIMENT,
     incarnation_id: str = INCARNATION,
     issued_ms: int = 1_800_000_000_000,
+    fence_ttl_s: int | None = None,
 ) -> dict:
+    if fence_ttl_s is None and operation == "acquire":
+        fence_ttl_s = 3600
+    elif fence_ttl_s is None and operation == "renew":
+        fence_ttl_s = 120
     return create_holder_authorization(
         holder,
         operation=operation,
@@ -123,6 +128,8 @@ def _authorization(
         resource_ref=resource_ref,
         expected_epoch=position["epoch"],
         expected_proof=position["proof"],
+        expected_current=position["current"],
+        fence_ttl_s=fence_ttl_s,
         issued_ms=issued_ms,
         ttl_s=60,
         nonce=f"{operation}:{resource_ref}:{position['epoch']}",
@@ -146,6 +153,7 @@ def _acquire(
         position=position,
         resource_ref=resource_ref,
         issued_ms=observed_at_ms - 1,
+        fence_ttl_s=ttl_s,
     )
     return store.acquire(
         resource_ref,
@@ -415,6 +423,8 @@ def test_signed_acquire_is_exact_and_matrix_verifier_compatible(tmp_path, keys):
         ("operation", "renew"),
         ("expected_epoch", 8),
         ("expected_proof", "cluster:fence-proof:v1:wrong"),
+        ("expected_current", True),
+        ("fence_ttl_s", 1),
     ],
 )
 def test_wrong_authorization_binding_fails_closed(tmp_path, keys, field, replacement):
@@ -522,6 +532,7 @@ def test_mutation_time_is_authority_owned_bounded_and_rollback_safe(tmp_path, ke
         operation="renew",
         position=position,
         issued_ms=NOW_MS + 100_000,
+        fence_ttl_s=1,
     )
     with pytest.raises(InvalidSignature, match="time"):
         store.renew(
@@ -548,6 +559,8 @@ def test_mutation_time_is_authority_owned_bounded_and_rollback_safe(tmp_path, ke
             resource_ref=RESOURCE,
             expected_epoch=position["epoch"],
             expected_proof=position["proof"],
+            expected_current=position["current"],
+            fence_ttl_s=1,
             issued_ms=NOW_MS,
             ttl_s=301,
             nonce="overlong",
@@ -573,6 +586,7 @@ def test_mutation_time_is_authority_owned_bounded_and_rollback_safe(tmp_path, ke
         operation="renew",
         position=position,
         issued_ms=held["created_ms"] - 1,
+        fence_ttl_s=1,
     )
     with pytest.raises(FenceError, match="rolled back"):
         store.renew(

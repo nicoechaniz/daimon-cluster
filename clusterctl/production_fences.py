@@ -29,7 +29,7 @@ from .fences import (
     now_ms,
 )
 
-AUTHORIZATION_SCHEMA = "resource-fence-holder-authorization/v1"
+AUTHORIZATION_SCHEMA = "resource-fence-holder-authorization/v2"
 HOLDER_ENROLLMENT_SCHEMA = "resource-fence-holder-enrollment/v1"
 SUPPORT_SCHEMA = "resource-fence-support/v1"
 DATABASE_SCHEMA = "resource-fence-sqlite/v2"
@@ -93,6 +93,8 @@ def create_holder_authorization(
     resource_ref: str,
     expected_epoch: int,
     expected_proof: str | None,
+    expected_current: bool,
+    fence_ttl_s: int | None,
     issued_ms: int | None = None,
     ttl_s: int = 60,
     nonce: str,
@@ -101,6 +103,17 @@ def create_holder_authorization(
 
     if operation not in _OPERATIONS:
         raise FenceError("invalid holder operation")
+    if not isinstance(expected_current, bool):
+        raise FenceError("invalid expected current position")
+    if operation == "release":
+        if fence_ttl_s is not None:
+            raise FenceError("release authorization cannot carry a fence TTL")
+    elif (
+        isinstance(fence_ttl_s, bool)
+        or not isinstance(fence_ttl_s, int)
+        or not 1 <= fence_ttl_s <= MAX_FENCE_TTL_S
+    ):
+        raise FenceError("authorized fence TTL is out of bounds")
     timestamp = now_ms() if issued_ms is None else issued_ms
     if (
         isinstance(ttl_s, bool)
@@ -119,6 +132,8 @@ def create_holder_authorization(
         "holder_pubkey": signer.public_key,
         "expected_epoch": expected_epoch,
         "expected_proof": expected_proof,
+        "expected_current": expected_current,
+        "fence_ttl_s": fence_ttl_s,
         "issued_ms": timestamp,
         "expires_at_ms": timestamp + ttl_s * 1000,
         "nonce": nonce,
@@ -630,6 +645,8 @@ class ProductionFenceStore:
         holder_pubkey: str,
         expected_epoch: int,
         expected_proof: str | None,
+        expected_current: bool,
+        fence_ttl_s: int | None,
         observed_at_ms: int,
     ) -> sqlite3.Row:
         if not isinstance(authorization, dict):
@@ -645,8 +662,16 @@ class ProductionFenceStore:
             "holder_pubkey": holder_pubkey,
             "expected_epoch": expected_epoch,
             "expected_proof": expected_proof,
+            "expected_current": expected_current,
+            "fence_ttl_s": fence_ttl_s,
         }
-        if any(authorization.get(key) != value for key, value in expected.items()):
+        if set(authorization) != {
+            *expected,
+            "issued_ms",
+            "expires_at_ms",
+            "nonce",
+            "signature",
+        } or any(authorization.get(key) != value for key, value in expected.items()):
             raise InvalidSignature("holder authorization binding mismatch")
         issued_ms = authorization.get("issued_ms")
         expires_at_ms = authorization.get("expires_at_ms")
@@ -1106,6 +1131,8 @@ class ProductionFenceStore:
                 holder_pubkey=pubkey,
                 expected_epoch=actual_epoch,
                 expected_proof=actual_proof,
+                expected_current=row is not None and row["current_json"] is not None,
+                fence_ttl_s=ttl_s,
                 observed_at_ms=timestamp,
             )
             evidence = self._signed_evidence(
@@ -1156,6 +1183,13 @@ class ProductionFenceStore:
             current = self._verify_position(connection, row)
             if self._is_expired(current, timestamp):
                 raise FenceConflict("expired resource fence cannot be renewed")
+            ttl_s = current["ttl_s"] if new_ttl_s is None else new_ttl_s
+            if (
+                isinstance(ttl_s, bool)
+                or not isinstance(ttl_s, int)
+                or not 1 <= ttl_s <= MAX_FENCE_TTL_S
+            ):
+                raise FenceError("production fence TTL is out of bounds")
             self._verify_authorization(
                 connection,
                 authorization,
@@ -1168,15 +1202,10 @@ class ProductionFenceStore:
                 holder_pubkey=current["holder_pubkey"],
                 expected_epoch=actual_epoch,
                 expected_proof=actual_proof,
+                expected_current=True,
+                fence_ttl_s=ttl_s,
                 observed_at_ms=timestamp,
             )
-            ttl_s = current["ttl_s"] if new_ttl_s is None else new_ttl_s
-            if (
-                isinstance(ttl_s, bool)
-                or not isinstance(ttl_s, int)
-                or not 1 <= ttl_s <= MAX_FENCE_TTL_S
-            ):
-                raise FenceError("production fence TTL is out of bounds")
             evidence = self._signed_evidence(
                 {
                     **{
@@ -1232,6 +1261,8 @@ class ProductionFenceStore:
                 holder_pubkey=current["holder_pubkey"],
                 expected_epoch=actual_epoch,
                 expected_proof=actual_proof,
+                expected_current=True,
+                fence_ttl_s=None,
                 observed_at_ms=timestamp,
             )
             evidence = self._signed_evidence(

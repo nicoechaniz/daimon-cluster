@@ -718,6 +718,7 @@ class AdmissionClient:
         if (
             not isinstance(result, dict)
             or not isinstance(result.get("epoch"), int)
+            or not isinstance(result.get("current"), bool)
             or result.get("resource_ref")
             != admission_resource_ref(self.being_ref, self.embodiment_id)
         ):
@@ -732,6 +733,12 @@ class AdmissionClient:
     def _mutation(self, action: str, *, ttl_s: int | None = None) -> dict[str, Any]:
         position = self._position()
         resource_ref = str(position["resource_ref"])
+        if action != "release" and (
+            isinstance(ttl_s, bool)
+            or not isinstance(ttl_s, int)
+            or not 1 <= ttl_s <= MAX_FENCE_TTL_S
+        ):
+            raise AdmissionError("admission lease TTL is out of bounds")
         authorization = create_holder_authorization(
             self.holder_signer,
             operation=action,
@@ -741,6 +748,8 @@ class AdmissionClient:
             resource_ref=resource_ref,
             expected_epoch=position["epoch"],
             expected_proof=position.get("proof"),
+            expected_current=bool(position.get("current")),
+            fence_ttl_s=ttl_s,
             nonce=str(uuid.uuid4()),
         )
         values = {
@@ -750,8 +759,6 @@ class AdmissionClient:
             "authorization": authorization,
         }
         if ttl_s is not None:
-            if not 1 <= ttl_s <= MAX_FENCE_TTL_S:
-                raise AdmissionError("admission lease TTL is out of bounds")
             values["ttl_s"] = ttl_s
         result = self._call(action, **values)
         return self.verify_receipt(result, expected_action=action)
@@ -818,7 +825,7 @@ class FenceMutationClient(AdmissionClient):
     bound to the exact prepared holder signature.
     """
 
-    PREPARED_SCHEMA = "dm.cluster.fence-mutation-prepared/v1"
+    PREPARED_SCHEMA = "dm.cluster.fence-mutation-prepared/v2"
 
     def embodiment_current(self) -> dict[str, Any] | None:
         return AdmissionClient.current(self)
@@ -859,6 +866,15 @@ class FenceMutationClient(AdmissionClient):
         if operation not in {"acquire", "renew", "release"}:
             raise AdmissionError("fence mutation operation is invalid")
         position = self.position(resource_ref)
+        if ttl_s is None:
+            ttl_s = self.lease_ttl_s
+        mutation_ttl_s = None if operation == "release" else ttl_s
+        if operation != "release" and (
+            isinstance(mutation_ttl_s, bool)
+            or not isinstance(mutation_ttl_s, int)
+            or not 1 <= mutation_ttl_s <= MAX_FENCE_TTL_S
+        ):
+            raise AdmissionError("fence lease TTL is out of bounds")
         authorization = create_holder_authorization(
             self.holder_signer,
             operation=operation,
@@ -868,12 +884,10 @@ class FenceMutationClient(AdmissionClient):
             resource_ref=resource_ref,
             expected_epoch=position["epoch"],
             expected_proof=position.get("proof"),
+            expected_current=bool(position.get("current")),
+            fence_ttl_s=mutation_ttl_s,
             nonce=str(uuid.uuid4()),
         )
-        if ttl_s is None:
-            ttl_s = self.lease_ttl_s
-        if operation != "release" and not 1 <= ttl_s <= MAX_FENCE_TTL_S:
-            raise AdmissionError("fence lease TTL is out of bounds")
         return {
             "schema": self.PREPARED_SCHEMA,
             "operation": operation,
@@ -882,28 +896,97 @@ class FenceMutationClient(AdmissionClient):
             "successor_epoch": position["epoch"] + 1,
             "authorization": authorization,
             "authorization_ref": ProductionFenceStore.proof_ref(authorization),
-            "ttl_s": None if operation == "release" else ttl_s,
+            "ttl_s": mutation_ttl_s,
         }
 
-    @staticmethod
     def _validate_prepared(
+        self,
         prepared: Mapping[str, Any],
     ) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
-        if prepared.get("schema") != FenceMutationClient.PREPARED_SCHEMA:
+        if set(prepared) != {
+            "schema",
+            "operation",
+            "resource_ref",
+            "expected_position",
+            "successor_epoch",
+            "authorization",
+            "authorization_ref",
+            "ttl_s",
+        } or prepared.get("schema") != self.PREPARED_SCHEMA:
             raise AdmissionError("prepared fence mutation is malformed")
         operation = prepared.get("operation")
         resource_ref = prepared.get("resource_ref")
         position = prepared.get("expected_position")
         authorization = prepared.get("authorization")
+        ttl_s = prepared.get("ttl_s")
+        authorization_fields = {
+            "schema",
+            "operation",
+            "body_ref",
+            "embodiment_id",
+            "incarnation_id",
+            "resource_ref",
+            "holder_key_id",
+            "holder_pubkey",
+            "expected_epoch",
+            "expected_proof",
+            "expected_current",
+            "fence_ttl_s",
+            "issued_ms",
+            "expires_at_ms",
+            "nonce",
+            "signature",
+        }
         if (
             operation not in {"acquire", "renew", "release"}
             or not isinstance(resource_ref, str)
+            or not resource_ref
             or not isinstance(position, dict)
+            or set(position) != {"resource_ref", "epoch", "proof", "current"}
             or position.get("resource_ref") != resource_ref
             or not isinstance(authorization, dict)
+            or set(authorization) != authorization_fields
+            or authorization.get("operation") != operation
+            or authorization.get("body_ref") != self.body_ref
+            or authorization.get("embodiment_id") != self.embodiment_id
+            or authorization.get("incarnation_id") != self.incarnation_id
+            or authorization.get("resource_ref") != resource_ref
+            or authorization.get("holder_key_id") != self.holder_signer.key_id
+            or authorization.get("holder_pubkey") != self.holder_signer.public_key
+            or authorization.get("expected_epoch") != position.get("epoch")
+            or authorization.get("expected_proof") != position.get("proof")
+            or authorization.get("expected_current") != position.get("current")
+            or authorization.get("fence_ttl_s") != ttl_s
+            or not isinstance(authorization.get("nonce"), str)
+            or not authorization.get("nonce")
+            or not isinstance(authorization.get("signature"), str)
+            or not self.holder_signer.verify(
+                _canonical(authorization),
+                str(authorization.get("signature")),
+                self.holder_signer.public_key,
+            )
             or prepared.get("authorization_ref")
             != ProductionFenceStore.proof_ref(authorization)
+            or isinstance(position.get("epoch"), bool)
+            or not isinstance(position.get("epoch"), int)
+            or not isinstance(position.get("current"), bool)
+            or (
+                position.get("proof") is not None
+                and not isinstance(position.get("proof"), str)
+            )
+            or isinstance(prepared.get("successor_epoch"), bool)
             or prepared.get("successor_epoch") != position.get("epoch", -2) + 1
+            or (
+                operation == "release" and ttl_s is not None
+            )
+            or (
+                operation != "release"
+                and (
+                    isinstance(ttl_s, bool)
+                    or not isinstance(ttl_s, int)
+                    or not 1 <= ttl_s <= MAX_FENCE_TTL_S
+                )
+            )
         ):
             raise AdmissionError("prepared fence mutation binding is invalid")
         return str(operation), resource_ref, position, authorization

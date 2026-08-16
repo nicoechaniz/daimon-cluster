@@ -48,11 +48,13 @@ persisted in the open operation journal. A compensation precondition failure
 marks the operation degraded instead of leaving a false stopped claim.
 
 The same transport also exposes `FenceMutationClient` for concrete writable
-resources. A host persists a holder-signed prepared mutation (exact resource,
-predecessor epoch/proof, nonce and expected successor) before asking the
-authority to commit it. Before any retry submits a CAS, it reads the authority
-and adopts only the already-signed successor whose `authorization_ref` hashes
-those exact prepared bytes. Park
+resources. A host persists a holder-signed prepared mutation whose
+`authorization_ref` hashes the exact operation, resource, predecessor
+epoch/proof/current state, requested fence TTL, holder authorization, nonce and
+derived successor before asking the authority to commit it. Both client and
+authority recalculate those bindings; editing any prepared semantic is refused.
+Before any retry submits a CAS, it reads the authority and adopts only the
+already-signed successor with that exact `authorization_ref`. Park
 records the authority receipt in its Ed25519-signed checkpoint manifest;
 wake/transfer commit that successor before spec, create, volume or start
 effects. A verifier-only local database is never a handoff mutator.

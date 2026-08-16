@@ -18,13 +18,16 @@ renew, release or verification.
 ## Holder authorization
 
 Every mutation carries a short-lived
-`resource-fence-holder-authorization/v1` signed by the holder's Ed25519 key.
+`resource-fence-holder-authorization/v2` signed by the holder's Ed25519 key.
+V2 binds the requested fence TTL and the complete predecessor position in
+addition to the holder, operation, resource and nonce; V1 is not accepted.
 The signed payload binds all of:
 
 - operation (`acquire`, `renew` or `release`);
 - body, embodiment and current incarnation;
 - exact resource and holder key id/public key;
-- expected high-water epoch and proof;
+- expected high-water epoch, proof and current/tombstone state;
+- requested fence TTL (`null` only for release);
 - issue/expiry times and a non-empty nonce.
 
 Cluster verifies the authorization and registered holder key inside the same

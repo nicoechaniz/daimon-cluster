@@ -860,6 +860,8 @@ def test_real_host_keeps_curator_worker_separate_and_replays_one_result(
         resource_ref=shared_item["resource_ref"],
         expected_epoch=fence_position["epoch"],
         expected_proof=fence_position["proof"],
+        expected_current=fence_position["current"],
+        fence_ttl_s=3600,
         issued_ms=now_ms - 1,
         ttl_s=60,
         nonce="real-process-production-fence",

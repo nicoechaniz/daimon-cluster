@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import multiprocessing
 import os
 import time
@@ -471,3 +472,157 @@ def test_fence_client_commits_and_recovers_one_exact_signed_successor(
         "proof": renewed["proof_ref"],
         "current": True,
     }
+
+
+def test_fence_prepared_ttl_tamper_fails_before_authority_mutation(
+    authority_fixture: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority = authority_fixture["authority"]
+    registrar = authority_fixture["registrar"]
+    coordinates = _coordinates("ttl-binding")
+    holder = _key(tmp_path / "holder/ttl-binding.pem", "holder-ttl-binding")
+    enrollment_client = _client(
+        authority_fixture["socket"], holder, authority, coordinates
+    )
+    _enroll(
+        enrollment_client,
+        registrar,
+        holder,
+        coordinates,
+        authority_fixture["clock"].value,
+    )
+    client = _fence_client(
+        authority_fixture["socket"], holder, authority, coordinates
+    )
+    resource_ref = "cluster:exclusive-volume:ttl-binding-home"
+    client.commit(client.prepare(resource_ref, operation="acquire", ttl_s=60))
+    prepared = client.prepare(resource_ref, operation="renew", ttl_s=60)
+    before = client.position(resource_ref)
+    renew_calls = 0
+    store = authority_fixture["server"].authority._store
+    real_renew = store.renew
+
+    def counted_renew(*args, **kwargs):
+        nonlocal renew_calls
+        renew_calls += 1
+        return real_renew(*args, **kwargs)
+
+    monkeypatch.setattr(store, "renew", counted_renew)
+    tampered = copy.deepcopy(prepared)
+    tampered["ttl_s"] = 300
+    with pytest.raises(AdmissionError, match="binding"):
+        client.commit(tampered)
+    assert renew_calls == 0
+    assert client.position(resource_ref) == before
+
+    with pytest.raises(AdmissionError, match="binding"):
+        client._call(
+            "fence-renew",
+            **client._coordinates(),
+            resource_ref=resource_ref,
+            expected_epoch=prepared["expected_position"]["epoch"],
+            expected_proof=prepared["expected_position"]["proof"],
+            authorization=prepared["authorization"],
+            ttl_s=300,
+        )
+    assert renew_calls == 1
+    assert client.position(resource_ref) == before
+
+    renew_calls = 0
+    committed = client.commit(prepared)
+    replay = client.commit(prepared)
+    assert renew_calls == 1
+    assert replay["proof_ref"] == committed["proof_ref"]
+
+
+def test_every_prepared_semantic_field_is_exactly_bound_before_mutation(
+    authority_fixture: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority = authority_fixture["authority"]
+    registrar = authority_fixture["registrar"]
+    coordinates = _coordinates("prepared-binding")
+    holder = _key(
+        tmp_path / "holder/prepared-binding.pem", "holder-prepared-binding"
+    )
+    enrollment_client = _client(
+        authority_fixture["socket"], holder, authority, coordinates
+    )
+    _enroll(
+        enrollment_client,
+        registrar,
+        holder,
+        coordinates,
+        authority_fixture["clock"].value,
+    )
+    client = _fence_client(
+        authority_fixture["socket"], holder, authority, coordinates
+    )
+    resource_ref = "cluster:exclusive-volume:prepared-binding-home"
+    client.commit(client.prepare(resource_ref, operation="acquire", ttl_s=60))
+    prepared = client.prepare(resource_ref, operation="renew", ttl_s=60)
+    before = client.position(resource_ref)
+    renew_calls = 0
+    store = authority_fixture["server"].authority._store
+    real_renew = store.renew
+
+    def counted_renew(*args, **kwargs):
+        nonlocal renew_calls
+        renew_calls += 1
+        return real_renew(*args, **kwargs)
+
+    monkeypatch.setattr(store, "renew", counted_renew)
+    cases = {
+        "schema": ("schema", "dm.cluster.fence-mutation-prepared/v1"),
+        "operation": ("operation", "release"),
+        "resource": ("resource_ref", resource_ref + ":other"),
+        "predecessor-resource": (
+            "expected_position.resource_ref",
+            resource_ref + ":other",
+        ),
+        "predecessor-epoch": ("expected_position.epoch", 99),
+        "predecessor-proof": ("expected_position.proof", "wrong-proof"),
+        "predecessor-current": ("expected_position.current", False),
+        "successor": ("successor_epoch", 99),
+        "ttl": ("ttl_s", 300),
+        "authorization-schema": (
+            "authorization.schema",
+            "resource-fence-holder-authorization/v1",
+        ),
+        "authorization-operation": ("authorization.operation", "release"),
+        "authorization-body": ("authorization.body_ref", "cluster:body:other"),
+        "authorization-embodiment": (
+            "authorization.embodiment_id",
+            "dm:embodiment:other",
+        ),
+        "authorization-incarnation": (
+            "authorization.incarnation_id",
+            "dm:incarnation:other",
+        ),
+        "authorization-resource": (
+            "authorization.resource_ref",
+            resource_ref + ":other",
+        ),
+        "authorization-key-id": ("authorization.holder_key_id", "other-key"),
+        "authorization-key": ("authorization.holder_pubkey", "ssh-ed25519 bad"),
+        "authorization-epoch": ("authorization.expected_epoch", 99),
+        "authorization-proof": ("authorization.expected_proof", "wrong-proof"),
+        "authorization-current": ("authorization.expected_current", False),
+        "authorization-ttl": ("authorization.fence_ttl_s", 300),
+        "authorization-issued": ("authorization.issued_ms", 1),
+        "authorization-expiry": ("authorization.expires_at_ms", 2),
+        "authorization-nonce": ("authorization.nonce", "other-nonce"),
+        "authorization-signature": ("authorization.signature", "ED25519:bad"),
+        "authorization-ref": ("authorization_ref", "cluster:fence-proof:v1:bad"),
+    }
+    for label, (path, replacement) in cases.items():
+        tampered = copy.deepcopy(prepared)
+        owner: dict[str, Any] = tampered
+        segments = path.split(".")
+        for segment in segments[:-1]:
+            owner = owner[segment]
+        owner[segments[-1]] = replacement
+        with pytest.raises(AdmissionError, match="malformed|binding") as raised:
+            client.commit(tampered)
+        assert raised.value, label
+        assert renew_calls == 0, label
+        assert client.position(resource_ref) == before, label

@@ -3,8 +3,8 @@
 Status: normative cross-repository contract for the V0 hosted runtime.
 
 “Matrix” in this document means our `daimon-matrix` component. Matrix.org is
-not used. The `daimonmatrix host` is the VPS where Cluster can realize bodies;
-it is not a software component or an identity authority.
+not used. Historical references to a similarly named host do not make that
+host an RC target; this contract assumes no existing infrastructure.
 
 ## Authority boundaries
 
@@ -27,14 +27,13 @@ Cluster pins `daimon-matrix` by full Git commit in
 An unpinned wheel, editable checkout, wrong commit or schema downgrade fails
 closed. Cluster does not carry a fallback implementation.
 
-The V0 recovery candidate pin is Matrix commit
-`96e9b112053b02e91d2f0f9add4b507c32058889`, consolidating the additive
-fresh-embodiment draft and the
-audited DM-055/DM-083 reboot/status candidate
-`915c56c8899fd53d683bd7c7c81c3465b600bed9`. It is not a release pin until
-both reviews and the cross-repository acceptance gate complete.
-The adapter accepts the additive runtime bundle line V1 through V7 and checks
-every corresponding public schema constant before opening state. It also
+The V0 RC pin is the merged Matrix commit
+`09414d6edd9586f539be8272c4979d0b36c86b87`, consolidating the additive
+fresh-embodiment, distributed-custody, least-authority capability and recovery
+work. Historical deployed-pair commits are recorded in dated receipts, not in
+the current execution contract. The only production-shaped RC bundle is V7
+and the only client configuration is V3; older undeployed formats fail closed
+at both Matrix and Cluster boundaries. The adapter also
 checks the closed DM-031 item/claim/result/inspection schemas, work kinds,
 coordination modes, exact four-method curator capability and the complete
 DM-034 profile/intent/receipt/reconciliation/rebuild schema line introduced at
@@ -42,14 +41,11 @@ Matrix merge `1b133976932cbbc0914ba4ecc403020c647f53c1`; the current pin is an
 audited additive descendant of that merge. Bundle contents remain Matrix
 authority; Cluster only validates the hosting envelope.
 
-DM-083 gate (2026-08-11): Matrix PR #112 is frozen at the exact commit above
-after the live-canary preflight exposed a rolling-deadline conflict during
-post-commit peer-response recovery and the first full host reboot exposed a
-missing least-authority clusterd status client. Cluster owns source and
-installed-process verification of this pin, the additive client config V2
-constant and the exact five-method status-observer set. Cluster does not
-interpret historical servers or Matrix custody. Any later Matrix candidate
-change requires another exact repin and complete downstream gate.
+Cluster owns source and installed-process verification of the exact pin, the
+V7 client config/binding boundary and the exact five-method status-observer
+set. Cluster does not interpret historical servers or Matrix custody. Any
+later Matrix candidate change requires another exact repin and complete
+downstream gate.
 
 H7 adds the Matrix `operator_rebirth` contract to the same closed import gate.
 Cluster accepts only the root-authorized package produced by the exact pin,
@@ -162,8 +158,9 @@ embodiment's keys. Creating a new body is a new embodiment, not a relocation.
 
 ## Tribe Bridge
 
-Tribe Bridge remains temporarily deployed for ordinary human messages and its
-own authenticated transport/deduplication/ACK evidence. It is not the Matrix
+Tribe Bridge remains a transitional option for ordinary human messages and its
+own authenticated transport/deduplication/ACK evidence. No deployment is
+assumed. It is not the Matrix
 peer wire, does not carry canonical `/we.sync` authority, and its ACK is never
 Matrix recipient intake or a semantic receipt. Matrix DM-051 through DM-055 and
 DM-082 independently own recipient encryption, logical message legs,

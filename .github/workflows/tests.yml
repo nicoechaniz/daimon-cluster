@@ -97,7 +97,11 @@ jobs:
           tests/test_transfer.py
           tests/test_volume_relocation.py
           tests/test_human_approvals.py
+          tests/test_physical_preflight.py
+          tests/test_rc_manifest.py
           scripts/h3-volume-drill.py
+          tools/build_physical_preflight.py
+          tools/build_rc_manifest.py
       - name: Type-check the Matrix, fence and mutation-journal boundaries
         run: >-
           python -m mypy --follow-imports=skip --ignore-missing-imports
@@ -129,9 +133,11 @@ jobs:
           tests/test_recovery_rebirth.py
           tests/integration/recovery-rebirth/role.py
           tests/integration/test_recovery_rebirth_containers.py
+          tools/build_physical_preflight.py
+          tools/build_rc_manifest.py
           scripts/h3-volume-drill.py
       - run: >-
-          python -m compileall -q clusterctl clusterd steward_tools tests
+          python -m compileall -q clusterctl clusterd steward_tools tests tools
       - run: python -W error::ResourceWarning -m pytest -q
 
   backup-export-disposable:
@@ -165,7 +171,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: AlterMundi/daimon-matrix
-          ref: 96e9b112053b02e91d2f0f9add4b507c32058889
+          ref: 09414d6edd9586f539be8272c4979d0b36c86b87
           path: matrix-source
           fetch-depth: 0
           persist-credentials: false
@@ -181,7 +187,7 @@ jobs:
           done
           docker version
           test "$(git -C matrix-source rev-parse HEAD)" = \
-            96e9b112053b02e91d2f0f9add4b507c32058889
+            09414d6edd9586f539be8272c4979d0b36c86b87
       - name: Prove isolated recovery roles and read-only snapshot restore
         env:
           DAIMON_RUN_DOCKER_RECOVERY_TESTS: "1"

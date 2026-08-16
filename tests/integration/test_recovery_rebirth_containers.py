@@ -15,7 +15,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MATRIX_COMMIT = "96e9b112053b02e91d2f0f9add4b507c32058889"
+MATRIX_COMMIT = "09414d6edd9586f539be8272c4979d0b36c86b87"
 pytestmark = pytest.mark.skipif(
     os.environ.get("DAIMON_RUN_DOCKER_RECOVERY_TESTS") != "1"
     or not os.environ.get("DAIMON_MATRIX_SOURCE"),
@@ -415,7 +415,7 @@ def test_recovery_roles_cross_only_closed_mounts(tmp_path: Path) -> None:
                         row["name"] for row in recovery_manifest["files"]
                     ),
                     "roles": [
-                    "synthetic-bootstrap",
+                        "synthetic-bootstrap",
                         "source-host",
                         "offline-root",
                         "target-preparation",

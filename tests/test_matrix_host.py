@@ -19,6 +19,14 @@ from daimon_matrix.curator import (
     create_curator_item,
 )
 from daimon_matrix.ledger import Ledger
+from daimon_matrix.operator_capabilities import (
+    HOST_PROFILE_NAMES,
+    OPERATOR_PROFILE_NAMES,
+    host_capability_profile,
+    host_capability_slot,
+    operator_capability_profile,
+    operator_capability_slot,
+)
 
 from clusterctl import matrix_host as matrix_host_module
 from clusterctl.embodiments import Registry
@@ -45,6 +53,36 @@ def _running(state_dir):
     registry.register(body_ref=BODY, embodiment_id=EMBODIMENT)
     registry.start(EMBODIMENT, incarnation_id=INCARNATION, started_at_ms=1)
     return registry
+
+
+def _snapshot_bundle(origin: dict) -> dict:
+    runtime_label = "snapshot-fixture"
+    runtime_id = "dm:runtime:v1:" + "a" * 43
+    capabilities = [
+        {
+            "descriptor": {"fixture": role},
+            "profile": operator_capability_profile(role),
+            "runtime_id": runtime_id,
+            "secret_slot": operator_capability_slot(runtime_label, role),
+        }
+        for role in OPERATOR_PROFILE_NAMES
+    ] + [
+        {
+            "descriptor": {"fixture": role},
+            "profile": host_capability_profile(role),
+            "runtime_id": runtime_id,
+            "secret_slot": host_capability_slot(runtime_label, role),
+        }
+        for role in HOST_PROFILE_NAMES
+    ]
+    return {
+        "schema": "dm.runtime.bundle/v7",
+        "local_origin": origin,
+        "socket": "matrix.sock",
+        "runtime_id": runtime_id,
+        "runtime_label": runtime_label,
+        "capabilities": capabilities,
+    }
 
 
 def test_body_snapshot_is_exact_registry_bound_and_filters_fences(tmp_path):
@@ -382,14 +420,15 @@ def test_registry_and_matrix_roots_are_owner_only_and_opaque(tmp_path):
         "dm.runtime.bundle/v6",
     ],
 )
-def test_public_bundle_accepts_the_pinned_additive_line(tmp_path, schema):
+def test_public_bundle_rejects_undeployed_legacy_schemas(tmp_path, schema):
     root = tmp_path / "runtime"
     root.mkdir(mode=0o700)
     bundle = root / "runtime.json"
     bundle.write_text(json.dumps({"schema": schema}), encoding="utf-8")
     bundle.chmod(0o600)
 
-    assert matrix_host_module._public_bundle(root, "runtime.json") == {"schema": schema}
+    with pytest.raises(MatrixHostError, match="matrix_bundle_rejected"):
+        matrix_host_module._public_bundle(root, "runtime.json")
 
 
 def test_public_bundle_rejects_an_unpinned_successor_schema(tmp_path):
@@ -414,11 +453,7 @@ def test_quiesced_snapshot_restore_excludes_host_locals_and_detects_tamper(
         "incarnation_id": INCARNATION,
         "principal_id": "compaii@legion",
     }
-    bundle = {
-        "schema": "dm.runtime.bundle/v1",
-        "local_origin": origin,
-        "socket": "matrix.sock",
-    }
+    bundle = _snapshot_bundle(origin)
     for name, content in {
         "runtime.json": json.dumps(bundle),
         "custody.json": "encrypted",
@@ -471,16 +506,14 @@ def test_quiesced_snapshot_restore_excludes_host_locals_and_detects_tamper(
 def test_snapshot_restore_rejects_replacement_after_verification(tmp_path, monkeypatch):
     source = tmp_path / "runtime"
     source.mkdir(mode=0o700)
-    bundle = {
-        "schema": "dm.runtime.bundle/v1",
-        "local_origin": {
+    bundle = _snapshot_bundle(
+        {
             "body_ref": BODY,
             "embodiment_id": EMBODIMENT,
             "incarnation_id": INCARNATION,
             "principal_id": "compaii@legion",
-        },
-        "socket": "matrix.sock",
-    }
+        }
+    )
     for name, content in {
         "runtime.json": json.dumps(bundle),
         "ledger.sqlite": "verified-ledger",

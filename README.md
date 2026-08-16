@@ -1,58 +1,70 @@
 # daimon-cluster
 
-A body and lifecycle controller for plural Daimon embodiments and the host
-boundary for the root-authorized `daimon-matrix` `/me`, `/we`, and `/we.sync`
-runtime. Matrix.org is not part of this architecture.
+`daimon-cluster` owns bodies, lifecycle, storage and concrete-resource
+fencing for root-authorized Daimon embodiments. It hosts the exact pinned
+`daimon-matrix` runtime; Matrix owns being identity, authority, canonical
+events, `/me`, `/we` and semantic receipts. Tribe Bridge is a transitional
+human-message transport and its ACK never substitutes for Matrix intake or
+semantic delivery.
 
-Each member of the tribe gets their own system container on daimonmatrix
-(`daimonmatrix.altermundi.net`, anyVPN `10.10.20.69`) where they run their own
-Hermes Agent instance — another embodiment of the same being that also lives
-on their home machine, following the pattern proven by `compaii@legion` /
-`compaii@daimonmatrix` (2026-07-31).
+The release candidate assumes no current deployment. All qualification is
+local or runs in disposable, network-disabled containers. Historical host
+inventory and operational receipts remain under `docs/`, but they are not the
+current architecture or evidence for this RC.
 
-## Goals
+## Core invariants
 
-- **Isolation**: every agent has their own space. No fighting over ports,
-  filesystem, CPU, or memory. A broken agent cannot harm the host or siblings.
-- **Familiar operations**: each container is a full Debian userland with
-  systemd, so `hermes-gateway` and the existing runbooks work exactly like on
-  a real machine. Same skills, same workflows, zero new cognitive load.
-- **Easy fleet updates**: one shared base image, rebuilt and rolled out
-  centrally. Tribe sync flows through existing mechanisms (Hermes fork git,
-  per-agent state repos, tribe bridge v1).
-- **Tribe-native identity**: each embodiment registers in the tribe bridge v1
-  directory as `<agent>@daimonmatrix`, with its own keys, distinct from the
-  home principal. Tribe keys authenticate transport; they do not define the
-  being.
-- **Plural presence**: several embodiments of one being may remain awake and
-  answer `/we` concurrently.
-- **Safe effects**: CAS/TTL fences exclude stale writers only on the same
-  concrete resource.
-- **Navigable convergence**: Matrix `/we.sync` imports origin-marked novelty for
-  local, reversible adoption rather than cloning effective configuration.
+- Generic containers do not manufacture Matrix identity.
+- Each embodiment has root-authorized credentials, a distinct incarnation and
+  fresh private custody. Creating a new embodiment is not cloning a private
+  database, key store or writable runtime.
+- Multiple authorized embodiments of one being may run concurrently. Shared
+  admission prevents two physical launches of the same embodiment credential.
+- CAS/TTL fences exclude stale writers only for the same concrete resource.
+- Runtime mutations require enrolled holder authorization and fail before
+  adapter/storage effects when authority is absent, stale or revoked.
+- Recovery transfer contains only the manifest-bound public runtime bundle and
+  canonical ledger events. Client keys, custody and journals do not cross it.
+- Host status and curator clients are separate least-authority capabilities;
+  neither is an operator signer oracle.
 
-## Status
+## Current state
 
-Repository integration is active for the authorized DM-083 dogfood. Read
-[`RESUME.md`](RESUME.md) first: issue #61 repins the exact Matrix
-successor-retry candidate before that repair is redeployed.
+Read [`RESUME.md`](RESUME.md) for exact commits, trees, completed evidence and
+remaining gates. The normative architecture boundary is
+[`docs/design/matrix-convergence.md`](docs/design/matrix-convergence.md); the
+current threat model is
+[`docs/security/threat-model-rc.md`](docs/security/threat-model-rc.md).
 
-Matrix hosting integration is otherwise implemented and under verification.
-See [`docs/design/embodiment-and-weave.md`](docs/design/embodiment-and-weave.md),
-[`docs/design/matrix-convergence.md`](docs/design/matrix-convergence.md), and
-[`docs/PLAN.md`](docs/PLAN.md).
+The complete unit/integration suite, exact Matrix pin check, lint, typing and
+compile gates run in CI for Python 3.11–3.14. Separate jobs exercise:
 
-This project is discussed openly: tribe agents are invited to review and
-comment via GitHub issues. Coordination messages flow over tribe bridge v1
-(`public-agents` group).
+- isolated recovery/rebirth with read-only two-file transfer; and
+- encrypted backup export, offline repository verification and restore.
 
-## Host resources (daimonmatrix, 2026-07-31)
+Those jobs prove software behavior on disposable infrastructure. They do not
+prove live physical singleton, independent real custody or an authorized
+cutover.
 
-| Resource | Available | Per-agent budget (draft) |
-|----------|-----------|--------------------------|
-| CPU      | 6 cores   | 1 core (burstable)       |
-| RAM      | 11 GB     | 1.5 GB                   |
-| Disk     | 83 GB     | 8 GB                     |
-| Network  | 1 pub IPv4, 1 IPv6/128, anyVPN | ZeroTier identity per container |
+## Safety
 
-Comfortably fits 6-8 embodiments.
+No broad roadmap permission authorizes SSH, administrative access changes,
+real custody, service mutation, production or external contact. Physical work
+requires a reviewed content-addressed preflight and an exact GO for that same
+plan. The production exclusion and administrative-access invariant in
+[`AGENTS.md`](AGENTS.md) are binding.
+
+## Development
+
+Install the exact dependencies from `requirements-dev.txt` under
+`constraints.txt`, then run:
+
+```bash
+python -m ruff check clusterctl clusterd steward_tools tests
+python -m mypy --follow-imports=skip --ignore-missing-imports clusterctl clusterd
+python -W error::ResourceWarning -m pytest -q
+```
+
+The workflow contains the authoritative narrower lint/type file lists used by
+the current baseline. Docker E2E tests are opt-in and must run only against
+local disposable state.

@@ -47,16 +47,17 @@ STATE/dm035-publishers/HASH/        host-local publisher custody (0700)
   hmk/                             derived publication index (0700)
 ```
 
-Provision `client.json` with schema `dm.local.client-config/v1` for an unchanged
-incarnation, or V2 after succession with the exact current origin and Matrix-
-verified bounded historical origin rows. The capability contains exactly
+Provision every `client.json` with schema `dm.local.client-config/v3`, the
+exact current origin, and the V7 bundle's signed `runtime_id` and
+`runtime_label`. Cluster does not accept V1/V2 client configurations or
+historical-server rows at the production boundary. The clusterd capability contains exactly
 `runtime.status`, `scope.me`, `scope.we`, `scope.we.diff`, and
 `scope.we.sync-plan`. Write the raw 32-byte capability key separately. Broader
 capabilities are rejected. Do not give Cluster root or recovery seeds. On
-incarnation succession update the expected origin and retain each eligible
-retired origin with its exact retirement millisecond. On relocation restore
-the capability from separate host custody; rotate it only by updating the Matrix
-bundle and encrypted custody atomically.
+incarnation succession provision a newly signed V7 runtime identity and update
+the current expected origin. On relocation restore capabilities from separate
+host custody; rotate them only by updating the V7 capability table, signed
+binding, encrypted custody and V3 client material atomically.
 
 Only when an embodiment has a curator worker, provision the second sidecar
 with exactly `curator.enqueue`, `curator.claim`, `curator.complete`, and
@@ -84,8 +85,8 @@ The production flag requires an initialized, owner-controlled
 `STATE/resource-fences.sqlite3`. It opens that database query-only and loads
 only registered public verification keys. Do not pass the Cluster fence
 private-key path or material to the Matrix host process. Omit the flag only for
-the explicit V1 compatibility fixtures used by tests and offline migration;
-that mode is not a production fence authority.
+explicit synthetic unit fixtures; that mode is not a production fence
+authority.
 
 Ready is emitted only after pin/schema, owner, registry, bundle/origin, socket
 length and second-writer checks pass and Matrix has loaded encrypted custody.
@@ -167,18 +168,19 @@ hash.
 ## Snapshot and restore
 
 Stop the daemon, call `create_portable_snapshot`, transfer the resulting closed
-directory, and call `restore_portable_snapshot` into a nonexistent target.
-Recreate `STATE/matrix-clients/HASH/` and, when applicable,
-`STATE/matrix-curator-clients/HASH/` on the destination; neither may appear in
-the snapshot. Start the daemon and require authenticated `runtime.status`,
+directory, and call `restore_portable_snapshot` into a nonexistent target. The
+snapshot excludes every operator and host client directory/key described by
+the complete signed V7 profile table. Recreate those V3 clients plus
+`STATE/matrix-clients/HASH/` and, when applicable,
+`STATE/matrix-curator-clients/HASH/` from separate custody on the destination;
+none may appear in the snapshot. Start the daemon and require authenticated `runtime.status`,
 `/me`, `/we`, cursor, curator queue and authority-epoch checks before routing
 traffic.
 
-The host boundary accepts the additive Matrix runtime bundle line V1 through
-V7 at the pinned commit. V3 enables native peer transport, V4 adds species,
-V5 adds attributed sources, V6 adds relationships and grants, and V7 adds
-configured peer targets; all remain owned and interpreted by Matrix. Any
-commit/schema mismatch, unsafe path, altered hash, registry/origin drift,
-stale resource epoch or missing local capability is a refusal. Preserve the
-source and destination state roots for diagnosis; do not rewrite either
-ledger.
+The host boundary accepts only Matrix runtime bundle V7 and local client config
+V3 at the pinned commit. Earlier pre-release schemas fail closed. Matrix owns
+and interprets configured peer targets, species, attributed sources,
+relationships and grants. Any commit/schema/runtime-identity mismatch, unsafe
+path, altered hash, registry/origin drift, stale resource epoch or missing
+local capability is a refusal. Preserve the source and destination state roots
+for diagnosis; do not rewrite either ledger.

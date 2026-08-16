@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 from pathlib import Path
 
@@ -11,6 +13,7 @@ from tools.build_rc_manifest import (
     ManifestError,
     build_manifest,
     canonical_manifest,
+    read_qualification,
     write_manifest,
 )
 
@@ -41,38 +44,113 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
         f"daimon-matrix.git@{matrix_commit}\n",
         encoding="utf-8",
     )
-    subprocess.run(
-        ["git", "-C", cluster, "add", "requirements-weave.txt"], check=True
-    )
+    subprocess.run(["git", "-C", cluster, "add", "requirements-weave.txt"], check=True)
     subprocess.run(["git", "-C", cluster, "commit", "-qm", "pin"], check=True)
     return matrix, cluster, tribe
 
 
+def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
+    repositories = {
+        "daimon-matrix": matrix,
+        "daimon-cluster": cluster,
+        "tribe-bridge": tribe,
+    }
+    names = tuple(repositories)
+    return {
+        "schema": "daimon-release-qualification/v1",
+        "release": "0.1.0rc1",
+        "supported_python": {name: ["3.13"] for name in names},
+        "artifacts": {name: [] for name in names},
+        "tests": {
+            name: [{"name": "full", "python": "3.13", "passed": 1, "skipped": 0}]
+            for name in names
+        },
+        "evidence": {
+            name: [
+                {
+                    "path": "README.md",
+                    "sha256": hashlib.sha256(
+                        (repository / "README.md").read_bytes()
+                    ).hexdigest(),
+                }
+            ]
+            for name, repository in repositories.items()
+        },
+        "limitations": ["fixture qualification is not physical evidence"],
+        "human_gates": [
+            "cross-being-consent",
+            "live-custody",
+            "physical-hosts-and-backup-target",
+            "physical-rehearsal-go",
+            "publication-and-cutover",
+            "tribe-independent-approval",
+            "tribe-retirement",
+        ],
+    }
+
+
+def _baselines(matrix: Path, cluster: Path, tribe: Path) -> dict:
+    repositories = {
+        "daimon-matrix": matrix,
+        "daimon-cluster": cluster,
+        "tribe-bridge": tribe,
+    }
+    result = {}
+    for name, repository in repositories.items():
+        commit = subprocess.check_output(
+            ["git", "-C", repository, "rev-list", "--max-parents=0", "HEAD"],
+            text=True,
+        ).strip()
+        tree = subprocess.check_output(
+            ["git", "-C", repository, "rev-parse", f"{commit}^{{tree}}"],
+            text=True,
+        ).strip()
+        result[name] = {"commit": commit, "tree": tree}
+    return result
+
+
 def test_same_heads_produce_byte_identical_manifest(tmp_path: Path) -> None:
     matrix, cluster, tribe = _fixture(tmp_path)
-    first = canonical_manifest(build_manifest(matrix, cluster, tribe))
-    second = canonical_manifest(build_manifest(matrix, cluster, tribe))
+    qualification = _qualification(matrix, cluster, tribe)
+    baselines = _baselines(matrix, cluster, tribe)
+    first = canonical_manifest(
+        build_manifest(matrix, cluster, tribe, qualification, baselines=baselines)
+    )
+    second = canonical_manifest(
+        build_manifest(matrix, cluster, tribe, qualification, baselines=baselines)
+    )
     assert first == second
     assert b'"schema":"daimon-release-candidate/v1"' in first
+    assert b'"archive_bytes":' in first
 
 
 def test_dirty_component_and_wrong_pin_fail_closed(tmp_path: Path) -> None:
     matrix, cluster, tribe = _fixture(tmp_path)
     (tribe / "untracked").write_text("no\n", encoding="utf-8")
     with pytest.raises(ManifestError, match="dirty_worktree:tribe-bridge"):
-        build_manifest(matrix, cluster, tribe)
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            _qualification(matrix, cluster, tribe),
+            baselines=_baselines(matrix, cluster, tribe),
+        )
     (tribe / "untracked").unlink()
     (cluster / "requirements-weave.txt").write_text(
         "daimon-matrix @ git+https://github.com/AlterMundi/"
         f"daimon-matrix.git@{'0' * 40}\n",
         encoding="utf-8",
     )
-    subprocess.run(
-        ["git", "-C", cluster, "add", "requirements-weave.txt"], check=True
-    )
+    subprocess.run(["git", "-C", cluster, "add", "requirements-weave.txt"], check=True)
     subprocess.run(["git", "-C", cluster, "commit", "-qm", "wrong pin"], check=True)
     with pytest.raises(ManifestError, match="cluster_matrix_pin_mismatch"):
-        build_manifest(matrix, cluster, tribe)
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            _qualification(matrix, cluster, tribe),
+            baselines=_baselines(matrix, cluster, tribe),
+        )
 
 
 def test_freeze_rejects_repository_changed_during_snapshot(
@@ -101,7 +179,92 @@ def test_freeze_rejects_repository_changed_during_snapshot(
     with pytest.raises(
         ManifestError, match="repository_changed_during_freeze:daimon-matrix"
     ):
-        build_manifest(matrix, cluster, tribe)
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            _qualification(matrix, cluster, tribe),
+            baselines=_baselines(matrix, cluster, tribe),
+        )
+
+
+def test_qualification_requires_python_coverage_and_committed_evidence(
+    tmp_path: Path,
+) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    qualification = _qualification(matrix, cluster, tribe)
+    qualification["supported_python"]["daimon-matrix"].append("3.14")
+    with pytest.raises(ManifestError, match="python_coverage_incomplete"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+        )
+
+    qualification = _qualification(matrix, cluster, tribe)
+    qualification["evidence"]["tribe-bridge"][0]["sha256"] = "0" * 64
+    with pytest.raises(ManifestError, match="evidence_mismatch:tribe-bridge"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+        )
+
+
+def test_manifest_requires_exact_baseline_ancestry(tmp_path: Path) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    baselines = _baselines(matrix, cluster, tribe)
+    baselines["daimon-cluster"]["tree"] = "0" * 40
+    with pytest.raises(ManifestError, match="baseline_mismatch:daimon-cluster"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            _qualification(matrix, cluster, tribe),
+            baselines=baselines,
+        )
+
+
+def test_manifest_hashes_external_artifacts_and_rejects_mismatch(
+    tmp_path: Path,
+) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir(mode=0o755)
+    wheel = artifact_root / "matrix.whl"
+    wheel.write_bytes(b"exact-wheel-bytes")
+    wheel.chmod(0o644)
+    qualification = _qualification(matrix, cluster, tribe)
+    qualification["artifacts"]["daimon-matrix"] = [
+        {
+            "name": "matrix-wheel",
+            "path": "matrix.whl",
+            "bytes": wheel.stat().st_size,
+            "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+        }
+    ]
+    build_manifest(
+        matrix,
+        cluster,
+        tribe,
+        qualification,
+        baselines=_baselines(matrix, cluster, tribe),
+        artifact_root=artifact_root,
+    )
+    qualification["artifacts"]["daimon-matrix"][0]["sha256"] = "0" * 64
+    with pytest.raises(ManifestError, match="qualification_artifact_mismatch"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=artifact_root,
+        )
 
 
 def test_manifest_output_rejects_target_and_parent_symlinks(tmp_path: Path) -> None:
@@ -121,3 +284,51 @@ def test_manifest_output_rejects_target_and_parent_symlinks(tmp_path: Path) -> N
     linked_parent.symlink_to(real_parent, target_is_directory=True)
     with pytest.raises(ManifestError, match="manifest_parent_contains_symlink"):
         write_manifest(linked_parent / "manifest.json", b"no")
+
+
+def test_manifest_output_never_overwrites_existing_file(tmp_path: Path) -> None:
+    target = tmp_path / "manifest.json"
+    target.write_bytes(b"preserve")
+    with pytest.raises(ManifestError, match="manifest_target_exists"):
+        write_manifest(target, b"replacement")
+    assert target.read_bytes() == b"preserve"
+
+
+def test_manifest_output_is_new_owner_only_and_exact(tmp_path: Path) -> None:
+    target = tmp_path / "manifest.json"
+    write_manifest(target, b"exact-manifest\n")
+    assert target.read_bytes() == b"exact-manifest\n"
+    assert target.stat().st_mode & 0o077 == 0
+    with pytest.raises(ManifestError, match="manifest_target_exists"):
+        write_manifest(target, b"replacement\n")
+
+
+def test_manifest_output_rejects_writable_parent(tmp_path: Path) -> None:
+    output_root = tmp_path / "mutable"
+    output_root.mkdir(mode=0o777)
+    output_root.chmod(0o777)
+    with pytest.raises(ManifestError, match="parent_not_owner_controlled"):
+        write_manifest(output_root / "manifest.json", b"no")
+
+
+def test_qualification_input_is_canonical_owner_only_and_not_linked(
+    tmp_path: Path,
+) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    qualification = _qualification(matrix, cluster, tribe)
+    raw = json.dumps(
+        qualification, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    source = tmp_path / "qualification.json"
+    source.write_text(raw, encoding="ascii")
+    source.chmod(0o600)
+    assert read_qualification(source) == qualification
+
+    source.chmod(0o640)
+    with pytest.raises(ManifestError, match="qualification_file_rejected"):
+        read_qualification(source)
+    source.chmod(0o600)
+    linked = tmp_path / "linked-qualification.json"
+    linked.symlink_to(source)
+    with pytest.raises(ManifestError, match="qualification_file_rejected"):
+        read_qualification(linked)

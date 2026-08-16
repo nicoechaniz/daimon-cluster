@@ -1,3 +1,10 @@
+# Historical single-host threat model (superseded)
+
+This 2026-08-01 proposal is retained as design history. It is not the current
+release-candidate threat model and its “never two awake” language does not
+describe plural embodiments. The normative model is
+`docs/security/threat-model-rc.md`.
+
 # daimon-cluster v1 threat model
 
 Status: PROPOSED (2026-08-01). Evidence for issue #3.

@@ -1,3 +1,9 @@
+# Historical receipt notice
+
+This file preserves the exact 2026-08-12 H10 evidence and hashes. It is not the
+current RC receipt. See `rc-recovery-rebirth-2026-08-16.md` for the current
+boundary.
+
 # H10 recovery-quorum rebirth verification receipt
 
 Date: 2026-08-12. Candidate only; local, synthetic, not deployed or
@@ -6,7 +12,7 @@ independently reviewed.
 ## Exact boundary
 
 - Matrix recovery and canonical-ledger restore:
-  `96e9b112053b02e91d2f0f9add4b507c32058889`.
+  `306900c64aac5b0aa6ca062e777ca5ea2686d84e`.
 - Cluster install/restore/start gate: this H10 branch, stacked directly on
   PR #85 at `9e6100baba705394ad9dc40ffbd38d721bc7e41d`.
 - Collective-memory contract:

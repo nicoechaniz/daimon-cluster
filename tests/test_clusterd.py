@@ -346,8 +346,8 @@ def test_token_actor_is_authoritative_for_audit(server):
                          headers={"Idempotency-Key": UUID1,
                                   "X-Actor": "agent:spoofed"})
     assert status == 200
-    events = [json.loads(l)
-              for l in (state_dir / "audit.jsonl").read_text().splitlines()]
+    events = [json.loads(line)
+              for line in (state_dir / "audit.jsonl").read_text().splitlines()]
     assert any(e["actor"] == "tester" for e in events)
     assert not any(e["actor"] == "agent:spoofed" for e in events)
 
@@ -432,7 +432,7 @@ def test_ontology_read_routes(server):
     assert weave["configured"] is False
     assert weave["implementation"] == "installed-daimon-matrix"
     assert weave["matrix_contract_commit"] == (
-        "96e9b112053b02e91d2f0f9add4b507c32058889"
+        "09414d6edd9586f539be8272c4979d0b36c86b87"
     )
     assert weave["embodiments"][0]["matrix_process"]["state"] == \
         "not-configured"

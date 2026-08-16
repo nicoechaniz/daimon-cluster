@@ -143,6 +143,7 @@ def _matrix_api() -> dict[str, Any]:
             daemon,
             memory_projection,
             operator_bootstrap,
+            operator_capabilities,
             operator_rebirth,
             publication,
             runtime,
@@ -270,6 +271,13 @@ def _matrix_api() -> dict[str, Any]:
         != _CLUSTERD_MATRIX_METHODS
     ):
         raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if set(getattr(operator_capabilities, "OPERATOR_PROFILE_NAMES", ())) != set(
+        getattr(service, "OPERATOR_CAPABILITY_PROFILES", ())
+    ) or set(getattr(operator_capabilities, "HOST_PROFILE_NAMES", ())) != {
+        "curator",
+        "status",
+    }:
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
     rebirth_expected = {
         "REQUEST_SCHEMA": "dm.operator.embodiment-request/v1",
         "ACTIVATION_SCHEMA": "dm.operator.embodiment-activation/v1",
@@ -291,6 +299,7 @@ def _matrix_api() -> dict[str, Any]:
         "curator": curator,
         "daemon": daemon,
         "memory_projection": memory_projection,
+        "operator_capabilities": operator_capabilities,
         "operator_rebirth": operator_rebirth,
         "publication": publication,
         "runtime": runtime,
@@ -790,13 +799,78 @@ def _snapshot_files(root: Path, bundle_name: str) -> tuple[dict[str, Any], list[
     socket_name = bundle.get("socket")
     excluded = {_LOCK_NAME, socket_name}
     if bundle.get("schema") == "dm.runtime.bundle/v7":
+        # These paths are secret-bearing by contract. Exclude them before
+        # interpreting public profile metadata, then require the complete exact
+        # profile table so a truncated or relabelled bundle cannot weaken the
+        # exclusion boundary.
+        excluded.update(
+            {"client.json", "client.key", "operator-clients", "host-clients"}
+        )
+        operator_capabilities = _matrix_api()["operator_capabilities"]
         capabilities = bundle.get("capabilities")
-        if not isinstance(capabilities, list):
+        runtime_id = bundle.get("runtime_id")
+        runtime_label = bundle.get("runtime_label")
+        operator_roles = set(operator_capabilities.OPERATOR_PROFILE_NAMES)
+        host_roles = set(operator_capabilities.HOST_PROFILE_NAMES)
+        if (
+            not isinstance(capabilities, list)
+            or len(capabilities) != len(operator_roles) + len(host_roles)
+            or not isinstance(runtime_id, str)
+            or not runtime_id
+            or not isinstance(runtime_label, str)
+            or not runtime_label
+        ):
             raise MatrixHostError("matrix_snapshot_source_unsafe")
+        observed: set[tuple[str, str]] = set()
         for row in capabilities:
-            profile = row.get("profile") if isinstance(row, Mapping) else None
-            if not isinstance(profile, Mapping):
+            if not isinstance(row, Mapping) or set(row) != {
+                "descriptor",
+                "profile",
+                "runtime_id",
+                "secret_slot",
+            }:
                 raise MatrixHostError("matrix_snapshot_source_unsafe")
+            profile = row.get("profile")
+            if not isinstance(profile, Mapping) or row.get("runtime_id") != runtime_id:
+                raise MatrixHostError("matrix_snapshot_source_unsafe")
+            role = profile.get("role")
+            schema = profile.get("schema")
+            if not isinstance(role, str) or not isinstance(
+                row.get("descriptor"), Mapping
+            ):
+                raise MatrixHostError("matrix_snapshot_source_unsafe")
+            try:
+                if schema == operator_capabilities.HOST_CAPABILITY_PROFILE_SCHEMA:
+                    if role not in host_roles:
+                        raise KeyError(role)
+                    expected_profile = operator_capabilities.host_capability_profile(
+                        role
+                    )
+                    expected_slot = operator_capabilities.host_capability_slot(
+                        runtime_label, role
+                    )
+                else:
+                    if role not in operator_roles:
+                        raise KeyError(role)
+                    expected_profile = (
+                        operator_capabilities.operator_capability_profile(role)
+                    )
+                    expected_slot = operator_capabilities.operator_capability_slot(
+                        runtime_label, role
+                    )
+            except (
+                KeyError,
+                operator_capabilities.OperatorCapabilityError,
+            ) as exception:
+                raise MatrixHostError("matrix_snapshot_source_unsafe") from exception
+            identity = (str(expected_profile["schema"]), role)
+            if (
+                dict(profile) != expected_profile
+                or row.get("secret_slot") != expected_slot
+                or identity in observed
+            ):
+                raise MatrixHostError("matrix_snapshot_source_unsafe")
+            observed.add(identity)
             client_directory = profile.get("client_directory")
             config_name = profile.get("client_config_filename")
             key_name = profile.get("client_key_filename")
@@ -817,6 +891,18 @@ def _snapshot_files(root: Path, bundle_name: str) -> tuple[dict[str, Any], list[
                 excluded.add(parts[0])
             else:
                 raise MatrixHostError("matrix_snapshot_source_unsafe")
+        expected_identities = {
+            (
+                operator_capabilities.operator_capability_profile(role)["schema"],
+                role,
+            )
+            for role in operator_roles
+        } | {
+            (operator_capabilities.host_capability_profile(role)["schema"], role)
+            for role in host_roles
+        }
+        if observed != expected_identities:
+            raise MatrixHostError("matrix_snapshot_source_unsafe")
     files: list[Path] = []
     for path in sorted(root.iterdir(), key=lambda item: item.name):
         if path.name in excluded or path.name.endswith((".tmp", "-wal", "-shm")):

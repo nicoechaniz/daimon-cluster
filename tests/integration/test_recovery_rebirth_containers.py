@@ -247,10 +247,10 @@ def test_recovery_roles_cross_only_closed_mounts(tmp_path: Path) -> None:
             "--source /source-host --label source "
             "--require-absent /target-host --require-absent /snapshot-transfer",
         )
-        _require_ok(bootstrapped, "trusted-bootstrap")
+        _require_ok(bootstrapped, "synthetic-bootstrap")
         assert _last_document(bootstrapped.stdout)["foreign_mounts_absent"] is True
 
-        # The trusted genesis staging is intentionally destroyed before the
+        # The explicitly synthetic genesis staging is destroyed before the
         # separated source, offline-root and target roles begin.
         shutil.rmtree(bootstrap)
         assert not bootstrap.exists()
@@ -415,7 +415,7 @@ def test_recovery_roles_cross_only_closed_mounts(tmp_path: Path) -> None:
                         row["name"] for row in recovery_manifest["files"]
                     ),
                     "roles": [
-                        "trusted-bootstrap",
+                    "synthetic-bootstrap",
                         "source-host",
                         "offline-root",
                         "target-preparation",

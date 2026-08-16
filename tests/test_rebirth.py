@@ -40,11 +40,13 @@ from clusterctl.admission import (
 from clusterctl.embodiments import Registry
 from clusterctl.fences import Ed25519Signer, ResourceFenceStore
 from clusterctl.matrix_host import (
+    MatrixHostError,
+    create_portable_snapshot,
     matrix_client_root,
     matrix_curator_client_root,
     matrix_root,
 )
-from clusterctl.operation_journal import OperationJournal
+from clusterctl.operation_journal import OperationJournal, canonical_bytes
 from clusterctl.production_fences import create_holder_enrollment
 
 
@@ -449,6 +451,41 @@ def test_recursive_package_install_rehashes_source_before_commit(
     ):
         rebirth._install_directory(source, short_tmp_path / "target")
     assert not (short_tmp_path / "target").exists()
+
+
+def test_v7_snapshot_rejects_incomplete_profiles_and_excludes_all_client_keys(
+    short_tmp_path,
+):
+    fixture = _ceremony(short_tmp_path)
+    source = fixture["peers"][min(fixture["peers"])]
+    bundle_path = source / "runtime.json"
+    original_bundle = bundle_path.read_bytes()
+    incomplete = json.loads(original_bundle)
+    incomplete["capabilities"] = []
+    bundle_path.write_bytes(canonical_bytes(incomplete))
+    bundle_path.chmod(0o600)
+    rejected = short_tmp_path / "incomplete-v7-snapshot"
+    with pytest.raises(MatrixHostError, match="matrix_snapshot_source_unsafe"):
+        create_portable_snapshot(source, rejected)
+    assert not rejected.exists()
+    bundle_path.write_bytes(original_bundle)
+    bundle_path.chmod(0o600)
+
+    client_secrets = [
+        path.read_bytes()
+        for path in source.rglob("*")
+        if path.is_file() and path.name in {"client.key", "capability.key"}
+    ]
+    assert len(client_secrets) == 12
+    snapshot = short_tmp_path / "v7-snapshot"
+    manifest = create_portable_snapshot(source, snapshot)
+    copied = b"".join(
+        path.read_bytes() for path in snapshot.rglob("*") if path.is_file()
+    )
+    assert all(secret not in copied for secret in client_secrets)
+    assert {row["name"] for row in manifest["files"]}.isdisjoint(
+        {"client.json", "client.key", "operator-clients", "host-clients"}
+    )
 
 
 def test_journaled_install_adds_stopped_target_and_loadable_empty_runtime(tmp_path):

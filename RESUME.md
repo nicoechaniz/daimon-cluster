@@ -18,29 +18,31 @@ The goal began from these merged V0 baselines:
 - Tribe Bridge `187c61d881e6de830a029027144193645f2c7f62`, tree
   `84da16611be62581d9a049d9f567652c4cc4e61b`.
 
-The current Matrix dependency is merged on `main` at
+The qualified Matrix functional merge is
 `09414d6edd9586f539be8272c4979d0b36c86b87`, tree
-`d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`. Cluster pins that exact commit in
-`requirements-weave.txt`, verifies `direct_url.json` at startup and has no
-unpinned runtime fallback.
+`d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`. The prepared documentation
+successor is `8262e1ee5ab2f0b1a389a911b206cac94b823618`, tree
+`8daf4c99192a8f797d60f36f049a832761304082`; Cluster pins that exact full
+commit in `requirements-weave.txt`, verifies `direct_url.json` at startup and
+has no unpinned runtime fallback. This local pin becomes publishable only after
+the Matrix successor reaches its protected default branch unchanged.
 
-The current Cluster candidate functional boundary is
-`f03d9a471f5768bc89e6f70492829bf33ddfbc57`, tree
-`a4b225631ec551c7c52edf8bbc8b371ab74c7689`. It contains the reviewed shared
-admission/fencing, authenticated handoff and recovery/rebirth components plus
-the final V7 snapshot, preflight and qualification corrections. This exact
-successor still requires independent review before publication. Later
-documentation or exact-pin commits do not change those semantics; the generated
-RC manifest records the final repository head and tree.
+The current Cluster functional merge is
+`820e3792a227b1848681a3421b113e8822c8d08a`, tree
+`4f62eb4f6eff1dfafbd477339a86fa7d5e70a5d8` (PR #93). It contains the
+independently reviewed shared admission/fencing, authenticated handoff,
+recovery/rebirth, V7 snapshot, preflight and qualification corrections. Later
+documentation or exact-pin commits do not change those semantics; the
+generated RC manifest records the final repository head and tree.
 
 Tribe Bridge transitional work is qualified on exact PR head
-`418900a9d3732689d6a309336c467623637fe8d4`, tree
-`d5b50379b1d9abe781ef92d0a50390559eed17c1`; its content-addressed source
-boundary is `cd54865733c0b0200924dcd39213b7fcd7eb12ec`, tree
-`7052ca5672fb56a14b826382f468fb38e19c50f0`. The exact head passed independent
-review and supported-Python qualification, but PR #65 still requires its
-independent human approval and normal merge. Tribe is not deployed and is not
-Matrix intake or semantic-delivery authority.
+`42d637245864fcd431198a570d19d7a6dd042924`, tree
+`5145f6446f3ec3013347509477a262f98825ebfa`; its content-addressed source
+boundary is `9c4f14f613657ea1e6e6c1805d4f869ae93d082f`, tree
+`38361d248866a84a6e4a45a2d83af56e7c549f66`. The exact head passed
+independent adversarial review, 124 tests on Python 3.10–3.13 and protected CI;
+PR #65 still requires independent human approval and normal merge. Tribe is
+not deployed and is not Matrix intake or semantic-delivery authority.
 
 ## What is automated and proven
 
@@ -78,12 +80,13 @@ and test counts are not the current RC baseline.
 
 ## Remaining automated work
 
-1. Merge the exact reviewed Cluster successor and obtain clean CI on `main`.
-2. Repin Tribe metadata to the final Matrix/Cluster merges, repeat its exact
-   review and obtain the independently approved normal PR merge.
-3. Run clean-install and supported-Python gates from the three exact final
-   commits, then generate the content-addressed manifest and wheelhouses.
-4. Keep Project/issues/PR receipts synchronized with the exact final hashes.
+1. Obtain the protected Tribe PR #65 approval and merge.
+2. Publish the reviewed Matrix documentation successor, then merge this exact
+   Cluster repin/documentation successor through normal review.
+3. Repin Tribe metadata once to those final Matrix/Cluster heads.
+4. Run clean-install and supported-Python gates from the three exact final
+   commits, generate the final content-addressed manifest and keep tracking
+   synchronized with its hashes.
 
 ## Human and external gates
 

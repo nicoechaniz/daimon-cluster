@@ -4,21 +4,23 @@ Date: 2026-08-16. Software-only candidate; not deployed.
 
 ## Exact functional boundary
 
-- Matrix main merge: `09414d6edd9586f539be8272c4979d0b36c86b87`,
-  tree `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`.
-- Cluster candidate code boundary:
-  `f03d9a471f5768bc89e6f70492829bf33ddfbc57`, tree
-  `a4b225631ec551c7c52edf8bbc8b371ab74c7689`; independent exact-hash review
-  is still pending.
-- Tribe reviewed PR head:
-  `418900a9d3732689d6a309336c467623637fe8d4`, tree
-  `d5b50379b1d9abe781ef92d0a50390559eed17c1`; content-addressed source boundary
-  `cd54865733c0b0200924dcd39213b7fcd7eb12ec`, tree
-  `7052ca5672fb56a14b826382f468fb38e19c50f0`.
+- Matrix functional merge: `09414d6edd9586f539be8272c4979d0b36c86b87`,
+  tree `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`; prepared documentation
+  successor/pin: `8262e1ee5ab2f0b1a389a911b206cac94b823618`, tree
+  `8daf4c99192a8f797d60f36f049a832761304082`.
+- Cluster functional merge: `820e3792a227b1848681a3421b113e8822c8d08a`,
+  tree `4f62eb4f6eff1dfafbd477339a86fa7d5e70a5d8`; independent exact-hash
+  review and main CI passed.
+- Tribe reviewed PR head: `42d637245864fcd431198a570d19d7a6dd042924`,
+  tree `5145f6446f3ec3013347509477a262f98825ebfa`;
+  content-addressed source boundary
+  `9c4f14f613657ea1e6e6c1805d4f869ae93d082f`, tree
+  `38361d248866a84a6e4a45a2d83af56e7c549f66`.
 
 The final three-repository manifest records later documentation/pin-only heads
-and archive hashes. Cluster installs Matrix from its full merged commit and
-verifies that exact `direct_url.json` value.
+and archive hashes. This prepared successor installs Matrix from the full
+reviewed commit named above and verifies that exact `direct_url.json` value; it
+does not call that pin merged until the protected Matrix integration completes.
 
 ## Guarantees exercised
 
@@ -109,9 +111,10 @@ and sdist
 `f1fa00e3c5d18cb7ecce44ae656938ff35daeedb22e713cdc53b916208a6befe`.
 Cluster installed the merge commit from Git and reproduced the same wheel hash.
 
-Independent reviews passed Matrix capability/custody/runtime metadata and the
-Cluster admission/fence code. The final Cluster pin/documentation successor
-must receive its own exact-hash review and CI before merge.
+Independent reviews passed Matrix capability/custody/runtime metadata, the
+Matrix documentation successor and the Cluster admission/fence code. This
+prepared Cluster pin/documentation successor must still receive its own
+exact-hash review and CI before merge.
 
 ## Explicit limits
 

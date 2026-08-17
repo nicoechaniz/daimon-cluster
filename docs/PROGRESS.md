@@ -5,16 +5,15 @@ start, then resume from the first open item.
 
 ## Active checkpoint (2026-08-16)
 
-Cluster PR #91 is merged on `main` at
-`4b77d2e47f31258d0801bd3a881b8dcf1a7584be` (tree
-`726159a25d6708a8388380f81f7cbec9f51122a9`) with Matrix merged at
+Cluster PR #93 is merged and green on `main` at
+`820e3792a227b1848681a3421b113e8822c8d08a` (tree
+`4f62eb4f6eff1dfafbd477339a86fa7d5e70a5d8`) with Matrix functional merge
 `09414d6edd9586f539be8272c4979d0b36c86b87` (tree
-`d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`). The first post-merge workflow
-exposed a clean-shutdown response-loss race on Python 3.14. A local successor
-now always publishes a safe final release after the runtime has stopped and
-adds deterministic coverage; it must pass normal review and CI before `main`
-is green. The final generated RC manifest is authoritative for repository
-heads.
+`d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`). The reviewed Matrix
+documentation successor and prepared exact pin are
+`8262e1ee5ab2f0b1a389a911b206cac94b823618` / tree
+`8daf4c99192a8f797d60f36f049a832761304082`. The final generated RC manifest
+is authoritative for repository heads.
 
 Completed locally on the exact code boundary:
 
@@ -28,11 +27,11 @@ Completed locally on the exact code boundary:
 - network-disabled recovery/rebirth container E2E: 1 passed; and
 - encrypted backup/export, offline check and restore container E2E: 1 passed.
 
-Matrix PR #121 and Cluster PR #91 are merged. Cluster issue #90 preserves the
-consolidated lineage; the post-merge clean-shutdown successor remains open.
-Tribe PR #65 has an independently reviewed exact candidate and still awaits
-its required human approval. Nothing in this checkpoint was deployed and no
-existing host or real custody was used.
+Matrix PR #121 and Cluster PR #93 are merged. Cluster issue #90 preserves the
+consolidated lineage. Tribe PR #65 exact head `42d637245864fcd431198a570d19d7a6dd042924`
+has independent review and green CI and still awaits its required human
+approval. Nothing in this checkpoint was deployed and no existing host or real
+custody was used.
 
 Current remaining work is RC metadata, exact final pinning, independent review,
 clean CI/main merges, the content-addressed manifest/artifacts and an offline

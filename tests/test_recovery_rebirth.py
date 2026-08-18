@@ -34,13 +34,22 @@ from clusterctl.matrix_host import (
     matrix_root,
     restore_portable_snapshot,
 )
-from tests.test_rebirth import _ceremony, _descriptor, _ensure_production_fences
+from tests.test_rebirth import (
+    _close_disposable_admission_servers,
+    _ceremony,
+    _descriptor,
+    _ensure_production_fences,
+    _stop_rebirth_host,
+)
 
 
 @pytest.fixture
 def short_tmp_path():
     with TemporaryDirectory(prefix="dmc-recovery-") as value:
-        yield Path(value)
+        try:
+            yield Path(value)
+        finally:
+            _close_disposable_admission_servers()
 
 
 def _recovery_fixture(tmp_path: Path) -> dict:
@@ -244,8 +253,7 @@ def test_recovery_restore_is_gated_idempotent_and_reproducible(short_tmp_path, c
         assert started["state"] == "running-ready"
         assert started["active_embodiment_ids"] == [result["embodiment_id"]]
     finally:
-        process.terminate()
-        _stdout, stderr = process.communicate(timeout=10)
+        _stdout, stderr = _stop_rebirth_host(process)
         assert process.returncode == 0, stderr
     recovered = load_runtime(
         matrix_root(state, result["embodiment_id"]),

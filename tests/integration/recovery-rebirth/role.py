@@ -29,6 +29,7 @@ from clusterctl.rebirth_host import (
     ADMISSION_CLIENT_SCHEMA,
     _installed_identity,
     launch_rebirth_host,
+    wait_rebirth_host_shutdown,
 )
 from clusterctl.recovery_rebirth import export_recovery_snapshot
 
@@ -297,6 +298,7 @@ def verify_target(arguments: argparse.Namespace) -> dict:
     finally:
         process.terminate()
         _stdout, stderr = process.communicate(timeout=10)
+        wait_rebirth_host_shutdown(process)
         admission_server.shutdown()
         admission_server.server_close()
         admission_thread.join(timeout=5)

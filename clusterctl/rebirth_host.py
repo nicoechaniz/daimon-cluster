@@ -215,6 +215,32 @@ def _terminate_without_consuming_output(process: subprocess.Popen[bytes]) -> Non
     process.wait(timeout=2)
 
 
+def wait_rebirth_host_shutdown(
+    process: subprocess.Popen[bytes], *, timeout_s: float = 10.0
+) -> None:
+    """Wait until admission supervision has finished after a runtime exits.
+
+    Waiting only for the child process is not enough: the supervisor publishes
+    the final release after observing that exit.  Callers that immediately
+    restart an embodiment or remove its state need an explicit lifecycle
+    boundary instead of racing that bounded final authority exchange.
+    """
+
+    if timeout_s <= 0 or timeout_s > 300:
+        raise RebirthHostError("rebirth_host_shutdown_argument_rejected")
+    if process.poll() is None:
+        raise RebirthHostError("rebirth_host_shutdown_runtime_running")
+    with _SUPERVISORS_LOCK:
+        supervisor = _SUPERVISORS.get(process.pid)
+        if supervisor is not None and supervisor.process is not process:
+            raise RebirthHostError("rebirth_host_shutdown_process_mismatch")
+    if supervisor is None:
+        return
+    if not supervisor._finished.wait(timeout_s):
+        raise RebirthHostError("rebirth_host_shutdown_timeout")
+    supervisor.thread.join()
+
+
 def _owner_file(path: Path) -> Path:
     try:
         info = path.lstat()
@@ -774,6 +800,11 @@ def launch_rebirth_host(
                 return process, {**result, "admission": supervisor.receipt}
             except BaseException:
                 _terminate(process)
+                # Do not return an error while the non-daemon admission
+                # supervisor still owns a final release exchange or the
+                # child's pipe descriptors.  This also keeps failed startup
+                # from contaminating the next launch in the same process.
+                wait_rebirth_host_shutdown(process)
                 raise
     except BaseException:
         try:
@@ -824,6 +855,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         return_code = process.wait()
+        wait_rebirth_host_shutdown(process)
         if return_code != 0:
             raise RebirthHostError("rebirth_host_process_failed")
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
@@ -842,4 +874,5 @@ __all__ = [
     "RebirthHostError",
     "launch_rebirth_host",
     "main",
+    "wait_rebirth_host_shutdown",
 ]

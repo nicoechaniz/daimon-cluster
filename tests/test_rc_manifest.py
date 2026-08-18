@@ -8,6 +8,7 @@ import json
 import subprocess
 import tarfile
 import zipfile
+from base64 import urlsafe_b64encode
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,33 @@ def _repository(path: Path, name: str) -> Path:
 
 def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     matrix = _repository(tmp_path / "matrix", "matrix")
+    matrix_files = {
+        ".gitignore": b"__pycache__/\n",
+        "LICENSE": b"fixture license\n",
+        "README.md": b"matrix\n",
+        "pyproject.toml": (
+            b"[build-system]\nrequires = [\"hatchling==1.31.0\"]\n"
+            b"build-backend = \"hatchling.build\"\n\n"
+            b"[project]\nname = \"daimon-matrix\"\nversion = \"0.1.0\"\n"
+            b"description = \"fixture Matrix\"\nreadme = \"README.md\"\n"
+            b"requires-python = \">=3.11\"\nlicense = \"MIT\"\n"
+            b"license-files = [\"LICENSE\"]\n"
+            b"authors = [{ name = \"RC Test\" }]\n"
+            b"classifiers = [\"Programming Language :: Python :: 3\"]\n"
+            b"dependencies = [\"fixture-dependency==1.0\"]\n"
+            b"[project.scripts]\ndaimon = \"daimon_matrix.cli:main\"\n"
+            b"[project.urls]\nSource = \"https://example.invalid/matrix\"\n"
+        ),
+        "src/daimon_matrix/__init__.py": b'__version__ = "0.1.0"\n',
+        "src/daimon_matrix/cli.py": b"def main() -> None:\n    return None\n",
+        "src/daimon_matrix/py.typed": b"\n",
+    }
+    for relative, raw in matrix_files.items():
+        target = matrix / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+    subprocess.run(["git", "-C", matrix, "add", "."], check=True)
+    subprocess.run(["git", "-C", matrix, "commit", "-qm", "package"], check=True)
     cluster = _repository(tmp_path / "cluster", "cluster")
     tribe = _repository(tmp_path / "tribe", "tribe")
     matrix_commit = subprocess.check_output(
@@ -54,6 +82,24 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 def _artifact_root(matrix: Path) -> Path:
     return matrix.parent / "artifacts"
+
+
+def _matrix_metadata(matrix: Path) -> bytes:
+    return (
+        b"Metadata-Version: 2.4\n"
+        b"Name: daimon-matrix\n"
+        b"Version: 0.1.0\n"
+        b"Summary: fixture Matrix\n"
+        b"Project-URL: Source, https://example.invalid/matrix\n"
+        b"Author: RC Test\n"
+        b"License-Expression: MIT\n"
+        b"License-File: LICENSE\n"
+        b"Classifier: Programming Language :: Python :: 3\n"
+        b"Requires-Python: >=3.11\n"
+        b"Requires-Dist: fixture-dependency==1.0\n"
+        b"Description-Content-Type: text/markdown\n\n"
+        + (matrix / "README.md").read_bytes()
+    )
 
 
 def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
@@ -84,26 +130,55 @@ def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
         ],
         check=True,
     )
+    package_files = {
+        path.removeprefix("src/"): (matrix / path).read_bytes()
+        for path in (
+            "src/daimon_matrix/__init__.py",
+            "src/daimon_matrix/cli.py",
+            "src/daimon_matrix/py.typed",
+        )
+    }
+    distribution = "daimon_matrix-0.1.0.dist-info"
+    wheel_files = {
+        **package_files,
+        f"{distribution}/METADATA": _matrix_metadata(matrix),
+        f"{distribution}/WHEEL": (
+            b"Wheel-Version: 1.0\nGenerator: hatchling 1.31.0\n"
+            b"Root-Is-Purelib: true\nTag: py3-none-any\n"
+        ),
+        f"{distribution}/entry_points.txt": (
+            b"[console_scripts]\ndaimon = daimon_matrix.cli:main\n"
+        ),
+        f"{distribution}/licenses/LICENSE": (matrix / "LICENSE").read_bytes(),
+    }
+    record_name = f"{distribution}/RECORD"
+    record = "".join(
+        f"{name},sha256="
+        f"{urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b'=').decode()},"
+        f"{len(raw)}\n"
+        for name, raw in wheel_files.items()
+    ) + f"{record_name},,\n"
+    wheel_files[record_name] = record.encode("ascii")
     matrix_wheel = artifact_root / "daimon_matrix-0.1.0-py3-none-any.whl"
     with zipfile.ZipFile(matrix_wheel, mode="w") as wheel_archive:
-        wheel_archive.writestr(
-            "daimon_matrix-0.1.0.dist-info/METADATA",
-            "Metadata-Version: 2.4\nName: daimon-matrix\nVersion: 0.1.0\n",
-        )
-        wheel_archive.writestr(
-            "daimon_matrix-0.1.0.dist-info/WHEEL",
-            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
-        )
-        wheel_archive.writestr("daimon_matrix-0.1.0.dist-info/RECORD", "")
+        for name, raw in wheel_files.items():
+            wheel_archive.writestr(name, raw)
     matrix_sdist = artifact_root / "daimon_matrix-0.1.0.tar.gz"
+    sdist_files = {
+        f"daimon_matrix-0.1.0/{path}": (matrix / path).read_bytes()
+        for path in (
+            ".gitignore",
+            "LICENSE",
+            "README.md",
+            "pyproject.toml",
+            "src/daimon_matrix/__init__.py",
+            "src/daimon_matrix/cli.py",
+            "src/daimon_matrix/py.typed",
+        )
+    }
+    sdist_files["daimon_matrix-0.1.0/PKG-INFO"] = _matrix_metadata(matrix)
     with tarfile.open(matrix_sdist, mode="w:gz") as sdist_archive:
-        for name, raw in (
-            (
-                "daimon_matrix-0.1.0/PKG-INFO",
-                b"Metadata-Version: 2.4\nName: daimon-matrix\nVersion: 0.1.0\n",
-            ),
-            ("daimon_matrix-0.1.0/pyproject.toml", b"[build-system]\n"),
-        ):
+        for name, raw in sdist_files.items():
             info = tarfile.TarInfo(name)
             info.size = len(raw)
             sdist_archive.addfile(info, io.BytesIO(raw))
@@ -141,14 +216,103 @@ def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
             }
         )
 
+    component_refs = {
+        name: {
+            "commit": subprocess.check_output(
+                ["git", "-C", repository, "rev-parse", "HEAD"], text=True
+            ).strip(),
+            "tree": subprocess.check_output(
+                ["git", "-C", repository, "rev-parse", "HEAD^{tree}"], text=True
+            ).strip(),
+        }
+        for name, repository in repositories.items()
+    }
+    for name in repositories:
+        source = next(
+            row
+            for row in artifacts[name]
+            if row["kind"] == ("git-bundle" if name == "daimon-matrix" else "git-archive")
+        )
+        probe_names = ["import", "installed-metadata", "smoke"]
+        if name == "daimon-matrix":
+            probe_names.insert(0, "direct-url-commit")
+        install_evidence = {
+            "schema": "daimon-offline-install-evidence/v1",
+            "producer": "daimon-rc-offline-qualifier/v1",
+            "producer_commit": component_refs["daimon-cluster"]["commit"],
+            "component": name,
+            "commit": component_refs[name]["commit"],
+            "tree": component_refs[name]["tree"],
+            "source_artifact": source["name"],
+            "source_sha256": source["sha256"],
+            "inputs": [
+                {"name": row["name"], "sha256": row["sha256"]}
+                for row in sorted(artifacts[name], key=lambda item: item["name"])
+            ],
+            "platform": "fixture-linux-x86_64",
+            "installations": [
+                {
+                    "python": "3.13",
+                    "network": "disabled",
+                    "result": "passed",
+                    "source": (
+                        "vcs-direct-url" if name == "daimon-matrix" else "git-archive"
+                    ),
+                    "installed_commit": component_refs[name]["commit"],
+                    "installed_tree": component_refs[name]["tree"],
+                    "probes": [
+                        {
+                            "name": probe,
+                            "result": "passed",
+                            "output_sha256": hashlib.sha256(
+                                f"{name}:{probe}:passed".encode()
+                            ).hexdigest(),
+                        }
+                        for probe in probe_names
+                    ],
+                }
+            ],
+        }
+        evidence_path = artifact_root / f"{name}-install-evidence.json"
+        evidence_path.write_text(
+            json.dumps(
+                install_evidence,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+            + "\n",
+            encoding="ascii",
+        )
+        evidence_path.chmod(0o600)
+        artifacts[name].append(
+            {
+                "name": "install-evidence",
+                "kind": "install-evidence",
+                "path": evidence_path.name,
+                "bytes": evidence_path.stat().st_size,
+                "sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+            }
+        )
+
+    evidence = {
+        name: [
+            {
+                "path": "README.md",
+                "sha256": hashlib.sha256(
+                    (repository / "README.md").read_bytes()
+                ).hexdigest(),
+            }
+        ]
+        for name, repository in repositories.items()
+    }
     receipts = {}
     for name, repository in repositories.items():
-        commit = subprocess.check_output(
-            ["git", "-C", repository, "rev-parse", "HEAD"], text=True
-        ).strip()
-        tree = subprocess.check_output(
-            ["git", "-C", repository, "rev-parse", "HEAD^{tree}"], text=True
-        ).strip()
+        commit = component_refs[name]["commit"]
+        tree = component_refs[name]["tree"]
+        install_evidence = next(
+            row for row in artifacts[name] if row["kind"] == "install-evidence"
+        )
         receipts[name] = {
             "schema": "daimon-artifact-qualification/v1",
             "commit": commit,
@@ -170,6 +334,10 @@ def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
                     ),
                     "installed_commit": commit,
                     "installed_tree": tree,
+                    "evidence_ref": {
+                        "artifact": install_evidence["name"],
+                        "sha256": install_evidence["sha256"],
+                    },
                 }
             ],
         }
@@ -183,17 +351,7 @@ def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
             name: [{"name": "full", "python": "3.13", "passed": 1, "skipped": 0}]
             for name in names
         },
-        "evidence": {
-            name: [
-                {
-                    "path": "README.md",
-                    "sha256": hashlib.sha256(
-                        (repository / "README.md").read_bytes()
-                    ).hexdigest(),
-                }
-            ]
-            for name, repository in repositories.items()
-        },
+        "evidence": evidence,
         "limitations": ["fixture qualification is not physical evidence"],
         "human_gates": [
             "cross-being-consent",
@@ -352,7 +510,7 @@ def test_qualification_requires_python_coverage_and_committed_evidence(
     matrix, cluster, tribe = _fixture(tmp_path)
     qualification = _qualification(matrix, cluster, tribe)
     qualification["supported_python"]["daimon-matrix"].append("3.14")
-    with pytest.raises(ManifestError, match="python_coverage_incomplete"):
+    with pytest.raises(ManifestError, match="install_evidence_invalid"):
         build_manifest(
             matrix,
             cluster,
@@ -603,6 +761,138 @@ def test_python_build_artifacts_are_structural_not_text_fixtures(
             baselines=_baselines(matrix, cluster, tribe),
             artifact_root=artifact_root,
         )
+    qualification = _qualification(matrix, cluster, tribe)
+    artifact_root = _artifact_root(matrix)
+    wheel = _artifact(qualification, "daimon-matrix", "python-wheel")
+    wheel_path = artifact_root / wheel["path"]
+    distribution = "daimon_matrix-0.1.0.dist-info"
+    minimal = {
+        f"{distribution}/METADATA": _matrix_metadata(matrix),
+        f"{distribution}/WHEEL": (
+            b"Wheel-Version: 1.0\nGenerator: hatchling 1.31.0\n"
+            b"Root-Is-Purelib: true\nTag: py3-none-any\n"
+        ),
+        f"{distribution}/entry_points.txt": (
+            b"[console_scripts]\ndaimon = daimon_matrix.cli:main\n"
+        ),
+        f"{distribution}/licenses/LICENSE": (matrix / "LICENSE").read_bytes(),
+    }
+    record_name = f"{distribution}/RECORD"
+    record = "".join(
+        f"{name},sha256="
+        f"{urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b'=').decode()},"
+        f"{len(raw)}\n"
+        for name, raw in minimal.items()
+    ) + f"{record_name},,\n"
+    minimal[record_name] = record.encode("ascii")
+    with zipfile.ZipFile(wheel_path, mode="w") as wheel_archive:
+        for name, raw in minimal.items():
+            wheel_archive.writestr(name, raw)
+    _refresh_artifact(qualification, artifact_root, "daimon-matrix", "python-wheel")
+    with pytest.raises(ManifestError, match="qualification_python_wheel_invalid"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=artifact_root,
+        )
+
+    qualification = _qualification(matrix, cluster, tribe)
+    sdist = _artifact(qualification, "daimon-matrix", "python-sdist")
+    sdist_path = artifact_root / sdist["path"]
+    minimal_sdist = {
+        f"daimon_matrix-0.1.0/{name}": (matrix / name).read_bytes()
+        for name in (".gitignore", "LICENSE", "README.md", "pyproject.toml")
+    }
+    minimal_sdist["daimon_matrix-0.1.0/PKG-INFO"] = _matrix_metadata(matrix)
+    with tarfile.open(sdist_path, mode="w:gz") as sdist_archive:
+        for name, raw in minimal_sdist.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(raw)
+            sdist_archive.addfile(info, io.BytesIO(raw))
+    _refresh_artifact(qualification, artifact_root, "daimon-matrix", "python-sdist")
+    with pytest.raises(ManifestError, match="qualification_python_sdist_invalid"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=artifact_root,
+        )
+
+    qualification = _qualification(matrix, cluster, tribe)
+    wheel = _artifact(qualification, "daimon-matrix", "python-wheel")
+    wheel_path = artifact_root / wheel["path"]
+    with zipfile.ZipFile(wheel_path) as wheel_archive:
+        wheel_files = {
+            name: wheel_archive.read(name)
+            for name in wheel_archive.namelist()
+            if not name.endswith(".dist-info/RECORD")
+        }
+    wheel_files["daimon_matrix/cli.py"] = b"def main(): return 'substituted'\n"
+    record_name = "daimon_matrix-0.1.0.dist-info/RECORD"
+    record = "".join(
+        f"{name},sha256="
+        f"{urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b'=').decode()},"
+        f"{len(raw)}\n"
+        for name, raw in wheel_files.items()
+    ) + f"{record_name},,\n"
+    wheel_files[record_name] = record.encode("ascii")
+    with zipfile.ZipFile(wheel_path, mode="w") as wheel_archive:
+        for name, raw in wheel_files.items():
+            wheel_archive.writestr(name, raw)
+    _refresh_artifact(qualification, artifact_root, "daimon-matrix", "python-wheel")
+    with pytest.raises(
+        ManifestError, match="qualification_python_wheel_source_mismatch"
+    ):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=artifact_root,
+        )
+
+    qualification = _qualification(matrix, cluster, tribe)
+    wheel = _artifact(qualification, "daimon-matrix", "python-wheel")
+    wheel_path = artifact_root / wheel["path"]
+    with zipfile.ZipFile(wheel_path) as wheel_archive:
+        wheel_files = {
+            name: wheel_archive.read(name)
+            for name in wheel_archive.namelist()
+            if not name.endswith(".dist-info/RECORD")
+        }
+    metadata_name = "daimon_matrix-0.1.0.dist-info/METADATA"
+    wheel_files[metadata_name] = wheel_files[metadata_name].replace(
+        b"Requires-Dist: fixture-dependency==1.0",
+        b"Requires-Dist: untrusted-substitute==9.9",
+    )
+    record = "".join(
+        f"{name},sha256="
+        f"{urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b'=').decode()},"
+        f"{len(raw)}\n"
+        for name, raw in wheel_files.items()
+    ) + f"{record_name},,\n"
+    wheel_files[record_name] = record.encode("ascii")
+    with zipfile.ZipFile(wheel_path, mode="w") as wheel_archive:
+        for name, raw in wheel_files.items():
+            wheel_archive.writestr(name, raw)
+    _refresh_artifact(qualification, artifact_root, "daimon-matrix", "python-wheel")
+    with pytest.raises(
+        ManifestError, match="qualification_python_package_metadata_mismatch"
+    ):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=artifact_root,
+        )
 
 
 def test_receipt_binds_inventory_source_and_offline_install(tmp_path: Path) -> None:
@@ -613,6 +903,69 @@ def test_receipt_binds_inventory_source_and_offline_install(tmp_path: Path) -> N
     ] = "available"
     with pytest.raises(
         ManifestError, match="qualification_receipt_installation_invalid:daimon-matrix"
+    ):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
+        )
+
+    qualification = _qualification(matrix, cluster, tribe)
+    install_row = _artifact(qualification, "daimon-matrix", "install-evidence")
+    install_path = _artifact_root(matrix) / install_row["path"]
+    install_evidence = json.loads(install_path.read_bytes())
+    install_evidence["installations"][0]["probes"].pop()
+    install_path.write_text(
+        json.dumps(
+            install_evidence,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+        + "\n",
+        encoding="ascii",
+    )
+    _refresh_artifact(
+        qualification, _artifact_root(matrix), "daimon-matrix", "install-evidence"
+    )
+    with pytest.raises(
+        ManifestError, match="qualification_install_evidence_invalid:daimon-matrix"
+    ):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
+        )
+
+    qualification = _qualification(matrix, cluster, tribe)
+    qualification["artifact_receipts"]["daimon-cluster"]["installations"][0][
+        "evidence_ref"
+    ]["sha256"] = "0" * 64
+    with pytest.raises(
+        ManifestError, match="qualification_receipt_installation_invalid:daimon-cluster"
+    ):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
+        )
+
+    qualification = _qualification(matrix, cluster, tribe)
+    qualification["evidence"]["tribe-bridge"][0]["sha256"] = "0" * 64
+    qualification["artifact_receipts"]["tribe-bridge"]["installations"][0][
+        "evidence_ref"
+    ]["sha256"] = "0" * 64
+    with pytest.raises(
+        ManifestError, match="qualification_evidence_mismatch:tribe-bridge"
     ):
         build_manifest(
             matrix,

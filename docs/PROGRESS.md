@@ -22,7 +22,7 @@ Completed locally on the exact code boundary:
 - a distinct recovery transfer limited to the public runtime bundle and
   canonical ledger, rejected by the generic full-snapshot restore;
 - V7 exact twelve-profile snapshot gate with every client tree excluded;
-- `600 passed, 4 skipped` with resource/unraisable warnings fatal on the
+- `606 passed, 4 skipped` with resource/unraisable warnings fatal on the
   prepared final-pin/freezer successor;
 - network-disabled recovery/rebirth container E2E: 1 passed; and
 - encrypted backup/export, offline check and restore container E2E: 1 passed.

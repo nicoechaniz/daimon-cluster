@@ -1,9 +1,10 @@
 """Freeze the three-repository V0 candidate into deterministic evidence.
 
 The tool is intentionally read-only with respect to the repositories.  It
-refuses dirty worktrees, verifies Cluster's exact Matrix source pin, hashes a
-deterministic ``git archive`` for every component, validates committed evidence
-and supported-Python qualification, and atomically writes one new canonical
+refuses dirty worktrees, verifies Cluster's exact Matrix source pin, validates
+typed source/build artifacts and their offline-install receipts against the
+exact component commits and trees, validates committed evidence and
+supported-Python qualification, and atomically writes one new canonical
 manifest. Re-running it over the same inputs produces the same bytes.
 """
 
@@ -16,6 +17,9 @@ import os
 import re
 import stat
 import subprocess
+import tarfile
+import tempfile
+import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,8 +44,21 @@ PIN_PATTERN: Final = re.compile(
     r"^daimon-matrix @ git\+https://github\.com/AlterMundi/"
     r"daimon-matrix\.git@([0-9a-f]{40})$"
 )
-QUALIFICATION_SCHEMA: Final = "daimon-release-qualification/v1"
+QUALIFICATION_SCHEMA: Final = "daimon-release-qualification/v2"
+ARTIFACT_RECEIPT_SCHEMA: Final = "daimon-artifact-qualification/v1"
 _COMPONENT_NAMES: Final = frozenset(BASELINES)
+_ARTIFACT_KINDS: Final = {
+    "daimon-matrix": frozenset(
+        {"git-bundle", "python-sdist", "python-wheel", "runtime-lock", "wheelhouse"}
+    ),
+    "daimon-cluster": frozenset({"git-archive", "runtime-lock", "wheelhouse"}),
+    "tribe-bridge": frozenset({"git-archive", "runtime-lock", "wheelhouse"}),
+}
+_REQUIRED_ARTIFACT_KINDS: Final = {
+    "daimon-matrix": frozenset({"git-bundle", "python-sdist", "python-wheel"}),
+    "daimon-cluster": frozenset({"git-archive"}),
+    "tribe-bridge": frozenset({"git-archive"}),
+}
 _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 _RELEASE: Final = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+rc[1-9][0-9]*$")
 _PYTHON: Final = re.compile(r"^3\.(?:[0-9]|1[0-9])$")
@@ -58,6 +75,9 @@ _REQUIRED_HUMAN_GATES: Final = frozenset(
     }
 )
 _MAX_QUALIFICATION_BYTES: Final = 1024 * 1024
+_MAX_PACKAGE_MEMBER_BYTES: Final = 512 * 1024 * 1024
+_MAX_PACKAGE_METADATA_BYTES: Final = 1024 * 1024
+_MAX_PACKAGE_MEMBERS: Final = 10_000
 
 
 class ManifestError(RuntimeError):
@@ -104,6 +124,146 @@ def _git(repository: Path, *arguments: str, text: bool = True) -> str | bytes:
             f"git_{arguments[0]}_failed:{repository.name}"
         ) from exception
     return result.stdout
+
+
+def _isolated_git(*arguments: str, cwd: Path | None = None) -> str:
+    """Run Git without ambient config or hooks while inspecting an artifact."""
+
+    environment = {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "LC_ALL": "C",
+        "PATH": os.environ.get("PATH", ""),
+    }
+    try:
+        result = subprocess.run(
+            ["git", "-c", "core.hooksPath=/dev/null", *arguments],
+            cwd=cwd,
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exception:
+        raise ManifestError("qualification_git_bundle_invalid") from exception
+    return result.stdout
+
+
+def _verify_git_bundle(path: Path, commit: str, tree: str) -> None:
+    """Prove a bundle is a complete, single-head object source for the candidate."""
+
+    heads = _isolated_git("bundle", "list-heads", os.fspath(path)).splitlines()
+    if heads != [f"{commit} HEAD"]:
+        raise ManifestError("qualification_git_bundle_head_mismatch")
+    with tempfile.TemporaryDirectory(prefix="daimon-rc-bundle-") as raw_directory:
+        repository = Path(raw_directory) / "objects.git"
+        _isolated_git("init", "--bare", "--quiet", os.fspath(repository))
+        # Verification in an empty repository rejects prerequisite/shallow bundles.
+        _isolated_git("-C", os.fspath(repository), "bundle", "verify", os.fspath(path))
+        _isolated_git(
+            "-C", os.fspath(repository), "bundle", "unbundle", os.fspath(path)
+        )
+        _isolated_git(
+            "-C", os.fspath(repository), "update-ref", "refs/heads/candidate", commit
+        )
+        observed_tree = _isolated_git(
+            "-C", os.fspath(repository), "rev-parse", f"{commit}^{{tree}}"
+        ).strip()
+        if observed_tree != tree:
+            raise ManifestError("qualification_git_bundle_tree_mismatch")
+        _isolated_git(
+            "-C",
+            os.fspath(repository),
+            "fsck",
+            "--strict",
+            "--full",
+            "--no-dangling",
+        )
+
+
+def _safe_package_member(name: str) -> bool:
+    path = Path(name)
+    return bool(name) and not path.is_absolute() and ".." not in path.parts
+
+
+def _metadata_project(raw: bytes) -> str:
+    if len(raw) > _MAX_PACKAGE_METADATA_BYTES:
+        raise ManifestError("qualification_python_package_invalid")
+    for line in raw.decode("utf-8", errors="strict").splitlines():
+        if line.lower().startswith("name:"):
+            return re.sub(r"[-_.]+", "-", line.partition(":")[2].strip().lower())
+    raise ManifestError("qualification_python_package_invalid")
+
+
+def _verify_python_wheel(path: Path) -> None:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+            names = [member.filename for member in members]
+            metadata = [name for name in names if name.endswith(".dist-info/METADATA")]
+            wheel = [name for name in names if name.endswith(".dist-info/WHEEL")]
+            record = [name for name in names if name.endswith(".dist-info/RECORD")]
+            if (
+                not path.name.endswith(".whl")
+                or not 1 <= len(members) <= _MAX_PACKAGE_MEMBERS
+                or len(names) != len(set(names))
+                or any(not _safe_package_member(name) for name in names)
+                or any(member.flag_bits & 0x1 for member in members)
+                or any(
+                    stat.S_ISLNK((member.external_attr >> 16) & 0xFFFF)
+                    for member in members
+                )
+                or sum(member.file_size for member in members)
+                > _MAX_PACKAGE_MEMBER_BYTES
+                or len(metadata) != 1
+                or len(wheel) != 1
+                or len(record) != 1
+            ):
+                raise ManifestError("qualification_python_wheel_invalid")
+            with archive.open(metadata[0]) as metadata_file:
+                raw_metadata = metadata_file.read(_MAX_PACKAGE_METADATA_BYTES + 1)
+            if _metadata_project(raw_metadata) != "daimon-matrix":
+                raise ManifestError("qualification_python_wheel_invalid")
+    except ManifestError:
+        raise
+    except (OSError, UnicodeError, zipfile.BadZipFile) as exception:
+        raise ManifestError("qualification_python_wheel_invalid") from exception
+
+
+def _verify_python_sdist(path: Path) -> None:
+    try:
+        with tarfile.open(path, mode="r:*") as archive:
+            members = archive.getmembers()
+            names = [member.name for member in members]
+            metadata = [name for name in names if name.endswith("/PKG-INFO")]
+            pyproject = [name for name in names if name.endswith("/pyproject.toml")]
+            if (
+                not path.name.endswith(".tar.gz")
+                or not 1 <= len(members) <= _MAX_PACKAGE_MEMBERS
+                or len(names) != len(set(names))
+                or any(not _safe_package_member(name) for name in names)
+                or any(
+                    member.issym() or member.islnk() or member.isdev()
+                    for member in members
+                )
+                or sum(member.size for member in members) > _MAX_PACKAGE_MEMBER_BYTES
+                or len(metadata) != 1
+                or len(pyproject) != 1
+            ):
+                raise ManifestError("qualification_python_sdist_invalid")
+            metadata_member = archive.extractfile(metadata[0])
+            if (
+                metadata_member is None
+                or _metadata_project(
+                    metadata_member.read(_MAX_PACKAGE_METADATA_BYTES + 1)
+                )
+                != "daimon-matrix"
+            ):
+                raise ManifestError("qualification_python_sdist_invalid")
+    except ManifestError:
+        raise
+    except (OSError, UnicodeError, tarfile.TarError) as exception:
+        raise ManifestError("qualification_python_sdist_invalid") from exception
 
 
 def _closed_repository(component: Component) -> dict[str, object]:
@@ -153,6 +313,7 @@ def _qualification(
     qualification = _closed(
         value,
         {
+            "artifact_receipts",
             "artifacts",
             "evidence",
             "human_gates",
@@ -206,21 +367,28 @@ def _qualification(
     ):
         raise ManifestError("qualification_artifact_root_rejected")
     artifact_paths: set[str] = set()
+    artifact_rows: dict[str, dict[str, dict[str, object]]] = {}
     for name in _COMPONENT_NAMES:
         rows = artifacts[name]
         assert isinstance(rows, list)
         names: set[str] = set()
+        kinds: set[str] = set()
+        artifact_rows[name] = {}
         for raw_row in rows:
             row = _closed(
                 raw_row,
-                {"bytes", "name", "path", "sha256"},
+                {"bytes", "kind", "name", "path", "sha256"},
                 "qualification_artifact_malformed",
             )
             path = row["path"]
+            kind = row["kind"]
             if (
                 not isinstance(row["name"], str)
                 or not row["name"]
                 or row["name"] in names
+                or not isinstance(kind, str)
+                or kind not in _ARTIFACT_KINDS[name]
+                or kind in kinds
                 or not isinstance(path, str)
                 or _EVIDENCE_PATH.fullmatch(path) is None
                 or ".." in Path(path).parts
@@ -272,7 +440,103 @@ def _qualification(
             ):
                 raise ManifestError("qualification_artifact_mismatch")
             names.add(row["name"])
+            kinds.add(kind)
             artifact_paths.add(path)
+            artifact_rows[name][row["name"]] = dict(row)
+            if kind == "git-archive":
+                if (
+                    row["bytes"] != frozen[name]["archive_bytes"]
+                    or row["sha256"] != frozen[name]["archive_sha256"]
+                ):
+                    raise ManifestError(f"qualification_git_archive_mismatch:{name}")
+            elif kind == "git-bundle":
+                _verify_git_bundle(
+                    candidate,
+                    str(frozen[name]["commit"]),
+                    str(frozen[name]["tree"]),
+                )
+            elif kind == "python-wheel":
+                _verify_python_wheel(candidate)
+            elif kind == "python-sdist":
+                _verify_python_sdist(candidate)
+        if not _REQUIRED_ARTIFACT_KINDS[name].issubset(kinds):
+            raise ManifestError(f"qualification_artifact_kinds_incomplete:{name}")
+
+    receipts = _component_map(
+        qualification["artifact_receipts"], "qualification_receipts_malformed"
+    )
+    for name in _COMPONENT_NAMES:
+        receipt = _closed(
+            receipts[name],
+            {
+                "artifacts",
+                "commit",
+                "installations",
+                "schema",
+                "source_artifact",
+                "tree",
+            },
+            "qualification_receipt_malformed",
+        )
+        expected_source_kind = "git-bundle" if name == "daimon-matrix" else "git-archive"
+        source_names = [
+            artifact_name
+            for artifact_name, row in artifact_rows[name].items()
+            if row["kind"] == expected_source_kind
+        ]
+        source_artifact = receipt["source_artifact"]
+        if (
+            receipt["schema"] != ARTIFACT_RECEIPT_SCHEMA
+            or receipt["commit"] != frozen[name]["commit"]
+            or receipt["tree"] != frozen[name]["tree"]
+            or not isinstance(source_artifact, str)
+            or source_names != [source_artifact]
+        ):
+            raise ManifestError(f"qualification_receipt_source_mismatch:{name}")
+        inventory = receipt["artifacts"]
+        expected_inventory = [
+            {"name": artifact_name, "sha256": row["sha256"]}
+            for artifact_name, row in sorted(artifact_rows[name].items())
+        ]
+        if not isinstance(inventory, list) or inventory != expected_inventory:
+            raise ManifestError(f"qualification_receipt_inventory_mismatch:{name}")
+        installations = receipt["installations"]
+        if not isinstance(installations, list):
+            raise ManifestError(f"qualification_receipt_installations_invalid:{name}")
+        expected_source = "vcs-direct-url" if name == "daimon-matrix" else "git-archive"
+        observed_versions: list[str] = []
+        for raw_installation in installations:
+            installation = _closed(
+                raw_installation,
+                {
+                    "installed_commit",
+                    "installed_tree",
+                    "network",
+                    "python",
+                    "result",
+                    "source",
+                },
+                "qualification_receipt_installation_malformed",
+            )
+            python = installation["python"]
+            if (
+                not isinstance(python, str)
+                or python not in python_by_component[name]
+                or installation["network"] != "disabled"
+                or installation["result"] != "passed"
+                or installation["source"] != expected_source
+                or installation["installed_commit"] != frozen[name]["commit"]
+                or installation["installed_tree"] != frozen[name]["tree"]
+            ):
+                raise ManifestError(
+                    f"qualification_receipt_installation_invalid:{name}"
+                )
+            observed_versions.append(python)
+        expected_versions = sorted(
+            python_by_component[name], key=lambda item: tuple(map(int, item.split(".")))
+        )
+        if observed_versions != expected_versions:
+            raise ManifestError(f"qualification_receipt_python_coverage_incomplete:{name}")
 
     tests = _component_map(qualification["tests"], "qualification_tests_malformed")
     for name in _COMPONENT_NAMES:

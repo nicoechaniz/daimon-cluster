@@ -19,6 +19,13 @@ _HEX: Final = re.compile(r"^[0-9a-f]{40}$")
 _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 _HOST_REF: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _COMPONENTS: Final = frozenset({"daimon-matrix", "daimon-cluster", "tribe-bridge"})
+_ARTIFACT_KINDS: Final = {
+    "daimon-matrix": frozenset(
+        {"git-bundle", "python-sdist", "python-wheel", "runtime-lock", "wheelhouse"}
+    ),
+    "daimon-cluster": frozenset({"git-archive", "runtime-lock", "wheelhouse"}),
+    "tribe-bridge": frozenset({"git-archive", "runtime-lock", "wheelhouse"}),
+}
 _HOST_ROLES: Final = frozenset({"source", "target", "backup"})
 _SHELLS: Final = frozenset(
     {"ash", "bash", "csh", "dash", "fish", "ksh", "sh", "zsh"}
@@ -133,7 +140,7 @@ def _release_manifest(value: Any) -> tuple[dict[str, dict[str, str]], list[dict[
         for value_row in rows:
             row = _closed(
                 value_row,
-                {"bytes", "name", "path", "sha256"},
+                {"bytes", "kind", "name", "path", "sha256"},
                 "physical_rc_manifest_malformed",
             )
             if (
@@ -141,6 +148,8 @@ def _release_manifest(value: Any) -> tuple[dict[str, dict[str, str]], list[dict[
                 or not row["name"]
                 or not isinstance(row["path"], str)
                 or not row["path"]
+                or not isinstance(row["kind"], str)
+                or row["kind"] not in _ARTIFACT_KINDS[component]
                 or not isinstance(row["bytes"], int)
                 or isinstance(row["bytes"], bool)
                 or row["bytes"] <= 0

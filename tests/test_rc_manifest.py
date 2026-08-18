@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import subprocess
+import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -62,24 +65,120 @@ def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
     names = tuple(repositories)
     artifact_root = _artifact_root(matrix)
     artifact_root.mkdir(mode=0o700, exist_ok=True)
-    artifacts = {}
-    for name in names:
-        path = artifact_root / f"{name}.artifact"
-        path.write_bytes(f"exact artifact for {name}\n".encode("ascii"))
+    artifacts: dict[str, list[dict]] = {name: [] for name in names}
+
+    matrix_bundle = artifact_root / "daimon-matrix.bundle"
+    if matrix_bundle.exists():
+        matrix_bundle.unlink()
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            matrix,
+            "-c",
+            "pack.threads=1",
+            "bundle",
+            "create",
+            matrix_bundle,
+            "HEAD",
+        ],
+        check=True,
+    )
+    matrix_wheel = artifact_root / "daimon_matrix-0.1.0-py3-none-any.whl"
+    with zipfile.ZipFile(matrix_wheel, mode="w") as wheel_archive:
+        wheel_archive.writestr(
+            "daimon_matrix-0.1.0.dist-info/METADATA",
+            "Metadata-Version: 2.4\nName: daimon-matrix\nVersion: 0.1.0\n",
+        )
+        wheel_archive.writestr(
+            "daimon_matrix-0.1.0.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        wheel_archive.writestr("daimon_matrix-0.1.0.dist-info/RECORD", "")
+    matrix_sdist = artifact_root / "daimon_matrix-0.1.0.tar.gz"
+    with tarfile.open(matrix_sdist, mode="w:gz") as sdist_archive:
+        for name, raw in (
+            (
+                "daimon_matrix-0.1.0/PKG-INFO",
+                b"Metadata-Version: 2.4\nName: daimon-matrix\nVersion: 0.1.0\n",
+            ),
+            ("daimon_matrix-0.1.0/pyproject.toml", b"[build-system]\n"),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(raw)
+            sdist_archive.addfile(info, io.BytesIO(raw))
+    for path, kind, artifact_name in (
+        (matrix_bundle, "git-bundle", "source-bundle"),
+        (matrix_wheel, "python-wheel", "wheel"),
+        (matrix_sdist, "python-sdist", "sdist"),
+    ):
         path.chmod(0o600)
-        artifacts[name] = [
+        artifacts["daimon-matrix"].append(
             {
-                "name": "release-artifact",
+                "name": artifact_name,
+                "kind": kind,
                 "path": path.name,
                 "bytes": path.stat().st_size,
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             }
-        ]
+        )
+
+    for name, repository in (("daimon-cluster", cluster), ("tribe-bridge", tribe)):
+        path = artifact_root / f"{name}.tar"
+        path.write_bytes(
+            subprocess.check_output(
+                ["git", "-C", repository, "archive", "--format=tar", "HEAD"]
+            )
+        )
+        path.chmod(0o600)
+        artifacts[name].append(
+            {
+                "name": "source-archive",
+                "kind": "git-archive",
+                "path": path.name,
+                "bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+
+    receipts = {}
+    for name, repository in repositories.items():
+        commit = subprocess.check_output(
+            ["git", "-C", repository, "rev-parse", "HEAD"], text=True
+        ).strip()
+        tree = subprocess.check_output(
+            ["git", "-C", repository, "rev-parse", "HEAD^{tree}"], text=True
+        ).strip()
+        receipts[name] = {
+            "schema": "daimon-artifact-qualification/v1",
+            "commit": commit,
+            "tree": tree,
+            "source_artifact": (
+                "source-bundle" if name == "daimon-matrix" else "source-archive"
+            ),
+            "artifacts": [
+                {"name": row["name"], "sha256": row["sha256"]}
+                for row in sorted(artifacts[name], key=lambda item: item["name"])
+            ],
+            "installations": [
+                {
+                    "python": "3.13",
+                    "network": "disabled",
+                    "result": "passed",
+                    "source": (
+                        "vcs-direct-url" if name == "daimon-matrix" else "git-archive"
+                    ),
+                    "installed_commit": commit,
+                    "installed_tree": tree,
+                }
+            ],
+        }
     return {
-        "schema": "daimon-release-qualification/v1",
+        "schema": "daimon-release-qualification/v2",
         "release": "0.1.0rc1",
         "supported_python": {name: ["3.13"] for name in names},
         "artifacts": artifacts,
+        "artifact_receipts": receipts,
         "tests": {
             name: [{"name": "full", "python": "3.13", "passed": 1, "skipped": 0}]
             for name in names
@@ -126,6 +225,27 @@ def _baselines(matrix: Path, cluster: Path, tribe: Path) -> dict:
         ).strip()
         result[name] = {"commit": commit, "tree": tree}
     return result
+
+
+def _artifact(qualification: dict, component: str, kind: str) -> dict:
+    return next(
+        row for row in qualification["artifacts"][component] if row["kind"] == kind
+    )
+
+
+def _refresh_artifact(
+    qualification: dict, artifact_root: Path, component: str, kind: str
+) -> None:
+    row = _artifact(qualification, component, kind)
+    path = artifact_root / row["path"]
+    row["bytes"] = path.stat().st_size
+    row["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    receipt_row = next(
+        item
+        for item in qualification["artifact_receipts"][component]["artifacts"]
+        if item["name"] == row["name"]
+    )
+    receipt_row["sha256"] = row["sha256"]
 
 
 def test_same_heads_produce_byte_identical_manifest(tmp_path: Path) -> None:
@@ -324,18 +444,7 @@ def test_manifest_hashes_external_artifacts_and_rejects_mismatch(
     matrix, cluster, tribe = _fixture(tmp_path)
     artifact_root = tmp_path / "artifacts"
     artifact_root.mkdir(mode=0o755)
-    wheel = artifact_root / "matrix.whl"
-    wheel.write_bytes(b"exact-wheel-bytes")
-    wheel.chmod(0o644)
     qualification = _qualification(matrix, cluster, tribe)
-    qualification["artifacts"]["daimon-matrix"] = [
-        {
-            "name": "matrix-wheel",
-            "path": "matrix.whl",
-            "bytes": wheel.stat().st_size,
-            "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
-        }
-    ]
     build_manifest(
         matrix,
         cluster,
@@ -344,7 +453,7 @@ def test_manifest_hashes_external_artifacts_and_rejects_mismatch(
         baselines=_baselines(matrix, cluster, tribe),
         artifact_root=artifact_root,
     )
-    qualification["artifacts"]["daimon-matrix"][0]["sha256"] = "0" * 64
+    qualification["artifacts"]["daimon-matrix"][1]["sha256"] = "0" * 64
     with pytest.raises(ManifestError, match="qualification_artifact_mismatch"):
         build_manifest(
             matrix,
@@ -353,6 +462,200 @@ def test_manifest_hashes_external_artifacts_and_rejects_mismatch(
             qualification,
             baselines=_baselines(matrix, cluster, tribe),
             artifact_root=artifact_root,
+        )
+
+
+def test_semantic_source_artifacts_cannot_be_replaced_by_matching_claims(
+    tmp_path: Path,
+) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    qualification = _qualification(matrix, cluster, tribe)
+    artifact_root = _artifact_root(matrix)
+    cluster_archive = _artifact(qualification, "daimon-cluster", "git-archive")
+    archive_path = artifact_root / cluster_archive["path"]
+    archive_path.write_bytes(
+        subprocess.check_output(
+            [
+                "git",
+                "-C",
+                cluster,
+                "archive",
+                "--format=tar",
+                "--prefix=unexpected/",
+                "HEAD",
+            ]
+        )
+    )
+    _refresh_artifact(
+        qualification, artifact_root, "daimon-cluster", "git-archive"
+    )
+    with pytest.raises(
+        ManifestError, match="qualification_git_archive_mismatch:daimon-cluster"
+    ):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=artifact_root,
+        )
+
+
+def test_matrix_bundle_must_have_one_exact_head(tmp_path: Path) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    qualification = _qualification(matrix, cluster, tribe)
+    artifact_root = _artifact_root(matrix)
+    bundle = _artifact(qualification, "daimon-matrix", "git-bundle")
+    bundle_path = artifact_root / bundle["path"]
+    subprocess.run(["git", "-C", matrix, "tag", "unexpected-head"], check=True)
+    bundle_path.unlink()
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            matrix,
+            "-c",
+            "pack.threads=1",
+            "bundle",
+            "create",
+            bundle_path,
+            "HEAD",
+            "refs/tags/unexpected-head",
+        ],
+        check=True,
+    )
+    bundle_path.chmod(0o600)
+    _refresh_artifact(qualification, artifact_root, "daimon-matrix", "git-bundle")
+    with pytest.raises(ManifestError, match="qualification_git_bundle_head_mismatch"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=artifact_root,
+        )
+
+
+def test_matrix_bundle_must_contain_full_history(tmp_path: Path) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    (matrix / "second").write_text("second\n", encoding="utf-8")
+    subprocess.run(["git", "-C", matrix, "add", "second"], check=True)
+    subprocess.run(["git", "-C", matrix, "commit", "-qm", "second"], check=True)
+    matrix_commit = subprocess.check_output(
+        ["git", "-C", matrix, "rev-parse", "HEAD"], text=True
+    ).strip()
+    (cluster / "requirements-weave.txt").write_text(
+        "daimon-matrix @ git+https://github.com/AlterMundi/"
+        f"daimon-matrix.git@{matrix_commit}\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", cluster, "add", "requirements-weave.txt"], check=True)
+    subprocess.run(["git", "-C", cluster, "commit", "-qm", "repin"], check=True)
+    qualification = _qualification(matrix, cluster, tribe)
+    artifact_root = _artifact_root(matrix)
+    bundle = _artifact(qualification, "daimon-matrix", "git-bundle")
+    bundle_path = artifact_root / bundle["path"]
+    bundle_path.unlink()
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            matrix,
+            "-c",
+            "pack.threads=1",
+            "bundle",
+            "create",
+            bundle_path,
+            "HEAD^..HEAD",
+        ],
+        check=True,
+    )
+    bundle_path.chmod(0o600)
+    _refresh_artifact(qualification, artifact_root, "daimon-matrix", "git-bundle")
+    with pytest.raises(ManifestError, match="qualification_git_bundle_invalid"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=artifact_root,
+        )
+
+
+def test_python_build_artifacts_are_structural_not_text_fixtures(
+    tmp_path: Path,
+) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    qualification = _qualification(matrix, cluster, tribe)
+    artifact_root = _artifact_root(matrix)
+    wheel = _artifact(qualification, "daimon-matrix", "python-wheel")
+    (artifact_root / wheel["path"]).write_bytes(b"not a wheel\n")
+    _refresh_artifact(qualification, artifact_root, "daimon-matrix", "python-wheel")
+    with pytest.raises(ManifestError, match="qualification_python_wheel_invalid"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=artifact_root,
+        )
+
+
+def test_receipt_binds_inventory_source_and_offline_install(tmp_path: Path) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    qualification = _qualification(matrix, cluster, tribe)
+    qualification["artifact_receipts"]["daimon-matrix"]["installations"][0][
+        "network"
+    ] = "available"
+    with pytest.raises(
+        ManifestError, match="qualification_receipt_installation_invalid:daimon-matrix"
+    ):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
+        )
+
+    qualification = _qualification(matrix, cluster, tribe)
+    qualification["artifact_receipts"]["tribe-bridge"]["tree"] = "0" * 40
+    with pytest.raises(
+        ManifestError, match="qualification_receipt_source_mismatch:tribe-bridge"
+    ):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
+        )
+
+
+def test_matrix_bundle_wheel_and_sdist_are_all_required(tmp_path: Path) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    qualification = _qualification(matrix, cluster, tribe)
+    qualification["artifacts"]["daimon-matrix"] = [
+        row
+        for row in qualification["artifacts"]["daimon-matrix"]
+        if row["kind"] != "python-sdist"
+    ]
+    with pytest.raises(
+        ManifestError, match="qualification_artifact_kinds_incomplete:daimon-matrix"
+    ):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
         )
 
 

@@ -35,8 +35,11 @@ def _manifest() -> dict:
         name: [
             {
                 "bytes": index,
-                "name": "source-archive",
-                "path": f"{name}.tar",
+                "kind": "git-bundle" if name == "daimon-matrix" else "git-archive",
+                "name": "source-bundle" if name == "daimon-matrix" else "source-archive",
+                "path": (
+                    f"{name}.bundle" if name == "daimon-matrix" else f"{name}.tar"
+                ),
                 "sha256": digit * 64,
             }
         ]

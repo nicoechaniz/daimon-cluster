@@ -71,7 +71,7 @@ not Matrix intake or semantic-delivery authority.
 - V7 snapshots require the complete canonical twelve-profile table and exclude
   root, operator and host client material unconditionally. Incomplete,
   duplicated, relabelled or unsafe layouts fail before a destination exists.
-- The complete Cluster suite passes 634 tests with four intentional skips and
+- The complete Cluster suite passes 635 tests with four intentional skips and
   ResourceWarning and unraisable-warning failures enabled. The
   network-disabled recovery/rebirth container journey
   and the independent encrypted backup/export/offline-restore journey pass.

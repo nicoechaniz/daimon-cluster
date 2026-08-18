@@ -105,3 +105,26 @@ def test_ci_sandbox_preflight_is_hosted_runner_only_and_preserves_isolation() ->
     assert 'test "$(wc -l < /proc/net/route)" -eq 1' in step
     assert "test ! -e /home/runner" in step
     assert "test ! -e /run/docker.sock" in step
+
+
+def test_ci_bubblewrap_install_is_cached_bounded_and_fail_closed() -> None:
+    workflow = (
+        Path(__file__).parents[1] / ".github/workflows/tests.yml"
+    ).read_text(encoding="utf-8")
+    start = workflow.index("      - name: Install the offline qualification sandbox")
+    end = workflow.index(
+        "      - name: Prove the disposable runner supports the qualification sandbox",
+        start,
+    )
+    step = workflow[start:end]
+
+    assert "apt-get update" not in step
+    assert "/var/lib/apt/lists/*_Packages*" in step
+    assert "/usr/bin/timeout --kill-after=5s 120s" in step
+    assert step.count("/usr/bin/apt-get install") == 1
+    assert "--no-install-recommends" in step
+    assert "Acquire::Retries=2" in step
+    assert "Acquire::http::Timeout=15" in step
+    assert "Acquire::https::Timeout=15" in step
+    assert "Dpkg::Lock::Timeout=30" in step
+    assert "test -x /usr/bin/bwrap" in step

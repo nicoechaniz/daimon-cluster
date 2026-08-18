@@ -187,8 +187,23 @@ jobs:
           PY
       - name: Install the offline qualification sandbox
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes bubblewrap
+          set -eu
+          if ! compgen -G '/var/lib/apt/lists/*_Packages*' >/dev/null; then
+            printf 'hosted runner apt package lists are missing; refusing an unbounded refresh\n' >&2
+            exit 1
+          fi
+          sudo -n /usr/bin/timeout --kill-after=5s 120s \
+            /usr/bin/apt-get install \
+            --yes \
+            --no-install-recommends \
+            -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=15 \
+            -o Acquire::https::Timeout=15 \
+            -o Dpkg::Lock::Timeout=30 \
+            -o Dpkg::Use-Pty=0 \
+            bubblewrap
+          test "$(dpkg-query -W -f='${Status}' bubblewrap)" = 'install ok installed'
+          test -x /usr/bin/bwrap
       - name: Prove the disposable runner supports the qualification sandbox
         run: |
           set -eu

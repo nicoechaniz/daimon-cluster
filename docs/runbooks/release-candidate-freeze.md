@@ -117,14 +117,17 @@ without making hosted-cache metadata an acceptance exception.
 
 Ubuntu hosted runners can apply an AppArmor sysctl that lets bubblewrap create
 a user namespace but denies the loopback setup required by `--unshare-all`.
-After installing bubblewrap, this workflow may disable that restriction only
-when `RUNNER_ENVIRONMENT` identifies GitHub's disposable hosted runner. It then
-runs a fail-closed sandbox preflight with the qualifier's namespace and minimal
-mount shape, proves that the network namespace differs from the runner, has no
-route, and cannot see the runner home or `/run` socket paths. This is CI runner
-preparation, not a production-host instruction or a relaxation of the
-qualifier: the actual installation still runs network-disabled with
-`--unshare-all --clearenv`.
+The workflow installs only bubblewrap, without recommends, from the package
+indexes already provisioned in the hosted image; it does not refresh those
+indexes. Missing indexes, a 30-second package-manager lock, 15-second network
+operations, exhausted retries, or a 120-second overall deadline all fail the
+job closed. It may then disable the AppArmor restriction only when
+`RUNNER_ENVIRONMENT` identifies GitHub's disposable hosted runner. A sandbox
+preflight with the qualifier's namespace and minimal mount shape proves that
+the network namespace differs from the runner, has no route, and cannot see the
+runner home or `/run` socket paths. This is CI runner preparation, not a
+production-host instruction or a relaxation of the qualifier: the actual
+installation still runs network-disabled with `--unshare-all --clearenv`.
 
 The trust boundary is the local Linux kernel, bubblewrap binary, selected
 CPython binaries/prefixes, mounted system runtime bytes and CA bundle. Their

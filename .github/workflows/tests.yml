@@ -27,6 +27,77 @@ jobs:
             requirements-weave.txt
             requirements-dev.txt
             constraints.txt
+      - name: Harden and record the trusted qualification interpreter
+        env:
+          EXPECTED_PYTHON: ${{ matrix.python-version }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import stat
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          from tools.qualify_offline import _owner_file
+
+          executable = Path(sys.executable).resolve(strict=True)
+          base_prefix = Path(sys.base_prefix).resolve(strict=True)
+          tool_cache = Path(os.environ["RUNNER_TOOL_CACHE"]).resolve(strict=True)
+          before = executable.stat()
+          assert f"{sys.version_info.major}.{sys.version_info.minor}" == os.environ["EXPECTED_PYTHON"]
+          assert executable.is_relative_to(tool_cache / "Python")
+          assert executable.parent == base_prefix / "bin"
+          assert stat.S_ISREG(before.st_mode)
+          trusted = base_prefix / "bin" / f".daimon-trusted-python-{os.environ['EXPECTED_PYTHON']}"
+          source = os.open(executable, os.O_RDONLY | os.O_NOFOLLOW)
+          target = os.open(trusted, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o500)
+          digest = hashlib.sha256()
+          try:
+              opened = os.fstat(source)
+              while chunk := os.read(source, 1024 * 1024):
+                  digest.update(chunk)
+                  offset = 0
+                  while offset < len(chunk):
+                      offset += os.write(target, chunk[offset:])
+              os.fchmod(target, 0o500)
+              os.fsync(target)
+              opened_after = os.fstat(source)
+          finally:
+              os.close(source)
+              os.close(target)
+          identity = (before.st_dev, before.st_ino, before.st_size, before.st_mode)
+          assert identity == (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mode)
+          assert identity == (opened_after.st_dev, opened_after.st_ino, opened_after.st_size, opened_after.st_mode)
+          assert trusted.read_bytes()[:4] == b"\x7fELF"
+          assert hashlib.sha256(trusted.read_bytes()).hexdigest() == digest.hexdigest()
+          trusted = _owner_file(trusted, executable=True)
+          probe = subprocess.run(
+              [os.fspath(trusted), "-I", "-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}');print(sys.base_prefix)"],
+              check=True,
+              capture_output=True,
+              env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+              text=True,
+          ).stdout.splitlines()
+          assert len(probe) == 2
+          assert probe[0] == os.environ["EXPECTED_PYTHON"]
+          assert Path(probe[1]).resolve(strict=True) == base_prefix
+          after = trusted.stat()
+          shim = Path(os.environ["RUNNER_TEMP"]) / "daimon-trusted-python-bin"
+          shim.mkdir(mode=0o700)
+          (shim / "python").symlink_to(trusted)
+          with Path(os.environ["GITHUB_PATH"]).open("a", encoding="utf-8") as github_path:
+              github_path.write(os.fspath(shim) + "\n")
+          print(json.dumps({
+              "base_prefix": os.fspath(base_prefix),
+              "source_executable": os.fspath(executable),
+              "executable": os.fspath(trusted),
+              "sha256": digest.hexdigest(),
+              "before": {"gid": before.st_gid, "mode": oct(stat.S_IMODE(before.st_mode)), "nlink": before.st_nlink, "uid": before.st_uid},
+              "after": {"gid": after.st_gid, "mode": oct(stat.S_IMODE(after.st_mode)), "nlink": after.st_nlink, "uid": after.st_uid},
+          }, sort_keys=True))
+          PY
       - name: Install the offline qualification sandbox
         run: |
           sudo apt-get update

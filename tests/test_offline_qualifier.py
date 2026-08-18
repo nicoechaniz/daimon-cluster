@@ -343,6 +343,26 @@ def test_trusted_executable_under_writable_parent_is_rejected(tmp_path: Path) ->
         _owner_file(candidate, executable=True)
 
 
+def test_trusted_executable_reports_unsafe_permissions(tmp_path: Path) -> None:
+    candidate = tmp_path / "python3.13"
+    candidate.write_bytes(b"\x7fELFfixture")
+    candidate.chmod(0o722)
+    with pytest.raises(
+        QualificationError, match="unsafe_regular_file_permissions"
+    ):
+        _owner_file(candidate, executable=True)
+
+
+def test_trusted_executable_reports_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "python3.13-real"
+    target.write_bytes(b"\x7fELFfixture")
+    target.chmod(0o700)
+    candidate = tmp_path / "python3.13"
+    candidate.symlink_to(target.name)
+    with pytest.raises(QualificationError, match="unsafe_regular_file_symlink"):
+        _owner_file(candidate, executable=True)
+
+
 def test_script_cannot_impersonate_trusted_python(tmp_path: Path) -> None:
     plan, *_ = _matrix_fixture(tmp_path)
     candidate = tmp_path / "fake-python"

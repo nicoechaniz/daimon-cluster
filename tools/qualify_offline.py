@@ -84,24 +84,58 @@ def _digest(path: Path) -> str:
 
 def _owner_file(path: Path, *, executable: bool = False) -> Path:
     absolute = Path(os.path.abspath(path))
-    resolved = absolute.resolve(strict=True)
-    info = absolute.lstat()
-    if (
-        absolute != resolved
-        or stat.S_ISLNK(info.st_mode)
-        or not stat.S_ISREG(info.st_mode)
-        or (info.st_nlink != 1 and not executable)
-        or info.st_uid not in ({0, os.geteuid()} if executable else {os.geteuid()})
-        or (
-            _externally_writable(info)
-            if executable
-            else bool(stat.S_IMODE(info.st_mode) & 0o022)
-        )
-        or (executable and not os.access(absolute, os.X_OK))
-    ):
-        raise QualificationError("unsafe_regular_file")
+    try:
+        info = absolute.lstat()
+        resolved = absolute.resolve(strict=True)
+    except OSError as exception:
+        raise QualificationError("unsafe_regular_file_missing") from exception
+    if stat.S_ISLNK(info.st_mode):
+        raise QualificationError("unsafe_regular_file_symlink")
+    if absolute != resolved:
+        raise QualificationError("unsafe_regular_file_path")
+    if not stat.S_ISREG(info.st_mode):
+        raise QualificationError("unsafe_regular_file_type")
+    if info.st_nlink != 1 and not executable:
+        raise QualificationError("unsafe_regular_file_links")
+    if info.st_uid not in ({0, os.geteuid()} if executable else {os.geteuid()}):
+        raise QualificationError("unsafe_regular_file_owner")
+    writable = (
+        _externally_writable(info)
+        if executable
+        else bool(stat.S_IMODE(info.st_mode) & 0o022)
+    )
+    if writable:
+        raise QualificationError("unsafe_regular_file_permissions")
+    if executable and not os.access(absolute, os.X_OK):
+        raise QualificationError("unsafe_regular_file_not_executable")
     if executable:
-        if absolute.read_bytes()[:4] != b"\x7fELF":
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                absolute, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            )
+            opened = os.fstat(descriptor)
+            prefix = os.read(descriptor, 4)
+            opened_after = os.fstat(descriptor)
+        except OSError as exception:
+            raise QualificationError("unsafe_regular_file_changed") from exception
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        identity = (info.st_dev, info.st_ino, info.st_size, info.st_mode)
+        if identity != (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mode,
+        ) or identity != (
+            opened_after.st_dev,
+            opened_after.st_ino,
+            opened_after.st_size,
+            opened_after.st_mode,
+        ):
+            raise QualificationError("unsafe_regular_file_changed")
+        if prefix != b"\x7fELF":
             raise QualificationError("interpreter_not_native_binary")
         parent = absolute.parent
         while parent != parent.parent:

@@ -764,17 +764,21 @@ def test_shared_admission_allows_only_one_ready_across_state_dirs(short_tmp_path
 def test_supervisor_stops_runtime_before_lease_expiry_on_authority_loss(
     short_tmp_path, monkeypatch
 ):
+    lease_ttl_s = rebirth_host.DEFAULT_LEASE_TTL_S
     fixture, state, values = _install(
         short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
     )
     installed = rebirth.install_rebirth_package(**values)
-    _ensure_production_fences(state, installed["embodiment_id"], lease_ttl_s=3)
+    _ensure_production_fences(
+        state, installed["embodiment_id"], lease_ttl_s=lease_ttl_s
+    )
     process, ready = rebirth_host.launch_rebirth_host(
         state,
         installed["embodiment_id"],
         _descriptor(fixture["password"]),
-        admission_lease_ttl_s=3,
+        admission_lease_ttl_s=lease_ttl_s,
     )
+    supervisor = rebirth_host._SUPERVISORS[process.pid]
     server, thread = _DISPOSABLE_ADMISSION_SERVERS.pop()
     started = time.monotonic()
     real_time_ns = time.time_ns
@@ -784,10 +788,11 @@ def test_supervisor_stops_runtime_before_lease_expiry_on_authority_loss(
     server.shutdown()
     server.server_close()
     thread.join(timeout=5)
-    _stdout, stderr = process.communicate(timeout=5)
+    _stdout, stderr = process.communicate(timeout=lease_ttl_s)
     rebirth_host.wait_rebirth_host_shutdown(process, timeout_s=5)
     assert process.returncode == -signal.SIGKILL, stderr
-    assert time.monotonic() - started < 2.25
+    assert supervisor.termination_reason == "admission-renew-failed"
+    assert time.monotonic() - started < lease_ttl_s * 3 / 4
     assert ready["admission"]["lease_expires_at_ms"] > 0
 
 

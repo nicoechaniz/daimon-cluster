@@ -89,13 +89,22 @@ bounded timeout. Interpreter paths are trusted operator inputs outside the
 qualification JSON. Native interpreter binaries and every prefix parent must be
 root/owner-controlled; group-writable paths are accepted only when the group is
 provably the owner's single-member primary group. A canonical executable may
-be a hardlink (as in GitHub's hosted tool cache), because it is an explicit
-operator input whose native format, resolved prefix, version and digest are all
-checked; release artifacts themselves remain single-link files. The freezer
-CLI requires repeatable
+be a hardlink when it remains non-externally-writable, because it is an
+explicit operator input whose native format, resolved prefix, version and
+digest are all checked; release artifacts themselves remain single-link files.
+The freezer CLI requires repeatable
 `--python COMPONENT:VERSION=/absolute/python` arguments for every component and
 supported version. There is no implicit current-interpreter fallback, and
 evidence cannot select an executable or command.
+
+The CI matrix does not weaken those rules for mutable hosted tool caches. Its
+pinned `setup-python` input is confined to `RUNNER_TOOL_CACHE/Python`, copied
+once through a no-follow descriptor into a new owner-only mode-0500 executable
+inside the exact interpreter prefix, and checked for stable source identity,
+byte hash, native format, version and `base_prefix`. Only that private copy is
+placed first on later steps' `PATH`; its original and prepared ownership, mode,
+link count, paths and hash are recorded without making the cache metadata an
+acceptance exception.
 
 The trust boundary is the local Linux kernel, bubblewrap binary, selected
 CPython binaries/prefixes, mounted system runtime bytes and CA bundle. Their

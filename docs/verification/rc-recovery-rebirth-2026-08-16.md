@@ -84,7 +84,7 @@ are absent from the payload.
 Matrix source-isolated suite: 640 passed, 22 declared skips
 Matrix Python CI: 3.11, 3.12, 3.13, 3.14 passed
 Matrix package/conformance/Hermes contract: passed
-Cluster final-pin/freezer suite with resource/unraisable warnings fatal: 600 passed, 4 skipped
+Cluster final-pin/freezer suite with resource/unraisable warnings fatal: 608 passed, 4 skipped
 Cluster workflow lint/type/compile: passed
 Disposable no-network recovery/rebirth: 1 passed
 Disposable encrypted export/offline check/restore: 1 passed

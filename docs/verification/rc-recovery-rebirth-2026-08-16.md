@@ -1,26 +1,26 @@
 # V0 RC recovery/rebirth qualification
 
-Date: 2026-08-16. Software-only candidate; not deployed.
+Date: 2026-08-18. Software-only candidate; not deployed.
 
 ## Exact functional boundary
 
 - Matrix functional merge: `09414d6edd9586f539be8272c4979d0b36c86b87`,
-  tree `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`; prepared documentation
-  successor/pin: `8262e1ee5ab2f0b1a389a911b206cac94b823618`, tree
-  `8daf4c99192a8f797d60f36f049a832761304082`.
+  tree `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`; merged closeout and exact
+  installed pin: `7266de8551ae861f3773c587bf907cfcddde6ffd`, tree
+  `d1ff7a6fc6b1351f67fd13171dcee51242fc9804`.
 - Cluster functional merge: `820e3792a227b1848681a3421b113e8822c8d08a`,
   tree `4f62eb4f6eff1dfafbd477339a86fa7d5e70a5d8`; independent exact-hash
   review and main CI passed.
-- Tribe reviewed PR head: `42d637245864fcd431198a570d19d7a6dd042924`,
-  tree `5145f6446f3ec3013347509477a262f98825ebfa`;
-  content-addressed source boundary
-  `9c4f14f613657ea1e6e6c1805d4f869ae93d082f`, tree
-  `38361d248866a84a6e4a45a2d83af56e7c549f66`.
+- Tribe merged main: `294e1194db6cd60d9349a2d43938475bbd1c8c20`,
+  tree `bcba9989a38519df87ecbb6c87a33a2f9740b85d`; qualified material source
+  `8ce2c9d4c6b3e4e94108600d4170f169ced26303`, tree
+  `0431882544ebd72bfbfbb343677b2557ea4fdbce`. Reviewed head
+  `e81c5da0b96d0ac29f7a3bdeacb1f0e7c860ec3c` has the same final tree and
+  passed 148 tests with zero failures on Python 3.10–3.13.
 
 The final three-repository manifest records later documentation/pin-only heads
-and archive hashes. This prepared successor installs Matrix from the full
-reviewed commit named above and verifies that exact `direct_url.json` value; it
-does not call that pin merged until the protected Matrix integration completes.
+and archive hashes. This successor installs Matrix from the full merged commit
+named above and verifies that exact `direct_url.json` value.
 
 ## Guarantees exercised
 
@@ -84,7 +84,7 @@ are absent from the payload.
 Matrix source-isolated suite: 640 passed, 22 declared skips
 Matrix Python CI: 3.11, 3.12, 3.13, 3.14 passed
 Matrix package/conformance/Hermes contract: passed
-Cluster suite with resource/unraisable warnings fatal: 595 passed, 4 skipped
+Cluster final-pin/freezer suite with resource/unraisable warnings fatal: 600 passed, 4 skipped
 Cluster workflow lint/type/compile: passed
 Disposable no-network recovery/rebirth: 1 passed
 Disposable encrypted export/offline check/restore: 1 passed
@@ -104,12 +104,14 @@ the repository and restores it in a second network-disabled container.
 
 ## Reproducibility and review
 
-Matrix merge-tree artifacts are byte-identical across two offline builds:
+Matrix closeout artifacts are byte-identical across two isolated builds:
 wheel
-`a8433cb007b46d45593895d0e459828a7281f09eb89cb85f558f8eabc9bc5e83`
+`11ef77b2b4c743cfa25d6652e9cad3594e41223cb73f558d5ead8f47bd43609d`
 and sdist
-`f1fa00e3c5d18cb7ecce44ae656938ff35daeedb22e713cdc53b916208a6befe`.
-Cluster installed the merge commit from Git and reproduced the same wheel hash.
+`b23d66004039dc9d454c1bf4382b87a381c538fe8194a3c262440425ffa6de69`.
+The final offline qualification installs Matrix through an exact Git bundle so
+`direct_url.json` retains VCS commit provenance; a plain wheel alone cannot
+satisfy Cluster's exact-commit gate.
 
 Independent reviews passed Matrix capability/custody/runtime metadata, the
 Matrix documentation successor and the Cluster admission/fence code. This

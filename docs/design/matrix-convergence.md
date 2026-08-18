@@ -28,9 +28,9 @@ An unpinned wheel, editable checkout, wrong commit or schema downgrade fails
 closed. Cluster does not carry a fallback implementation.
 
 The V0 RC functional merge is
-`09414d6edd9586f539be8272c4979d0b36c86b87`; the exact prepared installed pin is
-its reviewed documentation successor
-`8262e1ee5ab2f0b1a389a911b206cac94b823618`. The functional merge consolidates
+`09414d6edd9586f539be8272c4979d0b36c86b87`; the exact merged installed pin is
+its reviewed RC closeout successor
+`7266de8551ae861f3773c587bf907cfcddde6ffd`. The functional merge consolidates
 the fresh-embodiment, distributed-custody, least-authority capability and
 recovery work. Historical deployed-pair commits are recorded in dated
 receipts, not in the current execution contract. The only production-shaped RC bundle is V7

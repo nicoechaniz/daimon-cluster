@@ -1,6 +1,6 @@
 # Daimon V0 release-candidate checkpoint
 
-Last reconciled: 2026-08-16.
+Last reconciled: 2026-08-18.
 
 This repository is not deployed from the candidate described here. No existing
 host, service, access path, real custody or production state is part of the
@@ -20,12 +20,13 @@ The goal began from these merged V0 baselines:
 
 The qualified Matrix functional merge is
 `09414d6edd9586f539be8272c4979d0b36c86b87`, tree
-`d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`. The prepared documentation
-successor is `8262e1ee5ab2f0b1a389a911b206cac94b823618`, tree
-`8daf4c99192a8f797d60f36f049a832761304082`; Cluster pins that exact full
-commit in `requirements-weave.txt`, verifies `direct_url.json` at startup and
-has no unpinned runtime fallback. This local pin becomes publishable only after
-the Matrix successor reaches its protected default branch unchanged.
+`d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`. The merged Matrix closeout and
+exact installed pin is `7266de8551ae861f3773c587bf907cfcddde6ffd`, tree
+`d1ff7a6fc6b1351f67fd13171dcee51242fc9804`; it reconciles RC metadata and
+replaces an unreachable Hermes commit with a reachable commit having the same
+audited tree and contract bytes. Cluster pins that full commit in
+`requirements-weave.txt`, verifies `direct_url.json` at startup and has no
+unpinned runtime fallback.
 
 The current Cluster functional merge is
 `820e3792a227b1848681a3421b113e8822c8d08a`, tree
@@ -35,14 +36,15 @@ recovery/rebirth, V7 snapshot, preflight and qualification corrections. Later
 documentation or exact-pin commits do not change those semantics; the
 generated RC manifest records the final repository head and tree.
 
-Tribe Bridge transitional work is qualified on exact PR head
-`42d637245864fcd431198a570d19d7a6dd042924`, tree
-`5145f6446f3ec3013347509477a262f98825ebfa`; its content-addressed source
-boundary is `9c4f14f613657ea1e6e6c1805d4f869ae93d082f`, tree
-`38361d248866a84a6e4a45a2d83af56e7c549f66`. The exact head passed
-independent adversarial review, 124 tests on Python 3.10–3.13 and protected CI;
-PR #65 still requires independent human approval and normal merge. Tribe is
-not deployed and is not Matrix intake or semantic-delivery authority.
+Tribe Bridge PR #65 is merged on `main` at
+`294e1194db6cd60d9349a2d43938475bbd1c8c20`, tree
+`bcba9989a38519df87ecbb6c87a33a2f9740b85d`. Its qualified material source on
+the rebased lineage is `8ce2c9d4c6b3e4e94108600d4170f169ced26303`, tree
+`0431882544ebd72bfbfbb343677b2557ea4fdbce`; reviewed head
+`e81c5da0b96d0ac29f7a3bdeacb1f0e7c860ec3c` has the same final tree as the
+merge. The candidate passed independent exact-head review, 148 tests with zero
+failures on Python 3.10–3.13, and protected CI. Tribe is not deployed and is
+not Matrix intake or semantic-delivery authority.
 
 ## What is automated and proven
 
@@ -80,11 +82,9 @@ and test counts are not the current RC baseline.
 
 ## Remaining automated work
 
-1. Obtain the protected Tribe PR #65 approval and merge.
-2. Publish the reviewed Matrix documentation successor, then merge this exact
-   Cluster repin/documentation successor through normal review.
-3. Repin Tribe metadata once to those final Matrix/Cluster heads.
-4. Run clean-install and supported-Python gates from the three exact final
+1. Merge this exact Cluster repin/freezer successor through normal review.
+2. Repin Tribe metadata once to the final Matrix/Cluster heads.
+3. Run clean-install and supported-Python gates from the three exact final
    commits, generate the final content-addressed manifest and keep tracking
    synchronized with its hashes.
 

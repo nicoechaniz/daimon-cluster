@@ -3,17 +3,16 @@
 Living tracking file. Updated after every work session. Read FIRST on session
 start, then resume from the first open item.
 
-## Active checkpoint (2026-08-16)
+## Active checkpoint (2026-08-18)
 
 Cluster PR #93 is merged and green on `main` at
 `820e3792a227b1848681a3421b113e8822c8d08a` (tree
 `4f62eb4f6eff1dfafbd477339a86fa7d5e70a5d8`) with Matrix functional merge
 `09414d6edd9586f539be8272c4979d0b36c86b87` (tree
-`d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`). The reviewed Matrix
-documentation successor and prepared exact pin are
-`8262e1ee5ab2f0b1a389a911b206cac94b823618` / tree
-`8daf4c99192a8f797d60f36f049a832761304082`. The final generated RC manifest
-is authoritative for repository heads.
+`d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`). The merged Matrix closeout and
+exact installed pin are `7266de8551ae861f3773c587bf907cfcddde6ffd` / tree
+`d1ff7a6fc6b1351f67fd13171dcee51242fc9804`. The final generated RC manifest is
+authoritative for repository heads.
 
 Completed locally on the exact code boundary:
 
@@ -23,15 +22,17 @@ Completed locally on the exact code boundary:
 - a distinct recovery transfer limited to the public runtime bundle and
   canonical ledger, rejected by the generic full-snapshot restore;
 - V7 exact twelve-profile snapshot gate with every client tree excluded;
-- `595 passed, 4 skipped` with resource/unraisable warnings fatal;
+- `600 passed, 4 skipped` with resource/unraisable warnings fatal on the
+  prepared final-pin/freezer successor;
 - network-disabled recovery/rebirth container E2E: 1 passed; and
 - encrypted backup/export, offline check and restore container E2E: 1 passed.
 
-Matrix PR #121 and Cluster PR #93 are merged. Cluster issue #90 preserves the
-consolidated lineage. Tribe PR #65 exact head `42d637245864fcd431198a570d19d7a6dd042924`
-has independent review and green CI and still awaits its required human
-approval. Nothing in this checkpoint was deployed and no existing host or real
-custody was used.
+Matrix PRs #121/#123 and Cluster PR #93 are merged. Cluster issue #90 preserves
+the consolidated lineage. Tribe PR #65 is approved and merged at
+`294e1194db6cd60d9349a2d43938475bbd1c8c20`, tree
+`bcba9989a38519df87ecbb6c87a33a2f9740b85d`, after 148 zero-failure tests on
+Python 3.10–3.13. Nothing in this checkpoint was deployed and no existing host
+or real custody was used.
 
 Current remaining work is RC metadata, exact final pinning, independent review,
 clean CI/main merges, the content-addressed manifest/artifacts and an offline

@@ -49,6 +49,10 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     return matrix, cluster, tribe
 
 
+def _artifact_root(matrix: Path) -> Path:
+    return matrix.parent / "artifacts"
+
+
 def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
     repositories = {
         "daimon-matrix": matrix,
@@ -56,11 +60,26 @@ def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
         "tribe-bridge": tribe,
     }
     names = tuple(repositories)
+    artifact_root = _artifact_root(matrix)
+    artifact_root.mkdir(mode=0o700, exist_ok=True)
+    artifacts = {}
+    for name in names:
+        path = artifact_root / f"{name}.artifact"
+        path.write_bytes(f"exact artifact for {name}\n".encode("ascii"))
+        path.chmod(0o600)
+        artifacts[name] = [
+            {
+                "name": "release-artifact",
+                "path": path.name,
+                "bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        ]
     return {
         "schema": "daimon-release-qualification/v1",
         "release": "0.1.0rc1",
         "supported_python": {name: ["3.13"] for name in names},
-        "artifacts": {name: [] for name in names},
+        "artifacts": artifacts,
         "tests": {
             name: [{"name": "full", "python": "3.13", "passed": 1, "skipped": 0}]
             for name in names
@@ -83,7 +102,7 @@ def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
             "physical-hosts-and-backup-target",
             "physical-rehearsal-go",
             "publication-and-cutover",
-            "tribe-independent-approval",
+            "tribe-live-operations",
             "tribe-retirement",
         ],
     }
@@ -114,14 +133,30 @@ def test_same_heads_produce_byte_identical_manifest(tmp_path: Path) -> None:
     qualification = _qualification(matrix, cluster, tribe)
     baselines = _baselines(matrix, cluster, tribe)
     first = canonical_manifest(
-        build_manifest(matrix, cluster, tribe, qualification, baselines=baselines)
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=baselines,
+            artifact_root=_artifact_root(matrix),
+        )
     )
     second = canonical_manifest(
-        build_manifest(matrix, cluster, tribe, qualification, baselines=baselines)
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=baselines,
+            artifact_root=_artifact_root(matrix),
+        )
     )
     assert first == second
     assert b'"schema":"daimon-release-candidate/v1"' in first
     assert b'"archive_bytes":' in first
+    assert b'"tribe-live-operations"' in first
+    assert b'"tribe-independent-approval"' not in first
 
 
 def test_dirty_component_and_wrong_pin_fail_closed(tmp_path: Path) -> None:
@@ -134,6 +169,7 @@ def test_dirty_component_and_wrong_pin_fail_closed(tmp_path: Path) -> None:
             tribe,
             _qualification(matrix, cluster, tribe),
             baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
         )
     (tribe / "untracked").unlink()
     (cluster / "requirements-weave.txt").write_text(
@@ -150,6 +186,7 @@ def test_dirty_component_and_wrong_pin_fail_closed(tmp_path: Path) -> None:
             tribe,
             _qualification(matrix, cluster, tribe),
             baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
         )
 
 
@@ -185,6 +222,7 @@ def test_freeze_rejects_repository_changed_during_snapshot(
             tribe,
             _qualification(matrix, cluster, tribe),
             baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
         )
 
 
@@ -201,6 +239,7 @@ def test_qualification_requires_python_coverage_and_committed_evidence(
             tribe,
             qualification,
             baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
         )
 
     qualification = _qualification(matrix, cluster, tribe)
@@ -212,6 +251,7 @@ def test_qualification_requires_python_coverage_and_committed_evidence(
             tribe,
             qualification,
             baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
         )
 
 
@@ -226,6 +266,55 @@ def test_manifest_requires_exact_baseline_ancestry(tmp_path: Path) -> None:
             tribe,
             _qualification(matrix, cluster, tribe),
             baselines=baselines,
+            artifact_root=_artifact_root(matrix),
+        )
+
+
+@pytest.mark.parametrize(
+    "component", ["daimon-matrix", "daimon-cluster", "tribe-bridge"]
+)
+def test_qualification_requires_artifacts_for_every_component(
+    tmp_path: Path, component: str
+) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    qualification = _qualification(matrix, cluster, tribe)
+    qualification["artifacts"][component] = []
+    with pytest.raises(ManifestError, match="qualification_artifacts_invalid"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
+        )
+
+
+def test_qualification_requires_artifact_root(tmp_path: Path) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    with pytest.raises(ManifestError, match="qualification_artifact_root_missing"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            _qualification(matrix, cluster, tribe),
+            baselines=_baselines(matrix, cluster, tribe),
+        )
+
+
+def test_qualification_requires_remaining_human_gates(tmp_path: Path) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    qualification = _qualification(matrix, cluster, tribe)
+    qualification["human_gates"].remove("tribe-live-operations")
+    qualification["human_gates"].insert(-1, "tribe-independent-approval")
+    with pytest.raises(ManifestError, match="qualification_gates_invalid"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
         )
 
 

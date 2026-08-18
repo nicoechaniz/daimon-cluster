@@ -438,7 +438,7 @@ def test_ontology_read_routes(server):
     assert weave["configured"] is False
     assert weave["implementation"] == "installed-daimon-matrix"
     assert weave["matrix_contract_commit"] == (
-        "8262e1ee5ab2f0b1a389a911b206cac94b823618"
+        "7266de8551ae861f3773c587bf907cfcddde6ffd"
     )
     assert weave["embodiments"][0]["matrix_process"]["state"] == \
         "not-configured"

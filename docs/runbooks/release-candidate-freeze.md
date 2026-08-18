@@ -14,15 +14,20 @@ The separate qualification input must be canonical owner-only JSON with schema
 - `supported_python`: an ordered, non-empty version list for each of
   `daimon-matrix`, `daimon-cluster` and `tribe-bridge`;
 - `tests`: named pass/skip counts covering every declared Python version;
-- `artifacts`: optional non-source artifacts with a unique relative path, exact
-  byte size and SHA-256. The freezer opens and hashes each regular file beneath
-  the immutable artifact root and rejects links, replacement or mismatch;
+- `artifacts`: a non-empty list for every component. Each exact release
+  artifact has a unique relative path, byte size and SHA-256. The freezer opens
+  and hashes each regular file beneath the immutable artifact root and rejects
+  missing component artifacts, links, replacement or mismatch. This is the
+  same complete three-component inventory required by the physical preflight;
 - `evidence`: committed paths and SHA-256 values. The freezer reads those bytes
   from each exact component commit and rejects any mismatch;
 - `limitations`: statements that remain true of the candidate; and
 - `human_gates`: exactly the closed set for physical hosts/backup target,
-  physical GO, live custody, cross-being consent, independent Tribe approval,
-  publication/cutover and eventual Tribe retirement.
+  physical GO, live custody, cross-being consent, live Tribe participant
+  contact, key generation/rotation, directory publication, provisioning and
+  service/timer operations, publication/cutover and eventual Tribe retirement.
+  The completed independent Tribe software approval is release evidence, not a
+  remaining gate.
 
 Source archives are generated directly with `git archive`; their size and
 SHA-256 are calculated by the freezer. Initial goal baselines are retained

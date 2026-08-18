@@ -53,7 +53,7 @@ _REQUIRED_HUMAN_GATES: Final = frozenset(
         "physical-hosts-and-backup-target",
         "physical-rehearsal-go",
         "publication-and-cutover",
-        "tribe-independent-approval",
+        "tribe-live-operations",
         "tribe-retirement",
     }
 )
@@ -188,26 +188,27 @@ def _qualification(
     artifacts = _component_map(
         qualification["artifacts"], "qualification_artifacts_malformed"
     )
-    resolved_artifact_root: Path | None = None
-    if any(artifacts[name] for name in _COMPONENT_NAMES):
-        if artifact_root is None:
-            raise ManifestError("qualification_artifact_root_missing")
-        requested_root = Path(os.path.abspath(artifact_root))
-        resolved_artifact_root = requested_root.resolve(strict=True)
-        root_info = resolved_artifact_root.lstat()
-        if (
-            requested_root != resolved_artifact_root
-            or not stat.S_ISDIR(root_info.st_mode)
-            or stat.S_ISLNK(root_info.st_mode)
-            or root_info.st_uid != os.geteuid()
-            or stat.S_IMODE(root_info.st_mode) & 0o022
-        ):
-            raise ManifestError("qualification_artifact_root_rejected")
+    for name in _COMPONENT_NAMES:
+        rows = artifacts[name]
+        if not isinstance(rows, list) or not rows or len(rows) > 64:
+            raise ManifestError("qualification_artifacts_invalid")
+    if artifact_root is None:
+        raise ManifestError("qualification_artifact_root_missing")
+    requested_root = Path(os.path.abspath(artifact_root))
+    resolved_artifact_root = requested_root.resolve(strict=True)
+    root_info = resolved_artifact_root.lstat()
+    if (
+        requested_root != resolved_artifact_root
+        or not stat.S_ISDIR(root_info.st_mode)
+        or stat.S_ISLNK(root_info.st_mode)
+        or root_info.st_uid != os.geteuid()
+        or stat.S_IMODE(root_info.st_mode) & 0o022
+    ):
+        raise ManifestError("qualification_artifact_root_rejected")
     artifact_paths: set[str] = set()
     for name in _COMPONENT_NAMES:
         rows = artifacts[name]
-        if not isinstance(rows, list) or len(rows) > 64:
-            raise ManifestError("qualification_artifacts_invalid")
+        assert isinstance(rows, list)
         names: set[str] = set()
         for raw_row in rows:
             row = _closed(
@@ -231,7 +232,6 @@ def _qualification(
                 or _SHA256.fullmatch(row["sha256"]) is None
             ):
                 raise ManifestError("qualification_artifact_invalid")
-            assert resolved_artifact_root is not None
             candidate = resolved_artifact_root / path
             try:
                 resolved_candidate = candidate.resolve(strict=True)

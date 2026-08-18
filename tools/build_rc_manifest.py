@@ -20,7 +20,6 @@ import os
 import re
 import stat
 import subprocess
-import sys
 import tarfile
 import tempfile
 import tomllib
@@ -698,7 +697,9 @@ def _install_evidence(
         ],
         "python": [
             {
-                "executable": os.fspath(trusted_interpreters[version]),
+                "executable": os.fspath(
+                    trusted_interpreters[version].resolve(strict=True)
+                ),
                 "version": version,
             }
             for version in expected_versions
@@ -806,6 +807,7 @@ def _qualification(
     frozen: Mapping[str, Mapping[str, object]],
     artifact_root: Path | None,
     trusted_interpreters: Mapping[str, Mapping[str, Path]] | None,
+    snapshot_root: Path,
 ) -> dict[str, Any]:
     qualification = _closed(
         value,
@@ -843,14 +845,9 @@ def _qualification(
             raise ManifestError("qualification_python_invalid")
         python_by_component[name] = set(versions)
 
-    if trusted_interpreters is None:
-        current = f"{sys.version_info.major}.{sys.version_info.minor}"
-        trusted_interpreters = {
-            name: {version: Path(sys.executable).resolve() for version in versions}
-            for name, versions in python_by_component.items()
-            if versions == {current}
-        }
-    if set(trusted_interpreters) != set(_COMPONENT_NAMES):
+    if trusted_interpreters is None or set(trusted_interpreters) != set(
+        _COMPONENT_NAMES
+    ):
         raise ManifestError("qualification_trusted_interpreters_missing")
     for name in _COMPONENT_NAMES:
         if set(trusted_interpreters[name]) != python_by_component[name]:
@@ -919,6 +916,15 @@ def _qualification(
             ):
                 raise ManifestError("qualification_artifact_invalid")
             candidate = resolved_artifact_root / path
+            snapshot_directory = (
+                snapshot_root
+                / name
+                / f'{row["name"]}-{row["sha256"]}'
+            )
+            snapshot_directory.mkdir(parents=True, mode=0o700)
+            snapshot = snapshot_directory / Path(path).name
+            source_descriptor = -1
+            snapshot_descriptor = -1
             try:
                 resolved_candidate = candidate.resolve(strict=True)
                 info = candidate.lstat()
@@ -933,27 +939,47 @@ def _qualification(
                     or info.st_size != row["bytes"]
                 ):
                     raise ManifestError("qualification_artifact_invalid")
-                descriptor = os.open(
+                source_descriptor = os.open(
                     candidate, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
                 )
-                try:
-                    opened = os.fstat(descriptor)
-                    digest = hashlib.sha256()
-                    observed_bytes = 0
-                    while chunk := os.read(descriptor, 1024 * 1024):
-                        digest.update(chunk)
-                        observed_bytes += len(chunk)
-                finally:
-                    os.close(descriptor)
+                snapshot_descriptor = os.open(
+                    snapshot,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o400,
+                )
+                opened = os.fstat(source_descriptor)
+                digest = hashlib.sha256()
+                observed_bytes = 0
+                while chunk := os.read(source_descriptor, 1024 * 1024):
+                    digest.update(chunk)
+                    observed_bytes += len(chunk)
+                    offset = 0
+                    while offset < len(chunk):
+                        offset += os.write(snapshot_descriptor, chunk[offset:])
+                os.fchmod(snapshot_descriptor, 0o400)
+                os.fsync(snapshot_descriptor)
+                opened_after = os.fstat(source_descriptor)
+                snapshotted = os.fstat(snapshot_descriptor)
                 after = candidate.lstat()
             except OSError as exception:
                 raise ManifestError("qualification_artifact_invalid") from exception
+            finally:
+                if source_descriptor >= 0:
+                    os.close(source_descriptor)
+                if snapshot_descriptor >= 0:
+                    os.close(snapshot_descriptor)
             if (
                 (info.st_dev, info.st_ino, info.st_size)
                 != (opened.st_dev, opened.st_ino, opened.st_size)
                 or (info.st_dev, info.st_ino, info.st_size)
+                != (opened_after.st_dev, opened_after.st_ino, opened_after.st_size)
+                or (info.st_dev, info.st_ino, info.st_size)
                 != (after.st_dev, after.st_ino, after.st_size)
                 or observed_bytes != row["bytes"]
+                or snapshotted.st_size != observed_bytes
                 or digest.hexdigest() != row["sha256"]
             ):
                 raise ManifestError("qualification_artifact_mismatch")
@@ -961,7 +987,16 @@ def _qualification(
             kinds.add(kind)
             artifact_paths.add(path)
             artifact_rows[name][row["name"]] = dict(row)
-            artifact_files[name][row["name"]] = candidate
+            artifact_files[name][row["name"]] = snapshot
+        if not _REQUIRED_ARTIFACT_KINDS[name].issubset(kinds):
+            raise ManifestError(f"qualification_artifact_kinds_incomplete:{name}")
+
+    # All subsequent parsing and execution consumes the private, immutable-by-
+    # contract snapshot rather than reopening caller-controlled artifact paths.
+    for name in _COMPONENT_NAMES:
+        for artifact_name, row in artifact_rows[name].items():
+            kind = row["kind"]
+            snapshot = artifact_files[name][artifact_name]
             if kind == "git-archive":
                 if (
                     row["bytes"] != frozen[name]["archive_bytes"]
@@ -970,26 +1005,24 @@ def _qualification(
                     raise ManifestError(f"qualification_git_archive_mismatch:{name}")
             elif kind == "git-bundle":
                 _verify_git_bundle(
-                    candidate,
+                    snapshot,
                     str(frozen[name]["commit"]),
                     str(frozen[name]["tree"]),
                 )
             elif kind == "matrix-git-bundle":
                 _verify_git_bundle(
-                    candidate,
+                    snapshot,
                     str(frozen["daimon-matrix"]["commit"]),
                     str(frozen["daimon-matrix"]["tree"]),
                 )
             elif kind == "python-wheel":
                 _verify_python_wheel(
-                    candidate, repositories[name], str(frozen[name]["commit"])
+                    snapshot, repositories[name], str(frozen[name]["commit"])
                 )
             elif kind == "python-sdist":
                 _verify_python_sdist(
-                    candidate, repositories[name], str(frozen[name]["commit"])
+                    snapshot, repositories[name], str(frozen[name]["commit"])
                 )
-        if not _REQUIRED_ARTIFACT_KINDS[name].issubset(kinds):
-            raise ManifestError(f"qualification_artifact_kinds_incomplete:{name}")
 
     installation_evidence: dict[str, dict[str, Mapping[str, Any]]] = {}
     for name in _COMPONENT_NAMES:
@@ -1236,9 +1269,17 @@ def build_manifest(
     pin = _matrix_pin(cluster_repository, str(frozen["daimon-cluster"]["commit"]))
     if pin != frozen["daimon-matrix"]["commit"]:
         raise ManifestError("cluster_matrix_pin_mismatch")
-    qualified = _qualification(
-        qualification, components, frozen, artifact_root, trusted_interpreters
-    )
+    with tempfile.TemporaryDirectory(prefix="daimon-rc-artifact-snapshot-") as raw:
+        snapshot_root = Path(raw).resolve()
+        snapshot_root.chmod(0o700)
+        qualified = _qualification(
+            qualification,
+            components,
+            frozen,
+            artifact_root,
+            trusted_interpreters,
+            snapshot_root,
+        )
     for component in components:
         repository = component.repository.resolve(strict=True)
         final_commit = str(

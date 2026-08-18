@@ -6,9 +6,11 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ import pytest
 from tools.build_rc_manifest import ManifestError, _install_evidence
 from tools.qualify_offline import (
     QualificationError,
+    _owner_file,
     _verified_plan,
     produce_evidence,
     replay_evidence,
@@ -313,3 +316,38 @@ def test_qualification_json_cannot_select_an_executable(tmp_path: Path) -> None:
     version = f"{sys.version_info.major}.{sys.version_info.minor}"
     with pytest.raises(ManifestError, match="install_evidence_invalid"):
         _install_evidence(evidence_path, "daimon-matrix", {"commit": plan["commit"], "tree": plan["tree"]}, "source-bundle", rows["source-bundle"]["sha256"], evidence["inputs"], {version}, plan["producer_commit"], matrix, cluster, rows, files, {"commit": plan["commit"], "tree": plan["tree"]}, {version: Path(sys.executable).resolve()})
+
+
+def test_explicit_trusted_native_executable_may_have_multiple_hardlinks() -> None:
+    executable = Path(sys.executable).resolve()
+    with tempfile.TemporaryDirectory(
+        prefix=".qualifier-hardlink-", dir=Path.home()
+    ) as raw_directory:
+        first = Path(raw_directory) / f"original-{executable.name}"
+        linked = Path(raw_directory) / executable.name
+        shutil.copyfile(executable, first)
+        first.chmod(0o700)
+        os.link(first, linked)
+        assert linked.stat().st_nlink >= 2
+        assert _owner_file(linked, executable=True) == linked
+
+
+def test_trusted_executable_under_writable_parent_is_rejected(tmp_path: Path) -> None:
+    writable = tmp_path / "writable"
+    writable.mkdir(mode=0o777)
+    writable.chmod(0o777)
+    candidate = writable / "python3.13"
+    candidate.write_bytes(b"\x7fELFfixture")
+    candidate.chmod(0o700)
+    with pytest.raises(QualificationError, match="unsafe_interpreter_parent"):
+        _owner_file(candidate, executable=True)
+
+
+def test_script_cannot_impersonate_trusted_python(tmp_path: Path) -> None:
+    plan, *_ = _matrix_fixture(tmp_path)
+    candidate = tmp_path / "fake-python"
+    candidate.write_text("#!/bin/sh\nprintf '3.13.0\\nCPython\\n/usr\\n'\n")
+    candidate.chmod(0o700)
+    plan["python"][0]["executable"] = os.fspath(candidate)
+    with pytest.raises(QualificationError, match="interpreter_not_native_binary"):
+        _verified_plan(plan)

@@ -90,7 +90,7 @@ def _owner_file(path: Path, *, executable: bool = False) -> Path:
         absolute != resolved
         or stat.S_ISLNK(info.st_mode)
         or not stat.S_ISREG(info.st_mode)
-        or info.st_nlink != 1
+        or (info.st_nlink != 1 and not executable)
         or info.st_uid not in ({0, os.geteuid()} if executable else {os.geteuid()})
         or (
             _externally_writable(info)

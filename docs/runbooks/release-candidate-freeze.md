@@ -22,9 +22,11 @@ The separate qualification input must be canonical owner-only JSON with schema
   `runtime-lock`. Cluster and Tribe each require one `git-archive`, and Cluster
   additionally requires a `matrix-git-bundle` for the exact commit pinned in
   `requirements-weave.txt`. A kind may occur at most once per component. The
-  freezer opens and hashes each regular file beneath the immutable artifact
-  root and rejects missing component artifacts, links, replacement or
-  mismatch;
+  freezer opens each regular file beneath the immutable artifact root once,
+  hashes and copies it into a private content-addressed snapshot, then performs
+  every semantic check and qualifier replay exclusively from those snapshot
+  bytes. Missing component artifacts, links, replacement during capture or
+  digest mismatch are rejected;
 - `artifact_receipts`: one closed `daimon-artifact-qualification/v1` receipt
   per component. It binds the exact commit/tree, source artifact, complete
   name/SHA-256 inventory and one network-disabled successful clean-install row
@@ -86,9 +88,14 @@ work directory. It has no host home or `/run`, and every subprocess has a
 bounded timeout. Interpreter paths are trusted operator inputs outside the
 qualification JSON. Native interpreter binaries and every prefix parent must be
 root/owner-controlled; group-writable paths are accepted only when the group is
-provably the owner's single-member primary group. The freezer CLI requires repeatable
-`--python COMPONENT:VERSION=/absolute/python` arguments for a multi-version
-candidate. Evidence cannot select an executable or command.
+provably the owner's single-member primary group. A canonical executable may
+be a hardlink (as in GitHub's hosted tool cache), because it is an explicit
+operator input whose native format, resolved prefix, version and digest are all
+checked; release artifacts themselves remain single-link files. The freezer
+CLI requires repeatable
+`--python COMPONENT:VERSION=/absolute/python` arguments for every component and
+supported version. There is no implicit current-interpreter fallback, and
+evidence cannot select an executable or command.
 
 The trust boundary is the local Linux kernel, bubblewrap binary, selected
 CPython binaries/prefixes, mounted system runtime bytes and CA bundle. Their

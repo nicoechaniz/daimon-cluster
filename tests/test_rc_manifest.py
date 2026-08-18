@@ -19,7 +19,7 @@ import tools.build_rc_manifest as rc_subject
 
 from tools.build_rc_manifest import (
     ManifestError,
-    build_manifest,
+    build_manifest as _build_manifest,
     canonical_manifest,
     read_qualification,
     write_manifest,
@@ -27,6 +27,33 @@ from tools.build_rc_manifest import (
 
 
 REAL_REPLAY = rc_subject.replay_evidence
+
+
+def build_manifest(
+    matrix: Path,
+    cluster: Path,
+    tribe: Path,
+    qualification: dict,
+    **options: object,
+) -> dict[str, object]:
+    """Inject explicit dummy interpreter paths for structural-only tests.
+
+    The autouse replay stub below means these tests never execute the paths.
+    Executable replay has dedicated E2E coverage in test_offline_qualifier.py.
+    """
+
+    executable = Path(sys.executable).resolve()
+    options["trusted_interpreters"] = {
+        component: {version: executable for version in versions}
+        for component, versions in qualification["supported_python"].items()
+    }
+    return _build_manifest(
+        matrix,
+        cluster,
+        tribe,
+        qualification,
+        **options,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -474,6 +501,11 @@ def _refresh_artifact(
         if item["name"] == row["name"]
     )
     receipt_row["sha256"] = row["sha256"]
+    if kind == "install-evidence":
+        for installation in qualification["artifact_receipts"][component][
+            "installations"
+        ]:
+            installation["evidence_ref"]["sha256"] = row["sha256"]
 
 
 def test_same_heads_produce_byte_identical_manifest(tmp_path: Path) -> None:
@@ -505,6 +537,33 @@ def test_same_heads_produce_byte_identical_manifest(tmp_path: Path) -> None:
     assert b'"archive_bytes":' in first
     assert b'"tribe-live-operations"' in first
     assert b'"tribe-independent-approval"' not in first
+
+
+@pytest.mark.parametrize("omit", [None, "tribe-bridge"])
+def test_operational_freezer_requires_complete_trusted_interpreter_map(
+    tmp_path: Path, omit: str | None
+) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    qualification = _qualification(matrix, cluster, tribe)
+    executable = Path(sys.executable).resolve()
+    trusted = {
+        component: {version: executable for version in versions}
+        for component, versions in qualification["supported_python"].items()
+    }
+    if omit is None:
+        trusted = None
+    else:
+        trusted.pop(omit)
+    with pytest.raises(ManifestError, match="trusted_interpreters_missing"):
+        _build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
+            trusted_interpreters=trusted,
+        )
 
 
 def test_structured_strings_do_not_replace_executed_evidence(
@@ -596,7 +655,7 @@ def test_qualification_requires_python_coverage_and_committed_evidence(
     matrix, cluster, tribe = _fixture(tmp_path)
     qualification = _qualification(matrix, cluster, tribe)
     qualification["supported_python"]["daimon-matrix"].append("3.14")
-    with pytest.raises(ManifestError, match="trusted_interpreters_missing"):
+    with pytest.raises(ManifestError, match="install_evidence_invalid"):
         build_manifest(
             matrix,
             cluster,
@@ -744,6 +803,97 @@ def test_semantic_source_artifacts_cannot_be_replaced_by_matching_claims(
             baselines=_baselines(matrix, cluster, tribe),
             artifact_root=artifact_root,
         )
+
+
+def test_install_evidence_replacement_cannot_cross_snapshot_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    qualification = _qualification(matrix, cluster, tribe)
+    artifact_root = _artifact_root(matrix)
+    row = _artifact(qualification, "daimon-matrix", "install-evidence")
+    evidence_path = artifact_root / row["path"]
+    valid = evidence_path.read_bytes()
+    invalid = b"not canonical installation evidence\n"
+    evidence_path.write_bytes(invalid)
+    _refresh_artifact(
+        qualification, artifact_root, "daimon-matrix", "install-evidence"
+    )
+    real_install_evidence = rc_subject._install_evidence
+
+    def temporary_replacement(snapshot: Path, *args: object) -> object:
+        evidence_path.write_bytes(valid)
+        try:
+            return real_install_evidence(snapshot, *args)
+        finally:
+            evidence_path.write_bytes(invalid)
+
+    monkeypatch.setattr(rc_subject, "_install_evidence", temporary_replacement)
+    with pytest.raises(ManifestError, match="qualification_install_evidence_invalid"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=artifact_root,
+        )
+    assert evidence_path.read_bytes() == invalid
+
+
+def test_build_artifact_replacement_cannot_cross_snapshot_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    qualification = _qualification(matrix, cluster, tribe)
+    artifact_root = _artifact_root(matrix)
+    wheel = _artifact(qualification, "daimon-matrix", "python-wheel")
+    wheel_path = artifact_root / wheel["path"]
+    valid = wheel_path.read_bytes()
+    invalid = b"not a wheel\n"
+    wheel_path.write_bytes(invalid)
+    _refresh_artifact(
+        qualification, artifact_root, "daimon-matrix", "python-wheel"
+    )
+
+    evidence_row = _artifact(
+        qualification, "daimon-matrix", "install-evidence"
+    )
+    evidence_path = artifact_root / evidence_row["path"]
+    evidence = json.loads(evidence_path.read_bytes())
+    evidence_input = next(
+        item for item in evidence["inputs"] if item["name"] == wheel["name"]
+    )
+    evidence_input["sha256"] = wheel["sha256"]
+    evidence_path.write_text(
+        json.dumps(evidence, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="ascii",
+    )
+    _refresh_artifact(
+        qualification, artifact_root, "daimon-matrix", "install-evidence"
+    )
+    real_verify_wheel = rc_subject._verify_python_wheel
+
+    def temporary_replacement(
+        snapshot: Path, repository: Path, commit: str
+    ) -> None:
+        wheel_path.write_bytes(valid)
+        try:
+            real_verify_wheel(snapshot, repository, commit)
+        finally:
+            wheel_path.write_bytes(invalid)
+
+    monkeypatch.setattr(rc_subject, "_verify_python_wheel", temporary_replacement)
+    with pytest.raises(ManifestError, match="qualification_python_wheel_invalid"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            qualification,
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=artifact_root,
+        )
+    assert wheel_path.read_bytes() == invalid
 
 
 def test_matrix_bundle_must_have_one_exact_head(tmp_path: Path) -> None:

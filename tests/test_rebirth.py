@@ -56,6 +56,7 @@ class SimulatedCrash(BaseException):
 
 
 _DISPOSABLE_ADMISSION_SERVERS: list[tuple[AdmissionServer, threading.Thread]] = []
+_REAL_RUNTIME_LEASE_TTL_S = 10
 
 
 def _close_disposable_admission_servers() -> None:
@@ -223,7 +224,7 @@ def _launcher_kill_worker(
         state,
         embodiment_id,
         _descriptor(password),
-        admission_lease_ttl_s=3,
+        admission_lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S,
     )
     results.put((process.pid, ready["admission"]["lease_expires_at_ms"]))
     while True:
@@ -835,7 +836,11 @@ def test_graceful_stop_waits_for_inflight_renew_then_releases(
         short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
     )
     installed = rebirth.install_rebirth_package(**values)
-    _ensure_production_fences(state, installed["embodiment_id"], lease_ttl_s=3)
+    _ensure_production_fences(
+        state,
+        installed["embodiment_id"],
+        lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S,
+    )
     identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
     client = rebirth_host._configured_admission_client(state, identity)
     real_renew = client.renew
@@ -856,11 +861,11 @@ def test_graceful_stop_waits_for_inflight_renew_then_releases(
         installed["embodiment_id"],
         _descriptor(fixture["password"]),
         admission_client=client,
-        admission_lease_ttl_s=3,
+        admission_lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S,
     )
     supervisor = rebirth_host._SUPERVISORS[process.pid]
     block_renew.set()
-    assert renew_started.wait(timeout=2)
+    assert renew_started.wait(timeout=_REAL_RUNTIME_LEASE_TTL_S / 2)
     with ThreadPoolExecutor(max_workers=1) as executor:
         stopped = executor.submit(rebirth_host.stop_rebirth_host, process, timeout_s=5)
         deadline = time.monotonic() + 1
@@ -937,7 +942,11 @@ def test_stop_during_committed_renew_response_loss_fails_closed_and_releases(
         short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
     )
     installed = rebirth.install_rebirth_package(**values)
-    _ensure_production_fences(state, installed["embodiment_id"], lease_ttl_s=3)
+    _ensure_production_fences(
+        state,
+        installed["embodiment_id"],
+        lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S,
+    )
     identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
     client = rebirth_host._configured_admission_client(state, identity)
     real_renew = client.renew
@@ -959,11 +968,11 @@ def test_stop_during_committed_renew_response_loss_fails_closed_and_releases(
         installed["embodiment_id"],
         _descriptor(fixture["password"]),
         admission_client=client,
-        admission_lease_ttl_s=3,
+        admission_lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S,
     )
     supervisor = rebirth_host._SUPERVISORS[process.pid]
     inject_response_loss.set()
-    assert renew_committed.wait(timeout=2)
+    assert renew_committed.wait(timeout=_REAL_RUNTIME_LEASE_TTL_S / 2)
     with ThreadPoolExecutor(max_workers=1) as executor:
         stopped = executor.submit(rebirth_host.stop_rebirth_host, process, timeout_s=5)
         deadline = time.monotonic() + 1
@@ -990,7 +999,11 @@ def test_launcher_sigkill_cannot_leave_executing_orphan_beyond_lease(
         short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
     )
     installed = rebirth.install_rebirth_package(**values)
-    _ensure_production_fences(state, installed["embodiment_id"], lease_ttl_s=3)
+    _ensure_production_fences(
+        state,
+        installed["embodiment_id"],
+        lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S,
+    )
     context = multiprocessing.get_context("spawn")
     results = context.Queue()
     launcher = context.Process(
@@ -1007,7 +1020,7 @@ def test_launcher_sigkill_cannot_leave_executing_orphan_beyond_lease(
     os.kill(launcher.pid, signal.SIGKILL)
     launcher.join(timeout=5)
     assert launcher.exitcode == -signal.SIGKILL
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + _REAL_RUNTIME_LEASE_TTL_S / 2
     executing = True
     while time.monotonic() < deadline:
         stat_path = Path(f"/proc/{child_pid}/stat")

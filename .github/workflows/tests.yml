@@ -204,6 +204,11 @@ jobs:
               "$before" "$(cat "$restriction")"
           fi
           host_net_namespace=$(readlink /proc/self/ns/net)
+          private_prefix=${pythonLocation:?}
+          private_python=$(python -I -c 'import os,sys; print(os.path.basename(sys.executable))')
+          preflight_root=$(mktemp -d "$RUNNER_TEMP/daimon-bwrap-preflight.XXXXXX")
+          chmod 700 "$preflight_root"
+          trap 'rm -rf "$preflight_root"' EXIT
           /usr/bin/bwrap \
             --die-with-parent \
             --unshare-all \
@@ -213,13 +218,21 @@ jobs:
             --ro-bind /bin /bin \
             --ro-bind /lib /lib \
             --ro-bind /lib64 /lib64 \
+            --ro-bind /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt \
             --tmpfs /tmp \
             --dev /dev \
             --proc /proc \
+            --ro-bind "$private_prefix" /python \
+            --dir /work \
+            --bind "$preflight_root" /work \
             --setenv PATH /usr/bin:/bin \
+            --setenv HOME /work/home \
+            --setenv TMPDIR /work/tmp \
+            --setenv LD_LIBRARY_PATH /python/lib \
+            --setenv PRIVATE_PYTHON "$private_python" \
             --setenv HOST_NET_NAMESPACE "$host_net_namespace" \
-            /bin/sh -eu -c \
-              'test "$(readlink /proc/self/ns/net)" != "$HOST_NET_NAMESPACE"; test "$(wc -l < /proc/net/route)" -eq 1; test ! -e /home/runner; test ! -e /run/docker.sock'
+            /bin/bash -ceu \
+              'test "$(readlink /proc/self/ns/net)" != "$HOST_NET_NAMESPACE"; test "$(wc -l < /proc/net/route)" -eq 1; test ! -e /home/runner; test ! -e /run/docker.sock; mkdir -m 700 "$HOME" "$TMPDIR"; test "$("/python/bin/$PRIVATE_PYTHON" -I -c "import sys; print(sys.base_prefix)")" = /python; "/python/bin/$PRIVATE_PYTHON" -m venv --copies /work/venv; test "$(/work/venv/bin/python -I -c "import sys; print(sys.base_prefix)")" = /python'
       - run: python -m pip install -c constraints.txt -r requirements-dev.txt
       - name: Verify exact Matrix source pin
         run: |

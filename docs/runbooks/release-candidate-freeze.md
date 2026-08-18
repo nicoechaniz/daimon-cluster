@@ -86,7 +86,12 @@ mounts only the selected interpreter prefix, system runtime directories, the
 public CA bundle, private `/dev` and `/proc`, a tmpfs `/tmp`, and its disposable
 work directory. It has no host home or `/run`, and every subprocess has a
 bounded timeout. Interpreter paths are trusted operator inputs outside the
-qualification JSON. Native interpreter binaries and every prefix parent must be
+qualification JSON. The selected prefix is mounted read-only at `/python`; the
+sandbox sets `LD_LIBRARY_PATH` to that exact trusted prefix's `/python/lib` so
+relocated CPython builds cannot fall back to an ambient system or original
+tool-cache library. It also requires the isolated interpreter to report
+`/python` as its base prefix before creating a virtual environment. Native
+interpreter binaries and every prefix parent must be
 root/owner-controlled; group-writable paths are accepted only when the group is
 provably the owner's single-member primary group. A canonical executable may
 be a hardlink when it remains non-externally-writable, because it is an

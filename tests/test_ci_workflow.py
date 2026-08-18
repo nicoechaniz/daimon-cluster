@@ -69,6 +69,7 @@ def test_private_ci_prefix_inventory_rejects_writable_directory(
     private.mkdir(mode=0o700)
     package = private / "package"
     package.mkdir(mode=0o720)
+    package.chmod(0o720)
 
     inventory = _private_inventory()
     with pytest.raises(AssertionError):
@@ -97,6 +98,9 @@ def test_ci_sandbox_preflight_is_hosted_runner_only_and_preserves_isolation() ->
     assert "--clearenv" in step
     assert "--ro-bind / /" not in step
     assert "--share-net" not in step
+    assert '--ro-bind "$private_prefix" /python' in step
+    assert "--setenv LD_LIBRARY_PATH /python/lib" in step
+    assert '"/python/bin/$PRIVATE_PYTHON" -m venv --copies /work/venv' in step
     assert 'test "$(readlink /proc/self/ns/net)" != "$HOST_NET_NAMESPACE"' in step
     assert 'test "$(wc -l < /proc/net/route)" -eq 1' in step
     assert "test ! -e /home/runner" in step

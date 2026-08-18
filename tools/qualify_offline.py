@@ -361,6 +361,7 @@ set -euo pipefail
 umask 077
 mkdir -m 700 "$HOME" "$TMPDIR" wheelhouse source
 tar -xf "$QUAL_WHEELHOUSE" -C wheelhouse --no-same-owner --no-same-permissions
+test "$("$QUAL_PYTHON" -I -c 'import sys; print(sys.base_prefix)')" = /python
 "$QUAL_PYTHON" -m venv --copies venv
 if [[ "$QUAL_COMPONENT" == daimon-matrix ]]; then
   rmdir source
@@ -633,6 +634,7 @@ def _run_version(verified: Mapping[str, Any], interpreter: Mapping[str, str]) ->
             "HOME": "/work/home",
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
+            "LD_LIBRARY_PATH": "/python/lib",
             "PATH": "/usr/bin:/bin",
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_FIND_LINKS": "/work/wheelhouse",

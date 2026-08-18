@@ -36,6 +36,7 @@ FILES = (
     "tests/integration/test_recovery_rebirth_containers.py",
     "tools/build_physical_preflight.py",
     "tools/build_rc_manifest.py",
+    "tools/qualify_offline.py",
     "tools/check_rc_types.py",
     "scripts/h3-volume-drill.py",
 )

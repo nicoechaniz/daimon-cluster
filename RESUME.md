@@ -71,8 +71,9 @@ not Matrix intake or semantic-delivery authority.
 - V7 snapshots require the complete canonical twelve-profile table and exclude
   root, operator and host client material unconditionally. Incomplete,
   duplicated, relabelled or unsafe layouts fail before a destination exists.
-- The complete Cluster suite passes with ResourceWarning and unraisable-warning
-  failures enabled. The network-disabled recovery/rebirth container journey
+- The complete Cluster suite passes 622 tests with four intentional skips and
+  ResourceWarning and unraisable-warning failures enabled. The
+  network-disabled recovery/rebirth container journey
   and the independent encrypted backup/export/offline-restore journey pass.
 
 Current qualification evidence lives in
@@ -80,13 +81,16 @@ Current qualification evidence lives in
 inventory and incident documents are historical evidence; their hosts, hashes
 and test counts are not the current RC baseline.
 
-## Remaining automated work
+## Release-candidate acceptance protocol
 
-1. Merge this exact Cluster repin/freezer successor through normal review.
-2. Repin Tribe metadata once to the final Matrix/Cluster heads.
-3. Run clean-install and supported-Python gates from the three exact final
-   commits, generate the final content-addressed manifest and keep tracking
-   synchronized with its hashes.
+The Cluster successor is accepted only through normal review and protected CI.
+After that merge, Tribe metadata records the resulting Matrix/Cluster heads;
+that metadata-only successor does not change the qualified Tribe semantics.
+The three resulting clean commits are installed on every supported Python by
+the versioned offline qualifier, whose evidence is replayed by the freezer.
+The external content-addressed manifest records those resulting heads and
+artifact hashes; it is intentionally produced after the repository commits and
+does not require a self-referential evidence commit.
 
 ## Human and external gates
 

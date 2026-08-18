@@ -20,6 +20,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
@@ -28,6 +29,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
+
+try:  # Support both ``python -m tools...`` and the documented direct script.
+    from tools.qualify_offline import QualificationError, replay_evidence
+except ModuleNotFoundError:  # pragma: no cover - exercised by CLI subprocess test
+    from qualify_offline import (  # type: ignore[no-redef]
+        QualificationError,
+        replay_evidence,
+    )
 
 SCHEMA: Final = "daimon-release-candidate/v1"
 BASELINES: Final = {
@@ -64,7 +73,13 @@ _ARTIFACT_KINDS: Final = {
         }
     ),
     "daimon-cluster": frozenset(
-        {"git-archive", "install-evidence", "runtime-lock", "wheelhouse"}
+        {
+            "git-archive",
+            "install-evidence",
+            "matrix-git-bundle",
+            "runtime-lock",
+            "wheelhouse",
+        }
     ),
     "tribe-bridge": frozenset(
         {"git-archive", "install-evidence", "runtime-lock", "wheelhouse"}
@@ -72,15 +87,26 @@ _ARTIFACT_KINDS: Final = {
 }
 _REQUIRED_ARTIFACT_KINDS: Final = {
     "daimon-matrix": frozenset(
-        {"git-bundle", "install-evidence", "python-sdist", "python-wheel"}
+        {
+            "git-bundle",
+            "install-evidence",
+            "python-sdist",
+            "python-wheel",
+            "wheelhouse",
+        }
     ),
-    "daimon-cluster": frozenset({"git-archive", "install-evidence"}),
-    "tribe-bridge": frozenset({"git-archive", "install-evidence"}),
+    "daimon-cluster": frozenset(
+        {"git-archive", "install-evidence", "matrix-git-bundle", "wheelhouse"}
+    ),
+    "tribe-bridge": frozenset(
+        {"git-archive", "install-evidence", "wheelhouse"}
+    ),
 }
 _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 _RELEASE: Final = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+rc[1-9][0-9]*$")
 _PYTHON: Final = re.compile(r"^3\.(?:[0-9]|1[0-9])$")
 _EVIDENCE_PATH: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$")
+_ARTIFACT_NAME: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _REQUIRED_HUMAN_GATES: Final = frozenset(
     {
         "cross-being-consent",
@@ -483,6 +509,12 @@ def _install_evidence(
     expected_inputs: list[dict[str, str]],
     supported_python: set[str],
     producer_commit: str,
+    repository: Path,
+    cluster_repository: Path,
+    artifact_rows: Mapping[str, Mapping[str, object]],
+    artifact_files: Mapping[str, Path],
+    matrix_frozen: Mapping[str, object],
+    trusted_interpreters: Mapping[str, Path],
 ) -> dict[str, Mapping[str, Any]]:
     evidence = _closed(
         _read_canonical_json_artifact(path),
@@ -493,7 +525,6 @@ def _install_evidence(
             "inputs",
             "platform",
             "producer",
-            "producer_commit",
             "schema",
             "source_artifact",
             "source_sha256",
@@ -503,29 +534,51 @@ def _install_evidence(
     )
     if (
         evidence["schema"] != INSTALL_EVIDENCE_SCHEMA
-        or evidence["producer"] != "daimon-rc-offline-qualifier/v1"
-        or evidence["producer_commit"] != producer_commit
+        or not isinstance(evidence["producer"], Mapping)
         or evidence["component"] != component
         or evidence["commit"] != frozen["commit"]
         or evidence["tree"] != frozen["tree"]
         or evidence["source_artifact"] != source_name
         or evidence["source_sha256"] != source_sha256
         or evidence["inputs"] != expected_inputs
-        or not isinstance(evidence["platform"], str)
-        or not evidence["platform"]
+        or not isinstance(evidence["platform"], Mapping)
         or not isinstance(evidence["installations"], list)
     ):
         raise ManifestError(f"qualification_install_evidence_invalid:{component}")
-    expected_probes = ["import", "installed-metadata", "smoke"]
+    producer = _closed(
+        evidence["producer"],
+        {"commit", "name", "path", "sha256"},
+        "qualification_install_evidence_malformed",
+    )
+    if (
+        producer["commit"] != producer_commit
+        or producer["name"] != "daimon-rc-offline-qualifier/v1"
+        or producer["path"] != "tools/qualify_offline.py"
+        or not isinstance(producer["sha256"], str)
+        or _SHA256.fullmatch(producer["sha256"]) is None
+    ):
+        raise ManifestError(f"qualification_install_evidence_invalid:{component}")
+    _closed(
+        evidence["platform"], {"machine", "system"}, "qualification_install_evidence_malformed"
+    )
+    if any(
+        not isinstance(value, str) or not value
+        for value in evidence["platform"].values()
+    ):
+        raise ManifestError(f"qualification_install_evidence_invalid:{component}")
+    expected_probes = ["import", "installed-metadata", "smoke", "dependency-check"]
     if component == "daimon-matrix":
         expected_probes.insert(0, "direct-url-commit")
+        expected_probes.extend(("wheel-install", "sdist-install"))
     installations: dict[str, Mapping[str, Any]] = {}
     for raw_installation in evidence["installations"]:
         installation = _closed(
             raw_installation,
             {
+                "execution",
                 "installed_commit",
                 "installed_tree",
+                "interpreter",
                 "network",
                 "probes",
                 "python",
@@ -535,6 +588,32 @@ def _install_evidence(
             "qualification_install_evidence_malformed",
         )
         python = installation["python"]
+        execution = _closed(
+            installation["execution"],
+            {
+                "contract_sha256",
+                "ca_bundle_sha256",
+                "exit_code",
+                "sandbox",
+                "sandbox_executable",
+                "sandbox_sha256",
+                "stderr_sha256",
+                "stdout_sha256",
+            },
+            "qualification_install_evidence_malformed",
+        )
+        interpreter = _closed(
+            installation["interpreter"],
+            {
+                "base_prefix",
+                "executable",
+                "executable_sha256",
+                "implementation",
+                "version",
+                "version_full",
+            },
+            "qualification_install_evidence_malformed",
+        )
         probes = installation["probes"]
         if not isinstance(probes, list):
             raise ManifestError(f"qualification_install_evidence_invalid:{component}")
@@ -568,6 +647,20 @@ def _install_evidence(
             or installation["installed_commit"] != frozen["commit"]
             or installation["installed_tree"] != frozen["tree"]
             or observed_probes != expected_probes
+            or interpreter["version"] != python
+            or execution["exit_code"] != 0
+            or execution["sandbox"] != "bubblewrap-unshare-all"
+            or any(
+                not isinstance(execution[field], str)
+                or _SHA256.fullmatch(execution[field]) is None
+                for field in (
+                    "contract_sha256",
+                    "ca_bundle_sha256",
+                    "sandbox_sha256",
+                    "stderr_sha256",
+                    "stdout_sha256",
+                )
+            )
         ):
             raise ManifestError(f"qualification_install_evidence_invalid:{component}")
         installations[python] = installation
@@ -576,6 +669,47 @@ def _install_evidence(
     )
     if list(installations) != expected_versions:
         raise ManifestError(f"qualification_install_evidence_invalid:{component}")
+    plan = {
+        "schema": "daimon-offline-qualification-plan/v1",
+        "component": component,
+        "commit": frozen["commit"],
+        "tree": frozen["tree"],
+        "repository": os.fspath(repository),
+        "cluster_repository": os.fspath(cluster_repository),
+        "producer_commit": producer_commit,
+        "source_artifact": source_name,
+        "wheelhouse_artifact": next(
+            name for name, row in artifact_rows.items() if row["kind"] == "wheelhouse"
+        ),
+        "matrix_dependency": (
+            {"commit": matrix_frozen["commit"], "tree": matrix_frozen["tree"]}
+            if component == "daimon-cluster"
+            else None
+        ),
+        "artifacts": [
+            {
+                "kind": row["kind"],
+                "name": name,
+                "path": os.fspath(artifact_files[name]),
+                "sha256": row["sha256"],
+            }
+            for name, row in sorted(artifact_rows.items())
+            if row["kind"] != "install-evidence"
+        ],
+        "python": [
+            {
+                "executable": os.fspath(trusted_interpreters[version]),
+                "version": version,
+            }
+            for version in expected_versions
+        ],
+    }
+    try:
+        replay_evidence(evidence, plan)
+    except QualificationError as exception:
+        raise ManifestError(
+            f"qualification_install_evidence_replay_failed:{component}:{exception}"
+        ) from exception
     return installations
 
 
@@ -671,6 +805,7 @@ def _qualification(
     components: tuple[Component, ...],
     frozen: Mapping[str, Mapping[str, object]],
     artifact_root: Path | None,
+    trusted_interpreters: Mapping[str, Mapping[str, Path]] | None,
 ) -> dict[str, Any]:
     qualification = _closed(
         value,
@@ -707,6 +842,19 @@ def _qualification(
         ):
             raise ManifestError("qualification_python_invalid")
         python_by_component[name] = set(versions)
+
+    if trusted_interpreters is None:
+        current = f"{sys.version_info.major}.{sys.version_info.minor}"
+        trusted_interpreters = {
+            name: {version: Path(sys.executable).resolve() for version in versions}
+            for name, versions in python_by_component.items()
+            if versions == {current}
+        }
+    if set(trusted_interpreters) != set(_COMPONENT_NAMES):
+        raise ManifestError("qualification_trusted_interpreters_missing")
+    for name in _COMPONENT_NAMES:
+        if set(trusted_interpreters[name]) != python_by_component[name]:
+            raise ManifestError(f"qualification_trusted_interpreters_missing:{name}")
 
     repositories = {
         component.name: component.repository.resolve(strict=True)
@@ -754,7 +902,7 @@ def _qualification(
             kind = row["kind"]
             if (
                 not isinstance(row["name"], str)
-                or not row["name"]
+                or _ARTIFACT_NAME.fullmatch(row["name"]) is None
                 or row["name"] in names
                 or not isinstance(kind, str)
                 or kind not in _ARTIFACT_KINDS[name]
@@ -826,6 +974,12 @@ def _qualification(
                     str(frozen[name]["commit"]),
                     str(frozen[name]["tree"]),
                 )
+            elif kind == "matrix-git-bundle":
+                _verify_git_bundle(
+                    candidate,
+                    str(frozen["daimon-matrix"]["commit"]),
+                    str(frozen["daimon-matrix"]["tree"]),
+                )
             elif kind == "python-wheel":
                 _verify_python_wheel(
                     candidate, repositories[name], str(frozen[name]["commit"])
@@ -863,6 +1017,12 @@ def _qualification(
             ],
             python_by_component[name],
             str(frozen["daimon-cluster"]["commit"]),
+            repositories[name],
+            repositories["daimon-cluster"],
+            artifact_rows[name],
+            artifact_files[name],
+            frozen["daimon-matrix"],
+            trusted_interpreters[name],
         )
 
     receipts = _component_map(
@@ -1028,6 +1188,7 @@ def build_manifest(
     *,
     baselines: Mapping[str, Mapping[str, str]] = BASELINES,
     artifact_root: Path | None = None,
+    trusted_interpreters: Mapping[str, Mapping[str, Path]] | None = None,
 ) -> dict[str, object]:
     components = (
         Component("daimon-matrix", matrix),
@@ -1075,7 +1236,9 @@ def build_manifest(
     pin = _matrix_pin(cluster_repository, str(frozen["daimon-cluster"]["commit"]))
     if pin != frozen["daimon-matrix"]["commit"]:
         raise ManifestError("cluster_matrix_pin_mismatch")
-    qualified = _qualification(qualification, components, frozen, artifact_root)
+    qualified = _qualification(
+        qualification, components, frozen, artifact_root, trusted_interpreters
+    )
     for component in components:
         repository = component.repository.resolve(strict=True)
         final_commit = str(
@@ -1230,7 +1393,30 @@ def main() -> int:
     parser.add_argument("--qualification", type=Path, required=True)
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--python",
+        action="append",
+        default=[],
+        metavar="COMPONENT:VERSION=/ABSOLUTE/PYTHON",
+        help="trusted interpreter selected outside qualification JSON (repeatable)",
+    )
     arguments = parser.parse_args()
+    trusted: dict[str, dict[str, Path]] | None = None
+    if arguments.python:
+        trusted = {name: {} for name in _COMPONENT_NAMES}
+        for raw in arguments.python:
+            identity, separator, executable = raw.partition("=")
+            component, colon, version = identity.partition(":")
+            if (
+                separator != "="
+                or colon != ":"
+                or component not in _COMPONENT_NAMES
+                or _PYTHON.fullmatch(version) is None
+                or version in trusted[component]
+                or not Path(executable).is_absolute()
+            ):
+                parser.error(f"invalid --python value: {raw}")
+            trusted[component][version] = Path(executable)
     raw = canonical_manifest(
         build_manifest(
             arguments.matrix,
@@ -1238,6 +1424,7 @@ def main() -> int:
             arguments.tribe,
             read_qualification(arguments.qualification),
             artifact_root=arguments.artifact_root,
+            trusted_interpreters=trusted,
         )
     )
     write_manifest(arguments.output, raw)

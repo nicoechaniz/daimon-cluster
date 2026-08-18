@@ -22,8 +22,8 @@ Completed locally on the exact code boundary:
 - a distinct recovery transfer limited to the public runtime bundle and
   canonical ledger, rejected by the generic full-snapshot restore;
 - V7 exact twelve-profile snapshot gate with every client tree excluded;
-- `608 passed, 4 skipped` with resource/unraisable warnings fatal on the
-  prepared final-pin/freezer successor;
+- `622 passed, 4 skipped` with resource/unraisable warnings fatal on the
+  executable offline-qualifier/freezer successor;
 - network-disabled recovery/rebirth container E2E: 1 passed; and
 - encrypted backup/export, offline check and restore container E2E: 1 passed.
 
@@ -34,10 +34,14 @@ the consolidated lineage. Tribe PR #65 is approved and merged at
 Python 3.10–3.13. Nothing in this checkpoint was deployed and no existing host
 or real custody was used.
 
-Current remaining work is RC metadata, exact final pinning, independent review,
-clean CI/main merges, the content-addressed manifest/artifacts and an offline
-physical preflight. Real custody, participant consent/contact, host selection,
-physical execution, publication and cutover remain human gates.
+Acceptance now requires normal review and protected CI for the resulting
+Cluster commit, followed by the metadata-only Tribe pin to the resulting
+Matrix/Cluster heads. The versioned offline qualifier then installs every exact
+artifact on every supported Python under a network/filesystem-isolated sandbox;
+the freezer independently replays that evidence. The external manifest records
+the resulting commits and hashes without self-reference. Real custody,
+participant consent/contact, host selection, physical execution, publication
+and cutover remain human gates.
 
 ## Historical chronology (not the current baseline)
 

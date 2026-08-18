@@ -5,13 +5,17 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import subprocess
+import sys
 import tarfile
 import zipfile
 from base64 import urlsafe_b64encode
 from pathlib import Path
 
 import pytest
+
+import tools.build_rc_manifest as rc_subject
 
 from tools.build_rc_manifest import (
     ManifestError,
@@ -20,6 +24,16 @@ from tools.build_rc_manifest import (
     read_qualification,
     write_manifest,
 )
+
+
+REAL_REPLAY = rc_subject.replay_evidence
+
+
+@pytest.fixture(autouse=True)
+def _stub_replay_for_structural_freezer_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep structural freezer tests fast; dedicated tests exercise real replay."""
+
+    monkeypatch.setattr(rc_subject, "replay_evidence", lambda *_args: None)
 
 
 def _repository(path: Path, name: str) -> Path:
@@ -216,6 +230,37 @@ def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
             }
         )
 
+    for name in names:
+        path = artifact_root / f"{name}-wheelhouse.tar"
+        with tarfile.open(path, mode="w") as wheelhouse_archive:
+            info = tarfile.TarInfo("wheelhouse")
+            info.type = tarfile.DIRTYPE
+            info.mode = 0o700
+            wheelhouse_archive.addfile(info)
+        path.chmod(0o600)
+        artifacts[name].append(
+            {
+                "name": "wheelhouse",
+                "kind": "wheelhouse",
+                "path": path.name,
+                "bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+
+    cluster_matrix_bundle = artifact_root / "cluster-matrix.bundle"
+    cluster_matrix_bundle.write_bytes(matrix_bundle.read_bytes())
+    cluster_matrix_bundle.chmod(0o600)
+    artifacts["daimon-cluster"].append(
+        {
+            "name": "matrix-source-bundle",
+            "kind": "matrix-git-bundle",
+            "path": cluster_matrix_bundle.name,
+            "bytes": cluster_matrix_bundle.stat().st_size,
+            "sha256": hashlib.sha256(cluster_matrix_bundle.read_bytes()).hexdigest(),
+        }
+    )
+
     component_refs = {
         name: {
             "commit": subprocess.check_output(
@@ -234,12 +279,19 @@ def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
             if row["kind"] == ("git-bundle" if name == "daimon-matrix" else "git-archive")
         )
         probe_names = ["import", "installed-metadata", "smoke"]
+        probe_names.append("dependency-check")
         if name == "daimon-matrix":
             probe_names.insert(0, "direct-url-commit")
+            probe_names.extend(("wheel-install", "sdist-install"))
+        executable = Path(sys.executable).resolve()
         install_evidence = {
             "schema": "daimon-offline-install-evidence/v1",
-            "producer": "daimon-rc-offline-qualifier/v1",
-            "producer_commit": component_refs["daimon-cluster"]["commit"],
+            "producer": {
+                "commit": component_refs["daimon-cluster"]["commit"],
+                "name": "daimon-rc-offline-qualifier/v1",
+                "path": "tools/qualify_offline.py",
+                "sha256": "1" * 64,
+            },
             "component": name,
             "commit": component_refs[name]["commit"],
             "tree": component_refs[name]["tree"],
@@ -249,7 +301,7 @@ def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
                 {"name": row["name"], "sha256": row["sha256"]}
                 for row in sorted(artifacts[name], key=lambda item: item["name"])
             ],
-            "platform": "fixture-linux-x86_64",
+            "platform": {"machine": "x86_64", "system": "Linux"},
             "installations": [
                 {
                     "python": "3.13",
@@ -260,6 +312,24 @@ def _qualification(matrix: Path, cluster: Path, tribe: Path) -> dict:
                     ),
                     "installed_commit": component_refs[name]["commit"],
                     "installed_tree": component_refs[name]["tree"],
+                    "interpreter": {
+                        "base_prefix": os.fspath(executable.parent.parent),
+                        "executable": os.fspath(executable),
+                        "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+                        "implementation": "CPython",
+                        "version": "3.13",
+                        "version_full": "3.13.0",
+                    },
+                    "execution": {
+                        "contract_sha256": "2" * 64,
+                        "ca_bundle_sha256": "6" * 64,
+                        "exit_code": 0,
+                        "sandbox": "bubblewrap-unshare-all",
+                        "sandbox_executable": "/usr/bin/bwrap",
+                        "sandbox_sha256": "3" * 64,
+                        "stderr_sha256": "4" * 64,
+                        "stdout_sha256": "5" * 64,
+                    },
                     "probes": [
                         {
                             "name": probe,
@@ -437,6 +507,22 @@ def test_same_heads_produce_byte_identical_manifest(tmp_path: Path) -> None:
     assert b'"tribe-independent-approval"' not in first
 
 
+def test_structured_strings_do_not_replace_executed_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    matrix, cluster, tribe = _fixture(tmp_path)
+    monkeypatch.setattr(rc_subject, "replay_evidence", REAL_REPLAY)
+    with pytest.raises(ManifestError, match="install_evidence_replay_failed"):
+        build_manifest(
+            matrix,
+            cluster,
+            tribe,
+            _qualification(matrix, cluster, tribe),
+            baselines=_baselines(matrix, cluster, tribe),
+            artifact_root=_artifact_root(matrix),
+        )
+
+
 def test_dirty_component_and_wrong_pin_fail_closed(tmp_path: Path) -> None:
     matrix, cluster, tribe = _fixture(tmp_path)
     (tribe / "untracked").write_text("no\n", encoding="utf-8")
@@ -510,7 +596,7 @@ def test_qualification_requires_python_coverage_and_committed_evidence(
     matrix, cluster, tribe = _fixture(tmp_path)
     qualification = _qualification(matrix, cluster, tribe)
     qualification["supported_python"]["daimon-matrix"].append("3.14")
-    with pytest.raises(ManifestError, match="install_evidence_invalid"):
+    with pytest.raises(ManifestError, match="trusted_interpreters_missing"):
         build_manifest(
             matrix,
             cluster,

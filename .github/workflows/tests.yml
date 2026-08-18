@@ -27,6 +27,10 @@ jobs:
             requirements-weave.txt
             requirements-dev.txt
             constraints.txt
+      - name: Install the offline qualification sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
       - run: python -m pip install -c constraints.txt -r requirements-dev.txt
       - name: Verify exact Matrix source pin
         run: |
@@ -102,6 +106,7 @@ jobs:
           scripts/h3-volume-drill.py
           tools/build_physical_preflight.py
           tools/build_rc_manifest.py
+          tools/qualify_offline.py
           tools/check_rc_types.py
       - name: Type-check the Matrix, fence and mutation-journal boundaries
         run: python tools/check_rc_types.py

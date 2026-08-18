@@ -31,7 +31,13 @@ _ARTIFACT_KINDS: Final = {
         }
     ),
     "daimon-cluster": frozenset(
-        {"git-archive", "install-evidence", "runtime-lock", "wheelhouse"}
+        {
+            "git-archive",
+            "install-evidence",
+            "matrix-git-bundle",
+            "runtime-lock",
+            "wheelhouse",
+        }
     ),
     "tribe-bridge": frozenset(
         {"git-archive", "install-evidence", "runtime-lock", "wheelhouse"}
@@ -39,10 +45,20 @@ _ARTIFACT_KINDS: Final = {
 }
 _REQUIRED_ARTIFACT_KINDS: Final = {
     "daimon-matrix": frozenset(
-        {"git-bundle", "install-evidence", "python-sdist", "python-wheel"}
+        {
+            "git-bundle",
+            "install-evidence",
+            "python-sdist",
+            "python-wheel",
+            "wheelhouse",
+        }
     ),
-    "daimon-cluster": frozenset({"git-archive", "install-evidence"}),
-    "tribe-bridge": frozenset({"git-archive", "install-evidence"}),
+    "daimon-cluster": frozenset(
+        {"git-archive", "install-evidence", "matrix-git-bundle", "wheelhouse"}
+    ),
+    "tribe-bridge": frozenset(
+        {"git-archive", "install-evidence", "wheelhouse"}
+    ),
 }
 _HOST_ROLES: Final = frozenset({"source", "target", "backup"})
 _SHELLS: Final = frozenset(

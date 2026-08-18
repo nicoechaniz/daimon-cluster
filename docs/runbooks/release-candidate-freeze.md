@@ -18,8 +18,10 @@ The separate qualification input must be canonical owner-only JSON with schema
   artifact has a unique relative path, byte size and SHA-256. Matrix requires
   one `git-bundle`, one structurally valid `python-wheel` and one structurally
   valid `python-sdist`; every component requires one `install-evidence`.
-  `runtime-lock` and `wheelhouse` are optional. Cluster and Tribe each also
-  require one `git-archive`. A kind may occur at most once per component. The
+  Every component also requires its complete `wheelhouse`; Matrix may carry a
+  `runtime-lock`. Cluster and Tribe each require one `git-archive`, and Cluster
+  additionally requires a `matrix-git-bundle` for the exact commit pinned in
+  `requirements-weave.txt`. A kind may occur at most once per component. The
   freezer opens and hashes each regular file beneath the immutable artifact
   root and rejects missing component artifacts, links, replacement or
   mismatch;
@@ -58,25 +60,42 @@ Git inspection runs with ambient Git configuration and hooks disabled, and no
 artifact content is checked out or executed. Initial goal baselines are
 retained separately from the qualified component heads.
 
-A receipt is a deterministic, machine-checked qualification statement. Its
+A receipt is a deterministic, machine-replayed qualification statement. Its
 external `daimon-offline-install-evidence/v1` artifact binds component,
 commit/tree, source artifact/hash, the exact name/hash inventory of every
 other installation input, platform and every supported Python. The evidence
-also names the exact Cluster commit containing the qualifier contract; the
+also names and hashes `tools/qualify_offline.py` from the exact Cluster commit;
+the
 artifact itself is deliberately excluded from its input list. Each row must
 say network disabled and result passed and carry the closed probe set
-(`import`, `installed-metadata`, `smoke`, plus Matrix's
-`direct-url-commit`), with a SHA-256 of every probe output. The freezer hashes
-and parses this canonical JSON, then cross-checks the receipt row byte for byte
-against it. The evidence artifact does not name its own hash or the final
+(`import`, `installed-metadata`, `smoke`, `dependency-check`, plus Matrix's
+`direct-url-commit`, `wheel-install` and `sdist-install`), with a SHA-256 of
+every probe output. The freezer hashes and parses this canonical JSON, rebuilds
+the closed execution plan from repository and artifact facts, reruns every
+installation in a fresh sandbox, and requires byte-identical canonical
+evidence. The evidence artifact does not name its own hash or the final
 manifest, so it can be produced after installation without changing a
 repository head or creating a self-reference.
 
-This evidence is immutable and non-trivially structured, but remains an
-attestation from `daimon-rc-offline-qualifier/v1`: the freezer does not re-run
-the installation. Clean disposable qualification must produce it, and review
-must inspect the commands/environment separately. No synthetic receipt proves
-a physical install.
+`tools/qualify_offline.py` is the only producer. It accepts a closed canonical
+`daimon-offline-qualification-plan/v1`, snapshots every verified artifact by
+descriptor, and runs with bubblewrap `--unshare-all --clearenv`. The sandbox
+mounts only the selected interpreter prefix, system runtime directories, the
+public CA bundle, private `/dev` and `/proc`, a tmpfs `/tmp`, and its disposable
+work directory. It has no host home or `/run`, and every subprocess has a
+bounded timeout. Interpreter paths are trusted operator inputs outside the
+qualification JSON. Native interpreter binaries and every prefix parent must be
+root/owner-controlled; group-writable paths are accepted only when the group is
+provably the owner's single-member primary group. The freezer CLI requires repeatable
+`--python COMPONENT:VERSION=/absolute/python` arguments for a multi-version
+candidate. Evidence cannot select an executable or command.
+
+The trust boundary is the local Linux kernel, bubblewrap binary, selected
+CPython binaries/prefixes, mounted system runtime bytes and CA bundle. Their
+relevant paths and hashes are captured in the replay transcript. This is
+reproducible local installation evidence, not remote attestation or physical
+host evidence. No signing key or unverifiable producer claim substitutes for
+replay.
 
 The external evidence artifact has this closed form (probe output hashes are
 hashes of the qualifier's captured machine output, not free-form notes):
@@ -84,15 +103,19 @@ hashes of the qualifier's captured machine output, not free-form notes):
 ```json
 {
   "schema": "daimon-offline-install-evidence/v1",
-  "producer": "daimon-rc-offline-qualifier/v1",
-  "producer_commit": "<exact Cluster commit>",
+  "producer": {
+    "name": "daimon-rc-offline-qualifier/v1",
+    "commit": "<exact Cluster commit>",
+    "path": "tools/qualify_offline.py",
+    "sha256": "<committed tool blob hash>"
+  },
   "component": "daimon-matrix",
   "commit": "<exact Matrix commit>",
   "tree": "<exact Matrix tree>",
   "source_artifact": "source-bundle",
   "source_sha256": "<bundle hash>",
   "inputs": [{"name": "source-bundle", "sha256": "<bundle hash>"}],
-  "platform": "linux-x86_64-glibc>=2.34",
+  "platform": {"machine": "x86_64", "system": "Linux"},
   "installations": [
     {
       "python": "3.13",
@@ -101,6 +124,24 @@ hashes of the qualifier's captured machine output, not free-form notes):
       "source": "vcs-direct-url",
       "installed_commit": "<exact Matrix commit>",
       "installed_tree": "<exact Matrix tree>",
+      "interpreter": {
+        "base_prefix": "/trusted/python/prefix",
+        "executable": "/trusted/python/prefix/bin/python3.13",
+        "executable_sha256": "<64 lowercase hex>",
+        "implementation": "CPython",
+        "version": "3.13",
+        "version_full": "3.13.x"
+      },
+      "execution": {
+        "sandbox": "bubblewrap-unshare-all",
+        "exit_code": 0,
+        "contract_sha256": "<64 lowercase hex>",
+        "ca_bundle_sha256": "<64 lowercase hex>",
+        "sandbox_executable": "/usr/bin/bwrap",
+        "sandbox_sha256": "<64 lowercase hex>",
+        "stdout_sha256": "<64 lowercase hex>",
+        "stderr_sha256": "<64 lowercase hex>"
+      },
       "probes": [
         {
           "name": "direct-url-commit",
@@ -177,6 +218,9 @@ python tools/build_rc_manifest.py \
   --tribe /path/to/clean/tribe-bridge \
   --qualification qualification.json \
   --artifact-root /path/to/owner-controlled/artifacts \
+  --python daimon-matrix:3.11=/trusted/python/3.11/bin/python3.11 \
+  --python daimon-cluster:3.11=/trusted/python/3.11/bin/python3.11 \
+  --python tribe-bridge:3.10=/trusted/python/3.10/bin/python3.10 \
   --output daimon-v0.1.0rc1.json
 ```
 

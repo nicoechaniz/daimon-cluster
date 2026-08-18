@@ -44,6 +44,7 @@ def _manifest() -> dict:
                 ("git-bundle", "source-bundle", "daimon-matrix.bundle", "4"),
                 ("python-wheel", "wheel", "daimon-matrix.whl", "5"),
                 ("python-sdist", "sdist", "daimon-matrix.tar.gz", "6"),
+                ("wheelhouse", "wheelhouse", "matrix-wheelhouse.tar", "f"),
                 (
                     "install-evidence",
                     "install-evidence",
@@ -53,6 +54,20 @@ def _manifest() -> dict:
             )
         ],
         "daimon-cluster": [
+            {
+                "bytes": 2,
+                "kind": "matrix-git-bundle",
+                "name": "matrix-source-bundle",
+                "path": "cluster-matrix.bundle",
+                "sha256": "4" * 64,
+            },
+            {
+                "bytes": 2,
+                "kind": "wheelhouse",
+                "name": "wheelhouse",
+                "path": "cluster-wheelhouse.tar",
+                "sha256": "f" * 64,
+            },
             {
                 "bytes": 2,
                 "kind": "git-archive",
@@ -69,6 +84,13 @@ def _manifest() -> dict:
             },
         ],
         "tribe-bridge": [
+            {
+                "bytes": 3,
+                "kind": "wheelhouse",
+                "name": "wheelhouse",
+                "path": "tribe-wheelhouse.tar",
+                "sha256": "f" * 64,
+            },
             {
                 "bytes": 3,
                 "kind": "git-archive",
@@ -319,6 +341,28 @@ def test_preflight_is_bound_to_manifest_components_artifacts_and_backup() -> Non
     ][0]["evidence_ref"]["sha256"] = "0" * 64
     with pytest.raises(PhysicalPreflightError, match="rc_manifest_malformed"):
         build_preflight(_plan(receipt_lie), receipt_lie)
+
+
+@pytest.mark.parametrize(
+    ("component", "kind"),
+    [
+        ("daimon-matrix", "wheelhouse"),
+        ("daimon-cluster", "wheelhouse"),
+        ("daimon-cluster", "matrix-git-bundle"),
+        ("tribe-bridge", "wheelhouse"),
+    ],
+)
+def test_physical_preflight_requires_every_offline_replay_input(
+    component: str, kind: str
+) -> None:
+    manifest = _manifest()
+    manifest["qualification"]["artifacts"][component] = [
+        row
+        for row in manifest["qualification"]["artifacts"][component]
+        if row["kind"] != kind
+    ]
+    with pytest.raises(PhysicalPreflightError, match="rc_artifacts_incomplete"):
+        build_preflight(_plan(manifest), manifest)
 
 
 def test_cli_refuses_noncanonical_input_and_existing_output(

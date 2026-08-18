@@ -110,6 +110,17 @@ checks. Only the private `bin` is placed first on later steps' `PATH`; source
 and private paths, full-inventory hashes and executable hash are recorded
 without making hosted-cache metadata an acceptance exception.
 
+Ubuntu hosted runners can apply an AppArmor sysctl that lets bubblewrap create
+a user namespace but denies the loopback setup required by `--unshare-all`.
+After installing bubblewrap, this workflow may disable that restriction only
+when `RUNNER_ENVIRONMENT` identifies GitHub's disposable hosted runner. It then
+runs a fail-closed sandbox preflight with the qualifier's namespace and minimal
+mount shape, proves that the network namespace differs from the runner, has no
+route, and cannot see the runner home or `/run` socket paths. This is CI runner
+preparation, not a production-host instruction or a relaxation of the
+qualifier: the actual installation still runs network-disabled with
+`--unshare-all --clearenv`.
+
 The trust boundary is the local Linux kernel, bubblewrap binary, selected
 CPython binaries/prefixes, mounted system runtime bytes and CA bundle. Their
 relevant paths and hashes are captured in the replay transcript. This is

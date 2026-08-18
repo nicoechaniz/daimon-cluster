@@ -11,18 +11,30 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from tools.build_rc_manifest import ManifestError, _install_evidence
 from tools.qualify_offline import (
+    CANONICAL_SOURCE_DATE_EPOCH,
     QualificationError,
     _owner_file,
     _verified_plan,
     produce_evidence,
     replay_evidence,
 )
+
+
+def test_canonical_source_date_epoch_is_deterministic_and_zip_safe() -> None:
+    date_time = time.gmtime(int(CANONICAL_SOURCE_DATE_EPOCH))[:6]
+    assert date_time == (2000, 1, 1, 0, 0, 0)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr(zipfile.ZipInfo("metadata", date_time=date_time), b"")
+    assert output.getvalue().startswith(b"PK")
 
 
 def _git(repository: Path, *arguments: str) -> str:

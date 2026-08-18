@@ -85,7 +85,10 @@ descriptor, and runs with bubblewrap `--unshare-all --clearenv`. The sandbox
 mounts only the selected interpreter prefix, system runtime directories, the
 public CA bundle, private `/dev` and `/proc`, a tmpfs `/tmp`, and its disposable
 work directory. It has no host home or `/run`, and every subprocess has a
-bounded timeout. Interpreter paths are trusted operator inputs outside the
+bounded timeout. Build timestamps use the canonical deterministic ZIP-safe
+epoch `946684800` (2000-01-01 UTC); Unix epoch zero is forbidden because it is
+outside the ZIP date range and fails closed on Python 3.14. Interpreter paths
+are trusted operator inputs outside the
 qualification JSON. The selected prefix is mounted read-only at `/python`; the
 sandbox sets `LD_LIBRARY_PATH` to that exact trusted prefix's `/python/lib` so
 relocated CPython builds cannot fall back to an ambient system or original

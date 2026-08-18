@@ -37,6 +37,7 @@ PYTHON_VERSION: Final = re.compile(r"^3\.(?:[0-9]|1[0-9])$")
 ARTIFACT_NAME: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 MAX_MEMBERS: Final = 20_000
 MAX_MEMBER_BYTES: Final = 512 * 1024 * 1024
+CANONICAL_SOURCE_DATE_EPOCH: Final = "946684800"
 
 
 class QualificationError(RuntimeError):
@@ -656,7 +657,7 @@ def _run_version(verified: Mapping[str, Any], interpreter: Mapping[str, str]) ->
             "QUAL_SOURCE": "/work/source",
             "QUAL_TREE": str(verified["tree"]),
             "QUAL_WHEELHOUSE": "/work/inputs/" + snapshots[next(name for name, row in verified["artifacts"].items() if row["kind"] == "wheelhouse")].name,
-            "SOURCE_DATE_EPOCH": "0",
+            "SOURCE_DATE_EPOCH": CANONICAL_SOURCE_DATE_EPOCH,
             "TMPDIR": "/work/tmp",
             "TZ": "UTC",
         }

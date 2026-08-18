@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import signal
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -191,15 +192,7 @@ def _descriptor(value: bytes) -> int:
 def _stop_rebirth_host(
     process: subprocess.Popen[bytes], *, timeout_s: float = 10
 ) -> tuple[bytes, bytes]:
-    if process.poll() is None:
-        process.terminate()
-    try:
-        stdout, stderr = process.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        stdout, stderr = process.communicate(timeout=timeout_s)
-    rebirth_host.wait_rebirth_host_shutdown(process, timeout_s=timeout_s)
-    return stdout, stderr
+    return rebirth_host.stop_rebirth_host(process, timeout_s=timeout_s)
 
 
 def _rebirth_race_worker(
@@ -830,7 +823,109 @@ def test_monotonic_watchdog_kills_while_renew_round_trip_is_stuck():
     supervisor.thread.join(timeout=3)
 
 
-def test_committed_renew_response_loss_releases_after_runtime_stops(
+def test_graceful_stop_waits_for_inflight_renew_then_releases(
+    short_tmp_path, monkeypatch
+):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(state, installed["embodiment_id"], lease_ttl_s=3)
+    identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
+    client = rebirth_host._configured_admission_client(state, identity)
+    real_renew = client.renew
+    block_renew = threading.Event()
+    renew_started = threading.Event()
+    allow_renew = threading.Event()
+
+    def controlled_renew(*, ttl_s):
+        if not block_renew.is_set():
+            return real_renew(ttl_s=ttl_s)
+        renew_started.set()
+        assert allow_renew.wait(timeout=2)
+        return real_renew(ttl_s=ttl_s)
+
+    monkeypatch.setattr(client, "renew", controlled_renew)
+    process, _ready = rebirth_host.launch_rebirth_host(
+        state,
+        installed["embodiment_id"],
+        _descriptor(fixture["password"]),
+        admission_client=client,
+        admission_lease_ttl_s=3,
+    )
+    supervisor = rebirth_host._SUPERVISORS[process.pid]
+    block_renew.set()
+    assert renew_started.wait(timeout=2)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        stopped = executor.submit(rebirth_host.stop_rebirth_host, process, timeout_s=5)
+        deadline = time.monotonic() + 1
+        while not supervisor.shutdown_requested and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert supervisor.shutdown_requested is True
+        assert supervisor.shutdown_signal_sent is False
+        assert process.poll() is None
+        allow_renew.set()
+        _stdout, stderr = stopped.result(timeout=5)
+    assert process.returncode == 0, stderr
+    assert supervisor.shutdown_signal_sent is True
+    assert supervisor.termination_reason == "graceful-shutdown"
+    observer = rebirth_host._configured_admission_client(state, identity)
+    assert observer.position()["current"] is False
+
+
+def test_graceful_stop_drains_an_inflight_peer_request_and_releases(
+    short_tmp_path,
+):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(state, installed["embodiment_id"])
+    identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
+    process, _ready = rebirth_host.launch_rebirth_host(
+        state,
+        installed["embodiment_id"],
+        _descriptor(fixture["password"]),
+    )
+    supervisor = rebirth_host._SUPERVISORS[process.pid]
+    child_fds = Path(f"/proc/{process.pid}/fd")
+    baseline_fds = len(list(child_fds.iterdir()))
+    connection = socket.create_connection(("127.0.0.1", 20686), timeout=2)
+    try:
+        connection.sendall(
+            b"POST /dm-peer/v1 HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Content-Type: application/vnd.daimon.peer+jcs\r\n"
+            b"Content-Length: 1\r\n\r\n"
+        )
+        deadline = time.monotonic() + 2
+        while len(list(child_fds.iterdir())) <= baseline_fds and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(list(child_fds.iterdir())) > baseline_fds
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            stopped = executor.submit(
+                rebirth_host.stop_rebirth_host, process, timeout_s=10
+            )
+            deadline = time.monotonic() + 2
+            while not supervisor.shutdown_signal_sent and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert supervisor.shutdown_requested is True
+            assert supervisor.shutdown_signal_sent is True
+            # Complete the already accepted request while the daemon drains.
+            connection.sendall(b"x")
+            _stdout, stderr = stopped.result(timeout=10)
+    finally:
+        connection.close()
+        if process.poll() is None:
+            rebirth_host.stop_rebirth_host(process, timeout_s=10)
+    assert process.returncode == 0, stderr
+    assert supervisor.termination_reason == "graceful-shutdown"
+    observer = rebirth_host._configured_admission_client(state, identity)
+    assert observer.position()["current"] is False
+
+
+def test_stop_during_committed_renew_response_loss_fails_closed_and_releases(
     short_tmp_path, monkeypatch
 ):
     fixture, state, values = _install(
@@ -843,12 +938,14 @@ def test_committed_renew_response_loss_releases_after_runtime_stops(
     real_renew = client.renew
     renew_committed = threading.Event()
     inject_response_loss = threading.Event()
+    allow_response_loss = threading.Event()
 
     def renew_then_lose_response(*, ttl_s):
         receipt = real_renew(ttl_s=ttl_s)
         if not inject_response_loss.is_set():
             return receipt
         renew_committed.set()
+        assert allow_response_loss.wait(timeout=2)
         raise rebirth_host.AdmissionError("renew response lost")
 
     monkeypatch.setattr(client, "renew", renew_then_lose_response)
@@ -861,11 +958,19 @@ def test_committed_renew_response_loss_releases_after_runtime_stops(
     )
     supervisor = rebirth_host._SUPERVISORS[process.pid]
     inject_response_loss.set()
-    _stdout, stderr = process.communicate(timeout=5)
-    rebirth_host.wait_rebirth_host_shutdown(process, timeout_s=5)
-    assert renew_committed.is_set()
+    assert renew_committed.wait(timeout=2)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        stopped = executor.submit(rebirth_host.stop_rebirth_host, process, timeout_s=5)
+        deadline = time.monotonic() + 1
+        while not supervisor.shutdown_requested and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert supervisor.shutdown_requested is True
+        assert supervisor.shutdown_signal_sent is False
+        allow_response_loss.set()
+        _stdout, stderr = stopped.result(timeout=5)
     assert process.returncode == -signal.SIGKILL, stderr
     assert not supervisor.thread.is_alive()
+    assert supervisor.termination_reason == "admission-renew-failed"
     observer = rebirth_host._configured_admission_client(state, identity)
     deadline = time.monotonic() + 2
     while observer.position()["current"] is True and time.monotonic() < deadline:
@@ -1049,13 +1154,18 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
     installed = rebirth.install_rebirth_package(**values)
     _ensure_production_fences(state, installed["embodiment_id"])
 
-    processes = []
+    processes: list[tuple[str, subprocess.Popen[bytes]]] = []
     target_supervisor = None
     try:
         for embodiment_id, root in hosted_peers.items():
             processes.append(
-                _spawn_matrix_host(
-                    state, embodiment_id, fixture["peer_passwords"][embodiment_id]
+                (
+                    f"peer:{embodiment_id}",
+                    _spawn_matrix_host(
+                        state,
+                        embodiment_id,
+                        fixture["peer_passwords"][embodiment_id],
+                    ),
                 )
             )
             assert (
@@ -1068,7 +1178,7 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
             _descriptor(fixture["password"]),
         )
         target_supervisor = rebirth_host._SUPERVISORS[target_process.pid]
-        processes.append(target_process)
+        processes.append((f"target:{installed['embodiment_id']}", target_process))
         target_root = matrix_root(state, installed["embodiment_id"])
         target_client = _operator_client(target_root)
         target_weave_client = _operator_client(target_root, "weave")
@@ -1145,18 +1255,42 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
             == "pending"
         )
     finally:
-        for process in reversed(processes):
-            if process.poll() is None:
-                process.terminate()
         stop_failures = []
-        for process in reversed(processes):
-            _stdout, stderr = _stop_rebirth_host(process)
-            if process.returncode != 0:
-                stop_failures.append((process.pid, process.returncode, stderr))
+        stop_results = []
+        for role, process in reversed(processes):
+            try:
+                _stdout, stderr = _stop_rebirth_host(process)
+            except BaseException as exception:
+                stop_failures.append(
+                    {
+                        "role": role,
+                        "pid": process.pid,
+                        "returncode": process.poll(),
+                        "exception": repr(exception),
+                    }
+                )
+                continue
+            stop_results.append(
+                {
+                    "role": role,
+                    "pid": process.pid,
+                    "returncode": process.returncode,
+                    "stderr": stderr,
+                }
+            )
+            if process.returncode != 0 or b'"code":"stopped"' not in stderr:
+                stop_failures.append(stop_results[-1])
         if target_supervisor is not None:
             target_supervisor.thread.join(timeout=10)
             assert not target_supervisor.thread.is_alive()
+            assert target_supervisor.shutdown_requested is True
+            assert target_supervisor.shutdown_signal_sent is True
+            assert target_supervisor.termination_reason == "graceful-shutdown"
         assert stop_failures == []
+        assert {row["role"] for row in stop_results} == {
+            *(f"peer:{embodiment_id}" for embodiment_id in hosted_peers),
+            f"target:{installed['embodiment_id']}",
+        }
 
 
 @pytest.mark.parametrize(

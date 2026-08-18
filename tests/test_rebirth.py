@@ -906,7 +906,7 @@ def test_launcher_sigkill_cannot_leave_executing_orphan_beyond_lease(
             break
         try:
             executing = stat_path.read_text().split()[2] != "Z"
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             executing = False
         if not executing:
             break

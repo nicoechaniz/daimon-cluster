@@ -157,6 +157,25 @@ hashes of the qualifier's captured machine output, not free-form notes):
 The example abbreviates the exact input inventory, supported-Python rows and
 required probe list; a real artifact omitting them is rejected.
 
+For each component, create an owner-only canonical plan whose
+`artifacts` rows name the exact kind, absolute source path and SHA-256; whose
+`repository`, commit and tree identify the clean candidate; whose `python`
+rows contain the separately selected version/executable pairs; and whose
+`cluster_repository`/`producer_commit` identify the commit containing this
+tool. Cluster's plan additionally supplies the exact Matrix commit/tree as
+`matrix_dependency` and includes its `matrix-git-bundle`. Then produce the
+external artifact without overwriting an existing path:
+
+```bash
+python tools/qualify_offline.py \
+  --plan /owner-only/plans/daimon-matrix.json \
+  --output /owner-only/artifacts/daimon-matrix-install-evidence.json
+```
+
+Run the same closed command for Cluster and Tribe. Repeating it with identical
+inputs must produce identical bytes. The later freezer replay is mandatory;
+successful standalone production is not acceptance by itself.
+
 The relevant shape is:
 
 ```json

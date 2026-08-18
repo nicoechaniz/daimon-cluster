@@ -168,6 +168,48 @@ def _git(repository: Path, *arguments: str, binary: bool = False) -> str | bytes
     return completed.stdout
 
 
+def _cluster_runtime_requirements(
+    weave_requirements: str, runtime_requirements: str
+) -> list[str]:
+    matrix = re.compile(
+        r"daimon-matrix @ git\+https://github\.com/AlterMundi/"
+        r"daimon-matrix\.git@[0-9a-f]{40}"
+    )
+    pinned = re.compile(
+        r"[A-Za-z0-9][A-Za-z0-9._-]*==[A-Za-z0-9][A-Za-z0-9._+-]*"
+    )
+    weave: list[str] = []
+    matrix_count = 0
+    for raw_line in weave_requirements.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if matrix.fullmatch(line) is not None:
+            matrix_count += 1
+            continue
+        if pinned.fullmatch(line) is None or line in weave:
+            raise QualificationError("cluster_runtime_requirement_invalid")
+        weave.append(line)
+    if matrix_count != 1:
+        raise QualificationError("cluster_runtime_requirement_invalid")
+
+    declared: list[str] = []
+    include_count = 0
+    for raw_line in runtime_requirements.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line == "-r requirements-weave.txt":
+            include_count += 1
+            continue
+        if pinned.fullmatch(line) is None or line in declared:
+            raise QualificationError("cluster_runtime_requirement_invalid")
+        declared.append(line)
+    if include_count != 1 or weave != declared:
+        raise QualificationError("cluster_runtime_requirements_incomplete")
+    return weave
+
+
 def _isolated_git(*arguments: str) -> str:
     environment = {
         "GIT_CONFIG_GLOBAL": os.devnull,
@@ -501,13 +543,10 @@ def _verified_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
         if len(matches) != 1:
             raise QualificationError("cluster_matrix_pin_invalid")
         matrix_commit = matches[0]
-        for raw_line in raw_pin.splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("daimon-matrix @ git+"):
-                continue
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*==[A-Za-z0-9][A-Za-z0-9._+-]*", line) is None:
-                raise QualificationError("cluster_runtime_requirement_invalid")
-            runtime_requirements.append(line)
+        raw_runtime = _git(repository, "show", f"{commit}:requirements.txt")
+        if not isinstance(raw_runtime, str):
+            raise QualificationError("cluster_runtime_requirement_invalid")
+        runtime_requirements = _cluster_runtime_requirements(raw_pin, raw_runtime)
         if dependency["commit"] != matrix_commit or not isinstance(dependency["tree"], str) or SHA1.fullmatch(dependency["tree"]) is None:
             raise QualificationError("cluster_matrix_dependency_mismatch")
         heads = _isolated_git("bundle", "list-heads", os.fspath(matrix_bundle)).splitlines()

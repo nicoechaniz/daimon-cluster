@@ -21,6 +21,7 @@ from tools.build_rc_manifest import ManifestError, _install_evidence
 from tools.qualify_offline import (
     CANONICAL_SOURCE_DATE_EPOCH,
     QualificationError,
+    _cluster_runtime_requirements,
     _owner_file,
     _verified_plan,
     produce_evidence,
@@ -35,6 +36,34 @@ def test_canonical_source_date_epoch_is_deterministic_and_zip_safe() -> None:
     with zipfile.ZipFile(output, "w") as archive:
         archive.writestr(zipfile.ZipInfo("metadata", date_time=date_time), b"")
     assert output.getvalue().startswith(b"PK")
+
+
+def test_cluster_runtime_requirements_are_complete_and_ordered() -> None:
+    weave = (
+        "daimon-matrix @ git+https://github.com/AlterMundi/daimon-matrix.git@"
+        + "1" * 40
+        + "\nPyYAML==6.0.3\ncryptography==50.0.0\n"
+    )
+    runtime = (
+        "-r requirements-weave.txt\nPyYAML==6.0.3\ncryptography==50.0.0\n"
+    )
+    assert _cluster_runtime_requirements(weave, runtime) == [
+        "PyYAML==6.0.3",
+        "cryptography==50.0.0",
+    ]
+    with pytest.raises(
+        QualificationError, match="cluster_runtime_requirements_incomplete"
+    ):
+        _cluster_runtime_requirements(
+            weave, runtime.replace("PyYAML==6.0.3\n", "")
+        )
+    with pytest.raises(
+        QualificationError, match="cluster_runtime_requirement_invalid"
+    ):
+        _cluster_runtime_requirements(
+            weave.replace("https://github.com/AlterMundi", "https://example.invalid"),
+            runtime,
+        )
 
 
 def _git(repository: Path, *arguments: str) -> str:
@@ -231,6 +260,7 @@ def test_real_source_component_branches_run_in_bubblewrap(
                 "daimon-matrix @ git+https://github.com/AlterMundi/"
                 f"daimon-matrix.git@{matrix_commit}\n"
             ).encode(),
+            "requirements.txt": b"-r requirements-weave.txt\n",
             "tools/qualify_offline.py": qualifier_raw,
             "clusterctl/__init__.py": b"",
             "clusterctl/cli.py": b'import argparse\ndef main(): argparse.ArgumentParser().parse_args()\nif __name__ == "__main__": main()\n',

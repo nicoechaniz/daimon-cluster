@@ -98,13 +98,17 @@ supported version. There is no implicit current-interpreter fallback, and
 evidence cannot select an executable or command.
 
 The CI matrix does not weaken those rules for mutable hosted tool caches. Its
-pinned `setup-python` input is confined to `RUNNER_TOOL_CACHE/Python`, copied
-once through a no-follow descriptor into a new owner-only mode-0500 executable
-inside the exact interpreter prefix, and checked for stable source identity,
-byte hash, native format, version and `base_prefix`. Only that private copy is
-placed first on later steps' `PATH`; its original and prepared ownership, mode,
-link count, paths and hash are recorded without making the cache metadata an
-acceptance exception.
+pinned `setup-python` input is confined to `RUNNER_TOOL_CACHE/Python`. Before
+installation, CI inventories that complete prefix by no-follow descriptors,
+copies it into a mode-0700 owner-controlled tree beneath `RUNNER_TEMP`, removes
+all group/other write permission and rejects special files, changed source
+bytes, copied hardlinks or any symlink resolving outside the private prefix.
+The normalized source-before, source-after and private inventories must match
+exactly. The copied native executable must then report the expected version
+and the private `base_prefix` and pass the unchanged production owner/ancestry
+checks. Only the private `bin` is placed first on later steps' `PATH`; source
+and private paths, full-inventory hashes and executable hash are recorded
+without making hosted-cache metadata an acceptance exception.
 
 The trust boundary is the local Linux kernel, bubblewrap binary, selected
 CPython binaries/prefixes, mounted system runtime bytes and CA bundle. Their

@@ -35,6 +35,7 @@ jobs:
           import hashlib
           import json
           import os
+          import shutil
           import stat
           import subprocess
           import sys
@@ -42,37 +43,95 @@ jobs:
 
           from tools.qualify_offline import _owner_file
 
-          executable = Path(sys.executable).resolve(strict=True)
-          base_prefix = Path(sys.base_prefix).resolve(strict=True)
+          def normalised_mode(info):
+              return stat.S_IMODE(info.st_mode) & ~0o022
+
+          def digest_file(path):
+              descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+              digest = hashlib.sha256()
+              try:
+                  before = os.fstat(descriptor)
+                  while chunk := os.read(descriptor, 1024 * 1024):
+                      digest.update(chunk)
+                  after = os.fstat(descriptor)
+              finally:
+                  os.close(descriptor)
+              identity = (before.st_dev, before.st_ino, before.st_size, before.st_mode)
+              assert identity == (after.st_dev, after.st_ino, after.st_size, after.st_mode)
+              return digest.hexdigest(), before
+
+          def inventory(root, *, private):
+              rows = []
+
+              def visit(directory):
+                  for entry in sorted(os.scandir(directory), key=lambda item: item.name):
+                      path = Path(entry.path)
+                      relative = path.relative_to(root).as_posix()
+                      info = path.lstat()
+                      if private:
+                          assert info.st_uid == os.geteuid()
+                      if stat.S_ISLNK(info.st_mode):
+                          target = os.readlink(path)
+                          if private:
+                              resolved = path.resolve(strict=True)
+                              assert resolved.is_relative_to(root)
+                          rows.append(["symlink", relative, target])
+                      elif stat.S_ISDIR(info.st_mode):
+                          rows.append(["directory", relative, normalised_mode(info)])
+                          visit(path)
+                      elif stat.S_ISREG(info.st_mode):
+                          if private:
+                              assert info.st_nlink == 1
+                          digest, opened = digest_file(path)
+                          assert (info.st_dev, info.st_ino, info.st_size, info.st_mode) == (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mode)
+                          rows.append(["file", relative, normalised_mode(info), info.st_size, digest])
+                      else:
+                          raise AssertionError(f"unsupported prefix member: {relative}")
+
+              root_info = root.lstat()
+              assert stat.S_ISDIR(root_info.st_mode) and not stat.S_ISLNK(root_info.st_mode)
+              if private:
+                  assert root_info.st_uid == os.geteuid()
+              rows.append(["directory", ".", normalised_mode(root_info)])
+              visit(root)
+              return rows
+
+          def close_permissions(root):
+              for current, directories, files in os.walk(root, topdown=False, followlinks=False):
+                  for name in [*directories, *files]:
+                      path = Path(current) / name
+                      info = path.lstat()
+                      if stat.S_ISLNK(info.st_mode):
+                          continue
+                      assert stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
+                      path.chmod(normalised_mode(info))
+                  current_path = Path(current)
+                  current_path.chmod(normalised_mode(current_path.lstat()))
+
+          source_executable = Path(sys.executable).resolve(strict=True)
+          source_prefix = Path(sys.base_prefix).resolve(strict=True)
           tool_cache = Path(os.environ["RUNNER_TOOL_CACHE"]).resolve(strict=True)
-          before = executable.stat()
           assert f"{sys.version_info.major}.{sys.version_info.minor}" == os.environ["EXPECTED_PYTHON"]
-          assert executable.is_relative_to(tool_cache / "Python")
-          assert executable.parent == base_prefix / "bin"
-          assert stat.S_ISREG(before.st_mode)
-          trusted = base_prefix / "bin" / f".daimon-trusted-python-{os.environ['EXPECTED_PYTHON']}"
-          source = os.open(executable, os.O_RDONLY | os.O_NOFOLLOW)
-          target = os.open(trusted, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o500)
-          digest = hashlib.sha256()
-          try:
-              opened = os.fstat(source)
-              while chunk := os.read(source, 1024 * 1024):
-                  digest.update(chunk)
-                  offset = 0
-                  while offset < len(chunk):
-                      offset += os.write(target, chunk[offset:])
-              os.fchmod(target, 0o500)
-              os.fsync(target)
-              opened_after = os.fstat(source)
-          finally:
-              os.close(source)
-              os.close(target)
-          identity = (before.st_dev, before.st_ino, before.st_size, before.st_mode)
-          assert identity == (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mode)
-          assert identity == (opened_after.st_dev, opened_after.st_ino, opened_after.st_size, opened_after.st_mode)
+          assert source_prefix.is_relative_to(tool_cache / "Python")
+          relative_executable = source_executable.relative_to(source_prefix)
+          assert relative_executable.parent == Path("bin")
+          source_executable_digest, source_executable_info = digest_file(source_executable)
+          source_before = inventory(source_prefix, private=False)
+          source_inventory = hashlib.sha256(json.dumps(source_before, separators=(",", ":")).encode()).hexdigest()
+
+          private_parent = Path(os.environ["RUNNER_TEMP"]) / "daimon-private-python"
+          private_parent.mkdir(mode=0o700)
+          private_prefix = private_parent / "prefix"
+          shutil.copytree(source_prefix, private_prefix, symlinks=True)
+          close_permissions(private_prefix)
+
+          source_after = inventory(source_prefix, private=False)
+          private_inventory = inventory(private_prefix, private=True)
+          assert source_before == source_after == private_inventory
+          trusted = _owner_file(private_prefix / relative_executable, executable=True)
+          trusted_digest, _trusted_info = digest_file(trusted)
+          assert trusted_digest == source_executable_digest
           assert trusted.read_bytes()[:4] == b"\x7fELF"
-          assert hashlib.sha256(trusted.read_bytes()).hexdigest() == digest.hexdigest()
-          trusted = _owner_file(trusted, executable=True)
           probe = subprocess.run(
               [os.fspath(trusted), "-I", "-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}');print(sys.base_prefix)"],
               check=True,
@@ -82,21 +141,46 @@ jobs:
           ).stdout.splitlines()
           assert len(probe) == 2
           assert probe[0] == os.environ["EXPECTED_PYTHON"]
-          assert Path(probe[1]).resolve(strict=True) == base_prefix
-          after = trusted.stat()
-          shim = Path(os.environ["RUNNER_TEMP"]) / "daimon-trusted-python-bin"
-          shim.mkdir(mode=0o700)
-          (shim / "python").symlink_to(trusted)
+          assert Path(probe[1]).resolve(strict=True) == private_prefix
           with Path(os.environ["GITHUB_PATH"]).open("a", encoding="utf-8") as github_path:
-              github_path.write(os.fspath(shim) + "\n")
+              github_path.write(os.fspath(private_prefix / "bin") + "\n")
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as github_env:
+              github_env.write(f"LD_LIBRARY_PATH={private_prefix / 'lib'}\n")
+              github_env.write(f"PKG_CONFIG_PATH={private_prefix / 'lib/pkgconfig'}\n")
+              github_env.write(f"Python_ROOT_DIR={private_prefix}\n")
+              github_env.write(f"Python3_ROOT_DIR={private_prefix}\n")
+              github_env.write(f"pythonLocation={private_prefix}\n")
           print(json.dumps({
-              "base_prefix": os.fspath(base_prefix),
-              "source_executable": os.fspath(executable),
-              "executable": os.fspath(trusted),
-              "sha256": digest.hexdigest(),
-              "before": {"gid": before.st_gid, "mode": oct(stat.S_IMODE(before.st_mode)), "nlink": before.st_nlink, "uid": before.st_uid},
-              "after": {"gid": after.st_gid, "mode": oct(stat.S_IMODE(after.st_mode)), "nlink": after.st_nlink, "uid": after.st_uid},
+              "members": len(private_inventory),
+              "private_executable": os.fspath(trusted),
+              "private_executable_sha256": trusted_digest,
+              "private_inventory_sha256": hashlib.sha256(json.dumps(private_inventory, separators=(",", ":")).encode()).hexdigest(),
+              "private_prefix": os.fspath(private_prefix),
+              "source_executable": os.fspath(source_executable),
+              "source_executable_identity": {"gid": source_executable_info.st_gid, "mode": oct(stat.S_IMODE(source_executable_info.st_mode)), "nlink": source_executable_info.st_nlink, "size": source_executable_info.st_size, "uid": source_executable_info.st_uid},
+              "source_executable_sha256": source_executable_digest,
+              "source_inventory_sha256": source_inventory,
+              "source_prefix": os.fspath(source_prefix),
           }, sort_keys=True))
+          PY
+      - name: Verify the private interpreter is selected
+        env:
+          EXPECTED_PYTHON: ${{ matrix.python-version }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          from tools.qualify_offline import _owner_file
+
+          executable = Path(sys.executable).resolve(strict=True)
+          prefix = Path(sys.base_prefix).resolve(strict=True)
+          private_root = (Path(os.environ["RUNNER_TEMP"]) / "daimon-private-python").resolve(strict=True)
+          assert f"{sys.version_info.major}.{sys.version_info.minor}" == os.environ["EXPECTED_PYTHON"]
+          assert prefix.is_relative_to(private_root)
+          assert executable.parent == prefix / "bin"
+          assert _owner_file(executable, executable=True) == executable
           PY
       - name: Install the offline qualification sandbox
         run: |

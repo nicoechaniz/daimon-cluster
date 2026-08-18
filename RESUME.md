@@ -1,6 +1,6 @@
 # Daimon V0 release-candidate checkpoint
 
-Last reconciled: 2026-08-16.
+Last reconciled: 2026-08-18.
 
 This repository is not deployed from the candidate described here. No existing
 host, service, access path, real custody or production state is part of the
@@ -18,29 +18,33 @@ The goal began from these merged V0 baselines:
 - Tribe Bridge `187c61d881e6de830a029027144193645f2c7f62`, tree
   `84da16611be62581d9a049d9f567652c4cc4e61b`.
 
-The current Matrix dependency is merged on `main` at
+The qualified Matrix functional merge is
 `09414d6edd9586f539be8272c4979d0b36c86b87`, tree
-`d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`. Cluster pins that exact commit in
+`d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`. The merged Matrix closeout and
+exact installed pin is `bf5f7415f075af09442973144bc529f4c5ce7985`, tree
+`f38862427d5713b21ca9d0859a80ddbacfefa255`; it reconciles RC metadata and
+replaces an unreachable Hermes commit with a reachable commit having the same
+audited tree and contract bytes. Cluster pins that full commit in
 `requirements-weave.txt`, verifies `direct_url.json` at startup and has no
 unpinned runtime fallback.
 
-The current Cluster candidate functional boundary is
-`f03d9a471f5768bc89e6f70492829bf33ddfbc57`, tree
-`a4b225631ec551c7c52edf8bbc8b371ab74c7689`. It contains the reviewed shared
-admission/fencing, authenticated handoff and recovery/rebirth components plus
-the final V7 snapshot, preflight and qualification corrections. This exact
-successor still requires independent review before publication. Later
-documentation or exact-pin commits do not change those semantics; the generated
-RC manifest records the final repository head and tree.
+The current Cluster functional merge is
+`820e3792a227b1848681a3421b113e8822c8d08a`, tree
+`4f62eb4f6eff1dfafbd477339a86fa7d5e70a5d8` (PR #93). It contains the
+independently reviewed shared admission/fencing, authenticated handoff,
+recovery/rebirth, V7 snapshot, preflight and qualification corrections. Later
+documentation or exact-pin commits do not change those semantics; the
+generated RC manifest records the final repository head and tree.
 
-Tribe Bridge transitional work is qualified on exact PR head
-`418900a9d3732689d6a309336c467623637fe8d4`, tree
-`d5b50379b1d9abe781ef92d0a50390559eed17c1`; its content-addressed source
-boundary is `cd54865733c0b0200924dcd39213b7fcd7eb12ec`, tree
-`7052ca5672fb56a14b826382f468fb38e19c50f0`. The exact head passed independent
-review and supported-Python qualification, but PR #65 still requires its
-independent human approval and normal merge. Tribe is not deployed and is not
-Matrix intake or semantic-delivery authority.
+Tribe Bridge PR #65 is merged on `main` at
+`294e1194db6cd60d9349a2d43938475bbd1c8c20`, tree
+`bcba9989a38519df87ecbb6c87a33a2f9740b85d`. Its qualified material source on
+the rebased lineage is `8ce2c9d4c6b3e4e94108600d4170f169ced26303`, tree
+`0431882544ebd72bfbfbb343677b2557ea4fdbce`; reviewed head
+`e81c5da0b96d0ac29f7a3bdeacb1f0e7c860ec3c` has the same final tree as the
+merge. The candidate passed independent exact-head review, 148 tests with zero
+failures on Python 3.10–3.13, and protected CI. Tribe is not deployed and is
+not Matrix intake or semantic-delivery authority.
 
 ## What is automated and proven
 
@@ -67,8 +71,9 @@ Matrix intake or semantic-delivery authority.
 - V7 snapshots require the complete canonical twelve-profile table and exclude
   root, operator and host client material unconditionally. Incomplete,
   duplicated, relabelled or unsafe layouts fail before a destination exists.
-- The complete Cluster suite passes with ResourceWarning and unraisable-warning
-  failures enabled. The network-disabled recovery/rebirth container journey
+- The complete Cluster suite passes 636 tests with four intentional skips and
+  ResourceWarning and unraisable-warning failures enabled. The
+  network-disabled recovery/rebirth container journey
   and the independent encrypted backup/export/offline-restore journey pass.
 
 Current qualification evidence lives in
@@ -76,14 +81,16 @@ Current qualification evidence lives in
 inventory and incident documents are historical evidence; their hosts, hashes
 and test counts are not the current RC baseline.
 
-## Remaining automated work
+## Release-candidate acceptance protocol
 
-1. Merge the exact reviewed Cluster successor and obtain clean CI on `main`.
-2. Repin Tribe metadata to the final Matrix/Cluster merges, repeat its exact
-   review and obtain the independently approved normal PR merge.
-3. Run clean-install and supported-Python gates from the three exact final
-   commits, then generate the content-addressed manifest and wheelhouses.
-4. Keep Project/issues/PR receipts synchronized with the exact final hashes.
+The Cluster successor is accepted only through normal review and protected CI.
+After that merge, Tribe metadata records the resulting Matrix/Cluster heads;
+that metadata-only successor does not change the qualified Tribe semantics.
+The three resulting clean commits are installed on every supported Python by
+the versioned offline qualifier, whose evidence is replayed by the freezer.
+The external content-addressed manifest records those resulting heads and
+artifact hashes; it is intentionally produced after the repository commits and
+does not require a self-referential evidence commit.
 
 ## Human and external gates
 

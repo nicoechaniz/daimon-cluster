@@ -215,6 +215,72 @@ def _terminate_without_consuming_output(process: subprocess.Popen[bytes]) -> Non
     process.wait(timeout=2)
 
 
+def _supervisor_for(
+    process: subprocess.Popen[bytes],
+) -> _AdmissionSupervisor | None:
+    with _SUPERVISORS_LOCK:
+        supervisor = _SUPERVISORS.get(process.pid)
+        if supervisor is not None and supervisor.process is not process:
+            raise RebirthHostError("rebirth_host_shutdown_process_mismatch")
+        return supervisor
+
+
+def request_rebirth_host_shutdown(process: subprocess.Popen[bytes]) -> None:
+    """Request an admission-coordinated graceful runtime shutdown."""
+
+    if process.poll() is not None:
+        return
+    supervisor = _supervisor_for(process)
+    if supervisor is None:
+        process.terminate()
+        return
+    supervisor.request_shutdown()
+
+
+def stop_rebirth_host(
+    process: subprocess.Popen[bytes], *, timeout_s: float = 10.0
+) -> tuple[bytes, bytes]:
+    """Stop a runtime, drain its pipes and finish its admission release."""
+
+    if timeout_s <= 0 or timeout_s > 300:
+        raise RebirthHostError("rebirth_host_shutdown_argument_rejected")
+    supervisor = _supervisor_for(process)
+    request_rebirth_host_shutdown(process)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        if supervisor is not None:
+            supervisor.force_stop("graceful-shutdown-timeout")
+        elif process.poll() is None:
+            process.kill()
+        stdout, stderr = process.communicate(timeout=timeout_s)
+    wait_rebirth_host_shutdown(process, timeout_s=timeout_s)
+    return stdout, stderr
+
+
+def wait_rebirth_host_shutdown(
+    process: subprocess.Popen[bytes], *, timeout_s: float = 10.0
+) -> None:
+    """Wait until admission supervision has finished after a runtime exits.
+
+    Waiting only for the child process is not enough: the supervisor publishes
+    the final release after observing that exit.  Callers that immediately
+    restart an embodiment or remove its state need an explicit lifecycle
+    boundary instead of racing that bounded final authority exchange.
+    """
+
+    if timeout_s <= 0 or timeout_s > 300:
+        raise RebirthHostError("rebirth_host_shutdown_argument_rejected")
+    if process.poll() is None:
+        raise RebirthHostError("rebirth_host_shutdown_runtime_running")
+    supervisor = _supervisor_for(process)
+    if supervisor is None:
+        return
+    if not supervisor._finished.wait(timeout_s):
+        raise RebirthHostError("rebirth_host_shutdown_timeout")
+    supervisor.thread.join()
+
+
 def _owner_file(path: Path) -> Path:
     try:
         info = path.lstat()
@@ -328,6 +394,9 @@ class _AdmissionSupervisor:
         self._condition = threading.Condition()
         self._client_lock = threading.Lock()
         self._finished = threading.Event()
+        self._shutdown_requested = threading.Event()
+        self._shutdown_signal_sent = threading.Event()
+        self._termination_reason: str | None = None
         self.thread = threading.Thread(
             target=self._run,
             name=f"rebirth-admission-{process.pid}",
@@ -352,6 +421,34 @@ class _AdmissionSupervisor:
     def _hard_kill_at(self) -> float:
         return self._lease_deadline - self.ttl_s / 4
 
+    @property
+    def termination_reason(self) -> str | None:
+        with self._condition:
+            return self._termination_reason
+
+    @property
+    def shutdown_requested(self) -> bool:
+        return self._shutdown_requested.is_set()
+
+    @property
+    def shutdown_signal_sent(self) -> bool:
+        return self._shutdown_signal_sent.is_set()
+
+    def _record_termination(self, reason: str) -> None:
+        with self._condition:
+            if self._termination_reason is None:
+                self._termination_reason = reason
+            self._condition.notify_all()
+
+    def request_shutdown(self) -> None:
+        self._shutdown_requested.set()
+        with self._condition:
+            self._condition.notify_all()
+
+    def force_stop(self, reason: str) -> None:
+        self._record_termination(reason)
+        _terminate_without_consuming_output(self.process)
+
     def _watchdog(self) -> None:
         """Kill independently of renew I/O or either host's wall clock."""
 
@@ -361,7 +458,7 @@ class _AdmissionSupervisor:
                 if remaining > 0:
                     self._condition.wait(timeout=min(remaining, 0.25))
                     continue
-            _terminate_without_consuming_output(self.process)
+            self.force_stop("lease-hard-deadline")
             return
 
     def verify_current(self, *, minimum_remaining_s: float) -> dict[str, Any] | None:
@@ -382,6 +479,23 @@ class _AdmissionSupervisor:
     def _run(self) -> None:
         try:
             while self.process.poll() is None:
+                if (
+                    self._shutdown_requested.is_set()
+                    and not self._shutdown_signal_sent.is_set()
+                ):
+                    # The supervisor, not the caller, owns the transition from
+                    # admitted execution to shutdown.  If the remaining local
+                    # budget is narrow, first obtain a confirmed renewal; a
+                    # lost renewal response still fails closed below.
+                    with self._condition:
+                        renew_before_stop = (
+                            self._lease_deadline - time.monotonic()
+                            <= self.ttl_s / 2
+                        )
+                    if not renew_before_stop:
+                        self.process.terminate()
+                        self._shutdown_signal_sent.set()
+                        continue
                 with self._condition:
                     renew_at = self._lease_deadline - self.ttl_s * 3 / 4
                 interval = max(
@@ -400,7 +514,7 @@ class _AdmissionSupervisor:
                     with self._client_lock:
                         receipt = self.client.renew(ttl_s=self.ttl_s)
                 except AdmissionError:
-                    _terminate_without_consuming_output(self.process)
+                    self.force_stop("admission-renew-failed")
                     return
                 with self._condition:
                     self.receipt = receipt
@@ -409,7 +523,7 @@ class _AdmissionSupervisor:
                     # conservative deadline independent of wall-clock skew.
                     self._lease_deadline = renew_started + self.ttl_s
                     if time.monotonic() >= self._hard_kill_at():
-                        _terminate_without_consuming_output(self.process)
+                        self.force_stop("admission-renew-deadline")
                         return
                     self._condition.notify_all()
         finally:
@@ -425,6 +539,13 @@ class _AdmissionSupervisor:
                         self.client.release()
                 except AdmissionError:
                     pass
+            if self.termination_reason is None:
+                self._record_termination(
+                    "graceful-shutdown"
+                    if self._shutdown_signal_sent.is_set()
+                    and self.process.returncode == 0
+                    else "runtime-exited"
+                )
             self._finished.set()
             with self._condition:
                 self._condition.notify_all()
@@ -774,6 +895,11 @@ def launch_rebirth_host(
                 return process, {**result, "admission": supervisor.receipt}
             except BaseException:
                 _terminate(process)
+                # Do not return an error while the non-daemon admission
+                # supervisor still owns a final release exchange or the
+                # child's pipe descriptors.  This also keeps failed startup
+                # from contaminating the next launch in the same process.
+                wait_rebirth_host_shutdown(process)
                 raise
     except BaseException:
         try:
@@ -818,12 +944,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             os.close(args.ready_fd)
 
         def stop(_number: int, _frame: object) -> None:
-            if process.poll() is None:
-                process.terminate()
+            request_rebirth_host_shutdown(process)
 
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         return_code = process.wait()
+        wait_rebirth_host_shutdown(process)
         if return_code != 0:
             raise RebirthHostError("rebirth_host_process_failed")
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
@@ -842,4 +968,7 @@ __all__ = [
     "RebirthHostError",
     "launch_rebirth_host",
     "main",
+    "request_rebirth_host_shutdown",
+    "stop_rebirth_host",
+    "wait_rebirth_host_shutdown",
 ]

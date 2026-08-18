@@ -27,11 +27,13 @@ Cluster pins `daimon-matrix` by full Git commit in
 An unpinned wheel, editable checkout, wrong commit or schema downgrade fails
 closed. Cluster does not carry a fallback implementation.
 
-The V0 RC pin is the merged Matrix commit
-`09414d6edd9586f539be8272c4979d0b36c86b87`, consolidating the additive
-fresh-embodiment, distributed-custody, least-authority capability and recovery
-work. Historical deployed-pair commits are recorded in dated receipts, not in
-the current execution contract. The only production-shaped RC bundle is V7
+The V0 RC functional merge is
+`09414d6edd9586f539be8272c4979d0b36c86b87`; the exact merged installed pin is
+its reviewed RC closeout successor
+`bf5f7415f075af09442973144bc529f4c5ce7985`. The functional merge consolidates
+the fresh-embodiment, distributed-custody, least-authority capability and
+recovery work. Historical deployed-pair commits are recorded in dated
+receipts, not in the current execution contract. The only production-shaped RC bundle is V7
 and the only client configuration is V3; older undeployed formats fail closed
 at both Matrix and Cluster boundaries. The adapter also
 checks the closed DM-031 item/claim/result/inspection schemas, work kinds,

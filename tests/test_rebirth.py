@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import signal
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -55,6 +56,7 @@ class SimulatedCrash(BaseException):
 
 
 _DISPOSABLE_ADMISSION_SERVERS: list[tuple[AdmissionServer, threading.Thread]] = []
+_REAL_RUNTIME_LEASE_TTL_S = 10
 
 
 def _close_disposable_admission_servers() -> None:
@@ -68,7 +70,12 @@ def _close_disposable_admission_servers() -> None:
 atexit.register(_close_disposable_admission_servers)
 
 
-def _ensure_production_fences(state: Path, embodiment_id: str | None = None) -> None:
+def _ensure_production_fences(
+    state: Path,
+    embodiment_id: str | None = None,
+    *,
+    lease_ttl_s: int = rebirth_host.DEFAULT_LEASE_TTL_S,
+) -> None:
     state.mkdir(parents=True, mode=0o700, exist_ok=True)
     state.chmod(0o700)
     if not (state / "resource-fences.sqlite3").is_file():
@@ -126,7 +133,7 @@ def _ensure_production_fences(state: Path, embodiment_id: str | None = None) -> 
         activation_id=identity["activation_id"],
         credential_id=identity["credential_id"],
         manifest_hash=identity["manifest_hash"],
-        lease_ttl_s=3,
+        lease_ttl_s=lease_ttl_s,
     )
     now_ms = time.time_ns() // 1_000_000
     client.enroll(
@@ -155,7 +162,7 @@ def _ensure_production_fences(state: Path, embodiment_id: str | None = None) -> 
         "holder_key_id": holder.key_id,
         "authority_key_id": authority_signer.key_id,
         "authority_public_key": authority_signer.public_key,
-        "lease_ttl_s": 3,
+        "lease_ttl_s": lease_ttl_s,
     }
     config_path = state / "admission-client.json"
     config_path.write_text(
@@ -183,6 +190,12 @@ def _descriptor(value: bytes) -> int:
     return reader
 
 
+def _stop_rebirth_host(
+    process: subprocess.Popen[bytes], *, timeout_s: float = 10
+) -> tuple[bytes, bytes]:
+    return rebirth_host.stop_rebirth_host(process, timeout_s=timeout_s)
+
+
 def _rebirth_race_worker(
     state: str,
     embodiment_id: str,
@@ -194,15 +207,14 @@ def _rebirth_race_worker(
     gate.wait()
     try:
         process, ready = rebirth_host.launch_rebirth_host(
-            state, embodiment_id, _descriptor(password), admission_lease_ttl_s=3
+            state, embodiment_id, _descriptor(password)
         )
     except rebirth_host.RebirthHostError as exception:
         results.put(("refused", str(exception)))
         return
     results.put(("ready", ready["admission"]["fencing_token"]))
     stop.wait(timeout=10)
-    process.terminate()
-    process.communicate(timeout=10)
+    _stop_rebirth_host(process)
 
 
 def _launcher_kill_worker(
@@ -212,7 +224,7 @@ def _launcher_kill_worker(
         state,
         embodiment_id,
         _descriptor(password),
-        admission_lease_ttl_s=3,
+        admission_lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S,
     )
     results.put((process.pid, ready["admission"]["lease_expires_at_ms"]))
     while True:
@@ -624,8 +636,7 @@ def test_supervisor_starts_exact_authorized_incarnation_and_restarts(short_tmp_p
             fixture["password"] not in Path(f"/proc/{process.pid}/environ").read_bytes()
         )
     finally:
-        process.terminate()
-        _stdout, stderr = process.communicate(timeout=10)
+        _stdout, stderr = _stop_rebirth_host(process)
         assert process.returncode == 0, stderr
 
     client = rebirth_host._configured_admission_client(
@@ -655,8 +666,7 @@ def test_supervisor_starts_exact_authorized_incarnation_and_restarts(short_tmp_p
             == 1
         )
     finally:
-        restarted.terminate()
-        _stdout, stderr = restarted.communicate(timeout=10)
+        _stdout, stderr = _stop_rebirth_host(restarted)
         assert restarted.returncode == 0, stderr
 
 
@@ -686,16 +696,14 @@ def test_repeated_clean_restart_has_no_socket_or_admission_race(short_tmp_path):
             state,
             installed["embodiment_id"],
             _descriptor(fixture["password"]),
-            admission_lease_ttl_s=3,
         )
+        supervisor = rebirth_host._SUPERVISORS[process.pid]
         tokens.append(ready["admission"]["fencing_token"])
-        process.terminate()
-        _stdout, stderr = process.communicate(timeout=10)
+        _stdout, stderr = _stop_rebirth_host(process)
         assert process.returncode == 0, stderr
+        assert supervisor._finished.is_set()
+        assert not supervisor.thread.is_alive()
         observer = rebirth_host._configured_admission_client(state, identity)
-        deadline = time.monotonic() + 3
-        while observer.position()["current"] is True and time.monotonic() < deadline:
-            time.sleep(0.01)
         assert observer.position()["current"] is False
     assert tokens == sorted(tokens)
     assert len(set(tokens)) == len(tokens)
@@ -732,14 +740,23 @@ def test_shared_admission_allows_only_one_ready_across_state_dirs(short_tmp_path
         )
         for state in (state_a, state_b)
     ]
-    for worker in workers:
-        worker.start()
-    gate.wait()
-    outcomes = [results.get(timeout=20) for _ in workers]
-    stop.set()
-    for worker in workers:
-        worker.join(timeout=15)
-        assert worker.exitcode == 0
+    outcomes = []
+    try:
+        for worker in workers:
+            worker.start()
+        gate.wait()
+        outcomes = [results.get(timeout=30) for _ in workers]
+    finally:
+        stop.set()
+        for worker in workers:
+            worker.join(timeout=15)
+        for worker in workers:
+            if worker.is_alive():
+                worker.kill()
+                worker.join(timeout=5)
+        results.close()
+        results.join_thread()
+    assert all(worker.exitcode == 0 for worker in workers)
     assert sorted(outcome[0] for outcome in outcomes) == ["ready", "refused"]
     refusal = next(value for outcome, value in outcomes if outcome == "refused")
     assert refusal == "rebirth_host_admission_refused"
@@ -748,17 +765,21 @@ def test_shared_admission_allows_only_one_ready_across_state_dirs(short_tmp_path
 def test_supervisor_stops_runtime_before_lease_expiry_on_authority_loss(
     short_tmp_path, monkeypatch
 ):
+    lease_ttl_s = rebirth_host.DEFAULT_LEASE_TTL_S
     fixture, state, values = _install(
         short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
     )
     installed = rebirth.install_rebirth_package(**values)
-    _ensure_production_fences(state, installed["embodiment_id"])
+    _ensure_production_fences(
+        state, installed["embodiment_id"], lease_ttl_s=lease_ttl_s
+    )
     process, ready = rebirth_host.launch_rebirth_host(
         state,
         installed["embodiment_id"],
         _descriptor(fixture["password"]),
-        admission_lease_ttl_s=3,
+        admission_lease_ttl_s=lease_ttl_s,
     )
+    supervisor = rebirth_host._SUPERVISORS[process.pid]
     server, thread = _DISPOSABLE_ADMISSION_SERVERS.pop()
     started = time.monotonic()
     real_time_ns = time.time_ns
@@ -768,9 +789,11 @@ def test_supervisor_stops_runtime_before_lease_expiry_on_authority_loss(
     server.shutdown()
     server.server_close()
     thread.join(timeout=5)
-    _stdout, stderr = process.communicate(timeout=5)
+    _stdout, stderr = process.communicate(timeout=lease_ttl_s)
+    rebirth_host.wait_rebirth_host_shutdown(process, timeout_s=5)
     assert process.returncode == -signal.SIGKILL, stderr
-    assert time.monotonic() - started < 2.25
+    assert supervisor.termination_reason == "admission-renew-failed"
+    assert time.monotonic() - started < lease_ttl_s * 3 / 4
     assert ready["admission"]["lease_expires_at_ms"] > 0
 
 
@@ -806,8 +829,62 @@ def test_monotonic_watchdog_kills_while_renew_round_trip_is_stuck():
     supervisor.thread.join(timeout=3)
 
 
-def test_committed_renew_response_loss_releases_after_runtime_stops(
+def test_graceful_stop_waits_for_inflight_renew_then_releases(
     short_tmp_path, monkeypatch
+):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(
+        state,
+        installed["embodiment_id"],
+        lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S,
+    )
+    identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
+    client = rebirth_host._configured_admission_client(state, identity)
+    real_renew = client.renew
+    block_renew = threading.Event()
+    renew_started = threading.Event()
+    allow_renew = threading.Event()
+
+    def controlled_renew(*, ttl_s):
+        if not block_renew.is_set():
+            return real_renew(ttl_s=ttl_s)
+        renew_started.set()
+        assert allow_renew.wait(timeout=2)
+        return real_renew(ttl_s=ttl_s)
+
+    monkeypatch.setattr(client, "renew", controlled_renew)
+    process, _ready = rebirth_host.launch_rebirth_host(
+        state,
+        installed["embodiment_id"],
+        _descriptor(fixture["password"]),
+        admission_client=client,
+        admission_lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S,
+    )
+    supervisor = rebirth_host._SUPERVISORS[process.pid]
+    block_renew.set()
+    assert renew_started.wait(timeout=_REAL_RUNTIME_LEASE_TTL_S / 2)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        stopped = executor.submit(rebirth_host.stop_rebirth_host, process, timeout_s=5)
+        deadline = time.monotonic() + 1
+        while not supervisor.shutdown_requested and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert supervisor.shutdown_requested is True
+        assert supervisor.shutdown_signal_sent is False
+        assert process.poll() is None
+        allow_renew.set()
+        _stdout, stderr = stopped.result(timeout=5)
+    assert process.returncode == 0, stderr
+    assert supervisor.shutdown_signal_sent is True
+    assert supervisor.termination_reason == "graceful-shutdown"
+    observer = rebirth_host._configured_admission_client(state, identity)
+    assert observer.position()["current"] is False
+
+
+def test_graceful_stop_drains_an_inflight_peer_request_and_releases(
+    short_tmp_path,
 ):
     fixture, state, values = _install(
         short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
@@ -815,13 +892,74 @@ def test_committed_renew_response_loss_releases_after_runtime_stops(
     installed = rebirth.install_rebirth_package(**values)
     _ensure_production_fences(state, installed["embodiment_id"])
     identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
+    process, _ready = rebirth_host.launch_rebirth_host(
+        state,
+        installed["embodiment_id"],
+        _descriptor(fixture["password"]),
+    )
+    supervisor = rebirth_host._SUPERVISORS[process.pid]
+    child_fds = Path(f"/proc/{process.pid}/fd")
+    baseline_fds = len(list(child_fds.iterdir()))
+    connection = socket.create_connection(("127.0.0.1", 20686), timeout=2)
+    try:
+        connection.sendall(
+            b"POST /dm-peer/v1 HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Content-Type: application/vnd.daimon.peer+jcs\r\n"
+            b"Content-Length: 1\r\n\r\n"
+        )
+        deadline = time.monotonic() + 2
+        while len(list(child_fds.iterdir())) <= baseline_fds and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(list(child_fds.iterdir())) > baseline_fds
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            stopped = executor.submit(
+                rebirth_host.stop_rebirth_host, process, timeout_s=10
+            )
+            deadline = time.monotonic() + 2
+            while not supervisor.shutdown_signal_sent and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert supervisor.shutdown_requested is True
+            assert supervisor.shutdown_signal_sent is True
+            # Complete the already accepted request while the daemon drains.
+            connection.sendall(b"x")
+            _stdout, stderr = stopped.result(timeout=10)
+    finally:
+        connection.close()
+        if process.poll() is None:
+            rebirth_host.stop_rebirth_host(process, timeout_s=10)
+    assert process.returncode == 0, stderr
+    assert supervisor.termination_reason == "graceful-shutdown"
+    observer = rebirth_host._configured_admission_client(state, identity)
+    assert observer.position()["current"] is False
+
+
+def test_stop_during_committed_renew_response_loss_fails_closed_and_releases(
+    short_tmp_path, monkeypatch
+):
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(
+        state,
+        installed["embodiment_id"],
+        lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S,
+    )
+    identity = rebirth_host._installed_identity(state, installed["embodiment_id"])
     client = rebirth_host._configured_admission_client(state, identity)
     real_renew = client.renew
     renew_committed = threading.Event()
+    inject_response_loss = threading.Event()
+    allow_response_loss = threading.Event()
 
     def renew_then_lose_response(*, ttl_s):
-        real_renew(ttl_s=ttl_s)
+        receipt = real_renew(ttl_s=ttl_s)
+        if not inject_response_loss.is_set():
+            return receipt
         renew_committed.set()
+        assert allow_response_loss.wait(timeout=2)
         raise rebirth_host.AdmissionError("renew response lost")
 
     monkeypatch.setattr(client, "renew", renew_then_lose_response)
@@ -830,14 +968,23 @@ def test_committed_renew_response_loss_releases_after_runtime_stops(
         installed["embodiment_id"],
         _descriptor(fixture["password"]),
         admission_client=client,
-        admission_lease_ttl_s=3,
+        admission_lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S,
     )
     supervisor = rebirth_host._SUPERVISORS[process.pid]
-    _stdout, stderr = process.communicate(timeout=5)
-    supervisor.thread.join(timeout=2)
-    assert renew_committed.is_set()
+    inject_response_loss.set()
+    assert renew_committed.wait(timeout=_REAL_RUNTIME_LEASE_TTL_S / 2)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        stopped = executor.submit(rebirth_host.stop_rebirth_host, process, timeout_s=5)
+        deadline = time.monotonic() + 1
+        while not supervisor.shutdown_requested and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert supervisor.shutdown_requested is True
+        assert supervisor.shutdown_signal_sent is False
+        allow_response_loss.set()
+        _stdout, stderr = stopped.result(timeout=5)
     assert process.returncode == -signal.SIGKILL, stderr
     assert not supervisor.thread.is_alive()
+    assert supervisor.termination_reason == "admission-renew-failed"
     observer = rebirth_host._configured_admission_client(state, identity)
     deadline = time.monotonic() + 2
     while observer.position()["current"] is True and time.monotonic() < deadline:
@@ -852,7 +999,11 @@ def test_launcher_sigkill_cannot_leave_executing_orphan_beyond_lease(
         short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
     )
     installed = rebirth.install_rebirth_package(**values)
-    _ensure_production_fences(state, installed["embodiment_id"])
+    _ensure_production_fences(
+        state,
+        installed["embodiment_id"],
+        lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S,
+    )
     context = multiprocessing.get_context("spawn")
     results = context.Queue()
     launcher = context.Process(
@@ -869,7 +1020,7 @@ def test_launcher_sigkill_cannot_leave_executing_orphan_beyond_lease(
     os.kill(launcher.pid, signal.SIGKILL)
     launcher.join(timeout=5)
     assert launcher.exitcode == -signal.SIGKILL
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + _REAL_RUNTIME_LEASE_TTL_S / 2
     executing = True
     while time.monotonic() < deadline:
         stat_path = Path(f"/proc/{child_pid}/stat")
@@ -878,7 +1029,7 @@ def test_launcher_sigkill_cannot_leave_executing_orphan_beyond_lease(
             break
         try:
             executing = stat_path.read_text().split()[2] != "Z"
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             executing = False
         if not executing:
             break
@@ -990,8 +1141,7 @@ def test_failed_password_resumes_same_admitted_incarnation(short_tmp_path):
         assert result["state"] == "running-ready"
         assert OperationJournal(state).open_operations() == []
     finally:
-        process.terminate()
-        _stdout, stderr = process.communicate(timeout=10)
+        _stdout, stderr = _stop_rebirth_host(process)
         assert process.returncode == 0, stderr
 
 
@@ -1022,13 +1172,18 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
     installed = rebirth.install_rebirth_package(**values)
     _ensure_production_fences(state, installed["embodiment_id"])
 
-    processes = []
+    processes: list[tuple[str, subprocess.Popen[bytes]]] = []
     target_supervisor = None
     try:
         for embodiment_id, root in hosted_peers.items():
             processes.append(
-                _spawn_matrix_host(
-                    state, embodiment_id, fixture["peer_passwords"][embodiment_id]
+                (
+                    f"peer:{embodiment_id}",
+                    _spawn_matrix_host(
+                        state,
+                        embodiment_id,
+                        fixture["peer_passwords"][embodiment_id],
+                    ),
                 )
             )
             assert (
@@ -1041,7 +1196,7 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
             _descriptor(fixture["password"]),
         )
         target_supervisor = rebirth_host._SUPERVISORS[target_process.pid]
-        processes.append(target_process)
+        processes.append((f"target:{installed['embodiment_id']}", target_process))
         target_root = matrix_root(state, installed["embodiment_id"])
         target_client = _operator_client(target_root)
         target_weave_client = _operator_client(target_root, "weave")
@@ -1118,14 +1273,42 @@ def test_three_processes_exchange_new_origin_events_without_implicit_adoption(
             == "pending"
         )
     finally:
-        for process in reversed(processes):
-            process.terminate()
-        for process in reversed(processes):
-            _stdout, stderr = process.communicate(timeout=10)
-            assert process.returncode == 0, stderr
+        stop_failures = []
+        stop_results = []
+        for role, process in reversed(processes):
+            try:
+                _stdout, stderr = _stop_rebirth_host(process)
+            except BaseException as exception:
+                stop_failures.append(
+                    {
+                        "role": role,
+                        "pid": process.pid,
+                        "returncode": process.poll(),
+                        "exception": repr(exception),
+                    }
+                )
+                continue
+            stop_results.append(
+                {
+                    "role": role,
+                    "pid": process.pid,
+                    "returncode": process.returncode,
+                    "stderr": stderr,
+                }
+            )
+            if process.returncode != 0 or b'"code":"stopped"' not in stderr:
+                stop_failures.append(stop_results[-1])
         if target_supervisor is not None:
-            target_supervisor.thread.join(timeout=2)
+            target_supervisor.thread.join(timeout=10)
             assert not target_supervisor.thread.is_alive()
+            assert target_supervisor.shutdown_requested is True
+            assert target_supervisor.shutdown_signal_sent is True
+            assert target_supervisor.termination_reason == "graceful-shutdown"
+        assert stop_failures == []
+        assert {row["role"] for row in stop_results} == {
+            *(f"peer:{embodiment_id}" for embodiment_id in hosted_peers),
+            f"target:{installed['embodiment_id']}",
+        }
 
 
 @pytest.mark.parametrize(
@@ -1296,8 +1479,7 @@ def test_peer_rollout_waits_for_authenticated_restarted_daemon(short_tmp_path):
             == 1
         )
     finally:
-        process.terminate()
-        _stdout, stderr = process.communicate(timeout=10)
+        _stdout, stderr = _stop_rebirth_host(process)
         assert process.returncode == 0, stderr
 
 
@@ -1375,6 +1557,5 @@ def test_distributed_target_cannot_start_before_exact_all_peer_admission(
             ]
         )
     finally:
-        process.terminate()
-        _stdout, stderr = process.communicate(timeout=10)
+        _stdout, stderr = _stop_rebirth_host(process)
         assert process.returncode == 0, stderr

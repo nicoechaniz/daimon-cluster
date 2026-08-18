@@ -29,6 +29,7 @@ from clusterctl.rebirth_host import (
     ADMISSION_CLIENT_SCHEMA,
     _installed_identity,
     launch_rebirth_host,
+    stop_rebirth_host,
 )
 from clusterctl.recovery_rebirth import export_recovery_snapshot
 
@@ -295,8 +296,7 @@ def verify_target(arguments: argparse.Namespace) -> dict:
         if started["state"] != "running-ready":
             raise RuntimeError("recovered_runtime_not_ready")
     finally:
-        process.terminate()
-        _stdout, stderr = process.communicate(timeout=10)
+        _stdout, stderr = stop_rebirth_host(process)
         admission_server.shutdown()
         admission_server.server_close()
         admission_thread.join(timeout=5)

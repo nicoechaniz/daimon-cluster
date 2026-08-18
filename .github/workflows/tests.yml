@@ -27,6 +27,227 @@ jobs:
             requirements-weave.txt
             requirements-dev.txt
             constraints.txt
+      - name: Harden and record the trusted qualification interpreter
+        env:
+          EXPECTED_PYTHON: ${{ matrix.python-version }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import shutil
+          import stat
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          from tools.qualify_offline import _owner_file
+
+          def normalised_mode(info):
+              return stat.S_IMODE(info.st_mode) & ~0o022
+
+          def digest_file(path):
+              descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+              digest = hashlib.sha256()
+              try:
+                  before = os.fstat(descriptor)
+                  while chunk := os.read(descriptor, 1024 * 1024):
+                      digest.update(chunk)
+                  after = os.fstat(descriptor)
+              finally:
+                  os.close(descriptor)
+              identity = (before.st_dev, before.st_ino, before.st_size, before.st_mode)
+              assert identity == (after.st_dev, after.st_ino, after.st_size, after.st_mode)
+              return digest.hexdigest(), before
+
+          def inventory(root, *, private):
+              rows = []
+
+              def visit(directory):
+                  for entry in sorted(os.scandir(directory), key=lambda item: item.name):
+                      path = Path(entry.path)
+                      relative = path.relative_to(root).as_posix()
+                      info = path.lstat()
+                      if private:
+                          assert info.st_uid == os.geteuid()
+                          if not stat.S_ISLNK(info.st_mode):
+                              assert stat.S_IMODE(info.st_mode) & 0o022 == 0
+                      if stat.S_ISLNK(info.st_mode):
+                          target = os.readlink(path)
+                          if private:
+                              resolved = path.resolve(strict=True)
+                              assert resolved.is_relative_to(root)
+                          rows.append(["symlink", relative, target])
+                      elif stat.S_ISDIR(info.st_mode):
+                          rows.append(["directory", relative, normalised_mode(info)])
+                          visit(path)
+                      elif stat.S_ISREG(info.st_mode):
+                          if private:
+                              assert info.st_nlink == 1
+                          digest, opened = digest_file(path)
+                          assert (info.st_dev, info.st_ino, info.st_size, info.st_mode) == (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mode)
+                          rows.append(["file", relative, normalised_mode(info), info.st_size, digest])
+                      else:
+                          raise AssertionError(f"unsupported prefix member: {relative}")
+
+              root_info = root.lstat()
+              assert stat.S_ISDIR(root_info.st_mode) and not stat.S_ISLNK(root_info.st_mode)
+              if private:
+                  assert root_info.st_uid == os.geteuid()
+                  assert stat.S_IMODE(root_info.st_mode) & 0o022 == 0
+              rows.append(["directory", ".", normalised_mode(root_info)])
+              visit(root)
+              return rows
+
+          def close_permissions(root):
+              for current, directories, files in os.walk(root, topdown=False, followlinks=False):
+                  for name in [*directories, *files]:
+                      path = Path(current) / name
+                      info = path.lstat()
+                      if stat.S_ISLNK(info.st_mode):
+                          continue
+                      assert stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
+                      path.chmod(normalised_mode(info))
+                  current_path = Path(current)
+                  current_path.chmod(normalised_mode(current_path.lstat()))
+
+          source_executable = Path(sys.executable).resolve(strict=True)
+          source_prefix = Path(sys.base_prefix).resolve(strict=True)
+          tool_cache = Path(os.environ["RUNNER_TOOL_CACHE"]).resolve(strict=True)
+          assert f"{sys.version_info.major}.{sys.version_info.minor}" == os.environ["EXPECTED_PYTHON"]
+          assert source_prefix.is_relative_to(tool_cache / "Python")
+          relative_executable = source_executable.relative_to(source_prefix)
+          assert relative_executable.parent == Path("bin")
+          source_executable_digest, source_executable_info = digest_file(source_executable)
+          source_before = inventory(source_prefix, private=False)
+          source_inventory = hashlib.sha256(json.dumps(source_before, separators=(",", ":")).encode()).hexdigest()
+
+          private_parent = Path(os.environ["RUNNER_TEMP"]) / "daimon-private-python"
+          private_parent.mkdir(mode=0o700)
+          private_prefix = private_parent / "prefix"
+          shutil.copytree(source_prefix, private_prefix, symlinks=True)
+          close_permissions(private_prefix)
+
+          source_after = inventory(source_prefix, private=False)
+          private_inventory = inventory(private_prefix, private=True)
+          assert source_before == source_after == private_inventory
+          trusted = _owner_file(private_prefix / relative_executable, executable=True)
+          trusted_digest, _trusted_info = digest_file(trusted)
+          assert trusted_digest == source_executable_digest
+          assert trusted.read_bytes()[:4] == b"\x7fELF"
+          probe = subprocess.run(
+              [os.fspath(trusted), "-I", "-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}');print(sys.base_prefix)"],
+              check=True,
+              capture_output=True,
+              env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+              text=True,
+          ).stdout.splitlines()
+          assert len(probe) == 2
+          assert probe[0] == os.environ["EXPECTED_PYTHON"]
+          assert Path(probe[1]).resolve(strict=True) == private_prefix
+          with Path(os.environ["GITHUB_PATH"]).open("a", encoding="utf-8") as github_path:
+              github_path.write(os.fspath(private_prefix / "bin") + "\n")
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as github_env:
+              github_env.write(f"LD_LIBRARY_PATH={private_prefix / 'lib'}\n")
+              github_env.write(f"PKG_CONFIG_PATH={private_prefix / 'lib/pkgconfig'}\n")
+              github_env.write(f"Python_ROOT_DIR={private_prefix}\n")
+              github_env.write(f"Python3_ROOT_DIR={private_prefix}\n")
+              github_env.write(f"pythonLocation={private_prefix}\n")
+          print(json.dumps({
+              "members": len(private_inventory),
+              "private_executable": os.fspath(trusted),
+              "private_executable_sha256": trusted_digest,
+              "private_inventory_sha256": hashlib.sha256(json.dumps(private_inventory, separators=(",", ":")).encode()).hexdigest(),
+              "private_prefix": os.fspath(private_prefix),
+              "source_executable": os.fspath(source_executable),
+              "source_executable_identity": {"gid": source_executable_info.st_gid, "mode": oct(stat.S_IMODE(source_executable_info.st_mode)), "nlink": source_executable_info.st_nlink, "size": source_executable_info.st_size, "uid": source_executable_info.st_uid},
+              "source_executable_sha256": source_executable_digest,
+              "source_inventory_sha256": source_inventory,
+              "source_prefix": os.fspath(source_prefix),
+          }, sort_keys=True))
+          PY
+      - name: Verify the private interpreter is selected
+        env:
+          EXPECTED_PYTHON: ${{ matrix.python-version }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          from tools.qualify_offline import _owner_file
+
+          executable = Path(sys.executable).resolve(strict=True)
+          prefix = Path(sys.base_prefix).resolve(strict=True)
+          private_root = (Path(os.environ["RUNNER_TEMP"]) / "daimon-private-python").resolve(strict=True)
+          assert f"{sys.version_info.major}.{sys.version_info.minor}" == os.environ["EXPECTED_PYTHON"]
+          assert prefix.is_relative_to(private_root)
+          assert executable.parent == prefix / "bin"
+          assert _owner_file(executable, executable=True) == executable
+          PY
+      - name: Install the offline qualification sandbox
+        run: |
+          set -eu
+          if ! compgen -G '/var/lib/apt/lists/*_Packages*' >/dev/null; then
+            printf 'hosted runner apt package lists are missing; refusing an unbounded refresh\n' >&2
+            exit 1
+          fi
+          sudo -n /usr/bin/timeout --kill-after=5s 120s \
+            /usr/bin/apt-get install \
+            --yes \
+            --no-install-recommends \
+            -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=15 \
+            -o Acquire::https::Timeout=15 \
+            -o Dpkg::Lock::Timeout=30 \
+            -o Dpkg::Use-Pty=0 \
+            bubblewrap
+          test "$(dpkg-query -W -f='${Status}' bubblewrap)" = 'install ok installed'
+          test -x /usr/bin/bwrap
+      - name: Prove the disposable runner supports the qualification sandbox
+        run: |
+          set -eu
+          restriction=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if test -e "$restriction"; then
+            test "${RUNNER_ENVIRONMENT:-}" = github-hosted
+            before=$(cat "$restriction")
+            if test "$before" != 0; then
+              sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
+            test "$(cat "$restriction")" = 0
+            printf 'CI-only user-namespace restriction: %s -> %s\n' \
+              "$before" "$(cat "$restriction")"
+          fi
+          host_net_namespace=$(readlink /proc/self/ns/net)
+          private_prefix=${pythonLocation:?}
+          private_python=$(python -I -c 'import os,sys; print(os.path.basename(sys.executable))')
+          preflight_root=$(mktemp -d "$RUNNER_TEMP/daimon-bwrap-preflight.XXXXXX")
+          chmod 700 "$preflight_root"
+          trap 'rm -rf "$preflight_root"' EXIT
+          /usr/bin/bwrap \
+            --die-with-parent \
+            --unshare-all \
+            --new-session \
+            --clearenv \
+            --ro-bind /usr /usr \
+            --ro-bind /bin /bin \
+            --ro-bind /lib /lib \
+            --ro-bind /lib64 /lib64 \
+            --ro-bind /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt \
+            --tmpfs /tmp \
+            --dev /dev \
+            --proc /proc \
+            --ro-bind "$private_prefix" /python \
+            --dir /work \
+            --bind "$preflight_root" /work \
+            --setenv PATH /usr/bin:/bin \
+            --setenv HOME /work/home \
+            --setenv TMPDIR /work/tmp \
+            --setenv LD_LIBRARY_PATH /python/lib \
+            --setenv PRIVATE_PYTHON "$private_python" \
+            --setenv HOST_NET_NAMESPACE "$host_net_namespace" \
+            /bin/bash -ceu \
+              'test "$(readlink /proc/self/ns/net)" != "$HOST_NET_NAMESPACE"; test "$(wc -l < /proc/net/route)" -eq 1; test ! -e /home/runner; test ! -e /run/docker.sock; mkdir -m 700 "$HOME" "$TMPDIR"; test "$("/python/bin/$PRIVATE_PYTHON" -I -c "import sys; print(sys.base_prefix)")" = /python; "/python/bin/$PRIVATE_PYTHON" -m venv --copies /work/venv; test "$(/work/venv/bin/python -I -c "import sys; print(sys.base_prefix)")" = /python'
       - run: python -m pip install -c constraints.txt -r requirements-dev.txt
       - name: Verify exact Matrix source pin
         run: |
@@ -97,11 +318,13 @@ jobs:
           tests/test_transfer.py
           tests/test_volume_relocation.py
           tests/test_human_approvals.py
+          tests/test_ci_workflow.py
           tests/test_physical_preflight.py
           tests/test_rc_manifest.py
           scripts/h3-volume-drill.py
           tools/build_physical_preflight.py
           tools/build_rc_manifest.py
+          tools/qualify_offline.py
           tools/check_rc_types.py
       - name: Type-check the Matrix, fence and mutation-journal boundaries
         run: python tools/check_rc_types.py
@@ -145,7 +368,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: AlterMundi/daimon-matrix
-          ref: 09414d6edd9586f539be8272c4979d0b36c86b87
+          ref: bf5f7415f075af09442973144bc529f4c5ce7985
           path: matrix-source
           fetch-depth: 0
           persist-credentials: false
@@ -161,7 +384,7 @@ jobs:
           done
           docker version
           test "$(git -C matrix-source rev-parse HEAD)" = \
-            09414d6edd9586f539be8272c4979d0b36c86b87
+            bf5f7415f075af09442973144bc529f4c5ce7985
       - name: Prove isolated recovery roles and read-only snapshot restore
         env:
           DAIMON_RUN_DOCKER_RECOVERY_TESTS: "1"

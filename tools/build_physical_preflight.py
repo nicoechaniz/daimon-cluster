@@ -19,6 +19,47 @@ _HEX: Final = re.compile(r"^[0-9a-f]{40}$")
 _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 _HOST_REF: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _COMPONENTS: Final = frozenset({"daimon-matrix", "daimon-cluster", "tribe-bridge"})
+_ARTIFACT_KINDS: Final = {
+    "daimon-matrix": frozenset(
+        {
+            "git-bundle",
+            "install-evidence",
+            "python-sdist",
+            "python-wheel",
+            "runtime-lock",
+            "wheelhouse",
+        }
+    ),
+    "daimon-cluster": frozenset(
+        {
+            "git-archive",
+            "install-evidence",
+            "matrix-git-bundle",
+            "runtime-lock",
+            "wheelhouse",
+        }
+    ),
+    "tribe-bridge": frozenset(
+        {"git-archive", "install-evidence", "runtime-lock", "wheelhouse"}
+    ),
+}
+_REQUIRED_ARTIFACT_KINDS: Final = {
+    "daimon-matrix": frozenset(
+        {
+            "git-bundle",
+            "install-evidence",
+            "python-sdist",
+            "python-wheel",
+            "wheelhouse",
+        }
+    ),
+    "daimon-cluster": frozenset(
+        {"git-archive", "install-evidence", "matrix-git-bundle", "wheelhouse"}
+    ),
+    "tribe-bridge": frozenset(
+        {"git-archive", "install-evidence", "wheelhouse"}
+    ),
+}
 _HOST_ROLES: Final = frozenset({"source", "target", "backup"})
 _SHELLS: Final = frozenset(
     {"ash", "bash", "csh", "dash", "fish", "ksh", "sh", "zsh"}
@@ -43,6 +84,8 @@ _STAGE_ROLES: Final = (
     "source",
 )
 _RC_SCHEMA: Final = "daimon-release-candidate/v1"
+_QUALIFICATION_SCHEMA: Final = "daimon-release-qualification/v2"
+_ARTIFACT_RECEIPT_SCHEMA: Final = "daimon-artifact-qualification/v1"
 _MAX_DOCUMENT = 1024 * 1024
 
 
@@ -117,23 +160,55 @@ def _release_manifest(value: Any) -> tuple[dict[str, dict[str, str]], list[dict[
         ):
             raise PhysicalPreflightError("physical_rc_manifest_malformed")
         component_refs[name] = {"commit": commit, "tree": tree}
-    qualification = manifest["qualification"]
-    if not isinstance(qualification, Mapping):
+    qualification = _closed(
+        manifest["qualification"],
+        {
+            "artifact_receipts",
+            "artifacts",
+            "evidence",
+            "human_gates",
+            "limitations",
+            "release",
+            "schema",
+            "supported_python",
+            "tests",
+        },
+        "physical_rc_manifest_malformed",
+    )
+    if qualification["schema"] != _QUALIFICATION_SCHEMA:
         raise PhysicalPreflightError("physical_rc_manifest_malformed")
     artifact_map = _closed(
-        qualification.get("artifacts"),
+        qualification["artifacts"],
+        set(_COMPONENTS),
+        "physical_rc_manifest_malformed",
+    )
+    supported = _closed(
+        qualification["supported_python"],
+        set(_COMPONENTS),
+        "physical_rc_manifest_malformed",
+    )
+    evidence = _closed(
+        qualification["evidence"],
+        set(_COMPONENTS),
+        "physical_rc_manifest_malformed",
+    )
+    receipts = _closed(
+        qualification["artifact_receipts"],
         set(_COMPONENTS),
         "physical_rc_manifest_malformed",
     )
     artifact_refs: list[dict[str, str]] = []
+    artifact_rows: dict[str, dict[str, Mapping[str, Any]]] = {}
     for component in sorted(_COMPONENTS):
         rows = artifact_map[component]
         if not isinstance(rows, list) or not rows:
             raise PhysicalPreflightError("physical_rc_artifacts_incomplete")
+        artifact_rows[component] = {}
+        kinds: set[str] = set()
         for value_row in rows:
             row = _closed(
                 value_row,
-                {"bytes", "name", "path", "sha256"},
+                {"bytes", "kind", "name", "path", "sha256"},
                 "physical_rc_manifest_malformed",
             )
             if (
@@ -141,6 +216,9 @@ def _release_manifest(value: Any) -> tuple[dict[str, dict[str, str]], list[dict[
                 or not row["name"]
                 or not isinstance(row["path"], str)
                 or not row["path"]
+                or not isinstance(row["kind"], str)
+                or row["kind"] not in _ARTIFACT_KINDS[component]
+                or row["kind"] in kinds
                 or not isinstance(row["bytes"], int)
                 or isinstance(row["bytes"], bool)
                 or row["bytes"] <= 0
@@ -151,6 +229,117 @@ def _release_manifest(value: Any) -> tuple[dict[str, dict[str, str]], list[dict[
             artifact_refs.append(
                 {"name": f"{component}:{row['name']}", "sha256": row["sha256"]}
             )
+            artifact_rows[component][row["name"]] = row
+            kinds.add(row["kind"])
+        if not _REQUIRED_ARTIFACT_KINDS[component].issubset(kinds):
+            raise PhysicalPreflightError("physical_rc_artifacts_incomplete")
+
+        versions = supported[component]
+        if (
+            not isinstance(versions, list)
+            or not versions
+            or any(not isinstance(version, str) or not version for version in versions)
+            or len(set(versions)) != len(versions)
+        ):
+            raise PhysicalPreflightError("physical_rc_manifest_malformed")
+        evidence_rows = evidence[component]
+        if not isinstance(evidence_rows, list) or not evidence_rows:
+            raise PhysicalPreflightError("physical_rc_manifest_malformed")
+        observed_evidence: set[str] = set()
+        for value_evidence in evidence_rows:
+            evidence_row = _closed(
+                value_evidence,
+                {"path", "sha256"},
+                "physical_rc_manifest_malformed",
+            )
+            if (
+                not isinstance(evidence_row["path"], str)
+                or not evidence_row["path"]
+                or evidence_row["path"] in observed_evidence
+                or not isinstance(evidence_row["sha256"], str)
+                or _SHA256.fullmatch(evidence_row["sha256"]) is None
+            ):
+                raise PhysicalPreflightError("physical_rc_manifest_malformed")
+            observed_evidence.add(evidence_row["path"])
+
+        receipt = _closed(
+            receipts[component],
+            {
+                "artifacts",
+                "commit",
+                "installations",
+                "schema",
+                "source_artifact",
+                "tree",
+            },
+            "physical_rc_manifest_malformed",
+        )
+        expected_source_kind = (
+            "git-bundle" if component == "daimon-matrix" else "git-archive"
+        )
+        source_names = [
+            name
+            for name, artifact in artifact_rows[component].items()
+            if artifact["kind"] == expected_source_kind
+        ]
+        inventory = [
+            {"name": name, "sha256": artifact["sha256"]}
+            for name, artifact in sorted(artifact_rows[component].items())
+        ]
+        if (
+            receipt["schema"] != _ARTIFACT_RECEIPT_SCHEMA
+            or receipt["commit"] != component_refs[component]["commit"]
+            or receipt["tree"] != component_refs[component]["tree"]
+            or source_names != [receipt["source_artifact"]]
+            or receipt["artifacts"] != inventory
+            or not isinstance(receipt["installations"], list)
+        ):
+            raise PhysicalPreflightError("physical_rc_manifest_malformed")
+        expected_source = (
+            "vcs-direct-url" if component == "daimon-matrix" else "git-archive"
+        )
+        installed_versions: list[str] = []
+        for value_installation in receipt["installations"]:
+            installation = _closed(
+                value_installation,
+                {
+                    "evidence_ref",
+                    "installed_commit",
+                    "installed_tree",
+                    "network",
+                    "python",
+                    "result",
+                    "source",
+                },
+                "physical_rc_manifest_malformed",
+            )
+            evidence_ref = _closed(
+                installation["evidence_ref"],
+                {"artifact", "sha256"},
+                "physical_rc_manifest_malformed",
+            )
+            evidence_names = [
+                name
+                for name, artifact in artifact_rows[component].items()
+                if artifact["kind"] == "install-evidence"
+            ]
+            if (
+                installation["python"] not in versions
+                or installation["network"] != "disabled"
+                or installation["result"] != "passed"
+                or installation["source"] != expected_source
+                or installation["installed_commit"]
+                != component_refs[component]["commit"]
+                or installation["installed_tree"] != component_refs[component]["tree"]
+                or not isinstance(evidence_ref["artifact"], str)
+                or evidence_names != [evidence_ref["artifact"]]
+                or evidence_ref["sha256"]
+                != artifact_rows[component][evidence_ref["artifact"]]["sha256"]
+            ):
+                raise PhysicalPreflightError("physical_rc_manifest_malformed")
+            installed_versions.append(installation["python"])
+        if installed_versions != versions:
+            raise PhysicalPreflightError("physical_rc_manifest_malformed")
     if len({row["name"] for row in artifact_refs}) != len(artifact_refs):
         raise PhysicalPreflightError("physical_rc_manifest_malformed")
     return component_refs, artifact_refs

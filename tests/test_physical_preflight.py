@@ -32,29 +32,144 @@ def _manifest() -> dict:
         )
     }
     artifacts = {
-        name: [
+        "daimon-matrix": [
             {
-                "bytes": index,
-                "name": "source-archive",
-                "path": f"{name}.tar",
+                "bytes": 1,
+                "kind": kind,
+                "name": name,
+                "path": path,
                 "sha256": digit * 64,
             }
-        ]
-        for index, (name, digit) in enumerate(
-            (
-                ("daimon-matrix", "4"),
-                ("daimon-cluster", "5"),
-                ("tribe-bridge", "6"),
-            ),
-            1,
+            for kind, name, path, digit in (
+                ("git-bundle", "source-bundle", "daimon-matrix.bundle", "4"),
+                ("python-wheel", "wheel", "daimon-matrix.whl", "5"),
+                ("python-sdist", "sdist", "daimon-matrix.tar.gz", "6"),
+                ("wheelhouse", "wheelhouse", "matrix-wheelhouse.tar", "f"),
+                (
+                    "install-evidence",
+                    "install-evidence",
+                    "daimon-matrix-install.json",
+                    "c",
+                ),
+            )
+        ],
+        "daimon-cluster": [
+            {
+                "bytes": 2,
+                "kind": "matrix-git-bundle",
+                "name": "matrix-source-bundle",
+                "path": "cluster-matrix.bundle",
+                "sha256": "4" * 64,
+            },
+            {
+                "bytes": 2,
+                "kind": "wheelhouse",
+                "name": "wheelhouse",
+                "path": "cluster-wheelhouse.tar",
+                "sha256": "f" * 64,
+            },
+            {
+                "bytes": 2,
+                "kind": "git-archive",
+                "name": "source-archive",
+                "path": "daimon-cluster.tar",
+                "sha256": "7" * 64,
+            },
+            {
+                "bytes": 2,
+                "kind": "install-evidence",
+                "name": "install-evidence",
+                "path": "daimon-cluster-install.json",
+                "sha256": "d" * 64,
+            },
+        ],
+        "tribe-bridge": [
+            {
+                "bytes": 3,
+                "kind": "wheelhouse",
+                "name": "wheelhouse",
+                "path": "tribe-wheelhouse.tar",
+                "sha256": "f" * 64,
+            },
+            {
+                "bytes": 3,
+                "kind": "git-archive",
+                "name": "source-archive",
+                "path": "tribe-bridge.tar",
+                "sha256": "8" * 64,
+            },
+            {
+                "bytes": 3,
+                "kind": "install-evidence",
+                "name": "install-evidence",
+                "path": "tribe-bridge-install.json",
+                "sha256": "e" * 64,
+            },
+        ],
+    }
+    evidence = {
+        name: [{"path": "README.md", "sha256": digit * 64}]
+        for name, digit in (
+            ("daimon-matrix", "9"),
+            ("daimon-cluster", "a"),
+            ("tribe-bridge", "b"),
         )
     }
+    receipts = {}
+    for name in components:
+        receipts[name] = {
+            "schema": "daimon-artifact-qualification/v1",
+            "commit": components[name]["commit"],
+            "tree": components[name]["tree"],
+            "source_artifact": (
+                "source-bundle" if name == "daimon-matrix" else "source-archive"
+            ),
+            "artifacts": [
+                {"name": row["name"], "sha256": row["sha256"]}
+                for row in sorted(artifacts[name], key=lambda item: item["name"])
+            ],
+            "installations": [
+                {
+                    "python": "3.13",
+                    "network": "disabled",
+                    "result": "passed",
+                    "source": (
+                        "vcs-direct-url" if name == "daimon-matrix" else "git-archive"
+                    ),
+                    "installed_commit": components[name]["commit"],
+                    "installed_tree": components[name]["tree"],
+                    "evidence_ref": {
+                        "artifact": "install-evidence",
+                        "sha256": next(
+                            row["sha256"]
+                            for row in artifacts[name]
+                            if row["kind"] == "install-evidence"
+                        ),
+                    },
+                }
+            ],
+        }
     return {
         "schema": "daimon-release-candidate/v1",
         "baseline": {},
         "components": components,
         "cross_repository": {},
-        "qualification": {"artifacts": artifacts},
+        "qualification": {
+            "schema": "daimon-release-qualification/v2",
+            "release": "0.1.0rc1",
+            "supported_python": {name: ["3.13"] for name in components},
+            "artifacts": artifacts,
+            "artifact_receipts": receipts,
+            "tests": {
+                name: [
+                    {"name": "full", "python": "3.13", "passed": 1, "skipped": 0}
+                ]
+                for name in components
+            },
+            "evidence": evidence,
+            "limitations": ["fixture"],
+            "human_gates": ["fixture"],
+        },
     }
 
 
@@ -206,6 +321,48 @@ def test_preflight_is_bound_to_manifest_components_artifacts_and_backup() -> Non
     wrong_manifest_digest["rc_manifest_sha256"] = "0" * 64
     with pytest.raises(PhysicalPreflightError, match="rc_manifest_mismatch"):
         build_preflight(wrong_manifest_digest, manifest)
+    partial = copy.deepcopy(manifest)
+    partial["qualification"] = {"artifacts": partial["qualification"]["artifacts"]}
+    with pytest.raises(PhysicalPreflightError, match="rc_manifest_malformed"):
+        build_preflight(_plan(partial), partial)
+
+    missing_sdist = copy.deepcopy(manifest)
+    missing_sdist["qualification"]["artifacts"]["daimon-matrix"] = [
+        row
+        for row in missing_sdist["qualification"]["artifacts"]["daimon-matrix"]
+        if row["kind"] != "python-sdist"
+    ]
+    with pytest.raises(PhysicalPreflightError, match="rc_artifacts_incomplete"):
+        build_preflight(_plan(missing_sdist), missing_sdist)
+
+    receipt_lie = copy.deepcopy(manifest)
+    receipt_lie["qualification"]["artifact_receipts"]["daimon-matrix"][
+        "installations"
+    ][0]["evidence_ref"]["sha256"] = "0" * 64
+    with pytest.raises(PhysicalPreflightError, match="rc_manifest_malformed"):
+        build_preflight(_plan(receipt_lie), receipt_lie)
+
+
+@pytest.mark.parametrize(
+    ("component", "kind"),
+    [
+        ("daimon-matrix", "wheelhouse"),
+        ("daimon-cluster", "wheelhouse"),
+        ("daimon-cluster", "matrix-git-bundle"),
+        ("tribe-bridge", "wheelhouse"),
+    ],
+)
+def test_physical_preflight_requires_every_offline_replay_input(
+    component: str, kind: str
+) -> None:
+    manifest = _manifest()
+    manifest["qualification"]["artifacts"][component] = [
+        row
+        for row in manifest["qualification"]["artifacts"][component]
+        if row["kind"] != kind
+    ]
+    with pytest.raises(PhysicalPreflightError, match="rc_artifacts_incomplete"):
+        build_preflight(_plan(manifest), manifest)
 
 
 def test_cli_refuses_noncanonical_input_and_existing_output(

@@ -10,8 +10,8 @@ Cluster PR #93 is merged and green on `main` at
 `4f62eb4f6eff1dfafbd477339a86fa7d5e70a5d8`) with Matrix functional merge
 `09414d6edd9586f539be8272c4979d0b36c86b87` (tree
 `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`). The merged Matrix closeout and
-exact installed pin are `7266de8551ae861f3773c587bf907cfcddde6ffd` / tree
-`d1ff7a6fc6b1351f67fd13171dcee51242fc9804`. The final generated RC manifest is
+exact installed pin are `bf5f7415f075af09442973144bc529f4c5ce7985` / tree
+`f38862427d5713b21ca9d0859a80ddbacfefa255`. The final generated RC manifest is
 authoritative for repository heads.
 
 Completed locally on the exact code boundary:

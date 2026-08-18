@@ -6,8 +6,8 @@ Date: 2026-08-18. Software-only candidate; not deployed.
 
 - Matrix functional merge: `09414d6edd9586f539be8272c4979d0b36c86b87`,
   tree `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`; merged closeout and exact
-  installed pin: `7266de8551ae861f3773c587bf907cfcddde6ffd`, tree
-  `d1ff7a6fc6b1351f67fd13171dcee51242fc9804`.
+  installed pin: `bf5f7415f075af09442973144bc529f4c5ce7985`, tree
+  `f38862427d5713b21ca9d0859a80ddbacfefa255`.
 - Cluster functional merge: `820e3792a227b1848681a3421b113e8822c8d08a`,
   tree `4f62eb4f6eff1dfafbd477339a86fa7d5e70a5d8`; independent exact-hash
   review and main CI passed.

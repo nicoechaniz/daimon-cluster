@@ -21,8 +21,8 @@ The goal began from these merged V0 baselines:
 The qualified Matrix functional merge is
 `09414d6edd9586f539be8272c4979d0b36c86b87`, tree
 `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`. The merged Matrix closeout and
-exact installed pin is `7266de8551ae861f3773c587bf907cfcddde6ffd`, tree
-`d1ff7a6fc6b1351f67fd13171dcee51242fc9804`; it reconciles RC metadata and
+exact installed pin is `bf5f7415f075af09442973144bc529f4c5ce7985`, tree
+`f38862427d5713b21ca9d0859a80ddbacfefa255`; it reconciles RC metadata and
 replaces an unreachable Hermes commit with a reachable commit having the same
 audited tree and contract bytes. Cluster pins that full commit in
 `requirements-weave.txt`, verifies `direct_url.json` at startup and has no

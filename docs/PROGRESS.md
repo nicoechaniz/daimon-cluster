@@ -3,7 +3,7 @@
 Living tracking file. Updated after every work session. Read FIRST on session
 start, then resume from the first open item.
 
-## Active checkpoint (2026-08-18)
+## Active checkpoint (2026-08-20)
 
 Cluster PR #93 is merged and green on `main` at
 `820e3792a227b1848681a3421b113e8822c8d08a` (tree
@@ -12,7 +12,11 @@ Cluster PR #93 is merged and green on `main` at
 `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`). The merged Matrix closeout and
 exact installed pin are `bf5f7415f075af09442973144bc529f4c5ce7985` / tree
 `f38862427d5713b21ca9d0859a80ddbacfefa255`. The final generated RC manifest is
-authoritative for repository heads.
+authoritative for repository heads. The reviewed Cluster qualifier/runtime
+dependency source is PR #97 head
+`0b69b1dddc56c103d8f9c853d2a84d4ad32e3ba8`, tree
+`8c787d51cbcbb35ebd494c0b6dbf5e167f5d3fdb`; its normal merge and post-merge
+CI preserved that tree.
 
 Completed locally on the exact code boundary:
 
@@ -34,9 +38,8 @@ the consolidated lineage. Tribe PR #65 is approved and merged at
 Python 3.10–3.13. Nothing in this checkpoint was deployed and no existing host
 or real custody was used.
 
-Acceptance now requires normal review and protected CI for the resulting
-Cluster commit, followed by the metadata-only Tribe pin to the resulting
-Matrix/Cluster heads. The versioned offline qualifier then installs every exact
+For an integrated freeze, the metadata-only Tribe handoff records the resulting
+Matrix/Cluster heads. The versioned offline qualifier installs every exact
 artifact on every supported Python under a network/filesystem-isolated sandbox;
 the freezer independently replays that evidence. The external manifest records
 the resulting commits and hashes without self-reference. Real custody,

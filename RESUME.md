@@ -1,6 +1,6 @@
 # Daimon V0 release-candidate checkpoint
 
-Last reconciled: 2026-08-18.
+Last reconciled: 2026-08-20.
 
 This repository is not deployed from the candidate described here. No existing
 host, service, access path, real custody or production state is part of the
@@ -28,13 +28,15 @@ audited tree and contract bytes. Cluster pins that full commit in
 `requirements-weave.txt`, verifies `direct_url.json` at startup and has no
 unpinned runtime fallback.
 
-The current Cluster functional merge is
+The qualified Cluster functional merge is
 `820e3792a227b1848681a3421b113e8822c8d08a`, tree
 `4f62eb4f6eff1dfafbd477339a86fa7d5e70a5d8` (PR #93). It contains the
 independently reviewed shared admission/fencing, authenticated handoff,
 recovery/rebirth, V7 snapshot, preflight and qualification corrections. Later
-documentation or exact-pin commits do not change those semantics; the
-generated RC manifest records the final repository head and tree.
+documentation or exact-pin commits do not change those semantics. The reviewed
+offline-qualifier/dependency tree is
+`8c787d51cbcbb35ebd494c0b6dbf5e167f5d3fdb` (PR #97); the generated RC
+manifest records the repository commit that carries that tree.
 
 Tribe Bridge PR #65 is merged on `main` at
 `294e1194db6cd60d9349a2d43938475bbd1c8c20`, tree
@@ -83,14 +85,14 @@ and test counts are not the current RC baseline.
 
 ## Release-candidate acceptance protocol
 
-The Cluster successor is accepted only through normal review and protected CI.
-After that merge, Tribe metadata records the resulting Matrix/Cluster heads;
+Repository successors are accepted only through normal review and CI. For an
+integrated freeze, Tribe metadata records the resulting Matrix/Cluster heads;
 that metadata-only successor does not change the qualified Tribe semantics.
-The three resulting clean commits are installed on every supported Python by
-the versioned offline qualifier, whose evidence is replayed by the freezer.
-The external content-addressed manifest records those resulting heads and
-artifact hashes; it is intentionally produced after the repository commits and
-does not require a self-referential evidence commit.
+The three clean commits are installed on every supported Python by the
+versioned offline qualifier, whose evidence is replayed by the freezer. The
+external content-addressed manifest is authoritative for the resulting heads
+and artifact hashes; it is intentionally produced after the repository commits
+and does not require a self-referential evidence commit.
 
 ## Human and external gates
 

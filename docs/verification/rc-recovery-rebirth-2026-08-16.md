@@ -114,9 +114,12 @@ The final offline qualification installs Matrix through an exact Git bundle so
 satisfy Cluster's exact-commit gate.
 
 Independent reviews passed Matrix capability/custody/runtime metadata, the
-Matrix documentation successor and the Cluster admission/fence code. This
-prepared Cluster pin/documentation successor must still receive its own
-exact-hash review and CI before merge.
+Matrix documentation successor and the Cluster admission/fence code. The
+offline-qualifier/runtime-dependency tree
+`8c787d51cbcbb35ebd494c0b6dbf5e167f5d3fdb` then passed independent exact-head
+review, Python 3.11–3.14 CI and both disposable E2E jobs before its normal PR
+#97 merge. The external integrated manifest records the resulting repository
+commit without requiring this receipt to predict its own future merge SHA.
 
 ## Explicit limits
 

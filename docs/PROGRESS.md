@@ -3,16 +3,19 @@
 Living tracking file. Updated after every work session. Read FIRST on session
 start, then resume from the first open item.
 
-## Active checkpoint (2026-08-20)
+## Active checkpoint (2026-08-29)
 
 Cluster PR #93 is merged and green on `main` at
 `820e3792a227b1848681a3421b113e8822c8d08a` (tree
 `4f62eb4f6eff1dfafbd477339a86fa7d5e70a5d8`) with Matrix functional merge
 `09414d6edd9586f539be8272c4979d0b36c86b87` (tree
 `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`). The merged Matrix closeout and
-exact installed pin are `bf5f7415f075af09442973144bc529f4c5ce7985` / tree
-`f38862427d5713b21ca9d0859a80ddbacfefa255`. The final generated RC manifest is
-authoritative for repository heads. The reviewed Cluster qualifier/runtime
+former installed pin was `bf5f7415f075af09442973144bc529f4c5ce7985` / tree
+`f38862427d5713b21ca9d0859a80ddbacfefa255`. The current pin-forward is
+`52945123ec4d323c03eaafe216dce8a1d7e48565` / tree
+`0af4dfdb3506cfe826ee53533f67eee88fb96389`. The prior generated RC manifest
+remains authoritative only for the former pin; this successor requires a new
+external receipt and regenerated integrated manifest after merge. The reviewed Cluster qualifier/runtime
 dependency source is PR #97 head
 `0b69b1dddc56c103d8f9c853d2a84d4ad32e3ba8`, tree
 `8c787d51cbcbb35ebd494c0b6dbf5e167f5d3fdb`; its normal merge and post-merge

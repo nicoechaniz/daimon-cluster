@@ -29,8 +29,8 @@ closed. Cluster does not carry a fallback implementation.
 
 The V0 RC functional merge is
 `09414d6edd9586f539be8272c4979d0b36c86b87`; the exact merged installed pin is
-its reviewed RC closeout successor
-`bf5f7415f075af09442973144bc529f4c5ce7985`. The functional merge consolidates
+its additive first-embodiment/rebirth-hardening successor
+`52945123ec4d323c03eaafe216dce8a1d7e48565`. The functional merge consolidates
 the fresh-embodiment, distributed-custody, least-authority capability and
 recovery work. Historical deployed-pair commits are recorded in dated
 receipts, not in the current execution contract. The only production-shaped RC bundle is V7

@@ -1,6 +1,6 @@
 # Daimon V0 release-candidate checkpoint
 
-Last reconciled: 2026-08-20.
+Last reconciled: 2026-08-29.
 
 This repository is not deployed from the candidate described here. No existing
 host, service, access path, real custody or production state is part of the
@@ -21,10 +21,12 @@ The goal began from these merged V0 baselines:
 The qualified Matrix functional merge is
 `09414d6edd9586f539be8272c4979d0b36c86b87`, tree
 `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`. The merged Matrix closeout and
-exact installed pin is `bf5f7415f075af09442973144bc529f4c5ce7985`, tree
-`f38862427d5713b21ca9d0859a80ddbacfefa255`; it reconciles RC metadata and
-replaces an unreachable Hermes commit with a reachable commit having the same
-audited tree and contract bytes. Cluster pins that full commit in
+former installed pin was `bf5f7415f075af09442973144bc529f4c5ce7985`, tree
+`f38862427d5713b21ca9d0859a80ddbacfefa255`. The current exact pin-forward is
+`52945123ec4d323c03eaafe216dce8a1d7e48565`, tree
+`0af4dfdb3506cfe826ee53533f67eee88fb96389`; its two additive commits add the
+distributed first-embodiment surface and harden rebirth/custody validation.
+Cluster pins that full commit in
 `requirements-weave.txt`, verifies `direct_url.json` at startup and has no
 unpinned runtime fallback.
 
@@ -78,10 +80,11 @@ not Matrix intake or semantic-delivery authority.
   network-disabled recovery/rebirth container journey
   and the independent encrypted backup/export/offline-restore journey pass.
 
-Current qualification evidence lives in
-`docs/verification/rc-recovery-rebirth-2026-08-16.md`. Older verification files,
-inventory and incident documents are historical evidence; their hosts, hashes
-and test counts are not the current RC baseline.
+The existing qualification evidence at
+`docs/verification/rc-recovery-rebirth-2026-08-16.md` remains authoritative
+for the former `bf5f7415` pin. This pin-forward requires a successor external
+receipt and regenerated integrated manifest after normal merge; older
+verification files, inventory and incident documents remain historical.
 
 ## Release-candidate acceptance protocol
 

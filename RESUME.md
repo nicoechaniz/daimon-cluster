@@ -1,23 +1,24 @@
-# DM-083 resume checkpoint
+# Matrix RC pin-forward checkpoint
 
-Status: the DM-055/DM-083 runtime pair is host-qualified. Exact Cluster code
-`94d80ba` pins exact Matrix code `915c56c`; local suites, Python 3.11–3.14 CI,
-installed contract checks, rollback, encrypted backup/mirror and the final cold
-host reboot all passed. Both PRs remain unmerged pending independent review.
+Status: the Cluster adapter is locally qualified against Matrix RC
+`52945123ec4d323c03eaafe216dce8a1d7e48565`. The pin-forward migrates the
+host boundary to runtime bundle V7, client config V3 and recursive portable
+snapshot V2. It does not modify or restart either live Matrix service.
 
-Last reconciled: 2026-08-11.
+Last reconciled: 2026-08-29.
 
 ## Exact state
 
-- Matrix PR #112 freezes the deployed reboot/status candidate at
-  `915c56c8899fd53d683bd7c7c81c3465b600bed9`.
-- Cluster PR #77 runtime code
-  `94d80baca05f468287b7d2bf99c577350d654a36` repins that exact dependency,
-  verifies the five-method status-observer boundary and waits boundedly for the
-  private Incus bridge before `clusterd` binds.
-- Matrix passed 543 tests with 18 intentional skips plus build, conformance,
-  provenance and Python 3.11–3.14 CI. Cluster passed 299 tests with 2
-  intentional skips plus lint, type, compile and Python 3.11–3.14 CI.
+- Cluster pins Matrix RC
+  `52945123ec4d323c03eaafe216dce8a1d7e48565` and verifies V7, client V3,
+  the exact five-method status-observer boundary and every cluster contract
+  schema before opening state.
+- The focused two-host restart/relocation, pin-parity and snapshot-tamper gate
+  passed 21 tests. The full Cluster suite passed 299 tests with 2 intentional
+  skips; lint passed for every changed Python file.
+- Snapshot V2 carries Matrix's required nested operator/host clients, excludes
+  socket/lock/transients, streams hashes, bounds paths/count/bytes and rejects
+  traversal, symlinks, broad modes, extra payload entries and altered bytes.
 - The exact pair runs on Legion and daimonmatrix. Authenticated host status is
   configured with integrity `ok`, nine known events, zero incomplete, epoch 2
   and non-partial `/we` and sync-plan views.
@@ -37,12 +38,11 @@ Last reconciled: 2026-08-11.
 
 ## Resume order
 
-1. Read Matrix `RESUME.md`, issue #111 and PR #112.
-2. Preserve Matrix runtime code `915c56c` and Cluster runtime code `94d80ba` as
-   the exact deployed pair. Documentation-only successors do not move the pin.
-3. Obtain independent review for Matrix PR #112 and Cluster PR #77. Do not
-   self-merge or treat CI as that review.
-4. Continue only the remaining explicit external gates: consented cross-being
+1. Preserve the prior `915c56c`/`94d80ba` deployment evidence as historical;
+   do not rewrite or restart that running pair during pin-forward review.
+2. Review and merge this exact Matrix RC pin-forward only after normal CI and
+   independent review pass.
+3. Continue only the remaining explicit external gates: consented cross-being
    native delivery, fresh-host root authorization/private custody, governance
    approvals and final human cutover. Do not infer them from this host proof.
 

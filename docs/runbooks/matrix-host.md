@@ -30,6 +30,9 @@ STATE/matrix/HASH/                 portable Matrix root (0700)
   runtime.json                     public runtime bundle (0600)
   custody.json                     encrypted custody (0600)
   ledger.sqlite                    canonical ledger (0600)
+  client.json + client.key         portable operator observe client
+  operator-clients/ROLE/           portable disjoint operator clients
+  host-clients/ROLE/               portable Matrix host clients
   matrix.sock                      host-local, excluded from snapshot
   .daimon-matrixd.lock             host-local, excluded from snapshot
 STATE/matrix-clients/HASH/         host-local clusterd client (0700)
@@ -37,16 +40,14 @@ STATE/matrix-clients/HASH/         host-local clusterd client (0700)
   capability.key                   exactly 32 bytes (0600)
 ```
 
-Provision `client.json` with schema `dm.local.client-config/v1` for an unchanged
-incarnation, or V2 after succession with the exact current origin and Matrix-
-verified bounded historical origin rows. The capability contains exactly
+Provision the sidecar `client.json` with schema `dm.local.client-config/v3`,
+the exact current origin, runtime ID and runtime label. The capability contains exactly
 `runtime.status`, `scope.me`, `scope.we`, `scope.we.diff`, and
 `scope.we.sync-plan`. Write the raw 32-byte capability key separately. Broader
 capabilities are rejected. Do not give Cluster root or recovery seeds. On
-incarnation succession update the expected origin and retain each eligible
-retired origin with its exact retirement millisecond. On relocation restore
-the capability from separate host custody; rotate it only by updating the Matrix
-bundle and encrypted custody atomically.
+incarnation succession update the expected origin and runtime identity. On
+relocation reprovision this sidecar from separate host custody; rotate it only
+by updating the Matrix bundle and encrypted custody atomically.
 
 ## Start
 
@@ -70,15 +71,14 @@ SIGTERM/SIGINT quiesces the service boundary.
 ## Snapshot and restore
 
 Stop the daemon, call `create_portable_snapshot`, transfer the resulting closed
-directory, and call `restore_portable_snapshot` into a nonexistent target.
+snapshot V2 directory, and call `restore_portable_snapshot` into a nonexistent target.
 Recreate `STATE/matrix-clients/HASH/` on the destination; it must not appear in
 the snapshot. Start the daemon and require authenticated `runtime.status`,
 `/me`, `/we`, cursor and authority-epoch checks before routing traffic.
 
-The host boundary accepts the additive Matrix runtime bundle line V1 through
-V7 at the pinned commit. V3 enables native peer transport, V4 adds species,
-V5 adds attributed sources, V6 adds relationships and grants, and V7 adds
-configured peer targets; all remain owned and interpreted by Matrix. Any
+The host boundary accepts only Matrix runtime bundle V7 at the pinned commit;
+retired bundle and client schemas fail closed. All contents remain owned and
+interpreted by Matrix. Any
 commit/schema mismatch, unsafe path, altered hash, registry/origin drift,
 stale resource epoch or missing local capability is a refusal. Preserve the
 source and destination state roots for diagnosis; do not rewrite either

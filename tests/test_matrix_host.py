@@ -187,16 +187,15 @@ def test_registry_and_matrix_roots_are_owner_only_and_opaque(tmp_path):
         "dm.runtime.bundle/v6",
     ],
 )
-def test_public_bundle_accepts_the_pinned_additive_line(tmp_path, schema):
+def test_public_bundle_rejects_retired_runtime_schemas(tmp_path, schema):
     root = tmp_path / "runtime"
     root.mkdir(mode=0o700)
     bundle = root / "runtime.json"
     bundle.write_text(json.dumps({"schema": schema}), encoding="utf-8")
     bundle.chmod(0o600)
 
-    assert matrix_host_module._public_bundle(root, "runtime.json") == {
-        "schema": schema
-    }
+    with pytest.raises(MatrixHostError, match="matrix_bundle_rejected"):
+        matrix_host_module._public_bundle(root, "runtime.json")
 
 
 def test_public_bundle_rejects_an_unpinned_successor_schema(tmp_path):
@@ -224,7 +223,7 @@ def test_quiesced_snapshot_restore_excludes_host_locals_and_detects_tamper(
         "principal_id": "compaii@legion",
     }
     bundle = {
-        "schema": "dm.runtime.bundle/v1",
+        "schema": "dm.runtime.bundle/v7",
         "local_origin": origin,
         "socket": "matrix.sock",
     }
@@ -238,6 +237,18 @@ def test_quiesced_snapshot_restore_excludes_host_locals_and_detects_tamper(
         path.chmod(0o600)
     (source / "matrix.sock").write_text("host-local", encoding="utf-8")
     (source / "matrix.sock").chmod(0o600)
+    nested = source / "operator-clients" / "weave"
+    nested.mkdir(parents=True, mode=0o700)
+    (source / "operator-clients").chmod(0o700)
+    nested_config = nested / "client.json"
+    nested_config.write_text("portable-client", encoding="utf-8")
+    nested_config.chmod(0o600)
+
+    unsafe_link = nested / "substituted"
+    unsafe_link.symlink_to(tmp_path)
+    with pytest.raises(MatrixHostError, match="matrix_snapshot_source_unsafe"):
+        create_portable_snapshot(source, tmp_path / "unsafe-snapshot")
+    unsafe_link.unlink()
 
     original_copy = matrix_host_module.shutil.copyfile
 
@@ -267,10 +278,29 @@ def test_quiesced_snapshot_restore_excludes_host_locals_and_detects_tamper(
     assert (restored / "ledger.sqlite").read_text() == "canonical-ledger"
     assert not (restored / "matrix.sock").exists()
     assert not (restored / ".daimon-matrixd.lock").exists()
+    assert (
+        restored / "operator-clients" / "weave" / "client.json"
+    ).read_text() == "portable-client"
     assert stat.S_IMODE(restored.stat().st_mode) == 0o700
     assert all(
-        stat.S_IMODE(path.stat().st_mode) == 0o600 for path in restored.iterdir()
+        stat.S_IMODE(path.stat().st_mode) == (0o700 if path.is_dir() else 0o600)
+        for path in restored.rglob("*")
     )
+
+    manifest_path = snapshot / "snapshot.json"
+    original_manifest = manifest_path.read_text(encoding="utf-8")
+    substituted = json.loads(original_manifest)
+    substituted["files"][0]["name"] = "../escape"
+    manifest_path.write_text(json.dumps(substituted), encoding="utf-8")
+    with pytest.raises(MatrixHostError, match="matrix_snapshot_manifest_rejected"):
+        restore_portable_snapshot(snapshot, tmp_path / "traversal-rejected")
+    manifest_path.write_text(original_manifest, encoding="utf-8")
+
+    payload_link = snapshot / "payload" / "substituted"
+    payload_link.symlink_to(tmp_path)
+    with pytest.raises(MatrixHostError, match="matrix_snapshot_payload_rejected"):
+        restore_portable_snapshot(snapshot, tmp_path / "link-rejected")
+    payload_link.unlink()
 
     (snapshot / "payload" / "ledger.sqlite").write_text("tampered", encoding="utf-8")
     with pytest.raises(MatrixHostError, match="matrix_snapshot_payload_rejected"):

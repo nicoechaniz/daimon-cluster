@@ -27,17 +27,17 @@ Cluster pins `daimon-matrix` by full Git commit in
 An unpinned wheel, editable checkout, wrong commit or schema downgrade fails
 closed. Cluster does not carry a fallback implementation.
 
-The current pin is the audited Matrix DM-055/DM-083 reboot/status candidate
-`915c56c8899fd53d683bd7c7c81c3465b600bed9`.
-The adapter accepts the additive runtime bundle line V1 through V7 and checks
-every corresponding public schema constant before opening state. Bundle
-contents remain Matrix authority; Cluster only validates the hosting envelope.
+The current pin is Matrix RC
+`52945123ec4d323c03eaafe216dce8a1d7e48565`.
+The adapter accepts only runtime bundle V7 and client config V3 at that exact
+commit. Retired schemas fail closed. Bundle contents remain Matrix authority;
+Cluster only validates the hosting envelope.
 
 DM-083 gate (2026-08-11): Matrix PR #112 is frozen at the exact commit above
 after the live-canary preflight exposed a rolling-deadline conflict during
 post-commit peer-response recovery and the first full host reboot exposed a
 missing least-authority clusterd status client. Cluster owns source and
-installed-process verification of this pin, the additive client config V2
+installed-process verification of the historical pin, the client config
 constant and the exact five-method status-observer set. Cluster does not
 interpret historical servers or Matrix custody. Any later Matrix candidate
 change requires another exact repin and complete downstream gate.
@@ -86,8 +86,9 @@ must be provisioned anew after relocation.
 A supported relocation/rebirth sequence is:
 
 1. quiesce and stop the source Matrix daemon;
-2. create a hashed snapshot of its encrypted custody, runtime bundle, ledger
-   and sync journals, excluding socket/lock/transient files;
+2. create a recursive snapshot V2 of its encrypted custody, runtime bundle,
+   role clients, ledger and sync journals, excluding socket/lock/transient
+   files;
 3. restore into a fresh owner-only root attached to the same body and
    embodiment;
 4. install the signed authority-epoch successor when opening incarnation N+1;

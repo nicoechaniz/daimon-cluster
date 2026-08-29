@@ -3,7 +3,23 @@
 Living tracking file. Updated after every work session. Read FIRST on session
 start, then resume from the first open item.
 
-## Active checkpoint (2026-08-11)
+## Active checkpoint (2026-08-29)
+
+Cluster now has a locally qualified pin-forward candidate for Matrix RC
+`52945123ec4d323c03eaafe216dce8a1d7e48565`. The adapter accepts only runtime
+bundle V7 and client config V3 at that exact commit. The real-process fixture
+uses Matrix's complete disjoint operator/host capability profiles and signed
+runtime identity rather than the retired broad synthetic client.
+
+Portable snapshot V2 recursively preserves the nested Matrix runtime while
+remaining fail-closed: socket/lock/transients are excluded; paths, file count
+and total bytes are bounded; hashing streams; and restore rejects traversal,
+symlinks, broad modes, extra entries, origin substitution and altered content.
+The focused pin/restart/relocation/tamper gate passed 21 tests. The complete
+Cluster suite passed 299 tests with 2 intentional skips, and changed-file lint
+passed. No live service or authority was changed.
+
+## Previous checkpoint (2026-08-11)
 
 The exact DM-055/DM-083 host-qualified pair is Cluster
 `94d80baca05f468287b7d2bf99c577350d654a36` with Matrix

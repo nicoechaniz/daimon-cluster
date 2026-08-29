@@ -27,13 +27,16 @@ from typing import Any
 from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
-MATRIX_CONTRACT_COMMIT = "915c56c8899fd53d683bd7c7c81c3465b600bed9"
+MATRIX_CONTRACT_COMMIT = "52945123ec4d323c03eaafe216dce8a1d7e48565"
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
-MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
+MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v2"
 MATRIX_STATUS_SCHEMA = "dm.cluster-matrix-status/v1"
 _LOCK_NAME = ".daimon-matrixd.lock"
 _MAX_PASSWORD_BYTES = 4096
 _MAX_BUNDLE_BYTES = 4 * 1024 * 1024
+_MAX_SNAPSHOT_BYTES = 1 << 40
+_MAX_SNAPSHOT_FILES = 4096
+_MAX_SNAPSHOT_PATH_BYTES = 1024
 _MAX_UNIX_SOCKET_BYTES = 107
 _CLUSTERD_MATRIX_METHODS = frozenset(
     {
@@ -83,23 +86,9 @@ def _matrix_api() -> dict[str, Any]:
         getattr(cluster_api, name, None) != value for name, value in expected.items()
     ):
         raise MatrixHostError("daimon_matrix_contract_mismatch")
-    if getattr(runtime, "BUNDLE_SCHEMA", None) != "dm.runtime.bundle/v1":
-        raise MatrixHostError("daimon_matrix_contract_mismatch")
-    if getattr(runtime, "BUNDLE_SCHEMA_V2", None) != "dm.runtime.bundle/v2":
-        raise MatrixHostError("daimon_matrix_contract_mismatch")
-    if getattr(runtime, "BUNDLE_SCHEMA_V3", None) != "dm.runtime.bundle/v3":
-        raise MatrixHostError("daimon_matrix_contract_mismatch")
-    if getattr(runtime, "BUNDLE_SCHEMA_V4", None) != "dm.runtime.bundle/v4":
-        raise MatrixHostError("daimon_matrix_contract_mismatch")
-    if getattr(runtime, "BUNDLE_SCHEMA_V5", None) != "dm.runtime.bundle/v5":
-        raise MatrixHostError("daimon_matrix_contract_mismatch")
-    if getattr(runtime, "BUNDLE_SCHEMA_V6", None) != "dm.runtime.bundle/v6":
-        raise MatrixHostError("daimon_matrix_contract_mismatch")
     if getattr(runtime, "BUNDLE_SCHEMA_V7", None) != "dm.runtime.bundle/v7":
         raise MatrixHostError("daimon_matrix_contract_mismatch")
-    if getattr(client, "CLIENT_CONFIG_SCHEMA", None) != "dm.local.client-config/v1":
-        raise MatrixHostError("daimon_matrix_contract_mismatch")
-    if getattr(client, "CLIENT_CONFIG_SCHEMA_V2", None) != "dm.local.client-config/v2":
+    if getattr(client, "CLIENT_CONFIG_SCHEMA_V3", None) != "dm.local.client-config/v3":
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     if (
         frozenset(getattr(operator_bootstrap, "STATUS_OBSERVER_METHODS", ()))
@@ -207,15 +196,7 @@ def _public_bundle(root: Path, bundle_name: str) -> dict[str, Any]:
         raise
     except (FileNotFoundError, OSError, json.JSONDecodeError) as exception:
         raise MatrixHostError("matrix_bundle_unreadable") from exception
-    if not isinstance(value, dict) or value.get("schema") not in {
-        "dm.runtime.bundle/v1",
-        "dm.runtime.bundle/v2",
-        "dm.runtime.bundle/v3",
-        "dm.runtime.bundle/v4",
-        "dm.runtime.bundle/v5",
-        "dm.runtime.bundle/v6",
-        "dm.runtime.bundle/v7",
-    }:
+    if not isinstance(value, dict) or value.get("schema") != "dm.runtime.bundle/v7":
         raise MatrixHostError("matrix_bundle_rejected")
     return value
 
@@ -453,24 +434,66 @@ def matrix_client_factory(state_dir: str | Path) -> Any:
     return load
 
 
-def _snapshot_files(root: Path, bundle_name: str) -> tuple[dict[str, Any], list[Path]]:
+def _snapshot_files(
+    root: Path, bundle_name: str
+) -> tuple[dict[str, Any], list[tuple[Path, str]]]:
     bundle = _public_bundle(root, bundle_name)
     socket_name = bundle.get("socket")
     excluded = {_LOCK_NAME, socket_name}
-    files: list[Path] = []
-    for path in sorted(root.iterdir(), key=lambda item: item.name):
-        if path.name in excluded or path.name.endswith((".tmp", "-wal", "-shm")):
-            continue
-        info = path.lstat()
+    files: list[tuple[Path, str]] = []
+
+    def visit(directory: Path, relative: Path) -> None:
+        for path in sorted(directory.iterdir(), key=lambda item: item.name):
+            child = relative / path.name
+            if len(os.fsencode(child.as_posix())) > _MAX_SNAPSHOT_PATH_BYTES:
+                raise MatrixHostError("matrix_snapshot_source_unsafe")
+            if not relative.parts and path.name in excluded:
+                continue
+            if path.name.endswith((".tmp", "-wal", "-shm")):
+                continue
+            info = path.lstat()
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o077
+            ):
+                raise MatrixHostError("matrix_snapshot_source_unsafe")
+            if stat.S_ISDIR(info.st_mode):
+                visit(path, child)
+            elif stat.S_ISREG(info.st_mode):
+                files.append((path, child.as_posix()))
+            else:
+                raise MatrixHostError("matrix_snapshot_source_unsafe")
+
+    visit(root, Path())
+    if len(files) > _MAX_SNAPSHOT_FILES:
+        raise MatrixHostError("matrix_snapshot_source_unsafe")
+    return bundle, files
+
+
+def _private_file_hash(path: Path) -> tuple[str, int]:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(descriptor)
         if (
-            stat.S_ISLNK(info.st_mode)
-            or not stat.S_ISREG(info.st_mode)
+            not stat.S_ISREG(info.st_mode)
             or info.st_uid != os.geteuid()
             or stat.S_IMODE(info.st_mode) & 0o077
         ):
-            raise MatrixHostError("matrix_snapshot_source_unsafe")
-        files.append(path)
-    return bundle, files
+            raise MatrixHostError("matrix_snapshot_payload_rejected")
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > _MAX_SNAPSHOT_BYTES:
+                raise MatrixHostError("matrix_snapshot_payload_rejected")
+            digest.update(chunk)
+        return digest.hexdigest(), size
+    finally:
+        os.close(descriptor)
 
 
 def create_portable_snapshot(
@@ -495,15 +518,25 @@ def create_portable_snapshot(
         payload = temporary / "payload"
         payload.mkdir(mode=0o700)
         entries = []
-        for path in files:
-            copied = payload / path.name
+        total_size = 0
+        for path, name in files:
+            copied = payload / name
+            copied.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            directory = copied.parent
+            while directory != payload:
+                directory.chmod(0o700)
+                directory = directory.parent
             shutil.copyfile(path, copied)
             copied.chmod(0o600)
+            digest, size = _private_file_hash(copied)
+            total_size += size
+            if total_size > _MAX_SNAPSHOT_BYTES:
+                raise MatrixHostError("matrix_snapshot_source_unsafe")
             entries.append(
                 {
-                    "name": path.name,
-                    "sha256": hashlib.sha256(copied.read_bytes()).hexdigest(),
-                    "size": copied.stat().st_size,
+                    "name": name,
+                    "sha256": digest,
+                    "size": size,
                 }
             )
         manifest = {
@@ -554,47 +587,99 @@ def restore_portable_snapshot(
         or not isinstance(manifest.get("files"), list)
     ):
         raise MatrixHostError("matrix_snapshot_manifest_rejected")
-    _origin(manifest.get("origin"))
+    origin = _origin(manifest.get("origin"))
+    bundle_name = manifest.get("bundle")
+    if (
+        not isinstance(bundle_name, str)
+        or not bundle_name
+        or Path(bundle_name).name != bundle_name
+        or not 1 <= len(manifest["files"]) <= _MAX_SNAPSHOT_FILES
+    ):
+        raise MatrixHostError("matrix_snapshot_manifest_rejected")
     payload = _owner_directory(source / "payload")
-    verified: list[tuple[Path, str]] = []
+    declared: list[tuple[Path, str, Mapping[str, Any]]] = []
     names: set[str] = set()
+    expected_directories: set[str] = set()
+    total_size = 0
     for row in manifest["files"]:
+        name = row.get("name") if isinstance(row, Mapping) else None
+        relative = Path(name) if isinstance(name, str) else Path()
         if (
             not isinstance(row, Mapping)
             or set(row) != {"name", "sha256", "size"}
-            or not isinstance(row["name"], str)
-            or Path(row["name"]).name != row["name"]
+            or not isinstance(name, str)
+            or not name
+            or len(os.fsencode(name)) > _MAX_SNAPSHOT_PATH_BYTES
+            or relative.is_absolute()
+            or relative.as_posix() != name
+            or any(part in {"", ".", ".."} for part in relative.parts)
             or row["name"] in names
             or not isinstance(row["size"], int)
             or isinstance(row["size"], bool)
             or row["size"] < 0
+            or row["size"] > _MAX_SNAPSHOT_BYTES
+            or not isinstance(row["sha256"], str)
+            or len(row["sha256"]) != 64
+            or any(character not in "0123456789abcdef" for character in row["sha256"])
         ):
             raise MatrixHostError("matrix_snapshot_manifest_rejected")
-        path = payload / row["name"]
-        try:
-            info = path.lstat()
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        except (FileNotFoundError, OSError) as exception:
-            raise MatrixHostError("matrix_snapshot_payload_unreadable") from exception
+        total_size += row["size"]
+        if total_size > _MAX_SNAPSHOT_BYTES:
+            raise MatrixHostError("matrix_snapshot_manifest_rejected")
+        names.add(name)
+        declared.append((relative, name, row))
+        expected_directories.update(
+            parent.as_posix()
+            for parent in relative.parents
+            if parent != Path(".")
+        )
+    if bundle_name not in names:
+        raise MatrixHostError("matrix_snapshot_manifest_rejected")
+    observed: set[str] = set()
+    observed_directories: set[str] = set()
+    for path in payload.rglob("*"):
+        relative_name = path.relative_to(payload).as_posix()
+        info = path.lstat()
         if (
             stat.S_ISLNK(info.st_mode)
-            or not stat.S_ISREG(info.st_mode)
             or info.st_uid != os.geteuid()
             or stat.S_IMODE(info.st_mode) & 0o077
-            or info.st_size != row["size"]
-            or digest != row["sha256"]
+            or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
         ):
             raise MatrixHostError("matrix_snapshot_payload_rejected")
-        names.add(row["name"])
-        verified.append((path, row["name"]))
-    if {path.name for path in payload.iterdir()} != names:
+        if stat.S_ISDIR(info.st_mode):
+            observed_directories.add(relative_name)
+        else:
+            observed.add(relative_name)
+    if observed != names or observed_directories != expected_directories:
         raise MatrixHostError("matrix_snapshot_payload_rejected")
+    verified: list[tuple[Path, str]] = []
+    for relative, name, row in declared:
+        path = payload / relative
+        try:
+            digest, size = _private_file_hash(path)
+        except (FileNotFoundError, OSError) as exception:
+            raise MatrixHostError("matrix_snapshot_payload_unreadable") from exception
+        if size != row["size"] or digest != row["sha256"]:
+            raise MatrixHostError("matrix_snapshot_payload_rejected")
+        verified.append((path, name))
+    try:
+        bundle = _public_bundle(payload, bundle_name)
+        if _origin(bundle.get("local_origin")) != origin:
+            raise MatrixHostError("matrix_snapshot_payload_rejected")
+    except MatrixHostError as exception:
+        raise MatrixHostError("matrix_snapshot_payload_rejected") from exception
     temporary = target.with_name(f".{target.name}.restore-{uuid.uuid4()}")
     temporary.mkdir(parents=True, mode=0o700)
     temporary.chmod(0o700)
     try:
         for path, name in verified:
             copied = temporary / name
+            copied.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            directory = copied.parent
+            while directory != temporary:
+                directory.chmod(0o700)
+                directory = directory.parent
             shutil.copyfile(path, copied)
             copied.chmod(0o600)
         os.replace(temporary, target)

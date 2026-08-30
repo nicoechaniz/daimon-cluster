@@ -4,17 +4,22 @@
 fencing for root-authorized Daimon embodiments. It hosts the exact pinned
 `daimon-matrix` runtime; Matrix owns being identity, authority, canonical
 events, `/me`, `/we` and semantic receipts. Tribe Bridge is a transitional
-human-message transport and its ACK never substitutes for Matrix intake or
-semantic delivery.
+experiment that is absent from the stable runtime successor: Cluster neither
+installs it, creates its keys, opens its broker route nor offers a fallback.
+Matrix's native tribe/relationship governance is a separate semantic feature.
 
 The release candidate assumes no current deployment. All qualification is
 local or runs in disposable, network-disabled containers. Historical host
 inventory and operational receipts remain under `docs/`, but they are not the
-current architecture or evidence for this RC.
+current architecture or evidence for the stable successor. The reviewed RC
+freezer remains only to reproduce the already published three-repository RC.
 
 ## Core invariants
 
 - Generic containers do not manufacture Matrix identity.
+- The removed legacy `clusterctl provision` path cannot mint Bridge identity;
+  new embodiments use the root-authorized Matrix/Cluster birth and rebirth
+  ceremonies.
 - Each embodiment has root-authorized credentials, a distinct incarnation and
   fresh private custody. Creating a new embodiment is not cloning a private
   database, key store or writable runtime.

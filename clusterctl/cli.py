@@ -171,12 +171,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="human abandonment of critical jobs; recorded "
         "in the manifest with the actor — never silent",
     )
-    p_park.add_argument(
-        "--force-outbox",
-        action="store_true",
-        dest="force_outbox",
-        help="override a non-empty bridge outbox (refused by default, fail-closed)",
-    )
     _mutation("wake", "wake a parked daimon (SIGCONT hermes, issue #23)")
     p_wake = sub.choices["wake"]
     p_wake.add_argument(
@@ -220,48 +214,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="include volume deletion in the plan",
     )
     p_dp.add_argument("--json", action="store_true", help="emit JSON")
-
-    p_prov = sub.add_parser("provision", help="governed provisioning (issue #12)")
-    prov_sub = p_prov.add_subparsers(dest="provision_command", required=True)
-    p_prep = prov_sub.add_parser(
-        "prepare",
-        help="create container+volume+embodiment, emit confirmation token, then HALT",
-    )
-    p_prep.add_argument("name", help="instance (daimon) name")
-    p_prep.add_argument(
-        "--species", required=True, help="species tag recorded in the spec"
-    )
-    p_prep.add_argument(
-        "--requested-by",
-        required=True,
-        dest="requested_by",
-        help="human requesting the provisioning (ADR D8)",
-    )
-    p_prep.add_argument(
-        "--sponsor",
-        required=True,
-        help="human sponsor; must differ from --requested-by",
-    )
-    p_prep.add_argument(
-        "--seed-manifest",
-        default=None,
-        dest="seed_manifest",
-        help="optional seed-manifest/v1 YAML to stage",
-    )
-    p_prep.add_argument(
-        "--idempotency-key",
-        required=True,
-        help="uuid; retry with the same key replays the cached result",
-    )
-    p_prep.add_argument("--json", action="store_true", help="emit JSON")
-    p_conf = prov_sub.add_parser(
-        "confirm",
-        help="consume a provision-activate token (directory activation is governance's act)",
-    )
-    p_conf.add_argument(
-        "--token", required=True, help="token emitted by provision prepare"
-    )
-    p_conf.add_argument("--json", action="store_true", help="emit JSON")
 
     p_snap = sub.add_parser("snapshot", help="quiesced snapshots (issue #14)")
     snap_sub = p_snap.add_subparsers(dest="snapshot_command", required=True)
@@ -456,7 +408,6 @@ def run(argv=None, adapter=None) -> int:
             "restart",
             "logs",
             "destroy-plan",
-            "provision",
             "snapshot",
             "park",
             "wake",

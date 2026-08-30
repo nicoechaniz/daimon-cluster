@@ -33,7 +33,7 @@ def _fixture(tmp_path, adapter_type=FakeAdapter):
         host_id="test-host",
         incus_project="default",
         managed_prefix="",
-        profile="tribe-agent",
+        profile="daimon-agent",
         state_dir=str(state_dir),
     )
     adapter = adapter_type(
@@ -41,7 +41,7 @@ def _fixture(tmp_path, adapter_type=FakeAdapter):
             {
                 "name": NAME,
                 "state": "running",
-                "image_version": "tribe-base/test",
+                "image_version": "daimon-base/test",
                 "budgets": {},
                 "uptime_s": 5,
             }
@@ -153,7 +153,7 @@ def test_create_start_response_loss_converges_once(tmp_path, lost):
             host_id="test-host",
             incus_project="default",
             managed_prefix="",
-            profile="tribe-agent",
+            profile="daimon-agent",
             state_dir=str(state_dir),
         )
         adapter = _LostContainerResponse(
@@ -161,7 +161,7 @@ def test_create_start_response_loss_converges_once(tmp_path, lost):
                 {
                     "name": NAME,
                     "state": "running",
-                    "image_version": "tribe-base/test",
+                    "image_version": "daimon-base/test",
                     "budgets": {},
                     "uptime_s": 5,
                 }
@@ -232,7 +232,7 @@ def test_wrong_or_multiply_attached_volume_refuses_before_target_start(tmp_path)
 
 def test_preexisting_stopped_target_without_attachment_is_not_adopted(tmp_path):
     _state_dir, cfg, adapter = _fixture(tmp_path)
-    adapter.create_instance(NEW, "tribe-base/test", "tribe-agent")
+    adapter.create_instance(NEW, "daimon-base/test", "daimon-agent")
     adapter.mutation_log.clear()
     with pytest.raises(transfer.TransferRefused, match="outside this transfer"):
         transfer.run_transfer(NAME, NEW, cfg, adapter, actor="test")

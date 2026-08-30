@@ -24,6 +24,6 @@ devices:
     pool: default
     size: 8GiB
     type: disk
-name: tribe-agent
+name: daimon-agent
 used_by: []
 project: default

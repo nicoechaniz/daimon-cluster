@@ -138,7 +138,7 @@ class Adapter(abc.ABC):
         return []
 
     def resolve_image(self, image_alias: str) -> str:
-        """Resolve a moving alias (e.g. tribe-base/latest) to a versioned one."""
+        """Resolve a moving alias (e.g. daimon-base/latest) to a versioned one."""
         return image_alias
 
     def profile_budgets(self, profile: str) -> dict:
@@ -146,7 +146,7 @@ class Adapter(abc.ABC):
         return {}
 
     # ------------------------------------------------------------------
-    # Provisioning primitives (issue #12)
+    # Generic in-guest and durable-volume primitives
     # ------------------------------------------------------------------
 
     def exec(self, name: str, argv: list[str]) -> str:
@@ -583,7 +583,7 @@ class IncusAdapter(Adapter):
 
     def __init__(
         self,
-        profile: str = "tribe-agent",
+        profile: str = "daimon-agent",
         managed_prefix: str = "",
         project: str = "default",
         runner=None,
@@ -642,10 +642,10 @@ class IncusAdapter(Adapter):
         return instances
 
     def _image_aliases(self) -> dict[str, str]:
-        """Map image fingerprint -> shortest local alias (e.g. tribe-base/2026-08-01.1).
+        """Map image fingerprint -> shortest local alias (e.g. daimon-base/2026-08-01.1).
 
         Incus reports the upstream ``image.name`` for launched instances, which
-        hides which tribe-base version (fingerprint/alias) actually backs the
+        hides which daimon-base version (fingerprint/alias) actually backs the
         container. Aliases are the fleet's version handle, so resolve them.
         """
         try:
@@ -656,7 +656,7 @@ class IncusAdapter(Adapter):
         for img in images:
             fp = img.get("fingerprint") or ""
             aliases = [a.get("name", "") for a in (img.get("aliases") or [])]
-            aliases = [a for a in aliases if a and a != "tribe-base/latest"]
+            aliases = [a for a in aliases if a and a != "daimon-base/latest"]
             if fp and aliases:
                 out[fp] = sorted(aliases, key=len)[0]
         return out
@@ -996,7 +996,7 @@ class IncusAdapter(Adapter):
             "echo '__FILES__'; echo \"$FILES\"; echo '__CHECK__'; "
             "OK=ok; "
             "for db in $(find \"$DIR\" -name 'library.db' 2>/dev/null); do "
-            # sqlite3 CLI is NOT in tribe-base; python3 is (hermes needs it).
+            # sqlite3 CLI is NOT in daimon-base; python3 is (hermes needs it).
             "OUT=$(python3 -c 'import sqlite3,sys; "
             "c=sqlite3.connect(sys.argv[1]); "
             "c.execute(\"PRAGMA wal_checkpoint(TRUNCATE)\"); "

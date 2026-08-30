@@ -114,7 +114,7 @@ def test_logs_redaction(state_dir, capsys):
     ad = FakeAdapter(
         instances=[{"name": "daimon-x", "state": "running",
                     "image_version": "t", "budgets": {}, "uptime_s": 1,
-                    "profiles": ["tribe-agent"], "config_show": ""}],
+                    "profiles": ["daimon-agent"], "config_show": ""}],
         log_lines={"daimon-x": ["ok line", "-----BEGIN PRIVATE KEY-----",
                                 "Authorization: Bearer abc123", "clean"]},
     )

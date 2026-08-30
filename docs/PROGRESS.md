@@ -5,6 +5,15 @@ start, then resume from the first open item.
 
 ## Active checkpoint (2026-08-29)
 
+Stable retirement candidate #102 removes Tribe Bridge from active Cluster
+runtime/configuration without touching any host: the Bridge provisioning
+command and image assets are deleted, active defaults are `daimon-base` /
+`daimon-agent`, the broker port template is gone, and handoff no longer reads
+or overrides a Bridge outbox. The published three-repository RC tooling and
+the chronology below remain historical evidence; stable qualification is a
+new external Matrix+Cluster freeze. Review, CI, physical execution, live
+retirement and stable publication remain separate gates.
+
 Cluster PR #93 is merged and green on `main` at
 `820e3792a227b1848681a3421b113e8822c8d08a` (tree
 `4f62eb4f6eff1dfafbd477339a86fa7d5e70a5d8`) with Matrix functional merge

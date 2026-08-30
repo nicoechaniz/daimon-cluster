@@ -40,7 +40,7 @@ from .config import Config
 
 REPORT_SCHEMA = "clusterctl-reconcile-report/v1"
 
-_CREATE_ACTIONS = {"create", "provision", "provision-prepare"}
+_CREATE_ACTIONS = {"create"}
 _LIFECYCLE_ACTIONS = {"start", "stop", "restart", "delete"}
 
 

@@ -63,7 +63,7 @@ def _declare(state_dir, name=NAME, created_by=None):
         "schema": "instance-spec/v1",
         "instance_kind": "generic-instance",
         "name": name,
-        "image_version": "tribe-base/2026-08-01.1",
+        "image_version": "daimon-base/2026-08-01.1",
     }
     if created_by is not None:
         spec["created_by"] = created_by
@@ -74,7 +74,7 @@ def _declare(state_dir, name=NAME, created_by=None):
 def _adapter():
     return FakeAdapter(
         instances=[{"name": NAME, "state": "running",
-                    "image_version": "tribe-base/2026-08-01.1",
+                    "image_version": "daimon-base/2026-08-01.1",
                     "budgets": {}, "uptime_s": 42}])
 
 

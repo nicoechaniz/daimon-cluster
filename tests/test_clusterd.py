@@ -36,7 +36,7 @@ def state_dir(tmp_path):
     return tmp_path / "state"
 
 
-def _declare(state_dir, name=NAME, image_version="tribe-base/2026-08-01.1"):
+def _declare(state_dir, name=NAME, image_version="daimon-base/2026-08-01.1"):
     inst_dir = state_dir / "instances"
     inst_dir.mkdir(parents=True, exist_ok=True)
     (inst_dir / f"{name}.yaml").write_text(yaml.safe_dump({
@@ -839,7 +839,7 @@ def test_dashboard_prepare_returns_plan_without_mutating(server):
 def test_dashboard_prepare_restore_on_running_409(server):
     """restore proposal on a running instance → 409 pre-condition."""
     srv, ad, state_dir = server
-    ad._instances = [{"name": NAME, "state": "running", "image_version": "tribe-base/2026-08-01.1",
+    ad._instances = [{"name": NAME, "state": "running", "image_version": "daimon-base/2026-08-01.1",
                       "budgets": {}, "uptime_s": 600}]
     # Verify the adapter change took effect before the handler runs
     from clusterd.handlers import RequestContext, get_instance

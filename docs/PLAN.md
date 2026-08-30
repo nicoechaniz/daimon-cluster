@@ -1,4 +1,4 @@
-# Daimon Cluster release-candidate plan
+# Daimon Cluster stable-successor plan
 
 ## Release target
 
@@ -6,7 +6,8 @@ Provide the reproducible software path for creating a fresh root-authorized
 embodiment of an existing being without copying predecessor private custody or
 writable runtime state. Cluster owns bodies, lifecycle, storage, shared launch
 admission and concrete-resource fences. Matrix owns identity, authority,
-canonical events and semantic receipts. Tribe Bridge remains transitional.
+canonical events and semantic receipts. Tribe Bridge is retired from the
+stable runtime with no compatibility, downgrade or dual-run path.
 
 ## Automated acceptance
 
@@ -30,8 +31,10 @@ content-addressed commits:
 7. Backup/export, restore, recovery/rebirth, rollback and double-launch refusal
    pass from clean installs on supported Python versions and disposable
    containers with resource warnings fatal.
-8. The three-repository manifest records exact commits, trees, archive hashes,
-   dependency pins, artifacts, suite receipts and limitations.
+8. The stable external manifest records exact Matrix and Cluster commits,
+   trees, archive hashes, dependency pins, artifacts, suite receipts and
+   limitations. The published three-repository RC manifest is historical
+   evidence and is not reused for stable cutover.
 9. Independent review passes on every final code hash and normal branch
    protection is respected.
 
@@ -51,8 +54,9 @@ and access invariant in `AGENTS.md` remain binding.
 - real independent holder assignment and live custody;
 - consent and independent custody for the other being in the cross-being
   canary;
-- any Tribe participant contact, provisioning, key rotation or service change;
-- physical rehearsal GO, publication, cutover and eventual Tribe retirement.
+- physical rehearsal GO, publication and cutover;
+- deletion of the exact disposable live Tribe runtime/state; and
+- final Tribe source-only release and repository archive.
 
 Passing CI or a local adversarial review cannot satisfy any of these gates.
 

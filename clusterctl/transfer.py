@@ -52,7 +52,7 @@ source spec is marked ``transferred``
 (kept for audit; destroy is a separate human decision).
 
 Announcements distinguish ``embodiment-relocation`` (wake/transfer)
-from ``incarnation-creation`` (provision). The field is recorded in
+from ``incarnation-creation`` (native Matrix birth). The field is recorded in
 audit detail — clusterctl never broadcasts it.
 
 Exit codes (clusterctl.cli contract): 0 ok, 3 undeclared, 6 conflict
@@ -100,7 +100,7 @@ TRANSFER_RECORD_SCHEMA = "transfer-record/v1"
 # Announcement values (exact strings — tests assert them). Recorded in
 # audit detail only; clusterctl never broadcasts lifecycle itself.
 ANNOUNCEMENT_RELOCATION = "embodiment-relocation"
-ANNOUNCEMENT_CREATION = "incarnation-creation"  # used by provision
+ANNOUNCEMENT_CREATION = "incarnation-creation"
 
 WAKE_STEPS = (
     "verify-manifest",

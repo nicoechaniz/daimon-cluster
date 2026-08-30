@@ -21,10 +21,6 @@ Scenarios NOT already covered by test_park.py / test_transfer.py:
   clusterctl.audit.verify_chain still verifies and the failures are
   recorded as audit events.
 
-(Broker restart / non-empty bridge outbox is covered by
-test_park.py::test_outbox_nonempty_refused_unless_forced — referenced
-from the matrix, not duplicated here.)
-
 Every test asserts the CONVERGENT STATE explicitly — exactly one of the
 three documented states: source awake | both parked | target awake.
 
@@ -59,7 +55,7 @@ def state_dir(tmp_path):
 @pytest.fixture()
 def cfg(state_dir):
     return Config(host_id="test-host", incus_project="default",
-                  managed_prefix="", profile="tribe-agent",
+                  managed_prefix="", profile="daimon-agent",
                   state_dir=str(state_dir))
 
 
@@ -67,7 +63,7 @@ def cfg(state_dir):
 def adapter():
     return FakeAdapter(
         instances=[{"name": NAME, "state": "running",
-                    "image_version": "tribe-base/test", "budgets": {},
+                    "image_version": "daimon-base/test", "budgets": {},
                     "uptime_s": 5}],
         exec_handler=_exec_handler)
 

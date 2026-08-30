@@ -12,7 +12,7 @@ from clusterctl.reconcile import run_reconcile
 
 def _cfg(state_dir):
     return Config(host_id="test", incus_project="default",
-                  managed_prefix="", profile="tribe-agent",
+                  managed_prefix="", profile="daimon-agent",
                   state_dir=str(state_dir))
 
 

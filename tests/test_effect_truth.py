@@ -198,31 +198,3 @@ def test_plain_park_reexecutes_when_quiescence_cannot_be_observed(
     assert json.loads(out).get("idempotent-replay") is not True
     parks = [call for call in adapter.mutation_log if call[0] == "exec_quiesce_park"]
     assert len(parks) == 2
-
-
-def test_provision_prepare_does_not_replay_a_consumed_confirmation(
-    state_dir,
-):
-    adapter = FakeAdapter(instances=[])
-    code, out, _ = _run(
-        state_dir, "provision", "prepare", "daimon-x", "--species", "test",
-        "--requested-by", "alice", "--sponsor", "bob",
-        "--idempotency-key", UUID1, "--json", adapter=adapter,
-    )
-    assert code == 0
-    result = json.loads(out)
-    token_path = state_dir / "confirmations" / f"{result['token']}.json"
-    confirmation = json.loads(token_path.read_text(encoding="utf-8"))
-    confirmation["used"] = True
-    token_path.write_text(
-        json.dumps(confirmation, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-    code, out, _ = _run(
-        state_dir, "provision", "prepare", "daimon-x", "--species", "test",
-        "--requested-by", "alice", "--sponsor", "bob",
-        "--idempotency-key", UUID1, "--json", adapter=adapter,
-    )
-    assert code == 10
-    assert "idempotent-replay" not in out

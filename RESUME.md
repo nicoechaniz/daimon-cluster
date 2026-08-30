@@ -7,6 +7,21 @@ host, service, access path, real custody or production state is part of the
 qualification. All destructive tests use owner-only temporary state or
 network-disabled disposable containers.
 
+## Forward stable retirement successor
+
+Issue #102 removes the operational Tribe Bridge dependency before V0.1.0
+stable. The candidate deletes Bridge-specific provisioning and image assets,
+uses `daimon-base/latest` plus the `daimon-agent` profile, removes the legacy
+broker port from the firewall template and removes Bridge-outbox handling from
+handoff. Native Matrix tribe governance remains unchanged. This repository
+change is not deployed and does not stop a service, edit a firewall, delete
+live state, publish stable or archive another repository.
+
+The three-component RC qualifier/freezer below remains historical tooling for
+reproducing the already published `v0.1.0rc1`; stable birth and publication use
+a new external two-component content-addressed manifest. No RC digest
+authorizes the stable cutover.
+
 ## Exact baseline and forward boundary
 
 The goal began from these merged V0 baselines:

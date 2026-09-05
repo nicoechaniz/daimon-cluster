@@ -56,7 +56,7 @@ def state_dir(tmp_path):
 @pytest.fixture()
 def cfg(state_dir):
     return Config(host_id="test-host", incus_project="default",
-                  managed_prefix="", profile="tribe-agent",
+                  managed_prefix="", profile="daimon-agent",
                   state_dir=str(state_dir))
 
 
@@ -64,7 +64,7 @@ def cfg(state_dir):
 def adapter():
     return FakeAdapter(
         instances=[{"name": NAME, "state": "running",
-                    "image_version": "tribe-base/test", "budgets": {},
+                    "image_version": "daimon-base/test", "budgets": {},
                     "uptime_s": 5}],
         exec_handler=_exec_handler)
 

@@ -89,7 +89,7 @@ Drifted example (fragment):
   "state": "drifted",
   "drift": [
     {"field": "cpu", "declared": 2, "actual": 1},
-    {"field": "image_version", "declared": "tribe-base-2026-08-01.1", "actual": "debian-trixie-amd64-default-20260731_05:24"}
+    {"field": "image_version", "declared": "daimon-base-2026-08-01.1", "actual": "debian-trixie-amd64-default-20260731_05:24"}
   ]
 }
 ```
@@ -103,55 +103,6 @@ Drifted example (fragment):
 | 3 | not found (`status` of an unknown name) |
 | 6 | conflict (reserved; unused at v0.1.0) |
 | 10 | internal error (config/spec/incus failure, bug) |
-
-## Provision (issue #12; design: `docs/design/provisioning-flow.md` §2)
-
-```
-clusterctl provision prepare <name> --species <s> \
-    --requested-by <human> --sponsor <sponsor> \
-    [--seed-manifest <path>] --idempotency-key <uuid> [--json]
-clusterctl provision confirm --token <token> [--json]
-```
-
-`prepare` creates the container + durable home volume (`<name>-home`),
-generates the tribe v1 ed25519 identity **inside** the container (private
-material never leaves the volume; host sees only pubkey + SHA256
-fingerprint), optionally stages a `seed-manifest/v1` seed, writes the
-spec with state `provisioned-pending-activation`, and emits a single-use
-confirmation token at `<state_dir>/confirmations/<token>.json`. It then
-HALTs — nothing is registered.
-
-Token file shape (`confirmation/v1`):
-
-```json
-{
-  "schema": "confirmation/v1",
-  "token": "6f4b2f2c-0c6a-4b0e-9f6d-9f2f3b1f7a0a",
-  "operation": "provision-activate",
-  "target": "daimon-x",
-  "created_ms": 1785600000000,
-  "ttl_s": 900,
-  "used": false,
-  "artifacts": {
-    "directory_entry": {
-      "identity": "daimon-x@daimonmatrix",
-      "pubkey": "ssh-ed25519 AAAA... daimon-x@daimonmatrix",
-      "fingerprint": "SHA256:abc...",
-      "host_broker": "10.10.20.69:8685"
-    }
-  }
-}
-```
-
-`confirm` consumes the token (exit 3 unknown, 6 expired, replay of a used
-token is an idempotent exit-0 "already confirmed"), flips the spec to
-`active-pending-directory`, and prints the `directory_entry` artifact —
-the actual directory activation is **governance's** act, not clusterctl's.
-
-Admission failures exit 6 (duplicate name, sponsor == requester, seed
-checksum mismatch — all before any effect). Any post-creation failure
-triggers full reversal (stop+delete container, delete volume, spec marked
-`creation-failed`) and exits 10.
 
 ## Snapshot (issue #14; design: `docs/design/quiesced-snapshots.md` §2)
 
@@ -195,7 +146,7 @@ path — never file contents.
 
 ## Mutation recovery (issue #65)
 
-Create, power, provision-prepare and handoff mutations persist an exact
+Create, power and handoff mutations persist an exact
 operation intent before their first substrate call. `clusterctl reconcile
 --json` reports `counts.open_operations` plus pending/degraded findings.
 Clusterd health reports an `operation_journal` object and degrades while a
@@ -206,6 +157,6 @@ clusterctl repair --operation-id operation:<uuid> --json
 ```
 
 Repair accepts only a journaled start, stop or restart with a bounded,
-observable runtime state. It never clears arbitrary create, provision,
-handoff or future destroy ambiguity. The full state and rollback contract is
+observable runtime state. It never clears arbitrary create, handoff or future
+destroy ambiguity. The full state and rollback contract is
 `docs/design/operation-journal.md`.

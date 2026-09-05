@@ -26,7 +26,6 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
-import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,7 +38,7 @@ EXIT_NOT_FOUND = 3
 EXIT_CONFLICT = 6
 EXIT_INTERNAL = 10
 
-DEFAULT_IMAGE = "tribe-base/latest"
+DEFAULT_IMAGE = "daimon-base/latest"
 LOGS_DEFAULT_LINES = 100
 LOGS_MAX_LINES = 1000
 STOP_DEFAULT_TIMEOUT = 30
@@ -222,29 +221,6 @@ def _verify_effect(cfg, adapter, operation: str, name: str,
             observed,
         )
 
-    if operation == "provision-prepare":
-        spec = load_spec_raw(cfg.instances_dir, name)
-        try:
-            present = any(
-                item.get("name") == name for item in adapter.list_instances()
-            )
-        except Exception as exc:  # noqa: BLE001 -- effect-truth probes must fail closed
-            return "unverifiable", {"error": str(exc)}
-        token = _confirmation_observation(cfg, name, recorded.get("token"))
-        observed = {
-            "spec_present": spec is not None,
-            "spec_state": None if spec is None else spec.get("state"),
-            "container_present": present,
-            "confirmation": token,
-        }
-        matches = (
-            spec is not None
-            and spec.get("state") == "provisioned-pending-activation"
-            and present
-            and token.get("valid") is True
-        )
-        return ("matches" if matches else "contradicts", observed)
-
     observed_name = str(recorded.get("target") or name)
     runtime_truth, observed = _runtime_state_observation(
         adapter, observed_name, operation, recorded,
@@ -351,47 +327,6 @@ def _json_file_matches(value, expected) -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     return actual == expected
-
-
-def _confirmation_observation(cfg, name: str, token) -> dict:
-    if not isinstance(token, str) or not token:
-        return {"token": token, "present": False, "valid": False}
-    try:
-        if str(uuid.UUID(token)) != token:
-            raise ValueError
-    except ValueError:
-        return {"token": token, "present": False, "valid": False}
-    path = Path(cfg.state_dir) / "confirmations" / f"{token}.json"
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"token": token, "present": path.is_file(), "valid": False}
-    created_ms = value.get("created_ms")
-    ttl_s = value.get("ttl_s")
-    temporal_shape = (
-        isinstance(created_ms, int) and not isinstance(created_ms, bool)
-        and isinstance(ttl_s, int) and not isinstance(ttl_s, bool)
-        and ttl_s >= 0
-    )
-    expired = (
-        not temporal_shape
-        or audit.now_ms() > created_ms + ttl_s * 1000
-    )
-    valid = (
-        value.get("schema") == "confirmation/v1"
-        and value.get("operation") == "provision-activate"
-        and value.get("target") == name
-        and value.get("token") == token
-        and value.get("used") is False
-        and not expired
-    )
-    return {
-        "token": token,
-        "present": True,
-        "used": value.get("used"),
-        "expired": expired,
-        "valid": valid,
-    }
 
 
 def _resource_fence_observation(cfg, adapter, name: str, recorded: dict) -> dict:
@@ -1630,13 +1565,6 @@ def dispatch(args, cfg, adapter) -> int:
             return cmd_logs(args, cfg, adapter)
         if args.command == "destroy-plan":
             return cmd_destroy_plan(args, cfg, adapter)
-        if args.command == "provision":
-            # Lazy import: provision imports helpers from this module.
-            from . import provision
-            if getattr(args, "provision_command", None) == "prepare":
-                return provision.cmd_provision_prepare(args, cfg, adapter)
-            if getattr(args, "provision_command", None) == "confirm":
-                return provision.cmd_provision_confirm(args, cfg, adapter)
         if args.command == "snapshot":
             # Lazy import: snapshot imports helpers from this module.
             from . import snapshot

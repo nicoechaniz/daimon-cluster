@@ -288,7 +288,6 @@ jobs:
           clusterctl/matrix_host.py
           clusterctl/operation_journal.py
           clusterctl/park.py
-          clusterctl/provision.py
           clusterctl/reconcile.py
           clusterctl/rebirth.py
           clusterctl/rebirth_host.py
@@ -316,6 +315,7 @@ jobs:
           tests/integration/recovery-rebirth/role.py
           tests/integration/test_recovery_rebirth_containers.py
           tests/test_transfer.py
+          tests/test_tribe_bridge_retirement.py
           tests/test_volume_relocation.py
           tests/test_human_approvals.py
           tests/test_ci_workflow.py

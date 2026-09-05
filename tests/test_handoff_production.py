@@ -105,7 +105,7 @@ def _production_handoff(tmp_path: Path):
     cfg = Config("host", "default", "", "profile", str(state))
     adapter = FakeAdapter(
         instances=[{
-            "name": NAME, "state": "running", "image_version": "tribe-base/test",
+            "name": NAME, "state": "running", "image_version": "daimon-base/test",
             "budgets": {}, "uptime_s": 1,
         }],
         exec_handler=_exec_handler,

@@ -19,7 +19,7 @@ def state_dir(tmp_path):
     return tmp_path / "state"
 
 
-def _declare(state_dir, name=NAME, image_version="tribe-base/2026-08-01.1"):
+def _declare(state_dir, name=NAME, image_version="daimon-base/2026-08-01.1"):
     inst_dir = state_dir / "instances"
     inst_dir.mkdir(parents=True, exist_ok=True)
     (inst_dir / f"{name}.yaml").write_text(yaml.safe_dump({
@@ -100,7 +100,7 @@ def test_snapshot_create_happy_path_order(state_dir, capsys):
 
 
 def test_manifest_schema_shape(state_dir, capsys):
-    _declare(state_dir, image_version="tribe-base/2026-08-01.1")
+    _declare(state_dir, image_version="daimon-base/2026-08-01.1")
     code, ad = _snap(state_dir)
     assert code == 0
     out = json.loads(capsys.readouterr().out)
@@ -111,7 +111,7 @@ def test_manifest_schema_shape(state_dir, capsys):
     assert m["name"] == NAME
     assert m["snap_name"] == out["snap_name"]
     assert isinstance(m["created_ms"], int)
-    assert m["image_version"] == "tribe-base/2026-08-01.1"
+    assert m["image_version"] == "daimon-base/2026-08-01.1"
     assert m["quiesce"]["parked"] is True
     assert m["quiesce"]["sqlite_ok"] is True
     assert m["quiesce"]["checkpoint_files"] == [

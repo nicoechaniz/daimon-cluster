@@ -242,8 +242,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prefix", required=True)
     parser.add_argument("--project", default="default")
-    parser.add_argument("--profile", default="tribe-agent")
-    parser.add_argument("--image", default="tribe-base/latest")
+    parser.add_argument("--profile", default="daimon-agent")
+    parser.add_argument("--image", default="daimon-base/latest")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--observe", action="store_true", help=argparse.SUPPRESS)
     return parser

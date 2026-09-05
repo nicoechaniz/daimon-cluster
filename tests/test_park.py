@@ -1,9 +1,9 @@
 """Park with verified checkpoint manifest tests (issue #28).
 
-Covers: happy path (all 9 steps), resume from every interruption point,
+Covers: happy path (all 8 steps), resume from every interruption point,
 verification failure rollback, secret-refusal (fail-closed), unsigned /
 tampered manifest rejection, --abandon-critical actor recording, the
-explicit --no-fence path, outbox refusal, and CLI wiring.
+explicit --no-fence path, and CLI wiring.
 
 All tests run against FakeAdapter with a scripted exec_handler — no incus.
 """
@@ -44,7 +44,7 @@ def _spec_dict(**overrides):
         "schema": "instance-spec/v1",
         "name": NAME,
         "species": "test",
-        "image_version": "tribe-base/test",
+        "image_version": "daimon-base/test",
         "budgets": {"cpu": 1, "memory_mib": 1536, "disk_gib": 8},
         "created_ms": 1,
         "created_by": "test",
@@ -89,7 +89,7 @@ def state_dir(tmp_path):
 @pytest.fixture()
 def cfg(state_dir):
     return Config(host_id="test-host", incus_project="default",
-                  managed_prefix="", profile="tribe-agent",
+                  managed_prefix="", profile="daimon-agent",
                   state_dir=str(state_dir))
 
 
@@ -97,7 +97,7 @@ def cfg(state_dir):
 def adapter():
     return FakeAdapter(
         instances=[{"name": NAME, "state": "running",
-                    "image_version": "tribe-base/test", "budgets": {},
+                    "image_version": "daimon-base/test", "budgets": {},
                     "uptime_s": 5}],
         exec_handler=_exec_handler)
 
@@ -111,7 +111,7 @@ def lease(state_dir):
 def _cli(state_dir, *argv, adapter=None):
     ad = adapter if adapter is not None else FakeAdapter(
         instances=[{"name": NAME, "state": "running",
-                    "image_version": "tribe-base/test", "budgets": {},
+                    "image_version": "daimon-base/test", "budgets": {},
                     "uptime_s": 5}],
         exec_handler=_exec_handler)
     code = run(["--state-dir", str(state_dir), *argv], adapter=ad)
@@ -148,14 +148,13 @@ def test_happy_path_all_steps(state_dir, cfg, adapter, lease, capsys):
     assert manifest["fence_epoch"] == lease["epoch"]
     assert manifest["actor"] == "test"
     assert manifest["critical_jobs"] == "refused"
-    assert manifest["outbox"] == "not-configured"
     assert manifest["hmk_integrity"] == "ok"
     assert manifest["state_commit"] == COMMIT_SHA
     assert manifest["backup_ids"] == "not-configured"
     assert manifest["resource_fence"] == "authority-current"
     assert manifest["resource_fence_epoch"] == lease["epoch"]
     assert [s["name"] for s in manifest["steps"]] == [
-        "spec-parking", "critical-jobs", "outbox", "hmk-checkpoint",
+        "spec-parking", "critical-jobs", "hmk-checkpoint",
         "state-files", "state-repo", "verify"]
 
     # state files copied with recorded sha256
@@ -389,33 +388,6 @@ def test_no_fence_option_is_removed(state_dir, cfg, adapter, capsys):
         _cli(state_dir, "park", "--handoff", NAME, "--no-fence", adapter=adapter)
     assert (state_dir / "instances" / f"{NAME}.yaml").read_bytes() == before
     assert adapter.mutation_log == []
-
-
-# ---------------------------------------------------------------------------
-# bridge outbox
-# ---------------------------------------------------------------------------
-
-
-def test_outbox_nonempty_refused_unless_forced(
-        state_dir, cfg, adapter, lease, capsys):
-    _write_spec(state_dir)
-    outbox = state_dir / "bridge-outbox"
-    outbox.mkdir(parents=True)
-    (outbox / "msg-1.json").write_text("{}")
-
-    with pytest.raises(park.ParkRefused):
-        park.run_park(NAME, cfg, adapter, actor="test")
-    assert load_spec_raw(cfg.instances_dir, NAME)["status"] == "active"
-
-    out = park.run_park(NAME, cfg, adapter, actor="test", force_outbox=True)
-    assert out["checkpoint"]["outbox"] == "force-flushed"
-
-
-def test_outbox_empty_records_flushed(state_dir, cfg, adapter, lease):
-    _write_spec(state_dir)
-    (state_dir / "bridge-outbox").mkdir(parents=True)
-    result = park.run_park(NAME, cfg, adapter, actor="test")
-    assert result["checkpoint"]["outbox"] == "flushed"
 
 
 # ---------------------------------------------------------------------------

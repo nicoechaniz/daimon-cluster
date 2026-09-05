@@ -2,7 +2,7 @@
 
 Unit tests run against FakeAdapter fixtures with a tmp state_dir.
 Integration tests exercise IncusAdapter against the live incus daemon
-(iso-a / iso-b, profile tribe-agent) and are skipped when incus is
+(iso-a / iso-b, profile daimon-agent) and are skipped when incus is
 unavailable.
 """
 
@@ -52,8 +52,8 @@ def _write_spec(state_dir: Path, name: str, **overrides) -> None:
     spec = {
         "schema": "instance-spec/v1",
         "name": name,
-        "species": "tribe-agent",
-        "image_version": "tribe-base-2026-08-01.1",
+        "species": "daimon-agent",
+        "image_version": "daimon-base-2026-08-01.1",
         "budgets": {"cpu": 1, "memory_mib": 1536, "disk_gib": 8},
         "created_ms": 1754000000000,
         "created_by": "human:test",
@@ -65,7 +65,7 @@ def _write_spec(state_dir: Path, name: str, **overrides) -> None:
 
 
 def _actual(name: str, state: str = "running", cpu: int = 1, memory_mib: int = 1536,
-            disk_gib: int = 8, image_version: str = "tribe-base-2026-08-01.1",
+            disk_gib: int = 8, image_version: str = "daimon-base-2026-08-01.1",
             uptime_s: int = 42) -> dict:
     return {
         "name": name,
@@ -230,7 +230,7 @@ def test_config_show_exit_0_and_fields(capsys):
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
     assert data["schema"] == "clusterctl-config/v1"
-    assert data["profile"] == "tribe-agent"
+    assert data["profile"] == "daimon-agent"
     assert data["host_id"]
 
 
@@ -238,7 +238,7 @@ def test_repo_config_loads():
     cfg = load_config(CONFIG_PATH)
     assert cfg.host_id
     assert cfg.incus_project
-    assert cfg.profile == "tribe-agent"
+    assert cfg.profile == "daimon-agent"
     assert cfg.state_dir  # default /var/lib/daimon-cluster
 
 
@@ -264,7 +264,7 @@ requires_incus = pytest.mark.skipif(not INCUS_AVAILABLE,
 
 @requires_incus
 def test_incus_adapter_lists_tribe_agent_instances(tmp_path):
-    adapter = IncusAdapter(profile="tribe-agent", project="default")
+    adapter = IncusAdapter(profile="daimon-agent", project="default")
     instances = {inst["name"]: inst for inst in adapter.list_instances()}
     assert "iso-a" in instances
     assert "iso-b" in instances
@@ -276,7 +276,7 @@ def test_incus_adapter_lists_tribe_agent_instances(tmp_path):
 @requires_incus
 def test_incus_cli_status_iso_a_undeclared(tmp_path, capsys):
     # Empty tmp state_dir -> no specs -> iso-a must classify as undeclared.
-    adapter = IncusAdapter(profile="tribe-agent", project="default")
+    adapter = IncusAdapter(profile="daimon-agent", project="default")
     rc = cli.run(["--config", str(CONFIG_PATH), "--state-dir", str(tmp_path),
                   "status", "iso-a", "--json"], adapter=adapter)
     assert rc == 0

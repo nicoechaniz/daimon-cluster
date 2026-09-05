@@ -57,7 +57,7 @@ def _declare(state_dir, name=NAME):
         "schema": "instance-spec/v1",
         "instance_kind": "generic-instance",
         "name": name,
-        "image_version": "tribe-base/2026-08-01.1",
+        "image_version": "daimon-base/2026-08-01.1",
     }), encoding="utf-8")
 
 
@@ -69,7 +69,7 @@ def _write_manifest(state_dir, name, created_ms):
         "name": name,
         "snap_name": f"snap-{created_ms}",
         "created_ms": created_ms,
-        "image_version": "tribe-base/2026-08-01.1",
+        "image_version": "daimon-base/2026-08-01.1",
         "quiesce": {"parked": True, "sqlite_ok": True,
                     "checkpoint_files": []},
         "verified_readable": True,
@@ -83,7 +83,7 @@ def _write_manifest(state_dir, name, created_ms):
 def _adapter(log_lines=None):
     return FakeAdapter(
         instances=[{"name": NAME, "state": "running",
-                    "image_version": "tribe-base/2026-08-01.1",
+                    "image_version": "daimon-base/2026-08-01.1",
                     "budgets": {}, "uptime_s": 42}],
         log_lines=log_lines or {})
 
@@ -309,7 +309,7 @@ def test_cluster_list_projects_fleet(server, client):
     assert res["data"]["items"] == [{
         "name": NAME,
         "state": "running",
-        "image_version": "tribe-base/2026-08-01.1",
+        "image_version": "daimon-base/2026-08-01.1",
         "uptime_s": 42,
         "observed_at_ms": res["data"]["items"][0]["observed_at_ms"],
         "observations": res["data"]["items"][0]["observations"],

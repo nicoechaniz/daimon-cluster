@@ -12,24 +12,21 @@ Sequence:
   2. critical jobs — v1 policy is refuse-all (``critical_jobs: refused``);
      ``--abandon-critical`` records ``human-abandoned`` + actor, never
      silently
-  3. bridge outbox — ``state_dir/bridge-outbox/`` missing → no-op
-     (``not-configured``); non-empty → refuse (exit 6) unless
-     ``--force-outbox``
-  4. HMK checkpoint — wal_checkpoint(TRUNCATE) + integrity_check in
+  3. HMK checkpoint — wal_checkpoint(TRUNCATE) + integrity_check in
      container when the spec has ``hmk_path`` (else ``hmk: absent``)
-  5. state files — NOW.md + DIALOGUE-HANDOFF.md copied to
+  4. state files — NOW.md + DIALOGUE-HANDOFF.md copied to
      ``state_dir/park/<name>/state/`` when the spec has ``state_files``,
      sha256 recorded per file
-  6. state repo commit — git add+commit in the container when the spec has
+  5. state repo commit — git add+commit in the container when the spec has
      ``state_repo``; staged content scanned against lifecycle
      REDACT_PATTERNS — any match refuses (fail-closed)
-  7. verification — recompute every recorded hash, sqlite integrity must
+  6. verification — recompute every recorded hash, sqlite integrity must
      be ok, commit sha must resolve via git rev-parse, backup ids listed,
      an authority-signed current fence for the exact enrolled holder is required
-  8. resource-fence transition + manifest — spec status parking → parked ONLY after
+  7. resource-fence transition + manifest — spec status parking → parked ONLY after
      all verifications pass; signed ``checkpoint-manifest/v1`` written to
      ``state_dir/park/<name>/manifest-<resource_fence_epoch>.json``
-  9. stop — the container is stopped only after the manifest is written
+  8. stop — the container is stopped only after the manifest is written
      and verified
 
 Interruption at any step: the park-state file records completed steps and
@@ -38,8 +35,7 @@ outputs before redoing. Any failure rolls the spec status back to its
 pre-park value (default ``active``); the resource fence is never touched.
 
 Exit codes (clusterctl.cli contract): 0 ok, 3 undeclared, 6 conflict
-(refusals: outbox non-empty, secrets, lock), 10 internal (verification
-failures).
+(refusals: secrets, lock), 10 internal (verification failures).
 """
 
 from __future__ import annotations
@@ -82,7 +78,6 @@ STOP_TIMEOUT_S = 30
 STEPS = (
     "spec-parking",
     "critical-jobs",
-    "outbox",
     "hmk-checkpoint",
     "state-files",
     "state-repo",
@@ -106,7 +101,7 @@ class ParkError(Exception):
 
 
 class ParkRefused(ParkError):
-    """Policy refusal (non-empty outbox, secret material). Exit 6."""
+    """Policy refusal (authorization or secret material). Exit 6."""
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +246,6 @@ def run_park(
     *,
     actor: str,
     abandon_critical: bool = False,
-    force_outbox: bool = False,
     signer: fences.Signer | None = None,
     fence_store: Any | None = None,
     stop_timeout: int = STOP_TIMEOUT_S,
@@ -331,25 +325,7 @@ def run_park(
         else:
             _done("critical-jobs")
 
-        # 3. bridge outbox — v1 the bridge is external: inspect
-        #    state_dir/bridge-outbox/. Non-empty refuses unless forced.
-        outbox_dir = Path(cfg.state_dir) / "bridge-outbox"
-        if not outbox_dir.is_dir():
-            outbox = "not-configured"
-        elif any(outbox_dir.iterdir()):
-            if not force_outbox:
-                raise ParkRefused(
-                    "bridge outbox is non-empty; flush it or re-run with "
-                    "--force-outbox",
-                    {"outbox": "non-empty"})
-            outbox = "force-flushed"
-            logger.warning("park %s: non-empty bridge outbox overridden "
-                           "by --force-outbox (actor %s)", name, actor)
-        else:
-            outbox = "flushed"
-        _done("outbox", outbox=outbox)
-
-        # 4. HMK checkpoint — wal_checkpoint(TRUNCATE) + integrity_check in
+        # 3. HMK checkpoint — wal_checkpoint(TRUNCATE) + integrity_check in
         #    container (exec_quiesce_verify pattern), only when the spec
         #    declares hmk_path.
         spec = _spec()
@@ -507,7 +483,6 @@ def run_park(
                 "backup_ids": outputs.get("backup_ids"),
                 "critical_jobs": outputs.get("critical_jobs"),
                 "critical_jobs_actor": outputs.get("critical_jobs_actor"),
-                "outbox": outputs.get("outbox"),
                 "resource_fence_epoch": fence_epoch,
                 "resource_fence": outputs.get("resource_fence"),
                 "resource_fence_proof": outputs.get("resource_fence_proof"),
@@ -645,7 +620,6 @@ def cmd_park(args, cfg, adapter) -> int:
                 "method": "park-handoff",
                 "name": name,
                 "abandon_critical": bool(getattr(args, "abandon_critical", False)),
-                "force_outbox": bool(getattr(args, "force_outbox", False)),
                 "stop_timeout": int(getattr(args, "timeout", STOP_TIMEOUT_S)),
             },
             audit_context=stale,
@@ -659,7 +633,6 @@ def cmd_park(args, cfg, adapter) -> int:
                     name, cfg, adapter,
                     actor=_actor(args),
                     abandon_critical=bool(getattr(args, "abandon_critical", False)),
-                    force_outbox=bool(getattr(args, "force_outbox", False)),
                     signer=manifest_signer,
                     fence_store=fence_client,
                     stop_timeout=int(getattr(args, "timeout", STOP_TIMEOUT_S)),
@@ -701,7 +674,6 @@ def cmd_park(args, cfg, adapter) -> int:
                 "state": "parked",
                 "manifest": result["manifest"],
                 "critical_jobs": result["checkpoint"].get("critical_jobs"),
-                "outbox": result["checkpoint"].get("outbox"),
                 "resource_fence_epoch": result["checkpoint"].get(
                     "resource_fence_epoch"
                 ),

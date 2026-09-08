@@ -12,6 +12,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      DM_LEGACY_SOURCE: ${{ github.workspace }}/.ci-legacy-matrix/src
     strategy:
       fail-fast: false
       matrix:
@@ -269,6 +271,26 @@ jobs:
               == "MIT"
           )
           PY
+      - name: Acquire the exact legacy source for status transition contracts
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: AlterMundi/daimon-matrix
+          ref: 915c56c8899fd53d683bd7c7c81c3465b600bed9
+          path: .ci-legacy-matrix
+          sparse-checkout: src
+          persist-credentials: false
+      - name: Verify the complete legacy source inventory
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from daimon_matrix import operator_runtime_upgrade as upgrade
+
+          assert upgrade.LEGACY_REVISION == "915c56c8899fd53d683bd7c7c81c3465b600bed9"
+          source = Path(os.environ["DM_LEGACY_SOURCE"])
+          assert upgrade._inventory(upgrade._snapshot(source, private=False)) == upgrade.LEGACY_SOURCE_SHA256
+          print("Exact legacy source inventory verified; no test skipping or production acquisition.")
+          PY
       - name: Lint the Matrix, fence and mutation-journal boundaries
         run: >-
           python -m ruff check
@@ -286,6 +308,8 @@ jobs:
           clusterctl/locks.py
           clusterctl/lifecycle.py
           clusterctl/matrix_host.py
+          clusterctl/matrix_status_transition.py
+          tests/test_matrix_status_transition.py
           clusterctl/operation_journal.py
           clusterctl/park.py
           clusterctl/reconcile.py
@@ -368,7 +392,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: AlterMundi/daimon-matrix
-          ref: 52945123ec4d323c03eaafe216dce8a1d7e48565
+          ref: 0a80cc5c38d3c7f5cad98d440153f0cf9706686b
           path: matrix-source
           fetch-depth: 0
           persist-credentials: false
@@ -384,7 +408,7 @@ jobs:
           done
           docker version
           test "$(git -C matrix-source rev-parse HEAD)" = \
-            52945123ec4d323c03eaafe216dce8a1d7e48565
+            0a80cc5c38d3c7f5cad98d440153f0cf9706686b
       - name: Prove isolated recovery roles and read-only snapshot restore
         env:
           DAIMON_RUN_DOCKER_RECOVERY_TESTS: "1"

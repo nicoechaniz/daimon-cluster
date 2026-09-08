@@ -30,7 +30,7 @@ from typing import Any
 from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
-MATRIX_CONTRACT_COMMIT = "52945123ec4d323c03eaafe216dce8a1d7e48565"
+MATRIX_CONTRACT_COMMIT = "0a80cc5c38d3c7f5cad98d440153f0cf9706686b"
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
 MATRIX_RECOVERY_SNAPSHOT_SCHEMA = "dm.cluster-matrix-recovery-snapshot/v1"
@@ -1370,43 +1370,73 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ready-fd", type=int)
     parser.add_argument("--guardian-pid", type=int)
     parser.add_argument(
+        "--messaging-application",
+        type=Path,
+        default=None,
+        help="explicit owner-local native messaging application directory (disabled by default)",
+    )
+    parser.add_argument(
         "--production-fence-verifier",
         action="store_true",
         help="verify Cluster's production fence database without signing custody",
     )
     args = parser.parse_args(argv)
+    return run(
+        args.state_dir,
+        args.embodiment_id,
+        password_fd=args.password_fd,
+        bundle=args.bundle,
+        ready_fd=args.ready_fd,
+        guardian_pid=args.guardian_pid,
+        production_fence_verifier=args.production_fence_verifier,
+        messaging_application=args.messaging_application,
+    )
+
+
+def run(
+    state_dir: str | Path,
+    embodiment_id: str,
+    *,
+    password_fd: int,
+    bundle: str = "runtime.json",
+    ready_fd: int | None = None,
+    guardian_pid: int | None = None,
+    production_fence_verifier: bool = False,
+    messaging_application: str | Path | None = None,
+) -> int:
+    """Run the guarded host; native messaging requires explicit owner opt-in."""
+
+    bundle_name = bundle
     lock_descriptor: int | None = None
     stopping = threading.Event()
     guardian: threading.Thread | None = None
     try:
-        if args.guardian_pid is not None:
-            if args.guardian_pid <= 1 or os.getppid() != args.guardian_pid:
+        if guardian_pid is not None:
+            if guardian_pid <= 1 or os.getppid() != guardian_pid:
                 raise MatrixHostError("matrix_guardian_missing")
 
             def require_guardian() -> None:
                 while not stopping.wait(0.02):
-                    if os.getppid() != args.guardian_pid:
+                    if os.getppid() != guardian_pid:
                         os.kill(os.getpid(), signal.SIGKILL)
 
             guardian = threading.Thread(
                 target=require_guardian,
-                name=f"matrix-guardian-{args.guardian_pid}",
+                name=f"matrix-guardian-{guardian_pid}",
                 daemon=True,
             )
             guardian.start()
         api = _matrix_api()
         fence_store = (
-            ResourceFenceStore.production_verifier(args.state_dir)
-            if args.production_fence_verifier
+            ResourceFenceStore.production_verifier(state_dir)
+            if production_fence_verifier
             else None
         )
-        adapter = MatrixHostAdapter(
-            args.state_dir, args.embodiment_id, fence_store=fence_store
-        )
-        root = _owner_directory(matrix_root(args.state_dir, args.embodiment_id))
-        bundle = _public_bundle(root, args.bundle)
-        adapter.require_origin(_origin(bundle.get("local_origin")))
-        socket_name = bundle.get("socket")
+        adapter = MatrixHostAdapter(state_dir, embodiment_id, fence_store=fence_store)
+        root = _owner_directory(matrix_root(state_dir, embodiment_id))
+        public_bundle = _public_bundle(root, bundle_name)
+        adapter.require_origin(_origin(public_bundle.get("local_origin")))
+        socket_name = public_bundle.get("socket")
         if (
             not isinstance(socket_name, str)
             or not socket_name
@@ -1415,24 +1445,51 @@ def main(argv: Sequence[str] | None = None) -> int:
         ):
             raise MatrixHostError("matrix_socket_path_rejected")
         lock_descriptor = api["daemon"].acquire_lock(root)
+
+        def clock() -> int:
+            return time.time_ns() // 1_000_000
+
+        messaging_options: dict[str, Any] = {}
+        if messaging_application is not None:
+            try:
+                from daimon_matrix.messaging_config import (
+                    load_application,
+                    read_application_authorities,
+                )
+
+                messaging_options["relationship_authorities"] = (
+                    read_application_authorities(
+                        root, bundle_name, messaging_application, at_ms=clock()
+                    )
+                )
+            except Exception as exception:
+                raise MatrixHostError(
+                    "matrix_messaging_application_rejected"
+                ) from exception
         runtime = api["runtime"].load_runtime(
             root,
-            args.bundle,
-            _password_reader(args.password_fd),
-            clock=lambda: time.time_ns() // 1_000_000,
+            bundle_name,
+            _password_reader(password_fd),
+            clock=clock,
             body_reader=adapter.body_snapshot,
             curator_fence_verifier=adapter.verify_fence,
             curator_effect_observer=adapter.effect_observer,
+            **messaging_options,
         )
+        if messaging_application is not None:
+            try:
+                runtime = load_application(runtime, messaging_application)
+            except Exception as exception:
+                raise MatrixHostError(
+                    "matrix_messaging_application_rejected"
+                ) from exception
 
         def request_stop(_number: int, _frame: object) -> None:
             stopping.set()
 
         signal.signal(signal.SIGTERM, request_stop)
         signal.signal(signal.SIGINT, request_stop)
-        api["daemon"].serve_forever(
-            runtime, stop=stopping, ready_descriptor=args.ready_fd
-        )
+        api["daemon"].serve_forever(runtime, stop=stopping, ready_descriptor=ready_fd)
         return 0
     except Exception as exception:  # noqa: BLE001 - one closed process boundary
         code = exception.args[0] if exception.args else "matrix_host_startup_refused"

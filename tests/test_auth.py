@@ -58,8 +58,9 @@ def _req(srv, method, path, token=None, headers=None):
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode()
-        return exc.code, json.loads(body) if body else {}
+        with exc:
+            body = exc.read().decode()
+            return exc.code, json.loads(body) if body else {}
 
 
 def _token(state_dir, actor="tester", scopes=("read", "mutate"), owner="*", ttl_days=1):

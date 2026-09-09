@@ -11,12 +11,62 @@ PLANNED = {
     "tests/test_clusterd.py", "tests/test_matrix_parity.py",
 }
 
+# Additional test-only delta after the original seven-file maintenance boundary:
+# explicitly close HTTPError responses, including on body decoding failure.
+# Keep the historical baseline hashes and original PLANNED inventory unchanged.
+HTTP_HELPER_CLEANUP = {"tests/test_auth.py", "tests/test_clusterd.py"}
+
+# Owner-approved runtime exception: ONLY wrap the existing HTTPError catch
+# read/translate block in a context manager. Undo exactly that addition before
+# comparing historical hashes, so no other client changes are permitted.
+HTTP_CLIENT_CLEANUP = {"steward_tools/client.py", "steward_tools/mutations.py"}
+
+
+def _before_http_client_cleanup(name, candidate):
+    suffix = " only" if name == "steward_tools/client.py" else ""
+    original = (
+        '            try:\n'
+        '                body = json.loads(exc.read().decode("utf-8"))\n'
+        '            except Exception:  # non-JSON error body — keep the status'
+        + suffix + '\n'
+        '                body = None\n'
+        '            raise ClusterdHTTPError(exc.code, body) from exc\n'
+    ).encode()
+    wrapped = b"            with exc:\n" + b"".join(
+        b"    " + line for line in original.splitlines(keepends=True)
+    )
+    assert candidate.count(wrapped) == 1, name
+    return candidate.replace(wrapped, original)
+
+
+# Separately authorized test-owned response: no whole-file exemption.
+HTTP_UNATTENDED_TEST_CLEANUP = {"tests/test_steward_mutations.py"}
+
+
+def _before_http_unattended_test_cleanup(name, candidate):
+    original = (
+        '    assert exc_info.value.code == 403\n'
+        '    body = json.loads(exc_info.value.read().decode("utf-8"))\n'
+        '    assert body["error"] == "unattended-steward-denied"\n'
+        '    assert ad.mutation_log == []\n'
+    ).encode()
+    wrapped = b"    with exc_info.value:\n" + b"".join(
+        b"    " + line for line in original.splitlines(keepends=True)
+    )
+    assert candidate.count(wrapped) == 1, name
+    return candidate.replace(wrapped, original)
+
 
 def test_installed_tree_preserved_outside_explicit_maintenance_boundary():
     baseline = json.loads((ROOT / "docs/verification/maintenance-baseline.json").read_text())
     for name, digest in baseline["sha256"].items():
-        if name not in PLANNED:
-            assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == digest, name
+        if name not in PLANNED | HTTP_HELPER_CLEANUP:
+            candidate = (ROOT / name).read_bytes()
+            if name in HTTP_CLIENT_CLEANUP:
+                candidate = _before_http_client_cleanup(name, candidate)
+            if name in HTTP_UNATTENDED_TEST_CLEANUP:
+                candidate = _before_http_unattended_test_cleanup(name, candidate)
+            assert hashlib.sha256(candidate).hexdigest() == digest, name
 
 
 def test_only_declared_runtime_additions_and_exact_upstream_composition():

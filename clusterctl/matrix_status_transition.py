@@ -36,7 +36,7 @@ def _validate_pair(bundle, pair, origin, being, *, legacy=False, check_time=True
     try:
         if (bundle["local_origin"] != origin or bundle["manifest"]["being_ref"] != being
                 or bundle["binding"] is not None or bundle["binding_activation"] is not None
-                or bundle["provisional_history"] is not None or bundle["authority_history"]):
+                or bundle["provisional_history"] is not None):
             raise TransitionError("status_unsupported_authority_history_or_origin")
         chain = api.ControlChain(bundle["control_artifacts"][0])
         for artifact in bundle["control_artifacts"][1:]:
@@ -47,6 +47,25 @@ def _validate_pair(bundle, pair, origin, being, *, legacy=False, check_time=True
         credentials = api._indexed(bundle["credentials"])
         incarnations = api._indexed(bundle["incarnations"])
         authority = api.RootAuthority(api.BeingManifest.from_value(bundle["manifest"]), state, credentials, incarnations)
+        # Match Matrix's compact epoch construction, not its wider rekey/recovery
+        # lane. Matrix alone verifies signatures, lineage and allowed deltas.
+        history = bundle["authority_history"]
+        if not isinstance(history, list) or len(history) > 256:
+            raise TransitionError("status_unsupported_authority_history_or_origin")
+        historical_reversed = []
+        next_authority = authority
+        for entry in reversed(history):
+            if (not isinstance(entry, dict) or set(entry) != {"manifest", "successor"}
+                    or not isinstance(entry["successor"], dict)
+                    or entry["successor"].get("schema") != "dm.we.authority-epoch/v1"):
+                raise TransitionError("status_unsupported_authority_history_or_origin")
+            next_authority = api.RootAuthority(
+                api.BeingManifest.from_value(entry["manifest"]), next_authority.state,
+                next_authority.credentials, next_authority.incarnations)
+            historical_reversed.append(next_authority)
+        if history:
+            authority = api.RootHistoryAuthority(authority, list(reversed(historical_reversed)),
+                [entry["successor"] for entry in history])
         member = authority.validate_origin(origin, require_active=True)
         credential = credentials[member["embodiment_credential_id"]]
         body = api.verify_embodiment_credential(credential, state, at_ms=now)
@@ -58,7 +77,7 @@ def _validate_pair(bundle, pair, origin, being, *, legacy=False, check_time=True
         if not legacy:
             fields |= {"runtime_id", "runtime_label"}
         # Pinned 915c56c ClientConfig: V1 has exactly these three fields.
-        # V2 requires historical_servers and is outside this no-history lane.
+        # V2 requires historical_servers; external-client history stays out of scope.
         if (set(config) != fields or config["schema"] != ("dm.local.client-config/v1" if legacy else "dm.local.client-config/v3")
                 or config["expected_server"] != origin):
             raise TransitionError("status_client_binding_conflict")

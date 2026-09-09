@@ -65,7 +65,7 @@ load_runtime(r,"runtime.json",lambda:bytearray(b"synthetic-status-transition-pas
 
 
 @pytest.fixture
-def independent_legacy_status(tmp_path):
+def independent_legacy_status(tmp_path, request):
     """Fresh legacy authority, not a rename of deployed custody or V1 bytes."""
     import json
     legacy = Path(os.environ["DM_LEGACY_SOURCE"])
@@ -100,6 +100,50 @@ secrets[slot] = capability.key
 updated = store.rotate(lambda: bytearray(password), lambda: bytearray(password), expected_counter=current.counter, control_head=current.control_head, secrets=secrets)
 bundle["capabilities"] = [row for row in bundle["capabilities"] if row != old_status] + [dict(descriptor=capability.descriptor, secret_slot=slot)]
 bundle["keystore"]["counter"] = updated.counter
+if sys.argv[3] == "epoch":
+    import copy
+    from daimon_matrix.authority_epochs import create_authority_epoch, RootHistoryAuthority
+    from daimon_matrix.identity import ControlChain, create_incarnation_authorization
+    from daimon_matrix.weave import BeingManifest, RootAuthority
+    # Restart the other embodiment: the local origin and external V1 stay exact.
+    beta = p / "ceremony/runtimes/beta"
+    beta_bundle = json.loads((beta / "runtime.json").read_bytes())
+    beta_keys = EncryptedKeystore(beta / "custody.json").open(lambda: bytearray(b"synthetic-beta-password"))
+    seed = beta_keys.secrets[beta_bundle["keystore"]["signing_slot"]]
+    previous = BeingManifest.from_value(bundle["manifest"])
+    rows = copy.deepcopy(previous.value["embodiments"])
+    row = next(row for row in rows if row["embodiment_id"] == beta_bundle["local_origin"]["embodiment_id"])
+    credential = next(c for c in bundle["credentials"] if c["artifact_id"] == row["embodiment_credential_id"])
+    old_auth = next(c for c in bundle["incarnations"] if c["artifact_id"] == row["incarnation_authorization_id"])
+    issued = max(now, old_auth["body"]["started_at_ms"] + 1)
+    authorization = create_incarnation_authorization(credential, seed,
+        incarnation_id="incarnation:synthetic-beta-successor",
+        incarnation_sequence=old_auth["body"]["incarnation_sequence"] + 1,
+        started_at_ms=issued)
+    successor_row = dict(row, incarnation_id=authorization["body"]["incarnation_id"], incarnation_authorization_id=authorization["artifact_id"])
+    row["status"] = "retired"
+    rows.append(successor_row)
+    rows.sort(key=lambda row: (row["embodiment_id"], row["incarnation_id"]))
+    successor = BeingManifest.from_value(dict(previous.value, revision=previous.value["revision"] + 1, embodiments=rows))
+    epoch = create_authority_epoch(previous, successor, embodiment_id=row["embodiment_id"],
+        previous_incarnation_id=row["incarnation_id"], successor_authorization=authorization,
+        signing_seed=seed, issued_at_ms=issued)
+    bundle["incarnations"].append(authorization)
+    bundle["manifest"] = successor.value
+    bundle["authority_history"] = [dict(manifest=previous.value, successor=epoch)]
+    chain = ControlChain(bundle["control_artifacts"][0])
+    for artifact in bundle["control_artifacts"][1:]:
+        chain.add(artifact)
+    credentials = {c["artifact_id"]: c for c in bundle["credentials"]}
+    incarnations = {c["artifact_id"]: c for c in bundle["incarnations"]}
+    active = RootAuthority(successor, chain.state, credentials, incarnations)
+    historical = RootAuthority(previous, chain.state, credentials, incarnations)
+    RootHistoryAuthority(active, [historical], [epoch]).validate_origin(bundle["local_origin"], require_active=True)
+    # Genuine custody rotations reach the observed counter4 without editing counters.
+    for _ in range(2):
+        updated = store.rotate(lambda: bytearray(password), lambda: bytearray(password),
+            expected_counter=updated.counter, control_head=updated.control_head, secrets=updated.secrets)
+    bundle["keystore"]["counter"] = updated.counter
 # Explicit synthetic provisioning: bootstrap defaults to aligned names. Emit
 # a NEW native V1 pair for the fresh capability, never relabel old client bytes.
 (r / "runtime.json").unlink()
@@ -111,10 +155,10 @@ _private_write(pair / "client.json", dict(schema="dm.local.client-config/v1", ca
 _private_write(pair / "capability.key", capability.key)
 ClientConfig.load(pair / "client.json", (pair / "capability.key").read_bytes())
 load_runtime(r, "runtime.json", lambda: bytearray(password), clock=lambda: time.time_ns() // 1000000)
-assert updated.counter == 2
+assert updated.counter == (4 if sys.argv[3] == "epoch" else 2)
 (r / ".daimon-matrixd.lock").touch(mode=0o600)
 '''
-    subprocess.run([sys.executable, "-I", "-B", "-c", script, str(legacy), str(tmp_path)], check=True, capture_output=True, timeout=90)
+    subprocess.run([sys.executable, "-I", "-B", "-c", script, str(legacy), str(tmp_path), getattr(request, "param", "none")], check=True, capture_output=True, timeout=90)
     runtime = tmp_path / "ceremony/runtimes/alpha"
     bundle = json.loads((runtime / "runtime.json").read_bytes())
     native_pair = tmp_path / "ceremony/host-clients/alpha"
@@ -123,7 +167,7 @@ assert updated.counter == 2
     assert set(config) == {"schema", "capability", "expected_server"}
     assert config["schema"] == "dm.local.client-config/v1"
     assert bundle["keystore"]["signing_slot"] == "runtime.signing.v1:alpha"
-    assert bundle["keystore"]["counter"] == 2
+    assert bundle["keystore"]["counter"] == (4 if getattr(request, "param", "none") == "epoch" else 2)
     assert {row["secret_slot"] for row in bundle["capabilities"]} == {
         "runtime.capability.v1:alpha", "runtime.capability.v1:status:clusterd",
     }
@@ -139,27 +183,31 @@ assert updated.counter == 2
     return legacy, runtime, bundle, target, original
 
 
+@pytest.mark.parametrize("independent_legacy_status", ["none", "epoch"], indirect=True)
 def test_independent_legacy_v1_status_native_forward_and_reverse(independent_legacy_status):
-    """Keep this positive journey RED until the exact frozen Matrix fix arrives."""
+    """Native V1, independently provisioned status, and optional compact epoch."""
     import json
     legacy, runtime, bundle, target, original = independent_legacy_status
+    from daimon_matrix.keystore import EncryptedKeystore
+    unrelated = upgrade._snapshot(runtime.parent / "beta")
+    custody = EncryptedKeystore(runtime / "custody.json").open(lambda: bytearray(PASSWORD))
     transaction = runtime.parent / "upgrade"
     before = upgrade.inventory_digest(runtime)
     ready = upgrade.stage(
         source=runtime, transaction=transaction, legacy_source=legacy,
         legacy_sha256=upgrade.LEGACY_SOURCE_SHA256,
-        expected_source_sha256=before, expected_counter=2,
+        expected_source_sha256=before, expected_counter=bundle["keystore"]["counter"],
         expected_control_head=bundle["control_head"],
         expected_being_ref=bundle["manifest"]["being_ref"],
         expected_origin=bundle["local_origin"], password=PASSWORD,
         expires_at_ms=time.time_ns() // 1_000_000 + 1_800_000,
         externally_quiesced=True,
     )
-    assert (ready["counter_before"], ready["counter_after"]) == (2, 3)
+    assert (ready["counter_before"], ready["counter_after"]) == (bundle["keystore"]["counter"], bundle["keystore"]["counter"] + 1)
     assert upgrade.inventory_digest(runtime) == before
     assert upgrade._snapshot(target) == original
     upgrade.publish(source=runtime, transaction=transaction, expected_receipt_sha256=sha((transaction / "ready.json").read_bytes()), password=PASSWORD, externally_quiesced=True)
-    assert json.loads((runtime / "runtime.json").read_bytes())["keystore"]["counter"] == 3
+    assert json.loads((runtime / "runtime.json").read_bytes())["keystore"]["counter"] == bundle["keystore"]["counter"] + 1
     journey = dict(runtime=runtime, upgrade_transaction=transaction, transaction=target.parent / "transition", target=target, expected_target_sha256=upgrade._inventory(original), expected_upgrade_sha256=sha((transaction / "published.json").read_bytes()), expected_origin=bundle["local_origin"], expected_being_ref=bundle["manifest"]["being_ref"], externally_quiesced=True)
     m = module()
     runtime_before = upgrade.inventory_digest(runtime)
@@ -174,9 +222,12 @@ def test_independent_legacy_v1_status_native_forward_and_reverse(independent_leg
     # No successor runtime/status effects before native monotonic reverse.
     rollback_pin = rollback_runtime(journey)
     restored = json.loads((runtime / "runtime.json").read_bytes())
-    assert restored["keystore"]["counter"] == 4
+    assert restored["keystore"]["counter"] == bundle["keystore"]["counter"] + 2
+    assert restored["authority_history"] == bundle["authority_history"]
     assert restored["keystore"]["signing_slot"] == bundle["keystore"]["signing_slot"]
     assert restored["capabilities"] == bundle["capabilities"]
+    assert EncryptedKeystore(runtime / "custody.json").open(lambda: bytearray(PASSWORD)).secrets == custody.secrets
+    assert upgrade._snapshot(runtime.parent / "beta") == unrelated
     runtime_before = upgrade.inventory_digest(runtime)
     result = m.rollback(**publication_args(journey), expected_rollback_sha256=rollback_pin, password=PASSWORD)
     assert result["state"] == "stopped-rolled-back"
@@ -189,6 +240,101 @@ def test_independent_legacy_v1_status_native_forward_and_reverse(independent_leg
     assert upgrade._snapshot(journey["transaction"] / "checkpoint") == original
     # Authenticated legacy reads have effects; this is not post-effect rollback.
     assert upgrade.inventory_digest(runtime) != runtime_before
+
+
+@pytest.fixture
+def epoch_journey(independent_legacy_status):
+    legacy, runtime, bundle, target, original = independent_legacy_status
+    assert len(bundle["authority_history"]) == 1
+    transaction = runtime.parent / "upgrade"
+    upgrade.stage(source=runtime, transaction=transaction, legacy_source=legacy,
+        legacy_sha256=upgrade.LEGACY_SOURCE_SHA256,
+        expected_source_sha256=upgrade.inventory_digest(runtime),
+        expected_counter=bundle["keystore"]["counter"], expected_control_head=bundle["control_head"],
+        expected_being_ref=bundle["manifest"]["being_ref"], expected_origin=bundle["local_origin"],
+        password=PASSWORD, expires_at_ms=time.time_ns() // 1_000_000 + 1_800_000,
+        externally_quiesced=True)
+    upgrade.publish(source=runtime, transaction=transaction,
+        expected_receipt_sha256=sha((transaction / "ready.json").read_bytes()),
+        password=PASSWORD, externally_quiesced=True)
+    return dict(runtime=runtime, upgrade_transaction=transaction,
+        transaction=target.parent / "transition", target=target,
+        expected_target_sha256=upgrade._inventory(original),
+        expected_upgrade_sha256=sha((transaction / "published.json").read_bytes()),
+        expected_origin=bundle["local_origin"], expected_being_ref=bundle["manifest"]["being_ref"],
+        externally_quiesced=True)
+
+
+@pytest.mark.parametrize("independent_legacy_status", ["epoch"], indirect=True)
+@pytest.mark.parametrize("case", [
+    "signature", "hash", "revision", "chain", "manifest-schema", "successor-schema",
+    "entry-extra", "entry-missing", "entry-type", "successor-type", "manifest-type",
+    "history-null", "history-dict", "history-string", "history-false", "history-oversize",
+    "binding", "activation", "provisional", "origin", "being", "control-head",
+])
+def test_compact_epoch_refusals_before_staging(epoch_journey, case):
+    """Re-pinned inventory is not cryptographic or structural authority."""
+    import copy
+    import json
+    journey = epoch_journey
+    path = journey["runtime"] / "runtime.json"
+    bundle = json.loads(path.read_bytes())
+    history = bundle["authority_history"]
+    entry = history[0]
+    if case == "signature":
+        entry["successor"]["signature"]["value"] = "A" * 86
+    elif case == "hash":
+        entry["successor"]["content_hash"] = "0" * 64
+    elif case == "revision":
+        entry["successor"]["previous_revision"] += 1
+    elif case == "chain":
+        history.append(copy.deepcopy(entry))
+    elif case == "manifest-schema":
+        entry["manifest"]["schema"] = "being-manifest/v1"
+    elif case == "successor-schema":
+        entry["successor"]["schema"] = "dm.we.root-rekey/v1"
+    elif case == "entry-extra":
+        entry["control_artifacts"] = bundle["control_artifacts"]
+    elif case == "entry-missing":
+        del entry["manifest"]
+    elif case == "entry-type":
+        history[0] = []
+    elif case == "successor-type":
+        entry["successor"] = []
+    elif case == "manifest-type":
+        entry["manifest"] = []
+    elif case.startswith("history-"):
+        bundle["authority_history"] = {
+            "history-null": None, "history-dict": {}, "history-string": "",
+            "history-false": False, "history-oversize": history * 257,
+        }[case]
+    elif case in ("binding", "activation", "provisional"):
+        bundle[{"binding": "binding", "activation": "binding_activation", "provisional": "provisional_history"}[case]] = {}
+    elif case == "origin":
+        bundle["local_origin"]["principal_id"] = "synthetic-wrong"
+    elif case == "being":
+        bundle["manifest"]["being_ref"] = "synthetic-wrong"
+    else:
+        bundle["control_head"] = "0" * 64
+    rewrite(path, bundle)
+    repin_runtime(journey)
+    roots = [journey["runtime"], journey["target"], journey["upgrade_transaction"], journey["runtime"].parent / "beta"]
+    before = [upgrade._snapshot(root) for root in roots]
+    # Exercise the original legacy bundle too, not a V1 pair against V3 rows.
+    legacy_bundle = json.loads((journey["upgrade_transaction"] / "checkpoint/runtime.json").read_bytes())
+    m = module()
+    assert m is not None
+    pair = upgrade._snapshot(journey["target"])
+    m._validate_pair(legacy_bundle, pair, journey["expected_origin"], journey["expected_being_ref"], legacy=True)
+    for field in ("authority_history", "binding", "binding_activation", "provisional_history", "local_origin", "manifest", "control_head"):
+        legacy_bundle[field] = copy.deepcopy(bundle[field])
+    with pytest.raises(m.TransitionError):
+        m._validate_pair(legacy_bundle, pair,
+            journey["expected_origin"], journey["expected_being_ref"], legacy=True)
+    with pytest.raises(m.TransitionError):
+        m.stage(**journey)
+    assert not journey["transaction"].exists()
+    assert [upgrade._snapshot(root) for root in roots] == before
 
 
 def legacy_client_load(legacy, target):

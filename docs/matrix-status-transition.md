@@ -161,8 +161,10 @@ Interrupted validation copies are retained and may require reviewed recovery.
   All V2 clients are refused, including valid empty-history and nonempty-history
   variants; V2 without `historical_servers` is invalid in the pinned legacy loader.
   Never relabel a real client or reconstruct its bytes to pass this boundary.
-- Provisional/binding/rotated authority-history layouts are deliberately refused;
-  this bounded verifier supports ordinary root authority with no history binding.
+- Provisional/binding layouts and extended control/rekey histories remain refused.
+  The only supported nonempty authority history is a bounded, cryptographically
+  verified compact authority-epoch chain described below; this is not V2 client
+  history support or permission to discard runtime history.
 - No receipt/candidate reconstruction from arbitrary partial staging, new target
   creation, cross-filesystem exchange fallback or copying an existing transaction
   to another external parent inode. Large inventories inherit Matrix's per-file
@@ -174,6 +176,44 @@ Interrupted validation copies are retained and may require reviewed recovery.
   correction leaves the existing successor pin
   `0a80cc5c38d3c7f5cad98d440153f0cf9706686b` unchanged; full maintenance
   composition qualification and release approval remain separate gates.
+
+## Compact authority-epoch history
+
+A native V1 status client can be valid even when its runtime has undergone an
+ordinary signed authority-epoch succession. Runtime authority history and a
+client's `historical_servers` field are different contracts. V1 retains its
+exact three-field shape, and all V2 clients remain outside this transition lane.
+
+The public verifier accepts an empty history or at most 256 compact entries.
+Each entry has exactly `manifest` and `successor`; only the
+`dm.we.authority-epoch/v1` successor schema is admitted. Historical authorities
+are reconstructed using Matrix's `BeingManifest` and `RootAuthority` with the
+shared active control/credential/incarnation context. Matrix's
+`RootHistoryAuthority` verifies the complete ordered chain, signatures, hashes,
+lineage and successor semantics. Unknown or additional fields, malformed chains,
+replayed epochs, enrollment/recovery successors, extended control histories and
+provisional/binding histories are refused. No duplicate cryptographic verifier
+or runtime constructor is introduced.
+
+This verification applies wherever the existing pair validator is invoked,
+including forward staging/publication/replay and reverse validation. Current
+origin, active credentials, expiry, secret-key correspondence, exact methods,
+signed profile bindings, inventories, parent identity and CAS checks remain in
+force. History and original V1 client bytes must be preserved across monotonic
+reverse; do not rewrite production data to match an empty-history fixture.
+
+This scope extension does not make every post-rollback runtime immediately
+re-upgradable. Native runtime rollback can retain generated modern client
+artifacts whose subsequent regeneration conflicts with Matrix's preservation
+guard. A fresh transaction pathname alone does not resolve that condition.
+Preserve the complete earlier transaction and artifacts, and separately qualify
+a bounded recovery path; this sidecar change does not authorize deletion,
+unverified cleanup, custody rewind or a blanket preservation exception.
+
+The active Matrix dependency is the exact pin declared by the maintenance tree's
+requirements and host provenance guard. The earlier V1-correction pin and review
+counts below remain historical evidence, not this extension's qualification.
+New exact-head review, genuine installed-pair tests and hosted CI are required.
 
 ## Corrected legacy contract and evidence boundary
 

@@ -61,7 +61,7 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           from daimon_matrix import operator_runtime_upgrade as upgrade
-          assert upgrade._inventory(upgrade._snapshot(Path('.matrix-legacy/src'), private=False)) == upgrade.LEGACY_SOURCE_SHA256
+          assert upgrade._inventory(upgrade._snapshot(Path('.matrix-legacy/src').resolve(), private=False)) == upgrade.LEGACY_SOURCE_SHA256
           PY
       - name: Lint the Matrix integration boundary
         run: >-

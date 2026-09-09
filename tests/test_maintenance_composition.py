@@ -32,11 +32,19 @@ def test_only_declared_runtime_additions_and_exact_upstream_composition():
     assert not old - current
     origins = json.loads((ROOT / "docs/verification/maintenance-origins.json").read_text())
     for name, origin in origins.items():
-        assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == origin["candidate_sha256"], name
+        candidate = (ROOT / name).read_bytes()
+        # Preserve the historical frozen hashes: only these two origin members
+        # intentionally repin the identical Matrix package to its merged commit.
+        if name in {"clusterctl/matrix_host.py", "requirements-weave.txt"}:
+            merged = b"8e7d8870609507e61eec1be769280dc33c487366"
+            reviewed = b"0a80cc5c38d3c7f5cad98d440153f0cf9706686b"
+            assert candidate.count(merged) == 1, name
+            candidate = candidate.replace(merged, reviewed)
+        assert hashlib.sha256(candidate).hexdigest() == origin["candidate_sha256"], name
 
 
 def test_host_uses_private_fences_without_replacing_legacy_api():
     from clusterctl import fences, matrix_host
     assert matrix_host.ResourceFenceStore is not fences.ResourceFenceStore
     assert matrix_host.ResourceFenceStore.__module__ == "clusterctl.matrix_fencing.fences"
-    assert matrix_host.MATRIX_CONTRACT_COMMIT == "0a80cc5c38d3c7f5cad98d440153f0cf9706686b"
+    assert matrix_host.MATRIX_CONTRACT_COMMIT == "8e7d8870609507e61eec1be769280dc33c487366"

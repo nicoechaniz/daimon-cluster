@@ -70,7 +70,7 @@ def test_old_http_consumer_reads_real_five_method_client_and_enforces_old_auth()
             status, _, body = http_fixture._get(server, "/v1/weave/status")
             assert status == 200, body
             assert body["configured"] is True
-            assert body["matrix_contract_commit"] == "8e7d8870609507e61eec1be769280dc33c487366"
+            assert body["matrix_contract_commit"] == "acb131f18c200bb028ee86fa3a8ef9a2f6c040a3"
             row = body["embodiments"][0]
             assert row["me"]["body"]["state"] == "running"
             assert row["me"]["body"]["resource_fences"] == []

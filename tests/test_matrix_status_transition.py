@@ -64,6 +64,133 @@ load_runtime(r,"runtime.json",lambda:bytearray(b"synthetic-status-transition-pas
     return dict(runtime=runtime, upgrade_transaction=transaction, transaction=target.parent / "transition", target=target, expected_target_sha256=old, expected_upgrade_sha256=sha((transaction / "published.json").read_bytes()), expected_origin=bundle["local_origin"], expected_being_ref=bundle["manifest"]["being_ref"], externally_quiesced=True)
 
 
+@pytest.fixture
+def independent_legacy_status(tmp_path):
+    """Fresh legacy authority, not a rename of deployed custody or V1 bytes."""
+    import json
+    legacy = Path(os.environ["DM_LEGACY_SOURCE"])
+    assert upgrade._inventory(upgrade._snapshot(legacy, private=False)) == upgrade.LEGACY_SOURCE_SHA256
+    script = '''
+import os, sys, json, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from daimon_matrix.operator_bootstrap import _create, _private_write
+from daimon_matrix.runtime import load_runtime
+from daimon_matrix.keystore import EncryptedKeystore
+from daimon_matrix.local_api import create_capability
+from daimon_matrix.client import ClientConfig
+os.umask(0o077)
+p = Path(sys.argv[2])
+password = b"synthetic-status-transition-password"
+profile = p / "profile.json"
+profile.write_text(json.dumps(dict(schema="dm.operator.bootstrap-profile/v1", embodiments=[dict(label=x, body_ref="body:synthetic-"+x, principal_id="synthetic-"+x, listen_host="127.0.0.1", listen_port=47001+i, advertised_endpoint=f"http://127.0.0.1:{47001+i}/dm-peer/v1") for i,x in enumerate(("alpha","beta"))])))
+def fd(secret=password):
+    r,w=os.pipe(); os.write(w,secret); os.close(w); return r
+_create(p/"ceremony", profile, fd(b"synthetic-root-password"), [f"alpha={fd()}", f"beta={fd(b'synthetic-beta-password')}"])
+r = p / "ceremony/runtimes/alpha"
+bundle = json.loads((r / "runtime.json").read_bytes())
+store = EncryptedKeystore(r / "custody.json")
+current = store.open(lambda: bytearray(password))
+old_status = next(row for row in bundle["capabilities"] if ":status:" in row["secret_slot"])
+now = time.time_ns() // 1000000
+capability = create_capability(os.urandom(32), client_id="client:status:clusterd", methods=old_status["descriptor"]["methods"], not_before_ms=now, not_after_ms=now+3600000)
+slot = "runtime.capability.v1:status:clusterd"
+secrets = {key: value for key, value in current.secrets.items() if key != old_status["secret_slot"]}
+secrets[slot] = capability.key
+updated = store.rotate(lambda: bytearray(password), lambda: bytearray(password), expected_counter=current.counter, control_head=current.control_head, secrets=secrets)
+bundle["capabilities"] = [row for row in bundle["capabilities"] if row != old_status] + [dict(descriptor=capability.descriptor, secret_slot=slot)]
+bundle["keystore"]["counter"] = updated.counter
+# Explicit synthetic provisioning: bootstrap defaults to aligned names. Emit
+# a NEW native V1 pair for the fresh capability, never relabel old client bytes.
+(r / "runtime.json").unlink()
+_private_write(r / "runtime.json", bundle)
+pair = p / "ceremony/host-clients/alpha"
+for name in ("client.json", "capability.key"):
+    (pair / name).unlink()
+_private_write(pair / "client.json", dict(schema="dm.local.client-config/v1", capability=capability.descriptor, expected_server=bundle["local_origin"]))
+_private_write(pair / "capability.key", capability.key)
+ClientConfig.load(pair / "client.json", (pair / "capability.key").read_bytes())
+load_runtime(r, "runtime.json", lambda: bytearray(password), clock=lambda: time.time_ns() // 1000000)
+assert updated.counter == 2
+(r / ".daimon-matrixd.lock").touch(mode=0o600)
+'''
+    subprocess.run([sys.executable, "-I", "-B", "-c", script, str(legacy), str(tmp_path)], check=True, capture_output=True, timeout=90)
+    runtime = tmp_path / "ceremony/runtimes/alpha"
+    bundle = json.loads((runtime / "runtime.json").read_bytes())
+    native_pair = tmp_path / "ceremony/host-clients/alpha"
+    original = upgrade._snapshot(native_pair)
+    config = json.loads(original["client.json"])
+    assert set(config) == {"schema", "capability", "expected_server"}
+    assert config["schema"] == "dm.local.client-config/v1"
+    assert bundle["keystore"]["signing_slot"] == "runtime.signing.v1:alpha"
+    assert bundle["keystore"]["counter"] == 2
+    assert {row["secret_slot"] for row in bundle["capabilities"]} == {
+        "runtime.capability.v1:alpha", "runtime.capability.v1:status:clusterd",
+    }
+    from clusterctl.matrix_host import matrix_client_root
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    target = matrix_client_root(state, bundle["local_origin"]["embodiment_id"])
+    target.parent.mkdir(mode=0o700)
+    upgrade._copy(original, target)
+    legacy_client_load(legacy, target)
+    legacy_status_calls(legacy, runtime, target)
+    assert upgrade._snapshot(target) == original
+    return legacy, runtime, bundle, target, original
+
+
+def test_independent_legacy_v1_status_native_forward_and_reverse(independent_legacy_status):
+    """Keep this positive journey RED until the exact frozen Matrix fix arrives."""
+    import json
+    legacy, runtime, bundle, target, original = independent_legacy_status
+    transaction = runtime.parent / "upgrade"
+    before = upgrade.inventory_digest(runtime)
+    ready = upgrade.stage(
+        source=runtime, transaction=transaction, legacy_source=legacy,
+        legacy_sha256=upgrade.LEGACY_SOURCE_SHA256,
+        expected_source_sha256=before, expected_counter=2,
+        expected_control_head=bundle["control_head"],
+        expected_being_ref=bundle["manifest"]["being_ref"],
+        expected_origin=bundle["local_origin"], password=PASSWORD,
+        expires_at_ms=time.time_ns() // 1_000_000 + 1_800_000,
+        externally_quiesced=True,
+    )
+    assert (ready["counter_before"], ready["counter_after"]) == (2, 3)
+    assert upgrade.inventory_digest(runtime) == before
+    assert upgrade._snapshot(target) == original
+    upgrade.publish(source=runtime, transaction=transaction, expected_receipt_sha256=sha((transaction / "ready.json").read_bytes()), password=PASSWORD, externally_quiesced=True)
+    assert json.loads((runtime / "runtime.json").read_bytes())["keystore"]["counter"] == 3
+    journey = dict(runtime=runtime, upgrade_transaction=transaction, transaction=target.parent / "transition", target=target, expected_target_sha256=upgrade._inventory(original), expected_upgrade_sha256=sha((transaction / "published.json").read_bytes()), expected_origin=bundle["local_origin"], expected_being_ref=bundle["manifest"]["being_ref"], externally_quiesced=True)
+    m = module()
+    runtime_before = upgrade.inventory_digest(runtime)
+    staged = m.stage(**journey)
+    assert staged["state"] == "stopped-staged"
+    assert upgrade._snapshot(target) == original
+    assert upgrade._snapshot(journey["transaction"] / "checkpoint") == original
+    assert m.publish(**publication_args(journey))["state"] == "stopped-published"
+    assert upgrade._snapshot(target) == upgrade._snapshot(runtime / "host-clients/status")
+    assert json.loads((target / "client.json").read_bytes())["schema"] == "dm.local.client-config/v3"
+    assert upgrade.inventory_digest(runtime) == runtime_before
+    # No successor runtime/status effects before native monotonic reverse.
+    rollback_pin = rollback_runtime(journey)
+    restored = json.loads((runtime / "runtime.json").read_bytes())
+    assert restored["keystore"]["counter"] == 4
+    assert restored["keystore"]["signing_slot"] == bundle["keystore"]["signing_slot"]
+    assert restored["capabilities"] == bundle["capabilities"]
+    runtime_before = upgrade.inventory_digest(runtime)
+    result = m.rollback(**publication_args(journey), expected_rollback_sha256=rollback_pin, password=PASSWORD)
+    assert result["state"] == "stopped-rolled-back"
+    assert upgrade.inventory_digest(runtime) == runtime_before
+    assert upgrade._snapshot(target) == original
+    assert upgrade._snapshot(journey["transaction"] / "checkpoint") == original
+    legacy_client_load(legacy, target)
+    legacy_status_calls(legacy, runtime, target)
+    assert upgrade._snapshot(target) == original
+    assert upgrade._snapshot(journey["transaction"] / "checkpoint") == original
+    # Authenticated legacy reads have effects; this is not post-effect rollback.
+    assert upgrade.inventory_digest(runtime) != runtime_before
+
+
 def legacy_client_load(legacy, target):
     """Use the complete pinned loader in an isolated process, not our schema model."""
     assert upgrade._inventory(upgrade._snapshot(legacy, private=False)) == upgrade.LEGACY_SOURCE_SHA256

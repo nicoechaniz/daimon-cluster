@@ -86,7 +86,7 @@ def test_only_declared_runtime_additions_and_exact_upstream_composition():
         # Preserve the historical frozen hashes: only these two origin members
         # intentionally repin the identical Matrix package to its merged commit.
         if name in {"clusterctl/matrix_host.py", "requirements-weave.txt"}:
-            merged = b"8e7d8870609507e61eec1be769280dc33c487366"
+            merged = b"acb131f18c200bb028ee86fa3a8ef9a2f6c040a3"
             reviewed = b"0a80cc5c38d3c7f5cad98d440153f0cf9706686b"
             assert candidate.count(merged) == 1, name
             candidate = candidate.replace(merged, reviewed)
@@ -97,4 +97,4 @@ def test_host_uses_private_fences_without_replacing_legacy_api():
     from clusterctl import fences, matrix_host
     assert matrix_host.ResourceFenceStore is not fences.ResourceFenceStore
     assert matrix_host.ResourceFenceStore.__module__ == "clusterctl.matrix_fencing.fences"
-    assert matrix_host.MATRIX_CONTRACT_COMMIT == "8e7d8870609507e61eec1be769280dc33c487366"
+    assert matrix_host.MATRIX_CONTRACT_COMMIT == "acb131f18c200bb028ee86fa3a8ef9a2f6c040a3"

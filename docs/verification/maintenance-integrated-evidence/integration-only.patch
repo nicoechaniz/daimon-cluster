@@ -1,0 +1,63 @@
+--- approved/tests/test_maintenance_composition.py
++++ integrated/tests/test_maintenance_composition.py
+@@ -27,6 +27,7 @@
+         "clusterctl/matrix_fencing/__init__.py",
+         "clusterctl/matrix_fencing/fences.py",
+         "clusterctl/matrix_fencing/production_fences.py",
++        "clusterctl/matrix_status_transition.py",
+     }
+     assert not old - current
+     origins = json.loads((ROOT / "docs/verification/maintenance-origins.json").read_text())
+--- approved/.github/workflows/tests.yml
++++ integrated/.github/workflows/tests.yml
+@@ -48,11 +48,28 @@
+               == "MIT"
+           )
+           PY
++      - name: Check out exact legacy Matrix fixture source
++        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
++        with:
++          repository: AlterMundi/daimon-matrix
++          ref: 915c56c8899fd53d683bd7c7c81c3465b600bed9
++          path: .matrix-legacy
++          persist-credentials: false
++      - name: Verify closed legacy fixture inventory
++        run: |
++          test "$(git -C .matrix-legacy rev-parse HEAD)" = "915c56c8899fd53d683bd7c7c81c3465b600bed9"
++          python - <<'PY'
++          from pathlib import Path
++          from daimon_matrix import operator_runtime_upgrade as upgrade
++          assert upgrade._inventory(upgrade._snapshot(Path('.matrix-legacy/src'), private=False)) == upgrade.LEGACY_SOURCE_SHA256
++          PY
+       - name: Lint the Matrix integration boundary
+         run: >-
+           python -m ruff check
+           clusterctl/matrix_host.py
+           clusterctl/matrix_fencing
++          clusterctl/matrix_status_transition.py
++          tests/test_matrix_status_transition.py
+           scripts/maintenance-unit-runner.py
+           tests/test_maintenance_composition.py
+           tests/test_maintenance_runtime.py
+@@ -68,5 +85,8 @@
+         run: >-
+           python -m mypy --follow-imports=skip --ignore-missing-imports
+           clusterctl/matrix_host.py clusterctl/matrix_fencing
++          clusterctl/matrix_status_transition.py
+       - run: python -m compileall -q clusterctl clusterd steward_tools tests
+       - run: python scripts/maintenance-unit-runner.py
++        env:
++          DM_LEGACY_SOURCE: ${{ github.workspace }}/.matrix-legacy/src
+--- approved/docs/matrix-status-transition.md
++++ integrated/docs/matrix-status-transition.md
+@@ -171,7 +171,9 @@
+   capability-only expiry is supported. Revalidation is not authority renewal.
+ - This helper imports private Matrix upgrade and public verification primitives;
+   the reviewed Matrix successor is a required compatibility dependency. The
+-  unchanged Cluster pin does not yet provide that successor.
++  correction leaves the existing successor pin
++  `0a80cc5c38d3c7f5cad98d440153f0cf9706686b` unchanged; full maintenance
++  composition qualification and release approval remain separate gates.
+ 
+ ## Corrected legacy contract and evidence boundary
+ 

@@ -1,0 +1,10 @@
+{
+  "before": "f8e73c8230b95eb815aec8eac1fc9f54779b3dc31fa714ad8b9681f661b0c911",
+  "after": "15521edc48e91ed1b9a7e179518d15a5868a151fa65e8f01143ab199bc0cec52",
+  "changed": {
+    "ledger.sqlite": {
+      "before": "b6ee8bb39c8524da501505a37ef269a8eb3211306e27840e843d2a9b8f6fbcf7",
+      "after": "db94d84c1a909090acb9dacb9c2d47038265b7bb513184601f3fd2e5b5fbd79c"
+    }
+  }
+}

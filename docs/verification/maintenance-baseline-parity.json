@@ -1,0 +1,582 @@
+{
+  "baseline": "4a2571a6b22c6e504c1f78ce6594f1a2ad445097",
+  "tracked_files": 113,
+  "baseline_runtime_files": 30,
+  "unchanged_runtime_files": 29,
+  "changed_baseline_files": [
+    ".github/workflows/tests.yml",
+    "clusterctl/matrix_host.py",
+    "requirements-weave.txt",
+    "tests/test_clusterd.py",
+    "tests/test_matrix_host.py",
+    "tests/test_matrix_host_process.py",
+    "tests/test_matrix_parity.py"
+  ],
+  "files": {
+    ".github/workflows/tests.yml": {
+      "baseline_sha256": "7e95f4453bd89d3eefe354378096ba8899e4708cc15e32600343276a55c83106",
+      "candidate_sha256": "c3edbf75b23e5be13b1fcb1e1c8dd10975707fd9e71fd25199cdc2e11365a3f3",
+      "unchanged": false
+    },
+    ".gitignore": {
+      "baseline_sha256": "6e2040b150988d6a404a838cc43564da42d9e3e1ce6c602ede904b365116da9c",
+      "candidate_sha256": "6e2040b150988d6a404a838cc43564da42d9e3e1ce6c602ede904b365116da9c",
+      "unchanged": true
+    },
+    "README.md": {
+      "baseline_sha256": "e10316247fc1d73c47dcb6247a7029e056fcd96273cde19489bba49ee0bd3a37",
+      "candidate_sha256": "e10316247fc1d73c47dcb6247a7029e056fcd96273cde19489bba49ee0bd3a37",
+      "unchanged": true
+    },
+    "RESUME.md": {
+      "baseline_sha256": "cb5dbee19ab48905e44da840a2dacf546e484dd17c3e8b4340568578c12223b6",
+      "candidate_sha256": "cb5dbee19ab48905e44da840a2dacf546e484dd17c3e8b4340568578c12223b6",
+      "unchanged": true
+    },
+    "clusterctl/__init__.py": {
+      "baseline_sha256": "7944f2570561ec3f3e7e3b2e4bb225e763b2aed2c2268649ac3dc3e62de55898",
+      "candidate_sha256": "7944f2570561ec3f3e7e3b2e4bb225e763b2aed2c2268649ac3dc3e62de55898",
+      "unchanged": true
+    },
+    "clusterctl/adapters.py": {
+      "baseline_sha256": "791d13d7a90fdf2320ec1e29937d0b7be61487b7110189ba9298e1b8443bddac",
+      "candidate_sha256": "791d13d7a90fdf2320ec1e29937d0b7be61487b7110189ba9298e1b8443bddac",
+      "unchanged": true
+    },
+    "clusterctl/audit.py": {
+      "baseline_sha256": "2386ab5db5f39e06fb8d6a3dd05c596c53617a4358de650cd9d4a4cee0d94b97",
+      "candidate_sha256": "2386ab5db5f39e06fb8d6a3dd05c596c53617a4358de650cd9d4a4cee0d94b97",
+      "unchanged": true
+    },
+    "clusterctl/cli.py": {
+      "baseline_sha256": "c040d0115bc37952b2057d7f1e31b0bd70a55a706740bc7dc0fda2e221236dbd",
+      "candidate_sha256": "c040d0115bc37952b2057d7f1e31b0bd70a55a706740bc7dc0fda2e221236dbd",
+      "unchanged": true
+    },
+    "clusterctl/config.py": {
+      "baseline_sha256": "02a4218dadbd83e0e9c6359e8db0e56cbd31d8843bc48615c5321a583d1a88e0",
+      "candidate_sha256": "02a4218dadbd83e0e9c6359e8db0e56cbd31d8843bc48615c5321a583d1a88e0",
+      "unchanged": true
+    },
+    "clusterctl/embodiments.py": {
+      "baseline_sha256": "1aeace11f79e136da51485c81fae98aff0f55cc0504ca43911c5b1fe86451b80",
+      "candidate_sha256": "1aeace11f79e136da51485c81fae98aff0f55cc0504ca43911c5b1fe86451b80",
+      "unchanged": true
+    },
+    "clusterctl/fences.py": {
+      "baseline_sha256": "5273d04e3e5abb596d772591892973f3676b5615f80809e7af30e6d533393f64",
+      "candidate_sha256": "5273d04e3e5abb596d772591892973f3676b5615f80809e7af30e6d533393f64",
+      "unchanged": true
+    },
+    "clusterctl/idempotency.py": {
+      "baseline_sha256": "a84882912095f7c2c3e6b75ea1775eba0084894dcb30b01b62ff0024de6e4e87",
+      "candidate_sha256": "a84882912095f7c2c3e6b75ea1775eba0084894dcb30b01b62ff0024de6e4e87",
+      "unchanged": true
+    },
+    "clusterctl/inventory.py": {
+      "baseline_sha256": "576da30e37ea61b92059e4ad6ae6df1e2079bdc7639642aef5704abccc2b8a3e",
+      "candidate_sha256": "576da30e37ea61b92059e4ad6ae6df1e2079bdc7639642aef5704abccc2b8a3e",
+      "unchanged": true
+    },
+    "clusterctl/leases.py": {
+      "baseline_sha256": "7d84f10f8445faf30e491996d6169b2d6103d9225676c4df471b99ea30c128f2",
+      "candidate_sha256": "7d84f10f8445faf30e491996d6169b2d6103d9225676c4df471b99ea30c128f2",
+      "unchanged": true
+    },
+    "clusterctl/lifecycle.py": {
+      "baseline_sha256": "1cd5ebec549a54cb2ff2e956a91b5a1101ffe1ad71eccc2f10012ce5c2fc855f",
+      "candidate_sha256": "1cd5ebec549a54cb2ff2e956a91b5a1101ffe1ad71eccc2f10012ce5c2fc855f",
+      "unchanged": true
+    },
+    "clusterctl/locks.py": {
+      "baseline_sha256": "d2365bae558e7ed6fef78dff1b60bffb13cebee3f0fcf2056d69c17cc69a41c0",
+      "candidate_sha256": "d2365bae558e7ed6fef78dff1b60bffb13cebee3f0fcf2056d69c17cc69a41c0",
+      "unchanged": true
+    },
+    "clusterctl/matrix_host.py": {
+      "baseline_sha256": "9015ca1354e99aab3500335c458a98cbff87d904ebdeb5926c24d04d7437bc9e",
+      "candidate_sha256": "d24af0d7a4f1c7f4177be494129eff276d887fbaea5c7731c8f5b51d0327d42e",
+      "unchanged": false
+    },
+    "clusterctl/park.py": {
+      "baseline_sha256": "379ab2b36ff0a9d673b83278e70caa1f67ef48113f03cc873ab4b5762d1a4a6f",
+      "candidate_sha256": "379ab2b36ff0a9d673b83278e70caa1f67ef48113f03cc873ab4b5762d1a4a6f",
+      "unchanged": true
+    },
+    "clusterctl/provision.py": {
+      "baseline_sha256": "1e09ea14c707efe92ebe53b350a7612a8b4054247e63618e7609a5f1b1f0b71b",
+      "candidate_sha256": "1e09ea14c707efe92ebe53b350a7612a8b4054247e63618e7609a5f1b1f0b71b",
+      "unchanged": true
+    },
+    "clusterctl/reconcile.py": {
+      "baseline_sha256": "09feadf60644eb779c9f64b9b1d860c8f6b03afedab621aed9e7afcafbe6a0e9",
+      "candidate_sha256": "09feadf60644eb779c9f64b9b1d860c8f6b03afedab621aed9e7afcafbe6a0e9",
+      "unchanged": true
+    },
+    "clusterctl/snapshot.py": {
+      "baseline_sha256": "f2379158b30e3e6bc3cf5ab86f87d2adc813db10f8d934569414973486f41670",
+      "candidate_sha256": "f2379158b30e3e6bc3cf5ab86f87d2adc813db10f8d934569414973486f41670",
+      "unchanged": true
+    },
+    "clusterctl/transfer.py": {
+      "baseline_sha256": "cfe715d768adc869f8f8d48f6c227bf38e34c574350a4403e397ec866f6e41ec",
+      "candidate_sha256": "cfe715d768adc869f8f8d48f6c227bf38e34c574350a4403e397ec866f6e41ec",
+      "unchanged": true
+    },
+    "clusterd/__init__.py": {
+      "baseline_sha256": "f92a439f9ad225f0bc129139312f89ad9ca5f6bb1c534e14fb4fdd4f02074138",
+      "candidate_sha256": "f92a439f9ad225f0bc129139312f89ad9ca5f6bb1c534e14fb4fdd4f02074138",
+      "unchanged": true
+    },
+    "clusterd/__main__.py": {
+      "baseline_sha256": "dc5ea27264b541cdf31806d2841b9b3e1ba2ff75278fd2fd1e1cab6b486e079f",
+      "candidate_sha256": "dc5ea27264b541cdf31806d2841b9b3e1ba2ff75278fd2fd1e1cab6b486e079f",
+      "unchanged": true
+    },
+    "clusterd/auth.py": {
+      "baseline_sha256": "3d5b3f244237a023afcb0b530c741f7231989c6c0bdea53cb2cf83cc537dc666",
+      "candidate_sha256": "3d5b3f244237a023afcb0b530c741f7231989c6c0bdea53cb2cf83cc537dc666",
+      "unchanged": true
+    },
+    "clusterd/confirm.py": {
+      "baseline_sha256": "852768c9b138c18ca5b6341d546b5168ae853e5cf5e3f7f2686dff4c4b64b9f3",
+      "candidate_sha256": "852768c9b138c18ca5b6341d546b5168ae853e5cf5e3f7f2686dff4c4b64b9f3",
+      "unchanged": true
+    },
+    "clusterd/handlers.py": {
+      "baseline_sha256": "41f54b67e5720f2c4cdabe33b0761b418f5ba4d2e415c64cbb9a1a073552e388",
+      "candidate_sha256": "41f54b67e5720f2c4cdabe33b0761b418f5ba4d2e415c64cbb9a1a073552e388",
+      "unchanged": true
+    },
+    "clusterd/openapi.py": {
+      "baseline_sha256": "766c5d4550f9f5a25ae0c2d1cd06bad11e3cf493b7871e6e7d9d8b55a09d83a2",
+      "candidate_sha256": "766c5d4550f9f5a25ae0c2d1cd06bad11e3cf493b7871e6e7d9d8b55a09d83a2",
+      "unchanged": true
+    },
+    "clusterd/routes.py": {
+      "baseline_sha256": "b39434ac2789e6d1c908c1f44f6571267230c5cca0776a41dabb2e55c7327a0f",
+      "candidate_sha256": "b39434ac2789e6d1c908c1f44f6571267230c5cca0776a41dabb2e55c7327a0f",
+      "unchanged": true
+    },
+    "clusterd/server.py": {
+      "baseline_sha256": "5fa1218e4c20d065eaa9cbafefb63b4d81e0f916727a66d6427ce035dbd5dfa5",
+      "candidate_sha256": "5fa1218e4c20d065eaa9cbafefb63b4d81e0f916727a66d6427ce035dbd5dfa5",
+      "unchanged": true
+    },
+    "configs/clusterctl.yaml": {
+      "baseline_sha256": "741186a458acb42e2a05dc7d454fd98f82682d9a8a9698520f408183239164c4",
+      "candidate_sha256": "741186a458acb42e2a05dc7d454fd98f82682d9a8a9698520f408183239164c4",
+      "unchanged": true
+    },
+    "configs/clusterd.service": {
+      "baseline_sha256": "59f8deb54ebfe079c4ccc9626a044773c45484434baf56e98dff69c557e2e285",
+      "candidate_sha256": "59f8deb54ebfe079c4ccc9626a044773c45484434baf56e98dff69c557e2e285",
+      "unchanged": true
+    },
+    "configs/example-seed-note.md": {
+      "baseline_sha256": "99ec8de469acb89fcef6584ac2f886e4177c51e18ae2808a1f76e9bbdbfa41be",
+      "candidate_sha256": "99ec8de469acb89fcef6584ac2f886e4177c51e18ae2808a1f76e9bbdbfa41be",
+      "unchanged": true
+    },
+    "configs/nftables.conf": {
+      "baseline_sha256": "3afdd98333af332df666432f517ffa0c2808bd867441656859249cc0be10948a",
+      "candidate_sha256": "3afdd98333af332df666432f517ffa0c2808bd867441656859249cc0be10948a",
+      "unchanged": true
+    },
+    "configs/restic-backup.service": {
+      "baseline_sha256": "8af164513da91d7cfa7766b9dfbb6c86c3b6d2a57e9a3f9d78da53ee76062244",
+      "candidate_sha256": "8af164513da91d7cfa7766b9dfbb6c86c3b6d2a57e9a3f9d78da53ee76062244",
+      "unchanged": true
+    },
+    "configs/restic-backup.timer": {
+      "baseline_sha256": "8824a7419bc32ee73a84adf22f923c65b8d80b1da927079d55e9e1adc161cbc1",
+      "candidate_sha256": "8824a7419bc32ee73a84adf22f923c65b8d80b1da927079d55e9e1adc161cbc1",
+      "unchanged": true
+    },
+    "configs/seed-manifest.example.yaml": {
+      "baseline_sha256": "22478014894535015d683c5cf4e45201c05aa9ae1e87ef6f93df482f7a2b7e74",
+      "candidate_sha256": "22478014894535015d683c5cf4e45201c05aa9ae1e87ef6f93df482f7a2b7e74",
+      "unchanged": true
+    },
+    "configs/tribe-agent-profile.yaml": {
+      "baseline_sha256": "c6c01e4d57029452a6286ce43beb21cc9751f53d56e3d2e633eddbd3c562bc9d",
+      "candidate_sha256": "c6c01e4d57029452a6286ce43beb21cc9751f53d56e3d2e633eddbd3c562bc9d",
+      "unchanged": true
+    },
+    "configs/tribe-base-dpkg-2026-08-01.1.txt": {
+      "baseline_sha256": "30868a328756f9d13032442290d69ef2209362879a2070d73149f08204288296",
+      "candidate_sha256": "30868a328756f9d13032442290d69ef2209362879a2070d73149f08204288296",
+      "unchanged": true
+    },
+    "configs/tribe-base-manifest-2026-08-01.1.json": {
+      "baseline_sha256": "24fec4bce1225bbbe507935f01a508e527dc2688f02f4bdbcd0092ff7f3e4d0b",
+      "candidate_sha256": "24fec4bce1225bbbe507935f01a508e527dc2688f02f4bdbcd0092ff7f3e4d0b",
+      "unchanged": true
+    },
+    "configs/tribe-base-pins.env": {
+      "baseline_sha256": "8eb870e20d587806734325e41bfe87f5f1f6843d4b9096f23be244c2b3c64f34",
+      "candidate_sha256": "8eb870e20d587806734325e41bfe87f5f1f6843d4b9096f23be244c2b3c64f34",
+      "unchanged": true
+    },
+    "configs/tribe-base-pip-2026-08-01.1.txt": {
+      "baseline_sha256": "1b00744cbd8d6f820cb130fb69562ffb60dad44a805de56ba1d06e5e5ef87b92",
+      "candidate_sha256": "1b00744cbd8d6f820cb130fb69562ffb60dad44a805de56ba1d06e5e5ef87b92",
+      "unchanged": true
+    },
+    "configs/zramswap": {
+      "baseline_sha256": "b2ae74e6ce39fcd8f9e2ceba2f95273b7956c85dff825b0843b6d4bd900abb27",
+      "candidate_sha256": "b2ae74e6ce39fcd8f9e2ceba2f95273b7956c85dff825b0843b6d4bd900abb27",
+      "unchanged": true
+    },
+    "constraints.txt": {
+      "baseline_sha256": "d2ef6a02a3e8e4df6631542acf8ff2a96cbce996c342e957a921d11df8bf4e47",
+      "candidate_sha256": "d2ef6a02a3e8e4df6631542acf8ff2a96cbce996c342e957a921d11df8bf4e47",
+      "unchanged": true
+    },
+    "docs/DESIGN.md": {
+      "baseline_sha256": "45845fce14fed87e33de54b8e67c7acbc66905150ddf14bd5e15d5620ef3d3e1",
+      "candidate_sha256": "45845fce14fed87e33de54b8e67c7acbc66905150ddf14bd5e15d5620ef3d3e1",
+      "unchanged": true
+    },
+    "docs/PLAN.md": {
+      "baseline_sha256": "28227329f41e4f2387e86f584af45f145dda6f0103f6372bedaa3a1050cb3ffa",
+      "candidate_sha256": "28227329f41e4f2387e86f584af45f145dda6f0103f6372bedaa3a1050cb3ffa",
+      "unchanged": true
+    },
+    "docs/PROGRESS.md": {
+      "baseline_sha256": "e8adc9bffb12c3d5cdc4bcd42d9826caa080e9ab23ddfcb0f4b48d7adbbfeb5a",
+      "candidate_sha256": "e8adc9bffb12c3d5cdc4bcd42d9826caa080e9ab23ddfcb0f4b48d7adbbfeb5a",
+      "unchanged": true
+    },
+    "docs/adr/ADR-001-v1-architecture.md": {
+      "baseline_sha256": "3567fa6988ccc6d01227136b345a0a947140e9efd4a80bbc0e6e021c8acf5228",
+      "candidate_sha256": "3567fa6988ccc6d01227136b345a0a947140e9efd4a80bbc0e6e021c8acf5228",
+      "unchanged": true
+    },
+    "docs/contracts/clusterctl-cli.md": {
+      "baseline_sha256": "4f23f5ec66bea9d2e54689e9e6713f83693c0240157957eb84e0bec40c9412b8",
+      "candidate_sha256": "4f23f5ec66bea9d2e54689e9e6713f83693c0240157957eb84e0bec40c9412b8",
+      "unchanged": true
+    },
+    "docs/contracts/clusterd-openapi-v1.yaml": {
+      "baseline_sha256": "06a3ee4b4bd36522cdbd6b799710039df03cb8d2629bbc35e58d4a00ee00682b",
+      "candidate_sha256": "06a3ee4b4bd36522cdbd6b799710039df03cb8d2629bbc35e58d4a00ee00682b",
+      "unchanged": true
+    },
+    "docs/contracts/v1-state-contracts.md": {
+      "baseline_sha256": "fa15dcaf47f5c219c95040fa75a90add8e594288dda5833e88a71e34e08cde4a",
+      "candidate_sha256": "fa15dcaf47f5c219c95040fa75a90add8e594288dda5833e88a71e34e08cde4a",
+      "unchanged": true
+    },
+    "docs/design/backup-targets.md": {
+      "baseline_sha256": "561559304fc0b4d490a9d4012ee7fcd8dc46433d0ebea5cd01cfafad4fac9c0b",
+      "candidate_sha256": "561559304fc0b4d490a9d4012ee7fcd8dc46433d0ebea5cd01cfafad4fac9c0b",
+      "unchanged": true
+    },
+    "docs/design/ceremonies.md": {
+      "baseline_sha256": "3ee88ee93955ff91fc5b848b3040ef3802b5516afbc1d6dac00eadc330dc8e8d",
+      "candidate_sha256": "3ee88ee93955ff91fc5b848b3040ef3802b5516afbc1d6dac00eadc330dc8e8d",
+      "unchanged": true
+    },
+    "docs/design/clusterd.md": {
+      "baseline_sha256": "2c582c96b91ecb72e3f90c31c55dfe6793d1065e26190790ea4237a9cc21d7fc",
+      "candidate_sha256": "2c582c96b91ecb72e3f90c31c55dfe6793d1065e26190790ea4237a9cc21d7fc",
+      "unchanged": true
+    },
+    "docs/design/dashboard.md": {
+      "baseline_sha256": "0e90b9157967c5f34e81fc6f3d0d925ff5cc8a2b7b96d89f4e20f76946326303",
+      "candidate_sha256": "0e90b9157967c5f34e81fc6f3d0d925ff5cc8a2b7b96d89f4e20f76946326303",
+      "unchanged": true
+    },
+    "docs/design/embodiment-and-weave.md": {
+      "baseline_sha256": "48940186800115376b956d49f315cf73f5a721db4eaa7e9ba238c286a76ccd6d",
+      "candidate_sha256": "48940186800115376b956d49f315cf73f5a721db4eaa7e9ba238c286a76ccd6d",
+      "unchanged": true
+    },
+    "docs/design/m10-reconciliation.md": {
+      "baseline_sha256": "9cdf21f168434f5cd8804b0ef74bcee8529a71115a6b3cd1fed7757ccd93e952",
+      "candidate_sha256": "9cdf21f168434f5cd8804b0ef74bcee8529a71115a6b3cd1fed7757ccd93e952",
+      "unchanged": true
+    },
+    "docs/design/matrix-convergence.md": {
+      "baseline_sha256": "608d2d2093c479f98b79323abd06702f8dee8a7d1ce44ce994e23c1b987e4480",
+      "candidate_sha256": "608d2d2093c479f98b79323abd06702f8dee8a7d1ce44ce994e23c1b987e4480",
+      "unchanged": true
+    },
+    "docs/design/provisioning-flow.md": {
+      "baseline_sha256": "ce8d10e3ea790c3ad5e82589952efefb77d1a5881d546c6250ec8ffa6c8e3ca9",
+      "candidate_sha256": "ce8d10e3ea790c3ad5e82589952efefb77d1a5881d546c6250ec8ffa6c8e3ca9",
+      "unchanged": true
+    },
+    "docs/design/quiesced-snapshots.md": {
+      "baseline_sha256": "f152c953025bfeb9f6a845d17fd298ea7b3c99487ebbe9276d3e80dadfb797c2",
+      "candidate_sha256": "f152c953025bfeb9f6a845d17fd298ea7b3c99487ebbe9276d3e80dadfb797c2",
+      "unchanged": true
+    },
+    "docs/design/resource-fencing.md": {
+      "baseline_sha256": "ff87dc11ecb26c96b284ea28500f8e7d88df009e447a028ea0ba69c76a949d98",
+      "candidate_sha256": "ff87dc11ecb26c96b284ea28500f8e7d88df009e447a028ea0ba69c76a949d98",
+      "unchanged": true
+    },
+    "docs/design/tribe-agent-profile-and-volumes.md": {
+      "baseline_sha256": "cf2aad24e4b9ae4bc395dc64d3e74296d405e8ff296546dd1e8b0838954c07ee",
+      "candidate_sha256": "cf2aad24e4b9ae4bc395dc64d3e74296d405e8ff296546dd1e8b0838954c07ee",
+      "unchanged": true
+    },
+    "docs/inventory/daimonmatrix-2026-07-31.md": {
+      "baseline_sha256": "7eb2a6b0284a5bde7dd8c81f0a831b26221c8178bda8c09e82c2991980c119e7",
+      "candidate_sha256": "7eb2a6b0284a5bde7dd8c81f0a831b26221c8178bda8c09e82c2991980c119e7",
+      "unchanged": true
+    },
+    "docs/runbooks/clusterd-deploy.md": {
+      "baseline_sha256": "48c2829e9bc4f2a79d1f361dd2621e586ca11bd03585b25a7509a4d681328a41",
+      "candidate_sha256": "48c2829e9bc4f2a79d1f361dd2621e586ca11bd03585b25a7509a4d681328a41",
+      "unchanged": true
+    },
+    "docs/runbooks/host-restart-drill.md": {
+      "baseline_sha256": "7516475d8245e3be33fed3903869f1ef14bf2873375e408be041c4e6a59472fa",
+      "candidate_sha256": "7516475d8245e3be33fed3903869f1ef14bf2873375e408be041c4e6a59472fa",
+      "unchanged": true
+    },
+    "docs/runbooks/image-update-rolling-refresh.md": {
+      "baseline_sha256": "9af45c731f1b0f4e26996f9429661adb966f052719266108a6eaf67b5e6006b1",
+      "candidate_sha256": "9af45c731f1b0f4e26996f9429661adb966f052719266108a6eaf67b5e6006b1",
+      "unchanged": true
+    },
+    "docs/runbooks/m1-incus-foundation.md": {
+      "baseline_sha256": "ff2cdfdc4efd3842898064aa1c208b78fd0f3a3ee3b9b612480e122fcb833884",
+      "candidate_sha256": "ff2cdfdc4efd3842898064aa1c208b78fd0f3a3ee3b9b612480e122fcb833884",
+      "unchanged": true
+    },
+    "docs/runbooks/matrix-host.md": {
+      "baseline_sha256": "dec04408f6beac08f57ab87c1ca483b71a47b188f76ee12f9abac6dfd44fa982",
+      "candidate_sha256": "dec04408f6beac08f57ab87c1ca483b71a47b188f76ee12f9abac6dfd44fa982",
+      "unchanged": true
+    },
+    "docs/runbooks/steward-custody.md": {
+      "baseline_sha256": "cc9fb428bdb1fada722e085f6e06ea3f5cbdab4f89083bf8670b94955121ad9f",
+      "candidate_sha256": "cc9fb428bdb1fada722e085f6e06ea3f5cbdab4f89083bf8670b94955121ad9f",
+      "unchanged": true
+    },
+    "docs/security/threat-model-v1.md": {
+      "baseline_sha256": "e45cbb31c1bf8aa366953fe4b049fdfbcf19f7638cc32155fa8ab9f30ec7e288",
+      "candidate_sha256": "e45cbb31c1bf8aa366953fe4b049fdfbcf19f7638cc32155fa8ab9f30ec7e288",
+      "unchanged": true
+    },
+    "docs/verification/handoff-drill-1.md": {
+      "baseline_sha256": "818a8ea881e3402290e1669c218f3712c4588961d86d37ab823450c61276884b",
+      "candidate_sha256": "818a8ea881e3402290e1669c218f3712c4588961d86d37ab823450c61276884b",
+      "unchanged": true
+    },
+    "docs/verification/handoff-failure-matrix.md": {
+      "baseline_sha256": "71826a91aedfbb927adb1fe153be3466275f71a617d4a6ad77ed7dabd7552054",
+      "candidate_sha256": "71826a91aedfbb927adb1fe153be3466275f71a617d4a6ad77ed7dabd7552054",
+      "unchanged": true
+    },
+    "docs/verification/m1-acceptance-tests.md": {
+      "baseline_sha256": "668b105ec7f7ceb7bc6bacb8748fa95e0ff61b1af7a8e6bd611bb47128fe7d7e",
+      "candidate_sha256": "668b105ec7f7ceb7bc6bacb8748fa95e0ff61b1af7a8e6bd611bb47128fe7d7e",
+      "unchanged": true
+    },
+    "docs/verification/matrix-provisional-retirement.md": {
+      "baseline_sha256": "88d4910d2d27cca987b67ada70b3771193c2d8d83a403812cf24fb6b7555302d",
+      "candidate_sha256": "88d4910d2d27cca987b67ada70b3771193c2d8d83a403812cf24fb6b7555302d",
+      "unchanged": true
+    },
+    "docs/verification/restore-drill-1.md": {
+      "baseline_sha256": "b58bac2010e5e23a190377eb0aaacf899ee3931d7afbde5da0b546fb93a6e57e",
+      "candidate_sha256": "b58bac2010e5e23a190377eb0aaacf899ee3931d7afbde5da0b546fb93a6e57e",
+      "unchanged": true
+    },
+    "docs/verification/weave-r6-legion-daimonmatrix.md": {
+      "baseline_sha256": "3978740db2c67020f7797c85ce074829bf4edb1c2ec27633ea7a263221d270d0",
+      "candidate_sha256": "3978740db2c67020f7797c85ce074829bf4edb1c2ec27633ea7a263221d270d0",
+      "unchanged": true
+    },
+    "requirements-dev.txt": {
+      "baseline_sha256": "e5d53e24fe577d82389ecdf915156a7b56cdb7b21ecb03e3ffcff710aeab2115",
+      "candidate_sha256": "e5d53e24fe577d82389ecdf915156a7b56cdb7b21ecb03e3ffcff710aeab2115",
+      "unchanged": true
+    },
+    "requirements-weave.txt": {
+      "baseline_sha256": "49789728116922ec27eb888ea9387bb3d711bf6b88866dea0eb568a084041eaa",
+      "candidate_sha256": "993348e7a7de18ca011502d250986d301a6617f250fd32f74a0c8f51b92b4384",
+      "unchanged": false
+    },
+    "requirements.txt": {
+      "baseline_sha256": "b4cbf661b523f7dc56408ea77250933c2dd997b82afffe7115a35faff0087e28",
+      "candidate_sha256": "b4cbf661b523f7dc56408ea77250933c2dd997b82afffe7115a35faff0087e28",
+      "unchanged": true
+    },
+    "scripts/build-tribe-base.sh": {
+      "baseline_sha256": "eca0d945d2b2bed2493fc0cb99d55f44438225502d178f573601275ca916bf8c",
+      "candidate_sha256": "eca0d945d2b2bed2493fc0cb99d55f44438225502d178f573601275ca916bf8c",
+      "unchanged": true
+    },
+    "scripts/clusterctl": {
+      "baseline_sha256": "9fa2906411c0f76c457d170000131b7954d4f038533dffd8038b4be9e7ac837e",
+      "candidate_sha256": "9fa2906411c0f76c457d170000131b7954d4f038533dffd8038b4be9e7ac837e",
+      "unchanged": true
+    },
+    "scripts/clusterd": {
+      "baseline_sha256": "5b6b714686a595f0cd936f12a147cc00189e9b47d2d6f24061ddc5ea00c58e51",
+      "candidate_sha256": "5b6b714686a595f0cd936f12a147cc00189e9b47d2d6f24061ddc5ea00c58e51",
+      "unchanged": true
+    },
+    "scripts/matrix-host": {
+      "baseline_sha256": "9dd2d53544edadcfae52bc21c276a5380309121aa8dd9c1a0444b6cbf4751b3c",
+      "candidate_sha256": "9dd2d53544edadcfae52bc21c276a5380309121aa8dd9c1a0444b6cbf4751b3c",
+      "unchanged": true
+    },
+    "scripts/restic-backup.sh": {
+      "baseline_sha256": "58d0fb087621f4a7e8c0f500bda57e6e2e0ade53f87df5059f4c77559ff7877a",
+      "candidate_sha256": "58d0fb087621f4a7e8c0f500bda57e6e2e0ade53f87df5059f4c77559ff7877a",
+      "unchanged": true
+    },
+    "steward_tools/__init__.py": {
+      "baseline_sha256": "a4bfeb9c319fe249f420d6cc6d06fdd603f41d290a451ed6f23b5cf14f445033",
+      "candidate_sha256": "a4bfeb9c319fe249f420d6cc6d06fdd603f41d290a451ed6f23b5cf14f445033",
+      "unchanged": true
+    },
+    "steward_tools/client.py": {
+      "baseline_sha256": "b993024618b41e338e48c9f5a37303feb0b87a96c02e1bda4a3e91bc0fbc2906",
+      "candidate_sha256": "b993024618b41e338e48c9f5a37303feb0b87a96c02e1bda4a3e91bc0fbc2906",
+      "unchanged": true
+    },
+    "steward_tools/mutations.py": {
+      "baseline_sha256": "8cc8b423362b5bad56acc1f4850ad3c51b72a26d0dc45cc17c6c578902d40349",
+      "candidate_sha256": "8cc8b423362b5bad56acc1f4850ad3c51b72a26d0dc45cc17c6c578902d40349",
+      "unchanged": true
+    },
+    "steward_tools/tools.py": {
+      "baseline_sha256": "43198586f70036238caf19af09773d9270be0ec9706ebb80cc6c6d22fe6c266e",
+      "candidate_sha256": "43198586f70036238caf19af09773d9270be0ec9706ebb80cc6c6d22fe6c266e",
+      "unchanged": true
+    },
+    "tests/fixtures/matrix-weave-v1/configuration-proposal.json": {
+      "baseline_sha256": "61bcacbb6a0a3ece863cbc5f1ef80e9cc57ae61f83c0cd6611f2980ec1150d3a",
+      "candidate_sha256": "61bcacbb6a0a3ece863cbc5f1ef80e9cc57ae61f83c0cd6611f2980ec1150d3a",
+      "unchanged": true
+    },
+    "tests/fixtures/matrix-weave-v1/index.json": {
+      "baseline_sha256": "e9c1bac6fb96d99bf6c0dd1743047e6cc062cbd49d7be4b18d3372c3b108d908",
+      "candidate_sha256": "e9c1bac6fb96d99bf6c0dd1743047e6cc062cbd49d7be4b18d3372c3b108d908",
+      "unchanged": true
+    },
+    "tests/fixtures/matrix-weave-v1/manifest.json": {
+      "baseline_sha256": "eacb48327b56e440a0daf1a8f07bc1f6066917a191a9dd5d85061a9204145864",
+      "candidate_sha256": "eacb48327b56e440a0daf1a8f07bc1f6066917a191a9dd5d85061a9204145864",
+      "unchanged": true
+    },
+    "tests/test_audit_chain.py": {
+      "baseline_sha256": "8214eb7d9d1bef80c403bc059bbfbe6efcc214f1487ff0391383c9408153a195",
+      "candidate_sha256": "8214eb7d9d1bef80c403bc059bbfbe6efcc214f1487ff0391383c9408153a195",
+      "unchanged": true
+    },
+    "tests/test_auth.py": {
+      "baseline_sha256": "f6165ce2941381bec10038ce9362f0d7c4999de84dbb740a7be5df432b81101d",
+      "candidate_sha256": "f6165ce2941381bec10038ce9362f0d7c4999de84dbb740a7be5df432b81101d",
+      "unchanged": true
+    },
+    "tests/test_clusterctl.py": {
+      "baseline_sha256": "209ed64c212eaffcd84157e0cbcfacc4d3351f8ec11efb4ef9f9d2ad57961393",
+      "candidate_sha256": "209ed64c212eaffcd84157e0cbcfacc4d3351f8ec11efb4ef9f9d2ad57961393",
+      "unchanged": true
+    },
+    "tests/test_clusterd.py": {
+      "baseline_sha256": "8ad9196826911e9486cfe8991c1d543c4d57b68a53c0977577bdd7cc98b9cbec",
+      "candidate_sha256": "46711f69e4c890164519eb22cd9eb8c2e1068125a52132253f837225ed509af8",
+      "unchanged": false
+    },
+    "tests/test_dashboard_drill26.py": {
+      "baseline_sha256": "fdbc20a0245b3551a81c05861c8d0d236ba9b1eb9131710583f1295f2fb66bbb",
+      "candidate_sha256": "fdbc20a0245b3551a81c05861c8d0d236ba9b1eb9131710583f1295f2fb66bbb",
+      "unchanged": true
+    },
+    "tests/test_digest_parity.py": {
+      "baseline_sha256": "12a82079f4747b18542f1d736d786aca17d7a45b8ebfb7f27475cd22b508ab03",
+      "candidate_sha256": "12a82079f4747b18542f1d736d786aca17d7a45b8ebfb7f27475cd22b508ab03",
+      "unchanged": true
+    },
+    "tests/test_effect_truth.py": {
+      "baseline_sha256": "cdc18ecb8a3469c1447c6540da29c0f1599046ece8567f0e429bd5d9587b4ea2",
+      "candidate_sha256": "cdc18ecb8a3469c1447c6540da29c0f1599046ece8567f0e429bd5d9587b4ea2",
+      "unchanged": true
+    },
+    "tests/test_embodiments.py": {
+      "baseline_sha256": "fedc17cf118eca7b46e359d4857a4c95f1e8777fbd86e298710ab1eef6297edb",
+      "candidate_sha256": "fedc17cf118eca7b46e359d4857a4c95f1e8777fbd86e298710ab1eef6297edb",
+      "unchanged": true
+    },
+    "tests/test_handoff_failures.py": {
+      "baseline_sha256": "041c2e1cae7a73b28ccfdfbf934cfd6d109d6b0bd43256ce41857fdce308ba8d",
+      "candidate_sha256": "041c2e1cae7a73b28ccfdfbf934cfd6d109d6b0bd43256ce41857fdce308ba8d",
+      "unchanged": true
+    },
+    "tests/test_leases.py": {
+      "baseline_sha256": "84dc155f6de2273401d888986a5d9510c6a49cbc5080ceff9fb4fd945fcdd766",
+      "candidate_sha256": "84dc155f6de2273401d888986a5d9510c6a49cbc5080ceff9fb4fd945fcdd766",
+      "unchanged": true
+    },
+    "tests/test_lifecycle.py": {
+      "baseline_sha256": "1b6f1d1d0fdfc43c03463f0b58384b09b701cc919fd3f5472a3f4ab8930bd57d",
+      "candidate_sha256": "1b6f1d1d0fdfc43c03463f0b58384b09b701cc919fd3f5472a3f4ab8930bd57d",
+      "unchanged": true
+    },
+    "tests/test_matrix_host.py": {
+      "baseline_sha256": "fa5a669b3da10a9babe6bda9147ba768c99e2cb3dc50732954cea74f872f9039",
+      "candidate_sha256": "c0d9dfcac678c06bb57b45ada59de63fd50bdc8c10583ae25d0e30611c6e2188",
+      "unchanged": false
+    },
+    "tests/test_matrix_host_process.py": {
+      "baseline_sha256": "b715069186e6da0d753c5780f4e09fb1dce463a319577328f1e41ecfa8b36e3a",
+      "candidate_sha256": "0a7349ea2ba81150cc24bfa919af29c9c1fb62079733d51d23ec7721cd8ec17f",
+      "unchanged": false
+    },
+    "tests/test_matrix_parity.py": {
+      "baseline_sha256": "4646434f2a2280e8a268c78769824420e8730c3575c3e37c6b84bbc556379d9d",
+      "candidate_sha256": "58f9d355a56ad864c7c3cb77961d9eb661660c871567dddce1849df01cd744bb",
+      "unchanged": false
+    },
+    "tests/test_matrix_status.py": {
+      "baseline_sha256": "dfbf80e58faab155c6977bd4f5d244495d7041d3aa56b035a75530a621c6ed05",
+      "candidate_sha256": "dfbf80e58faab155c6977bd4f5d244495d7041d3aa56b035a75530a621c6ed05",
+      "unchanged": true
+    },
+    "tests/test_operational_assets.py": {
+      "baseline_sha256": "04473f2bc39c1ee553733ae01ab33a8368aca3244c87d4a9de6c8623066a0178",
+      "candidate_sha256": "04473f2bc39c1ee553733ae01ab33a8368aca3244c87d4a9de6c8623066a0178",
+      "unchanged": true
+    },
+    "tests/test_park.py": {
+      "baseline_sha256": "a701a4b9a7b9ac7fc31b34351442dc69e65600625390192a17bdb5b9ff741bca",
+      "candidate_sha256": "a701a4b9a7b9ac7fc31b34351442dc69e65600625390192a17bdb5b9ff741bca",
+      "unchanged": true
+    },
+    "tests/test_provision.py": {
+      "baseline_sha256": "5190c752f8591820ec6721032d4f503681c483f4c4f7df9f5e9bcc826672bcfb",
+      "candidate_sha256": "5190c752f8591820ec6721032d4f503681c483f4c4f7df9f5e9bcc826672bcfb",
+      "unchanged": true
+    },
+    "tests/test_snapshot.py": {
+      "baseline_sha256": "672b13fba349a0981b486926df068970c27c584350f9f571da8321dcb9fd2f2d",
+      "candidate_sha256": "672b13fba349a0981b486926df068970c27c584350f9f571da8321dcb9fd2f2d",
+      "unchanged": true
+    },
+    "tests/test_steward_mutations.py": {
+      "baseline_sha256": "969bf77be45dc58df3ac14eaf3b28f4923e9382717df8dec2fb114cd2598d4af",
+      "candidate_sha256": "969bf77be45dc58df3ac14eaf3b28f4923e9382717df8dec2fb114cd2598d4af",
+      "unchanged": true
+    },
+    "tests/test_steward_tools.py": {
+      "baseline_sha256": "535bf6c4eea7ba5ded3a59ffb84b71d5ae785f1fd365a030699942e0db69cc43",
+      "candidate_sha256": "535bf6c4eea7ba5ded3a59ffb84b71d5ae785f1fd365a030699942e0db69cc43",
+      "unchanged": true
+    },
+    "tests/test_transfer.py": {
+      "baseline_sha256": "283ef02ccbb960c946c58f80a63c87c5eb883039e6a1f586cb9a376485428c33",
+      "candidate_sha256": "283ef02ccbb960c946c58f80a63c87c5eb883039e6a1f586cb9a376485428c33",
+      "unchanged": true
+    }
+  }
+}

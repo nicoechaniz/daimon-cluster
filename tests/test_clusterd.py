@@ -425,7 +425,7 @@ def test_ontology_read_routes(server):
         "configured": False,
         "implementation": "installed-daimon-matrix",
         "matrix_contract_commit": (
-            "915c56c8899fd53d683bd7c7c81c3465b600bed9"
+            "0a80cc5c38d3c7f5cad98d440153f0cf9706686b"
         ),
         "embodiments": [],
     }

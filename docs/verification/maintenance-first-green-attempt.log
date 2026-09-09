@@ -1,0 +1,112 @@
+.................................ss.................F................... [ 20%]
+........................................................................ [ 40%]
+.........................................F.............F.........F...... [ 60%]
+........................................................................ [ 80%]
+.......................................................................  [100%]
+=================================== FAILURES ===================================
+__________________________ test_ontology_read_routes ___________________________
+
+server = (<clusterd.server.ClusterdServer object at 0x7f30a0504650>, <clusterctl.adapters.FakeAdapter object at 0x7f30a0506e10>, PosixPath('/tmp/pytest-of-debian/pytest-73/test_ontology_read_routes0/state'))
+
+    def test_ontology_read_routes(server):
+        from clusterctl.embodiments import Registry
+        from clusterctl.fences import ResourceFenceStore
+    
+        srv, _, state_dir = server
+        embodiment = Registry(state_dir).register(body_ref="cluster:test:compaii")
+        Registry(state_dir).start(embodiment["embodiment_id"])
+        ResourceFenceStore(state_dir).acquire(
+            "volume:compaii-state", "test-public-key", "SHA256:test",
+            holder_embodiment_id=embodiment["embodiment_id"],
+        )
+    
+        status, _, embodiments = _get(srv, "/v1/embodiments")
+        assert status == 200
+        assert embodiments[0]["embodiment_id"] == embodiment["embodiment_id"]
+        assert embodiments[0]["status"] == "running"
+    
+        status, _, fences = _get(srv, "/v1/resource-fences")
+        assert status == 200
+        assert fences[0]["resource_ref"] == "volume:compaii-state"
+        assert fences[0]["holder_embodiment_id"] == embodiment["embodiment_id"]
+    
+        status, _, weave = _get(srv, "/v1/weave/status")
+        assert status == 200
+>       assert weave == {
+            "schema": "dm.cluster-matrix-status/v1",
+            "configured": False,
+            "implementation": "installed-daimon-matrix",
+            "matrix_contract_commit": (
+                "915c56c8899fd53d683bd7c7c81c3465b600bed9"
+            ),
+            "embodiments": [],
+        }
+E       AssertionError: assert {'configured'...706686b', ...} == {'configured'...600bed9', ...}
+E         
+E         Omitting 4 identical items, use -vv to show
+E         Differing items:
+E         {'matrix_contract_commit': '0a80cc5c38d3c7f5cad98d440153f0cf9706686b'} != {'matrix_contract_commit': '915c56c8899fd53d683bd7c7c81c3465b600bed9'}
+E         Use -v to get more diff
+
+tests/test_clusterd.py:423: AssertionError
+----------------------------- Captured stderr call -----------------------------
+127.0.0.1 - - [08/Sep/2026 23:12:45] "GET /v1/embodiments HTTP/1.1" 200 -
+127.0.0.1 - - [08/Sep/2026 23:12:45] "GET /v1/resource-fences HTTP/1.1" 200 -
+127.0.0.1 - - [08/Sep/2026 23:12:45] "GET /v1/weave/status HTTP/1.1" 200 -
+______ test_documented_matrix_host_launcher_works_from_outside_repository ______
+
+tmp_path = PosixPath('/tmp/pytest-of-debian/pytest-73/test_documented_matrix_host_la0')
+
+    def test_documented_matrix_host_launcher_works_from_outside_repository(tmp_path):
+        launcher = Path(__file__).resolve().parents[1] / "scripts" / "matrix-host"
+        environment = os.environ.copy()
+        environment["VIRTUAL_ENV"] = sys.prefix
+    
+        result = subprocess.run(
+            [launcher, "--help"],
+            cwd=tmp_path,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    
+>       assert result.returncode == 0, result.stderr
+E       AssertionError: Traceback (most recent call last):
+E           File "/tmp/dm132-cluster-maintenance/scripts/matrix-host", line 2, in <module>
+E             from clusterctl.matrix_host import main
+E         ModuleNotFoundError: No module named 'clusterctl'
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=[PosixPath('/tmp/dm132-cluster-maintenance/scripts/matrix-host'), '--help'], returncode=1, stdou...ne 2, in <module>\n    from clusterctl.matrix_host import main\nModuleNotFoundError: No module named \'clusterctl\'\n').returncode
+
+tests/test_matrix_host.py:769: AssertionError
+_______ test_application_startup_failure_releases_real_fixture_admission _______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f30a04ed650>
+
+    def test_application_startup_failure_releases_real_fixture_admission(monkeypatch):
+        # Reuse the existing disposable signed-runtime/admission fixtures. This
+        # exercises the actual child host and pin guard, not the injected lifecycle.
+        import tempfile
+        import time
+        from pathlib import Path
+>       import test_rebirth as fixtures
+E       ModuleNotFoundError: No module named 'test_rebirth'
+
+tests/test_matrix_messaging_host.py:297: ModuleNotFoundError
+_____________ test_host_refuses_matrix_without_client_v2_contract ______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f30a32184b0>
+
+    def test_host_refuses_matrix_without_client_v2_contract(monkeypatch) -> None:
+>       monkeypatch.delattr(client, "CLIENT_CONFIG_SCHEMA_V2")
+E       AttributeError: CLIENT_CONFIG_SCHEMA_V2
+
+tests/test_matrix_parity.py:89: AttributeError
+=========================== short test summary info ============================
+FAILED tests/test_clusterd.py::test_ontology_read_routes - AssertionError: as...
+FAILED tests/test_matrix_host.py::test_documented_matrix_host_launcher_works_from_outside_repository
+FAILED tests/test_matrix_messaging_host.py::test_application_startup_failure_releases_real_fixture_admission
+FAILED tests/test_matrix_parity.py::test_host_refuses_matrix_without_client_v2_contract
+4 failed, 353 passed, 2 skipped in 62.39s (0:01:02)

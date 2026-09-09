@@ -1,0 +1,8 @@
+NATIVE_V1_ACTUAL_LOADER_PASS c62912be20c2530848d7ca41cf391689e8ff2baf41192c8387ed3a7895eea260
+MIGRATION_PASS {"before": 1, "after": 2, "capabilities": 12, "origin": {"body_ref": "body:synthetic-alpha", "embodiment_id": "embodiment:8fcd7e10-fc59-4241-8202-18fdbdc0d6ad", "incarnation_id": "incarnation:1010c214-63d7-4667-a234-3a1b6e0b173b", "principal_id": "synthetic-alpha"}}
+AUTHENTICATED_FENCE_PASS
+SIDECAR_PUBLISH_PASS {"schema": "dm.cluster.status-publication/v1", "state": "stopped-published", "ready_sha256": "016ca86f9d78a5a75bc1e9d11e8396ee033711044f2a84e6b315317b27ea015e", "runtime_sha256": "a4120c31b66a2b18ce004582fee4b48b80839807b4a14fc0c94c041b59415fd0", "target": "/tmp/dmi-reverse-03/s/matrix-clients/6eee67bea3c5900d51ae5f5982a05d3e", "client_sha256": "cf2ed8ec28d551eaaba701b171de802903e3b767fa44554c7826c31d0a5e4066"}
+MONOTONIC_REVERSE_PASS {"schema": "dm.cluster.status-rollback/v1", "state": "stopped-rolled-back", "ready_sha256": "016ca86f9d78a5a75bc1e9d11e8396ee033711044f2a84e6b315317b27ea015e", "rollback_publication_sha256": "ee606eeab8e9080dbf52c33d22f4bab3e555df94c2f8e6e7bef6f8bc765b399e", "runtime_sha256": "7c4e2f0288b3bde394248d0f7219793053ffb558c0d0f7e022b722c410f22326", "target": "/tmp/dmi-reverse-03/s/matrix-clients/6eee67bea3c5900d51ae5f5982a05d3e", "client_sha256": "c62912be20c2530848d7ca41cf391689e8ff2baf41192c8387ed3a7895eea260"}
+RESTORED_V1_FIVE_ACTUAL_LEGACY_CALLS_PASS
+POST_LEGACY_READ_REVERSE_REFUSED status_not_exact_monotonic_runtime_rollback
+REVERSE_CLEANUP_PASS

@@ -1,0 +1,101 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+______ test_missing_modern_authority_refuses_without_creating_placeholder ______
+
+self = <clusterctl.matrix_fencing.production_fences.ProductionFenceStore object at 0x7f3bdc019010>
+
+    def _validate_database_path(self, *, require_exists: bool) -> os.stat_result | None:
+        try:
+>           info = self._database_path.lstat()
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+clusterctl/matrix_fencing/production_fences.py:310: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.13/pathlib/_abc.py:437: in lstat
+    return self.stat(follow_symlinks=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = PosixPath('/tmp/pytest-of-debian/pytest-76/test_missing_modern_authority_0/resource-fences.sqlite3')
+
+    def stat(self, *, follow_symlinks=True):
+        """
+        Return the result of the stat() system call on this path, like
+        os.stat() does.
+        """
+>       return os.stat(self, follow_symlinks=follow_symlinks)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: '/tmp/pytest-of-debian/pytest-76/test_missing_modern_authority_0/resource-fences.sqlite3'
+
+/usr/lib/python3.13/pathlib/_local.py:517: FileNotFoundError
+
+During handling of the above exception, another exception occurred:
+
+tmp_path = PosixPath('/tmp/pytest-of-debian/pytest-76/test_missing_modern_authority_0')
+
+    def test_missing_modern_authority_refuses_without_creating_placeholder(tmp_path):
+        with pytest.raises(MatrixHostError, match="resource_fence_registry_unavailable"):
+>           MatrixHostAdapter(tmp_path, "embodiment:missing")
+
+tests/test_maintenance_runtime.py:25: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+clusterctl/matrix_host.py:655: in __init__
+    self.fences = fence_store or ResourceFenceStore(self.state_dir)
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+clusterctl/matrix_fencing/fences.py:519: in __init__
+    self._backend: Any = ProductionFenceStore(
+clusterctl/matrix_fencing/production_fences.py:214: in __init__
+    self._prepare_storage(verifier_only=verifier_only)
+clusterctl/matrix_fencing/production_fences.py:280: in _prepare_storage
+    self._validate_database_path(require_exists=True)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <clusterctl.matrix_fencing.production_fences.ProductionFenceStore object at 0x7f3bdc019010>
+
+    def _validate_database_path(self, *, require_exists: bool) -> os.stat_result | None:
+        try:
+            info = self._database_path.lstat()
+        except FileNotFoundError:
+            if not require_exists:
+                return None
+>           raise FenceError("production fence database is unavailable")
+E           clusterctl.matrix_fencing.fences.FenceError: production fence database is unavailable
+
+clusterctl/matrix_fencing/production_fences.py:314: FenceError
+__ test_old_http_consumer_reads_real_five_method_client_and_enforces_old_auth __
+
+    def test_old_http_consumer_reads_real_five_method_client_and_enforces_old_auth():
+        with tempfile.TemporaryDirectory(prefix="dmm-http-") as name:
+            state = Path(name) / "state"
+            now = time.time_ns() // 1_000_000
+            authority = runtime_fixture._authority(now)
+            origin = authority["origins"]["legion"]
+            registry = runtime_fixture.Registry(state)
+            registry.register(body_ref=origin["body_ref"], embodiment_id=origin["embodiment_id"])
+            registry.start(origin["embodiment_id"], incarnation_id=origin["incarnation_id"], started_at_ms=now)
+            root, bundle, _, host_capabilities = runtime_fixture._write_runtime(state, authority, "legion", now)
+            runtime_fixture._write_client_config(
+                state, host_capabilities["status"], origin,
+                runtime_id=bundle["runtime_id"], runtime_label=bundle["runtime_label"],
+            )
+            process, _ = runtime_fixture._spawn(state, origin["embodiment_id"])
+            server = None
+            thread = None
+            try:
+                factory = matrix_client_factory(state)
+                client = factory(origin["embodiment_id"])
+                for call in (
+                    client.runtime_status, client.scope_me, client.scope_we, client.scope_diff,
+                    lambda: client.scope_sync_plan({"request_id": "40000000-0000-4000-8000-000000000001"}),
+                ):
+                    response = call()
+                    assert isinstance(response, tuple) and len(response) == 2
+>                   assert response[1]["ok"] is True, response
+E                   AssertionError: ({'auth': {'alg': 'HMAC-SHA256', 'key_id': 'dm:local-key:v1:P8IZ-d7zRoMJ4QEJ6E1mCxVnfhKvZy7vhqGnlqR3WJU', 'value': 'x9...5JQ7sU'}, 'completed_at_ms': 1788909353215, 'error': {'code': 'invalid_params', 'retryable': False}, 'ok': False, ...})
+E                   assert False is True
+
+tests/test_maintenance_runtime.py:55: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_maintenance_runtime.py::test_missing_modern_authority_refuses_without_creating_placeholder
+FAILED tests/test_maintenance_runtime.py::test_old_http_consumer_reads_real_five_method_client_and_enforces_old_auth
+2 failed in 1.46s

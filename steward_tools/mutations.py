@@ -219,11 +219,12 @@ class MutationClient:
                 payload = json.loads(resp.read().decode("utf-8"))
                 return resp.status, payload, dict(resp.headers)
         except urllib.error.HTTPError as exc:
-            try:
-                body = json.loads(exc.read().decode("utf-8"))
-            except Exception:  # non-JSON error body — keep the status
-                body = None
-            raise ClusterdHTTPError(exc.code, body) from exc
+            with exc:
+                try:
+                    body = json.loads(exc.read().decode("utf-8"))
+                except Exception:  # non-JSON error body — keep the status
+                    body = None
+                raise ClusterdHTTPError(exc.code, body) from exc
         except CrossOriginRedirect:
             raise
         except (urllib.error.URLError, OSError, TimeoutError) as exc:

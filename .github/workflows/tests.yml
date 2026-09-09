@@ -3,7 +3,7 @@ name: tests
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, maintenance/installed-4a2571a]
 
 permissions:
   contents: read
@@ -48,10 +48,33 @@ jobs:
               == "MIT"
           )
           PY
+      - name: Check out exact legacy Matrix fixture source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: AlterMundi/daimon-matrix
+          ref: 915c56c8899fd53d683bd7c7c81c3465b600bed9
+          path: .matrix-legacy
+          persist-credentials: false
+      - name: Verify closed legacy fixture inventory
+        run: |
+          test "$(git -C .matrix-legacy rev-parse HEAD)" = "915c56c8899fd53d683bd7c7c81c3465b600bed9"
+          python - <<'PY'
+          from pathlib import Path
+          from daimon_matrix import operator_runtime_upgrade as upgrade
+          assert upgrade._inventory(upgrade._snapshot(Path('.matrix-legacy/src').resolve(), private=False)) == upgrade.LEGACY_SOURCE_SHA256
+          PY
       - name: Lint the Matrix integration boundary
         run: >-
           python -m ruff check
           clusterctl/matrix_host.py
+          clusterctl/matrix_fencing
+          clusterctl/matrix_status_transition.py
+          tests/test_matrix_status_transition.py
+          scripts/maintenance-unit-runner.py
+          tests/test_maintenance_composition.py
+          tests/test_maintenance_runtime.py
+          tests/test_matrix_messaging_host.py
+          tests/test_production_fences.py
           clusterd/__main__.py
           clusterd/handlers.py
           tests/test_matrix_host.py
@@ -61,6 +84,9 @@ jobs:
       - name: Type-check the Matrix host boundary
         run: >-
           python -m mypy --follow-imports=skip --ignore-missing-imports
-          clusterctl/matrix_host.py
+          clusterctl/matrix_host.py clusterctl/matrix_fencing
+          clusterctl/matrix_status_transition.py
       - run: python -m compileall -q clusterctl clusterd steward_tools tests
-      - run: python -W error::ResourceWarning -m pytest -q
+      - run: python scripts/maintenance-unit-runner.py
+        env:
+          DM_LEGACY_SOURCE: ${{ github.workspace }}/.matrix-legacy/src

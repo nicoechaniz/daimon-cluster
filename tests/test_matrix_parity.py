@@ -85,8 +85,8 @@ def test_host_refuses_matrix_without_v7_contract(monkeypatch) -> None:
         matrix_host._matrix_api()
 
 
-def test_host_refuses_matrix_without_client_v2_contract(monkeypatch) -> None:
-    monkeypatch.delattr(client, "CLIENT_CONFIG_SCHEMA_V2")
+def test_host_refuses_matrix_without_client_v3_contract(monkeypatch) -> None:
+    monkeypatch.delattr(client, "CLIENT_CONFIG_SCHEMA_V3")
     with pytest.raises(MatrixHostError, match="daimon_matrix_contract_mismatch"):
         matrix_host._matrix_api()
 

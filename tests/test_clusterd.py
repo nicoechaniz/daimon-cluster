@@ -92,7 +92,8 @@ def _req(server, method, path, headers=None, auth=True):
             body = resp.read().decode("utf-8")
             return resp.status, dict(resp.headers), body
     except urllib.error.HTTPError as exc:
-        return exc.code, dict(exc.headers), exc.read().decode("utf-8")
+        with exc:
+            return exc.code, dict(exc.headers), exc.read().decode("utf-8")
 
 
 def _get(server, path, headers=None, auth=True):
@@ -120,7 +121,8 @@ def _post_json(server, path, body_dict, headers=None, auth=True):
             body = resp.read().decode("utf-8")
             return resp.status, dict(resp.headers), json.loads(body)
     except urllib.error.HTTPError as exc:
-        return exc.code, dict(exc.headers), json.loads(exc.read().decode("utf-8"))
+        with exc:
+            return exc.code, dict(exc.headers), json.loads(exc.read().decode("utf-8"))
 
 
 def _cli(state_dir, *argv, adapter=None):
@@ -425,7 +427,7 @@ def test_ontology_read_routes(server):
         "configured": False,
         "implementation": "installed-daimon-matrix",
         "matrix_contract_commit": (
-            "915c56c8899fd53d683bd7c7c81c3465b600bed9"
+            "8e7d8870609507e61eec1be769280dc33c487366"
         ),
         "embodiments": [],
     }

@@ -1,0 +1,15 @@
+.F                                                                       [100%]
+=================================== FAILURES ===================================
+__________ test_host_uses_private_fences_without_replacing_legacy_api __________
+
+    def test_host_uses_private_fences_without_replacing_legacy_api():
+        from clusterctl import fences, matrix_host
+>       assert matrix_host.ResourceFenceStore is not fences.ResourceFenceStore
+E       AssertionError: assert <class 'clusterctl.fences.ResourceFenceStore'> is not <class 'clusterctl.fences.ResourceFenceStore'>
+E        +  where <class 'clusterctl.fences.ResourceFenceStore'> = <module 'clusterctl.matrix_host' from '/tmp/dm132-cluster-maintenance/clusterctl/matrix_host.py'>.ResourceFenceStore
+E        +  and   <class 'clusterctl.fences.ResourceFenceStore'> = <module 'clusterctl.fences' from '/tmp/dm132-cluster-maintenance/clusterctl/fences.py'>.ResourceFenceStore
+
+tests/test_maintenance_composition.py:23: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_maintenance_composition.py::test_host_uses_private_fences_without_replacing_legacy_api
+1 failed, 1 passed in 0.05s

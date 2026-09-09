@@ -1,0 +1,6 @@
+$ python -m ruff check clusterctl/matrix_host.py clusterctl/matrix_fencing scripts/maintenance-unit-runner.py tests/test_maintenance_composition.py tests/test_maintenance_runtime.py tests/test_matrix_messaging_host.py tests/test_production_fences.py clusterd/__main__.py clusterd/handlers.py tests/test_matrix_host.py tests/test_matrix_host_process.py tests/test_matrix_parity.py tests/test_matrix_status.py
+All checks passed!
+$ python -m mypy --follow-imports=skip --ignore-missing-imports clusterctl/matrix_host.py clusterctl/matrix_fencing
+Success: no issues found in 4 source files
+$ python -m compileall -q clusterctl clusterd steward_tools tests
+All checks passed!

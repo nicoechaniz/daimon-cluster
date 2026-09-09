@@ -354,10 +354,11 @@ def test_unattended_mutation_denied_by_clusterd(server):
                  "Idempotency-Key": "unattended-probe"})
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(req, timeout=5)
-    assert exc_info.value.code == 403
-    body = json.loads(exc_info.value.read().decode("utf-8"))
-    assert body["error"] == "unattended-steward-denied"
-    assert ad.mutation_log == []
+    with exc_info.value:
+        assert exc_info.value.code == 403
+        body = json.loads(exc_info.value.read().decode("utf-8"))
+        assert body["error"] == "unattended-steward-denied"
+        assert ad.mutation_log == []
 
 
 def test_happy_path_proves_x_attended_sent(server, mclient):

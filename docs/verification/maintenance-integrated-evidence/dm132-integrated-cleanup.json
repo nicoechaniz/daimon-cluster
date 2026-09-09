@@ -1,0 +1,15 @@
+{
+  "installed_before_after_identical": "82915e48df295ec63d9b3f2e10a74ebad9c1a2bfe35398fd938deb6477f598c9",
+  "legacy_inventory": "f3f219144f58a46431304802ea8f887bc9e9376fc745bc60a9f28f13457de764",
+  "labs_checked": [
+    "/tmp/dmi-host-01",
+    "/tmp/dmi-host-02",
+    "/tmp/dmi-host-03",
+    "/tmp/dmi-reverse-01",
+    "/tmp/dmi-reverse-02",
+    "/tmp/dmi-reverse-03"
+  ],
+  "remaining_owned_host_pids": [],
+  "remaining_sockets": [],
+  "post_read_refusals_complete_inventories_unchanged": true
+}

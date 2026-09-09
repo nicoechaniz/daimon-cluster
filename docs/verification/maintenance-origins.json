@@ -1,0 +1,32 @@
+{
+  "clusterctl/matrix_host.py": {
+    "source_path": "clusterctl/matrix_host.py",
+    "source_commit": "48caa742c212345783cad94537184adcfd2c439b",
+    "source_sha256": "f4f5b971ef986cf74422c77f5ffa19763d83eb84a206b55cf3f132e11bf2dae4",
+    "candidate_sha256": "d24af0d7a4f1c7f4177be494129eff276d887fbaea5c7731c8f5b51d0327d42e",
+    "changes": [
+      "Single host fence import redirected to private namespace"
+    ]
+  },
+  "clusterctl/matrix_fencing/fences.py": {
+    "source_path": "clusterctl/fences.py",
+    "source_commit": "48caa742c212345783cad94537184adcfd2c439b",
+    "source_sha256": "7d679d6ab7fe87f45ff97b00c68f42f12af6e786ee548fe8577569b2c8dcc531",
+    "candidate_sha256": "7d679d6ab7fe87f45ff97b00c68f42f12af6e786ee548fe8577569b2c8dcc531",
+    "changes": []
+  },
+  "clusterctl/matrix_fencing/production_fences.py": {
+    "source_path": "clusterctl/production_fences.py",
+    "source_commit": "48caa742c212345783cad94537184adcfd2c439b",
+    "source_sha256": "801bda5b91e4ffa2dc280b9b4fc2e0dfd4c8c7c33b3f10774f29ac97c9099218",
+    "candidate_sha256": "801bda5b91e4ffa2dc280b9b4fc2e0dfd4c8c7c33b3f10774f29ac97c9099218",
+    "changes": []
+  },
+  "requirements-weave.txt": {
+    "source_path": "requirements-weave.txt",
+    "source_commit": "48caa742c212345783cad94537184adcfd2c439b",
+    "source_sha256": "993348e7a7de18ca011502d250986d301a6617f250fd32f74a0c8f51b92b4384",
+    "candidate_sha256": "993348e7a7de18ca011502d250986d301a6617f250fd32f74a0c8f51b92b4384",
+    "changes": []
+  }
+}

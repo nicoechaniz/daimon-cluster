@@ -9,7 +9,7 @@ import sys
 
 def main():
     source = Path(sys.argv[1]).resolve()
-    revision = "acb131f18c200bb028ee86fa3a8ef9a2f6c040a3"
+    revision = "95216a1227a2bafd09db975bd2caf415e3e163cc"
     distribution = metadata.distribution("daimon-matrix")
     direct = json.loads(distribution.read_text("direct_url.json"))
     assert direct["vcs_info"]["commit_id"] == revision

@@ -1263,9 +1263,7 @@ def verify_portable_snapshot(
     except (UnicodeDecodeError, json.JSONDecodeError) as exception:
         raise MatrixHostError("matrix_snapshot_manifest_unreadable") from exception
     expected_schema = (
-        MATRIX_RECOVERY_SNAPSHOT_SCHEMA
-        if _custody_free
-        else MATRIX_SNAPSHOT_SCHEMA
+        MATRIX_RECOVERY_SNAPSHOT_SCHEMA if _custody_free else MATRIX_SNAPSHOT_SCHEMA
     )
     if (
         not isinstance(manifest, dict)
@@ -1376,6 +1374,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="explicit owner-local native messaging application directory (disabled by default)",
     )
     parser.add_argument(
+        "--visibility-installation",
+        type=Path,
+        default=None,
+        help="owner-signed visibility installation for the explicit messaging application",
+    )
+    parser.add_argument(
         "--production-fence-verifier",
         action="store_true",
         help="verify Cluster's production fence database without signing custody",
@@ -1390,6 +1394,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         guardian_pid=args.guardian_pid,
         production_fence_verifier=args.production_fence_verifier,
         messaging_application=args.messaging_application,
+        visibility_installation=args.visibility_installation,
     )
 
 
@@ -1403,6 +1408,7 @@ def run(
     guardian_pid: int | None = None,
     production_fence_verifier: bool = False,
     messaging_application: str | Path | None = None,
+    visibility_installation: str | Path | None = None,
 ) -> int:
     """Run the guarded host; native messaging requires explicit owner opt-in."""
 
@@ -1411,6 +1417,8 @@ def run(
     stopping = threading.Event()
     guardian: threading.Thread | None = None
     try:
+        if visibility_installation is not None and messaging_application is None:
+            raise MatrixHostError("matrix_visibility_requires_application")
         if guardian_pid is not None:
             if guardian_pid <= 1 or os.getppid() != guardian_pid:
                 raise MatrixHostError("matrix_guardian_missing")
@@ -1450,6 +1458,17 @@ def run(
             return time.time_ns() // 1_000_000
 
         messaging_options: dict[str, Any] = {}
+        if visibility_installation is not None:
+            try:
+                from daimon_matrix.operator_messaging import host_visibility_factory
+
+                messaging_options["egress_factory"] = host_visibility_factory(
+                    messaging_application, visibility_installation, clock=clock
+                )
+            except Exception as exception:
+                raise MatrixHostError(
+                    "matrix_visibility_installation_rejected"
+                ) from exception
         if messaging_application is not None:
             try:
                 from daimon_matrix.messaging_config import (

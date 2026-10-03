@@ -200,6 +200,48 @@ def test_status_failure_is_membership_safe(tmp_path):
     assert "/private/socket" not in json.dumps(response.body)
 
 
+def test_external_owner_admission_preserves_managed_matrix_views(tmp_path):
+    _running(tmp_path)
+    external = {
+        "body_ref": "codex:external:fixture",
+        "embodiment_id": "embodiment:external-fixture",
+        "incarnation_id": "incarnation:external-fixture",
+    }
+    Registry(tmp_path).adopt_running(**external)
+    calls = []
+
+    def managed_only(embodiment_id):
+        calls.append(embodiment_id)
+        assert embodiment_id == EMBODIMENT, "external owner root must not be opened"
+        return MatrixClient()
+
+    response = weave_status(Deps(config_path="unused", state_dir=str(tmp_path), matrix_client_factory=managed_only), _context())
+    assert response.status == 200
+    assert calls == [EMBODIMENT]
+    assert response.body["configured"] is True
+    assert [row["embodiment_id"] for row in response.body["embodiments"]] == [EMBODIMENT]
+    assert response.body["external_owner_bodies"] == [{
+        "embodiment_id": external["embodiment_id"],
+        "incarnation_id": external["incarnation_id"],
+        "matrix_access": "owner-local-required",
+    }]
+    assert "hosting" not in json.dumps(response.body)
+    assert "/private" not in json.dumps(response.body)
+
+
+def test_external_owner_does_not_hide_a_managed_failure(tmp_path):
+    _running(tmp_path)
+    Registry(tmp_path).adopt_running(body_ref="external", embodiment_id="embodiment:external", incarnation_id="incarnation:external")
+
+    def unavailable(_embodiment_id):
+        raise RuntimeError("/private/socket")
+
+    response = weave_status(Deps(config_path="unused", state_dir=str(tmp_path), matrix_client_factory=unavailable), _context())
+    assert response.status == 503
+    assert response.body["error"] == "matrix-status-unavailable"
+    assert "/private/socket" not in json.dumps(response.body)
+
+
 def test_clusterd_entrypoint_wires_the_production_matrix_factory(tmp_path, monkeypatch):
     captured = {}
 

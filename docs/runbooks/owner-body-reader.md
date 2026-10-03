@@ -89,3 +89,64 @@ production backend. Record whether the crossing used different actual UIDs.
 Same-UID fixtures and rejected UID expectations do not prove deployed crossing.
 Verify missing/stopped/substituted origins, source/profile/socket drift, refusal
 before native spawn, clean shutdown and unchanged registry/fence tables.
+
+## Existing owner-hosted process admission (opt-in v2)
+
+The closed `dm.cluster-owner-body-reader-profile/v2` keeps the v1 fields and
+adds `process`, containing exactly integer `uid`, `pid`, `start_ticks` and
+canonical UUID `boot_id`. These are Linux kernel metadata, not Matrix IDs.
+The profile must remain root/reader-owned and nonwritable by other users.
+An approved preflight must bind the process to the selected owner service and
+its actual runtime listener (unit MainPID equals socket SO_PEERCRED PID/UID),
+record the kernel start ticks and current boot ID, and preserve the current
+signed Matrix origin. A process name or PID by itself is insufficient.
+No runtime path, custody, capability key or private payload goes in this profile.
+
+Explicit enrollment uses the coherent pinned release:
+
+```sh
+venv/bin/python -E -s -m clusterctl.owner_runtime \
+  --state-root /var/lib/daimon-cluster \
+  --profile /etc/daimon-cluster/body-readers/example.json
+```
+
+This command changes the native registry and requires live approval. It checks
+physical presence before atomically enrolling the supplied existing origin; it
+mints no IDs and preserves the fleet. Exact active replay is a no-op; conflicting
+body/embodiment/incarnation, retired/ended records and reused incarnation IDs
+refuse. If the reply or final process observation is lost after commit, accepted
+history stays accepted; an explicit exact retry rechecks liveness without adding
+a record. Do not rewind this history as a rollback.
+
+The existing reader unit accepts this v2 profile. Each query opens a kernel
+pidfd and checks owner, boot and start ticks before and after the native registry/
+fence observation. Dead/zombie/reused or inaccessible processes refuse; missing
+Linux pidfd support refuses. No process signals, agent wakeups, polling loop,
+runtime requests or automatic registry mutations are installed. Reads preserve
+registry and native fence rows. A v1 profile retains its prior behavior and does
+not claim physical process validation.
+
+After process loss the saved logical incarnation is not silently ended or
+replaced: observations become unavailable. An explicitly approved new profile
+can rebind a restarted process to the same still-active native origin; Matrix
+must separately prove that the origin and authority are still current. An
+incarnation ended by an explicit native stop cannot be reopened. A future
+root-authorized incarnation needs its normal lifecycle authorization.
+
+Every registry writer must first adopt the coherent shared-lock release under
+the approved writer cutoff. An older writer ignores the lock. The enrollment
+command and reader neither stop/start the owner's service nor authorize Codex
+launch, capability renewal, Matrix events, memory adoption or model inference.
+Retain a recovery plan for accepted registration; remove a reader/profile only
+under its approved cutoff, and preserve other bodies and resource fences.
+
+Existing-owner enrollment records `hosting: external-owner`. It cannot relabel an
+already managed Matrix body as external, even when its origin matches. The
+Cluster Matrix status projection keeps existing managed-body views intact and
+reports external records separately in optional `external_owner_bodies`, with
+only embodiment/incarnation IDs and `matrix_access: owner-local-required`. It
+does not open their private runtime, fabricate authenticated Matrix views or
+claim physical liveness from this summary. An existing managed-body failure
+still fails the status request; this exception never hides that failure.
+Owner-local current authority and physical observations remain necessary before
+native Codex start.

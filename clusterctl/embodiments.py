@@ -164,6 +164,66 @@ class Registry:
         return dict(record)
 
     @_serialized
+    def adopt_running(
+        self, *, body_ref: str, embodiment_id: str, incarnation_id: str
+    ) -> dict[str, Any]:
+        """Enroll an explicitly admitted existing process without minting IDs.
+
+        The caller supplies physical admission; this atomic registry operation
+        grants neither Matrix identity nor a resource fence. Exact active replay
+        preserves history; an ended incarnation can never be reopened.
+        """
+        if (
+            not isinstance(body_ref, str) or not body_ref
+            or not isinstance(embodiment_id, str)
+            or not embodiment_id.startswith("embodiment:")
+            or not isinstance(incarnation_id, str)
+            or not incarnation_id.startswith("incarnation:")
+        ):
+            raise RegistryError("invalid existing owner origin")
+        state = self.load()
+        current = state["embodiments"].get(embodiment_id)
+        if current is not None:
+            if (
+                current.get("body_ref") == body_ref
+                and current.get("hosting") == "external-owner"
+                and current.get("status") == "running"
+                and current.get("current_incarnation_id") == incarnation_id
+                and sum(
+                    item.get("incarnation_id") == incarnation_id
+                    and item.get("stopped_at_ms") is None
+                    for item in current.get("incarnations", [])
+                ) == 1
+            ):
+                return copy.deepcopy(current)
+            raise RegistryError("existing owner origin conflicts with registry")
+        for record in state["embodiments"].values():
+            if record.get("body_ref") == body_ref:
+                raise RegistryError("existing owner body already registered")
+            if any(
+                item.get("incarnation_id") == incarnation_id
+                for item in record.get("incarnations", [])
+            ):
+                raise RegistryError("incarnation already registered")
+        now = int(time.time() * 1000)
+        record = {
+            "embodiment_id": embodiment_id,
+            "body_ref": body_ref,
+            "hosting": "external-owner",
+            "status": "running",
+            "created_at_ms": now,
+            "current_incarnation_id": incarnation_id,
+            "incarnations": [{
+                "incarnation_id": incarnation_id,
+                "started_at_ms": now,
+                "stopped_at_ms": None,
+            }],
+        }
+        state["embodiments"][embodiment_id] = record
+        self._save(state)
+        return copy.deepcopy(record)
+
+    @_serialized
     def start(
         self,
         embodiment_id: str,

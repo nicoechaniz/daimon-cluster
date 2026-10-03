@@ -16,8 +16,10 @@ from typing import Any
 from daimon_matrix.cluster import validate_body_snapshot
 
 from .matrix_host import MatrixHostAdapter, _matrix_api
+from .owner_runtime import ProcessPresence, validate_process
 
 PROFILE_SCHEMA = "dm.cluster-owner-body-reader-profile/v1"
+PROCESS_PROFILE_SCHEMA = "dm.cluster-owner-body-reader-profile/v2"
 REQUEST_SCHEMA = "dm.cluster-owner-body-read/v1"
 MAX_BYTES = 65536
 TIMEOUT_SECONDS = 5
@@ -110,16 +112,27 @@ def load_profile(path: Path) -> dict[str, Any]:
 
 
 def validate_profile(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != {
+    if not isinstance(value, dict):
+        raise ReaderError("body_reader_profile_rejected")
+    expected = {
         "schema", "socket_path", "socket_mode", "caller_uid", "origin"
-    } or value["schema"] != PROFILE_SCHEMA:
+    }
+    if value.get("schema") == PROCESS_PROFILE_SCHEMA:
+        expected.add("process")
+        validate_process(value.get("process"))
+    elif value.get("schema") != PROFILE_SCHEMA:
+        raise ReaderError("body_reader_profile_rejected")
+    if set(value) != expected:
         raise ReaderError("body_reader_profile_rejected")
     _uid(value["caller_uid"])
     _origin(value["origin"])
     _path(value["socket_path"])
     if not isinstance(value["socket_mode"], str) or value["socket_mode"] not in {"0600", "0666"}:
         raise ReaderError("body_reader_profile_rejected")
-    return dict(value, origin=_origin(value["origin"]))
+    result = dict(value, origin=_origin(value["origin"]))
+    if "process" in result:
+        result["process"] = validate_process(result["process"])
+    return result
 
 
 def peer_uid(connection: socket.socket) -> int:
@@ -226,9 +239,17 @@ class OwnerBodyReader:
                     connection, _ = self.socket.accept()
                 except socket.timeout:
                     continue
-                handle(connection, self.profile, self.adapter.body_snapshot)
+                handle(connection, self.profile, self.body_snapshot)
         finally:
             self.close()
+
+    def body_snapshot(self, **arguments: Any) -> dict[str, Any]:
+        if self.profile["schema"] == PROFILE_SCHEMA:
+            return self.adapter.body_snapshot(**arguments)
+        with ProcessPresence(self.profile["process"]) as presence:
+            snapshot = self.adapter.body_snapshot(**arguments)
+            presence.verify()
+            return snapshot
 
     def close(self) -> None:
         self.socket.close()

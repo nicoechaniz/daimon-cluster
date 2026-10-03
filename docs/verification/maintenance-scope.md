@@ -136,3 +136,21 @@ matrix remains a future CI gate. No unrelated lint refactor was attempted.
 This is author composition/self-check, not independent review. Parent must
 review this freeze, integrate reviewed V1 migration, regenerate exact hashes,
 run future CI and resolve final release/custody/production gates before use.
+
+## Issue114: shared registry mutation serialization
+
+Existing-owner runtime adoption requires concurrent native Registry writers to
+preserve the installed fleet's records. This increment changes only the native
+registry implementation and its tests, plus CI coverage and this boundary's exact
+candidate digests. Historical baseline hashes and the Matrix dependency pin remain
+unchanged. Register/start/stop hold one owner-only kernel lock for their complete
+load/modify/replace operation; queries create no lock. A live lock is never broken
+on elapsed time, and an explicit embodiment identifier cannot replace another body.
+
+All processes that mutate this registry must use the updated implementation before
+concurrent existing-owner enrollment is enabled. An older process ignores the new
+lock, so updating only a new enrollment process does not provide serialization.
+Deployment therefore requires an approved writer cutoff and coherent release for
+existing writers. The persistent lock inode must not be unlinked while any writer
+is active. Rollback likewise requires a writer cutoff; the registry JSON schema is
+unchanged. This implementation does not enroll or start the target body.

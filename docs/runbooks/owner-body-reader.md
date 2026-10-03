@@ -139,3 +139,14 @@ command and reader neither stop/start the owner's service nor authorize Codex
 launch, capability renewal, Matrix events, memory adoption or model inference.
 Retain a recovery plan for accepted registration; remove a reader/profile only
 under its approved cutoff, and preserve other bodies and resource fences.
+
+Existing-owner enrollment records `hosting: external-owner`. It cannot relabel an
+already managed Matrix body as external, even when its origin matches. The
+Cluster Matrix status projection keeps existing managed-body views intact and
+reports external records separately in optional `external_owner_bodies`, with
+only embodiment/incarnation IDs and `matrix_access: owner-local-required`. It
+does not open their private runtime, fabricate authenticated Matrix views or
+claim physical liveness from this summary. An existing managed-body failure
+still fails the status request; this exception never hides that failure.
+Owner-local current authority and physical observations remain necessary before
+native Codex start.

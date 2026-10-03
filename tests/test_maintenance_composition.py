@@ -57,10 +57,12 @@ def _before_http_unattended_test_cleanup(name, candidate):
     return candidate.replace(wrapped, original)
 
 
-# Issues114/116: exact scoped serialization/enrollment delta; historical hashes remain.
+# Issues114/116: exact scoped registry/fleet-status delta; historical hashes remain.
 REGISTRY_MUTATION_UPDATE = {
-    "clusterctl/embodiments.py": "ca4af62eab9a1abc15ef357ceb113162be0462b429295111f28edd36e57913c9",
+    "clusterctl/embodiments.py": "297d52439d967a6f04a710d6c79db21f13288e0d73d3c57fcef21701d6bf6cdd",
     "tests/test_embodiments.py": "f99b43ff17353b6ca1b8720a285d4c57ab310851c7e8eec73c5e5374e0afa7b9",
+    "clusterd/handlers.py": "429d31321b530fd4650c6d7d19adeb458e4b96b96d45ec61fe1e8727eea865de",
+    "tests/test_matrix_status.py": "624b88bc4e7e9f0d31f67c255aeb572c85bb4eaff3103b4c2e09add710823707",
 }
 
 

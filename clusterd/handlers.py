@@ -558,10 +558,20 @@ def _redacted_matrix_status(deps: Deps) -> Response:
     if factory is None:
         raise RuntimeError("matrix_client_factory_unavailable")
     rows = []
+    external_owner_bodies = []
     for record in Registry(_state_dir(deps)).list_all():
         if record.get("status") != "running":
             continue
         embodiment_id = record["embodiment_id"]
+        if record.get("hosting") == "external-owner":
+            # Cluster physical admission does not authorize access to the
+            # owner's private Matrix root or grant a local client capability.
+            external_owner_bodies.append({
+                "embodiment_id": embodiment_id,
+                "incarnation_id": record["current_incarnation_id"],
+                "matrix_access": "owner-local-required",
+            })
+            continue
         client = factory(embodiment_id)
         runtime = _matrix_result(getattr(client, "runtime_status", None))
         me = _matrix_result(getattr(client, "scope_me", None))
@@ -721,6 +731,7 @@ def _redacted_matrix_status(deps: Deps) -> Response:
             "implementation": "installed-daimon-matrix",
             "matrix_contract_commit": MATRIX_CONTRACT_COMMIT,
             "embodiments": rows,
+            **({"external_owner_bodies": external_owner_bodies} if external_owner_bodies else {}),
         },
     )
 

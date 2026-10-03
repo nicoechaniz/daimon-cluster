@@ -171,3 +171,14 @@ def test_saved_profile_is_copied_before_observation(tmp_path, process):
     admitted = validate_profile(value)
     value["process"]["pid"] += 1
     assert admitted["process"]["pid"] == binding["pid"]
+
+
+def test_enrollment_cannot_relabel_an_existing_managed_body(tmp_path, process):
+    _, binding = process
+    registry = Registry(tmp_path)
+    registry.register(body_ref=ORIGIN["body_ref"], embodiment_id=ORIGIN["embodiment_id"])
+    registry.start(ORIGIN["embodiment_id"], incarnation_id=ORIGIN["incarnation_id"])
+    before = registry.path.read_bytes()
+    with pytest.raises(RegistryError):
+        enroll(tmp_path, profile(tmp_path, binding))
+    assert registry.path.read_bytes() == before

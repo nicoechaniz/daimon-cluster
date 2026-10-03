@@ -186,6 +186,7 @@ class Registry:
         if current is not None:
             if (
                 current.get("body_ref") == body_ref
+                and current.get("hosting") == "external-owner"
                 and current.get("status") == "running"
                 and current.get("current_incarnation_id") == incarnation_id
                 and sum(
@@ -208,6 +209,7 @@ class Registry:
         record = {
             "embodiment_id": embodiment_id,
             "body_ref": body_ref,
+            "hosting": "external-owner",
             "status": "running",
             "created_at_ms": now,
             "current_incarnation_id": incarnation_id,

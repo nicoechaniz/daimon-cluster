@@ -166,3 +166,11 @@ test; historical hashes and all other original modules remain frozen.
 No changes to default host placement, V7 loader, fleet adapters or Matrix pin.
 The runbook separates profile/process selection, native Matrix authority and
 live approval. Private qualification is not deployed physical acceptance.
+
+The same issue116 increment explicitly marks newly enrolled external-owner rows
+and adds the scoped handlers/status-test digests. Without that marker, the
+legacy fleet Matrix projection would attempt a missing service-owned root and
+return503 for the entire fleet. Managed Matrix views keep their existing shape
+and failure semantics; an optional separate external-owner access summary never
+claims an authenticated Matrix view or physical liveness. Existing managed rows
+are not relabeled. All other historical digests and source pins remain unchanged.

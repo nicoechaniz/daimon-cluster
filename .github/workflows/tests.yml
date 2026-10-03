@@ -72,6 +72,7 @@ jobs:
           clusterctl/owner_body_reader.py
           clusterctl/owner_runtime.py
           tests/test_owner_runtime.py
+          tests/test_matrix_status.py
           clusterctl/embodiments.py
           tests/test_embodiments.py
           tests/test_owner_body_reader.py

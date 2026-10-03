@@ -69,6 +69,8 @@ jobs:
           clusterctl/matrix_host.py
           clusterctl/matrix_fencing
           clusterctl/matrix_status_transition.py
+          clusterctl/owner_body_reader.py
+          tests/test_owner_body_reader.py
           tests/test_matrix_status_transition.py
           scripts/maintenance-unit-runner.py
           tests/test_maintenance_composition.py
@@ -86,6 +88,7 @@ jobs:
           python -m mypy --follow-imports=skip --ignore-missing-imports
           clusterctl/matrix_host.py clusterctl/matrix_fencing
           clusterctl/matrix_status_transition.py
+          clusterctl/owner_body_reader.py
       - run: python -m compileall -q clusterctl clusterd steward_tools tests
       - run: python scripts/maintenance-unit-runner.py
         env:

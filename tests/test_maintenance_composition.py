@@ -78,6 +78,7 @@ def test_only_declared_runtime_additions_and_exact_upstream_composition():
         "clusterctl/matrix_fencing/fences.py",
         "clusterctl/matrix_fencing/production_fences.py",
         "clusterctl/matrix_status_transition.py",
+        "clusterctl/owner_body_reader.py",
     }
     assert not old - current
     origins = json.loads((ROOT / "docs/verification/maintenance-origins.json").read_text())

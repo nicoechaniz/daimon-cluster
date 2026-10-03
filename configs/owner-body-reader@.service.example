@@ -1,0 +1,23 @@
+# Template only. Render the exact immutable release/profile before approval.
+[Unit]
+Description=Owner-authorized Cluster body observations for %i
+After=clusterd.service
+Requires=clusterd.service
+
+[Service]
+Type=simple
+User=clusterd
+Group=clusterd
+WorkingDirectory=/opt/daimon-cluster-releases/EXACT_RELEASE
+ExecStart=/opt/daimon-cluster-releases/EXACT_RELEASE/venv/bin/python -E -s -m clusterctl.owner_body_reader --state-root /var/lib/daimon-cluster --profile /etc/daimon-cluster/body-readers/%i.json
+RuntimeDirectory=daimon-cluster-body-reader-%i
+RuntimeDirectoryMode=0755
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/daimon-cluster
+PrivateTmp=true
+TimeoutStopSec=30
+Restart=no
+# No Install section: enabling or starting a reader is an explicit live action.

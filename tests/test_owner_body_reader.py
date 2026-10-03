@@ -110,6 +110,39 @@ def test_real_socket_uses_native_authenticated_reader_without_writes(fixture):
     assert not Path(profile["socket_path"]).exists()
 
 
+@pytest.mark.skipif(not hasattr(os, "pidfd_open"), reason="Linux pidfd admission")
+@pytest.mark.parametrize("exit_during_read", [False, True])
+def test_process_bound_socket_refuses_dead_runtime_without_history_rewrite(fixture, exit_during_read):
+    from test_owner_runtime import process_binding
+    _, state, _, profile = fixture
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    profile.update(schema=body.PROCESS_PROFILE_SCHEMA, process=process_binding(child.pid))
+    reader, stop, thread = serve(state, profile)
+    try:
+        before = (state / "embodiments.json").read_bytes(), history(state)
+        assert query(profile)["ok"] is True
+        if exit_during_read:
+            native_snapshot = reader.adapter.body_snapshot
+
+            def dies_during_read(**arguments):
+                result = native_snapshot(**arguments)
+                child.terminate()
+                child.wait(timeout=3)
+                return result
+
+            reader.adapter.body_snapshot = dies_during_read
+        else:
+            child.terminate()
+            child.wait(timeout=3)
+        assert query(profile) == {"ok": False, "error": "cluster_body_read_refused"}
+        assert ((state / "embodiments.json").read_bytes(), history(state)) == before
+    finally:
+        shutdown(reader, stop, thread)
+        if child.poll() is None:
+            child.terminate()
+        child.wait(timeout=3)
+
+
 @pytest.mark.parametrize("change", [
     {"body_ref": "codex:other:compaii"}, {"incarnation_id": "incarnation:other"},
     {"embodiment_id": "embodiment:other"}, {"evaluated_at_ms": True},

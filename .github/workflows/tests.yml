@@ -70,6 +70,8 @@ jobs:
           clusterctl/matrix_fencing
           clusterctl/matrix_status_transition.py
           clusterctl/owner_body_reader.py
+          clusterctl/owner_runtime.py
+          tests/test_owner_runtime.py
           clusterctl/embodiments.py
           tests/test_embodiments.py
           tests/test_owner_body_reader.py
@@ -91,6 +93,7 @@ jobs:
           clusterctl/matrix_host.py clusterctl/matrix_fencing
           clusterctl/matrix_status_transition.py
           clusterctl/owner_body_reader.py
+          clusterctl/owner_runtime.py
           clusterctl/embodiments.py
       - run: python -m compileall -q clusterctl clusterd steward_tools tests
       - run: python scripts/maintenance-unit-runner.py

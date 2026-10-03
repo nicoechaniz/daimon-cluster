@@ -57,9 +57,9 @@ def _before_http_unattended_test_cleanup(name, candidate):
     return candidate.replace(wrapped, original)
 
 
-# Issue114: exact scoped registry serialization delta; historical hashes remain.
+# Issues114/116: exact scoped serialization/enrollment delta; historical hashes remain.
 REGISTRY_MUTATION_UPDATE = {
-    "clusterctl/embodiments.py": "76673e579f50cfd173a38f79469ee2fdab08278042329de12735e998c24d31b7",
+    "clusterctl/embodiments.py": "ca4af62eab9a1abc15ef357ceb113162be0462b429295111f28edd36e57913c9",
     "tests/test_embodiments.py": "f99b43ff17353b6ca1b8720a285d4c57ab310851c7e8eec73c5e5374e0afa7b9",
 }
 
@@ -89,6 +89,7 @@ def test_only_declared_runtime_additions_and_exact_upstream_composition():
         "clusterctl/matrix_fencing/production_fences.py",
         "clusterctl/matrix_status_transition.py",
         "clusterctl/owner_body_reader.py",
+        "clusterctl/owner_runtime.py",
     }
     assert not old - current
     origins = json.loads((ROOT / "docs/verification/maintenance-origins.json").read_text())

@@ -154,3 +154,15 @@ Deployment therefore requires an approved writer cutoff and coherent release for
 existing writers. The persistent lock inode must not be unlinked while any writer
 is active. Rollback likewise requires a writer cutoff; the registry JSON schema is
 unchanged. This implementation does not enroll or start the target body.
+
+## Issue116: optional existing-owner runtime enrollment
+
+Add only `clusterctl/owner_runtime.py` to the runtime inventory. The owner reader
+accepts an opt-in v2 process selector and guards native observations with actual
+Linux pidfd/owner/boot/start evidence. Native Registry gains atomic enrollment
+of an explicitly admitted existing origin and exact active replay; IDs and
+history are preserved. Its exact updated digest is declared in the boundary
+test; historical hashes and all other original modules remain frozen.
+No changes to default host placement, V7 loader, fleet adapters or Matrix pin.
+The runbook separates profile/process selection, native Matrix authority and
+live approval. Private qualification is not deployed physical acceptance.

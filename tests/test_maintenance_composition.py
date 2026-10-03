@@ -60,7 +60,7 @@ def _before_http_unattended_test_cleanup(name, candidate):
 # Issue114: exact scoped registry serialization delta; historical hashes remain.
 REGISTRY_MUTATION_UPDATE = {
     "clusterctl/embodiments.py": "76673e579f50cfd173a38f79469ee2fdab08278042329de12735e998c24d31b7",
-    "tests/test_embodiments.py": "6483fe69e4d4aac86c68c0818a6a2aea8d01fee63c95a2db31599d951747c21f",
+    "tests/test_embodiments.py": "f99b43ff17353b6ca1b8720a285d4c57ab310851c7e8eec73c5e5374e0afa7b9",
 }
 
 

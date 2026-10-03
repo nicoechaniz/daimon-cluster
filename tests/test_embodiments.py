@@ -177,15 +177,22 @@ def test_read_only_registry_queries_do_not_create_lock(tmp_path):
     assert not lock.exists()
 
 
-def test_busy_lock_does_not_break_live_holder(tmp_path, monkeypatch):
+@pytest.mark.parametrize("operation", ["register", "start", "stop"])
+def test_busy_lock_does_not_break_live_holder(tmp_path, monkeypatch, operation):
     import clusterctl.embodiments as module
     registry = Registry(tmp_path)
-    registry.register(body_ref="existing")
+    embodiment = registry.register(body_ref="existing")["embodiment_id"]
+    if operation == "stop":
+        registry.start(embodiment)
     before = registry.path.read_bytes()
     with registry._mutation_lock():
         inode = (tmp_path / "embodiments.lock").stat().st_ino
         monkeypatch.setattr(module, "MUTATION_LOCK_TIMEOUT_SECONDS", 0.02)
         with pytest.raises(RegistryError, match="busy"):
-            Registry(tmp_path).register(body_ref="new")
+            writer = Registry(tmp_path)
+            if operation == "register":
+                writer.register(body_ref="new")
+            else:
+                getattr(writer, operation)(embodiment)
         assert (tmp_path / "embodiments.lock").stat().st_ino == inode
         assert registry.path.read_bytes() == before

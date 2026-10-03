@@ -68,7 +68,10 @@ fence positions, clock high-waters or signed history are modified by queries.
 An occupied socket, including a stale socket, refuses startup and is not removed.
 Shutdown unlinks only the inode published by that reader; a replacement file or
 socket remains intact. A client can delay one request for at most the transport
-read deadline; native SQLite operations have their own existing bounded waits.
+read deadline of five seconds shared by header and payload; incoming bytes do
+not renew it. Response writes have a separate five-second bound. Native SQLite
+operations have their own existing bounded waits; the unit allows thirty seconds
+for cooperative shutdown across these stages.
 No automatic retry, polling, timers or independent events are installed.
 
 ## Deployment and evidence

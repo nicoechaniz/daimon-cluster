@@ -263,3 +263,36 @@ def test_uncontrolled_ancestor_refuses_profile_and_socket(fixture):
         assert not Path(profile["socket_path"]).exists()
     finally:
         root.chmod(0o700)
+
+
+def test_dripping_request_cannot_extend_whole_read_deadline(monkeypatch):
+    monkeypatch.setattr(body, "TIMEOUT_SECONDS", 0.2)
+    server, client = socket.socketpair()
+    calls = []
+    profile = {"caller_uid": os.geteuid(), "origin": dict(ORIGIN)}
+    handler = threading.Thread(target=body.handle, args=(server, profile, lambda **kw: calls.append(kw)))
+    stop = threading.Event()
+
+    def drip():
+        try:
+            client.sendall(struct.pack("!I", body.MAX_BYTES))
+            while not stop.is_set():
+                client.sendall(b"\x00")
+                stop.wait(0.03)
+        except OSError:
+            pass
+
+    writer = threading.Thread(target=drip)
+    try:
+        handler.start()
+        writer.start()
+        handler.join(0.8)
+        assert not handler.is_alive(), "ongoing input extended the request deadline"
+        assert calls == []
+    finally:
+        stop.set()
+        client.close()
+        writer.join(2)
+        handler.join(2)
+        server.close()
+        assert not writer.is_alive() and not handler.is_alive()

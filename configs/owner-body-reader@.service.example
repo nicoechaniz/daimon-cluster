@@ -18,6 +18,6 @@ ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/daimon-cluster
 PrivateTmp=true
-TimeoutStopSec=15
+TimeoutStopSec=30
 Restart=no
 # No Install section: enabling or starting a reader is an explicit live action.

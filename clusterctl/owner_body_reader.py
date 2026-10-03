@@ -10,6 +10,7 @@ import socket
 import stat
 import struct
 import threading
+import time
 from typing import Any
 
 from daimon_matrix.cluster import validate_body_snapshot
@@ -127,9 +128,14 @@ def peer_uid(connection: socket.socket) -> int:
     return struct.unpack("3I", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
 
 
-def _exact(connection: socket.socket, length: int) -> bytes:
+def _exact(connection: socket.socket, length: int, deadline: float | None = None) -> bytes:
     chunks = []
     while length:
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ReaderError("body_reader_deadline_rejected")
+            connection.settimeout(remaining)
         chunk = connection.recv(length)
         if not chunk:
             raise ReaderError("body_reader_incomplete")
@@ -138,11 +144,11 @@ def _exact(connection: socket.socket, length: int) -> bytes:
     return b"".join(chunks)
 
 
-def receive(connection: socket.socket) -> Any:
-    size = struct.unpack("!I", _exact(connection, 4))[0]
+def receive(connection: socket.socket, *, deadline: float | None = None) -> Any:
+    size = struct.unpack("!I", _exact(connection, 4, deadline))[0]
     if not 0 < size <= MAX_BYTES:
         raise ReaderError("body_reader_size_rejected")
-    return _decode(_exact(connection, size))
+    return _decode(_exact(connection, size, deadline))
 
 
 def send(connection: socket.socket, value: Any) -> None:
@@ -157,7 +163,7 @@ def handle(connection: socket.socket, profile: dict[str, Any], reader: Any) -> N
     try:
         if peer_uid(connection) != profile["caller_uid"]:
             raise ReaderError("body_reader_caller_rejected")
-        request = receive(connection)
+        request = receive(connection, deadline=time.monotonic() + TIMEOUT_SECONDS)
         if not isinstance(request, dict) or set(request) != {
             "schema", "body_ref", "embodiment_id", "incarnation_id", "evaluated_at_ms"
         } or request["schema"] != REQUEST_SCHEMA:
@@ -171,9 +177,11 @@ def handle(connection: socket.socket, profile: dict[str, Any], reader: Any) -> N
         arguments = dict(origin, evaluated_at_ms=instant)
         observation = reader(**arguments)
         validate_body_snapshot(observation, **arguments)
+        connection.settimeout(TIMEOUT_SECONDS)
         send(connection, {"ok": True, "snapshot": observation})
     except Exception:
         try:
+            connection.settimeout(TIMEOUT_SECONDS)
             send(connection, {"ok": False, "error": "cluster_body_read_refused"})
         except (OSError, ValueError):
             pass

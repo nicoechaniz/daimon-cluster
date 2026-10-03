@@ -18,3 +18,12 @@ UID1000, using exact public source in removed disposable staging and no daemon
 frames/requests, keys, registry or service mutation. That kernel observation does
 not prove actual enrollment, reader socket crossing, Matrix current authority
 or native harness adoption. Those operational acceptance items remain pending.
+
+Fleet-status correction: independent review **APPROVE** exact
+`2a2d9b43b8a5bb26036a2efea8aad2f3a948909f`. Ten focused status/enrollment/boundary
+checks and independent external-only, stopped-external, readonly, relabeling and
+unknown-marker probes pass. Only explicitly external-owner records bypass the
+service-owned Matrix root; managed failures retain503 with content-free errors.
+The optional summary claims neither authenticated Matrix metadata nor physical
+liveness. Process/socket implementation bytes and their earlier proofs remain
+unchanged. Current-head CI and actual adoption are separate outstanding checks.

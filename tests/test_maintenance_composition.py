@@ -57,9 +57,19 @@ def _before_http_unattended_test_cleanup(name, candidate):
     return candidate.replace(wrapped, original)
 
 
+# Issue114: exact scoped registry serialization delta; historical hashes remain.
+REGISTRY_MUTATION_UPDATE = {
+    "clusterctl/embodiments.py": "76673e579f50cfd173a38f79469ee2fdab08278042329de12735e998c24d31b7",
+    "tests/test_embodiments.py": "f99b43ff17353b6ca1b8720a285d4c57ab310851c7e8eec73c5e5374e0afa7b9",
+}
+
+
 def test_installed_tree_preserved_outside_explicit_maintenance_boundary():
     baseline = json.loads((ROOT / "docs/verification/maintenance-baseline.json").read_text())
     for name, digest in baseline["sha256"].items():
+        if name in REGISTRY_MUTATION_UPDATE:
+            assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == REGISTRY_MUTATION_UPDATE[name], name
+            continue
         if name not in PLANNED | HTTP_HELPER_CLEANUP:
             candidate = (ROOT / name).read_bytes()
             if name in HTTP_CLIENT_CLEANUP:

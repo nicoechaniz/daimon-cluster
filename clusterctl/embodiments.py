@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import copy
+import contextlib
+import fcntl
+import functools
 import json
 import os
 import stat
@@ -12,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 REGISTRY_SCHEMA = "embodiment-registry/v1"
+MUTATION_LOCK_TIMEOUT_SECONDS = 5
 
 
 class RegistryError(RuntimeError):
@@ -22,9 +26,66 @@ def new_id(kind: str) -> str:
     return f"{kind}:{uuid.uuid4()}"
 
 
+def _serialized(method):
+    @functools.wraps(method)
+    def mutate(self, *args, **kwargs):
+        with self._mutation_lock():
+            return method(self, *args, **kwargs)
+    return mutate
+
+
 class Registry:
     def __init__(self, state_dir: str | Path):
         self.path = Path(state_dir) / "embodiments.json"
+
+    @contextlib.contextmanager
+    def _mutation_lock(self):
+        """Serialize all bodies' load/modify/replace operations, including threads.
+
+        Keep the inode in place: unlinking a flock file lets another caller lock
+        a different inode. Kernel locks disappear when a process exits; elapsed
+        time never grants permission to break a live holder's lock.
+        """
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        parent = self.path.parent.lstat()
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != os.geteuid()
+        ):
+            raise RegistryError("embodiment registry parent is unsafe")
+        self.path.parent.chmod(0o700)
+        lock_path = self.path.parent / "embodiments.lock"
+        try:
+            descriptor = os.open(
+                lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                0o600,
+            )
+        except OSError as exc:
+            raise RegistryError("cannot open embodiment registry lock") from exc
+        try:
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o077
+                or info.st_nlink != 1
+            ):
+                raise RegistryError("embodiment registry lock is unsafe")
+            deadline = time.monotonic() + MUTATION_LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise RegistryError("embodiment registry mutation is busy")
+                    time.sleep(0.01)
+            linked = lock_path.lstat()
+            if (linked.st_dev, linked.st_ino) != (info.st_dev, info.st_ino):
+                raise RegistryError("embodiment registry lock changed")
+            yield
+        finally:
+            os.close(descriptor)
 
     def load(self) -> dict[str, Any]:
         if not self.path.is_file():
@@ -78,6 +139,7 @@ class Registry:
             os.close(descriptor)
         os.replace(temporary, self.path)
 
+    @_serialized
     def register(
         self, *, body_ref: str, embodiment_id: str | None = None
     ) -> dict[str, Any]:
@@ -87,6 +149,8 @@ class Registry:
                 raise RegistryError(f"body already registered: {body_ref}")
         now = int(time.time() * 1000)
         identifier = embodiment_id or new_id("embodiment")
+        if identifier in state["embodiments"]:
+            raise RegistryError("embodiment already registered")
         record = {
             "embodiment_id": identifier,
             "body_ref": body_ref,
@@ -99,6 +163,7 @@ class Registry:
         self._save(state)
         return dict(record)
 
+    @_serialized
     def start(
         self,
         embodiment_id: str,
@@ -138,6 +203,7 @@ class Registry:
         self._save(state)
         return copy.deepcopy(incarnation)
 
+    @_serialized
     def stop(self, embodiment_id: str) -> dict[str, Any]:
         state = self.load()
         try:

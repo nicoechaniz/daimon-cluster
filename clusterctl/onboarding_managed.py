@@ -5,7 +5,7 @@ from pathlib import Path
 
 from . import being_seed, onboarding_admission, onboarding_mounts
 from .admission import AdmissionEndpoint
-from .embodiments import Registry
+from .onboarding_registry import OwnerRegistry
 from .fences import Ed25519Signer
 from .onboarding import Observation, OnboardingError, digest, private_directory
 from .onboarding_custody import FirstCustody
@@ -31,7 +31,7 @@ class ManagedRuntime:
         for key in ('registrar_key', 'registry', 'state'):
             if not isinstance(value[key], str) or not Path(value[key]).is_absolute():
                 raise OnboardingError('invalid_onboarding_managed_configuration')
-        self.registry = Registry(private_directory(Path(value['registry'])))
+        self.registry = OwnerRegistry(Path(value['registry']))
         self.state = private_directory(Path(value['state']))
         visibility = value['visibility_installation']
         if visibility is not None and (not isinstance(visibility, str)

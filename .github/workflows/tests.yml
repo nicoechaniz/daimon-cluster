@@ -328,6 +328,9 @@ jobs:
           tools/install_onboarding_worker.py
           tests/test_onboarding_worker_install.py
           clusterctl/onboarding_managed.py
+          clusterctl/onboarding_registry.py
+          clusterctl/onboarding_authority.py
+          tests/test_onboarding_host_ownership.py
           tests/test_onboarding_runtime.py
           tests/test_onboarding_service.py
           tests/test_onboarding_managed.py
@@ -403,6 +406,14 @@ jobs:
         run: python tools/check_rc_types.py
       - run: >-
           python -m compileall -q clusterctl clusterd steward_tools tests tools
+      - name: Prove root worker and canonical service owner separation
+        if: needs.scope.outputs.profile != 'ci'
+        run: |
+          set -eu
+          onboarding_python="$(python -c 'import sys; print(sys.executable)')"
+          sudo env LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" "$onboarding_python" -m pytest -q \
+            tests/test_onboarding_host_ownership.py -k 'root_worker or existing_authority' \
+            -W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning
       - run: >-
           python -m pytest -q
           ${{ needs.scope.outputs.pytest_args }}

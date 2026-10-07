@@ -273,6 +273,7 @@ jobs:
         run: >-
           python -m ruff check
           clusterctl/admission.py
+          clusterctl/admission_supervisor.py
           clusterctl/audit.py
           clusterctl/adapters.py
           clusterctl/cli.py
@@ -283,6 +284,8 @@ jobs:
           clusterctl/onboarding_holder_backup.py
           clusterctl/onboarding_sdk.py
           clusterctl/onboarding_target.py
+          clusterctl/onboarding_admission.py
+          tests/test_onboarding_admission.py
           clusterctl/owner_process.py
           clusterctl/browser.py
           clusterctl/distributed_rebirth.py

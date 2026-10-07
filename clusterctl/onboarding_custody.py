@@ -389,3 +389,33 @@ class FirstCustody:
             response = document(response_path)
             onboarding_credential.verify_response(previous, plan, request, response)
             return response
+
+    def admission_coordinates(self, plan: dict) -> dict:
+        """Derive the host registrar's expected binding from native public proofs.
+
+        No receiving key, holder key or online Root custody is opened here.
+        The separate host custody grant still authorizes use of this ceremony.
+        """
+        from daimon_matrix import identity, operator_first_embodiment as first
+        from . import onboarding_credential
+        if not self.authorize(plan):
+            raise OnboardingError("identity_authorization_required")
+        root = self._path(plan)
+        with being_seed._locked(root):
+            activation = document(root / "target-activation.json")
+            _, previous = first.validate_activation(document(root / "genesis.json"),
+                document(root / "target-request.json"), activation)
+            request, response = document(root / "credential-request.json"), document(root / "credential-response.json")
+            current = onboarding_credential.verify_response(previous, plan, request, response)
+            origin = request["origin"]
+            current.validate_origin(origin, require_active=True)
+            member = current.manifest.member(origin["embodiment_id"], origin["incarnation_id"])
+            credential = current.credentials[member["embodiment_credential_id"]]
+            now = time.time_ns() // 1_000_000
+            identity.verify_embodiment_credential(credential, current.state, at_ms=now)
+            identity.verify_incarnation_authorization(current.incarnations[member["incarnation_authorization_id"]],
+                credential, current.state, at_ms=now)
+            return dict(being_ref=current.manifest.being_ref, body_ref=origin["body_ref"],
+                embodiment_id=origin["embodiment_id"], incarnation_id=origin["incarnation_id"],
+                activation_id=activation["activation_id"], credential_id=credential["artifact_id"],
+                manifest_hash=current.manifest.digest)

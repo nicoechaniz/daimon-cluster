@@ -247,6 +247,26 @@ nor registry adoption supplies the mandatory shared admission lease, fences,
 peer delivery, provider or human Telegram acceptance. That integration remains
 required before a cohort activation can be reported.
 
+The next admission adapter generates a separate receiving-owned physical
+holder key after native V8 verification. Its durable public descriptor binds
+that key to the exact plan and native being/body/incarnation/activation,
+credential and manifest. Retries keep the key; loss after descriptor publication
+refuses regeneration. `admission-prepare` emits only public coordinates and a
+short-lived proof made by the maintained holder-authorization constructor.
+The host derives its expected coordinates independently from the verified
+first activation and current credential succession, then validates that proof
+before invoking the maintained registrar-signed enrollment constructor.
+The registrar and admission authority keys never enter the receiving home.
+
+A receiving launch acquires and rechecks the maintained shared admission lease
+before its controlled spawn. It reuses the same renewal/watchdog supervisor as
+rebirth hosting. Graceful stop completes release; failed spawn releases the
+lease; uncertain acquisition starts no process. Another session cannot launch
+until the existing coordinate is released or expires. This adapter's native
+TCP qualification is separate from the prior Incus daemon qualification: its
+controlled child is a disposable process. Managed receiving composition,
+canonical registry/fence binding and full cohort activation remain pending.
+
 Canonical registry writers share the reviewed kernel lock from Cluster #114.
 The mainline rollback operation uses that same lock and retains its narrow
 compensation condition. This preserves history across concurrent body jobs;

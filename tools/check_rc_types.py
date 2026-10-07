@@ -8,6 +8,7 @@ from pathlib import Path
 
 FILES = (
     "clusterctl/admission.py",
+    "clusterctl/admission_supervisor.py",
     "clusterctl/adapters.py",
     "clusterctl/embodiments.py",
     "clusterctl/fences.py",
@@ -33,6 +34,7 @@ FILES = (
     "clusterctl/onboarding_holder_backup.py",
     "clusterctl/onboarding_sdk.py",
     "clusterctl/onboarding_target.py",
+    "clusterctl/onboarding_admission.py",
     "clusterctl/owner_process.py",
     "clusterctl/onboarding_input.py",
     "clusterctl/onboarding_release.py",

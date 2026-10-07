@@ -326,7 +326,7 @@ class Target:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running"))
+    parser.add_argument("action", choices=("prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare"))
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--genesis", type=Path, required=True)
@@ -353,6 +353,10 @@ def main(argv: list[str] | None = None) -> int:
                                 ready_descriptor=args.ready_fd)
         if args.action == "running":
             print(json.dumps(target.running()))
+            return 0
+        if args.action == "admission-prepare":
+            from .onboarding_admission import ReceivingHolder
+            print(json.dumps(ReceivingHolder(target).request()))
             return 0
         if args.action == "prepare":
             target.prepare()

@@ -567,7 +567,7 @@ class HostBackend:
         mount = dict(type='disk', source=str(self.config.runtime_code), path=str(code),
                      readonly='true', shift='true')
         return code, ['--runtime-code', str(code), '--runtime-digest', self.config.runtime_digest], {
-            'onboarding-runtime-' + self.config.runtime_digest: mount}
+            self.config.runtime_digest: mount}
 
     def _mounted(self, plan: dict, mounts: dict) -> bool:
         instances, _ = self._inventory()

@@ -131,14 +131,14 @@ def test_host_attaches_runtime_once_before_v8_observation_and_preserves_foreign_
     actions = []
     def observe(_plan, action):
         actions.append(action)
-        assert 'onboarding-runtime-' + result['runtime_digest'] in run.instances[0]['expanded_devices']
+        assert result['runtime_digest'] in run.instances[0]['expanded_devices']
         return dict(phase='v8')
     monkeypatch.setattr(backend, '_matrix_command', observe)
     run.calls.clear()
     backend._matrix_execute(plan, SimpleNamespace(root=root))
     backend._matrix_execute(plan, SimpleNamespace(root=root))
     assert actions == ['observe', 'observe'] and len(run.calls) == 1
-    device = run.instances[0]['expanded_devices']['onboarding-runtime-' + result['runtime_digest']]
+    device = run.instances[0]['expanded_devices'][result['runtime_digest']]
     assert device['readonly'] == 'true' and device['source'] == str(output)
     device['source'] = '/foreign/runtime'
     with pytest.raises(OnboardingError, match='foreign_receiving_mount_preserved'):

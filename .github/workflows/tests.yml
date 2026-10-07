@@ -280,6 +280,7 @@ jobs:
           clusterctl/onboarding_consent.py
           clusterctl/onboarding_custody.py
           clusterctl/onboarding_holder_backup.py
+          clusterctl/onboarding_sdk.py
           clusterctl/browser.py
           clusterctl/distributed_rebirth.py
           clusterctl/embodiments.py
@@ -314,6 +315,8 @@ jobs:
           tests/test_being_seed.py
           tests/test_onboarding_consent.py
           tests/test_onboarding_custody.py
+          tests/test_onboarding_sdk.py
+          tests/test_onboarding_target_authorization.py
           scripts/being-seed
           tests/test_admission.py
           tests/test_matrix_host_process.py
@@ -338,6 +341,7 @@ jobs:
           tools/build_rc_manifest.py
           tools/qualify_offline.py
           tools/check_rc_types.py
+          tools/build_onboarding_sdk.py
       - name: Type-check the Matrix, fence and mutation-journal boundaries
         run: python tools/check_rc_types.py
       - run: >-

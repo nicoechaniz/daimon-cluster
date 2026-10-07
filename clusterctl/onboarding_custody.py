@@ -9,9 +9,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -69,13 +72,28 @@ class FirstCustody:
 
         _matrix_api()
         descriptor = -1
+        staging = None
+        public_output = None
         try:
             command = [sys.executable, "-B", "-I", "-m", "daimon_matrix.operator_genesis", *arguments]
+            if arguments[0] == "first-embodiment":
+                command = [sys.executable, "-B", "-I", "-m", "daimon_matrix.operator_first_embodiment", *arguments[1:]]
             if arguments[0] == "backup-restore":
                 launcher = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
                             "from clusterctl.onboarding_holder_backup import main; raise SystemExit(main())")
                 command = [sys.executable, "-B", "-I", "-c", launcher,
                            str(Path(__file__).resolve().parents[1]), *arguments[1:]]
+            public_command = (arguments[0] in {"create-intent", "sign", "aggregate"}
+                              or arguments[:2] in [["first-embodiment", "root-share"],
+                                                   ["first-embodiment", "aggregate"]])
+            if public_command:
+                index = command.index("--output") + 1
+                candidate = being_seed._path(Path(command[index]))
+                if not candidate.exists():
+                    private_directory(candidate.parent)
+                    staging = Path(tempfile.mkdtemp(prefix=".native-public-", dir=candidate.parent))
+                    public_output = candidate
+                    command[index] = str(staging / "result.json")
             if password is not None:
                 descriptor = os.open(being_seed._path(password), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                 info = os.fstat(descriptor)
@@ -90,11 +108,25 @@ class FirstCustody:
                                     timeout=120, check=False)
             if result.returncode:
                 raise OnboardingError("native_onboarding_custody_refused")
+            if staging is not None and public_output is not None:
+                # Native public-output CLIs write a small document directly.
+                # Their incomplete output must never become a live checkpoint.
+                # The enclosing custody lock owns publication; a completed
+                # existing document is compared, never overwritten on retry.
+                from daimon_matrix import canonical, keystore
+                value = document(staging / "result.json")
+                if public_output.exists():
+                    if document(public_output) != value:
+                        raise OnboardingError("existing_onboarding_custody_preserved")
+                else:
+                    keystore._atomic_write(public_output, canonical.canonical_bytes(value))
         except (OSError, subprocess.TimeoutExpired):
             raise OnboardingError("native_onboarding_custody_refused") from None
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
+            if staging is not None:
+                shutil.rmtree(staging)
 
     def _dispatch(self, plan: dict, arguments: list[str], password: Path | None = None) -> None:
         if not self.authorize(plan):
@@ -274,3 +306,50 @@ class FirstCustody:
             if result is None:
                 raise OnboardingError("native_onboarding_custody_refused")
             return result
+
+    def authorize_target(self, plan: dict, request: dict) -> dict:
+        """Authorize one public, body-signed target request; never open its keys.
+
+        The guest generates and retains target custody. This side receives only
+        the public enrollment request, and returns public Root authorization.
+        Canonical/physical admission remains a later observed effect.
+        """
+        observed = self.observe(plan)
+        if observed is None or not observed["backup_restore_verified"]:
+            raise OnboardingError("verified_onboarding_custody_required")
+        from daimon_matrix import canonical, keystore, operator_first_embodiment as first, operator_rebirth
+
+        root = self._path(plan)
+        with being_seed._locked(root):
+            request_path = root / "target-request.json"
+            if request_path.exists() and document(request_path) != request:
+                raise OnboardingError("existing_onboarding_target_preserved")
+            genesis = document(root / "genesis.json")
+            activation_path = root / "target-activation.json"
+            if activation_path.exists():
+                activation = document(activation_path)
+                first.validate_activation(genesis, request, activation)
+                expected = first.aggregate_activation(genesis, request,
+                    [document(root / "target-root-share.json")],
+                    observed_at_ms=activation["body"]["issued_at_ms"])
+                if expected != activation:
+                    raise OnboardingError("onboarding_target_activation_conflict")
+                return activation
+            verified = operator_rebirth.validate_enrollment_request(request, first._initial_base(genesis),
+                observed_at_ms=time.time_ns() // 1_000_000)
+            if verified["body"]["origin"]["body_ref"] != "codex:daimon-cluster:" + plan["name"]:
+                raise OnboardingError("onboarding_target_binding_conflict")
+            if not request_path.exists():
+                # Native enrollment CLIs require canonical document bytes.
+                keystore._atomic_write(request_path, canonical.canonical_bytes(verified))
+            # Root is the sole holder process; the target and Recovery packages
+            # are neither present in argv nor opened by this ceremony.
+            self._dispatch(plan, ["first-embodiment", "root-share", "--genesis", str(root / "genesis.json"),
+                "--request", str(request_path), "--holder", str(root / "root"),
+                "--output", str(root / "target-root-share.json")], root / "root.unlock")
+            self._dispatch(plan, ["first-embodiment", "aggregate", "--genesis", str(root / "genesis.json"),
+                "--request", str(request_path), "--share", str(root / "target-root-share.json"),
+                "--output", str(activation_path)])
+            activation = document(activation_path)
+            first.validate_activation(genesis, request, activation)
+            return activation

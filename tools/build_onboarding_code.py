@@ -19,7 +19,7 @@ from clusterctl.onboarding_input import relative
 HMK_COMMIT = "518f350889001b7f70ac3dd4f843a9e0c16d256c"
 ROOT = Path(__file__).resolve().parents[1]
 MODULES = ("__init__.py", "being_seed.py", "onboarding.py", "onboarding_input.py",
-           "onboarding_release.py", "onboarding_guest.py", "onboarding_mounts.py")
+           "onboarding_release.py", "onboarding_guest.py", "onboarding_mounts.py", "onboarding_sdk.py")
 
 
 def copy_code(source: Path, target: Path) -> None:
@@ -44,7 +44,7 @@ def copy_code(source: Path, target: Path) -> None:
         stream.write(raw)
 
 
-def build(checkout: Path, commons: Path, selected_profile: dict, output: Path) -> dict:
+def build(checkout: Path, commons: Path, selected_profile: dict, output: Path, *, sdk: Path | None = None) -> dict:
     selected_profile = onboarding_release.profile(selected_profile)
     if output.exists() or output.is_symlink():
         raise OnboardingError("receiving_code_destination_exists")
@@ -75,6 +75,12 @@ def build(checkout: Path, commons: Path, selected_profile: dict, output: Path) -
         if path.is_file() and "__pycache__" not in path.parts:
             copy_code(path, output / path.relative_to(ROOT))
     copy_code(ROOT / "support/source-inheritance.md", output / "inheritance.md")
+    if sdk is not None:
+        from clusterctl import onboarding_sdk
+        onboarding_sdk.verify(sdk.parent, uid=os.geteuid())
+        for path in sorted(sdk.rglob("*")):
+            if path.is_file():
+                copy_code(path, output / "sdk" / path.relative_to(sdk))
     for name in selected_profile["skills"]:
         source = commons / name
         if not source.is_dir() or source.is_symlink():
@@ -107,9 +113,10 @@ def main() -> int:
     parser.add_argument("--commons", type=Path, required=True)
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--sdk", type=Path)
     args = parser.parse_args()
     try:
-        result = build(args.hmk_checkout, args.commons, json.loads(args.profile.read_bytes()), args.output)
+        result = build(args.hmk_checkout, args.commons, json.loads(args.profile.read_bytes()), args.output, sdk=args.sdk)
         print(json.dumps(result))
         return 0
     except Exception:

@@ -81,6 +81,15 @@ registry projection remain required before a hosted Matrix body can pass
 acceptance. Disposable native backup/restore evidence is not live consumer
 denial or independent human recovery evidence. The enrollment flag stays false.
 
+The Root-side target authorizer receives only the native public enrollment
+request. It checks the body reference against the exact hosted plan and persists
+that one request before signing. A second target cannot replace it, even when
+it has the same presentation name. Root signs in its own native process; a
+keyless process aggregates the activation. A lost activation acknowledgement
+is reconciled by native validation of the existing public artifact without
+another holder invocation. Target custody stays on the receiving side. The
+native V7 package fixture is not current V8 or physical admission acceptance.
+
 ## Execution and recovery
 
 A plan binds owner, environment name, receiving input digest, qualified release,
@@ -137,6 +146,20 @@ receiving tools and selected transferable context; no identity, memory, bot
 credential or account cache is part of a code release. The mutable development
 checkout is captured, while the final artifact forbids group/other writes and
 is selected by its complete manifest digest.
+
+Optionally build the Matrix SDK wheelhouse with
+`python -m tools.build_onboarding_sdk --matrix-checkout CHECKOUT --output DIR/sdk`
+and select it with `tools.build_onboarding_code --sdk DIR/sdk`. This captures
+the exact repository SDK pin and constraint-selected dependencies, records
+every wheel's version/hash and includes the result in the receiving code digest.
+The guest installs only these wheels with network access disabled for pip,
+hash requirements enabled and dependency resolution disabled. It checks
+dependency consistency and every installed wheel member before publishing its
+receipt. Context observation rechecks the actual SDK bytes. A missing initial
+installation acknowledgement permits replay of dependency installation;
+changed completed code is preserved and refused. No account, bot, identity
+key or runtime is copied into this code package. The host VCS pin guard remains
+unchanged; this guest installation is qualified by the wheel and release hashes.
 
 Live configurations also set `consent_state` to the private intake store and
 `consent_uid` to its dedicated service UID. Missing consent configuration stops

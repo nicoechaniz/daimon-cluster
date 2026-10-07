@@ -47,7 +47,7 @@ def inventory(path: Path) -> dict[str, str]:
 
 
 def backup_restore(root: Path, role: str, reader) -> dict:
-    from daimon_matrix import keystore, operator_genesis
+    from daimon_matrix import canonical, keystore, operator_genesis
 
     if role not in {"root", "recovery"}:
         raise OnboardingError("invalid_onboarding_holder_role")
@@ -96,13 +96,19 @@ def backup_restore(root: Path, role: str, reader) -> dict:
         unchanged_or_write(restored / name, private_bytes(backup / name))
     if inventory(restored) != original:
         raise OnboardingError("onboarding_holder_backup_conflict")
+    def publish(path: Path, value: dict) -> None:
+        if path.exists():
+            if document(path) != value:
+                raise OnboardingError("onboarding_holder_backup_conflict")
+        else:
+            keystore._atomic_write(path, canonical.canonical_bytes(value))
     witness = operator_genesis.create_holder_share(document(root / "intent.json"), restored, reader)
-    operator_genesis._write_new(root / ("restored-" + role + "-share.json"), witness)
+    publish(root / ("restored-" + role + "-share.json"), witness)
     result = {"schema": BACKUP_SCHEMA, "plan_digest": digest(plan), "role": role,
               "key_id": descriptor["key"]["key_id"], "counter": 1,
               "control_head": operator_genesis.PENDING_CONTROL_HEAD, "files": original,
               "witness_digest": digest(witness)}
-    operator_genesis._write_new(root / (role + "-backup-receipt.json"), result)
+    publish(root / (role + "-backup-receipt.json"), result)
     return result
 
 

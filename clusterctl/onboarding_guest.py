@@ -18,7 +18,7 @@ from collections import Counter
 from contextlib import closing
 from pathlib import Path
 
-from . import being_seed, onboarding_input, onboarding_release
+from . import being_seed, onboarding_input, onboarding_release, onboarding_sdk
 from .onboarding import Observation, OnboardingError, digest, private_directory, validate_plan
 
 
@@ -53,6 +53,7 @@ def new_bytes(path: Path, raw: bytes, *, executable: bool = False) -> None:
 class Receiver:
     def __init__(self, home: Path, incoming: Path, code: Path, plan: dict, *, code_uid: int = 0):
         self.plan = validate_plan(plan)
+        self.code_uid = code_uid
         self.home, self.incoming, self.code = home.absolute(), incoming.absolute(), code.absolute()
         private_directory(self.home)
         if not self.incoming.is_relative_to(self.home) or self.code.is_relative_to(self.incoming):
@@ -145,6 +146,8 @@ os.execv({sys.executable!r}, [{sys.executable!r}, "-B", str(script), *sys.argv[2
             return
         if observed.state != "absent":
             raise OnboardingError("existing_receiving_file_preserved")
+        if (self.code / "sdk").exists():
+            onboarding_sdk.install(self.home, self.code, self.plan["release_digest"], code_uid=self.code_uid)
         self._copy_input()
         mkdir_chain(self.home, self.state)
         mkdir_chain(self.home, self.home / "Projects/being")
@@ -193,6 +196,8 @@ os.execv({sys.executable!r}, [{sys.executable!r}, "-B", str(script), *sys.argv[2
         marker = self._marker("context")
         if marker is None:
             return Observation("absent", safe_to_execute=True)
+        if (self.code / "sdk").exists():
+            onboarding_sdk.observe(self.home, self.code, code_uid=self.code_uid)
         if (checksum(self.home / ".codex/AGENTS.md") != marker["agents_sha256"]
                 or checksum(self.home / ".codex/config.toml") != marker["config_sha256"]):
             return Observation("conflict", reason="observed_state_conflict")

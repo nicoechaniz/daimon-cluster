@@ -330,3 +330,29 @@ stop refusal, preserved memory and exact cleanup. It used synthetic custody and
 explicit receive-only configuration. Canonical registry enrollment, host-worker
 lifecycle integration and real cohort/provider/Telegram acceptance remain
 pending; this qualification does not turn prepared Eko input into a live body.
+
+The host worker also accepts an optional owner-private `admission` configuration
+file with schema `cluster-onboarding-managed-runtime/v1`. It selects the existing
+authority's public key and loopback port, a receiving loopback proxy port, the
+dedicated registrar key, private service progress and canonical registry roots,
+and the receiving signed visibility installation. The authority itself uses the
+maintained admission service. Its signing key stays outside the worker and guest;
+the registrar key stays outside the guest. A null visibility installation is
+accepted only for an explicitly configured disposable `qualify-` job.
+
+Once native V8 preparation is verified, the same worker stage reconciles its
+exact Incus admission proxy, enrolls the existing receiving holder and installs
+the persistent dedicated guest systemd unit. Every signed enrollment proposal is
+preserved before dispatch. A lost enrollment acknowledgement is recovered by
+querying the original holder binding before attempting another enrollment;
+expired unpublished proposals may be renewed, whereas confirmed public profiles
+remain unchanged. Publication never replaces the receiving identity or memory.
+
+Only authenticated native running status with a current shared lease permits
+atomic canonical registry adoption. A lost registry acknowledgement reuses that
+exact active incarnation. The observer checks service state and native daemon
+presence again; an existing registry row alone does not complete the stage. The
+unit is enabled for boot and renews admission independently of the Codex
+conversation or worker lifetime. Foreign proxies, units and registry origins
+are preserved and refused. Provider, access, peer delivery and Telegram still
+have their separate receiving acceptance requirements.

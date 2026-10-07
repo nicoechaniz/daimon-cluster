@@ -115,3 +115,30 @@ def test_revocation_during_creation_stops_before_the_next_resource_effect(tmp_pa
         backend.execute(value, "environment", "unused")
     assert len(run.calls) == 1
     assert len(run.instances) == 1 and not run.volumes
+
+
+def test_verified_v8_lifecycle_retry_never_reenters_credential_writer(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    config, value, run, _ = configured(tmp_path)
+    (tmp_path / 'views').mkdir(mode=0o700)
+    config = replace(config, views=tmp_path / 'views')
+    backend = HostBackend(config, run=run)
+    backend.execute(value, 'environment', 'unused')
+    run.instances[0]['expanded_devices']['onboarding-matrix-public'] = backend._matrix_mount(value)
+    run.calls.clear()
+    root = tmp_path / 'custody'
+    (root / digest(value)).mkdir(mode=0o700, parents=True)
+    being_seed._write(root / digest(value) / 'genesis.json', {})
+    published, actions = [], []
+    monkeypatch.setattr('clusterctl.onboarding_mounts.prepare_matrix_public',
+                        lambda _views, _plan, documents: published.append(documents))
+    def current(_plan, action):
+        actions.append(action)
+        assert action == 'observe'
+        return dict(phase='v8')
+    backend._matrix_command = current
+    backend._matrix_execute(value, SimpleNamespace(root=root))
+    assert actions == ['observe'] and published == [{'genesis.json': {}}]
+    assert run.calls == []

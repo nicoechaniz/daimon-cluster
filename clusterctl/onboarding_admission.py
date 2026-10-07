@@ -112,6 +112,51 @@ class ReceivingHolder:
             authority_key_id=authority_key_id, authority_public_key=authority_public_key,
             lease_ttl_s=lease_ttl_s, **public["coordinates"])
 
+    def configured_client(self, configuration: dict) -> AdmissionClient:
+        """Bind host public configuration to this body's existing holder."""
+        fields = {'schema', 'plan_digest', 'endpoint', 'authority_key_id',
+                  'authority_public_key', 'lease_ttl_s', 'enrollment'}
+        if (set(configuration) != fields
+                or configuration['schema'] != 'cluster-onboarding-admission-profile/v1'
+                or configuration['plan_digest'] != digest(self.target.plan)
+                or not isinstance(configuration['endpoint'], dict)
+                or set(configuration['endpoint']) != {'transport', 'host', 'port'}
+                or configuration['endpoint']['transport'] != 'tcp-authenticated'
+                or not isinstance(configuration['enrollment'], dict)
+                or not isinstance(configuration['authority_key_id'], str)
+                or not configuration['authority_key_id']
+                or type(configuration['lease_ttl_s']) is not int
+                or not 3 <= configuration['lease_ttl_s'] <= 300):
+            raise OnboardingError('onboarding_admission_profile_rejected')
+        ed25519_fingerprint(configuration['authority_public_key'])
+        public = self.prepare()
+        expected = {**public['coordinates'], 'holder_key_id': public['holder_key_id'],
+                    'holder_pubkey': public['holder_pubkey']}
+        if any(configuration['enrollment'].get(key) != value for key, value in expected.items()):
+            raise OnboardingError('onboarding_admission_profile_rejected')
+        endpoint = configuration['endpoint']
+        return self.client(AdmissionEndpoint.network(endpoint['host'], endpoint['port']),
+            authority_key_id=configuration['authority_key_id'],
+            authority_public_key=configuration['authority_public_key'],
+            lease_ttl_s=configuration['lease_ttl_s'])
+
+    def ensure_enrolled(self, configuration: dict, *, enroll: bool = False) -> bool:
+        """Recover a lost enrollment ACK without refreshing a registered key."""
+        from .admission import AdmissionError, AdmissionConflict, AdmissionUnavailable
+        client = self.configured_client(configuration)
+        try:
+            client.current()
+        except AdmissionUnavailable:
+            raise
+        except AdmissionConflict:
+            # The enrolled coordinate is held by another service session.
+            return True
+        except AdmissionError:
+            if not enroll:
+                return False
+            client.enroll(configuration['enrollment'])
+        return True
+
     def launch(self, client: AdmissionClient, spawn: Callable[[], subprocess.Popen[bytes]]) -> AdmissionSupervisor:
         """Acquire/recheck shared admission before the controlled runtime spawn.
 

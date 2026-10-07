@@ -285,7 +285,7 @@ class Target:
             except OSError:
                 pass
 
-    def running(self) -> dict:
+    def running(self, *, admitted: bool = False) -> dict:
         """Observe a kernel-pinned daemon and authenticate its native status.
 
         This proves owner-local runtime presence, not a Cluster admission lease,
@@ -315,6 +315,13 @@ class Target:
                 expected = prepared["receipt"]["origin"]
                 if status["ok"] is not True or any(status["server"].get(field) != value for field, value in expected.items()):
                     raise OnboardingError("onboarding_daemon_origin_conflict")
+                if admitted:
+                    _, observed = client.scope_me()
+                    body = observed.get('result', {}).get('body', {})
+                    if (observed.get('ok') is not True or body.get('state') != 'running'
+                            or any(body.get(field) != expected[field] for field in
+                                   ('body_ref', 'embodiment_id', 'incarnation_id'))):
+                        raise OnboardingError('onboarding_admission_not_current')
                 current_socket = (root / "matrix.sock").lstat()
                 if (socket_identity.st_dev, socket_identity.st_ino) != (current_socket.st_dev, current_socket.st_ino):
                     raise OnboardingError("onboarding_daemon_socket_changed")
@@ -326,13 +333,14 @@ class Target:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve"))
+    parser.add_argument("action", choices=("prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running"))
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--genesis", type=Path, required=True)
     parser.add_argument("--activation", type=Path)
     parser.add_argument("--credential-response", type=Path)
     parser.add_argument("--admission-profile", type=Path)
+    parser.add_argument("--public-profile-json")
     parser.add_argument("--code", type=Path, required=True)
     visibility = parser.add_mutually_exclusive_group()
     visibility.add_argument("--receive-only", action="store_true")
@@ -358,8 +366,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "serve":
             return target.serve(receive_only=args.receive_only, visibility_installation=args.visibility_installation,
                                 ready_descriptor=args.ready_fd)
-        if args.action == "running":
-            print(json.dumps(target.running()))
+        if args.action in {"running", "admitted-running"}:
+            print(json.dumps(target.running(admitted=args.action == 'admitted-running')))
+            return 0
+        if args.action in {'admission-check', 'admission-enroll'}:
+            from .onboarding_admission import ReceivingHolder
+            if args.public_profile_json is None or len(args.public_profile_json) > 16384:
+                raise OnboardingError('onboarding_admission_profile_required')
+            registered = ReceivingHolder(target).ensure_enrolled(json.loads(args.public_profile_json),
+                enroll=args.action == 'admission-enroll')
+            print(json.dumps(dict(registered=registered)))
             return 0
         if args.action == "admission-prepare":
             from .onboarding_admission import ReceivingHolder

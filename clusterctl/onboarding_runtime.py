@@ -27,37 +27,11 @@ MAX_FRAME = 4096
 
 def serve(target, profile: dict, *, receive_only=False, visibility_installation=None, ready_descriptor=None):
     """Run the admitted parent as a service, retaining its ephemeral session."""
-    from .admission import AdmissionEndpoint, AdmissionError, AdmissionConflict, AdmissionUnavailable
-    from .onboarding import digest
-    from .production_fences import ed25519_fingerprint
-    fields = {'schema','plan_digest','endpoint','authority_key_id','authority_public_key','lease_ttl_s','enrollment'}
-    if (set(profile) != fields or profile['schema'] != 'cluster-onboarding-admission-profile/v1'
-            or profile['plan_digest'] != digest(target.plan)
-            or not isinstance(profile['endpoint'],dict)
-            or set(profile['endpoint']) != {'transport','host','port'}
-            or profile['endpoint']['transport'] != 'tcp-authenticated'
-            or not isinstance(profile['authority_key_id'],str) or not profile['authority_key_id']
-            or not isinstance(profile['enrollment'],dict)):
-        raise OnboardingError('onboarding_admission_profile_rejected')
-    ed25519_fingerprint(profile['authority_public_key'])
     holder = ReceivingHolder(target)
-    public = holder.prepare()
-    expected = {**public['coordinates'], 'holder_key_id':public['holder_key_id'], 'holder_pubkey':public['holder_pubkey']}
-    if any(profile['enrollment'].get(key) != value for key,value in expected.items()):
-        raise OnboardingError('onboarding_admission_profile_rejected')
-    endpoint = AdmissionEndpoint.network(profile['endpoint']['host'],profile['endpoint']['port'])
-    client = holder.client(endpoint,authority_key_id=profile['authority_key_id'],
-        authority_public_key=profile['authority_public_key'],lease_ttl_s=profile['lease_ttl_s'])
+    client = holder.configured_client(profile)
     # Persisted authority enrollment survives service/profile expiry. Probe its
     # binding first instead of trying an expired enrollment on every restart.
-    try:
-        client.current()
-    except AdmissionUnavailable:
-        raise
-    except AdmissionConflict:
-        pass
-    except AdmissionError:
-        client.enroll(profile['enrollment'])
+    holder.ensure_enrolled(profile, enroll=True)
     owned = AdmittedDaemon(target,client)
     stopping = threading.Event()
     def request_stop(_number,_frame):

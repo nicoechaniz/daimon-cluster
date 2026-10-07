@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULES = ("__init__.py", "being_seed.py", "onboarding.py", "onboarding_input.py",
            "onboarding_release.py", "onboarding_guest.py", "onboarding_mounts.py", "onboarding_sdk.py",
            "onboarding_target.py", "onboarding_credential.py", "owner_process.py", "onboarding_admission.py",
-           "onboarding_runtime.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
+           "onboarding_runtime.py", "onboarding_service.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
 
 
 def copy_code(source: Path, target: Path) -> None:

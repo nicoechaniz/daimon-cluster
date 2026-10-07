@@ -43,13 +43,14 @@ class HostConfig:
     qualification: bool = False
     custody: Path | None = None
     custody_grants: Path | None = None
+    admission: Path | None = None
 
     @classmethod
     def load(cls, path: Path) -> HostConfig:
         value = being_seed._read(path)
         consent_keys = {"consent_state", "consent_uid"}
         custody_keys = {"custody", "custody_grants"}
-        if (set(value) - consent_keys - custody_keys - {"qualification"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - {"qualification", "admission"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -100,10 +101,17 @@ class HostConfig:
                     or custody == custody_grants or custody.is_relative_to(custody_grants)
                     or custody_grants.is_relative_to(custody)):
                 raise OnboardingError("separate_onboarding_custody_required")
+        admission = None
+        if 'admission' in value:
+            if (custody is None or not isinstance(value['admission'], str)
+                    or not Path(value['admission']).is_absolute()):
+                raise OnboardingError('invalid_onboarding_host_configuration')
+            admission = Path(value['admission'])
+            being_seed._read(admission)
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission)
 
     def approved_plans(self) -> list[dict]:
         private_directory(self.grants)
@@ -222,6 +230,9 @@ class HostBackend:
                 target = self._matrix_command(plan, "observe")
                 if target["phase"] in {"absent", "prepared", "v7", "v8-published"}:
                     return Observation("absent", safe_to_execute=True)
+                if self.config.admission is not None:
+                    from .onboarding_managed import ManagedRuntime
+                    return ManagedRuntime(self).observe(plan)
             # Current receiving authority is not physical/canonical admission.
             return Observation("waiting", reason="backend_unavailable")
         # Do not invent success for native enrollment or receiving acceptance.
@@ -248,6 +259,9 @@ class HostBackend:
                 ceremony.prepare(plan, identity_mode=decision["matrix_identity_mode"])
             if self.config.code and self.config.views and (self.config.code / "sdk/sdk.json").exists():
                 self._matrix_execute(plan, ceremony)
+                if self.config.admission is not None:
+                    from .onboarding_managed import ManagedRuntime
+                    ManagedRuntime(self).execute(plan)
             return
         if stage != "environment":
             raise OnboardingError("unsupported_onboarding_host_stage")
@@ -374,7 +388,7 @@ class HostBackend:
         return dict(type="disk", source=str(self.config.views / digest(plan) / "matrix-public"),
                     path="/home/agent/.onboarding-matrix", readonly="true", shift="true")
 
-    def _matrix_command(self, plan: dict, action: str) -> dict:
+    def _target_call(self, plan: dict, action: str, *, profile: dict | None = None) -> dict:
         if self.config.custody is None or self.config.custody_grants is None:
             raise OnboardingError("identity_authorization_required")
         if not FirstCustody(self.config.custody, self.config.custody_grants).authorize(plan):
@@ -387,8 +401,15 @@ class HostBackend:
             "--env", "HOME=/home/agent", "--", "python3", "-B", "-I", "-c", launcher, str(guest_code),
             action, "--home", "/home/agent", "--code", str(guest_code),
             "--plan", "/home/agent/.onboarding-input/plan.json", "--genesis", public + "/genesis.json",
-            "--activation", public + "/activation.json", "--credential-response", public + "/credential-response.json"])
+            "--activation", public + "/activation.json", "--credential-response", public + "/credential-response.json",
+            *(['--public-profile-json', json.dumps(profile, separators=(',', ':'))] if profile is not None else [])])
         value = json.loads(result)
+        if not isinstance(value, dict):
+            raise OnboardingError('invalid_onboarding_observation')
+        return value
+
+    def _matrix_command(self, plan: dict, action: str) -> dict:
+        value = self._target_call(plan, action)
         if (not isinstance(value, dict) or set(value) != {"phase", "request", "receipt"}
                 or value["phase"] not in {"absent", "prepared", "v7", "v8-published", "v8"}):
             raise OnboardingError("invalid_onboarding_observation")
@@ -409,6 +430,11 @@ class HostBackend:
         if current is None:
             self._dispatch(plan, ["config", "device", "add", self.instance(plan), "onboarding-matrix-public", "disk",
                                   *[key + "=" + value for key, value in mount.items() if key != "type"]])
+        # Lifecycle recovery may already have a live daemon. Its verified V8
+        # publication is immutable; never reenter credential writer operations
+        # merely because a later service/registry acknowledgement was lost.
+        if self._matrix_command(plan, 'observe')['phase'] == 'v8':
+            return
         target = self._matrix_command(plan, "prepare")
         activation = ceremony.authorize_target(plan, target["request"])
         onboarding_mounts.prepare_matrix_public(self.config.views, plan, {"activation.json": activation})

@@ -33,6 +33,8 @@ class IncusFixture:
             self.volumes.append(dict(name=argv[4], type="custom", config={
                 "size": "22GiB", "user.dm.onboarding-plan": argv[6].split("=", 1)[1]}))
         elif argv[:3] == ["config", "device", "add"]:
+            if len(argv[4]) > 64:
+                raise OnboardingError("incus_device_name_limit")
             row = next(row for row in self.instances if row["name"] == argv[3])
             row["expanded_devices"][argv[4]] = dict(type="disk", **dict(item.split("=", 1) for item in argv[6:]))
         elif argv[0] == "start":

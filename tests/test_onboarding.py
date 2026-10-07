@@ -178,3 +178,13 @@ def test_browser_requirement_is_owner_selected():
     facts = dict.fromkeys(ob.ACCEPTANCE, True)
     assert not ob.JobStore.accepted(plan(), facts)
     assert ob.JobStore.accepted(plan(browser=False), facts)
+
+
+def test_access_readiness_advances_to_listener_but_does_not_prove_real_owner_ssh(tmp_path):
+    store, backend = setup(tmp_path)
+    backend.wait = 'acceptance'
+    result = advance(store, backend)
+    assert result['completed_steps'] == list(ob.STAGES[:-1])
+    assert result['active'] is False
+    assert ob.STAGE_FACTS['access'] == dict(ssh_ready=True, provider_verified=True)
+    assert 'ssh_verified' in ob.ACCEPTANCE

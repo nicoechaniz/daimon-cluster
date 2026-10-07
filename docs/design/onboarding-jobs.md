@@ -461,3 +461,12 @@ usable input inventory. A retry completes missing files and verifies both the
 source and receiving inventory. Contradictory files or changed source intent
 remain preserved and refused. One bad intake does not block other selected
 pairs, and an existing progress record exposes its verification failure.
+
+## Access readiness and real owner acceptance
+
+The access stage distinguishes `ssh_ready` from `ssh_verified`. An observed
+dedicated SSH listener and a successful receiving provider turn permit the
+worker to continue installing Telegram. They do not claim an owner CLI login.
+The final acceptance stage still requires real SSH/native Codex evidence,
+along with human Telegram, steering, topics and continuity receipts. This avoids
+making a working human channel depend on a prior human SSH acceptance step.

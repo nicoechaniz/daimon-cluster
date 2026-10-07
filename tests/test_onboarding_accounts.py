@@ -47,8 +47,9 @@ def test_provider_success_does_not_claim_real_ssh_cli_acceptance(tmp_path, monke
                  probe_receipt=dict(schema=SCHEMA, plan_digest=digest(plan()), provider_verified=True))
     account = manager(tmp_path, monkeypatch, value)
     observed = account.observe(plan())
-    assert observed.state == 'waiting' and observed.reason == 'human_contact_required'
-    assert observed.facts == {}
+    assert observed.state == 'complete'
+    assert observed.facts == dict(verified=True, ssh_ready=True, provider_verified=True)
+    assert 'ssh_verified' not in observed.facts
     value['probe_receipt']['plan_digest'] = 'f' * 64
     with pytest.raises(OnboardingError, match='invalid_onboarding_observation'):
         account.observe(plan())

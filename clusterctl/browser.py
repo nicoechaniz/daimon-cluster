@@ -145,7 +145,8 @@ def run(home: Path) -> int:
                 if any(child.poll() is not None for child in children):
                     raise ValueError("browser_process_exited")
                 if status()["extension_connected"]:
-                    print(json.dumps({"browser": "accepted", **status()}), flush=True)
+                    print(json.dumps({"browser": "extension-connected",
+                                      "page_operation": "not-performed", **status()}), flush=True)
                     break
                 time.sleep(1)
             else:

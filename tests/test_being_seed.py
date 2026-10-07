@@ -132,6 +132,25 @@ def test_storage_shortage_rejects_before_consuming_archive(tmp_path, monkeypatch
     assert seeds.status(tmp_path, "one")["phase"] == "awaiting-upload"
 
 
+def test_published_archive_survives_metadata_failure_and_conflicting_retry(tmp_path, monkeypatch):
+    seeds.create(tmp_path, {"name": "one", "label": "One", "mode": "import"}, owner="ani", key=KEY)
+    original_write = seeds._write
+    def crash(path, value):
+        if path.name == "record.json" and value.get("phase") == "uploaded":
+            raise OSError("fixture metadata write failure")
+        return original_write(path, value)
+    with monkeypatch.context() as change:
+        change.setattr(seeds, "_write", crash)
+        with pytest.raises(OSError):
+            seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(b"first"), length=5,
+                         sha256=hashlib.sha256(b"first").hexdigest())
+    assert seeds.status(tmp_path, "one")["phase"] == "attention-required"
+    with pytest.raises(seeds.SeedError):
+        seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(b"other"), length=5,
+                     sha256=hashlib.sha256(b"other").hexdigest())
+    assert (tmp_path / "being-seeds/one/source.archive").read_bytes() == b"first"
+
+
 def test_bad_archive_and_source_soul_credentials_never_prepare(tmp_path):
     spec = {"name": "one", "label": "One", "mode": "new", "soul": "Secret: 123456789:" + "a" * 40}
     seeds.create(tmp_path, spec, owner="ani", key=KEY)

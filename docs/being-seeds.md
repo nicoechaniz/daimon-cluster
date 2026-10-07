@@ -22,7 +22,7 @@ files are not mutated. Supported harness adapters are `hermes`, `codex` and
 `mixed`; multi-profile homes require an explicit source-selection file.
 
 ```sh
-python3 scripts/being-seed discover --being Eko \
+python3 scripts/being-seed discover \
   --selection source-selection.json --output export-plan.json
 # Review the source plan and stop only the selected writers for a final snapshot.
 python3 scripts/being-seed export --plan export-plan.json \
@@ -64,8 +64,8 @@ an expiring, revocable owner-scoped bearer token. Issue `seed:write` and
 
 Uploads are authenticated and ownership checked before reading their bodies;
 they stream to mode-0600 files in mode-0700 directories. The initial upload
-limit is 512 MiB; the upstream expanded limit is 5 GiB. Intake reserves working
-space, limits pending slots per owner and does not accept chunked framing.
+limit is 512 MiB; the upstream expanded limit is 5 GiB. Intake checks available
+working space, limits pending slots per owner and does not accept chunked framing.
 Incomplete and failed preparations remain private and need operator attention;
 they are not overwritten or automatically restarted. Exact preparation retries
 return the original result, preserving later receiving memory writes.

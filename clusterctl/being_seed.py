@@ -101,6 +101,10 @@ def _record(state_dir: str | Path, name: str, owner: str) -> tuple[Path, dict]:
         raise SeedError("seed_not_found", 404)
     if record.get("schema") != SCHEMA or record.get("name") != name:
         raise SeedError("invalid_seed_record")
+    if record.get("phase") == "awaiting-upload" and (directory / "source.archive").exists():
+        # A crash may publish bytes before publishing metadata. Reads expose
+        # that ambiguity; neither retry nor repair may replace those bytes.
+        record = {**record, "phase": "attention-required"}
     return directory, record
 
 
@@ -234,13 +238,14 @@ def upload(state_dir: str | Path, name: str, *, owner: str,
                 os.fsync(destination.fileno())
             if digest.hexdigest() != sha256:
                 raise SeedError("seed_archive_hash_mismatch")
-            os.rename(path, directory / "source.archive")
+            os.link(path, directory / "source.archive")
             record.update(phase="uploaded", archive_sha256=sha256, archive_size=length)
         except (OSError, SeedError):
             record["phase"] = "attention-required"
             _write(directory / "record.json", record)
             raise
         _write(directory / "record.json", record)
+        path.unlink()
     return project(record)
 
 

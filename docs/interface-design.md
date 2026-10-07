@@ -24,6 +24,13 @@ competing with the content. Green indicates an observed successful state.
 | Mauve | `#dcb3c3` | Secondary accent |
 | Green | `#a8dac6` | Verified success |
 
+Legibility is a first requirement for **every visible text**, including labels,
+help, status, captions, technical detail and navigation. Do not create a clean
+composition by shrinking secondary text. This intake uses 16px body/input text
+and at least 14px supporting text at normal browser zoom. Small screens retain
+those sizes; rearrange or wrap content instead. Check contrast, line height and
+real rendering, not only CSS declarations. Browser text zoom must remain usable.
+
 Space Grotesk supplies a human, technical voice. Self-host the Latin font with
 its SIL Open Font License and provenance; retain a system fallback. Orbital
 paths and an interference wave form the own visual mark. Segmented control

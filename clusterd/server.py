@@ -73,7 +73,8 @@ class ClusterdHandler(BaseHTTPRequestHandler):
         # Participant browser sessions are restricted to the intake surface.
         # Fleet/admin routes still require their explicit bearer credentials.
         path = urlsplit(self.path).path
-        if not auth_header and (path in {"/v1/seeds", "/v1/seed-session"} or path.startswith("/v1/seeds/")):
+        if not auth_header and (path in {"/v1/seeds", "/v1/seed-session"}
+                or path.startswith(("/v1/seeds/", "/v1/onboarding/local-body"))):
             cookie = SimpleCookie()
             try:
                 cookie.load(self.headers.get("Cookie", ""))
@@ -302,7 +303,7 @@ class ClusterdHandler(BaseHTTPRequestHandler):
                 self._respond(ctx, handlers.Response(200, {"status": "ok", "service": "seed-intake"}))
                 return
             if not (path in {"/v1/onboarding", "/v1/seeds", "/v1/seed-access", "/v1/seed-access-requests", "/v1/seed-session"}
-                    or path.startswith(("/v1/seeds/", "/v1/seed-access-requests/"))):
+                    or path.startswith(("/v1/seeds/", "/v1/seed-access-requests/", "/v1/onboarding/local-body"))):
                 self.close_connection = True
                 self._respond(ctx, handlers.Response(404, {"error": "seed_intake_route_only"}))
                 return

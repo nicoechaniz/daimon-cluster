@@ -37,3 +37,16 @@ def test_approval_reconciliation_covers_receiving_and_host_without_native_rehear
         'tests/test_onboarding_intake.py', 'tests/test_onboarding_host.py',
         'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'}
     assert select(['clusterctl/onboarding_approvals.py', 'clusterctl/onboarding_custody.py'], ROOT)[0] == 'onboarding'
+
+
+def test_local_portal_covers_shared_http_auth_without_repeating_body_lifecycle(tmp_path):
+    changed = ['clusterctl/onboarding_local_body.py', 'clusterd/server.py',
+               'clusterd/handlers.py', 'clusterd/routes.py', 'tests/test_onboarding_local_body.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'portal'
+    assert {'tests/test_auth.py', 'tests/test_clusterd.py', 'tests/test_human_approvals.py',
+            'tests/test_being_seed.py', 'tests/test_onboarding_local_body.py'} <= set(tests)
+    assert 'tests/test_onboarding_runtime.py' not in tests
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select(changed + ['clusterctl/admission.py'], ROOT) == ('full', ['tests'])
+    assert select(['clusterd/server.py'], ROOT) == ('full', ['tests'])

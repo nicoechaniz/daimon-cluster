@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import time
+from pathlib import Path
 
 from clusterctl import being_seed, onboarding_consent
 from clusterctl.onboarding import OnboardingError
@@ -13,6 +14,67 @@ from clusterctl.onboarding_progress import Progress
 
 from . import auth
 from .seed_ui import HTML, SCRIPT, agent_guide, agent_markdown, representation
+
+
+def local_body_tool(deps, ctx, tool, **params):
+    from . import handlers
+    from clusterctl import onboarding_peer, onboarding_release
+
+    root = Path(__file__).resolve().parents[1]
+    paths = {'export_local_matrix_identity.py': root / 'tools/export_local_matrix_identity.py',
+             'onboarding_peer_native.py': root / 'clusterctl/onboarding_peer_native.py'}
+    if tool not in paths:
+        return handlers.Response(404, {'error': 'local_body_tool_not_found'})
+    try:
+        raw = onboarding_release.regular(paths[tool], uid=root.stat().st_uid, limit=100000)
+        if tool == 'onboarding_peer_native.py' and hashlib.sha256(raw).hexdigest() != onboarding_peer.TOOL_SHA256:
+            raise ValueError
+        return handlers.Response(200, raw.decode(), content_type='text/plain; charset=utf-8',
+            headers={'X-Content-SHA256': hashlib.sha256(raw).hexdigest(),
+                     'Content-Disposition': 'attachment; filename="' + tool + '"'})
+    except (OSError, ValueError, OnboardingError):
+        return handlers.Response(409, {'error': 'local_body_tool_requires_attention'})
+
+
+def local_body_requests(deps, ctx, seed=None, _body=None, _submit=False, **params):
+    from . import handlers
+    from clusterctl.onboarding_local_body import Requests, read, submit
+
+    try:
+        if not deps.onboarding_progress:
+            return handlers.Response(200, {'items': []})
+        requests = Requests(deps.onboarding_progress, worker_uid=deps.onboarding_worker_uid)
+        state = Path(handlers._state_dir(deps))
+        if seed is not None:
+            request = requests.read(seed, owner=_owner(ctx))
+            value = submit(state, request, _body) if _submit else read(state, request)
+            return handlers.Response(200, value)
+        requests._directory()
+        items = []
+        for path in sorted(requests.root.glob('*' + requests.suffix)):
+            candidate = path.name.removesuffix(requests.suffix)
+            try:
+                request = requests.read(candidate, owner=_owner(ctx))
+            except OnboardingError as exc:
+                if str(exc) == 'onboarding_job_not_found':
+                    continue
+                raise
+            items.append(read(state, request))
+        return handlers.Response(200, {'items': items})
+    except FileNotFoundError:
+        return handlers.Response(404, {'error': 'local_body_request_not_found'})
+    except being_seed.SeedError as error:
+        return handlers.Response(error.status, {'error': str(error)})
+    except OnboardingError as error:
+        if str(error) == 'onboarding_job_not_found':
+            return handlers.Response(404, {'error': 'local_body_request_not_found'})
+        return handlers.Response(409, {'error': 'local_body_verification_requires_attention'})
+    except (OSError, ValueError, KeyError, TypeError):
+        return handlers.Response(409, {'error': 'local_body_verification_requires_attention'})
+
+
+def local_body_report(deps, ctx, **params):
+    return local_body_requests(deps, ctx, _submit=True, **params)
 
 
 def _owner(ctx):

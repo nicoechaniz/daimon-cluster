@@ -32,6 +32,14 @@ APPROVAL_FILES = {'clusterctl/onboarding_approvals.py', 'tests/test_onboarding_a
 APPROVAL_TESTS = ('tests/test_onboarding_approvals.py', 'tests/test_onboarding_consent.py',
     'tests/test_onboarding_intake.py', 'tests/test_onboarding_host.py',
     'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
+PORTAL_FILES = {'clusterctl/onboarding_local_body.py', 'tools/export_local_matrix_identity.py',
+    'clusterd/seed_handlers.py', 'clusterd/seed_ui.py', 'clusterd/handlers.py',
+    'clusterd/routes.py', 'clusterd/server.py', 'tests/test_being_seed.py',
+    'tests/test_onboarding_local_body.py', 'tools/check_rc_types.py'}
+PORTAL_TESTS = ('tests/test_onboarding_local_body.py', 'tests/test_being_seed.py',
+    'tests/test_clusterd.py', 'tests/test_auth.py', 'tests/test_human_approvals.py',
+    'tests/test_onboarding_consent.py', 'tests/test_onboarding_actions.py',
+    'tests/test_onboarding_ingress.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 
 
 def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
@@ -39,6 +47,14 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'clusterctl/onboarding_local_body.py', 'tools/export_local_matrix_identity.py',
+                       'tests/test_onboarding_local_body.py'}
+            and set(changed) <= PORTAL_FILES | CI_FILES
+            and all((root / path).is_file() for path in PORTAL_TESTS)):
+        # This owner-intake change still exercises all shared HTTP, access,
+        # owner and human-approval contracts. It changes no Incus/admission,
+        # guest runtime, provider execution or native body lifecycle code.
+        return 'portal', list(PORTAL_TESTS)
     if (set(changed) <= APPROVAL_FILES | CI_FILES
             and all((root / path).is_file() for path in APPROVAL_TESTS)):
         return 'approval', list(APPROVAL_TESTS)

@@ -71,6 +71,11 @@ class FirstCustody:
         descriptor = -1
         try:
             command = [sys.executable, "-B", "-I", "-m", "daimon_matrix.operator_genesis", *arguments]
+            if arguments[0] == "backup-restore":
+                launcher = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
+                            "from clusterctl.onboarding_holder_backup import main; raise SystemExit(main())")
+                command = [sys.executable, "-B", "-I", "-c", launcher,
+                           str(Path(__file__).resolve().parents[1]), *arguments[1:]]
             if password is not None:
                 descriptor = os.open(being_seed._path(password), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                 info = os.fstat(descriptor)
@@ -178,10 +183,36 @@ class FirstCustody:
         if expected != value:
             raise OnboardingError("onboarding_custody_genesis_conflict")
         state = identity.verify_genesis(value)
+        backup_verified = self._observe_backups(root, plan, value)
         return {"schema": "cluster-onboarding-genesis-receipt/v1", "plan_digest": digest(plan),
                 "being_ref": state.being_ref, "control_head": state.head,
                 "genesis_digest": digest(value), "holder_roles": ["root", "recovery"],
-                "enrolled": False, "backup_restore_verified": False}
+                "enrolled": False, "backup_restore_verified": backup_verified}
+
+    @staticmethod
+    def _observe_backups(root: Path, plan: dict, genesis: dict) -> bool:
+        from daimon_matrix import operator_genesis
+        from .onboarding_holder_backup import BACKUP_SCHEMA, inventory
+
+        witnesses = []
+        for role in ("root", "recovery"):
+            receipt_path = root / (role + "-backup-receipt.json")
+            if not receipt_path.exists():
+                return False
+            receipt = document(receipt_path)
+            descriptor = document(root / role / "descriptor.json")
+            witness = document(root / ("restored-" + role + "-share.json"))
+            expected = {"schema": BACKUP_SCHEMA, "plan_digest": digest(plan), "role": role,
+                        "key_id": descriptor["key"]["key_id"], "counter": 1,
+                        "control_head": operator_genesis.PENDING_CONTROL_HEAD,
+                        "files": inventory(root / role), "witness_digest": digest(witness)}
+            if (receipt != expected or inventory(root / ("backup-" + role)) != expected["files"]
+                    or inventory(root / ("restore-" + role)) != expected["files"]):
+                raise OnboardingError("onboarding_holder_backup_conflict")
+            witnesses.append(witness)
+        if operator_genesis.aggregate_intent(document(root / "intent.json"), witnesses) != genesis:
+            raise OnboardingError("onboarding_holder_backup_conflict")
+        return True
 
     def prepare(self, plan: dict, *, identity_mode: str) -> dict:
         # Never infer absence of identity from an archive lacking runtime keys.
@@ -236,6 +267,9 @@ class FirstCustody:
             self._dispatch(plan, ["aggregate", "--intent", str(root / "intent.json"),
                 "--share", str(root / "root-share.json"), "--share", str(root / "recovery-share.json"),
                 "--output", str(root / "genesis.json")])
+            for role in ("root", "recovery"):
+                self._dispatch(plan, ["backup-restore", "--ceremony-root", str(root), "--role", role],
+                               root / (role + ".unlock"))
             result = self.observe(plan)
             if result is None:
                 raise OnboardingError("native_onboarding_custody_refused")

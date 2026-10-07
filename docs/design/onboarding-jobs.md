@@ -65,11 +65,21 @@ foreign intent or changed grant stops without replacing identity. Grant
 revocation is rechecked between holder operations.
 
 Custody preparation does not mark Matrix enrollment complete. Its receipt
-explicitly leaves backup/restore and enrollment unverified until their actual
-native operations are connected. Existing identity selections never run this
-first-genesis ceremony. Native target preparation, current V8 authority,
-backup/restore, physical admission and canonical registry projection remain
-required before a hosted Matrix body can pass acceptance.
+marks backup/restore verified only after separate native holder processes back
+up complete encrypted packages, restore with the independently retained counter
+and pending-control marker, and produce typed genesis signatures from both
+restored packages. Public signature aggregation must recover the same genesis.
+Private inventories verify ciphertext, descriptors and rollback sidecars;
+unlock material stays outside the backup. An interrupted native restore can
+reconcile missing metadata from the preserved exact backup, while contradictory
+ciphertext or high-waters remain refused without replacement. Known incomplete
+native temporaries remain preserved outside the portable member inventory.
+
+Existing identity selections never run this first-genesis ceremony. Native
+target preparation, current V8 authority, physical admission and canonical
+registry projection remain required before a hosted Matrix body can pass
+acceptance. Disposable native backup/restore evidence is not live consumer
+denial or independent human recovery evidence. The enrollment flag stays false.
 
 ## Execution and recovery
 

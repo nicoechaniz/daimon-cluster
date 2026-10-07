@@ -279,6 +279,7 @@ jobs:
           clusterctl/being_seed.py
           clusterctl/onboarding_consent.py
           clusterctl/onboarding_custody.py
+          clusterctl/onboarding_holder_backup.py
           clusterctl/browser.py
           clusterctl/distributed_rebirth.py
           clusterctl/embodiments.py

@@ -29,6 +29,7 @@ FILES = (
     "clusterctl/onboarding_progress.py",
     "clusterctl/onboarding_consent.py",
     "clusterctl/onboarding_custody.py",
+    "clusterctl/onboarding_holder_backup.py",
     "clusterctl/onboarding_input.py",
     "clusterctl/onboarding_release.py",
     "clusterctl/onboarding_guest.py",

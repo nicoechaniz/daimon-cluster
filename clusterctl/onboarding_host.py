@@ -211,7 +211,8 @@ class HostBackend:
             decision = self._decision(plan)
             if decision is None or decision["matrix_identity_mode"] != "first" or not ceremony.authorize(plan):
                 return Observation("waiting", reason="identity_authorization_required")
-            if ceremony.observe(plan) is None:
+            observed = ceremony.observe(plan)
+            if observed is None or not observed["backup_restore_verified"]:
                 return Observation("absent", safe_to_execute=True)
             # Genesis custody is not a body enrollment. Native target preparation,
             # restore and physical admission must finish before this stage does.

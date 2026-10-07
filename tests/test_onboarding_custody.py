@@ -40,14 +40,15 @@ def test_real_native_genesis_is_preserved_through_an_uncertain_acknowledgement(t
     directory = ceremony.root / digest(value)
     preserved = {path.relative_to(directory).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
                  for path in directory.rglob("*") if path.is_file()}
-    assert ceremony.prepare(value, identity_mode="first") == first
+    completed = ceremony.prepare(value, identity_mode="first")
+    assert completed == {**first, "backup_restore_verified": True}
     assert {path.relative_to(directory).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in directory.rglob("*") if path.is_file()} == preserved
+            for path in directory.rglob("*") if path.is_file()}.items() >= preserved.items()
     # Each holder subprocess has exactly one private holder path and its own FD.
     for argv, password in commands:
-        if argv[0] in {"sign", "create-holder"}:
+        if argv[0] in {"sign", "create-holder", "backup-restore"}:
             role = "root" if "root.unlock" == password.name else "recovery"
-            assert str(directory / role) in argv
+            assert str(directory / role) in argv or (argv[0] == "backup-restore" and role in argv)
             assert str(directory / ("recovery" if role == "root" else "root")) not in argv
         else:
             assert password is None
@@ -158,6 +159,79 @@ def test_host_job_dispatches_native_ceremony_without_claiming_body_enrollment(tm
     result = backend.observe(value, "matrix", "fixture-operation")
     assert result.state == "waiting" and result.reason == "backend_unavailable" and not result.facts
     receipt = FirstCustody(custody, grants).observe(value)
-    assert receipt["enrolled"] is False and receipt["backup_restore_verified"] is False
+    assert receipt["enrolled"] is False and receipt["backup_restore_verified"] is True
     # No Incus runtime, provider or Telegram dispatch can be inferred from genesis.
     assert incus.calls == []
+
+
+def test_uncertain_backup_acknowledgement_resumes_without_replacing_the_backup(tmp_path):
+    crashed = []
+    def execute(arguments, password):
+        FirstCustody._run(arguments, password)
+        if arguments[0] == "backup-restore" and arguments[-1] == "root" and not crashed:
+            crashed.append(True)
+            raise RuntimeError("backup completed before acknowledgement was lost")
+    ceremony, value, _ = fixture(tmp_path, run=execute)
+    with pytest.raises(RuntimeError):
+        ceremony.prepare(value, identity_mode="first")
+    root = ceremony.root / digest(value)
+    from clusterctl.onboarding_holder_backup import inventory
+    preserved = inventory(root / "backup-root")
+    assert ceremony.observe(value)["backup_restore_verified"] is False
+    result = ceremony.prepare(value, identity_mode="first")
+    assert result["backup_restore_verified"] is True
+    assert inventory(root / "backup-root") == inventory(root / "restore-root") == preserved
+    assert result["enrolled"] is False
+
+
+def test_native_restore_interruption_reconciles_counter_and_proves_a_signature(tmp_path, monkeypatch):
+    from daimon_matrix import keystore
+    from clusterctl.onboarding_holder_backup import backup_restore, inventory
+
+    def stop_before_backup(arguments, password):
+        if arguments[0] == "backup-restore":
+            raise RuntimeError("stopped before backup")
+        FirstCustody._run(arguments, password)
+    ceremony, value, _ = fixture(tmp_path, run=stop_before_backup)
+    with pytest.raises(RuntimeError):
+        ceremony.prepare(value, identity_mode="first")
+    root = ceremony.root / digest(value)
+    def reader():
+        return bytearray((root / "root.unlock").read_bytes())
+    original = keystore._write_highwater
+    def fail_before_counter(path, counter):
+        if path.parent.name == "restore-root":
+            raise RuntimeError("native ciphertext published before counter")
+        return original(path, counter)
+    with monkeypatch.context() as patch:
+        patch.setattr(keystore, "_write_highwater", fail_before_counter)
+        with pytest.raises(RuntimeError):
+            backup_restore(root, "root", reader)
+    assert (root / "restore-root/holder.json").exists()
+    assert not (root / "restore-root/.holder.json.highwater").exists()
+    assert ceremony.observe(value)["backup_restore_verified"] is False
+    backup_restore(root, "root", reader)
+    assert inventory(root / "restore-root") == inventory(root / "backup-root")
+    ceremony.run = FirstCustody._run
+    assert ceremony.prepare(value, identity_mode="first")["backup_restore_verified"] is True
+
+
+def test_conflicting_backup_or_extra_unlock_is_refused_without_replacement(tmp_path):
+    from clusterctl.onboarding_holder_backup import inventory
+
+    ceremony, value, _ = fixture(tmp_path)
+    ceremony.prepare(value, identity_mode="first")
+    root = ceremony.root / digest(value)
+    original = inventory(root / "root")
+    ciphertext = root / "backup-root/holder.json"
+    changed = ciphertext.read_bytes() + b"unexpected bytes"
+    ciphertext.write_bytes(changed)
+    with pytest.raises(OnboardingError, match="native_onboarding_custody_refused"):
+        ceremony.prepare(value, identity_mode="first")
+    assert ciphertext.read_bytes() == changed and inventory(root / "root") == original
+    extra = root / "backup-recovery/unlock"
+    extra.write_bytes(b"fixture extra file")
+    extra.chmod(0o600)
+    with pytest.raises(OnboardingError, match="onboarding_holder_backup_conflict"):
+        inventory(root / "backup-recovery")
+    assert extra.exists()

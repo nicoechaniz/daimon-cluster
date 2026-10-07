@@ -308,6 +308,10 @@ jobs:
           clusterctl/onboarding_target.py
           clusterctl/onboarding_code_successor.py
           clusterctl/onboarding_peer.py
+          clusterctl/onboarding_peer_host.py
+          clusterctl/onboarding_source.py
+          tests/test_onboarding_source.py
+          tests/test_onboarding_peer_host.py
           clusterctl/onboarding_local_body.py
           tests/test_onboarding_local_body.py
           clusterctl/onboarding_admission.py

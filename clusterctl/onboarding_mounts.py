@@ -64,7 +64,7 @@ def prepare_matrix_public(views: Path, plan: dict, documents: dict[str, dict]) -
     """Publish only native public authorization to a read-only receiving mount."""
     from daimon_matrix import canonical, keystore
     from .matrix_host import _publish_directory_noreplace
-    allowed = {'genesis.json', 'activation.json', 'credential-response.json', 'admission.json'}
+    allowed = {'genesis.json', 'activation.json', 'credential-response.json', 'admission.json', 'peer-offer.json'}
     if not documents or not set(documents) <= allowed:
         raise OnboardingError('invalid_onboarding_public_matrix_documents')
     private_directory(views)

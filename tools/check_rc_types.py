@@ -54,6 +54,8 @@ FILES = (
     "clusterctl/onboarding_release.py",
     "clusterctl/onboarding_code_successor.py",
     "clusterctl/onboarding_peer.py",
+    "clusterctl/onboarding_peer_host.py",
+    "clusterctl/onboarding_source.py",
     "clusterctl/onboarding_local_body.py",
     "clusterctl/onboarding_guest.py",
     "clusterctl/onboarding_mounts.py",

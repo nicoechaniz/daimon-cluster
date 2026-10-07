@@ -1,0 +1,234 @@
+"""Owner-local native peer ceremony and hosting with retained native visibility.
+
+The caller coordinates the existing daemon lifecycle. These operations acquire
+its real writer lock, use only existing Body custody, never read an inbox, and
+never create Root authority or synthesize participant signatures.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import sys
+import threading
+import time
+from contextlib import contextmanager
+from dataclasses import replace
+from pathlib import Path
+
+from . import being_seed, onboarding_peer
+from .onboarding import OnboardingError, private_directory
+from .onboarding_views import serve_views
+
+
+class Source:
+    def __init__(self, settings: dict, *, code: Path | None = None, code_uid: int = 0):
+        if (not isinstance(settings, dict) or set(settings) != {'schema', 'runtime_root', 'password_file',
+                'native_visibility', 'outputs', 'applications'} or settings['schema'] != 'cluster-onboarding-source/v1'
+                or any(not isinstance(settings[key], str) or not Path(settings[key]).is_absolute()
+                       for key in ('runtime_root', 'password_file', 'native_visibility', 'outputs'))
+                or not isinstance(settings['applications'], list) or len(settings['applications']) > 16):
+            raise OnboardingError('invalid_onboarding_source_configuration')
+        for key in ('runtime_root', 'password_file', 'native_visibility', 'outputs'):
+            being_seed._path(Path(settings[key]))
+        self.settings = settings
+        self.root = private_directory(Path(settings['runtime_root']))
+        self.outputs = private_directory(Path(settings['outputs']), create=True)
+        self.visibility = Path(settings['native_visibility'])
+        self.code = code or Path(__file__).resolve().parents[1]
+        self.tool = onboarding_peer.native(self.code, uid=code_uid)
+
+    def _reader(self):
+        from daimon_matrix.messaging_config import protected_read
+        return bytearray(protected_read(Path(self.settings['password_file'])))
+
+    def _load(self, *, signed: bool):
+        from daimon_matrix import daemon, native_egress, runtime
+        def clock():
+            return time.time_ns() // 1_000_000
+        options = ({'egress_factory': daemon._visibility_factory(self.visibility, clock=clock)} if signed else
+                   {'egress': native_egress.closed_visibility(clock=clock, catalog_mode='migrate')})
+        return runtime.load_runtime(self.root, 'runtime.json', self._reader, clock=clock, **options)
+
+    @contextmanager
+    def writer(self):
+        from daimon_matrix.daemon import acquire_lock
+        descriptor = acquire_lock(self.root)
+        try:
+            yield
+        finally:
+            os.close(descriptor)
+
+    def directory(self, plan_digest: str) -> Path:
+        import re
+        if not isinstance(plan_digest, str) or not re.fullmatch(r'[0-9a-f]{64}', plan_digest):
+            raise OnboardingError('approved_onboarding_peer_required')
+        return private_directory(self.outputs / plan_digest, create=True)
+
+    def offer(self, plan_digest: str, peer: dict, endpoints: list[str]) -> dict:
+        self.tool.verify_identity(peer)
+        directory = self.directory(plan_digest)
+        with self.writer():
+            runtime = self._load(signed=True)
+            bundle = self.tool.read_public(self.root / 'runtime.json')
+            path = self.tool.offer(runtime, bundle, peer, directory, endpoints, self.visibility)
+            return self.tool.read_public(path)
+
+    def finish(self, plan_digest: str, response: dict) -> dict:
+        from daimon_matrix.messaging_config import config_digest
+        from daimon_matrix.operator_messaging import _reissue_installation
+        directory = self.directory(plan_digest)
+        with self.writer():
+            before = self.tool.read_public(self.visibility)
+            # Migration-mode loading registers native catalogs without changing
+            # their journals/proof keys and cannot serve or release an egress.
+            # The maintained additional-link operation migrates only app catalogs.
+            runtime = self._load(signed=False)
+            try:
+                path = self.tool.finish(runtime, self.root, bytes(self._reader()), response,
+                                        directory, additional_link=True)
+            finally:
+                # A lost ACK after bundle publication must still leave the native
+                # daemon restartable against its unchanged signed disclosure.
+                current = self._load(signed=False)
+                _reissue_installation(current, self.visibility,
+                    application_sha256=config_digest(self.tool.read_public(self.root / 'runtime.json')))
+            after = self.tool.read_public(self.visibility)
+            if any(after['document'][field] != before['document'][field]
+                   for field in ('disclosure', 'secrets', 'telegram_qualification')):
+                raise OnboardingError('existing_onboarding_source_visibility_preserved')
+            # Validate the ORIGINAL controller and every native catalog with its
+            # ORIGINAL proof key before returning a usable app to the host.
+            restored = self._load(signed=True)
+            restored.egress.validate_registered_catalogs()
+            return self.tool.read_public(path)
+
+    def views(self) -> list:
+        from daimon_matrix.chat_host import application_view
+        base = self._load(signed=True)
+        views = [base]
+        seen = set()
+        for fingerprint in self.settings['applications']:
+            directory = self.directory(fingerprint)
+            ready = self.tool.read_public(directory / 'ready.json')
+            if (ready['runtime_root'] != str(self.root) or ready['app_directory'] != str(directory / 'application')
+                    or ready['visibility_installation'] != str(directory / 'visibility/installation.json')):
+                raise OnboardingError('current_onboarding_source_application_required')
+            view = application_view(base, directory / 'application', directory / 'visibility/installation.json')
+            socket_name = 'peer-' + fingerprint[:12] + '.sock'
+            if socket_name in seen:
+                raise OnboardingError('onboarding_runtime_listener_collision')
+            seen.add(socket_name)
+            socket = self.outputs / socket_name
+            if len(os.fsencode(socket)) > 107:
+                raise OnboardingError('onboarding_runtime_socket_path_too_long')
+            views.append(replace(view, socket_path=socket))
+        return views
+
+    def register(self, config: Path, unit: Path, original_sha256: str, python: Path, fingerprint: str) -> None:
+        """Retain all unit settings and original bytes; replace only its entry point.
+
+        The host pins the original owner unit. This owner-local operation may
+        append an accepted application; a retry cannot reset preceding links.
+        """
+        import hashlib
+        from daimon_matrix.keystore import _atomic_write
+        from .onboarding_release import regular
+        settings = being_seed._read(config)
+        if settings != self.settings:
+            raise OnboardingError('existing_onboarding_source_configuration_preserved')
+        original = self.outputs / ('native-unit-' + original_sha256)
+        if not original.exists():
+            raw = regular(unit, uid=os.geteuid())
+            if hashlib.sha256(raw).hexdigest() != original_sha256 or raw.count(b'\nExecStart=') != 1:
+                raise OnboardingError('existing_onboarding_source_service_preserved')
+            _atomic_write(original, raw)
+        raw = regular(original, uid=os.geteuid())
+        if hashlib.sha256(raw).hexdigest() != original_sha256:
+            raise OnboardingError('existing_onboarding_source_service_preserved')
+        launcher = ('import sys;sys.path.insert(0,sys.argv.pop(1));'
+                    'from clusterctl.onboarding_source import main;raise SystemExit(main())')
+        argv = [str(python), '-B', '-I', '-c', launcher, str(self.code), '--config', str(config)]
+        encoded = ' '.join(json.dumps(arg.replace('%', '%%').replace('$', '$$')) for arg in argv)
+        candidate = b'\n'.join(('ExecStart=' + encoded).encode() if line.startswith(b'ExecStart=') else line
+                               for line in raw.split(b'\n'))
+        if regular(unit, uid=os.geteuid()) not in (raw, candidate):
+            raise OnboardingError('existing_onboarding_source_service_preserved')
+        # Validate both retained controllers and the new signed app BEFORE
+        # selecting its service. Publication order remains safe after lost ACK.
+        if fingerprint not in settings['applications']:
+            settings = {**settings, 'applications': [*settings['applications'], fingerprint]}
+        self.settings = settings
+        self.views()
+        being_seed._write(config, settings)
+        _atomic_write(unit, candidate)
+
+    def serve(self, stop: threading.Event, *, ready_descriptor: int | None = None) -> None:
+        with self.writer():
+            serve_views(self.views(), stop, ready_descriptor=ready_descriptor)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', type=Path, required=True)
+    parser.add_argument('--ready-fd', type=int)
+    args = parser.parse_args(argv)
+    try:
+        settings = being_seed._read(args.config)
+        source = Source(settings)
+        stop = threading.Event()
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(signum, lambda *_: stop.set())
+        source.serve(stop, ready_descriptor=args.ready_fd)
+        return 0
+    except Exception:
+        # No paths, custody, token values or raw native errors in service logs.
+        print(json.dumps({'error': 'native_onboarding_source_refused'}))
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
+
+
+def child() -> int:
+    """Drop privilege before reading Body custody; return only public ceremony data."""
+    try:
+        config = being_seed._path(Path(sys.argv[1]))
+        owner = json.loads(sys.argv[2])
+        action = sys.argv[3]
+        info = config.stat()
+        if (os.geteuid() != 0 or action not in {'offer', 'finish', 'register', 'observe'}
+                or [info.st_uid, info.st_gid, info.st_dev, info.st_ino] != owner or info.st_mode & 0o077):
+            return 1
+        raw = sys.stdin.buffer.read(1_048_577)
+        if len(raw) > 1_048_576:
+            return 1
+        request = json.loads(raw)
+        os.setgroups([])
+        os.setgid(owner[1])
+        os.setuid(owner[0])
+        source = Source(being_seed._read(config))
+        if action == 'offer':
+            value = source.offer(request['plan_digest'], request['peer'], request['endpoints'])
+        elif action == 'finish':
+            value = source.finish(request['plan_digest'], request['response'])
+        elif action == 'register':
+            source.register(config, Path(request['unit']), request['unit_sha256'], Path(request['python']), request['plan_digest'])
+            value = {'registered': True}
+        else:
+            from daimon_matrix.client import ClientConfig, LocalClient
+            native = ClientConfig.load(source.root / 'client.json', bytearray((source.root / 'client.key').read_bytes()))
+            result = LocalClient(source.root / 'matrix.sock', native).runtime_status()[1]
+            for fingerprint in source.settings['applications']:
+                application = source.directory(fingerprint) / 'application'
+                peer = ClientConfig.load(application / 'client.json', bytearray((application / 'client.key').read_bytes()))
+                socket = source.outputs / ('peer-' + fingerprint[:12] + '.sock')
+                if LocalClient(socket, peer).invoke('messaging.send', {})[1].get('error', {}).get('code') != 'invalid_params':
+                    raise OnboardingError('onboarding_runtime_not_ready')
+            value = {'running': result.get('ok') is True, 'applications': source.settings['applications']}
+        print(json.dumps(value))
+        return 0
+    except Exception:
+        return 1

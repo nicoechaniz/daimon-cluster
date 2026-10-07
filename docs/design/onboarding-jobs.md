@@ -575,3 +575,31 @@ the SDK interpreter reexec and the persistent service all retain the original
 Context, memory, provider and Telegram stages continue to use the original code.
 Absent both fields, the existing launch path is unchanged; partial selection is
 refused. This mechanism alone establishes no peer relationship or live acceptance.
+
+### Retained Source service and per-being peer admission
+
+The optional owner-selected `peer` configuration makes Matrix reconciliation
+perform the maintained encrypted two-party ceremony before managed admission.
+The Source operation runs as its existing owner, acquires its real writer lock,
+and uses the existing signed native Telegram installation. The worker stops and
+restarts that one user service around the finite ceremony; it never reads an
+inbox or opens a model turn. Independent receiving stages retain worker slots,
+while Source ceremonies serialize against their shared service.
+
+Public responses, receiving identities and loopback port allocations persist
+under the exact approved plan. Retries retain native signed proposals and keys.
+The Source owner reissues only the changed runtime digest in its existing
+installation, retaining its disclosure, token, proof key and qualification even
+after an interrupted bundle publication. Hosting keeps the original native
+controller and socket alongside independently signed peer applications under
+one writer lock. The original user unit is pinned and backed up; only its
+`ExecStart` changes, preserving its credential and resource settings.
+
+Two dedicated loopback Incus proxies connect each approved pair. Foreign
+devices and host listener collisions are refused; administrative networking is
+untouched. Managed admission derives application and visibility paths from
+each verified receiving peer publication, rather than a global being path.
+New local-body reports are independently signature-checked before acceptance.
+A different Root produces `existing_identity_conflict` and preserves both
+authorities for reconciliation. Local reports and a ready peer application do
+not establish hosted conversational acceptance.

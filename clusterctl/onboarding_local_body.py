@@ -152,3 +152,42 @@ def submit(state: Path, request: dict, value: object, *, code: Path | None = Non
             return read(state, request)
         being_seed._write(root / 'latest.json', {'report_digest': fingerprint})
     return read(state, request)
+
+
+def worker_identity(state: Path, request: dict, *, intake_uid: int) -> dict | None:
+    """Read participant-owned public authority without changing its ownership.
+
+    The root worker independently checks the signed packet. Local claims remain
+    data; this returns no authority to mint or replace a hosted being.
+    """
+    from .onboarding_release import regular
+    request = validate(request)
+    root = _directory(state, request)
+    if not root.exists():
+        return None
+    for parent in (state, root.parent, root):
+        being_seed._path(parent)
+        info = parent.stat()
+        if not parent.is_dir() or info.st_uid != intake_uid or info.st_mode & 0o077:
+            raise OnboardingError('private_local_body_report_required')
+    def read_private(path):
+        raw = regular(path, uid=intake_uid, limit=being_seed.MAX_RECORD)
+        if path.stat().st_mode & 0o077:
+            raise OnboardingError('private_local_body_report_required')
+        return json.loads(raw)
+    try:
+        pointer = read_private(root / 'latest.json')
+    except FileNotFoundError:
+        return None
+    fingerprint = pointer.get('report_digest')
+    if not isinstance(fingerprint, str) or not re.fullmatch(r'[0-9a-f]{64}', fingerprint):
+        raise OnboardingError('invalid_local_body_report')
+    report = read_private(root / (fingerprint + '.json'))
+    if digest(report) != fingerprint or report.get('request_id') != request['request_id']:
+        raise OnboardingError('invalid_local_body_report')
+    identity = report.get('matrix_identity')
+    if identity is not None:
+        authority = onboarding_peer.native(Path(__file__).resolve().parents[1]).verify_identity(identity)
+        if request['expected_being_ref'] is not None and authority.state.being_ref != request['expected_being_ref']:
+            raise OnboardingError('existing_local_body_identity_preserved')
+    return identity

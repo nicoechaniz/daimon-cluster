@@ -24,7 +24,7 @@ REASONS = frozenset({
     "host_authorization_required", "capacity_required", "connection_data_required",
     "identity_authorization_required", "account_authorization_required",
     "human_contact_required", "uncertain_external_effect", "observed_state_conflict",
-    "backend_unavailable", "verification_failed",
+    "backend_unavailable", "verification_failed", "existing_identity_conflict",
 })
 FACTS = frozenset({
     "verified", "root_gib", "home_gib", "memory_stores", "memory_chapters", "skills",
@@ -239,8 +239,9 @@ class JobStore:
                     record.update(state="waiting" if observed.state in {"waiting", "absent"} else "attention-required",
                                   reason=observed.reason or ("observed_state_conflict" if observed.state == "conflict"
                                                             else "verification_failed"))
-            except OnboardingError:
-                record.update(state="attention-required", reason="verification_failed")
+            except OnboardingError as error:
+                record.update(state="attention-required", reason='existing_identity_conflict'
+                              if str(error) == 'existing_identity_conflict' else "verification_failed")
             except Exception:
                 # Keep dispatch intent and exact operation ID for reconciliation.
                 # Private exception text, command output and credentials stay out.

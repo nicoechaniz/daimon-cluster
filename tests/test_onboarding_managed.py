@@ -17,6 +17,27 @@ from tests.test_admission import _key
 from tests.test_onboarding_target import receiving
 
 
+def test_each_receiving_body_selects_its_verified_peer_application(monkeypatch):
+    managed = object.__new__(ManagedRuntime)
+    managed.backend = SimpleNamespace(config=SimpleNamespace(peer=Path('configured'), qualification=False))
+    managed.settings = {'visibility_installation': '/home/agent/another-being/visibility',
+                        'messaging_application': '/home/agent/another-being/application'}
+    def host(backend):
+        def application(plan):
+            if plan['name'] == 'waiting':
+                return None
+            root = '/home/agent/.local/state/daimon-onboarding/' + plan['name'] + '/peer'
+            return root + '/application', root + '/visibility/installation.json'
+        return SimpleNamespace(application=application)
+    monkeypatch.setattr('clusterctl.onboarding_peer_host.PeerHost', host)
+    for name in ('eko', 'oliva'):
+        app, visibility = managed._selection({'name': name})
+        assert '/' + name + '/peer/' in app and '/' + name + '/peer/' in visibility
+        assert managed._ready({'name': name})
+    assert managed._selection({'name': 'waiting'}) == (None, None)
+    assert not managed._ready({'name': 'waiting'})
+
+
 def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp_path, monkeypatch):
     ceremony, plan, blank = receiving(tmp_path)
     ceremony.prepare(plan, identity_mode='first')

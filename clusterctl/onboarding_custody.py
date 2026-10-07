@@ -23,6 +23,54 @@ from .onboarding import OnboardingError, digest, private_directory, validate_pla
 
 GRANT_SCHEMA = "cluster-onboarding-custody-grant/v1"
 ROLES = ["root", "recovery", "backup", "restore"]
+POLICY_SCHEMA = "cluster-onboarding-custody-policy/v1"
+
+
+class CustodyPolicy:
+    """Operator authorization combined with the pair's exact published review.
+
+    The operator supplies actual attribution digests. HTTP cannot supply them
+    or enable custody. The decision digest binds this grant to the preserved
+    authenticated owner instruction; an old inheritance-only review cannot
+    authorize custody and an existing identity cannot enter first genesis.
+    """
+    def __init__(self, path: Path):
+        self.value = document(path)
+        value = self.value
+        if (set(value) != {"schema", "execution_uid", "source_binding_digest",
+                          "operator_instruction_digest", "roles", "revoked"}
+                or value["schema"] != POLICY_SCHEMA
+                or type(value["execution_uid"]) is not int or value["execution_uid"] != os.geteuid()
+                or any(not isinstance(value[key], str) or not re.fullmatch(r"[0-9a-f]{64}", value[key])
+                       for key in ("source_binding_digest", "operator_instruction_digest"))
+                or value["roles"] != ROLES or type(value["revoked"]) is not bool):
+            raise OnboardingError("invalid_onboarding_custody_policy")
+
+    def review(self) -> dict:
+        from .onboarding_consent import CUSTODY_NOTICE
+        return dict(policy_digest=digest(self.value), notice=CUSTODY_NOTICE)
+
+    def issue(self, plan: dict, proposal: dict, decision: dict, grants: Path) -> None:
+        from .onboarding_consent import _expected, validate_review
+        validate_review(proposal)
+        selection = {key: decision.get(key) for key in (
+            "review_digest", "inheritance_approved", "matrix_identity_mode")}
+        if (self.value["revoked"] or proposal.get("matrix_custody") != self.review()
+                or proposal["plan"] != validate_plan(plan)
+                or _expected(proposal, selection) != decision):
+            raise OnboardingError("identity_authorization_required")
+        if decision["matrix_identity_mode"] != "first":
+            return
+        private_directory(grants)
+        grant = dict(schema=GRANT_SCHEMA, plan_digest=digest(plan), ceremony="first-matrix-identity",
+            execution_uid=os.geteuid(), source_binding_digest=self.value["source_binding_digest"],
+            owner_instruction_digest=digest(decision), roles=ROLES, revoked=False)
+        path = grants / (plan["name"] + ".json")
+        if path.exists():
+            if document(path) != grant:
+                raise OnboardingError("existing_onboarding_custody_preserved")
+        else:
+            being_seed._write(path, grant)
 
 
 def document(path: Path) -> dict:

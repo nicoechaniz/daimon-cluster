@@ -46,13 +46,14 @@ class HostConfig:
     admission: Path | None = None
     accounts: Path | None = None
     intake_policy: Path | None = None
+    custody_policy: Path | None = None
 
     @classmethod
     def load(cls, path: Path) -> HostConfig:
         value = being_seed._read(path)
         consent_keys = {"consent_state", "consent_uid"}
         custody_keys = {"custody", "custody_grants"}
-        if (set(value) - consent_keys - custody_keys - {"qualification", "admission", "accounts", "intake_policy"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -124,10 +125,18 @@ class HostConfig:
             intake_policy = Path(value['intake_policy'])
             from .onboarding_intake import policy
             policy(intake_policy, value['release_digest'])
+        custody_policy = None
+        if 'custody_policy' in value:
+            if (custody is None or intake_policy is None or not isinstance(value['custody_policy'], str)
+                    or not Path(value['custody_policy']).is_absolute()):
+                raise OnboardingError('invalid_onboarding_host_configuration')
+            from .onboarding_custody import CustodyPolicy
+            custody_policy = Path(value['custody_policy'])
+            CustodyPolicy(custody_policy)
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -171,6 +180,10 @@ class HostBackend:
         if self.config.intake_policy is not None:
             from .onboarding_intake import allows
             if not allows(self.config, plan):
+                return False
+        if self.config.custody_policy is not None:
+            from .onboarding_custody import CustodyPolicy
+            if CustodyPolicy(self.config.custody_policy).value['revoked']:
                 return False
         try:
             private_directory(self.config.grants)
@@ -468,7 +481,12 @@ class HostBackend:
         if self.config.consent_uid is None or self.config.progress is None or self.config.code is None:
             raise OnboardingError("invalid_onboarding_host_configuration")
         onboarding_release.verify(self.config.code, plan["release_digest"], uid=os.geteuid())
-        proposal = onboarding_consent.review(plan, (self.config.code / "inheritance.md").read_text())
+        from .onboarding_custody import CustodyPolicy
+        custody = CustodyPolicy(self.config.custody_policy) if self.config.custody_policy is not None else None
+        if custody is not None and custody.value['revoked']:
+            return None
+        proposal = onboarding_consent.review(plan, (self.config.code / "inheritance.md").read_text(),
+            custody=custody.review() if custody is not None else None)
         reviews = onboarding_consent.Reviews(self.config.progress, worker_uid=os.geteuid())
         try:
             existing = reviews.read(plan["name"], owner=plan["owner"])

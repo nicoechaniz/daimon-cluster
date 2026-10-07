@@ -19,9 +19,16 @@ from .onboarding_progress import Progress
 
 REVIEW_SCHEMA = "cluster-onboarding-review/v1"
 CONSENT_SCHEMA = "cluster-onboarding-consent/v1"
+CUSTODY_NOTICE = (
+    "For a first Matrix identity, authorize this Cluster operator to create and "
+    "retain encrypted Root and Recovery custody in separate holder stores, "
+    "and verify backup and restore. These stores share this host administrator; "
+    "they are not independent administrative custodians. An existing signed "
+    "Matrix identity must instead authorize a new embodiment from its current Root."
+)
 
 
-def review(plan: dict, source_text: str) -> dict:
+def review(plan: dict, source_text: str, *, custody: dict | None = None) -> dict:
     plan = validate_plan(plan)
     if (not isinstance(source_text, str) or not source_text.strip()
             or len(source_text.encode()) > 48000 or "\0" in source_text):
@@ -29,6 +36,14 @@ def review(plan: dict, source_text: str) -> dict:
     document = {"schema": REVIEW_SCHEMA, "name": plan["name"], "owner": plan["owner"],
                 "plan": plan, "source_text": source_text,
                 "source_digest": hashlib.sha256(source_text.encode()).hexdigest()}
+    if custody is not None:
+        if (set(custody) != {"policy_digest", "notice"}
+                or not isinstance(custody["policy_digest"], str)
+                or len(custody["policy_digest"]) != 64
+                or any(c not in "0123456789abcdef" for c in custody["policy_digest"])
+                or custody["notice"] != CUSTODY_NOTICE):
+            raise OnboardingError("invalid_onboarding_review")
+        document["matrix_custody"] = custody
     value = {**document, "review_digest": digest(document)}
     if len(json.dumps(value, sort_keys=True).encode()) > 65536:
         raise OnboardingError("invalid_onboarding_review")
@@ -36,11 +51,11 @@ def review(plan: dict, source_text: str) -> dict:
 
 
 def validate_review(value: object) -> dict:
-    if not isinstance(value, dict) or set(value) != {
+    if not isinstance(value, dict) or set(value) - {"matrix_custody"} != {
         "schema", "name", "owner", "plan", "source_text", "source_digest", "review_digest",
     }:
         raise OnboardingError("invalid_onboarding_review")
-    if review(value["plan"], value["source_text"]) != value:
+    if review(value["plan"], value["source_text"], custody=value.get("matrix_custody")) != value:
         raise OnboardingError("invalid_onboarding_review")
     return value
 

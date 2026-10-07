@@ -21,6 +21,17 @@ unchanged. An existing identity choice requires native continuity evidence;
 it never authorizes another root. Custody creation is still a separate native
 authority operation, not an effect of submitting this decision.
 
+An optional private operator custody policy adds `matrix_custody` to the same
+review, with its exact policy digest and explicit holder notice. Only a pair
+decision on that expanded review and a current operator policy issue an exact
+first-identity custody grant. The grant attributes the actual Source binding
+and preserved owner instruction digests. An earlier inheritance-only decision
+does not authorize custody; changing or revoking policy prevents reuse. An
+`existing` decision never issues a first-genesis grant. Publication creates no
+keys: the existing native worker adapter performs the resumable ceremony.
+Root and Recovery packages occupy separate stores and processes on this host;
+they share its administrator and are not independent administrative custodians.
+
 The decision binds the plan and Source text digest. An identical retry is
 idempotent; a contradictory decision is refused. A changed proposal cannot
 reuse an older acknowledgement. The worker reads participant-owned decisions

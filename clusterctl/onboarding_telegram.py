@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -74,18 +75,38 @@ def service(home: Path, code: Path, codex: Path = Path('/usr/local/bin/codex')) 
 
 
 
-def native_service(home: Path, codex: Path) -> bytes:
+def native_service(home: Path, codex: Path, code: Path) -> bytes:
     # Separate cgroups preserve the shared native daemon across listener restarts.
+    launcher = ('import sys;sys.path.insert(0,sys.argv.pop(1));'
+                'from clusterctl.onboarding_telegram import main;raise SystemExit(main())')
+    args = ['/usr/bin/python3', '-B', '-I', '-c', launcher, str(code), 'native-serve',
+            '--code', str(code), '--plan', str(home / '.onboarding-input/plan.json')]
+    encoded = ' '.join(json.dumps(arg.replace('%', '%%').replace('$', '$$')) for arg in args)
     command = json.dumps(str(codex))
     return ('[Unit]\nDescription=Receiving native Codex daemon\n'
         'After=network-online.target\nWants=network-online.target\n'
-        '[Service]\nType=oneshot\nRemainAfterExit=yes\nUser=agent\nGroup=agent\n'
+        '[Service]\nType=simple\nUser=agent\nGroup=agent\n'
         f'Environment=HOME={home}\nEnvironment=CODEX_HOME={home}/.codex\n'
         'Environment=PATH=/usr/local/bin:/usr/bin:/bin\nUMask=0077\n'
-        f'ExecStart={command} app-server daemon start\n'
-        f'ExecStop={command} app-server daemon stop\n'
-        'TimeoutStartSec=180\nTimeoutStopSec=30\nKillMode=control-group\n'
+        f'ExecStart={encoded}\nExecStop={command} app-server daemon stop\n'
+        'Restart=on-failure\nRestartSec=5\nTimeoutStopSec=30\nKillMode=control-group\n'
         'StandardOutput=null\nStandardError=null\n[Install]\nWantedBy=multi-user.target\n').encode()
+
+
+def native_serve(home: Path, codex: Path, *, run=subprocess.run, wait=time.sleep, cycles=None) -> None:
+    """Supervise the native singleton without inference or Matrix attention."""
+    env = dict(HOME=str(home), CODEX_HOME=str(home / '.codex'), PATH='/usr/local/bin:/usr/bin:/bin')
+    count = 0
+    while cycles is None or count < cycles:
+        # Native start is idempotent and waits for the control handshake. It
+        # recovers a departed daemon without replaying any conversation turn.
+        result = run([str(codex), 'app-server', 'daemon', 'start'], capture_output=True,
+                     text=True, timeout=180, check=False, env=env)
+        if result.returncode:
+            raise OnboardingError('native_codex_daemon_start_failed')
+        count += 1
+        wait(5)
+
 
 def api(token: str, method: str) -> dict:
     if method not in {'getMe', 'getWebhookInfo'}:
@@ -154,7 +175,7 @@ def reserve(root: Path, plan: dict, supplied: dict) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('prepare', 'install', 'observe', 'probe', 'native-install'))
+    parser.add_argument('action', choices=('prepare', 'install', 'observe', 'probe', 'native-install', 'native-serve'))
     parser.add_argument('--code', type=Path, required=True)
     parser.add_argument('--plan', type=Path, required=True)
     args = parser.parse_args(argv)
@@ -186,10 +207,15 @@ def main(argv=None) -> int:
             if incoming.stat().st_mode & 0o077:
                 raise OnboardingError('private_telegram_connections_required')
             value = prepare(home, args.code, codex, plan, release['profile'], supplied)
+        elif args.action == 'native-serve':
+            if os.geteuid() != 1000:
+                raise OnboardingError('qualified_guest_telegram_required')
+            native_serve(home, codex)
+            return 0
         elif args.action == 'native-install':
             if os.geteuid() != 0:
                 raise OnboardingError('qualified_guest_telegram_required')
-            publish(Path('/etc/systemd/system') / NATIVE_UNIT, native_service(home, codex))
+            publish(Path('/etc/systemd/system') / NATIVE_UNIT, native_service(home, codex, args.code))
             for command in (['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', NATIVE_UNIT]):
                 result = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
                 if result.returncode:

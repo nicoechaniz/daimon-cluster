@@ -59,6 +59,18 @@ def _available_port() -> int:
         return int(candidate.getsockname()[1])
 
 
+def test_snapshot_fixture_accepts_a_repeated_ephemeral_port(tmp_path, monkeypatch):
+    first = _available_port()
+    second = _available_port()
+    while second == first:
+        second = _available_port()
+    ports = iter([first, first, second])
+    monkeypatch.setattr(f"{__name__}._available_port", lambda: next(ports))
+    _signed_snapshot_root(tmp_path)
+    profile = json.loads((tmp_path / "snapshot-profile.json").read_text())
+    assert len({row["advertised_endpoint"] for row in profile["embodiments"]}) == 2
+
+
 def _password_descriptor(password: bytes) -> int:
     reader, writer = os.pipe()
     os.write(writer, password)
@@ -70,6 +82,9 @@ def _signed_snapshot_root(root, *, ledger_name="ledger.sqlite"):
     runtime_label = "snapshot-fixture"
     port = _available_port()
     peer_port = _available_port()
+    # The first temporary socket has closed; the OS may offer its port again.
+    while peer_port == port:
+        peer_port = _available_port()
     profile = root / "snapshot-profile.json"
     profile.write_bytes(
         canonical_bytes(

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from clusterctl.onboarding import OnboardingError
-from clusterctl.onboarding_telegram import configuration, prepare, service
+from clusterctl.onboarding_telegram import configuration, native_service, prepare, service
 from tests.test_onboarding import plan
 
 PROFILE = dict(model='gpt-6.1-sol', reasoning='xhigh', approval='never', sandbox='danger-full-access')
@@ -112,3 +112,14 @@ def test_listener_readiness_does_not_satisfy_final_telegram_acceptance(tmp_path)
     assert result['stage'] == 'acceptance'
     assert ob.STAGE_FACTS['telegram'] == dict(telegram_ready=True)
     assert 'telegram_verified' in ob.ACCEPTANCE
+
+
+def test_shared_codex_daemon_has_its_own_lifecycle_outside_listener_cgroup():
+    home, code, codex = Path('/home/agent'), Path('/opt/code'), Path('/usr/local/bin/codex')
+    listener = service(home, code, codex).decode()
+    native = native_service(home, codex).decode()
+    assert 'Requires=daimon-onboarding-codex.service' in listener
+    assert 'ExecStartPre=' not in listener
+    assert 'Type=oneshot' in native and 'RemainAfterExit=yes' in native
+    assert 'app-server daemon start' in native and 'app-server daemon stop' in native
+    assert 'StandardOutput=null' in native and 'TimeoutStartSec=180' in native

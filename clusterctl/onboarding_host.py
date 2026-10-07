@@ -301,7 +301,7 @@ class HostBackend:
                 self._dispatch(plan, ['config', 'device', 'add', self.instance(plan), 'onboarding-connections', 'disk',
                     *[key + '=' + value for key, value in mount.items() if key != 'type']])
             self._telegram_command(plan, 'prepare')
-            self._telegram_command(plan, 'native-start')
+            self._telegram_command(plan, 'native-install')
             self._telegram_probe(plan)
             self._telegram_command(plan, 'install')
             return
@@ -429,7 +429,7 @@ class HostBackend:
             raise OnboardingError('qualified_guest_environment_required')
         launcher = ('import sys;sys.path.insert(0,sys.argv.pop(1));'
                     'from clusterctl.onboarding_telegram import main;raise SystemExit(main())')
-        identity = [] if action in {'install', 'observe'} else ['--user', '1000', '--group', '1000', '--env', 'HOME=/home/agent']
+        identity = [] if action in {'install', 'observe', 'native-install'} else ['--user', '1000', '--group', '1000', '--env', 'HOME=/home/agent']
         value = json.loads(self._dispatch(plan, ['exec', self.instance(plan), *identity, '--', 'python3', '-B', '-I',
             '-c', launcher, str(code), action, '--code', str(code), '--plan', '/home/agent/.onboarding-input/plan.json']))
         if (not isinstance(value, dict) or action != 'probe' and value.get('plan_digest') != digest(plan)):

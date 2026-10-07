@@ -424,7 +424,9 @@ conversation database, input journal and token binding. Interrupted preparation
 can finish missing configuration without replacing existing conversation data.
 
 The dedicated boot-enabled unit uses the receiving agent's own Codex home and
-workspace. Both draft delivery and unfinished-response previews are disabled;
+workspace. The shared native Codex daemon has a separate persistent unit and
+cgroup, so restarting the Telegram listener does not terminate CLI sessions.
+Its first startup permits bounded native package installation. Both draft delivery and unfinished-response previews are disabled;
 completed replies remain the visible result. Shared native App Server access
 supports CLI continuity, while automatic history imports, maintenance and
 Matrix inbox attention remain disabled. A native proxy/skill probe runs without

@@ -43,7 +43,7 @@ from clusterctl import lifecycle
 from clusterctl import operation_journal
 from clusterctl.config import load_config
 
-from . import __version__
+from . import __version__, seed_handlers
 from . import paging
 import steward_tools.mutations as mutations
 
@@ -131,6 +131,7 @@ class Deps:
     matrix_client_factory: Callable[[str], object] | None = None
     fence_store_factory: Callable[[str], Any] | None = None
     clusterd_base_url: str = "http://127.0.0.1:8785"
+    seed_only: bool = False
     pager: paging.SnapshotPager = dataclasses.field(
         default_factory=paging.SnapshotPager
     )
@@ -161,6 +162,7 @@ class Response:
     status: int
     body: object  # dict/list -> JSON, str -> raw
     content_type: str = "application/json"
+    headers: dict | None = None
 
 
 def _error(
@@ -1585,6 +1587,11 @@ input:focus{outline:none;border-color:var(--accent)}
   </div>
 
   <!-- Fleet View -->
+  <div class="card" id="seeds-card">
+    <div class="section-header"><h2>Seed preparation</h2><a href="/v1/onboarding">Import or start a daimon</a></div>
+    <div id="seeds-content" hx-get="/v1/seeds" hx-trigger="load, every 10s, refresh"
+         hx-swap="none" hx-on::after-request="renderSeeds(event)"><p class="muted">Loading...</p></div>
+  </div>
   <div class="card" id="fleet-card">
     <div class="section-header"><h2>Fleet</h2></div>
     <div id="fleet-content" hx-get="/v1/instances" hx-trigger="load, every 10s, refresh"
@@ -1658,6 +1665,7 @@ function authenticate(){
       document.getElementById('dashboard').style.display='block';
       htmx.trigger('#health-content','load');
       htmx.trigger('#fleet-content','load');
+      htmx.trigger('#seeds-content','load');
       htmx.trigger('#weave-content','load');
       htmx.trigger('#embodiments-content','load');
       htmx.trigger('#fences-content','load');
@@ -1731,6 +1739,21 @@ function renderHealth(event){
     h+='</div>';
     el.innerHTML=h;
   }catch(e){el.innerHTML='<div class="alert">No data <span class="retry-link" onclick="htmx.trigger(\'#health-content\',\'load\')">retry</span></div>'}
+}
+
+function renderSeeds(event){
+  var el=document.getElementById('seeds-content');
+  try{
+    var data=JSON.parse(event.detail.xhr.responseText);
+    if(!event.detail.xhr.status||event.detail.xhr.status>=400)throw Error('unavailable');
+    var rows=data.items||[];
+    el.innerHTML=rows.length?rows.map(function(d){return '<div class="card"><strong>'+escHtml(d.label)
+      +'</strong> · '+escHtml(d.phase)+'<p>'+escHtml(d.memory_coverage)+' · stores: '+escHtml(String(d.memory_stores??'—'))
+      +' · initial chapters: '+escHtml(String(d.memory_chapters??'—'))+' · skills: '+escHtml(String(d.skills??'—'))
+      +'</p><p>Browser: '+escHtml(d.browser)+' · SSH: '+escHtml(d.ssh)+' · Telegram: '+escHtml(d.telegram)
+      +'</p><p class="muted">Pending: '+escHtml((d.pending||[]).join(', '))+'</p></div>'}).join('')
+      :'<p class="muted">No seed preparations for this owner.</p>';
+  }catch(e){el.textContent='Seed progress unavailable.'}
 }
 
 function renderFleet(event){
@@ -2026,6 +2049,14 @@ document.addEventListener('click',function(ev){
 
 
 HANDLERS = {
+    "seed_ui": seed_handlers.seed_ui,
+    "seed_access": seed_handlers.seed_access,
+    "list_seeds": seed_handlers.list_seeds,
+    "create_seed": seed_handlers.create_seed,
+    "upload_seed": seed_handlers.upload_seed,
+    "discover_seed": seed_handlers.discover_seed,
+    "prepare_seed": seed_handlers.prepare_seed,
+    "seed_connections": seed_handlers.seed_connections,
     "health": health,
     "openapi_yaml": openapi_yaml,
     "list_instances": list_instances,

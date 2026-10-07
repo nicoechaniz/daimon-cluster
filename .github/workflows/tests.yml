@@ -276,6 +276,8 @@ jobs:
           clusterctl/audit.py
           clusterctl/adapters.py
           clusterctl/cli.py
+          clusterctl/being_seed.py
+          clusterctl/browser.py
           clusterctl/distributed_rebirth.py
           clusterctl/embodiments.py
           clusterctl/fences.py
@@ -298,11 +300,14 @@ jobs:
           clusterd/auth.py
           clusterd/confirm.py
           clusterd/handlers.py
+          clusterd/seed_handlers.py
           clusterd/openapi.py
           clusterd/routes.py
           clusterd/server.py
           steward_tools/mutations.py
           tests/test_matrix_host.py
+          tests/test_being_seed.py
+          scripts/being-seed
           tests/test_admission.py
           tests/test_matrix_host_process.py
           tests/test_matrix_parity.py

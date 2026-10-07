@@ -64,6 +64,8 @@ def main(argv=None) -> int:
                         help="clusterctl-config/v1 YAML (default: %(default)s)")
     parser.add_argument("--state-dir", default=None,
                         help="override clusterctl state_dir (tests)")
+    parser.add_argument("--seed-only", action="store_true",
+                        help="serve private intake only, without fleet or Matrix access")
     parser.add_argument("--dump-openapi", nargs="?", const=DEFAULT_OPENAPI_OUT,
                         default=None, metavar="PATH",
                         help=f"write the generated OpenAPI YAML and exit "
@@ -136,7 +138,8 @@ def main(argv=None) -> int:
     deps = handlers.Deps(
         config_path=args.config,
         state_dir=args.state_dir,
-        matrix_client_factory=matrix_client_factory(state_dir),
+        matrix_client_factory=None if args.seed_only else matrix_client_factory(state_dir),
+        seed_only=args.seed_only,
     )
     server.serve(deps, binds)
     return 0

@@ -57,6 +57,9 @@ def _operation(route) -> dict:
         })
     for query_param in route.query_params:
         parameters.append(dict(query_param))
+    if route.body_format == "archive":
+        parameters.append({"name": "X-Archive-SHA256", "in": "header", "required": True,
+                           "schema": {"type": "string", "pattern": "^[0-9a-f]{64}$"}})
     if route.idempotency_required:
         parameters.append({
             "name": "Idempotency-Key",
@@ -109,7 +112,7 @@ def _operation(route) -> dict:
     responses: dict[str, dict] = {
         "200": {"description": "clusterctl result JSON (exit 0)"},
     }
-    if route.handler in {"list_instances", "audit_tail", "weave_differences"}:
+    if route.handler in {"list_instances", "audit_tail", "weave_differences", "list_seeds"}:
         responses["200"] = {
             "description": "Bounded immutable snapshot page",
             "content": {"application/json": {"schema": {
@@ -180,7 +183,7 @@ def _operation(route) -> dict:
                         "content": err_content}
 
     security: list[dict] = [] if route.public else [{"bearerAuth": []}]
-    return {
+    operation = {
         "operationId": route.operation_id,
         "summary": route.summary,
         "description": (
@@ -197,6 +200,13 @@ def _operation(route) -> dict:
         "security": security,
         "responses": responses,
     }
+    if route.body_format == "archive":
+        operation["requestBody"] = {"required": True, "content": {
+            "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}}
+    elif (route.path.startswith("/v1/seeds") or route.path == "/v1/seed-access") and route.method == "POST":
+        operation["requestBody"] = {"required": True, "content": {
+            "application/json": {"schema": {"type": "object"}}}}
+    return operation
 
 
 def build_openapi() -> dict:

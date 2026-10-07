@@ -86,6 +86,10 @@ class ClusterdHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", resp.content_type)
         self.send_header("X-Request-Id", ctx.request_id)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        if getattr(resp, "headers", None):
+            for key, value in resp.headers.items():
+                self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -249,15 +253,8 @@ class ClusterdHandler(BaseHTTPRequestHandler):
         split = urlsplit(self.path)
         path = split.path
         query = parse_qs(split.query)
-        # Read POST body for dashboard mutation routes.
+        # Archive uploads are authenticated before reading any incoming bytes.
         _body: dict = {}
-        if method == "POST":
-            cl = int(self.headers.get("Content-Length", 0))
-            if 0 < cl < 65536:
-                try:
-                    _body = json.loads(self.rfile.read(cl))
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    _body = {}
         try:
             route, params = routes.match(method, path)
         except routes.MethodNotAllowed:
@@ -276,17 +273,50 @@ class ClusterdHandler(BaseHTTPRequestHandler):
                 "request_id": ctx.request_id,
             }))
             return
+        if self.server.deps.seed_only:
+            if path == "/v1/health":
+                self._respond(ctx, handlers.Response(200, {"status": "ok", "service": "seed-intake"}))
+                return
+            if not (path in {"/v1/onboarding", "/v1/seeds", "/v1/seed-access"} or path.startswith("/v1/seeds/")):
+                self.close_connection = True
+                self._respond(ctx, handlers.Response(404, {"error": "seed_intake_route_only"}))
+                return
+        archive = route.body_format == "archive"
+        if archive:
+            self.close_connection = True
+        else:
+            if method == "POST":
+                try:
+                    cl = int(self.headers.get("Content-Length", 0))
+                except ValueError:
+                    cl = -1
+                if not 0 <= cl < 65536 or self.headers.get("Transfer-Encoding"):
+                    self.close_connection = True
+                    self._respond(ctx, handlers.Response(413, {"error": "bounded_json_body_required"}))
+                    return
+                if cl:
+                    try:
+                        _body = json.loads(self.rfile.read(cl))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        self._respond(ctx, handlers.Response(400, {"error": "invalid_json"}))
+                        return
         ctx, denial = self._enforce(ctx, route, params, path, method, _body)
         if denial is not None:
             self._respond(ctx, denial)
             return
         handler = handlers.HANDLERS[route.handler]
         try:
+            extra = {}
+            if archive:
+                self.connection.settimeout(30)
+                extra = {"_stream": self.rfile, "_length": self.headers.get("Content-Length"),
+                         "_sha256": self.headers.get("X-Archive-SHA256"),
+                         "_transfer_encoding": self.headers.get("Transfer-Encoding")}
             resp = handler(self.server.deps, ctx, route=route, query=query,
-                           _body=_body, **params)
+                           _body=_body, **extra, **params)
         except Exception as exc:  # noqa: BLE001  # pragma: no cover - defensive
             resp = handlers.Response(500, {
-                "error": f"clusterd internal error: {exc!r}",
+                "error": "seed_operation_failed" if route.handler.startswith("seed_") or route.path.startswith("/v1/seeds") else f"clusterd internal error: {exc!r}",
                 "action": route.operation_id,
                 "target": path,
                 "request_id": ctx.request_id,

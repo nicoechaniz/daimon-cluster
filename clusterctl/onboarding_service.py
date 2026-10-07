@@ -43,15 +43,29 @@ def install(code: Path, *, receive_only: bool, visibility: Path | None = None,
            'Environment=HOME=/home/agent\nUMask=0077\nRestart=on-failure\nRestartSec=5\n'
            'KillMode=control-group\nTimeoutStopSec=30\nExecStart=' + encoded +
            '\n[Install]\nWantedBy=multi-user.target\n').encode()
-    path = directory / UNIT
+    publish(directory / UNIT, raw)
+    execute = run or _run
+    execute(['systemctl', 'daemon-reload'])
+    execute(['systemctl', 'enable', '--now', UNIT])
+
+
+def publish(path: Path, raw: bytes, *, mode: int = 0o600) -> None:
+    """Atomic owned publication, refusing replacement of an existing candidate."""
+    directory = path.parent
+    being_seed._path(directory)
+    info = directory.stat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        raise OnboardingError('onboarding_service_directory_rejected')
     if path.exists() or path.is_symlink():
-        if onboarding_release.regular(path, uid=os.geteuid()) != raw:
+        if (onboarding_release.regular(path, uid=os.geteuid()) != raw
+                or stat.S_IMODE(path.stat().st_mode) != mode):
             raise OnboardingError('existing_onboarding_service_preserved')
     else:
         temporary = directory / ('.onboarding-service-' + uuid.uuid4().hex)
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
         try:
             with os.fdopen(descriptor, 'wb') as output:
+                os.fchmod(output.fileno(), mode)
                 output.write(raw)
                 output.flush()
                 os.fsync(output.fileno())
@@ -63,9 +77,6 @@ def install(code: Path, *, receive_only: bool, visibility: Path | None = None,
                 os.close(parent)
         finally:
             temporary.unlink(missing_ok=True)
-    execute = run or _run
-    execute(['systemctl', 'daemon-reload'])
-    execute(['systemctl', 'enable', '--now', UNIT])
 
 
 def _run(argv: list[str]) -> None:

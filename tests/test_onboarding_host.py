@@ -142,3 +142,42 @@ def test_verified_v8_lifecycle_retry_never_reenters_credential_writer(tmp_path, 
     backend._matrix_execute(value, SimpleNamespace(root=root))
     assert actions == ['observe'] and published == [{'genesis.json': {}}]
     assert run.calls == []
+
+
+def test_access_installs_only_dedicated_ssh_and_does_not_claim_provider(tmp_path, monkeypatch):
+    from dataclasses import replace
+    config, value, run, _ = configured(tmp_path)
+    backend = HostBackend(replace(config, code=tmp_path, consent_state=tmp_path), run=run)
+    monkeypatch.setattr(backend, '_ssh_key', lambda _plan: 'public fixture key')
+    calls = []
+    def ssh(_plan, action, key):
+        calls.append(action)
+        return dict(installed='install' in calls)
+    monkeypatch.setattr(backend, '_ssh_command', ssh)
+    assert backend.observe(value, 'access', 'unused').state == 'absent'
+    backend.execute(value, 'access', 'unused')
+    result = backend.observe(value, 'access', 'unused')
+    assert result.state == 'waiting' and result.facts == {}
+    assert calls == ['observe', 'install', 'observe']
+
+
+def test_private_connections_are_owner_scoped_and_never_return_bot_token(tmp_path, monkeypatch):
+    import os
+    from dataclasses import replace
+    config, value, run, _ = configured(tmp_path)
+    backend = HostBackend(replace(config, consent_state=tmp_path, consent_uid=os.geteuid()), run=run)
+    monkeypatch.setattr(backend, '_decision', lambda _plan: {'approved': True})
+    directory = tmp_path / 'being-seeds/eko'
+    directory.mkdir(mode=0o700, parents=True)
+    record = dict(schema=being_seed.SCHEMA, name='eko', created_by=value['owner'])
+    being_seed._write(directory / 'record.json', record)
+    key = 'ssh-ed25519 ' + 'A' * 43
+    being_seed._write(directory / 'connections.json', dict(ssh_public_key=key, telegram_bot_token='fixture secret'))
+    assert backend._ssh_key(value) == key
+    (directory / 'connections.json').chmod(0o644)
+    with pytest.raises(OnboardingError, match='private_onboarding_connections_required'):
+        backend._ssh_key(value)
+    (directory / 'connections.json').chmod(0o600)
+    being_seed._write(directory / 'record.json', {**record, 'created_by': 'other'})
+    with pytest.raises(OnboardingError, match='account_authorization_required'):
+        backend._ssh_key(value)

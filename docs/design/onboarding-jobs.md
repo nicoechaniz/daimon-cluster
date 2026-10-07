@@ -356,3 +356,26 @@ unit is enabled for boot and renews admission independently of the Codex
 conversation or worker lifetime. Foreign proxies, units and registry origins
 are preserved and refused. Provider, access, peer delivery and Telegram still
 have their separate receiving acceptance requirements.
+
+## Dedicated receiving SSH
+
+The access adapter installs a standalone OpenSSH listener on guest port 2222
+for the dedicated `agent` account. It takes only the selected owner's public
+key from the private intake boundary. Its configuration, owner key, host key
+and boot-enabled unit have separate paths; existing host administration is
+untouched. Invalid keys cannot publish an immutable owner binding. Retries
+preserve the host key and refuse another owner key or conflicting files.
+
+A minimal image can lack OpenSSH. The qualified guest installer prepares the
+native package with package-start suppression, disables the package's default
+listener and then starts the dedicated unit. An interrupted package attempt
+keeps its own suppression marker until retry finishes native configuration.
+Foreign suppression policies are preserved. Dependency preparation runs only
+after the CLI has verified the exact new guest, immutable plan and code.
+
+Observation checks exact files, private host-key continuity, service MainPID
+and the actual listening socket. It does not install missing files or claim
+provider entitlement. A listening service alone never completes access:
+real SSH/Codex and provider acceptance are still required. External ingress
+and real cohort activation remain pending; disposable pinned-host-key login,
+retry, restart and stopped-listener checks qualify this implementation slice.

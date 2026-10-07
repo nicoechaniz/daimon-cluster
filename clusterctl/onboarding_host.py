@@ -214,6 +214,15 @@ class HostBackend:
             return Observation("waiting", reason="identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
             return self._guest_observe(plan, stage)
+        if stage == 'access' and self.config.code and self.config.consent_state:
+            key = self._ssh_key(plan)
+            if key is None:
+                return Observation('waiting', reason='account_authorization_required')
+            if not self._ssh_command(plan, 'observe', key)['installed']:
+                return Observation('absent', safe_to_execute=True)
+            # A listening sshd is not a successful human login or a provider
+            # turn. The access stage remains pending until both are observed.
+            return Observation('waiting', reason='account_authorization_required')
         if stage == "matrix" and self.config.custody and self.config.custody_grants:
             ceremony = FirstCustody(self.config.custody, self.config.custody_grants)
             decision = self._decision(plan)
@@ -248,6 +257,12 @@ class HostBackend:
             raise OnboardingError("identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
             self._guest_execute(plan, stage)
+            return
+        if stage == 'access' and self.config.code and self.config.consent_state:
+            key = self._ssh_key(plan)
+            if key is None:
+                raise OnboardingError('account_authorization_required')
+            self._ssh_command(plan, 'install', key)
             return
         if stage == "matrix" and self.config.custody and self.config.custody_grants:
             decision = self._decision(plan)
@@ -294,6 +309,55 @@ class HostBackend:
         if self.config.consent_state is None:
             return stage == "context" and self.config.qualification and plan["name"].startswith("qualify-")
         return self._decision(plan) is not None
+
+    def _ssh_key(self, plan: dict) -> str | None:
+        """Read only the selected participant's public key at the intake boundary."""
+        if self.config.consent_state is None or self.config.consent_uid is None:
+            raise OnboardingError('account_authorization_required')
+        intake_uid = self.config.consent_uid
+        # This also validates private intake directories and seed ownership.
+        if self._decision(plan) is None:
+            return None
+        directory = being_seed._directory(self.config.consent_state, plan['name'])
+        def read_private(name: str) -> dict:
+            path = directory / name
+            raw = onboarding_release.regular(path, uid=intake_uid, limit=65536)
+            if path.stat().st_mode & 0o077:
+                raise OnboardingError('private_onboarding_connections_required')
+            value = json.loads(raw)
+            if not isinstance(value, dict):
+                raise OnboardingError('account_authorization_required')
+            return value
+        record = read_private('record.json')
+        if (record.get('schema') != being_seed.SCHEMA or record.get('name') != plan['name']
+                or record.get('created_by') != plan['owner']):
+            raise OnboardingError('account_authorization_required')
+        try:
+            value = read_private('connections.json')
+        except FileNotFoundError:
+            return None
+        from .onboarding_ssh import public_key
+        key = value.get('ssh_public_key')
+        if key is None:
+            return None
+        public_key(key)
+        return key
+
+    def _ssh_command(self, plan: dict, action: str, key: str) -> dict:
+        if self._environment(plan).state != 'complete':
+            raise OnboardingError('qualified_guest_environment_required')
+        _, code, mounts = self._guest_paths(plan)
+        if not self._mounted(plan, mounts):
+            raise OnboardingError('qualified_guest_environment_required')
+        launcher = ('import sys; sys.path.insert(0,sys.argv.pop(1)); '
+                    'from clusterctl.onboarding_ssh import main; raise SystemExit(main())')
+        value = json.loads(self._dispatch(plan, ['exec', self.instance(plan), '--',
+            'python3', '-B', '-I', '-c', launcher, str(code), action, '--code', str(code),
+            '--plan', '/home/agent/.onboarding-input/plan.json', '--public-key', key]))
+        if (not isinstance(value, dict) or type(value.get('installed')) is not bool
+                or value.get('plan_digest') != digest(plan) or value.get('port') != 2222):
+            raise OnboardingError('invalid_onboarding_observation')
+        return value
 
     def _decision(self, plan: dict) -> dict | None:
         if self.config.consent_uid is None or self.config.progress is None or self.config.code is None:

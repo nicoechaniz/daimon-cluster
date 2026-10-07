@@ -1,0 +1,154 @@
+"""Finite owner-scoped checks of an existing local Codex body.
+
+Requests are host-owned. Participant reports preserve evidence and never issue
+Root custody, a new identity, account permission or hosted acceptance.
+"""
+from __future__ import annotations
+
+import json
+import re
+import uuid
+from pathlib import Path
+
+from . import being_seed, onboarding_peer
+from .onboarding import OnboardingError, digest, private_directory
+from .onboarding_progress import Progress
+
+SCHEMA = 'cluster-onboarding-local-body-request/v1'
+REPORT = 'cluster-onboarding-local-body-report/v1'
+CHECKS = {
+    'identity_context': 'Verify Codex loads your own SOUL and being identity, preserving the original history.',
+    'memory': 'Retrieve one older and one recent own memory through the configured local HMK binding.',
+    'cli_resume': 'Verify your existing local Codex conversation can be resumed.',
+    'matrix_owner_client': 'Check the existing authenticated owner client status for your local body. Do not read an inbox.',
+}
+RESULTS = {'passed', 'missing', 'failed', 'not-checked'}
+
+
+def validate(value: object) -> dict:
+    if (not isinstance(value, dict) or set(value) != {'schema', 'name', 'owner', 'request_id',
+            'expected_being_ref', 'updated_ms'} or value['schema'] != SCHEMA
+            or any(not isinstance(value[key], str) or not being_seed.NAME.fullmatch(value[key])
+                   for key in ('name', 'owner'))
+            or not isinstance(value['request_id'], str)
+            or type(value['updated_ms']) is not int or value['updated_ms'] < 0
+            or value['expected_being_ref'] is not None and (not isinstance(value['expected_being_ref'], str)
+                or not re.fullmatch(r'dm:being:v1:[A-Za-z0-9_-]{43}', value['expected_being_ref']))):
+        raise OnboardingError('invalid_local_body_request')
+    try:
+        if str(uuid.UUID(value['request_id'])) != value['request_id']:
+            raise ValueError
+    except ValueError as exc:
+        raise OnboardingError('invalid_local_body_request') from exc
+    return value
+
+
+class Requests(Progress):
+    suffix = '.local-body.json'
+    validate = staticmethod(validate)
+
+
+def _directory(state: Path, request: dict, *, create: bool = False) -> Path:
+    parent = state / 'local-body-reports'
+    if create:
+        private_directory(parent, create=True)
+    root = parent / request['name']
+    if create:
+        private_directory(root, create=True)
+    return being_seed._path(root)
+
+
+def _summary(report: dict) -> dict:
+    identity = report['matrix_identity']
+    origin = identity['document']['origin'] if identity is not None else None
+    return dict(request_id=report['request_id'], checked_at_ms=report['checked_at_ms'],
+        checks=report['checks'], matrix_state=report['matrix_state'],
+        identity_verified=identity is not None,
+        being_ref=identity['document']['authority']['manifest']['being_ref'] if identity is not None else None,
+        body_ref=origin['body_ref'] if origin is not None else None,
+        codex_matrix_body_verified=origin is not None and origin['body_ref'].startswith('codex:'),
+        evidence_scope='participant-local report; signed identity independently verified; local checks self-reported',
+        hosted_acceptance=False)
+
+
+def read(state: Path, request: dict) -> dict:
+    request = validate(request)
+    root = _directory(state, request)
+    try:
+        pointer = being_seed._read(root / 'latest.json')
+        fingerprint = pointer['report_digest']
+        if not isinstance(fingerprint, str) or not re.fullmatch(r'[0-9a-f]{64}', fingerprint):
+            raise OnboardingError('invalid_local_body_report')
+        report = being_seed._read(root / (fingerprint + '.json'))
+        if digest(report) != fingerprint:
+            raise OnboardingError('invalid_local_body_report')
+        summary = _summary(report) if report['request_id'] == request['request_id'] else None
+    except FileNotFoundError:
+        summary = None
+    try:
+        seed = being_seed.status(state, request['name'], owner=request['owner'])
+        received = dict(context_prepared=seed['phase'] == 'prepared', archive_received=seed['archive_sha256'] is not None,
+            ssh_key_received=seed['ssh'].startswith('key supplied'),
+            telegram_data_received=seed['telegram'].startswith('data supplied'))
+    except being_seed.SeedError as exc:
+        if exc.status != 404:
+            raise
+        received = dict(context_prepared=False, archive_received=False, ssh_key_received=False, telegram_data_received=False)
+    return {**request, 'checks': CHECKS, 'report': summary, 'received': received,
+        'instructions': [
+            'Continue your existing local Codex installation and this workspace; do not reinstall or re-export received context.',
+            'Keep the already selected shared account and recorded human approvals.',
+            'If a signed Matrix identity exists, export only its public signed identity with the provided existing-body exporter, which calls maintained native chat-link public_identity.',
+            'Use its existing authority. A Hermes identity proves that being, but does not prove a local Codex embodiment exists.',
+            'Respect the local daemon writer lock. Keep custody, private keys, passwords, paths, bot tokens and provider credentials local.',
+            'If no identity can be found, report not-found; do not create another Root to satisfy this check.',
+            'Submit results through the response_path. A missing check is useful evidence, not a request for Nicolas to relay technical details.',
+        ], 'response_path': '/v1/onboarding/local-body/' + request['name'],
+        'export_tools': {'exporter': '/v1/onboarding/local-body/tools/export_local_matrix_identity.py',
+            'native_peer': '/v1/onboarding/local-body/tools/onboarding_peer_native.py',
+            'native_peer_sha256': onboarding_peer.TOOL_SHA256,
+            'usage': 'Use the existing body Matrix Python. exporter --runtime-root LOCAL_ROOT --password-file LOCAL_PASSWORD --output PRIVATE_PUBLIC_JSON [--visibility-installation EXISTING_INSTALLATION]. Keep local paths and custody local; restore an owner-controlled daemon after any finite offline export.'}}
+
+
+def submit(state: Path, request: dict, value: object, *, code: Path | None = None, code_uid: int = 0) -> dict:
+    request = validate(request)
+    if (not isinstance(value, dict) or set(value) != {'schema', 'request_id', 'checked_at_ms',
+            'checks', 'matrix_state', 'matrix_identity'} or value['schema'] != REPORT
+            or value['request_id'] != request['request_id']
+            or type(value['checked_at_ms']) is not int or value['checked_at_ms'] < request['updated_ms']
+            or not isinstance(value['checks'], dict) or set(value['checks']) != set(CHECKS)
+            or any(not isinstance(result, str) or result not in RESULTS for result in value['checks'].values())
+            or value['matrix_state'] not in {'signed-identity', 'not-found', 'unavailable'}
+            or (value['matrix_state'] == 'signed-identity') != isinstance(value['matrix_identity'], dict)
+            or value['matrix_state'] != 'signed-identity' and value['matrix_identity'] is not None):
+        raise being_seed.SeedError('invalid_local_body_report')
+    if len(json.dumps(value).encode()) > being_seed.MAX_RECORD:
+        raise being_seed.SeedError('local_body_report_too_large')
+    if value['matrix_identity'] is not None:
+        tool = onboarding_peer.native(code or Path(__file__).resolve().parents[1], uid=code_uid)
+        try:
+            authority = tool.verify_identity(value['matrix_identity'])
+            expected = request['expected_being_ref']
+            if expected is not None and authority.state.being_ref != expected:
+                raise ValueError
+        except (ValueError, KeyError, TypeError) as exc:
+            raise being_seed.SeedError('local_body_signed_identity_required') from exc
+    root = _directory(state, request, create=True)
+    with being_seed._locked(root):
+        previous = read(state, request)['report']
+        if (previous is not None and previous['identity_verified'] and (value['matrix_identity'] is None
+                or previous['being_ref'] != value['matrix_identity']['document']['authority']['manifest']['being_ref'])):
+            raise being_seed.SeedError('existing_local_body_identity_preserved', 409)
+        fingerprint = digest(value)
+        destination = root / (fingerprint + '.json')
+        if destination.exists():
+            if being_seed._read(destination) != value:
+                raise being_seed.SeedError('existing_local_body_report_preserved', 409)
+        else:
+            being_seed._write(destination, value)
+        if previous is not None and value['checked_at_ms'] < previous['checked_at_ms']:
+            # A delayed retry preserves its evidence without rewinding the
+            # current participant report or hiding subsequent local checks.
+            return read(state, request)
+        being_seed._write(root / 'latest.json', {'report_digest': fingerprint})
+    return read(state, request)

@@ -344,7 +344,8 @@ def test_same_entrypoint_machine_formats_are_public_metadata_only(tmp_path):
             "/v1/seed-access-requests", "/v1/seed-access-requests/{request_id}",
             "/v1/seed-access-requests/{request_id}/claim", "/v1/seed-session",
             "/v1/seeds/{seed}/onboarding/review", "/v1/seeds/{seed}/onboarding/action",
-            "/v1/seeds/{seed}/onboarding/access"}
+            "/v1/seeds/{seed}/onboarding/access", "/v1/onboarding/local-body",
+            "/v1/onboarding/local-body/{seed}", "/v1/onboarding/local-body/tools/{tool}"}
         assert request("/v1/seeds", extra={"Authorization": ""})[0] == 401
         assert request("/v1/seeds/private-fixture/selection", owner="sai")[0] == 404
 
@@ -419,6 +420,20 @@ def test_browser_access_cookie_is_private_intake_only_and_requires_same_origin(t
             assert request("/v1/seeds", "POST", seed_spec, extra=extra)[0] == 403
         origin = f"http://127.0.0.1:{server.server_address[1]}"
         assert request("/v1/seeds", "POST", seed_spec, extra={**write, "Origin": origin})[0] == 200
+        from clusterctl.onboarding_local_body import Requests
+        from tests.test_onboarding_local_body import request as local_request, report as local_report
+        import dataclasses
+        import os
+        progress = tmp_path / 'progress'
+        progress.mkdir(mode=0o750)
+        task = local_request('private', spec['owner'])
+        Requests(progress, worker_uid=os.geteuid()).publish(task)
+        server.deps = dataclasses.replace(server.deps, onboarding_progress=str(progress),
+            onboarding_worker_uid=os.geteuid())
+        local_path = '/v1/onboarding/local-body/private'
+        assert request(local_path, extra=cookie)[0] == 200
+        assert request(local_path, 'POST', local_report(task), extra=cookie)[0] == 403
+        assert request(local_path, 'POST', local_report(task), extra={**cookie, 'Origin': origin})[0] == 200
         assert request("/v1/seeds", owner="sai")[2]["items"] == []
         code, headers, result = request("/v1/seed-session", "DELETE", extra={**cookie, "Origin": origin})
         assert code == 200 and result["signed_out"] is True and "Max-Age=0" in headers["Set-Cookie"]

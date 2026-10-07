@@ -151,12 +151,13 @@ class ManagedRuntime:
         assert configuration is not None
         onboarding_mounts.prepare_matrix_public(self.backend.config.views, plan, {'admission.json': configuration})
         _, code, _ = self.backend._guest_paths(plan)
+        runtime_code, runtime_args, _ = self.backend._runtime_paths(plan, code)
         launcher = ('import sys;sys.path.insert(0,sys.argv.pop(1));'
                     'from clusterctl.onboarding_service import main;raise SystemExit(main())')
         selection = (['--receive-only'] if self.settings['visibility_installation'] is None else
                      ['--visibility-installation', self.settings['visibility_installation']])
         self.backend._dispatch(plan, ['exec', self.backend.instance(plan), '--', 'python3', '-B', '-I', '-c',
-            launcher, str(code), '--code', str(code), '--plan', '/home/agent/.onboarding-input/plan.json', *selection])
+            launcher, str(runtime_code), '--code', str(code), *runtime_args, '--plan', '/home/agent/.onboarding-input/plan.json', *selection])
         # Observe authenticated, admitted presence before committing canonical state.
         presence = self.backend._target_call(plan, 'admitted-running')
         origin = presence['origin']

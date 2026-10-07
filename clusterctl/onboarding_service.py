@@ -9,33 +9,40 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from . import being_seed, onboarding_release
+from . import being_seed, onboarding_code_successor, onboarding_release
 from .onboarding import OnboardingError, validate_plan
 
 UNIT = 'daimon-onboarding-matrix.service'
 
 
-def command(code: Path, *, receive_only: bool, visibility: Path | None = None) -> list[str]:
+def command(code: Path, *, receive_only: bool, visibility: Path | None = None,
+            runtime_code: Path | None = None, runtime_digest: str | None = None) -> list[str]:
     if receive_only == (visibility is not None):
         raise OnboardingError('onboarding_visibility_selection_required')
+    if (runtime_code is None) != (runtime_digest is None):
+        raise OnboardingError('qualified_onboarding_runtime_required')
+    runtime_args = ([] if runtime_code is None else
+                    ['--runtime-code', str(runtime_code), '--runtime-digest', str(runtime_digest)])
     launcher = ('import sys;sys.path.insert(0,sys.argv.pop(1));'
                 'from clusterctl.onboarding_target import main;raise SystemExit(main())')
     public = '/home/agent/.onboarding-matrix/'
-    argv = ['/usr/bin/python3', '-B', '-I', '-c', launcher, str(code), 'admitted-serve',
-            '--home', '/home/agent', '--code', str(code),
+    argv = ['/usr/bin/python3', '-B', '-I', '-c', launcher, str(runtime_code or code), 'admitted-serve',
+            '--home', '/home/agent', '--code', str(code), *runtime_args,
             '--plan', '/home/agent/.onboarding-input/plan.json',
             '--genesis', public + 'genesis.json', '--admission-profile', public + 'admission.json']
     return argv + (['--receive-only'] if receive_only else ['--visibility-installation', str(visibility)])
 
 
 def install(code: Path, *, receive_only: bool, visibility: Path | None = None,
+            runtime_code: Path | None = None, runtime_digest: str | None = None,
             directory: Path = Path('/etc/systemd/system'), run=None) -> None:
     """Preserve foreign units; publication/reload/enable are independently retryable."""
     being_seed._path(directory)
     info = directory.stat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
         raise OnboardingError('onboarding_service_directory_rejected')
-    argv = command(code, receive_only=receive_only, visibility=visibility)
+    argv = command(code, receive_only=receive_only, visibility=visibility,
+                   runtime_code=runtime_code, runtime_digest=runtime_digest)
     # systemd's ExecStart syntax, not a shell command. Escape substitutions.
     encoded = ' '.join(json.dumps(arg.replace('%', '%%').replace('$', '$$')) for arg in argv)
     raw = ('[Unit]\nDescription=Admitted native onboarding body\nAfter=network-online.target\n'
@@ -92,16 +99,23 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--code', type=Path, required=True)
     parser.add_argument('--plan', type=Path, required=True)
+    parser.add_argument('--runtime-code', type=Path)
+    parser.add_argument('--runtime-digest')
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument('--receive-only', action='store_true')
     selection.add_argument('--visibility-installation', type=Path)
     args = parser.parse_args(argv)
     try:
         plan = validate_plan(json.loads(onboarding_release.regular(args.plan, uid=1000)))
-        onboarding_release.verify(args.code, plan['release_digest'], uid=0)
+        onboarding_code_successor.selection(args.runtime_code, args.runtime_digest, args.code,
+                                             plan['release_digest'], uid=0)
         if os.geteuid() != 0 or args.code != Path('/opt/daimon-onboarding') / plan['release_digest']:
             raise OnboardingError('qualified_guest_service_required')
-        install(args.code, receive_only=args.receive_only, visibility=args.visibility_installation)
+        if (args.runtime_code is not None
+                and args.runtime_code != Path('/opt/daimon-onboarding-runtime') / args.runtime_digest):
+            raise OnboardingError('qualified_guest_service_required')
+        install(args.code, receive_only=args.receive_only, visibility=args.visibility_installation,
+                runtime_code=args.runtime_code, runtime_digest=args.runtime_digest)
         print(json.dumps(dict(installed=True)))
         return 0
     except (OSError, ValueError, OnboardingError):

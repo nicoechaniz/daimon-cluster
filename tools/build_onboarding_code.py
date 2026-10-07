@@ -19,7 +19,7 @@ from clusterctl.onboarding_input import relative
 HMK_COMMIT = "518f350889001b7f70ac3dd4f843a9e0c16d256c"
 ROOT = Path(__file__).resolve().parents[1]
 MODULES = ("__init__.py", "being_seed.py", "onboarding.py", "onboarding_input.py",
-           "onboarding_release.py", "onboarding_guest.py", "onboarding_mounts.py", "onboarding_sdk.py",
+           "onboarding_release.py", "onboarding_code_successor.py", "onboarding_guest.py", "onboarding_mounts.py", "onboarding_sdk.py",
            "onboarding_target.py", "onboarding_credential.py", "owner_process.py", "onboarding_admission.py",
            "onboarding_runtime.py", "onboarding_service.py", "onboarding_ssh.py", "onboarding_provider.py", "onboarding_telegram.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
 
@@ -123,16 +123,27 @@ def build(checkout: Path, commons: Path, selected_profile: dict, output: Path, *
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--hmk-checkout", type=Path, required=True)
-    parser.add_argument("--commons", type=Path, required=True)
-    parser.add_argument("--profile", type=Path, required=True)
+    parser.add_argument("--hmk-checkout", type=Path)
+    parser.add_argument("--commons", type=Path)
+    parser.add_argument("--profile", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--runtime-base", type=Path)
+    parser.add_argument("--base-digest")
     parser.add_argument("--sdk", type=Path)
     parser.add_argument("--telegram-artifact", type=Path)
     args = parser.parse_args()
     try:
-        result = build(args.hmk_checkout, args.commons, json.loads(args.profile.read_bytes()), args.output,
-                       sdk=args.sdk, telegram=args.telegram_artifact)
+        if args.runtime_base is not None:
+            if (args.base_digest is None or any(value is not None for value in (
+                    args.hmk_checkout, args.commons, args.profile, args.sdk, args.telegram_artifact))):
+                raise OnboardingError('qualified_onboarding_runtime_required')
+            from clusterctl.onboarding_code_successor import build as build_successor
+            result = build_successor(args.runtime_base, args.base_digest, ROOT / 'clusterctl', MODULES, args.output)
+        else:
+            if args.base_digest is not None or any(value is None for value in (args.hmk_checkout, args.commons, args.profile)):
+                raise OnboardingError('receiving_code_build_configuration_required')
+            result = build(args.hmk_checkout, args.commons, json.loads(args.profile.read_bytes()), args.output,
+                           sdk=args.sdk, telegram=args.telegram_artifact)
         print(json.dumps(result))
         return 0
     except Exception:

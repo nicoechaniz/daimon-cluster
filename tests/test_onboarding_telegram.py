@@ -117,9 +117,25 @@ def test_listener_readiness_does_not_satisfy_final_telegram_acceptance(tmp_path)
 def test_shared_codex_daemon_has_its_own_lifecycle_outside_listener_cgroup():
     home, code, codex = Path('/home/agent'), Path('/opt/code'), Path('/usr/local/bin/codex')
     listener = service(home, code, codex).decode()
-    native = native_service(home, codex).decode()
+    native = native_service(home, codex, code).decode()
     assert 'Requires=daimon-onboarding-codex.service' in listener
     assert 'ExecStartPre=' not in listener
-    assert 'Type=oneshot' in native and 'RemainAfterExit=yes' in native
-    assert 'app-server daemon start' in native and 'app-server daemon stop' in native
-    assert 'StandardOutput=null' in native and 'TimeoutStartSec=180' in native
+    assert 'Type=simple' in native and 'Restart=on-failure' in native
+    assert 'native-serve' in native and 'app-server daemon stop' in native
+    assert 'StandardOutput=null' in native and 'CODEX_HOME=/home/agent/.codex' in native
+
+
+def test_native_supervisor_reconciles_singleton_without_model_or_message_commands():
+    from types import SimpleNamespace
+    from clusterctl.onboarding_telegram import native_serve
+    calls, waits = [], []
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0)
+    native_serve(Path('/home/agent'), Path('/usr/local/bin/codex'), run=run, wait=waits.append, cycles=3)
+    assert waits == [5, 5, 5]
+    assert all(argv == ['/usr/local/bin/codex', 'app-server', 'daemon', 'start'] for argv, _ in calls)
+    assert all(options['env']['CODEX_HOME'] == '/home/agent/.codex' for _, options in calls)
+    with pytest.raises(OnboardingError, match='native_codex_daemon_start_failed'):
+        native_serve(Path('/home/agent'), Path('/usr/local/bin/codex'),
+                     run=lambda *a, **k: SimpleNamespace(returncode=1), wait=waits.append, cycles=1)

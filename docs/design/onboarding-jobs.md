@@ -470,3 +470,13 @@ worker to continue installing Telegram. They do not claim an owner CLI login.
 The final acceptance stage still requires real SSH/native Codex evidence,
 along with human Telegram, steering, topics and continuity receipts. This avoids
 making a working human channel depend on a prior human SSH acceptance step.
+
+## Native daemon crash recovery
+
+A disposable process interruption exposed that an active oneshot unit does not
+observe a departed native Codex child: no recovery occurred within 40 seconds.
+The native unit now runs a persistent unprivileged supervisor that reconciles
+Codex's idempotent singleton startup and readiness every five seconds. A failed
+native operation exits for systemd recovery; captured diagnostics stay private.
+It starts no model turn, reads no Matrix inbox and replays no Telegram input.
+Listener restarts retain a separate cgroup and the same receiving Codex home.

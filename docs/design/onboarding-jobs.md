@@ -545,3 +545,31 @@ configuration and that installation's exact SDK before publishing its unit.
 An existing changed unit is preserved and refused. Omitting `--activate`
 installs without starting. The worker uses the same engine and policy as web,
 agent API and CLI; no active Codex conversation is needed.
+
+
+### Runtime successors for an already receiving body
+
+A receiving plan continues to pin its original `release_digest`. Its context,
+Source selection, skill bytes, HMK tooling, Matrix wheelhouse and Telegram binary
+remain unchanged. To fix maintained Cluster runtime code without reinstalling
+that context, build a separate artifact with:
+
+```sh
+python -m tools.build_onboarding_code --runtime-base BASE --base-digest DIGEST --output NEW
+```
+
+The builder replaces only top-level `clusterctl/*.py` modules and records the
+original artifact digest. Both sealed inventories are checked: removal, changed
+nonmodule bytes and profile drift are rejected even if the new artifact was
+resealed. Always use the original plan artifact as the base for later successors.
+No receiving home, memory, credentials or custody is read by this builder.
+
+The owner selects both `runtime_code` and `runtime_digest` in the host config
+only after qualifying that exact artifact. Matrix reconciliation attaches a
+separate read-only runtime mount named by its full digest, preserving any foreign
+device and previous runtime mount. Target commands,
+the SDK interpreter reexec and the persistent service all retain the original
+`--code` for dependency verification and carry the explicit runtime selection.
+Context, memory, provider and Telegram stages continue to use the original code.
+Absent both fields, the existing launch path is unchanged; partial selection is
+refused. This mechanism alone establishes no peer relationship or live acceptance.

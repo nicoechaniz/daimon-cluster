@@ -51,6 +51,7 @@ FILES = (
     "clusterctl/onboarding_input.py",
     "clusterctl/onboarding_intake.py",
     "clusterctl/onboarding_release.py",
+    "clusterctl/onboarding_code_successor.py",
     "clusterctl/onboarding_guest.py",
     "clusterctl/onboarding_mounts.py",
     "clusterctl/onboarding_qualification.py",

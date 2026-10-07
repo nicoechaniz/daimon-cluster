@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from . import being_seed, onboarding_release, onboarding_sdk
+from . import being_seed, onboarding_code_successor, onboarding_release, onboarding_sdk
 from .onboarding import OnboardingError, digest, private_directory, validate_plan
 
 
@@ -342,6 +342,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--admission-profile", type=Path)
     parser.add_argument("--public-profile-json")
     parser.add_argument("--code", type=Path, required=True)
+    parser.add_argument("--runtime-code", type=Path)
+    parser.add_argument("--runtime-digest")
     visibility = parser.add_mutually_exclusive_group()
     visibility.add_argument("--receive-only", action="store_true")
     visibility.add_argument("--visibility-installation", type=Path)
@@ -349,13 +351,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         plan = validate_plan(being_seed._read(args.plan))
-        onboarding_release.verify(args.code, plan["release_digest"], uid=0)
+        runtime = onboarding_code_successor.selection(args.runtime_code, args.runtime_digest,
+            args.code, plan['release_digest'], uid=0)
         venv = onboarding_sdk.observe(args.home, args.code)
         if Path(sys.prefix) != venv:
             launcher = ("import sys; sys.path.insert(0,sys.argv.pop(1)); "
                         "from clusterctl.onboarding_target import main; raise SystemExit(main())")
             os.execv(venv / "bin/python", [str(venv / "bin/python"), "-B", "-I", "-c", launcher,
-                                          str(args.code), *(argv if argv is not None else sys.argv[1:])])
+                                          str(runtime), *(argv if argv is not None else sys.argv[1:])])
         target = Target(args.home, plan, document(args.genesis))
         if args.action == "admitted-serve":
             from .onboarding_runtime import serve

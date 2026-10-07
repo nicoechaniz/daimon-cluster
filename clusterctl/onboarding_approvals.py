@@ -122,7 +122,15 @@ class Approvals:
         path = directory / (proposal['review_digest'] + '.json')
         with being_seed._locked(directory):
             if path.exists():
-                if document(path) != record:
+                previous = document(path)
+                # A successor may reconcile another pair's existing identity.
+                # Preserve this pair's original attribution and policy digest
+                # when its exact approved decision and human instruction match.
+                if (set(previous) != set(record)
+                        or any(previous[key] != item for key, item in record.items()
+                               if key != 'approval_policy_digest')
+                        or not isinstance(previous['approval_policy_digest'], str)
+                        or not re.fullmatch(r'[0-9a-f]{64}', previous['approval_policy_digest'])):
                     raise OnboardingError('existing_onboarding_approval_preserved')
             else:
                 being_seed._write(path, record)

@@ -85,6 +85,27 @@ def test_participant_choice_precedes_delegation_and_remains_exact(tmp_path):
     assert not list(config.grants.rglob('*.json'))
 
 
+def test_reconciling_another_existing_identity_preserves_original_pair_approval(tmp_path):
+    config, proposal, value = setup(tmp_path)
+    approved = decision(config, proposal)
+    record = next((config.grants / 'delegated-owner-approvals').glob('*.json'))
+    original = record.read_bytes()
+    successor = {**value, 'pairs': {**value['pairs'],
+        'oliva': dict(owner='ani', matrix_identity_mode='existing')}}
+    being_seed._write(config.owner_approval_policy, successor)
+    assert decision(config, proposal) == approved
+    assert record.read_bytes() == original
+    other = onboarding_consent.review(plan(name='oliva', owner='ani'), proposal['source_text'],
+                                      custody=proposal['matrix_custody'])
+    assert Approvals(config.owner_approval_policy).decision(other, config.grants)['matrix_identity_mode'] == 'existing'
+    changed = {**successor, 'pairs': {**successor['pairs'],
+        'eko': dict(owner='sai', matrix_identity_mode='existing')}}
+    being_seed._write(config.owner_approval_policy, changed)
+    with pytest.raises(OnboardingError, match='existing_onboarding_approval_preserved'):
+        decision(config, proposal)
+    assert record.read_bytes() == original
+
+
 def test_http_reports_delegated_approval_only_for_current_review_and_owner(tmp_path):
     config, proposal, _ = setup(tmp_path)
     decision(config, proposal)

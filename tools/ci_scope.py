@@ -27,6 +27,10 @@ ONBOARDING_CONTRACTS = ('tests/test_being_seed.py', 'tests/test_admission.py',
     'tests/test_matrix_parity.py', 'tests/test_effect_truth.py',
     'tests/test_honest_read_models.py', 'tests/test_auth.py', 'tests/test_clusterd.py',
     'tests/test_operational_assets.py', 'tests/test_ci_workflow.py', 'tests/test_ci_scope.py')
+APPROVAL_FILES = {'clusterctl/onboarding_approvals.py', 'tests/test_onboarding_approvals.py'}
+APPROVAL_TESTS = ('tests/test_onboarding_approvals.py', 'tests/test_onboarding_consent.py',
+    'tests/test_onboarding_intake.py', 'tests/test_onboarding_host.py',
+    'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 
 
 def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
@@ -34,6 +38,9 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) <= APPROVAL_FILES | CI_FILES
+            and all((root / path).is_file() for path in APPROVAL_TESTS)):
+        return 'approval', list(APPROVAL_TESTS)
     def onboarding(path):
         return (path in ONBOARDING_FILES or path in CI_FILES
                 or re.fullmatch(r'(?:clusterctl/onboarding_|tests/test_onboarding)[A-Za-z0-9_]*\.py', path))

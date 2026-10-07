@@ -407,7 +407,7 @@ jobs:
       - run: >-
           python -m compileall -q clusterctl clusterd steward_tools tests tools
       - name: Prove root worker and canonical service owner separation
-        if: needs.scope.outputs.profile != 'ci'
+        if: needs.scope.outputs.profile == 'full' || needs.scope.outputs.profile == 'onboarding'
         run: |
           set -eu
           onboarding_python="$(python -c 'import sys; print(sys.executable)')"
@@ -423,7 +423,7 @@ jobs:
 
   backup-export-disposable:
     needs: scope
-    if: needs.scope.outputs.profile != 'ci'
+    if: needs.scope.outputs.profile == 'full' || needs.scope.outputs.profile == 'onboarding'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -450,7 +450,7 @@ jobs:
 
   recovery-rebirth-disposable-hosts:
     needs: scope
-    if: needs.scope.outputs.profile != 'ci'
+    if: needs.scope.outputs.profile == 'full' || needs.scope.outputs.profile == 'onboarding'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

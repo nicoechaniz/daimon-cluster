@@ -65,7 +65,7 @@ def service(home: Path, code: Path, codex: Path = Path('/usr/local/bin/codex')) 
         '[Service]\nType=simple\nUser=agent\nGroup=agent\n'
         f'Environment=HOME={home}\nEnvironment=CODEX_HOME={home}/.codex\n'
         'Environment=PATH=/usr/local/bin:/usr/bin:/bin\nUMask=0077\n'
-        'Restart=on-failure\nRestartSec=5\nKillMode=control-group\nTimeoutStopSec=30\n'
+        'Restart=on-failure\nRestartSec=5\nKillMode=control-group\nTimeoutStartSec=180\nTimeoutStopSec=30\n'
         f'WorkingDirectory={home}/Projects/being\n'
         f'ExecStartPre={json.dumps(str(codex))} app-server daemon start\nExecStart={encoded}\n'
         '[Install]\nWantedBy=multi-user.target\n').encode()
@@ -174,7 +174,7 @@ def main(argv=None) -> int:
             if os.geteuid() != 1000:
                 raise OnboardingError('qualified_guest_telegram_required')
             result = subprocess.run([str(codex), 'app-server', 'daemon', 'start'],
-                capture_output=True, text=True, timeout=60, check=False,
+                capture_output=True, text=True, timeout=180, check=False,
                 env=dict(HOME=str(home), CODEX_HOME=str(home / '.codex'), PATH='/usr/local/bin:/usr/bin:/bin'))
             if result.returncode:
                 raise OnboardingError('native_codex_daemon_start_failed')

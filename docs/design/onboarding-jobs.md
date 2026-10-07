@@ -566,8 +566,10 @@ No receiving home, memory, credentials or custody is read by this builder.
 
 The owner selects both `runtime_code` and `runtime_digest` in the host config
 only after qualifying that exact artifact. Matrix reconciliation attaches a
-separate read-only runtime mount named by its full digest, preserving any foreign
-device and previous runtime mount. Target commands,
+separate read-only runtime mount whose device name fits the stricter 63-character
+Incus disk limit (`runtime-` plus 55 digest characters). Its path and launch
+arguments retain the complete digest. Existing or foreign device-name collisions
+are refused whenever the full mount differs; previous runtime mounts remain. Target commands,
 the SDK interpreter reexec and the persistent service all retain the original
 `--code` for dependency verification and carry the explicit runtime selection.
 Context, memory, provider and Telegram stages continue to use the original code.

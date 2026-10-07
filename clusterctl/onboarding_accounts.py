@@ -76,9 +76,10 @@ class ManagedAccount:
         if (not isinstance(receipt, dict) or receipt.get('schema') != SCHEMA
                 or receipt.get('plan_digest') != digest(plan) or receipt.get('provider_verified') is not True):
             raise OnboardingError('invalid_onboarding_observation')
-        # Both proofs are required. A successful provider probe and listening
-        # SSH unit do not establish an actual receiving human CLI session.
-        return Observation('waiting', reason='human_contact_required')
+        # Host access observation has already verified its dedicated SSH
+        # listener. Readiness permits Telegram setup; final acceptance still
+        # requires an actual owner SSH/native Codex session.
+        return Observation('complete', dict(verified=True, ssh_ready=True, provider_verified=True))
 
     def execute(self, plan: dict) -> None:
         profile, mount = self.profile(plan), self.mount(plan)

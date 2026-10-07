@@ -15,6 +15,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from daimon_matrix.canonical import canonical_bytes
 from daimon_matrix.runtime import load_runtime
+from daimon_matrix.daemon import acquire_lock
+from daimon_matrix.native_egress import closed_visibility, VISIBILITY_SCHEMA_VERSION
 
 from clusterctl.admission import (
     AdmissionAuthority,
@@ -131,6 +133,7 @@ def source_snapshot(arguments: argparse.Namespace) -> dict:
     source = arguments.source.resolve(strict=True)
     snapshot = arguments.snapshot.resolve()
     now_ms = time.time_ns() // 1_000_000
+    _provision_visibility(source / "runtime", _password(source / "runtime.password"), now_ms)
     hosted = load_runtime(
         source / "runtime",
         "runtime.json",
@@ -158,6 +161,19 @@ def source_snapshot(arguments: argparse.Namespace) -> dict:
     }
     _write_new(arguments.evidence, canonical_bytes(evidence))
     return evidence
+
+
+def _provision_visibility(root: Path, password: bytes, now_ms: int) -> None:
+    descriptor = acquire_lock(root)
+    try:
+        def clock() -> int:
+            return now_ms
+        hosted = load_runtime(root, "runtime.json", lambda: bytearray(password),
+                              clock=clock, egress=closed_visibility(clock=clock, catalog_mode="migrate"))
+        hosted.egress.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+        hosted.egress.validate_registered_catalogs()
+    finally:
+        os.close(descriptor)
 
 
 def _descriptor(value: bytes) -> int:
@@ -277,6 +293,7 @@ def verify_target(arguments: argparse.Namespace) -> dict:
     embodiment_id = restore["embodiment_id"]
     runtime_root = matrix_root(target / "state", embodiment_id)
     now_ms = time.time_ns() // 1_000_000
+    _provision_visibility(runtime_root, password, now_ms)
     hosted = load_runtime(
         runtime_root,
         "runtime.json",

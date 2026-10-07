@@ -273,10 +273,26 @@ jobs:
         run: >-
           python -m ruff check
           clusterctl/admission.py
+          clusterctl/admission_supervisor.py
           clusterctl/audit.py
           clusterctl/adapters.py
           clusterctl/cli.py
           clusterctl/being_seed.py
+          clusterctl/onboarding_consent.py
+          clusterctl/onboarding_custody.py
+          clusterctl/onboarding_credential.py
+          clusterctl/onboarding_holder_backup.py
+          clusterctl/onboarding_sdk.py
+          clusterctl/onboarding_target.py
+          clusterctl/onboarding_admission.py
+          clusterctl/onboarding_runtime.py
+          clusterctl/onboarding_service.py
+          clusterctl/onboarding_managed.py
+          tests/test_onboarding_runtime.py
+          tests/test_onboarding_service.py
+          tests/test_onboarding_managed.py
+          tests/test_onboarding_admission.py
+          clusterctl/owner_process.py
           clusterctl/browser.py
           clusterctl/distributed_rebirth.py
           clusterctl/embodiments.py
@@ -307,7 +323,15 @@ jobs:
           clusterd/server.py
           steward_tools/mutations.py
           tests/test_matrix_host.py
+          tests/test_matrix_v8_snapshot.py
+          tests/test_embodiments.py
           tests/test_being_seed.py
+          tests/test_onboarding_consent.py
+          tests/test_onboarding_custody.py
+          tests/test_onboarding_credential.py
+          tests/test_onboarding_sdk.py
+          tests/test_onboarding_target_authorization.py
+          tests/test_onboarding_target.py
           scripts/being-seed
           tests/test_admission.py
           tests/test_matrix_host_process.py
@@ -332,6 +356,7 @@ jobs:
           tools/build_rc_manifest.py
           tools/qualify_offline.py
           tools/check_rc_types.py
+          tools/build_onboarding_sdk.py
       - name: Type-check the Matrix, fence and mutation-journal boundaries
         run: python tools/check_rc_types.py
       - run: >-
@@ -374,7 +399,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: AlterMundi/daimon-matrix
-          ref: 52945123ec4d323c03eaafe216dce8a1d7e48565
+          ref: 196ec7219f954cf4e514a1f61ae72eb3451d851e
           path: matrix-source
           fetch-depth: 0
           persist-credentials: false
@@ -390,7 +415,7 @@ jobs:
           done
           docker version
           test "$(git -C matrix-source rev-parse HEAD)" = \
-            52945123ec4d323c03eaafe216dce8a1d7e48565
+            196ec7219f954cf4e514a1f61ae72eb3451d851e
       - name: Prove isolated recovery roles and read-only snapshot restore
         env:
           DAIMON_RUN_DOCKER_RECOVERY_TESTS: "1"

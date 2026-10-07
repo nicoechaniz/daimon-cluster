@@ -1,6 +1,17 @@
 # Daimon V0 release-candidate checkpoint
 
-Last reconciled: 2026-08-29.
+Last reconciled: 2026-10-07.
+
+## Onboarding SDK successor
+
+The onboarding candidate advances the executable Matrix pin to
+`196ec7219f954cf4e514a1f61ae72eb3451d851e`. The earlier `52945123` pin below
+remains historical qualification evidence: it provides distributed V7 birth,
+but has no V2 credential constructor or V8 runtime schema. The successor keeps
+the exact installed-commit guard, accepts only V7/V8 hosted bundles and applies
+the same secret-bearing snapshot exclusions to both. Current candidate checks
+and receiving qualifications are recorded in the owning onboarding PR; they
+do not establish live cohort enrollment, custody consent or a fleet cutover.
 
 This repository is not deployed from the candidate described here. No existing
 host, service, access path, real custody or production state is part of the
@@ -37,13 +48,13 @@ The qualified Matrix functional merge is
 `09414d6edd9586f539be8272c4979d0b36c86b87`, tree
 `d7146e291ae3f8313dc0b3d3c3a0b5e5f94d33ad`. The merged Matrix closeout and
 former installed pin was `bf5f7415f075af09442973144bc529f4c5ce7985`, tree
-`f38862427d5713b21ca9d0859a80ddbacfefa255`. The current exact pin-forward is
+`f38862427d5713b21ca9d0859a80ddbacfefa255`. The earlier exact pin-forward was
 `52945123ec4d323c03eaafe216dce8a1d7e48565`, tree
 `0af4dfdb3506cfe826ee53533f67eee88fb96389`; its two additive commits add the
 distributed first-embodiment surface and harden rebirth/custody validation.
-Cluster pins that full commit in
-`requirements-weave.txt`, verifies `direct_url.json` at startup and has no
-unpinned runtime fallback.
+That candidate pinned the full commit in `requirements-weave.txt`. The current
+onboarding successor above retains exact `direct_url.json` verification at
+startup and has no unpinned runtime fallback.
 
 The qualified Cluster functional merge is
 `820e3792a227b1848681a3421b113e8822c8d08a`, tree

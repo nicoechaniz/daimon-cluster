@@ -66,6 +66,8 @@ def main(argv=None) -> int:
                         help="override clusterctl state_dir (tests)")
     parser.add_argument("--seed-only", action="store_true",
                         help="serve private intake only, without fleet or Matrix access")
+    parser.add_argument("--onboarding-progress", default=None,
+                        help="read-only host-worker progress directory; never enables execution")
     parser.add_argument("--dump-openapi", nargs="?", const=DEFAULT_OPENAPI_OUT,
                         default=None, metavar="PATH",
                         help=f"write the generated OpenAPI YAML and exit "
@@ -158,6 +160,7 @@ def main(argv=None) -> int:
         state_dir=args.state_dir,
         matrix_client_factory=None if args.seed_only else matrix_client_factory(state_dir),
         seed_only=args.seed_only,
+        onboarding_progress=args.onboarding_progress,
     )
     server.serve(deps, binds)
     return 0

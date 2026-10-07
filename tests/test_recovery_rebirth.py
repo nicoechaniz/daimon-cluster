@@ -40,6 +40,7 @@ from tests.test_rebirth import (
     _descriptor,
     _ensure_production_fences,
     _stop_rebirth_host,
+    _provision_visibility,
 )
 
 
@@ -233,6 +234,8 @@ def test_recovery_restore_is_gated_idempotent_and_reproducible(short_tmp_path, c
     assert result["state"] == "installed-restored-stopped"
     assert result["custody_free_transfer"] is True
     assert Registry(state).status(result["embodiment_id"])["status"] == "stopped"
+    _provision_visibility(matrix_root(state, result["embodiment_id"]),
+                          fixture["password"], fixture["now_ms"] + 30)
     hosted = load_runtime(
         matrix_root(state, result["embodiment_id"]),
         "runtime.json",
@@ -298,6 +301,8 @@ def test_recovery_restore_is_gated_idempotent_and_reproducible(short_tmp_path, c
     )
     second = json.loads(capsys.readouterr().out)
     assert second["event_set_sha256"] == result["event_set_sha256"]
+    _provision_visibility(matrix_root(second_state, second["embodiment_id"]),
+                          fixture["password"], fixture["now_ms"] + 30)
     second_hosted = load_runtime(
         matrix_root(second_state, second["embodiment_id"]),
         "runtime.json",

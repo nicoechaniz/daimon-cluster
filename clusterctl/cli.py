@@ -314,7 +314,7 @@ def _build_parser() -> argparse.ArgumentParser:
     seeds = sub.add_parser("seed", help="receive private portable context or prepare a new being")
     seeds.add_argument("--owner", default="clusterctl-cli", help="owner of the private intake")
     commands = seeds.add_subparsers(dest="seed_command", required=True)
-    for command in ("create", "upload", "discover", "prepare", "connections", "status", "list"):
+    for command in ("create", "upload", "discover", "prepare", "connections", "status", "list", "review", "consent"):
         p = commands.add_parser(command)
         p.add_argument("--json", action="store_true")
         if command not in {"create", "list"}:
@@ -328,6 +328,11 @@ def _build_parser() -> argparse.ArgumentParser:
         if command in {"prepare", "connections"}:
             p.add_argument("--selection" if command == "prepare" else "--file", type=Path,
                            required=command == "connections")
+        if command in {"review", "consent"}:
+            p.add_argument("--reviews", required=True, type=Path)
+            p.add_argument("--worker-uid", default=0, type=int)
+        if command == "consent":
+            p.add_argument("--file", required=True, type=Path)
     return parser
 
 
@@ -440,6 +445,17 @@ def run(argv=None, adapter=None) -> int:
                     seed_result = being_seed.discovery(base, args.name, **options)
                 elif args.seed_command == "status":
                     seed_result = being_seed.status(base, args.name, **options)
+                elif args.seed_command in {"review", "consent"}:
+                    from .onboarding_consent import Reviews, read, submit
+                    reviews = Reviews(args.reviews, worker_uid=args.worker_uid)
+                    being_seed.status(base, args.name, **options)
+                    if args.seed_command == "consent":
+                        seed_result = submit(base, args.name, json.loads(args.file.read_bytes()), reviews=reviews, **options)
+                    else:
+                        proposal = reviews.read(args.name, **options)
+                        decision = read(base, proposal, intake_uid=os.geteuid())
+                        seed_result = {"review": proposal, "recorded": decision is not None,
+                                       "matrix_identity_mode": decision["matrix_identity_mode"] if decision else None}
                 else:
                     seed_result = being_seed.list_seeds(base, **options)
                 print(json.dumps(seed_result, indent=2))

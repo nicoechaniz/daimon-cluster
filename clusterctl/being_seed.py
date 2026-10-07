@@ -135,7 +135,7 @@ def tool(name: str, arguments: list[str], *, timeout: int = 600) -> dict:
                 f"from tools.{name} import main; raise SystemExit(main())")
     try:
         result = subprocess.run(
-            [sys.executable, "-I", "-c", launcher, str(root), *arguments],
+            [sys.executable, "-B", "-I", "-c", launcher, str(root), *arguments],
             capture_output=True, timeout=timeout, check=False,
         )
         value = json.loads(result.stdout)

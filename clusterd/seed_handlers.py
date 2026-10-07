@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import re
 import time
 
-from clusterctl import being_seed
+from clusterctl import being_seed, onboarding_consent
+from clusterctl.onboarding import OnboardingError
+from clusterctl.onboarding_progress import Progress
 
 from . import auth
 from .seed_ui import HTML, SCRIPT, agent_guide, agent_markdown, representation
@@ -32,8 +35,62 @@ def list_seeds(deps, ctx, query=None, **params):
 
     def build():
         rows = being_seed.list_seeds(handlers._state_dir(deps), owner=_owner(ctx))
+        if deps.onboarding_progress:
+            for row in rows:
+                try:
+                    row["onboarding"] = Progress(deps.onboarding_progress, worker_uid=deps.onboarding_worker_uid).read(
+                        row["name"], owner=_owner(ctx))
+                    row["active"] = row["onboarding"]["active"]
+                except FileNotFoundError:
+                    row["onboarding"] = None
+                except (OnboardingError, OSError, ValueError, TypeError, KeyError):
+                    row["onboarding"] = {"state": "attention-required", "reason": "verification_failed", "active": False}
         return rows, int(time.time() * 1000), False
     return handlers._page_or_resume(deps, ctx, query=query, kind="seeds", filters=None, build=build)
+
+
+def seed_onboarding_status(deps, ctx, seed, **params):
+    from . import handlers
+
+    try:
+        being_seed.status(handlers._state_dir(deps), seed, owner=_owner(ctx))
+        if not deps.onboarding_progress:
+            return handlers.Response(200, {"state": "waiting", "reason": "backend_unavailable", "active": False})
+        value = Progress(deps.onboarding_progress, worker_uid=deps.onboarding_worker_uid).read(seed, owner=_owner(ctx))
+        return handlers.Response(200, value)
+    except FileNotFoundError:
+        return handlers.Response(200, {"state": "waiting", "reason": "host_authorization_required", "active": False})
+    except being_seed.SeedError as error:
+        return handlers.Response(error.status, {"error": str(error)})
+    except (OnboardingError, OSError, ValueError, TypeError, KeyError):
+        return handlers.Response(409, {"error": "onboarding_progress_requires_attention"})
+
+
+def seed_onboarding_review(deps, ctx, seed, _body=None, _submit=False, **params):
+    from . import handlers
+
+    try:
+        state = handlers._state_dir(deps)
+        being_seed.status(state, seed, owner=_owner(ctx))
+        if not deps.onboarding_progress:
+            return handlers.Response(200, {"state": "waiting", "reason": "backend_unavailable"})
+        reviews = onboarding_consent.Reviews(deps.onboarding_progress, worker_uid=deps.onboarding_worker_uid)
+        proposal = reviews.read(seed, owner=_owner(ctx))
+        if _submit:
+            return handlers.Response(200, onboarding_consent.submit(state, seed, _body, owner=_owner(ctx), reviews=reviews))
+        decision = onboarding_consent.read(state, proposal, intake_uid=os.geteuid())
+        return handlers.Response(200, {"review": proposal, "recorded": decision is not None,
+                                      "matrix_identity_mode": decision["matrix_identity_mode"] if decision else None})
+    except FileNotFoundError:
+        return handlers.Response(200, {"state": "waiting", "reason": "host_authorization_required"})
+    except being_seed.SeedError as error:
+        return handlers.Response(error.status, {"error": str(error)})
+    except (OnboardingError, OSError, ValueError, TypeError, KeyError):
+        return handlers.Response(409, {"error": "onboarding_review_requires_attention"})
+
+
+def seed_onboarding_consent(deps, ctx, seed, **params):
+    return seed_onboarding_review(deps, ctx, seed, _submit=True, **params)
 
 
 def create_seed(deps, ctx, _body=None, **params):

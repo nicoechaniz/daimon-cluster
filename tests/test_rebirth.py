@@ -8,6 +8,7 @@ import os
 import signal
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -15,7 +16,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from pathlib import Path
 
 import pytest
@@ -30,8 +31,10 @@ from daimon_matrix.operator_rebirth import (
     create_target_preparation,
 )
 from daimon_matrix.runtime import load_runtime
+from daimon_matrix.daemon import acquire_lock
+from daimon_matrix.native_egress import closed_visibility, VISIBILITY_SCHEMA_VERSION
 
-from clusterctl import audit, cli, distributed_rebirth, rebirth, rebirth_host
+from clusterctl import audit, cli, distributed_rebirth, rebirth, rebirth_host, matrix_host
 from clusterctl.admission import (
     AdmissionAuthority,
     AdmissionClient,
@@ -231,7 +234,8 @@ def _launcher_kill_worker(
         time.sleep(1)
 
 
-def _ceremony(tmp_path: Path, *, now_ms: int = 1_800_000_000_000) -> dict:
+def _ceremony(tmp_path: Path, *, now_ms: int = 1_800_000_000_000,
+              provision_visibility: bool = True) -> dict:
     source = tmp_path / "source"
     source.mkdir(mode=0o700)
     profile = {
@@ -320,6 +324,10 @@ def _ceremony(tmp_path: Path, *, now_ms: int = 1_800_000_000_000) -> dict:
         json.loads((output / "runtimes/host-a/runtime.json").read_bytes()),
         lambda: bytearray(target_password),
     )
+    if provision_visibility:
+        for identity, root in peers.items():
+            _provision_visibility(root, peer_passwords[identity], time.time_ns() // 1_000_000)
+        _provision_visibility(package / "runtime", target_password, now_ms + 20)
     return {
         "package": package,
         "peers": peers,
@@ -327,6 +335,20 @@ def _ceremony(tmp_path: Path, *, now_ms: int = 1_800_000_000_000) -> dict:
         "password": target_password,
         "activation": activation,
     }
+
+
+def _provision_visibility(root: Path, password: bytes, now_ms: int) -> None:
+    """Explicit native provisioning for these disposable, receive-only bodies."""
+    descriptor = acquire_lock(root)
+    try:
+        def clock() -> int:
+            return now_ms
+        hosted = load_runtime(root, "runtime.json", lambda: bytearray(password),
+                              clock=clock, egress=closed_visibility(clock=clock, catalog_mode="migrate"))
+        hosted.egress.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+        hosted.egress.validate_registered_catalogs()
+    finally:
+        os.close(descriptor)
 
 
 def _install(tmp_path: Path, *, ceremony_now_ms: int = 1_800_000_000_000, **changes):
@@ -538,6 +560,42 @@ def test_journaled_install_adds_stopped_target_and_loadable_empty_runtime(tmp_pa
             row["embodiment_id"] for row in bundle["peer_transport"]["targets"]
         }
     assert OperationJournal(state).list_all(limit=10)[0]["state"] == "completed"
+
+
+@pytest.mark.parametrize("invalid_catalog", [False, True])
+def test_stopped_visibility_provision_is_explicit_and_preserves_invalid_catalog(
+    short_tmp_path, invalid_catalog, capsys
+):
+    fixture = _ceremony(short_tmp_path, now_ms=time.time_ns() // 1_000_000,
+                        provision_visibility=False)
+    state = short_tmp_path / "state"
+    result = rebirth.install_rebirth_package(state, fixture["package"], fixture["peers"],
+                                             idempotency_key=str(uuid.uuid4()))
+    root = matrix_root(state, result["embodiment_id"])
+    bundle_before = (root / "runtime.json").read_bytes()
+    bundle = json.loads(bundle_before)
+    catalog = root / bundle["peer_transport"]["exchange_filename"]
+    if invalid_catalog:
+        with closing(sqlite3.connect(catalog)) as database:
+            database.execute("CREATE TABLE echo_v2_foreign (preserve TEXT)")
+            database.commit()
+        catalog.chmod(0o600)
+        before = catalog.read_bytes()
+    status = matrix_host.main([
+        "--state-dir", str(state), "--embodiment-id", result["embodiment_id"],
+        "--password-fd", str(_descriptor(fixture["password"])), "--provision-visibility",
+    ])
+    assert status == (1 if invalid_catalog else 0)
+    assert not (root / bundle["socket"]).exists()
+    assert (root / "runtime.json").read_bytes() == bundle_before
+    assert Registry(state).status(result["embodiment_id"])["status"] == "stopped"
+    if invalid_catalog:
+        assert catalog.read_bytes() == before
+    else:
+        hosted = load_runtime(root, "runtime.json", lambda: bytearray(fixture["password"]),
+                              clock=lambda: time.time_ns() // 1_000_000)
+        assert hosted.service.ledger.events() == []
+        assert "matrix_visibility_provisioned" in capsys.readouterr().err
 
 
 def test_same_activation_with_a_new_idempotency_key_replays_one_result(tmp_path):

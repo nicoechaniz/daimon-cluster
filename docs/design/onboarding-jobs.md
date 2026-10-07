@@ -566,7 +566,8 @@ No receiving home, memory, credentials or custody is read by this builder.
 
 The owner selects both `runtime_code` and `runtime_digest` in the host config
 only after qualifying that exact artifact. Matrix reconciliation attaches a
-separate read-only runtime mount, preserving any foreign device. Target commands,
+separate read-only runtime mount named by its full digest, preserving any foreign
+device and previous runtime mount. Target commands,
 the SDK interpreter reexec and the persistent service all retain the original
 `--code` for dependency verification and carry the explicit runtime selection.
 Context, memory, provider and Telegram stages continue to use the original code.

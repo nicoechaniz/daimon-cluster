@@ -25,6 +25,7 @@ FILES = (
     "clusterctl/being_seed.py",
     "clusterctl/browser.py",
     "clusterd/seed_handlers.py",
+    "clusterd/seed_ui.py",
     "clusterctl/distributed_rebirth.py",
     "clusterd/approvals.py",
     "clusterd/auth.py",

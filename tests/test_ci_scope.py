@@ -27,3 +27,13 @@ def test_workflow_only_changes_test_workflow_without_repeating_runtime_rehearsal
     profile, tests = select(['.github/workflows/tests.yml', 'README.md', 'tools/ci_scope.py'], ROOT)
     assert profile == 'ci'
     assert set(tests) == {'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'}
+
+
+def test_approval_reconciliation_covers_receiving_and_host_without_native_rehearsals():
+    profile, tests = select(['clusterctl/onboarding_approvals.py',
+        'tests/test_onboarding_approvals.py', 'tools/ci_scope.py', '.github/workflows/tests.yml'], ROOT)
+    assert profile == 'approval'
+    assert set(tests) == {'tests/test_onboarding_approvals.py', 'tests/test_onboarding_consent.py',
+        'tests/test_onboarding_intake.py', 'tests/test_onboarding_host.py',
+        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'}
+    assert select(['clusterctl/onboarding_approvals.py', 'clusterctl/onboarding_custody.py'], ROOT)[0] == 'onboarding'

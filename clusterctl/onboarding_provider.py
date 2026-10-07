@@ -1,7 +1,8 @@
 """Independent native Codex login for an authorized receiving account.
 
-No credential cache is copied from Source or another being. Device login runs
-in its own durable guest service; only a bounded owner action leaves its home.
+Device login is the independent fallback when no operator-approved shared
+provider login was installed by the host adapter. It runs in its own durable
+guest service; only a bounded owner action leaves its home.
 """
 from __future__ import annotations
 

@@ -118,6 +118,17 @@ def seed_onboarding_review(deps, ctx, seed, _body=None, _submit=False, **params)
         if _submit:
             return handlers.Response(200, onboarding_consent.submit(state, seed, _body, owner=_owner(ctx), reviews=reviews))
         decision = onboarding_consent.read(state, proposal, intake_uid=os.geteuid())
+        if decision is None:
+            from clusterctl.onboarding_approvals import Status
+            try:
+                recorded = Status(deps.onboarding_progress, worker_uid=deps.onboarding_worker_uid).read(
+                    seed, owner=_owner(ctx))
+            except FileNotFoundError:
+                recorded = None
+            if recorded is not None and recorded['review_digest'] == proposal['review_digest']:
+                return handlers.Response(200, {'review': proposal, 'recorded': recorded['recorded'],
+                    'matrix_identity_mode': recorded['matrix_identity_mode'],
+                    'recorded_by': recorded['recorded_by']})
         return handlers.Response(200, {"review": proposal, "recorded": decision is not None,
                                       "matrix_identity_mode": decision["matrix_identity_mode"] if decision else None})
     except FileNotFoundError:

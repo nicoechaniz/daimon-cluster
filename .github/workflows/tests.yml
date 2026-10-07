@@ -279,6 +279,8 @@ jobs:
           clusterctl/cli.py
           clusterctl/being_seed.py
           clusterctl/onboarding_consent.py
+          clusterctl/onboarding_approvals.py
+          tests/test_onboarding_approvals.py
           clusterctl/onboarding_custody.py
           clusterctl/onboarding_credential.py
           clusterctl/onboarding_holder_backup.py
@@ -301,6 +303,7 @@ jobs:
           tests/test_onboarding_provider.py
           tests/test_onboarding_actions.py
           tests/test_onboarding_accounts.py
+          tests/test_onboarding_shared_login.py
           tools/configure_onboarding_account.py
           tools/install_onboarding_worker.py
           tests/test_onboarding_worker_install.py

@@ -165,7 +165,7 @@ def test_service_launches_selected_runtime_while_retaining_original_code_argumen
         command(base, receive_only=True, runtime_code=output)
 
 
-def test_target_reexec_preserves_selected_runtime_and_uses_original_sdk(tmp_path, monkeypatch):
+def test_target_reexec_preserves_selected_runtime_and_uses_qualified_runtime_sdk(tmp_path, monkeypatch):
     from clusterctl import onboarding_code_successor, onboarding_target
     base, original, source, _ = fixture(tmp_path)
     output = tmp_path / 'successor'
@@ -191,8 +191,151 @@ def test_target_reexec_preserves_selected_runtime_and_uses_original_sdk(tmp_path
         '--genesis', str(tmp_path / 'genesis.json'), '--runtime-code', str(output),
         '--runtime-digest', result['runtime_digest']]
     assert onboarding_target.main(args) == 1
-    assert sdk_codes == [base] and len(execs) == 1
+    assert sdk_codes == [output] and len(execs) == 1
     executable, argv = execs[0]
     assert executable == venv / 'bin/python'
     assert argv[5] == str(output) and argv[6:] == args
     assert '--runtime-digest' in argv
+
+
+def sdk_generations(tmp_path):
+    import shutil
+    import zipfile
+    from clusterctl import onboarding_sdk
+    from tests.test_onboarding_sdk import fixture as sdk_fixture
+    from tools.build_onboarding_sdk import seal
+    base, _, source, profile = fixture(tmp_path)
+    (base / 'release.json').unlink()
+    (base / 'sdk/pinned.whl').unlink()
+    sdk_root = tmp_path / 'replacement'
+    sdk_root.mkdir()
+    current, _, home = sdk_fixture(sdk_root)
+    shutil.copytree(current / 'sdk', base / 'sdk', dirs_exist_ok=True)
+    previous = json.loads((base / 'sdk/sdk.json').read_bytes())
+    previous['matrix_commit'] = onboarding_sdk.PREVIOUS_MATRIX_COMMIT
+    (base / 'sdk/sdk.json').write_text(json.dumps(previous))
+    fingerprint = onboarding_release.seal(base, profile)
+    wheel = next((current / 'sdk/wheels').iterdir())
+    with zipfile.ZipFile(wheel) as archive:
+        entries = {name: archive.read(name) for name in archive.namelist()}
+    entries['daimon_matrix/__init__.py'] = b'# Qualified replacement fixture.\n'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        for name, raw in entries.items():
+            archive.writestr(name, raw)
+    seal(current / 'sdk')
+    return base, fingerprint, source, profile, current / 'sdk', home
+
+
+def test_explicit_sdk_successor_installs_new_generation_without_touching_previous(tmp_path):
+    from clusterctl import onboarding_sdk
+    from clusterctl.onboarding import digest
+    base, original, source, _, sdk, home = sdk_generations(tmp_path)
+    old = onboarding_sdk.install(home, base, original, code_uid=os.geteuid(),
+        matrix_commit=onboarding_sdk.PREVIOUS_MATRIX_COMMIT)
+    before = {p.relative_to(old.parent).as_posix(): p.read_bytes()
+        for p in old.parent.rglob('*') if p.is_file() and not p.is_symlink()}
+    original_files = {p.relative_to(base).as_posix(): p.read_bytes() for p in base.rglob('*') if p.is_file()}
+    output = tmp_path / 'sdk-successor'
+    result = build(base, original, source, ('onboarding_target.py',), output, sdk=sdk)
+    marker = json.loads((output / 'runtime-successor.json').read_bytes())
+    assert marker['schema'] == 'cluster-onboarding-runtime-successor/v2'
+    assert marker['previous_sdk_digest'] == digest(json.loads((base / 'sdk/sdk.json').read_bytes()))
+    installed = onboarding_sdk.install(home, output, result['runtime_digest'], code_uid=os.geteuid())
+    assert installed != old
+    assert onboarding_sdk.observe(home, output, code_uid=os.geteuid()) == installed
+    assert onboarding_sdk.install(home, output, result['runtime_digest'], code_uid=os.geteuid()) == installed
+    assert before == {p.relative_to(old.parent).as_posix(): p.read_bytes()
+        for p in old.parent.rglob('*') if p.is_file() and not p.is_symlink()}
+    assert original_files == {p.relative_to(base).as_posix(): p.read_bytes() for p in base.rglob('*') if p.is_file()}
+    assert not list(home.rglob('custody.json'))
+
+
+@pytest.mark.parametrize('asset', ['inheritance.md', 'hmk/scripts/memoryctl.py',
+    'telegram/telecodex', 'sdk/sdk.json', 'runtime-successor.json'])
+def test_sdk_successor_rejects_resealed_context_or_marker_changes(tmp_path, asset):
+    base, original, source, profile, sdk, _ = sdk_generations(tmp_path)
+    output = tmp_path / 'sdk-successor'
+    build(base, original, source, ('onboarding_target.py',), output, sdk=sdk)
+    (output / 'release.json').unlink()
+    if asset.endswith('.json'):
+        value = json.loads((output / asset).read_bytes())
+        if asset == 'runtime-successor.json':
+            value['previous_sdk_digest'] = '0' * 64
+        else:
+            value['matrix_commit'] = '0' * 40
+        (output / asset).write_text(json.dumps(value))
+    else:
+        (output / asset).write_bytes(b'Unapproved replacement.')
+    replacement = onboarding_release.seal(output, profile)
+    with pytest.raises(OnboardingError):
+        verify(output, replacement, base, original, uid=os.geteuid())
+
+
+def test_target_sdk_observation_and_retry_do_not_load_body_custody(tmp_path, monkeypatch, capsys):
+    from clusterctl import onboarding_code_successor, onboarding_sdk, onboarding_target
+    from tests.test_onboarding import plan
+    base, original, source, _, sdk, home = sdk_generations(tmp_path)
+    output = tmp_path / 'sdk-successor'
+    result = build(base, original, source, ('onboarding_target.py',), output, sdk=sdk)
+    plan_path = tmp_path / 'plan.json'
+    being_seed._write(plan_path, {**plan(), 'release_digest': original})
+    selection = onboarding_code_successor.selection
+    install, observe = onboarding_sdk.install, onboarding_sdk.observe
+    monkeypatch.setattr(onboarding_code_successor, 'selection',
+        lambda *a, **kw: selection(*a, uid=os.geteuid()))
+    monkeypatch.setattr(onboarding_sdk, 'install',
+        lambda *a, **kw: install(*a, code_uid=os.geteuid()))
+    monkeypatch.setattr(onboarding_sdk, 'observe',
+        lambda *a, **kw: observe(*a, code_uid=os.geteuid()))
+    def no_custody(*args, **kwargs):
+        raise AssertionError('dependency preparation must not load a Body')
+    monkeypatch.setattr(onboarding_target, 'Target', no_custody)
+    common = ['--home', str(home), '--code', str(base), '--plan', str(plan_path),
+        '--genesis', str(tmp_path / 'absent-genesis.json'), '--runtime-code', str(output),
+        '--runtime-digest', result['runtime_digest']]
+    assert onboarding_target.main(['sdk-observe', *common]) == 0
+    assert json.loads(capsys.readouterr().out)['ready'] is False
+    assert not (home / '.local').exists()
+    for action in ['sdk-prepare', 'sdk-observe', 'sdk-prepare']:
+        assert onboarding_target.main([action, *common]) == 0
+        assert json.loads(capsys.readouterr().out)['ready'] is True
+    assert not list(home.rglob('custody.json'))
+
+
+def test_host_reconciles_missing_sdk_before_reading_existing_body(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from clusterctl.onboarding_host import HostBackend
+    from tests.test_onboarding_host import configured
+    base, original, source, _, sdk, _ = sdk_generations(tmp_path)
+    output = tmp_path / 'sdk-successor'
+    result = build(base, original, source, ('onboarding_target.py',), output, sdk=sdk)
+    host = tmp_path / 'host'
+    host.mkdir()
+    config, plan, run, _ = configured(host)
+    config = replace(config, code=base, runtime_code=output, runtime_digest=result['runtime_digest'],
+        release_digest=original, views=host / 'views', custody=host / 'custody', custody_grants=host / 'custody-grants')
+    plan = {**plan, 'release_digest': original}
+    being_seed._write(config.grants / 'eko.json', dict(schema='cluster-onboarding-host-grant/v1', plan=plan, revoked=False))
+    backend = HostBackend(config, run=run)
+    monkeypatch.setattr(backend, '_consented', lambda *a, **kw: True)
+    monkeypatch.setattr(backend, '_decision', lambda p: dict(matrix_identity_mode='first'))
+    monkeypatch.setattr('clusterctl.onboarding_host.FirstCustody', lambda *a: SimpleNamespace(
+        authorize=lambda p: True, observe=lambda p: dict(backup_restore_verified=True)))
+    monkeypatch.setattr(backend, '_guest_paths', lambda p: (None, base, {}))
+    monkeypatch.setattr(backend, '_mounted', lambda *a: True)
+    ready = []
+    actions = []
+    def sdk_observe(p, action):
+        actions.append(action)
+        return dict(ready=bool(ready))
+    def matrix_observe(p, action):
+        actions.append('matrix-' + action)
+        return dict(phase='v8')
+    monkeypatch.setattr(backend, '_target_call', sdk_observe)
+    monkeypatch.setattr(backend, '_matrix_command', matrix_observe)
+    observed = backend.observe(plan, 'matrix', 'same-operation')
+    assert observed.state == 'absent' and observed.safe_to_execute
+    assert actions == ['sdk-observe']
+    ready.append(True)
+    backend.observe(plan, 'matrix', 'same-operation')
+    assert actions == ['sdk-observe', 'sdk-observe', 'matrix-observe']

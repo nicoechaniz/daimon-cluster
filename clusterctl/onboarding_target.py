@@ -346,7 +346,7 @@ class Target:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept"))
+    parser.add_argument("action", choices=("sdk-observe", "sdk-prepare", "prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept"))
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--genesis", type=Path, required=True)
@@ -370,7 +370,19 @@ def main(argv: list[str] | None = None) -> int:
         plan = validate_plan(being_seed._read(args.plan))
         runtime = onboarding_code_successor.selection(args.runtime_code, args.runtime_digest,
             args.code, plan['release_digest'], uid=0)
-        venv = onboarding_sdk.observe(args.home, args.code)
+        if args.action == 'sdk-prepare':
+            onboarding_sdk.install(args.home, runtime, args.runtime_digest or plan['release_digest'])
+            print(json.dumps(dict(ready=True, matrix_commit=onboarding_sdk.MATRIX_COMMIT)))
+            return 0
+        if args.action == 'sdk-observe':
+            try:
+                onboarding_sdk.observe(args.home, runtime)
+                ready = True
+            except FileNotFoundError:
+                ready = False
+            print(json.dumps(dict(ready=ready, matrix_commit=onboarding_sdk.MATRIX_COMMIT)))
+            return 0
+        venv = onboarding_sdk.observe(args.home, runtime)
         if Path(sys.prefix) != venv:
             launcher = ("import sys; sys.path.insert(0,sys.argv.pop(1)); "
                         "from clusterctl.onboarding_target import main; raise SystemExit(main())")

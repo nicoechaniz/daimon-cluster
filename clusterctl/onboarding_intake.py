@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from . import being_seed, onboarding_consent, onboarding_input, onboarding_release
-from .onboarding import PLAN_SCHEMA, SCHEMA, OnboardingError, digest, private_directory, validate_plan
+from .onboarding import PLAN_SCHEMA, OnboardingError, digest, private_directory, validate_plan
 from .onboarding_progress import Progress
 
 POLICY = 'cluster-onboarding-intake-policy/v1'
@@ -103,24 +103,30 @@ class Intake:
                     source_uid=config.consent_uid, resume=True)['seed_digest']
             plan = validate_plan(dict(schema=PLAN_SCHEMA, name=name, **entry,
                 seed_digest=fingerprint, release_digest=config.release_digest))
-            proposal = onboarding_consent.review(plan, (config.code / 'inheritance.md').read_text())
+            from .onboarding_custody import CustodyPolicy
+            custody = CustodyPolicy(config.custody_policy) if config.custody_policy is not None else None
+            if custody is not None and custody.value['revoked']:
+                raise OnboardingError('identity_authorization_required')
+            proposal = onboarding_consent.review(plan, (config.code / 'inheritance.md').read_text(),
+                custody=custody.review() if custody is not None else None)
             reviews = onboarding_consent.Reviews(config.progress, worker_uid=os.geteuid())
             reviews.publish(proposal)
             decision = onboarding_consent.read(config.consent_state, proposal, intake_uid=config.consent_uid)
+            if custody is not None and decision is not None:
+                if config.custody_grants is None:
+                    raise OnboardingError('identity_authorization_required')
+                custody.issue(plan, proposal, decision, config.custody_grants)
             grant_path = config.grants / (name + '.json')
             grant = dict(schema='cluster-onboarding-host-grant/v1', plan=plan, revoked=False)
             if grant_path.exists():
                 if being_seed._read(grant_path) != grant:
                     raise OnboardingError('existing_onboarding_grant_preserved')
-            elif decision is not None:
-                # Host policy authorizes resources; the pair accepts this exact
-                # proposal. Neither statement creates Root or Recovery custody.
+            else:
+                # The operator already authorized this seed's 30 GiB resources.
+                # Preparing its empty environment need not wait for inheritance
+                # review. Context and Matrix dispatch still require the exact
+                # pair decision; a resource grant never creates native custody.
                 if not allows(config, plan):
                     raise OnboardingError('host_authorization_required')
                 being_seed._write(grant_path, grant)
-            else:
-                Progress(config.progress, worker_uid=os.geteuid()).publish(dict(schema=SCHEMA,
-                    name=name, owner=entry['owner'], plan_digest=digest(plan), state='waiting',
-                    stage='environment', reason='identity_authorization_required', completed_steps=[],
-                    active=False, updated_ms=int(time.time() * 1000)))
             return plan

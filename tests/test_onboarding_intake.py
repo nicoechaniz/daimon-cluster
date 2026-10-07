@@ -2,9 +2,10 @@
 import os
 from dataclasses import replace
 
+import pytest
+
 from clusterctl import being_seed, onboarding_consent, onboarding_intake, onboarding_release
 from clusterctl.onboarding_host import HostBackend
-from clusterctl.onboarding_progress import Progress
 from tests import test_onboarding_guest as guest_fixtures
 from tests import test_onboarding_host as host_fixtures
 
@@ -31,10 +32,11 @@ def configured(tmp_path, packet):
 
 def test_worker_discovers_prepared_seed_and_resumes_same_plan_after_portal_consent(tmp_path, packet):
     config = configured(tmp_path, packet)
-    assert config.approved_plans() == []
+    plans = config.approved_plans()
+    assert len(plans) == 1
     reviews = onboarding_consent.Reviews(config.progress, worker_uid=os.geteuid())
     proposal = reviews.read('fixture', owner='ani')
-    assert Progress(config.progress, worker_uid=os.geteuid()).read('fixture', owner='ani')['active'] is False
+    assert HostBackend(config)._decision(plans[0]) is None
     original = (config.inputs / 'fixture/received/context/SOUL.md').read_bytes()
     onboarding_consent.submit(config.consent_state, 'fixture', dict(review_digest=proposal['review_digest'],
         inheritance_approved=True, matrix_identity_mode='first'), owner='ani', reviews=reviews)
@@ -77,24 +79,104 @@ def test_bad_intake_does_not_block_another_prepared_pair(tmp_path, packet):
     directory.mkdir(mode=0o700)
     being_seed._write(directory / 'record.json', dict(schema=being_seed.SCHEMA, name='broken',
                                                     created_by='wrong-owner', phase='prepared'))
-    assert config.approved_plans() == []
+    assert len(config.approved_plans()) == 1
     assert onboarding_consent.Reviews(config.progress, worker_uid=os.geteuid()).read('fixture', owner='ani')
     assert not (config.inputs / 'broken').exists()
 
 
-def test_same_worker_enqueues_only_after_owner_decision_and_without_a_codex_turn(tmp_path, packet):
+def test_same_worker_prepares_resources_then_waits_for_review_without_a_codex_turn(tmp_path, packet):
     from clusterctl.onboarding import JobStore
     from clusterctl.onboarding_worker import Worker
     from tests.test_onboarding import FixtureBackend
     config = configured(tmp_path, packet)
     backend = FixtureBackend()
+    original_observe = backend.observe
+    def observe(plan, stage, operation):
+        from clusterctl.onboarding import Observation
+        if stage == 'context' and HostBackend(config)._decision(plan) is None:
+            return Observation('waiting', reason='identity_authorization_required')
+        return original_observe(plan, stage, operation)
+    backend.observe = observe
     store = JobStore(config.jobs)
     worker = Worker(store, lambda: backend, plans=config.approved_plans)
-    assert worker.once() == []
+    assert worker.once()[0]['completed_steps'] == ['environment']
+    assert worker.once()[0]['reason'] == 'identity_authorization_required'
     reviews = onboarding_consent.Reviews(config.progress, worker_uid=os.geteuid())
     proposal = reviews.read('fixture', owner='ani')
     onboarding_consent.submit(config.consent_state, 'fixture', dict(review_digest=proposal['review_digest'],
         inheritance_approved=True, matrix_identity_mode='first'), owner='ani', reviews=reviews)
-    assert worker.once()[0]['completed_steps'] == ['environment']
     assert worker.once()[0]['completed_steps'] == ['environment', 'context']
     assert store.status('fixture', owner='ani')['active'] is False
+
+
+def custody_config(config, tmp_path):
+    from clusterctl.onboarding_custody import POLICY_SCHEMA, ROLES
+    custody, grants = tmp_path / 'custody', tmp_path / 'custody-grants'
+    custody.mkdir(mode=0o700)
+    grants.mkdir(mode=0o700)
+    policy = tmp_path / 'custody-policy.json'
+    being_seed._write(policy, dict(schema=POLICY_SCHEMA, execution_uid=os.geteuid(),
+        source_binding_digest='a' * 64, operator_instruction_digest='b' * 64, roles=ROLES, revoked=False))
+    return replace(config, custody=custody, custody_grants=grants, custody_policy=policy)
+
+
+def test_exact_portal_review_issues_first_custody_once_without_keys(tmp_path, packet):
+    from clusterctl.onboarding_custody import FirstCustody
+    config = custody_config(configured(tmp_path, packet), tmp_path)
+    assert len(config.approved_plans()) == 1
+    reviews = onboarding_consent.Reviews(config.progress, worker_uid=os.geteuid())
+    proposal = reviews.read('fixture', owner='ani')
+    assert proposal['matrix_custody']['notice'] == onboarding_consent.CUSTODY_NOTICE
+    assert not list(config.custody.iterdir()) and not list(config.custody_grants.iterdir())
+    onboarding_consent.submit(config.consent_state, 'fixture', dict(review_digest=proposal['review_digest'],
+        inheritance_approved=True, matrix_identity_mode='first'), owner='ani', reviews=reviews)
+    assert config.approved_plans() == [proposal['plan']]
+    grant = config.custody_grants / 'fixture.json'
+    original = grant.read_bytes()
+    assert FirstCustody(config.custody, config.custody_grants).authorize(proposal['plan'])
+    assert HostBackend(config)._decision(proposal['plan'])['matrix_identity_mode'] == 'first'
+    assert config.approved_plans() == [proposal['plan']] and grant.read_bytes() == original
+    assert not list(config.custody.iterdir())
+    policy = being_seed._read(config.custody_policy)
+    being_seed._write(config.custody_policy, {**policy, 'revoked': True})
+    assert HostBackend(config)._decision(proposal['plan']) is None
+    assert grant.read_bytes() == original
+
+
+def test_existing_identity_and_old_review_never_authorize_first_custody(tmp_path, packet):
+    config = configured(tmp_path, packet)
+    config.approved_plans()
+    reviews = onboarding_consent.Reviews(config.progress, worker_uid=os.geteuid())
+    old = reviews.read('fixture', owner='ani')
+    onboarding_consent.submit(config.consent_state, 'fixture', dict(review_digest=old['review_digest'],
+        inheritance_approved=True, matrix_identity_mode='first'), owner='ani', reviews=reviews)
+    config = custody_config(config, tmp_path)
+    assert len(config.approved_plans()) == 1
+    assert HostBackend(config)._decision(being_seed._read(config.grants / 'fixture.json')['plan']) is None
+    assert not list(config.custody_grants.iterdir())
+    proposal = reviews.read('fixture', owner='ani')
+    assert proposal['review_digest'] != old['review_digest']
+    onboarding_consent.submit(config.consent_state, 'fixture', dict(review_digest=proposal['review_digest'],
+        inheritance_approved=True, matrix_identity_mode='existing'), owner='ani', reviews=reviews)
+    assert config.approved_plans() == [proposal['plan']]
+    assert not list(config.custody_grants.iterdir()) and not list(config.custody.iterdir())
+
+
+def test_changed_or_untrusted_custody_policy_cannot_reuse_owner_decision(tmp_path, packet):
+    from clusterctl.onboarding_custody import CustodyPolicy
+    from clusterctl.onboarding import OnboardingError
+    config = custody_config(configured(tmp_path, packet), tmp_path)
+    config.approved_plans()
+    reviews = onboarding_consent.Reviews(config.progress, worker_uid=os.geteuid())
+    proposal = reviews.read('fixture', owner='ani')
+    onboarding_consent.submit(config.consent_state, 'fixture', dict(review_digest=proposal['review_digest'],
+        inheritance_approved=True, matrix_identity_mode='first'), owner='ani', reviews=reviews)
+    config.custody_policy.chmod(0o640)
+    with pytest.raises(OnboardingError, match='private_onboarding_custody_required'):
+        CustodyPolicy(config.custody_policy)
+    config.custody_policy.chmod(0o600)
+    policy = being_seed._read(config.custody_policy)
+    being_seed._write(config.custody_policy, {**policy, 'operator_instruction_digest': 'c' * 64})
+    assert len(config.approved_plans()) == 1
+    assert HostBackend(config)._decision(being_seed._read(config.grants / 'fixture.json')['plan']) is None
+    assert not list(config.custody_grants.iterdir())

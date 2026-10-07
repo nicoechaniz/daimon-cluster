@@ -2,17 +2,59 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import subprocess
+import uuid
 from pathlib import Path
 
-from clusterctl.onboarding import OnboardingError
+from clusterctl.onboarding import OnboardingError, private_directory
 from clusterctl.onboarding_host import HostConfig
+from clusterctl import being_seed, onboarding_release
 from clusterctl.onboarding_service import publish
 
 UNIT = 'daimon-onboarding-worker.service'
+
+
+def install_unit(directory: Path, candidate: bytes, *, previous_sha256: str | None = None) -> bool:
+    """Update only our exact owned unit, preserving its recoverable predecessor."""
+    lock = private_directory(directory / '.daimon-onboarding-worker-install', create=True)
+    with being_seed._locked(lock):
+        return _install_unit_locked(directory, candidate, previous_sha256=previous_sha256)
+
+
+def _install_unit_locked(directory: Path, candidate: bytes, *, previous_sha256: str | None) -> bool:
+    path = directory / UNIT
+    if previous_sha256 is None:
+        publish(path, candidate)
+        return False
+    if not re.fullmatch(r'[0-9a-f]{64}', previous_sha256):
+        raise OnboardingError('qualified_worker_predecessor_required')
+    original = onboarding_release.regular(path, uid=os.geteuid())
+    if path.stat().st_mode & 0o777 != 0o600:
+        raise OnboardingError('existing_onboarding_service_preserved')
+    if original == candidate:
+        return False
+    if hashlib.sha256(original).hexdigest() != previous_sha256:
+        raise OnboardingError('existing_onboarding_service_preserved')
+    # publish verifies ownership/mode and refuses a contradictory rollback.
+    publish(directory / (UNIT + '.' + previous_sha256 + '.previous'), original)
+    temporary = directory / ('.onboarding-worker-' + uuid.uuid4().hex)
+    try:
+        publish(temporary, candidate)
+        if onboarding_release.regular(path, uid=os.geteuid()) != original:
+            raise OnboardingError('existing_onboarding_service_preserved')
+        os.replace(temporary, path)
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
 
 
 def service(release: Path, config: Path) -> bytes:
@@ -37,6 +79,7 @@ def main(argv=None) -> int:
     parser.add_argument('--release', type=Path, required=True)
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--activate', action='store_true')
+    parser.add_argument('--replace-unit-sha256', help='Exact installed predecessor; preserve rollback')
     args = parser.parse_args(argv)
     try:
         if os.geteuid() != 0:
@@ -49,13 +92,19 @@ def main(argv=None) -> int:
             cwd=args.release, capture_output=True, timeout=30, check=False)
         if result.returncode:
             raise OnboardingError('qualified_worker_release_required')
-        publish(Path('/etc/systemd/system') / UNIT, candidate)
+        changed = install_unit(Path('/etc/systemd/system'), candidate,
+                               previous_sha256=args.replace_unit_sha256)
         if args.activate:
             for command in (['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', UNIT]):
                 result = subprocess.run(command, capture_output=True, timeout=30, check=False)
                 if result.returncode:
                     raise OnboardingError('worker_service_failed')
-        print(json.dumps(dict(installed=True, activation_requested=args.activate)))
+            if changed:
+                result = subprocess.run(['systemctl', 'restart', UNIT],
+                    capture_output=True, timeout=40, check=False)
+                if result.returncode:
+                    raise OnboardingError('worker_service_failed')
+        print(json.dumps(dict(installed=True, activation_requested=args.activate, software_updated=changed)))
         return 0
     except (OSError, ValueError, subprocess.TimeoutExpired):
         print(json.dumps(dict(error='onboarding_worker_install_refused')))

@@ -74,7 +74,7 @@ class PeerHost:
         environment = ['XDG_RUNTIME_DIR=/run/user/' + str(self.settings['source_uid']),
             'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/' + str(self.settings['source_uid']) + '/bus']
         arguments = [action] if action == 'daemon-reload' else [action, Path(self.settings['source_unit']).name]
-        self._run(['runuser', '-u', user, '--', 'env', *environment, 'systemctl', '--user', *arguments])
+        self._run(['/usr/sbin/runuser', '-u', user, '--', 'env', *environment, 'systemctl', '--user', *arguments])
 
     def _ports(self, plan: dict) -> tuple[int, int]:
         fingerprint = digest(plan)

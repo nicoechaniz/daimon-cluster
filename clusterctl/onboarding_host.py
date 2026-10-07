@@ -7,13 +7,14 @@ maintained installer; no command from a source archive is executed.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import being_seed
+from . import being_seed, onboarding_input, onboarding_mounts, onboarding_release
 from .onboarding import Observation, OnboardingError, digest, private_directory, validate_plan
 from .onboarding_progress import Progress
 
@@ -33,12 +34,15 @@ class HostConfig:
     profile: str
     concurrency: int
     progress: Path | None = None
+    inputs: Path | None = None
+    code: Path | None = None
+    views: Path | None = None
 
     @classmethod
     def load(cls, path: Path) -> HostConfig:
         value = being_seed._read(path)
         if (set(value) != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
-                           "release_digest", "pool", "profile", "concurrency"}
+                           "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
                 or any(not isinstance(value[key], str) or not being_seed.NAME.fullmatch(value[key])
@@ -46,11 +50,11 @@ class HostConfig:
                 or type(value["concurrency"]) is not int or not 1 <= value["concurrency"] <= 8):
             raise OnboardingError("invalid_onboarding_host_configuration")
         directories = {}
-        for key in ("jobs", "grants"):
+        for key in ("jobs", "grants", "inputs", "views"):
             if not isinstance(value[key], str) or not Path(value[key]).is_absolute():
                 raise OnboardingError("invalid_onboarding_host_configuration")
             directories[key] = private_directory(Path(value[key]))
-        if directories["jobs"] == directories["grants"]:
+        if len(set(directories.values())) != len(directories):
             raise OnboardingError("invalid_onboarding_host_configuration")
         if not isinstance(value["progress"], str) or not Path(value["progress"]).is_absolute():
             raise OnboardingError("invalid_onboarding_host_configuration")
@@ -58,9 +62,13 @@ class HostConfig:
         Progress(progress, worker_uid=progress.stat().st_uid)._directory()
         if progress.stat().st_uid != path.stat().st_uid or progress in directories.values():
             raise OnboardingError("invalid_onboarding_host_configuration")
+        if not isinstance(value["code"], str) or not Path(value["code"]).is_absolute():
+            raise OnboardingError("invalid_onboarding_host_configuration")
+        code = Path(value["code"])
+        onboarding_release.verify(code, value["release_digest"], uid=path.stat().st_uid)
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
-                   value["profile"], value["concurrency"], progress)
+                   value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"])
 
     def approved_plans(self) -> list[dict]:
         private_directory(self.grants)
@@ -159,6 +167,8 @@ class HostBackend:
             return Observation("waiting", reason="host_authorization_required")
         if stage == "environment":
             return self._environment(plan)
+        if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
+            return self._guest_observe(plan, stage)
         # Do not invent success for native enrollment or receiving acceptance.
         # The remaining typed stage adapters are added with their actual tests.
         reason = {"matrix": "identity_authorization_required", "access": "account_authorization_required",
@@ -168,6 +178,9 @@ class HostBackend:
     def execute(self, plan: dict, stage: str, operation_id: str) -> None:
         if not self.authorize(plan, digest(plan)):
             raise OnboardingError("host_authorization_required")
+        if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
+            self._guest_execute(plan, stage)
+            return
         if stage != "environment":
             raise OnboardingError("unsupported_onboarding_host_stage")
         observed = self._environment(plan)
@@ -192,6 +205,77 @@ class HostBackend:
                       "source=" + name + "-home", "path=/home/agent"])
         if row.get("status") == "Stopped":
             self._dispatch(plan, ["start", name])
+
+    def _guest_paths(self, plan: dict) -> tuple[Path, Path, dict]:
+        if self.config.code is None or self.config.inputs is None or self.config.views is None:
+            raise OnboardingError("receiving_code_configuration_required")
+        onboarding_release.verify(self.config.code, plan["release_digest"], uid=os.geteuid())
+        source = self.config.inputs / plan["name"]
+        onboarding_input.verify(source, plan["seed_digest"])
+        view = self.config.views / digest(plan) / "input"
+        guest_code = Path("/opt/daimon-onboarding") / plan["release_digest"]
+        mounts = {
+            "onboarding-code": dict(type="disk", source=str(self.config.code), path=str(guest_code), readonly="true", shift="true"),
+            "onboarding-input": dict(type="disk", source=str(view), path="/home/agent/.onboarding-input", readonly="true", shift="true"),
+        }
+        return source, guest_code, mounts
+
+    def _mounted(self, plan: dict, mounts: dict) -> bool:
+        instances, _ = self._inventory()
+        row = next(row for row in instances if row.get("name") == self.instance(plan))
+        devices = row.get("expanded_devices", {})
+        for name, expected in mounts.items():
+            if name in devices and devices[name] != expected:
+                raise OnboardingError("foreign_receiving_mount_preserved")
+        return all(name in devices for name in mounts)
+
+    def _guest_command(self, plan: dict, action: str, stage: str, guest_code: Path) -> str:
+        # Only qualified receiving code runs. No command from the seed or
+        # inherited home, model output, or HTTP string reaches this argv.
+        launcher = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
+                    "from clusterctl.onboarding_guest import main; raise SystemExit(main())")
+        incoming = "/home/agent/.onboarding-input"
+        return self._dispatch(plan, ["exec", self.instance(plan), "--user", "1000", "--group", "1000",
+            "--env", "HOME=/home/agent", "--", "python3", "-B", "-I", "-c", launcher, str(guest_code),
+            action, stage, "--home", "/home/agent", "--input", incoming,
+            "--code", str(guest_code), "--plan", incoming + "/plan.json"])
+
+    def _guest_observe(self, plan: dict, stage: str) -> Observation:
+        if self._environment(plan).state != "complete":
+            return Observation("waiting", reason="backend_unavailable")
+        _, guest_code, mounts = self._guest_paths(plan)
+        if not self._mounted(plan, mounts):
+            return Observation("absent", safe_to_execute=True) if stage == "context" else Observation("waiting", reason="backend_unavailable")
+        value = json.loads(self._guest_command(plan, "observe", stage, guest_code))
+        if not isinstance(value, dict) or set(value) != {"state", "facts", "reason", "safe_to_execute"}:
+            raise OnboardingError("invalid_onboarding_observation")
+        observed = Observation(**value)
+        observed.validate()
+        return observed
+
+    def _guest_execute(self, plan: dict, stage: str) -> None:
+        if self._environment(plan).state != "complete":
+            raise OnboardingError("qualified_guest_environment_required")
+        source, guest_code, mounts = self._guest_paths(plan)
+        if stage == "context":
+            assert self.config.views is not None
+            onboarding_mounts.prepare_view(source, self.config.views, plan)
+            instances, _ = self._inventory()
+            row = next(row for row in instances if row.get("name") == self.instance(plan))
+            # Code first: its typed bootstrap owns just the new empty home.
+            for name in ("onboarding-code", "onboarding-input"):
+                if name == "onboarding-input":
+                    launcher = ("import sys; sys.path.insert(0, sys.argv[1]); "
+                                "from clusterctl.onboarding_mounts import bootstrap_home; bootstrap_home()")
+                    self._dispatch(plan, ["exec", self.instance(plan), "--", "python3", "-B", "-I", "-c", launcher, str(guest_code)])
+                current = row.get("expanded_devices", {}).get(name)
+                if current is not None and current != mounts[name]:
+                    raise OnboardingError("foreign_receiving_mount_preserved")
+                if current is None:
+                    device = mounts[name]
+                    self._dispatch(plan, ["config", "device", "add", self.instance(plan), name, "disk",
+                        *[key + "=" + value for key, value in device.items() if key != "type"]])
+        self._guest_command(plan, "execute", stage, guest_code)
 
     def _dispatch(self, plan: dict, argv: list[str]) -> str:
         # A revoked plan stops before the next concrete effect, including

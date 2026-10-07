@@ -13,9 +13,24 @@ acceptance. Web progress reads the same job's closed projection through
 
 The current typed host adapter reconciles Incus environment preparation: exact
 image fingerprint, isolated instance, 8 GiB root and 22 GiB durable home.
-It refuses a foreign instance, home volume or attachment. The other real stage
-adapters are still being integrated and currently return an explicit waiting
-state. This is a foundation for complete onboarding, not a deployed end-to-end
+It refuses a foreign instance, home volume or attachment. Context and memory
+use the same engine's typed receiving adapter. Incus mounts exact qualified
+code and a private per-body frozen input view read-only with ID shifting. The
+installer preserves the complete receiving index, original SOUL, historical
+skills and each working HMK store. It copies only explicitly selected shared
+skills, installs attributed Source context separately from autobiography, and
+renders manual native HMK access with no inherited dotenv or Source binding.
+
+Each HMK store gets a verified SQLite snapshot before a supported native
+upgrade. Native stats and two chapter expansions verify the actual binding;
+all original table rows/columns must survive, including vectors, links and
+query history. Derived FTS indexes and native access counters have specific
+exceptions. No bootstrap or re-embedding runs. A later receiving write is not
+replaced by a retry. Interrupted snapshot publication reconciles its known
+hard link; an unpublished snapshot is never mistaken for a complete backup.
+
+Matrix, access, Telegram and acceptance adapters are still being integrated
+and currently return explicit waiting states. This is a foundation for complete onboarding, not a deployed end-to-end
 activation claim. Real cohort activation and human acceptance remain pending.
 
 ## Execution and recovery
@@ -65,9 +80,23 @@ instructions, raw diagnostics, credential material or host paths.
 The worker entry point is `python -m clusterctl.onboarding_worker --config PATH`;
 `--once` is a bounded operator invocation of the same engine. Its configuration
 uses schema `cluster-onboarding-host/v1` with host-owned `jobs`, `grants` and
-`progress` directories, pinned `native_image`, `browser_image`, `release_digest`,
+`progress`, `inputs` and `views` directories, the qualified `code` directory, pinned `native_image`, `browser_image`, `release_digest`,
 named `pool`/`profile` and bounded `concurrency`. Only reviewed receiving release
-code belongs in its installation. No incoming script is an execution adapter.
+code belongs in its installation. No incoming script is an execution adapter. Build code-only artifacts with
+`python -m tools.build_onboarding_code`; choose shared skills and the primary
+memory store explicitly. Artifacts contain pinned HMK code, maintained
+receiving tools and selected transferable context; no identity, memory, bot
+credential or account cache is part of a code release. The mutable development
+checkout is captured, while the final artifact forbids group/other writes and
+is selected by its complete manifest digest.
+
+The dedicated guest account uses UID/GID 1000. The qualified image carries
+receiving tools; bootstrap creates this new unprivileged account when absent,
+refuses an existing conflicting UID/group, and initializes only its empty
+mounted home. Existing receiving homes and accounts are preserved.
+Every input view sits below a root-private parent outside intake state. Only
+that job's child view is mounted in its guest; both input and code disks are
+read-only. Their installed writable memory remains inside the 22 GiB home.
 
 Provider authorization is separate from the seed. An owner-authorized account
 profile may deliver a protected supported login cache; a fresh login is needed
@@ -78,7 +107,17 @@ do not substitute for native Matrix root/custody consent or signed authority.
 ## Qualification still required
 
 Local crash/retry, isolation, concurrency, revocation and HTTP disclosure tests
-qualify the orchestration boundary. They do not prove live receiving memory,
+qualify the orchestration boundary. A host-local qualification of Eko's already
+frozen input with the pinned native HMK retrieved 25 chapters across two stores,
+verified original-row preservation and exercised installation retry. It made
+no provider, Matrix or Telegram calls and created no live body. Its private
+receipt pins the exact input and code artifact. A subsequent purpose-created
+Incus qualification completed the same environment/context/memory stages,
+verified a read-only input mount and repeated both receiving stages without
+replacement. The disposable instance and its 22 GiB home were removed using
+independently tested exact-marker cleanup; the existing four bodies remained
+running. This is physical receiving-stage evidence, not canonical Eko enrollment
+or hosted SSH/provider/Telegram acceptance. They do not prove live receiving memory,
 Matrix enrollment, provider login or a human Telegram exchange. Finish the
 typed stage adapters, qualify the disposable complete journey, then run Eko
 and independently Oliva on the same final qualified release. Keep the goal

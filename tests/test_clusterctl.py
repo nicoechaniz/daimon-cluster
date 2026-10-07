@@ -2,7 +2,7 @@
 
 Unit tests run against FakeAdapter fixtures with a tmp state_dir.
 Integration tests exercise IncusAdapter against the live incus daemon
-(iso-a / iso-b, profile daimon-agent) and are skipped when incus is
+(iso-a / iso-b, their preserved historical tribe-agent profile) and are skipped when incus is
 unavailable.
 """
 
@@ -264,7 +264,7 @@ requires_incus = pytest.mark.skipif(not INCUS_AVAILABLE,
 
 @requires_incus
 def test_incus_adapter_lists_tribe_agent_instances(tmp_path):
-    adapter = IncusAdapter(profile="daimon-agent", project="default")
+    adapter = IncusAdapter(profile="tribe-agent", project="default")
     instances = {inst["name"]: inst for inst in adapter.list_instances()}
     assert "iso-a" in instances
     assert "iso-b" in instances
@@ -275,8 +275,10 @@ def test_incus_adapter_lists_tribe_agent_instances(tmp_path):
 
 @requires_incus
 def test_incus_cli_status_iso_a_undeclared(tmp_path, capsys):
+    # The historical fixtures keep their original profile; onboarding uses
+    # a separate daimon-agent profile and must not change these bodies.
     # Empty tmp state_dir -> no specs -> iso-a must classify as undeclared.
-    adapter = IncusAdapter(profile="daimon-agent", project="default")
+    adapter = IncusAdapter(profile="tribe-agent", project="default")
     rc = cli.run(["--config", str(CONFIG_PATH), "--state-dir", str(tmp_path),
                   "status", "iso-a", "--json"], adapter=adapter)
     assert rc == 0

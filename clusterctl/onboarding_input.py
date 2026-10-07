@@ -127,18 +127,22 @@ def capture(received: Path, destination: Path, *, source_uid: int) -> dict:
     return {"seed_digest": digest(value), "files": len(before)}
 
 
-def verify(root: Path, expected: str) -> dict:
-    private_directory(root)
+def verify(root: Path, expected: str, *, uid: int | None = None) -> dict:
+    uid = os.geteuid() if uid is None else uid
+    being_seed._path(root)
+    info = root.stat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_mode & 0o077:
+        raise OnboardingError("private_onboarding_input_required")
     manifest_path = being_seed._path(root / "manifest.json")
     descriptor = os.open(manifest_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
         info = os.fstat(stream.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != uid
                 or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > MAX_MANIFEST):
             raise OnboardingError("private_onboarding_input_required")
         manifest = json.load(stream)
     if (set(manifest) != {"schema", "files", "archive_sha256"} or manifest.get("schema") != SCHEMA
             or digest(manifest) != expected or not isinstance(manifest["files"], list)
-            or inventory(root / "received", uid=os.geteuid()) != manifest["files"]):
+            or inventory(root / "received", uid=uid) != manifest["files"]):
         raise OnboardingError("onboarding_input_digest_mismatch")
     return manifest

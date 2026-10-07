@@ -118,6 +118,18 @@ preflighted before native composition writes tables. Provisioning cannot serve
 or grant messaging authority. Disposable rebirth/recovery proofs explicitly
 prepare their own closed catalogs before default validation and restart.
 
+The next current-credential adapter composes native V2 credential and succession
+artifacts across separate actors. The receiving actor signs its own acceptance;
+a Root-only subprocess receives those public signatures and signs the exact
+plan-bound succession. Neither actor receives the other's seed. The original
+credential, incarnation, keys and manifest members remain unchanged except for
+the native V1-to-V2 credential references and next manifest revision. Native
+validators verify both artifacts, and a fixture compares the result byte-for-byte
+with the maintained full constructors. Lost acknowledgement reuses the existing
+public response without another holder call; altered requests or revoked custody
+grants refuse signing. This does not yet publish V8 on the receiving filesystem
+or establish physical admission.
+
 ## Execution and recovery
 
 A plan binds owner, environment name, receiving input digest, qualified release,

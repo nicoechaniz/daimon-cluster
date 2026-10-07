@@ -83,7 +83,13 @@ class FirstCustody:
                             "from clusterctl.onboarding_holder_backup import main; raise SystemExit(main())")
                 command = [sys.executable, "-B", "-I", "-c", launcher,
                            str(Path(__file__).resolve().parents[1]), *arguments[1:]]
+            if arguments[0] == "credential-response":
+                launcher = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
+                            "from clusterctl.onboarding_credential import main; raise SystemExit(main())")
+                command = [sys.executable, "-B", "-I", "-c", launcher,
+                           str(Path(__file__).resolve().parents[1]), *arguments[1:]]
             public_command = (arguments[0] in {"create-intent", "sign", "aggregate"}
+                              or arguments[0] == "credential-response"
                               or arguments[:2] in [["first-embodiment", "root-share"],
                                                    ["first-embodiment", "aggregate"]])
             if public_command:
@@ -353,3 +359,33 @@ class FirstCustody:
             activation = document(activation_path)
             first.validate_activation(genesis, request, activation)
             return activation
+
+    def authorize_credential(self, plan: dict, request: dict) -> dict:
+        """Co-sign native V2 succession in a Root-only subprocess for this target."""
+        from daimon_matrix import canonical, keystore, operator_first_embodiment as first
+        from . import onboarding_credential
+
+        if not self.authorize(plan):
+            raise OnboardingError("identity_authorization_required")
+        root = self._path(plan)
+        with being_seed._locked(root):
+            _, previous = first.validate_activation(document(root / "genesis.json"),
+                document(root / "target-request.json"), document(root / "target-activation.json"))
+            request_path, response_path = root / "credential-request.json", root / "credential-response.json"
+            if request_path.exists() and document(request_path) != request:
+                raise OnboardingError("existing_onboarding_credential_preserved")
+            if response_path.exists():
+                response = document(response_path)
+                onboarding_credential.verify_response(previous, plan, request, response)
+                return response
+            onboarding_credential.validate_request(previous, plan, request,
+                observed_at_ms=time.time_ns() // 1_000_000)
+            if not request_path.exists():
+                keystore._atomic_write(request_path, canonical.canonical_bytes(request))
+            self._dispatch(plan, ["credential-response", "--plan", str(root / "plan.json"),
+                "--genesis", str(root / "genesis.json"), "--target-request", str(root / "target-request.json"),
+                "--activation", str(root / "target-activation.json"), "--request", str(request_path),
+                "--holder", str(root / "root"), "--output", str(response_path)], root / "root.unlock")
+            response = document(response_path)
+            onboarding_credential.verify_response(previous, plan, request, response)
+            return response

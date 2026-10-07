@@ -50,3 +50,13 @@ def test_local_portal_covers_shared_http_auth_without_repeating_body_lifecycle(t
     assert select(changed, tmp_path) == ('full', ['tests'])
     assert select(changed + ['clusterctl/admission.py'], ROOT) == ('full', ['tests'])
     assert select(['clusterd/server.py'], ROOT) == ('full', ['tests'])
+
+
+def test_peer_host_keeps_signed_services_and_owner_separation_without_snapshot_rehearsals():
+    changed = ['clusterctl/onboarding_peer_host.py', 'tests/test_onboarding_peer_host.py', 'tools/ci_scope.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'peer'
+    assert {'tests/test_onboarding_peer_host.py', 'tests/test_onboarding_source.py',
+            'tests/test_onboarding_managed.py', 'tests/test_onboarding_host_ownership.py'} <= set(tests)
+    assert select(changed + ['clusterctl/onboarding_target.py'], ROOT)[0] == 'onboarding'
+    assert select(changed + ['clusterctl/admission.py'], ROOT)[0] == 'full'

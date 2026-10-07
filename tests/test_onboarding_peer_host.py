@@ -179,3 +179,17 @@ def test_revocation_between_peer_effects_restores_source_without_finishing(tmp_p
     with pytest.raises(OnboardingError, match='host_authorization_required'):
         host.execute(plan())
     assert effects == ['offer'] and services == ['stop', 'start']
+
+
+def test_owner_service_resolves_runuser_in_the_closed_execution_environment(monkeypatch):
+    import subprocess
+    host = object.__new__(PeerHost)
+    host.settings = {'source_uid': os.geteuid(), 'source_unit': '/owner/daimon-matrix-native.service'}
+    captured = []
+    host._run = lambda argv: captured.append(argv)
+    host._service('stop')
+    command = captured[0]
+    assert command[0] == '/usr/sbin/runuser'
+    result = subprocess.run([command[0], '--version'], env={'PATH': os.defpath}, capture_output=True, check=False)
+    assert result.returncode == 0
+    assert command[-3:] == ['--user', 'stop', 'daimon-matrix-native.service']

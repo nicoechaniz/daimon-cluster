@@ -157,7 +157,9 @@ class Target:
             if complete.exists() and document(complete) != current_receipt:
                 raise OnboardingError("onboarding_target_runtime_conflict")
             if bundle != expected:
-                if not complete.exists():
+                if (not complete.exists() or not (self.root / 'peer/accepted-private.json').is_file()
+                        or set(bundle) != set(expected) or any(bundle[key] != expected[key]
+                            for key in expected if key not in {'sources', 'relationships'})):
                     raise OnboardingError('existing_onboarding_target_preserved')
                 from .onboarding_peer import augmented
                 peer_receipt, peer_complete = augmented(self, expected, bundle)

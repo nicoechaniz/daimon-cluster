@@ -42,7 +42,7 @@ def profile(plan: dict) -> dict:
 
 
 class Target:
-    def __init__(self, home: Path, plan: dict, genesis: dict):
+    def __init__(self, home: Path, plan: dict, genesis: dict, *, code: Path | None = None, code_uid: int = 0):
         self.home = private_directory(home)
         self.plan = validate_plan(plan)
         self.genesis = genesis
@@ -50,6 +50,11 @@ class Target:
         self.preparation = self.root / "preparation"
         self.package = self.root / "package"
         self.credential = self.root / "credential"
+        self.code = code if code is not None else Path(__file__).resolve().parents[1]
+        self.code_uid = code_uid
+
+    def document_bundle(self) -> dict:
+        return document(self.package / "runtime/runtime.json")
 
     def _reader(self) -> bytearray:
         password = self.root / "body.unlock"
@@ -145,12 +150,20 @@ class Target:
             raise OnboardingError("onboarding_target_runtime_conflict")
         if bundle != original:
             expected = self._credential_bundle(original, document(self.credential / "response.json"))
-            if bundle != expected or document(self.credential / "candidate.json") != expected:
+            if document(self.credential / "candidate.json") != expected:
                 raise OnboardingError("existing_onboarding_target_preserved")
             current_receipt = self._credential_receipt(original, expected)
             complete = self.credential / "receipt.json"
             if complete.exists() and document(complete) != current_receipt:
                 raise OnboardingError("onboarding_target_runtime_conflict")
+            if bundle != expected:
+                if (not complete.exists() or not (self.root / 'peer/accepted-private.json').is_file()
+                        or set(bundle) != set(expected) or any(bundle[key] != expected[key]
+                            for key in expected if key not in {'sources', 'relationships'})):
+                    raise OnboardingError('existing_onboarding_target_preserved')
+                from .onboarding_peer import augmented
+                peer_receipt, peer_complete = augmented(self, expected, bundle)
+                return dict(phase='v8' if peer_complete else 'peer-published', request=request, receipt=peer_receipt)
             return dict(phase="v8" if complete.exists() else "v8-published", request=request, receipt=current_receipt)
         return dict(phase="v7", request=request, receipt=receipt)
 
@@ -333,7 +346,7 @@ class Target:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running"))
+    parser.add_argument("action", choices=("prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept"))
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--genesis", type=Path, required=True)
@@ -344,6 +357,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--code", type=Path, required=True)
     parser.add_argument("--runtime-code", type=Path)
     parser.add_argument("--runtime-digest")
+    parser.add_argument("--peer-packet", type=Path)
+    parser.add_argument("--peer-packet-sha256")
+    parser.add_argument("--peer-being-ref")
+    parser.add_argument("--messaging-application", type=Path)
     visibility = parser.add_mutually_exclusive_group()
     visibility.add_argument("--receive-only", action="store_true")
     visibility.add_argument("--visibility-installation", type=Path)
@@ -359,13 +376,27 @@ def main(argv: list[str] | None = None) -> int:
                         "from clusterctl.onboarding_target import main; raise SystemExit(main())")
             os.execv(venv / "bin/python", [str(venv / "bin/python"), "-B", "-I", "-c", launcher,
                                           str(runtime), *(argv if argv is not None else sys.argv[1:])])
-        target = Target(args.home, plan, document(args.genesis))
+        target = Target(args.home, plan, document(args.genesis), code=runtime)
+        if args.action == 'peer-identity':
+            from .onboarding_peer import identity
+            print(json.dumps(identity(target)))
+            return 0
+        if args.action == 'peer-accept':
+            from .onboarding_peer import accept
+            if args.peer_packet is None or args.peer_packet_sha256 is None or args.peer_being_ref is None:
+                raise OnboardingError('approved_onboarding_peer_required')
+            raw = onboarding_release.regular(args.peer_packet, uid=os.geteuid())
+            if hashlib.sha256(raw).hexdigest() != args.peer_packet_sha256:
+                raise OnboardingError('approved_onboarding_peer_required')
+            print(json.dumps(accept(target, json.loads(raw), expected_being=args.peer_being_ref)))
+            return 0
         if args.action == "admitted-serve":
             from .onboarding_runtime import serve
             if args.admission_profile is None:
                 raise OnboardingError("onboarding_admission_profile_required")
             return serve(target, document(args.admission_profile), receive_only=args.receive_only,
-                visibility_installation=args.visibility_installation, ready_descriptor=args.ready_fd)
+                visibility_installation=args.visibility_installation, messaging_application=args.messaging_application,
+                ready_descriptor=args.ready_fd)
         if args.action == "serve":
             return target.serve(receive_only=args.receive_only, visibility_installation=args.visibility_installation,
                                 ready_descriptor=args.ready_fd)

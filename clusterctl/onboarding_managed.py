@@ -21,7 +21,7 @@ class ManagedRuntime:
         value = self.settings
         fields = {'schema', 'host_port', 'guest_port', 'authority_key_id', 'authority_public_key',
                   'registrar_key_id', 'registrar_key', 'registry', 'state', 'visibility_installation'}
-        if (set(value) != fields or value['schema'] != 'cluster-onboarding-managed-runtime/v1'
+        if (set(value) - {'messaging_application'} != fields or value['schema'] != 'cluster-onboarding-managed-runtime/v1'
                 or any(type(value[key]) is not int or not 1 <= value[key] <= 65535
                        for key in ('host_port', 'guest_port'))
                 or any(not isinstance(value[key], str) or not value[key]
@@ -37,6 +37,12 @@ class ManagedRuntime:
         if visibility is not None and (not isinstance(visibility, str)
                 or not Path(visibility).is_absolute() or '..' in Path(visibility).parts
                 or not Path(visibility).is_relative_to('/home/agent')):
+            raise OnboardingError('invalid_onboarding_managed_configuration')
+
+        app = value.get('messaging_application')
+        if app is not None and (visibility is None or not isinstance(app, str)
+                or not Path(app).is_absolute() or '..' in Path(app).parts
+                or not Path(app).is_relative_to('/home/agent')):
             raise OnboardingError('invalid_onboarding_managed_configuration')
 
     def _ready(self, plan: dict) -> bool:
@@ -156,6 +162,8 @@ class ManagedRuntime:
                     'from clusterctl.onboarding_service import main;raise SystemExit(main())')
         selection = (['--receive-only'] if self.settings['visibility_installation'] is None else
                      ['--visibility-installation', self.settings['visibility_installation']])
+        if self.settings.get('messaging_application') is not None:
+            selection += ['--messaging-application', self.settings['messaging_application']]
         self.backend._dispatch(plan, ['exec', self.backend.instance(plan), '--', 'python3', '-B', '-I', '-c',
             launcher, str(runtime_code), '--code', str(code), *runtime_args, '--plan', '/home/agent/.onboarding-input/plan.json', *selection])
         # Observe authenticated, admitted presence before committing canonical state.

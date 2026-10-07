@@ -19,7 +19,8 @@ ONBOARDING_FILES = {'clusterctl/being_seed.py', 'clusterctl/onboarding.py',
     'clusterd/seed_handlers.py', 'clusterd/seed_ui.py', 'scripts/being-seed',
     'tools/build_onboarding_code.py', 'tools/build_onboarding_sdk.py',
     'tools/configure_onboarding_account.py', 'tools/install_onboarding_worker.py',
-    'tools/check_rc_types.py', 'docs/design/onboarding-jobs.md', 'tests/test_being_seed.py'}
+    'tools/check_rc_types.py', 'docs/design/onboarding-jobs.md', 'tests/test_being_seed.py',
+    'clusterctl/onboarding_peer_native.py', 'support/matrix-onboarding/PROVENANCE.json'}
 ONBOARDING_CONTRACTS = ('tests/test_being_seed.py', 'tests/test_admission.py',
     'tests/test_production_fences.py', 'tests/test_embodiments.py',
     'tests/test_matrix_host.py', 'tests/test_matrix_host_process.py',

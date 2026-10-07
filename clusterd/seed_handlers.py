@@ -8,7 +8,7 @@ import time
 
 from clusterctl import being_seed
 
-from . import auth, handlers
+from . import auth
 
 
 def _owner(ctx):
@@ -16,6 +16,8 @@ def _owner(ctx):
 
 
 def _call(deps, ctx, fn, *args, **kwargs):
+    from . import handlers
+
     try:
         return handlers.Response(200, fn(handlers._state_dir(deps), *args, owner=_owner(ctx), **kwargs))
     except being_seed.SeedError as error:
@@ -25,6 +27,8 @@ def _call(deps, ctx, fn, *args, **kwargs):
 
 
 def list_seeds(deps, ctx, query=None, **params):
+    from . import handlers
+
     def build():
         rows = being_seed.list_seeds(handlers._state_dir(deps), owner=_owner(ctx))
         return rows, int(time.time() * 1000), False
@@ -36,6 +40,8 @@ def create_seed(deps, ctx, _body=None, **params):
 
 
 def seed_access(deps, ctx, _body=None, **params):
+    from . import handlers
+
     if _owner(ctx) != "*":
         return handlers.Response(403, {"error": "seed_operator_access_required"})
     if (not isinstance(_body, dict) or set(_body) != {"owner"}
@@ -51,6 +57,8 @@ def seed_access(deps, ctx, _body=None, **params):
 
 
 def upload_seed(deps, ctx, seed, _stream, _length, _sha256, _transfer_encoding=None, **params):
+    from . import handlers
+
     if _transfer_encoding:
         return handlers.Response(400, {"error": "content_length_upload_required"})
     try:
@@ -65,6 +73,8 @@ def discover_seed(deps, ctx, seed, **params):
 
 
 def prepare_seed(deps, ctx, seed, _body=None, **params):
+    from . import handlers
+
     if not isinstance(_body, dict) or set(_body) != {"selection"}:
         return handlers.Response(400, {"error": "explicit_receiving_selection_required"})
     return _call(deps, ctx, being_seed.prepare, seed, _body["selection"])
@@ -75,6 +85,8 @@ def seed_connections(deps, ctx, seed, _body=None, **params):
 
 
 def seed_ui(deps, ctx, **params):
+    from . import handlers
+
     digest = base64.b64encode(hashlib.sha256(SCRIPT.encode()).digest()).decode()
     policy = ("default-src 'none'; script-src 'sha256-" + digest
               + "'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")

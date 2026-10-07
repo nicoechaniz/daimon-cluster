@@ -4,6 +4,8 @@ import io
 import json
 import socket
 import sqlite3
+import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -19,6 +21,17 @@ from clusterd import auth, handlers, seed_handlers
 from clusterd.server import make_server
 
 KEY = "11111111-1111-4111-8111-111111111111"
+
+
+@pytest.mark.parametrize("first", ["handlers", "seed_handlers"])
+def test_http_handler_import_orders(first):
+    # A fresh process catches partial module initialization hidden by pytest's
+    # imports. Both standalone intake and the full server load these modules.
+    subprocess.run([sys.executable, "-c",
+                    f"from clusterd import {first}; "
+                    "from clusterd import seed_handlers; "
+                    "assert seed_handlers.seed_ui(None, None).status == 200"],
+                   check=True, capture_output=True, text=True)
 
 
 @pytest.fixture(autouse=True)

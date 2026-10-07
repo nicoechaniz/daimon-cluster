@@ -203,6 +203,25 @@ def create(state_dir: str | Path, spec: dict, *, owner: str, key: str) -> dict:
     return project(record)
 
 
+def _retryable_upload(directory: Path, record: dict) -> bool:
+    """Retry interrupted intake only; never touch published or prepared context."""
+    if (record.get("mode") != "import" or record.get("phase") != "attention-required"
+            or any(record.get(key) is not None for key in
+                   ("archive_sha256", "archive_size", "preparation_fingerprint"))):
+        return False
+    partials = 0
+    for path in directory.iterdir():
+        if path.name in {"record.json", "connections.json", "lock"}:
+            continue
+        if not re.fullmatch(r"upload-[0-9a-f]{32}\.partial", path.name):
+            return False
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            return False
+        partials += 1
+    return partials > 0
+
+
 def upload(state_dir: str | Path, name: str, *, owner: str,
            stream: BinaryIO, length: int, sha256: str) -> dict:
     directory, _ = _record(state_dir, name, owner)
@@ -215,12 +234,17 @@ def upload(state_dir: str | Path, name: str, *, owner: str,
             raise SeedError("new_seed_has_no_source_archive", 409)
         if record.get("archive_sha256") == sha256 and record.get("archive_size") == length:
             return project(record)
-        if record["phase"] != "awaiting-upload":
+        if record["phase"] != "awaiting-upload" and not _retryable_upload(directory, record):
             raise SeedError("seed_archive_already_present", 409)
+        if (record.get("upload_sha256", sha256) != sha256
+                or record.get("upload_size", length) != length):
+            raise SeedError("seed_upload_retry_requires_same_archive", 409)
         # Upstream permits at most 5 GiB of expanded payload. Reserve space
         # for preserved and working copies plus uploaded archive copies.
         if shutil.disk_usage(directory).free < 10 * 1024**3 + 3 * length:
             raise SeedError("seed_staging_storage_required", 409)
+        record.update(upload_sha256=sha256, upload_size=length)
+        _write(directory / "record.json", record)
         path = directory / ("upload-" + uuid.uuid4().hex + ".partial")
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         digest = hashlib.sha256()
@@ -342,7 +366,7 @@ def connections(state_dir: str | Path, name: str, value: dict, *, owner: str) ->
         return project(record)
 
 
-def project(record: dict) -> dict:
+def project(record: dict, *, retryable_upload: bool = False) -> dict:
     """Closed read model: no identity text, paths, credentials or raw errors."""
     if (record.get("phase") not in PHASES or not NAME.fullmatch(str(record.get("name", "")))
             or not LABEL.fullmatch(str(record.get("label", "")))):
@@ -353,6 +377,7 @@ def project(record: dict) -> dict:
         "schema": SCHEMA, "name": record["name"], "label": record["label"],
         "mode": record["mode"] if record.get("mode") in {"import", "new"} else "unknown",
         "phase": record["phase"], "tool_commit": TOOL_COMMIT,
+        "upload_retryable": record["phase"] == "awaiting-upload" or retryable_upload,
         "created_ms": record.get("created_ms") if type(record.get("created_ms")) is int else None,
         "prepared_ms": record.get("prepared_ms") if type(record.get("prepared_ms")) is int else None,
         "archive_sha256": record.get("archive_sha256") if re.fullmatch(r"[0-9a-f]{64}", str(record.get("archive_sha256", ""))) else None,
@@ -369,7 +394,8 @@ def project(record: dict) -> dict:
 
 
 def status(state_dir: str | Path, name: str, *, owner: str = "*") -> dict:
-    return project(_record(state_dir, name, owner)[1])
+    directory, record = _record(state_dir, name, owner)
+    return project(record, retryable_upload=_retryable_upload(directory, record))
 
 
 def list_seeds(state_dir: str | Path, *, owner: str = "*") -> list[dict]:

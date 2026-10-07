@@ -67,7 +67,7 @@ const requestKeys=new Map();
 let connected=false,currentRecord=null,selectionData=null,records=[],busy=false,accessPending=null;
 const selectedName=()=>encodeURIComponent(field('name').value.trim());
 const phases={'awaiting-upload':'Waiting for continuity','uploaded':'Package delivered','preparing':'Preparing preserved context','prepared':'Context preserved','attention-required':'Host attention required'};
-const errorCopy={unauthorized:'Connect with a valid private access.',forbidden:'This access does not permit that operation.',seed_operator_access_required:'Use host operator access to issue invitations.',seed_not_found:'This home is not available in your workspace.',staging_storage_required:'The host needs more working space before accepting this package.',seed_archive_already_present:'This package is already preserved. Review the uploaded package.',invalid_telegram_bot_token:'Check the exact token from BotFather.',invalid_telegram_destination:'Use the numeric Telegram destination, not a username.',ssh_public_key_required:'Use a complete public SSH key.',seed_name_already_present:'This home already exists. Select it from your workspace.',seed_verification_or_preparation_refused:'The package or receiving selection needs attention. Check the checksum and the selected identity.',idempotency_key_reuse:'The intake changed after creation. Select the existing home or choose a new environment ID.'};
+const errorCopy={incomplete_seed_upload:'The transfer was interrupted. Send the same package again; your access and earlier data are preserved.',seed_upload_retry_requires_same_archive:'Retry with the same package and checksum.',unauthorized:'Connect with a valid private access.',forbidden:'This access does not permit that operation.',seed_operator_access_required:'Use host operator access to issue invitations.',seed_not_found:'This home is not available in your workspace.',staging_storage_required:'The host needs more working space before accepting this package.',seed_archive_already_present:'This package is already preserved. Review the uploaded package.',invalid_telegram_bot_token:'Check the exact token from BotFather.',invalid_telegram_destination:'Use the numeric Telegram destination, not a username.',ssh_public_key_required:'Use a complete public SSH key.',seed_name_already_present:'This home already exists. Select it from your workspace.',seed_verification_or_preparation_refused:'The package or receiving selection needs attention. Check the checksum and the selected identity.',idempotency_key_reuse:'The intake changed after creation. Select the existing home or choose a new environment ID.'};
 function node(tag,className,text){const el=document.createElement(tag);if(className)el.className=className;if(text!==undefined)el.textContent=String(text);return el}
 function message(text,kind=''){field('message').textContent=text;field('message').dataset.kind=kind}
 function step(number){document.querySelectorAll('[data-panel]').forEach(p=>p.hidden=Number(p.dataset.panel)!==number);document.querySelectorAll('[data-step]').forEach(b=>{if(Number(b.dataset.step)===number)b.setAttribute('aria-current','step');else b.removeAttribute('aria-current')});}
@@ -81,16 +81,16 @@ async function api(path,method='GET',body=null,headers={}){
 }
 async function action(fn,working,success){if(busy)return;busy=true;message(working,'working');const buttons=[...document.querySelectorAll('button,input,select,textarea')];const previous=buttons.map(b=>b.disabled);buttons.forEach(b=>b.disabled=true);try{await fn();message(success,'success')}catch(error){message(error.message,'error')}finally{busy=false;buttons.forEach((b,i)=>b.disabled=previous[i]);updateActions()}}
 function requireHome(){if(!connected)throw Error('Connect to your private workspace first.');if(!currentRecord||currentRecord.name!==field('name').value.trim())throw Error('Prepare or select this home first.');}
-function updateActions(){field('create').disabled=busy||!connected||Boolean(currentRecord);field('upload').disabled=busy||!currentRecord||currentRecord.phase!=='awaiting-upload';field('review').disabled=busy||!currentRecord||!currentRecord.archive_sha256;field('prepare').disabled=busy||!currentRecord||currentRecord.phase==='prepared'||(currentRecord.mode==='import'&&!selectionData);field('connections').disabled=busy||!currentRecord;field('refresh').disabled=busy||!connected;}
+function updateActions(){field('create').disabled=busy||!connected||Boolean(currentRecord);field('upload').disabled=busy||!currentRecord||!currentRecord.upload_retryable;field('review').disabled=busy||!currentRecord||!currentRecord.archive_sha256;field('prepare').disabled=busy||!currentRecord||currentRecord.phase==='prepared'||(currentRecord.mode==='import'&&!selectionData);field('connections').disabled=busy||!currentRecord;field('refresh').disabled=busy||!connected;}
 function resetSelection(){selectionData=null;field('selection').value='';field('receiving-review').hidden=true;field('memory-choices').replaceChildren();field('skill-choices').replaceChildren();}
 function clearConnections(){for(const id of ['bot-token','chat-id','topic-id','ssh-key'])field(id).value='';}
 function addRail(container,title,copy,done,number){const row=node('div','rail-item'+(done?' done':''));row.append(node('span','rail-dot',done?'✓':number));const text=node('div');text.append(node('div','rail-title',title),node('div','rail-copy',copy));row.append(text);container.append(row);}
-function showRecord(record){currentRecord=record;const root=field('progress');root.replaceChildren();const identity=node('div','continuity-card');identity.append(node('div','avatar',record.label.slice(0,1)));const title=node('div');title.append(node('div','continuity-name',record.label),node('div','phase',phases[record.phase]||'Not verified'));identity.append(title);root.append(identity);
+function showRecord(record){currentRecord=record;const root=field('progress');root.replaceChildren();const identity=node('div','continuity-card');identity.append(node('div','avatar',record.label.slice(0,1)));const title=node('div');title.append(node('div','continuity-name',record.label),node('div','phase',record.phase==='attention-required'&&record.upload_retryable?'Transfer interrupted · retry available':phases[record.phase]||'Not verified'));identity.append(title);root.append(identity);
  const prepared=record.phase==='prepared';const metrics=node('div','metrics');for(const [value,label] of [[record.memory_chapters,'Memories'],[record.memory_stores,'Stores'],[record.skills,'Skills']]){const item=node('div');item.append(node('div','metric-value',value===null||value===undefined?'—':value),node('div','metric-label',label));metrics.append(item)}root.append(metrics);
  const rail=node('div','rail');addRail(rail,'Identity & continuity',prepared?'Verified context preserved with its provenance.':'Awaiting preserved context.',prepared,1);addRail(rail,'Telegram connection',record.telegram.startsWith('data supplied')?'Bot details received; verification pending.':'Deliver the dedicated bot and destination.',false,2);addRail(rail,'Terminal & Codex',record.ssh.startsWith('key supplied')?'Public key received; runtime and login pending.':'SSH and account authorization are still pending.',false,3);addRail(rail,'Receiving acceptance',record.active?'Active body verified.':'Host activation and a real bot welcome are pending.',record.active===true,4);root.append(rail);
  const note=node('div','activation-note');note.append(node('strong','',prepared?'Context prepared. Body activation pending.':'Preservation comes first.'));note.append(node('span','',prepared?'These counts describe the delivered context. The host still needs to install and verify the receiving body.':'Your original history remains yours. A prepared package never claims a body is already active.'));root.append(note);
  document.querySelector('[data-step="1"]').classList.add('done');document.querySelector('[data-step="2"]').classList.toggle('done',prepared);updateActions();}
-function listRecords(items){records=items;const root=field('deliveries');root.replaceChildren();for(const r of records){const button=node('button','delivery-button'+(currentRecord&&r.name===currentRecord.name?' selected':''));button.type='button';button.append(node('span','',r.label),node('small','',phases[r.phase]||'Not verified'));button.onclick=()=>{if(!busy)selectRecord(r)};root.append(button)}}
+function listRecords(items){records=items;const root=field('deliveries');root.replaceChildren();for(const r of records){const button=node('button','delivery-button'+(currentRecord&&r.name===currentRecord.name?' selected':''));button.type='button';button.append(node('span','',r.label),node('small','',r.phase==='attention-required'&&r.upload_retryable?'Transfer interrupted · retry available':phases[r.phase]||'Not verified'));button.onclick=()=>{if(!busy)selectRecord(r)};root.append(button)}}
 function selectRecord(record){clearConnections();resetSelection();field('name').value=record.name;field('label').value=record.label;mode(record.mode);field('browser').checked=record.browser.startsWith('requested');showRecord(record);listRecords(records);step(record.phase==='prepared'?3:2);message(record.phase==='prepared'?'Preserved context is ready. Receiving activation is still pending.':'Continue this existing delivery. No new export is needed.');}
 async function refresh(){const data=await api('/v1/seeds');listRecords(data.items);if(currentRecord){const updated=data.items.find(r=>r.name===currentRecord.name);if(updated)showRecord(updated)}return data;}
 function receivingSelection(){if(!selectionData)throw Error('Deliver and verify a package first.');return JSON.parse(field('selection').value);}
@@ -180,7 +180,8 @@ def agent_guide() -> dict:
                        "body": {"name": "lowercase environment ID", "label": "daimon name", "mode": "import or new",
                                 "browser": "optional boolean", "soul": "required initial SOUL only for new"}},
             "upload": {"method": "POST", "path": "/v1/seeds/{name}/archive", "body": "raw ZIP/TGZ bytes",
-                       "required_headers": {"Content-Length": "archive byte size", "X-Archive-SHA256": "64 lowercase hex characters"}},
+                       "required_headers": {"Content-Length": "archive byte size", "X-Archive-SHA256": "64 lowercase hex characters"},
+                       "recommended_total_timeout_seconds": 1800},
             "selection": {"method": "GET", "path": "/v1/seeds/{name}/selection", "result": "private verified candidates"},
             "prepare": {"method": "POST", "path": "/v1/seeds/{name}/prepare", "body": {"selection": "reviewed selection object; null for new"}},
             "connections": {"method": "POST", "path": "/v1/seeds/{name}/connections",
@@ -191,7 +192,8 @@ def agent_guide() -> dict:
         "retry_rules": ["Reuse the same creation UUID and exact specification.",
                         "If uploaded, discover the existing archive instead of uploading again.",
                         "An exact preparation retry preserves later receiving memory writes.",
-                        "Failed or partial attempts require attention; never overwrite them."],
+                        "If upload_retryable is true, resend the same archive/checksum with a 30-minute total timeout; earlier partial bytes stay preserved.",
+                        "Published archives and preparation attempts are never overwritten."],
         "api": api,
     }
 
@@ -269,6 +271,7 @@ Never restart a source bot or upload an archive merely to adopt this update.
 3. `POST /v1/seeds/eko/archive`: raw archive bytes, its exact `Content-Length`,
    `Content-Type: application/octet-stream` and `X-Archive-SHA256`.
    The limit is 512 MiB compressed and 5 GiB expanded; chunked upload is refused.
+   Allow a 30-minute total client timeout for large packages.
 4. `GET /v1/seeds/eko/selection`. Review the returned identity SOUL, memory stores
    and historical skills against the human-authorized source selection. Preserve
    the returned schema and being label. Set `memory_coverage` to `owner-selected`
@@ -297,8 +300,10 @@ with the separate connection step and actual receiving acceptance.
 Reuse the creation UUID with the same specification. If an archive is already
 uploaded, discover that preserved archive instead of uploading again. Exact
 preparation retries return the preserved result and retain later receiving
-writes. A failed/partial operation needs host attention, not deletion or overwrite.
-If a request times out, read progress before deciding what to repeat.
+writes. If a request times out, read progress first. When `upload_retryable` is
+true, resend the same archive and checksum using the existing access and a
+30-minute total client timeout. Earlier partial bytes and connection data stay
+preserved. Other attention-required states still need host review.
 
 ## Structured requests
 

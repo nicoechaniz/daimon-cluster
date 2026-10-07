@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from contextlib import closing, contextmanager
@@ -125,14 +126,56 @@ def test_private_connections_are_not_in_read_model(tmp_path):
         seeds.connections(tmp_path, "one", {"telegram_chat_id": 1234}, owner="sai")
 
 
-def test_failed_upload_preserves_partial_and_blocks_overwrite(tmp_path):
+def test_failed_upload_preserves_partial_and_blocks_different_archive(tmp_path):
     seeds.create(tmp_path, {"name": "one", "label": "One", "mode": "import"}, owner="ani", key=KEY)
     with pytest.raises(seeds.SeedError, match="incomplete"):
         seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(b"short"), length=20, sha256="0" * 64)
     assert seeds.status(tmp_path, "one")["phase"] == "attention-required"
     assert len(list((tmp_path / "being-seeds/one").glob("*.partial"))) == 1
-    with pytest.raises(seeds.SeedError, match="already_present"):
+    assert seeds.status(tmp_path, "one")["upload_retryable"] is True
+    with pytest.raises(seeds.SeedError, match="requires_same_archive"):
         seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(b"short"), length=5, sha256="0" * 64)
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_interrupted_upload_retry_preserves_partial_and_connections(tmp_path, packet, legacy):
+    archive, digest = packet
+    raw = archive.read_bytes()
+    seeds.create(tmp_path, {"name": "one", "label": "One", "mode": "import"}, owner="ani", key=KEY)
+    seeds.connections(tmp_path, "one", {"telegram_chat_id": 1234}, owner="ani")
+    with pytest.raises(seeds.SeedError, match="incomplete"):
+        seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(raw[:20]), length=len(raw), sha256=digest)
+    directory = tmp_path / "being-seeds/one"
+    partial = next(directory.glob("*.partial"))
+    connections = (directory / "connections.json").read_bytes()
+    if legacy:
+        record = seeds._read(directory / "record.json")
+        record.pop("upload_sha256")
+        record.pop("upload_size")
+        seeds._write(directory / "record.json", record)
+    with pytest.raises(seeds.SeedError, match="not_found"):
+        seeds.upload(tmp_path, "one", owner="sai", stream=io.BytesIO(raw), length=len(raw), sha256=digest)
+    assert seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(raw), length=len(raw), sha256=digest)["phase"] == "uploaded"
+    assert partial.read_bytes() == raw[:20]
+    assert (directory / "connections.json").read_bytes() == connections
+    assert (directory / "source.archive").read_bytes() == raw
+    assert not seeds.status(tmp_path, "one")["upload_retryable"]
+    assert seeds.discovery(tmp_path, "one", owner="ani")["schema"]
+
+
+@pytest.mark.parametrize("marker", ["source.archive", "received", "discovery.json"])
+def test_upload_retry_refuses_published_or_preparation_state(tmp_path, marker):
+    seeds.create(tmp_path, {"name": "one", "label": "One", "mode": "import"}, owner="ani", key=KEY)
+    with pytest.raises(seeds.SeedError):
+        seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(b"x"), length=2, sha256="0" * 64)
+    directory = tmp_path / "being-seeds/one"
+    (directory / marker).write_bytes(b"preserved")
+    assert not seeds.status(tmp_path, "one")["upload_retryable"]
+    stream = io.BytesIO(b"xx")
+    with pytest.raises(seeds.SeedError, match="already_present"):
+        seeds.upload(tmp_path, "one", owner="ani", stream=stream, length=2, sha256="0" * 64)
+    assert stream.tell() == 0
+    assert (directory / marker).read_bytes() == b"preserved"
 
 
 def test_storage_shortage_rejects_before_consuming_archive(tmp_path, monkeypatch):
@@ -237,6 +280,33 @@ def test_web_upload_full_workflow_owner_isolation_and_no_secret_echo(tmp_path, p
         assert "default-src 'none'" in headers["Content-Security-Policy"]
         assert "https://" not in html and "sessionStorage" not in html
         assert hashlib.sha256(seed_handlers.SCRIPT.encode()).digest()
+
+
+def test_http_disconnected_upload_can_retry_same_packet(tmp_path, packet):
+    state = tmp_path / "state"
+    archive, digest = packet
+    raw = archive.read_bytes()
+    with http_server(state) as (server, request):
+        spec = {"name": "one", "label": "Fixture", "mode": "import"}
+        assert request("/v1/seeds", "POST", spec, extra={"Idempotency-Key": KEY})[0] == 200
+        _, token = auth.create_token(state, actor="ani", scopes=["seed:write"], owner="ani", ttl_days=1)
+        with socket.create_connection(server.server_address, timeout=3) as connection:
+            headers = ("POST /v1/seeds/one/archive HTTP/1.1\r\nHost: localhost\r\n"
+                       f"Authorization: Bearer {token}\r\nContent-Length: {len(raw)}\r\n"
+                       f"X-Archive-SHA256: {digest}\r\n\r\n")
+            connection.sendall(headers.encode() + raw[:20])
+            connection.shutdown(socket.SHUT_WR)
+            connection.recv(4096)
+        for _ in range(20):
+            progress = request("/v1/seeds")[2]["items"][0]
+            if progress["phase"] == "attention-required":
+                break
+            time.sleep(0.05)
+        assert progress["upload_retryable"] is True
+        partial = next((state / "being-seeds/one").glob("*.partial"))
+        assert request("/v1/seeds/one/archive", "POST", raw, extra={"X-Archive-SHA256": digest})[0] == 200
+        assert partial.read_bytes() == raw[:20]
+        assert request("/v1/seeds/one/selection")[0] == 200
 
 
 def test_upload_unauthenticated_rejected_without_reading_body(tmp_path):

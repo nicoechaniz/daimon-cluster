@@ -97,6 +97,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}section{border-top:1px solid #52
 <label>Owner name <input id="invite-owner" placeholder="ani or sai"></label>
 <button id="invite">Create access valid for 3 days</button>
 <label>New access token (shown once; share privately) <input id="invite-token" type="password" readonly autocomplete="off"></label></details>
+<button id="copy-invite">Copy private access</button>
 <section><h2>1. Choose the starting point</h2>
 <label>Environment name <input id="name" placeholder="eko" pattern="[a-z0-9][a-z0-9-]{0,30}"></label>
 <label>Daimon name <input id="label" placeholder="Eko"></label>
@@ -142,6 +143,9 @@ field('create').onclick=()=>action(()=>{let value={name:field('name').value.trim
 field('refresh').onclick=()=>action(()=>api('/v1/seeds'));
 field('invite').onclick=()=>action(async()=>{const data=await api('/v1/seed-access','POST',{owner:field('invite-owner').value.trim()});
   field('invite-token').value=data.token;return {owner:data.owner,expires_ms:data.expires_ms,private_access:'Token shown once in the private access field'};});
+field('copy-invite').onclick=async()=>{try{if(!field('invite-token').value)throw Error('Create private access first');
+  await navigator.clipboard.writeText(field('invite-token').value);field('message').textContent='Private access copied. Share it through your private channel.';
+}catch(error){field('message').textContent=error.message}};
 field('upload').onclick=()=>action(async()=>{const archive=field('archive').files[0];if(!archive)throw Error('Choose the portable seed archive');
   if(archive.size>512*1024*1024)throw Error('Archive exceeds 512 MiB');
   await api('/v1/seeds/'+selectedName()+'/archive','POST',archive,{'X-Archive-SHA256':field('sha256').value.trim()});

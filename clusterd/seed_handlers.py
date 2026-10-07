@@ -7,6 +7,8 @@ import re
 import time
 
 from clusterctl import being_seed
+from clusterctl.onboarding import OnboardingError
+from clusterctl.onboarding_progress import Progress
 
 from . import auth
 from .seed_ui import HTML, SCRIPT, agent_guide, agent_markdown, representation
@@ -32,8 +34,35 @@ def list_seeds(deps, ctx, query=None, **params):
 
     def build():
         rows = being_seed.list_seeds(handlers._state_dir(deps), owner=_owner(ctx))
+        if deps.onboarding_progress:
+            for row in rows:
+                try:
+                    row["onboarding"] = Progress(deps.onboarding_progress, worker_uid=deps.onboarding_worker_uid).read(
+                        row["name"], owner=_owner(ctx))
+                    row["active"] = row["onboarding"]["active"]
+                except FileNotFoundError:
+                    row["onboarding"] = None
+                except (OnboardingError, OSError, ValueError, TypeError, KeyError):
+                    row["onboarding"] = {"state": "attention-required", "reason": "verification_failed", "active": False}
         return rows, int(time.time() * 1000), False
     return handlers._page_or_resume(deps, ctx, query=query, kind="seeds", filters=None, build=build)
+
+
+def seed_onboarding_status(deps, ctx, seed, **params):
+    from . import handlers
+
+    try:
+        being_seed.status(handlers._state_dir(deps), seed, owner=_owner(ctx))
+        if not deps.onboarding_progress:
+            return handlers.Response(200, {"state": "waiting", "reason": "backend_unavailable", "active": False})
+        value = Progress(deps.onboarding_progress, worker_uid=deps.onboarding_worker_uid).read(seed, owner=_owner(ctx))
+        return handlers.Response(200, value)
+    except FileNotFoundError:
+        return handlers.Response(200, {"state": "waiting", "reason": "host_authorization_required", "active": False})
+    except being_seed.SeedError as error:
+        return handlers.Response(error.status, {"error": str(error)})
+    except (OnboardingError, OSError, ValueError, TypeError, KeyError):
+        return handlers.Response(409, {"error": "onboarding_progress_requires_attention"})
 
 
 def create_seed(deps, ctx, _body=None, **params):

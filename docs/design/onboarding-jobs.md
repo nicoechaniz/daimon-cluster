@@ -1,0 +1,85 @@
+# Durable receiving jobs
+
+The complete onboarding task is tracked with cohort #32 and Matrix #263.
+The intake and the receiving worker are separate processes. An uploaded archive
+or a successful preparation never means that the hosted embodiment is active.
+
+## Current implementation boundary
+
+`clusterctl.onboarding` records an exact host-authorized plan and eight ordered
+steps: environment, context, memory, Matrix, access, Telegram, welcome and
+acceptance. Web progress reads the same job's closed projection through
+`GET /v1/seeds/{seed}/onboarding`; it does not execute host operations.
+
+The current typed host adapter reconciles Incus environment preparation: exact
+image fingerprint, isolated instance, 8 GiB root and 22 GiB durable home.
+It refuses a foreign instance, home volume or attachment. The other real stage
+adapters are still being integrated and currently return an explicit waiting
+state. This is a foundation for complete onboarding, not a deployed end-to-end
+activation claim. Real cohort activation and human acceptance remain pending.
+
+## Execution and recovery
+
+A plan binds owner, environment name, receiving input digest, qualified release,
+account profile and browser selection. The seed digest covers a frozen input
+manifest and every prepared file, including preserved originals, selected
+working memory and historical skills. It is not just the archive checksum.
+Capture checks ownership, links and source drift; failed captures remain
+preserved without a readiness marker. The maintained archive verifier runs
+before publication. Source files and the original intake stay unchanged.
+
+Only a host-owned grant for the exact plan permits dispatch. Participant intake
+credentials and name labels cannot create or widen that grant. Every unfinished
+step rechecks current authorization. The Incus adapter rechecks before each
+resource mutation, including after an earlier long operation returns.
+
+Before dispatch, the worker persists its stable operation ID and intent.
+After a restart it observes the actual effect before deciding whether another
+dispatch is safe. An uncertain outgoing welcome is never replayed merely
+because its receipt is missing. A completed command is not a completed step.
+Typed observations must establish the stage's required effects. Complete
+acceptance requires actual SSH, provider, identity, Matrix delivery, Telegram,
+human steering, distinct topics, restart and CLI resume evidence, plus browser
+acceptance when selected. A bare `verified: true` cannot substitute for them.
+
+Per-job filesystem locks protect independent being jobs. The service worker
+uses bounded concurrent slots and fair scheduling, so a waiting or slow job
+does not starve another. It does not capture process-global HTTP stdout and
+does not need an active Codex conversation. Its work is finite authorized
+onboarding; it adds no Matrix inbox polling, peer reply or model wakeup service.
+
+## Host and HTTP ownership
+
+Job and grant directories belong to the worker principal with mode 0700.
+The progress directory belongs to that principal with mode 0750; published
+files are mode 0640, readable by the portal group and writable only by the
+worker. These directories must be outside the intake's writable state.
+
+The HTTP service receives only `--onboarding-progress`. It validates the
+worker's numeric UID, private seed ownership, projection ownership/mode, exact
+closed schema and ordered completion prefix. Extra fields, corrupt records or
+an owner mismatch cannot produce a false active response. Progress contains
+fixed reason codes, stages, counts/timestamps and digests, never private
+instructions, raw diagnostics, credential material or host paths.
+
+The worker entry point is `python -m clusterctl.onboarding_worker --config PATH`;
+`--once` is a bounded operator invocation of the same engine. Its configuration
+uses schema `cluster-onboarding-host/v1` with host-owned `jobs`, `grants` and
+`progress` directories, pinned `native_image`, `browser_image`, `release_digest`,
+named `pool`/`profile` and bounded `concurrency`. Only reviewed receiving release
+code belongs in its installation. No incoming script is an execution adapter.
+
+Provider authorization is separate from the seed. An owner-authorized account
+profile may deliver a protected supported login cache; a fresh login is needed
+only when the provider actually requires it. Shared-account refresh and Source
+continuity must be qualified before cohort activation. Host execution grants
+do not substitute for native Matrix root/custody consent or signed authority.
+
+## Qualification still required
+
+Local crash/retry, isolation, concurrency, revocation and HTTP disclosure tests
+qualify the orchestration boundary. They do not prove live receiving memory,
+Matrix enrollment, provider login or a human Telegram exchange. Finish the
+typed stage adapters, qualify the disposable complete journey, then run Eko
+and independently Oliva on the same final qualified release. Keep the goal
+active until both real receiving acceptances are observed.

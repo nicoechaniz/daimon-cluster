@@ -132,6 +132,8 @@ class Deps:
     fence_store_factory: Callable[[str], Any] | None = None
     clusterd_base_url: str = "http://127.0.0.1:8785"
     seed_only: bool = False
+    onboarding_progress: str | None = None
+    onboarding_worker_uid: int = 0
     pager: paging.SnapshotPager = dataclasses.field(
         default_factory=paging.SnapshotPager
     )
@@ -2062,6 +2064,7 @@ HANDLERS = {
     "discover_seed": seed_handlers.discover_seed,
     "prepare_seed": seed_handlers.prepare_seed,
     "seed_connections": seed_handlers.seed_connections,
+    "seed_onboarding_status": seed_handlers.seed_onboarding_status,
     "health": health,
     "openapi_yaml": openapi_yaml,
     "list_instances": list_instances,

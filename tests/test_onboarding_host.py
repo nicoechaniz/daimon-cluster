@@ -1,0 +1,117 @@
+"""Typed substrate commands preserve foreign bodies and reconcile partial creation."""
+import copy
+import json
+
+import pytest
+
+from clusterctl import being_seed
+from clusterctl.onboarding import JobStore, OnboardingError, digest
+from clusterctl.onboarding_host import HostBackend, HostConfig
+from tests.test_onboarding import plan
+
+
+class IncusFixture:
+    def __init__(self):
+        self.instances = []
+        self.volumes = []
+        self.calls = []
+        self.fail_after = None
+
+    def __call__(self, argv):
+        if argv[0] == "list":
+            return json.dumps(self.instances)
+        if argv[:3] == ["storage", "volume", "list"]:
+            return json.dumps(self.volumes)
+        if argv[0] == "query":
+            return json.dumps(next(v for v in self.volumes if argv[1].endswith("/" + v["name"])))
+        self.calls.append(argv)
+        if argv[0] == "init":
+            self.instances.append(dict(name=argv[2], status="Stopped", config={
+                "volatile.base_image": argv[1], "user.dm.onboarding-plan": argv[-1].split("=", 1)[1]},
+                expanded_devices={"root": dict(type="disk", path="/", pool=argv[6], size="8GiB")}))
+        elif argv[:3] == ["storage", "volume", "create"]:
+            self.volumes.append(dict(name=argv[4], type="custom", config={
+                "size": "22GiB", "user.dm.onboarding-plan": argv[6].split("=", 1)[1]}))
+        elif argv[:3] == ["config", "device", "add"]:
+            row = next(row for row in self.instances if row["name"] == argv[3])
+            row["expanded_devices"]["home"] = dict(type="disk", **dict(item.split("=", 1) for item in argv[6:]))
+        elif argv[0] == "start":
+            next(row for row in self.instances if row["name"] == argv[1])["status"] = "Running"
+        else:
+            raise AssertionError("unexpected command")
+        if len(self.calls) == self.fail_after:
+            raise RuntimeError("transport disconnected after effect")
+        return ""
+
+
+def configured(tmp_path):
+    for name in ("jobs", "grants"):
+        (tmp_path / name).mkdir(mode=0o700)
+    config = HostConfig(tmp_path / "jobs", tmp_path / "grants", "3" * 64, "4" * 64,
+                        "2" * 64, "daimon-cluster", "daimon-agent", 2)
+    value = plan()
+    being_seed._write(config.grants / "eko.json", dict(schema="cluster-onboarding-host-grant/v1",
+                                                      plan=value, revoked=False))
+    run = IncusFixture()
+    return config, value, run, HostBackend(config, run=run)
+
+
+@pytest.mark.parametrize("failed_command", [1, 2, 3, 4])
+def test_each_partial_effect_reconciles_without_recreating(tmp_path, failed_command):
+    config, value, run, backend = configured(tmp_path)
+    store = JobStore(config.jobs)
+    store.submit(value, backend)
+    run.fail_after = failed_command
+    assert store.tick("eko", backend)["active"] is False
+    run.fail_after = None
+    assert store.tick("eko", backend)["completed_steps"] == ["environment"]
+    assert len(run.calls) == 4
+    assert backend.observe(value, "environment", "unused").facts == {
+        "verified": True, "root_gib": 8, "home_gib": 22}
+
+
+@pytest.mark.parametrize("foreign", ["body", "volume", "device"])
+def test_foreign_state_is_not_mutated(tmp_path, foreign):
+    config, value, run, backend = configured(tmp_path)
+    if foreign == "body":
+        run.instances.append(dict(name="dm-eko", config={}, expanded_devices={}))
+    elif foreign == "volume":
+        run.volumes.append(dict(name="dm-eko-home", type="custom", config={"size": "22GiB"}))
+    else:
+        backend.execute(value, "environment", "unused")
+        run.instances[0]["expanded_devices"]["home"]["source"] = "other-being-home"
+        run.calls.clear()
+    before = copy.deepcopy((run.instances, run.volumes))
+    assert backend.observe(value, "environment", "unused").state == "conflict"
+    with pytest.raises(OnboardingError):
+        backend.execute(value, "environment", "unused")
+    assert (run.instances, run.volumes) == before and run.calls == []
+
+
+def test_intake_label_and_revoked_or_different_grant_cannot_authorize(tmp_path):
+    config, value, run, backend = configured(tmp_path)
+    assert backend.authorize(value, digest(value))
+    assert not backend.authorize(plan(owner="ani"), digest(plan(owner="ani")))
+    assert not backend.authorize(value, "5" * 64)
+    grant = config.grants / "eko.json"
+    being_seed._write(grant, dict(schema="cluster-onboarding-host-grant/v1", plan=value, revoked=True))
+    assert not backend.authorize(value, digest(value))
+    with pytest.raises(OnboardingError, match="host_authorization_required"):
+        backend.execute(value, "environment", "unused")
+    assert not run.calls
+
+
+def test_revocation_during_creation_stops_before_the_next_resource_effect(tmp_path):
+    config, value, run, backend = configured(tmp_path)
+    original = backend.run
+    def revoke_after_init(argv):
+        result = original(argv)
+        if argv[0] == "init":
+            being_seed._write(config.grants / "eko.json", dict(schema="cluster-onboarding-host-grant/v1",
+                                                              plan=value, revoked=True))
+        return result
+    backend.run = revoke_after_init
+    with pytest.raises(OnboardingError, match="host_authorization_required"):
+        backend.execute(value, "environment", "unused")
+    assert len(run.calls) == 1
+    assert len(run.instances) == 1 and not run.volumes

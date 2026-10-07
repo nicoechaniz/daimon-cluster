@@ -35,6 +35,7 @@ FILES = (
     "clusterctl/onboarding_sdk.py",
     "clusterctl/onboarding_target.py",
     "clusterctl/onboarding_admission.py",
+    "clusterctl/onboarding_runtime.py",
     "clusterctl/owner_process.py",
     "clusterctl/onboarding_input.py",
     "clusterctl/onboarding_release.py",

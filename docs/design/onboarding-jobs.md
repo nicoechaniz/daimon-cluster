@@ -314,3 +314,19 @@ chapters. The instance/home cleanup preserved the four pre-existing bodies.
 This used synthetic custody and an explicit receive-only configuration. It
 proves native service restart and physical presence, with zero canonical
 admissions, peer deliveries, provider calls or Telegram calls.
+
+`admitted-serve` now composes that native daemon with the shared admission
+supervisor. The service parent retains the physical holder and ephemeral
+session; a private inherited socket supplies read-only process-and-lease body
+snapshots to the child. Native `/me` reports running only while both the pinned
+kernel process and authority-signed lease remain current. Losing that lease
+stops the daemon, and losing the parent stops its child. No inbox attention,
+model turn or curator mutation is added. A persisted holder enrollment permits
+restart even after its original enrollment document expires.
+
+The integrated disposable Incus qualification verified actual shared TCP
+admission, native `/me` running state, systemd restart with unchanged identity,
+stop refusal, preserved memory and exact cleanup. It used synthetic custody and
+explicit receive-only configuration. Canonical registry enrollment, host-worker
+lifecycle integration and real cohort/provider/Telegram acceptance remain
+pending; this qualification does not turn prepared Eko input into a live body.

@@ -326,12 +326,13 @@ class Target:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare"))
+    parser.add_argument("action", choices=("prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve"))
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--genesis", type=Path, required=True)
     parser.add_argument("--activation", type=Path)
     parser.add_argument("--credential-response", type=Path)
+    parser.add_argument("--admission-profile", type=Path)
     parser.add_argument("--code", type=Path, required=True)
     visibility = parser.add_mutually_exclusive_group()
     visibility.add_argument("--receive-only", action="store_true")
@@ -348,6 +349,12 @@ def main(argv: list[str] | None = None) -> int:
             os.execv(venv / "bin/python", [str(venv / "bin/python"), "-B", "-I", "-c", launcher,
                                           str(args.code), *(argv if argv is not None else sys.argv[1:])])
         target = Target(args.home, plan, document(args.genesis))
+        if args.action == "admitted-serve":
+            from .onboarding_runtime import serve
+            if args.admission_profile is None:
+                raise OnboardingError("onboarding_admission_profile_required")
+            return serve(target, document(args.admission_profile), receive_only=args.receive_only,
+                visibility_installation=args.visibility_installation, ready_descriptor=args.ready_fd)
         if args.action == "serve":
             return target.serve(receive_only=args.receive_only, visibility_installation=args.visibility_installation,
                                 ready_descriptor=args.ready_fd)

@@ -192,3 +192,18 @@ def enrollment(plan: dict, request: dict, expected: dict, registrar: Ed25519Sign
             holder_pubkey=holder["holder_pubkey"], nonce=str(uuid.uuid4()), **expected)
     except Exception:
         raise OnboardingError("onboarding_admission_request_rejected") from None
+
+
+def profile(plan: dict, request: dict, expected: dict, registrar: Ed25519Signer, *,
+            endpoint: AdmissionEndpoint, authority_key_id: str, authority_public_key: str,
+            lease_ttl_s: int = 15) -> dict:
+    """Compose host-selected public service configuration after holder proof."""
+    if (endpoint.transport != "tcp-authenticated" or endpoint.port is None
+            or not isinstance(authority_key_id, str) or not authority_key_id
+            or type(lease_ttl_s) is not int or not 3 <= lease_ttl_s <= 300):
+        raise OnboardingError("onboarding_admission_profile_rejected")
+    ed25519_fingerprint(authority_public_key)
+    return dict(schema="cluster-onboarding-admission-profile/v1", plan_digest=digest(plan),
+        endpoint=dict(transport=endpoint.transport, host=endpoint.address, port=endpoint.port),
+        authority_key_id=authority_key_id, authority_public_key=authority_public_key,
+        lease_ttl_s=lease_ttl_s, enrollment=enrollment(plan,request,expected,registrar))

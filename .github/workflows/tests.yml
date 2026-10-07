@@ -285,6 +285,8 @@ jobs:
           clusterctl/onboarding_sdk.py
           clusterctl/onboarding_target.py
           clusterctl/onboarding_admission.py
+          clusterctl/onboarding_runtime.py
+          tests/test_onboarding_runtime.py
           tests/test_onboarding_admission.py
           clusterctl/owner_process.py
           clusterctl/browser.py

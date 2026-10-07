@@ -10,6 +10,8 @@ import copy
 import hashlib
 import json
 import os
+import socket
+import struct
 import sys
 import time
 from contextlib import contextmanager
@@ -241,16 +243,100 @@ class Target:
             finally:
                 os.close(descriptor)
 
+    def serve(self, *, receive_only: bool = False, visibility_installation: Path | None = None,
+              ready_descriptor: int | None = None) -> int:
+        """Hand this body's verified custody to the native single-writer daemon.
+
+        Receive-only is an explicit qualification/initial-admission choice.
+        A mirrored body must supply its signed native visibility installation;
+        a missing or invalid installation never falls back to closed visibility.
+        Process restarts retain the package, authority and native journals.
+        """
+        from daimon_matrix import daemon
+        if receive_only == (visibility_installation is not None):
+            raise OnboardingError("onboarding_visibility_selection_required")
+        if self.observe()["phase"] != "v8":
+            raise OnboardingError("current_onboarding_target_required")
+        # Validate/read only this receiving body's existing password. A pipe
+        # keeps custody unlock material out of argv, environment and logs.
+        password = self._reader()
+        reader, writer = os.pipe()
+        pipe_identity = os.fstat(reader)
+        try:
+            os.write(writer, password)
+        finally:
+            password[:] = b"\x00" * len(password)
+            os.close(writer)
+        try:
+            argv = ["--state-root", str(self.package / "runtime"), "--password-fd", str(reader)]
+            if receive_only:
+                argv.append("--closed-visibility")
+            else:
+                argv += ["--visibility-installation", str(visibility_installation)]
+            if ready_descriptor is not None:
+                argv += ["--ready-fd", str(ready_descriptor)]
+            return daemon.main(argv)
+        finally:
+            # Native startup consumes/closes the FD. Early refusal may not.
+            try:
+                remaining = os.fstat(reader)
+                if (remaining.st_dev, remaining.st_ino) == (pipe_identity.st_dev, pipe_identity.st_ino):
+                    os.close(reader)
+            except OSError:
+                pass
+
+    def running(self) -> dict:
+        """Observe a kernel-pinned daemon and authenticate its native status.
+
+        This proves owner-local runtime presence, not a Cluster admission lease,
+        a resource fence, peer delivery or a model/Telegram acceptance.
+        """
+        from daimon_matrix.client import ClientConfig, LocalClient
+        from .owner_process import ProcessPresence
+        prepared = self.observe()
+        if prepared["phase"] != "v8":
+            raise OnboardingError("current_onboarding_target_required")
+        root = self.package / "runtime"
+        socket_identity = (root / "matrix.sock").lstat()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(5)
+            connection.connect(str(root / "matrix.sock"))
+            pid, uid, _gid = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            if uid != os.geteuid():
+                raise OnboardingError("onboarding_daemon_owner_conflict")
+            process = dict(uid=uid, pid=pid,
+                start_ticks=int((Path("/proc") / str(pid) / "stat").read_text().rpartition(")")[2].split()[19]),
+                boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip())
+            with ProcessPresence(process) as presence:
+                key = bytearray(onboarding_release.regular(root / "client.key", uid=os.geteuid()))
+                config = ClientConfig.load(root / "client.json", key)
+                client = LocalClient(root / "matrix.sock", config)
+                _, status = client.runtime_status()
+                expected = prepared["receipt"]["origin"]
+                if status["ok"] is not True or any(status["server"].get(field) != value for field, value in expected.items()):
+                    raise OnboardingError("onboarding_daemon_origin_conflict")
+                current_socket = (root / "matrix.sock").lstat()
+                if (socket_identity.st_dev, socket_identity.st_ino) != (current_socket.st_dev, current_socket.st_ino):
+                    raise OnboardingError("onboarding_daemon_socket_changed")
+                presence.verify()
+                return dict(schema="cluster-onboarding-runtime-presence/v1", plan_digest=digest(self.plan),
+                    origin=expected, process=process, runtime_id=config.runtime_id,
+                    runtime_sha256=prepared["receipt"]["runtime_sha256"])
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "activate", "observe", "credential-prepare", "credential-apply"))
+    parser.add_argument("action", choices=("prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running"))
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--genesis", type=Path, required=True)
     parser.add_argument("--activation", type=Path)
     parser.add_argument("--credential-response", type=Path)
     parser.add_argument("--code", type=Path, required=True)
+    visibility = parser.add_mutually_exclusive_group()
+    visibility.add_argument("--receive-only", action="store_true")
+    visibility.add_argument("--visibility-installation", type=Path)
+    parser.add_argument("--ready-fd", type=int)
     args = parser.parse_args(argv)
     try:
         plan = validate_plan(being_seed._read(args.plan))
@@ -262,6 +348,12 @@ def main(argv: list[str] | None = None) -> int:
             os.execv(venv / "bin/python", [str(venv / "bin/python"), "-B", "-I", "-c", launcher,
                                           str(args.code), *(argv if argv is not None else sys.argv[1:])])
         target = Target(args.home, plan, document(args.genesis))
+        if args.action == "serve":
+            return target.serve(receive_only=args.receive_only, visibility_installation=args.visibility_installation,
+                                ready_descriptor=args.ready_fd)
+        if args.action == "running":
+            print(json.dumps(target.running()))
+            return 0
         if args.action == "prepare":
             target.prepare()
         elif args.action == "activate":

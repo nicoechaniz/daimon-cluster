@@ -229,6 +229,24 @@ Actual Source online-custody authorization and consumer-denial qualification
 are required for live use; disposable native protocol tests do not establish
 either. No live cohort custody or genesis has been created by this candidate.
 
+The receiving target now offers `serve` and `running` verbs through the same
+qualified-code/offline-SDK launcher. `serve` hands the receiving body's own
+unlock material to the maintained native daemon through a descriptor; it never
+copies custody to the host. It requires either an explicit receive-only choice
+or a signed native visibility installation. Invalid mirror configuration never
+falls back to receive-only. The native daemon owns its writer lock and signal
+handling; restart reuses the existing identity and journals.
+
+`running` pins the socket peer's actual Linux PID, UID, boot ID and start ticks,
+authenticates native owner-local status, verifies the expected signed origin,
+and refuses a replaced socket or departed process. The process observer and
+atomic `Registry.adopt_running` operation reuse the reviewed owner-runtime work
+from Cluster #116 (`b097157f`). Registry replay preserves the exact active
+incarnation; collisions and ended incarnations are refused. Neither presence
+nor registry adoption supplies the mandatory shared admission lease, fences,
+peer delivery, provider or human Telegram acceptance. That integration remains
+required before a cohort activation can be reported.
+
 Canonical registry writers share the reviewed kernel lock from Cluster #114.
 The mainline rollback operation uses that same lock and retains its narrow
 compensation condition. This preserves history across concurrent body jobs;
@@ -266,3 +284,14 @@ Matrix enrollment, provider login or a human Telegram exchange. Finish the
 typed stage adapters, qualify the disposable complete journey, then run Eko
 and independently Oliva on the same final qualified release. Keep the goal
 active until both real receiving acceptances are observed.
+
+A subsequent disposable Incus run started the qualified receiving daemon under
+systemd, authenticated its owner-local status and bound the socket peer to the
+unit's actual MainPID. A service restart changed the kernel PID while retaining
+runtime identity, signed origin and bundle digest. Stopping the service made
+presence unavailable; both original HMK stores still retrieved all 25 selected
+chapters. The instance/home cleanup preserved the four pre-existing bodies.
+This used synthetic custody and an explicit receive-only configuration. It
+proves native service restart and physical presence, with zero canonical
+admissions, peer deliveries, provider calls or Telegram calls.
+

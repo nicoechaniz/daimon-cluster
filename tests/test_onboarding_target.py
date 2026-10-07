@@ -154,3 +154,78 @@ def test_credential_publication_refuses_running_writer_and_preserves_changed_run
     with pytest.raises(OnboardingError, match="existing_onboarding_target_preserved"):
         target.apply_credential(response)
     assert path.read_bytes() == raw
+
+
+def test_native_receiving_daemon_restarts_same_authority_and_refuses_second_writer(tmp_path):
+    import json
+    import os
+    import select
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path
+    from daimon_matrix.client import ClientConfig, LocalClient
+    from clusterctl.onboarding_target import document
+    ceremony, plan, _ = fixture(tmp_path)
+    ceremony.prepare(plan, identity_mode="first")
+    genesis = document(ceremony.root / digest(plan) / "genesis.json")
+    # AF_UNIX has a fixed kernel path budget; receiving homes must fit it.
+    with tempfile.TemporaryDirectory(prefix="dm-") as short:
+        home = Path(short)
+        target = Target(home, plan, genesis)
+        before = target.activate(ceremony.authorize_target(plan, target.prepare()))
+        target.apply_credential(ceremony.authorize_credential(plan, target.credential_request()))
+        runtime = target.package / "runtime"
+        original_keys = (runtime / "custody.json").read_bytes()
+        original_bundle = (runtime / "runtime.json").read_bytes()
+        own = home / "own-history"
+        own.write_bytes(b"new receiving history")
+        invocation = ("import sys,json; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
+                      "from clusterctl.onboarding_target import Target; "
+                      "raise SystemExit(Target(Path(sys.argv[2]),json.loads(sys.argv[3]),"
+                      "json.loads(sys.argv[4])).serve(receive_only=True,ready_descriptor=int(sys.argv[5])))")
+        repository = str(Path(__file__).resolve().parents[1])
+        config = ClientConfig.load(runtime / "client.json", bytearray((runtime / "client.key").read_bytes()))
+        client = LocalClient(runtime / "matrix.sock", config)
+        for _ in range(2):
+            reader, writer = os.pipe()
+            process = subprocess.Popen([sys.executable, "-B", "-I", "-c", invocation, repository,
+                str(home), json.dumps(plan), json.dumps(genesis), str(writer)], pass_fds=(writer,),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            os.close(writer)
+            try:
+                assert select.select([reader], [], [], 10)[0], "native daemon never became ready"
+                assert os.read(reader, 16) == b"READY\n"
+                _, status = client.runtime_status()
+                assert status["ok"] is True
+                assert status["server"]["embodiment_id"] == before["receipt"]["origin"]["embodiment_id"]
+                assert status["server"]["incarnation_id"] == before["receipt"]["origin"]["incarnation_id"]
+                observed = target.running()
+                assert observed["process"]["pid"] == process.pid
+                assert observed["origin"] == before["receipt"]["origin"]
+                assert target.serve(receive_only=True) == 1
+                assert process.poll() is None
+                assert client.runtime_status()[1]["ok"] is True
+            finally:
+                os.close(reader)
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=10)
+            assert process.returncode == 0
+            assert target.serve(visibility_installation=home / "missing-visibility.json") == 1
+            assert not (runtime / "matrix.sock").exists()
+            with pytest.raises(OSError):
+                target.running()
+            assert (runtime / "custody.json").read_bytes() == original_keys
+            assert (runtime / "runtime.json").read_bytes() == original_bundle
+            assert own.read_bytes() == b"new receiving history"
+
+
+def test_daemon_requires_explicit_visibility_and_current_authority(tmp_path):
+    _, _, target = receiving(tmp_path)
+    with pytest.raises(OnboardingError, match="onboarding_visibility_selection_required"):
+        target.serve()
+    with pytest.raises(OnboardingError, match="onboarding_visibility_selection_required"):
+        target.serve(receive_only=True, visibility_installation=tmp_path / "unselected.json")
+    with pytest.raises(OnboardingError, match="current_onboarding_target_required"):
+        target.serve(receive_only=True)

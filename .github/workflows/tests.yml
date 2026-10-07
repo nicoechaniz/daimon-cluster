@@ -283,6 +283,7 @@ jobs:
           clusterctl/onboarding_holder_backup.py
           clusterctl/onboarding_sdk.py
           clusterctl/onboarding_target.py
+          clusterctl/owner_process.py
           clusterctl/browser.py
           clusterctl/distributed_rebirth.py
           clusterctl/embodiments.py

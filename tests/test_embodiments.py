@@ -189,3 +189,37 @@ def test_busy_lock_does_not_break_live_holder(tmp_path, monkeypatch):
             Registry(tmp_path).register(body_ref="new")
         assert (tmp_path / "embodiments.lock").stat().st_ino == inode
         assert registry.path.read_bytes() == before
+
+
+def test_adopt_running_exact_replay_keeps_native_origin_history_and_siblings(tmp_path):
+    registry = Registry(tmp_path)
+    sibling = registry.register(body_ref="managed-sibling")
+    registry.start(sibling["embodiment_id"])
+    previous = registry.status(sibling["embodiment_id"])
+    origin = dict(body_ref="codex:fixture:receiving", embodiment_id="embodiment:received",
+                  incarnation_id="incarnation:received")
+    record = registry.adopt_running(**origin)
+    assert record["hosting"] == "external-owner"
+    assert record["current_incarnation_id"] == origin["incarnation_id"]
+    written = registry.path.read_bytes()
+    assert registry.adopt_running(**origin) == record
+    assert registry.path.read_bytes() == written
+    assert registry.status(sibling["embodiment_id"]) == previous
+    registry.stop(origin["embodiment_id"])
+    ended = registry.path.read_bytes()
+    with pytest.raises(RegistryError):
+        registry.adopt_running(**origin)
+    assert registry.path.read_bytes() == ended
+
+
+@pytest.mark.parametrize("change", [dict(body_ref="other"), dict(embodiment_id="embodiment:other"),
+                                    dict(incarnation_id="incarnation:other")])
+def test_adopt_running_conflicts_never_replace_or_reopen_history(tmp_path, change):
+    registry = Registry(tmp_path)
+    origin = dict(body_ref="codex:fixture:receiving", embodiment_id="embodiment:received",
+                  incarnation_id="incarnation:received")
+    registry.adopt_running(**origin)
+    previous = registry.path.read_bytes()
+    with pytest.raises(RegistryError):
+        registry.adopt_running(**{**origin, **change})
+    assert registry.path.read_bytes() == previous

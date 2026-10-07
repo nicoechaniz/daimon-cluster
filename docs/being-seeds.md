@@ -104,6 +104,21 @@ existing Cluster/Matrix runtime pair. Do not replace the existing fleet service
 or retarget its SDK pin to install this feature. Live installation follows the
 repository's exact-plan deployment and administrative-access rules.
 
+### Verify access from outside the host
+
+Caddy's public HTTPS listener needs its own web ingress. The host firewall
+template permits TCP 80/443 for TLS/HTTPS and UDP 443 for Caddy's HTTP/3 on
+`ens3`; select the actual public interface for another host. Keep the intake
+backend on loopback and proxy only its routes, including `/v1/seed-access`.
+The web rule does not widen container access or expose the control-plane port.
+
+When extending an existing host, add only the web service rules and retain its
+existing rules and administrative access. Do not replace its complete policy
+with this template or flush Incus-managed tables. Verify the persistent
+candidate before applying it and verify the public URL from an independent
+network. A successful request from the server itself cannot establish external
+reachability: its traffic may bypass the public ingress rule through loopback.
+
 ## Optional graphical browser environment
 
 The seed's browser checkbox requests **Chromium + Xvfb + Kimi WebBridge** with

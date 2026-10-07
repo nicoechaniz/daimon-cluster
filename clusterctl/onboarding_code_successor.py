@@ -59,7 +59,7 @@ def selection(code: Path | None, fingerprint: str | None, base: Path, base_finge
 def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, ...], output: Path) -> dict:
     """Capture a code-only successor; never read receiving home or custody."""
     from . import being_seed
-    from tools.build_onboarding_code import copy_code
+    from tools.build_onboarding_code import copy_code, capture_peer_tool
     original = onboarding_release.verify(base, base_fingerprint, uid=os.geteuid())
     being_seed._path(output)
     if (output.exists() or output.is_symlink() or output.is_relative_to(base)
@@ -70,11 +70,15 @@ def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, .
         raise OnboardingError('qualified_onboarding_runtime_required')
     output.mkdir(mode=0o755)
     replaced = {'clusterctl/' + name for name in modules}
+    if 'onboarding_peer.py' in modules:
+        replaced.add('clusterctl/onboarding_peer_native.py')
     for row in original['files']:
         if row['path'] not in replaced and row['path'] != MARKER:
             copy_code(base / row['path'], output / row['path'])
     for name in modules:
         copy_code(source / name, output / 'clusterctl' / name)
+    if 'onboarding_peer.py' in modules:
+        capture_peer_tool(output)
     (output / MARKER).write_text(json.dumps(dict(schema=SCHEMA, base_release_digest=base_fingerprint), sort_keys=True))
     (output / MARKER).chmod(0o644)
     for directory in output.rglob('*'):

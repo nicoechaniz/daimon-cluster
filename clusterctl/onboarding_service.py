@@ -16,8 +16,11 @@ UNIT = 'daimon-onboarding-matrix.service'
 
 
 def command(code: Path, *, receive_only: bool, visibility: Path | None = None,
-            runtime_code: Path | None = None, runtime_digest: str | None = None) -> list[str]:
+            runtime_code: Path | None = None, runtime_digest: str | None = None,
+            messaging_application: Path | None = None) -> list[str]:
     if receive_only == (visibility is not None):
+        raise OnboardingError('onboarding_visibility_selection_required')
+    if messaging_application is not None and receive_only:
         raise OnboardingError('onboarding_visibility_selection_required')
     if (runtime_code is None) != (runtime_digest is None):
         raise OnboardingError('qualified_onboarding_runtime_required')
@@ -29,12 +32,14 @@ def command(code: Path, *, receive_only: bool, visibility: Path | None = None,
     argv = ['/usr/bin/python3', '-B', '-I', '-c', launcher, str(runtime_code or code), 'admitted-serve',
             '--home', '/home/agent', '--code', str(code), *runtime_args,
             '--plan', '/home/agent/.onboarding-input/plan.json',
-            '--genesis', public + 'genesis.json', '--admission-profile', public + 'admission.json']
+            '--genesis', public + 'genesis.json', '--admission-profile', public + 'admission.json',
+            *(['--messaging-application', str(messaging_application)] if messaging_application is not None else [])]
     return argv + (['--receive-only'] if receive_only else ['--visibility-installation', str(visibility)])
 
 
 def install(code: Path, *, receive_only: bool, visibility: Path | None = None,
             runtime_code: Path | None = None, runtime_digest: str | None = None,
+            messaging_application: Path | None = None,
             directory: Path = Path('/etc/systemd/system'), run=None) -> None:
     """Preserve foreign units; publication/reload/enable are independently retryable."""
     being_seed._path(directory)
@@ -42,7 +47,7 @@ def install(code: Path, *, receive_only: bool, visibility: Path | None = None,
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
         raise OnboardingError('onboarding_service_directory_rejected')
     argv = command(code, receive_only=receive_only, visibility=visibility,
-                   runtime_code=runtime_code, runtime_digest=runtime_digest)
+                   runtime_code=runtime_code, runtime_digest=runtime_digest, messaging_application=messaging_application)
     # systemd's ExecStart syntax, not a shell command. Escape substitutions.
     encoded = ' '.join(json.dumps(arg.replace('%', '%%').replace('$', '$$')) for arg in argv)
     raw = ('[Unit]\nDescription=Admitted native onboarding body\nAfter=network-online.target\n'
@@ -101,6 +106,7 @@ def main(argv=None) -> int:
     parser.add_argument('--plan', type=Path, required=True)
     parser.add_argument('--runtime-code', type=Path)
     parser.add_argument('--runtime-digest')
+    parser.add_argument('--messaging-application', type=Path)
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument('--receive-only', action='store_true')
     selection.add_argument('--visibility-installation', type=Path)
@@ -115,7 +121,7 @@ def main(argv=None) -> int:
                 and args.runtime_code != Path('/opt/daimon-onboarding-runtime') / args.runtime_digest):
             raise OnboardingError('qualified_guest_service_required')
         install(args.code, receive_only=args.receive_only, visibility=args.visibility_installation,
-                runtime_code=args.runtime_code, runtime_digest=args.runtime_digest)
+                runtime_code=args.runtime_code, runtime_digest=args.runtime_digest, messaging_application=args.messaging_application)
         print(json.dumps(dict(installed=True)))
         return 0
     except (OSError, ValueError, OnboardingError):

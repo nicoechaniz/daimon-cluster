@@ -25,7 +25,7 @@ from .owner_process import ProcessPresence
 MAX_FRAME = 4096
 
 
-def serve(target, profile: dict, *, receive_only=False, visibility_installation=None, ready_descriptor=None):
+def serve(target, profile: dict, *, receive_only=False, visibility_installation=None, messaging_application=None, ready_descriptor=None):
     """Run the admitted parent as a service, retaining its ephemeral session."""
     holder = ReceivingHolder(target)
     client = holder.configured_client(profile)
@@ -39,7 +39,8 @@ def serve(target, profile: dict, *, receive_only=False, visibility_installation=
     signal.signal(signal.SIGTERM,request_stop)
     signal.signal(signal.SIGINT,request_stop)
     try:
-        owned.start(receive_only=receive_only,visibility_installation=visibility_installation)
+        owned.start(receive_only=receive_only,visibility_installation=visibility_installation,
+                    messaging_application=messaging_application)
         if ready_descriptor is not None:
             os.write(ready_descriptor,b'READY\n')
             os.close(ready_descriptor)
@@ -132,8 +133,10 @@ class AdmittedDaemon:
                     self.supervisor.force_stop("body-observer-unavailable")
                 return
 
-    def start(self, *, receive_only=False, visibility_installation=None):
+    def start(self, *, receive_only=False, visibility_installation=None, messaging_application=None):
         if receive_only == (visibility_installation is not None):
+            raise OnboardingError("onboarding_visibility_selection_required")
+        if messaging_application is not None and receive_only:
             raise OnboardingError("onboarding_visibility_selection_required")
         parent, child = socket.socketpair()
         parent.settimeout(5)
@@ -143,12 +146,14 @@ class AdmittedDaemon:
                     "from clusterctl.onboarding_runtime import child_main;"
                     "raise SystemExit(child_main(Path(sys.argv[2]),json.loads(sys.argv[3]),"
                     "json.loads(sys.argv[4]),int(sys.argv[5]),int(sys.argv[6]),int(sys.argv[7]),"
-                    "sys.argv[8]=='true',Path(sys.argv[9]) if sys.argv[9] else None))")
+                    "sys.argv[8]=='true',Path(sys.argv[9]) if sys.argv[9] else None,"
+                    "Path(sys.argv[10]) if sys.argv[10] else None,int(sys.argv[11])))")
         def spawn():
             self.process = subprocess.Popen([sys.executable, '-B', '-I', '-c', launcher,
                 str(Path(__file__).resolve().parents[1]), str(self.target.home), json.dumps(self.target.plan),
                 json.dumps(self.target.genesis), str(child.fileno()), str(ready_write), str(os.getpid()),
-                'true' if receive_only else 'false', str(visibility_installation) if visibility_installation else ''],
+                'true' if receive_only else 'false', str(visibility_installation) if visibility_installation else '',
+                str(messaging_application) if messaging_application else '', str(self.target.code_uid)],
                 pass_fds=(child.fileno(), ready_write), stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 env={'PATH':os.defpath, 'LANG':'C.UTF-8', 'HOME':str(self.target.home),
@@ -210,10 +215,10 @@ class AdmittedDaemon:
 
 
 def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
-               receive_only, visibility_installation):
+               receive_only, visibility_installation, messaging_application=None, code_uid=0):
     from daimon_matrix import daemon, runtime, native_egress
     from .onboarding_target import Target
-    target = Target(home, plan, genesis)
+    target = Target(home, plan, genesis, code_uid=code_uid)
     if target.observe()['phase'] != 'v8' or os.getppid() != guardian_pid:
         raise OnboardingError('onboarding_runtime_parent_rejected')
     stopping = threading.Event()
@@ -240,15 +245,31 @@ def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
             raise OnboardingError('onboarding_visibility_selection_required')
         def clock():
             return time.time_ns() // 1_000_000
-        options = (dict(egress=native_egress.closed_visibility(clock=clock)) if receive_only else
+        if messaging_application is not None and receive_only:
+            raise OnboardingError('onboarding_visibility_selection_required')
+        if messaging_application is not None:
+            # The receiving native catalogs were initialized before enrollment.
+            # The peer app owns a separate signed controller, not their key.
+            options = dict(egress=native_egress.closed_visibility(clock=clock))
+        else:
+            options = (dict(egress=native_egress.closed_visibility(clock=clock)) if receive_only else
                    dict(egress_factory=daemon._visibility_factory(visibility_installation, clock=clock)))
         hosted = runtime.load_runtime(target.package/'runtime', 'runtime.json', target._reader,
             clock=clock, body_reader=body_reader, **options)
+        if messaging_application is not None:
+            from dataclasses import replace
+            from daimon_matrix.chat_host import application_view
+            peer = application_view(hosted, messaging_application, visibility_installation)
+            peer = replace(peer, socket_path=hosted.state_root / 'peer.sock')
         def request_stop(_number, _frame):
             stopping.set()
         signal.signal(signal.SIGTERM, request_stop)
         signal.signal(signal.SIGINT, request_stop)
-        daemon.serve_forever(hosted, stop=stopping, ready_descriptor=ready_descriptor)
+        if messaging_application is not None:
+            from .onboarding_views import serve_views
+            serve_views([hosted, peer], stopping, ready_descriptor=ready_descriptor)
+        else:
+            daemon.serve_forever(hosted, stop=stopping, ready_descriptor=ready_descriptor)
         return 0
     finally:
         stopping.set()

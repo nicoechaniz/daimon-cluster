@@ -326,7 +326,7 @@ class HostBackend:
                 if not self._mounted(plan, mounts):
                     return Observation("absent", safe_to_execute=True)
                 target = self._matrix_command(plan, "observe")
-                if target["phase"] in {"absent", "prepared", "v7", "v8-published"}:
+                if target["phase"] in {"absent", "prepared", "v7", "v8-published", "peer-published"}:
                     return Observation("absent", safe_to_execute=True)
                 if self.config.admission is not None:
                     from .onboarding_managed import ManagedRuntime
@@ -656,7 +656,7 @@ class HostBackend:
     def _matrix_command(self, plan: dict, action: str) -> dict:
         value = self._target_call(plan, action)
         if (not isinstance(value, dict) or set(value) != {"phase", "request", "receipt"}
-                or value["phase"] not in {"absent", "prepared", "v7", "v8-published", "v8"}):
+                or value["phase"] not in {"absent", "prepared", "v7", "v8-published", "v8", "peer-published"}):
             raise OnboardingError("invalid_onboarding_observation")
         return value
 
@@ -684,7 +684,7 @@ class HostBackend:
         # Lifecycle recovery may already have a live daemon. Its verified V8
         # publication is immutable; never reenter credential writer operations
         # merely because a later service/registry acknowledgement was lost.
-        if self._matrix_command(plan, 'observe')['phase'] == 'v8':
+        if self._matrix_command(plan, 'observe')['phase'] in {'v8', 'peer-published'}:
             return
         target = self._matrix_command(plan, "prepare")
         activation = ceremony.authorize_target(plan, target["request"])

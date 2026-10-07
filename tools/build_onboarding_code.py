@@ -19,9 +19,9 @@ from clusterctl.onboarding_input import relative
 HMK_COMMIT = "518f350889001b7f70ac3dd4f843a9e0c16d256c"
 ROOT = Path(__file__).resolve().parents[1]
 MODULES = ("__init__.py", "being_seed.py", "onboarding.py", "onboarding_input.py",
-           "onboarding_release.py", "onboarding_code_successor.py", "onboarding_guest.py", "onboarding_mounts.py", "onboarding_sdk.py",
+           "onboarding_release.py", "onboarding_code_successor.py", "onboarding_peer.py", "onboarding_guest.py", "onboarding_mounts.py", "onboarding_sdk.py",
            "onboarding_target.py", "onboarding_credential.py", "owner_process.py", "onboarding_admission.py",
-           "onboarding_runtime.py", "onboarding_service.py", "onboarding_ssh.py", "onboarding_provider.py", "onboarding_telegram.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
+           "onboarding_runtime.py", "onboarding_views.py", "onboarding_service.py", "onboarding_ssh.py", "onboarding_provider.py", "onboarding_telegram.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
 
 
 def copy_code(source: Path, target: Path) -> None:
@@ -44,6 +44,15 @@ def copy_code(source: Path, target: Path) -> None:
                          0o755 if source.stat().st_mode & 0o100 else 0o644)
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(raw)
+
+
+def capture_peer_tool(output: Path) -> None:
+    from clusterctl.onboarding_peer import TOOL_MODULE, TOOL_SHA256
+    source = ROOT / 'clusterctl/onboarding_peer_native.py'
+    target = output / 'clusterctl' / TOOL_MODULE
+    copy_code(source, target)
+    if hashlib.sha256(onboarding_release.regular(target, uid=os.geteuid())).hexdigest() != TOOL_SHA256:
+        raise OnboardingError('qualified_native_peer_tool_required')
 
 
 def build(checkout: Path, commons: Path, selected_profile: dict, output: Path, *, sdk: Path | None = None,
@@ -74,6 +83,7 @@ def build(checkout: Path, commons: Path, selected_profile: dict, output: Path, *
                 raise OnboardingError("invalid_pinned_hmk_archive")
     for name in MODULES:
         copy_code(ROOT / "clusterctl" / name, output / "clusterctl" / name)
+    capture_peer_tool(output)
     for path in sorted((ROOT / "support/being-seed-tools").rglob("*")):
         if path.is_file() and "__pycache__" not in path.parts:
             copy_code(path, output / path.relative_to(ROOT))

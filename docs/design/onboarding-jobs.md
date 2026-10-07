@@ -407,3 +407,31 @@ Disposable native device-flow qualification verifies service, own home,
 read-only account metadata and private owner action without approving an
 account or running inference. Real cohort provider and SSH acceptance remain
 pending.
+
+## Dedicated receiving Telegram listener
+
+The receiving artifact optionally captures the maintained pinned telecodex
+binary with `--telegram-artifact`. Its source, archive, binary hash and build
+selection become part of the sealed code inventory. No bot credential enters
+that artifact. The worker mounts only the selected body's private token and
+human destination, independently of its preserved seed and public SSH key.
+
+Before starting, the worker durably reserves the bot across all jobs. Another
+plan cannot consume that bot, including after a crash. Native preflight requires
+private-chat topics and refuses an existing webhook without changing it.
+Invalid bot data does not freeze the receiving binding. Retries preserve the
+conversation database, input journal and token binding. Interrupted preparation
+can finish missing configuration without replacing existing conversation data.
+
+The dedicated boot-enabled unit uses the receiving agent's own Codex home and
+workspace. Both draft delivery and unfinished-response previews are disabled;
+completed replies remain the visible result. Shared native App Server access
+supports CLI continuity, while automatic history imports, maintenance and
+Matrix inbox attention remain disabled. A native proxy/skill probe runs without
+model inference or reading bot updates before service installation.
+
+The Telegram stage records `telegram_ready` only after observing the exact
+owned unit's live binary process. Real conversation, permanent final replies,
+steering, independent topics, restart continuity and CLI resume remain separate
+acceptance requirements. Listener readiness never sets `telegram_verified` or
+activates the being.

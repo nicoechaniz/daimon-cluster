@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULES = ("__init__.py", "being_seed.py", "onboarding.py", "onboarding_input.py",
            "onboarding_release.py", "onboarding_guest.py", "onboarding_mounts.py", "onboarding_sdk.py",
            "onboarding_target.py", "onboarding_credential.py", "owner_process.py", "onboarding_admission.py",
-           "onboarding_runtime.py", "onboarding_service.py", "onboarding_ssh.py", "onboarding_provider.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
+           "onboarding_runtime.py", "onboarding_service.py", "onboarding_ssh.py", "onboarding_provider.py", "onboarding_telegram.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
 
 
 def copy_code(source: Path, target: Path) -> None:
@@ -46,7 +46,8 @@ def copy_code(source: Path, target: Path) -> None:
         stream.write(raw)
 
 
-def build(checkout: Path, commons: Path, selected_profile: dict, output: Path, *, sdk: Path | None = None) -> dict:
+def build(checkout: Path, commons: Path, selected_profile: dict, output: Path, *, sdk: Path | None = None,
+          telegram: Path | None = None) -> dict:
     selected_profile = onboarding_release.profile(selected_profile)
     if output.exists() or output.is_symlink():
         raise OnboardingError("receiving_code_destination_exists")
@@ -77,6 +78,17 @@ def build(checkout: Path, commons: Path, selected_profile: dict, output: Path, *
         if path.is_file() and "__pycache__" not in path.parts:
             copy_code(path, output / path.relative_to(ROOT))
     copy_code(ROOT / "support/source-inheritance.md", output / "inheritance.md")
+    if telegram is not None:
+        from clusterctl.onboarding_telegram import ARCHIVE, BINARY, COMMIT
+        copy_code(telegram, output / 'telegram/telecodex')
+        binary = output / 'telegram/telecodex'
+        if hashlib.sha256(binary.read_bytes()).hexdigest() != BINARY:
+            raise OnboardingError('qualified_telegram_binary_required')
+        binary.chmod(0o755)
+        (output / 'telegram/artifact.json').write_text(json.dumps(dict(
+            commit=COMMIT, archive_sha256=ARCHIVE, binary_sha256=BINARY,
+            rust='1.95.0', features='--no-default-features'), sort_keys=True))
+        (output / 'telegram/artifact.json').chmod(0o644)
     if sdk is not None:
         from clusterctl import onboarding_sdk
         onboarding_sdk.verify(sdk.parent, uid=os.geteuid())
@@ -116,9 +128,11 @@ def main() -> int:
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--sdk", type=Path)
+    parser.add_argument("--telegram-artifact", type=Path)
     args = parser.parse_args()
     try:
-        result = build(args.hmk_checkout, args.commons, json.loads(args.profile.read_bytes()), args.output, sdk=args.sdk)
+        result = build(args.hmk_checkout, args.commons, json.loads(args.profile.read_bytes()), args.output,
+                       sdk=args.sdk, telegram=args.telegram_artifact)
         print(json.dumps(result))
         return 0
     except Exception:

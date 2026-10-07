@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import being_seed, onboarding_input, onboarding_mounts, onboarding_release
+from . import being_seed, onboarding_consent, onboarding_input, onboarding_mounts, onboarding_release
 from .onboarding import Observation, OnboardingError, digest, private_directory, validate_plan
 from .onboarding_progress import Progress
 
@@ -37,17 +37,22 @@ class HostConfig:
     inputs: Path | None = None
     code: Path | None = None
     views: Path | None = None
+    consent_state: Path | None = None
+    consent_uid: int | None = None
+    qualification: bool = False
 
     @classmethod
     def load(cls, path: Path) -> HostConfig:
         value = being_seed._read(path)
-        if (set(value) != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        consent_keys = {"consent_state", "consent_uid"}
+        if (set(value) - consent_keys - {"qualification"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
                 or any(not isinstance(value[key], str) or not being_seed.NAME.fullmatch(value[key])
                        for key in ("pool", "profile"))
-                or type(value["concurrency"]) is not int or not 1 <= value["concurrency"] <= 8):
+                or type(value["concurrency"]) is not int or not 1 <= value["concurrency"] <= 8
+                or type(value.get("qualification", False)) is not bool):
             raise OnboardingError("invalid_onboarding_host_configuration")
         directories = {}
         for key in ("jobs", "grants", "inputs", "views"):
@@ -66,9 +71,20 @@ class HostConfig:
             raise OnboardingError("invalid_onboarding_host_configuration")
         code = Path(value["code"])
         onboarding_release.verify(code, value["release_digest"], uid=path.stat().st_uid)
+        consent_state, consent_uid = None, None
+        if consent_keys & set(value):
+            if (not consent_keys <= set(value) or not isinstance(value["consent_state"], str)
+                    or not Path(value["consent_state"]).is_absolute()
+                    or type(value["consent_uid"]) is not int or value["consent_uid"] < 0):
+                raise OnboardingError("invalid_onboarding_host_configuration")
+            consent_state, consent_uid = being_seed._path(Path(value["consent_state"])), value["consent_uid"]
+            info = consent_state.stat()
+            if info.st_uid != consent_uid or info.st_mode & 0o077 or not consent_state.is_dir():
+                raise OnboardingError("invalid_onboarding_host_configuration")
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
-                   value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"])
+                   value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
+                   consent_state, consent_uid, value.get("qualification", False))
 
     def approved_plans(self) -> list[dict]:
         private_directory(self.grants)
@@ -167,6 +183,8 @@ class HostBackend:
             return Observation("waiting", reason="host_authorization_required")
         if stage == "environment":
             return self._environment(plan)
+        if stage in {"context", "matrix"} and not self._consented(plan, stage=stage):
+            return Observation("waiting", reason="identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
             return self._guest_observe(plan, stage)
         # Do not invent success for native enrollment or receiving acceptance.
@@ -178,6 +196,8 @@ class HostBackend:
     def execute(self, plan: dict, stage: str, operation_id: str) -> None:
         if not self.authorize(plan, digest(plan)):
             raise OnboardingError("host_authorization_required")
+        if stage in {"context", "matrix"} and not self._consented(plan, stage=stage):
+            raise OnboardingError("identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
             self._guest_execute(plan, stage)
             return
@@ -205,6 +225,24 @@ class HostBackend:
                       "source=" + name + "-home", "path=/home/agent"])
         if row.get("status") == "Stopped":
             self._dispatch(plan, ["start", name])
+
+    def _consented(self, plan: dict, *, stage: str) -> bool:
+        # Disposable context-only qualification has no participant decision.
+        # A deployed host config supplies the private intake boundary.
+        if self.config.consent_state is None:
+            return stage == "context" and self.config.qualification and plan["name"].startswith("qualify-")
+        if self.config.consent_uid is None or self.config.progress is None or self.config.code is None:
+            raise OnboardingError("invalid_onboarding_host_configuration")
+        onboarding_release.verify(self.config.code, plan["release_digest"], uid=os.geteuid())
+        proposal = onboarding_consent.review(plan, (self.config.code / "inheritance.md").read_text())
+        reviews = onboarding_consent.Reviews(self.config.progress, worker_uid=os.geteuid())
+        try:
+            existing = reviews.read(plan["name"], owner=plan["owner"])
+        except FileNotFoundError:
+            existing = None
+        if existing != proposal:
+            reviews.publish(proposal)
+        return onboarding_consent.read(self.config.consent_state, proposal, intake_uid=self.config.consent_uid) is not None
 
     def _guest_paths(self, plan: dict) -> tuple[Path, Path, dict]:
         if self.config.code is None or self.config.inputs is None or self.config.views is None:

@@ -277,6 +277,7 @@ jobs:
           clusterctl/adapters.py
           clusterctl/cli.py
           clusterctl/being_seed.py
+          clusterctl/onboarding_consent.py
           clusterctl/browser.py
           clusterctl/distributed_rebirth.py
           clusterctl/embodiments.py
@@ -308,6 +309,7 @@ jobs:
           steward_tools/mutations.py
           tests/test_matrix_host.py
           tests/test_being_seed.py
+          tests/test_onboarding_consent.py
           scripts/being-seed
           tests/test_admission.py
           tests/test_matrix_host_process.py

@@ -39,6 +39,9 @@ def validate(value: object) -> dict:
 
 
 class Progress:
+    suffix = ".json"
+    validate = staticmethod(validate)
+
     def __init__(self, root: str | Path, *, worker_uid: int = 0):
         self.root = being_seed._path(Path(root))
         self.worker_uid = worker_uid
@@ -52,7 +55,7 @@ class Progress:
     def _file(self, name: str) -> Path:
         if not isinstance(name, str) or not being_seed.NAME.fullmatch(name):
             raise OnboardingError("invalid_onboarding_name")
-        return being_seed._path(self.root / (name + ".json"))
+        return being_seed._path(self.root / (name + self.suffix))
 
     def read(self, name: str, *, owner: str) -> dict:
         self._directory()
@@ -63,13 +66,13 @@ class Progress:
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != self.worker_uid
                     or info.st_nlink != 1 or info.st_mode & 0o037 or info.st_size > 65536):
                 raise OnboardingError("trusted_onboarding_progress_required")
-            value = validate(json.load(stream))
+            value = self.validate(json.load(stream))
         if value["name"] != name or owner != "*" and value["owner"] != owner:
             raise OnboardingError("onboarding_job_not_found")
         return value
 
     def publish(self, value: dict) -> None:
-        value = validate(value)
+        value = self.validate(value)
         self._directory()
         if os.geteuid() != self.worker_uid:
             raise OnboardingError("trusted_onboarding_progress_required")

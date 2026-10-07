@@ -342,7 +342,8 @@ def test_same_entrypoint_machine_formats_are_public_metadata_only(tmp_path):
             "/v1/onboarding", "/v1/seed-access", "/v1/seeds", "/v1/seeds/{seed}/archive",
             "/v1/seeds/{seed}/selection", "/v1/seeds/{seed}/prepare", "/v1/seeds/{seed}/connections", "/v1/seeds/{seed}/onboarding",
             "/v1/seed-access-requests", "/v1/seed-access-requests/{request_id}",
-            "/v1/seed-access-requests/{request_id}/claim", "/v1/seed-session"}
+            "/v1/seed-access-requests/{request_id}/claim", "/v1/seed-session",
+            "/v1/seeds/{seed}/onboarding/review"}
         assert request("/v1/seeds", extra={"Authorization": ""})[0] == 401
         assert request("/v1/seeds/private-fixture/selection", owner="sai")[0] == 404
 

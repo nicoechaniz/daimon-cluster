@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from clusterctl import being_seed, onboarding_input, onboarding_mounts
+from clusterctl import being_seed, onboarding_consent, onboarding_input, onboarding_mounts
 from clusterctl.onboarding import JobStore, OnboardingError, digest
 from clusterctl.onboarding_host import HostBackend
 from tests import test_onboarding_guest as guest_fixtures
@@ -78,6 +78,15 @@ def test_engine_installs_guest_context_and_memory_through_read_only_devices(tmp_
     # Fixture input has exactly the same owner/name/digest selected in its plan.
     receiver.incoming.rename(inputs / 'fixture')
     config = replace(config, inputs=inputs, views=views, code=receiver.code, release_digest=receiver.plan['release_digest'])
+    state, progress = tmp_path / 'intake', tmp_path / 'progress'
+    progress.mkdir(mode=0o750)
+    state.chmod(0o700)
+    reviews = onboarding_consent.Reviews(progress, worker_uid=os.geteuid())
+    proposal = onboarding_consent.review(receiver.plan, (receiver.code / 'inheritance.md').read_text())
+    reviews.publish(proposal)
+    onboarding_consent.submit(state, 'fixture', dict(review_digest=proposal['review_digest'],
+        inheritance_approved=True, matrix_identity_mode='first'), owner=receiver.plan['owner'], reviews=reviews)
+    config = replace(config, progress=progress, consent_state=state, consent_uid=os.geteuid())
     being_seed._write(config.grants / 'fixture.json', dict(schema='cluster-onboarding-host-grant/v1', plan=receiver.plan, revoked=False))
     incus = GuestIncus()
     backend = HostBackend(config, run=incus)

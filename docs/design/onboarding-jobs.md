@@ -11,6 +11,26 @@ steps: environment, context, memory, Matrix, access, Telegram, welcome and
 acceptance. Web progress reads the same job's closed projection through
 `GET /v1/seeds/{seed}/onboarding`; it does not execute host operations.
 
+Before installing Source inheritance, the worker publishes an owner-private
+review of the exact plan and qualified inheritance text. The same portal and
+agent API expose `GET /v1/seeds/{seed}/onboarding/review`; POST records the
+human/daimon pair's acknowledgement and whether to continue an existing signed
+Matrix identity or prepare its first one. `clusterctl seed review` and
+`clusterctl seed consent` call the same functions. The original SOUL remains
+unchanged. An existing identity choice requires native continuity evidence;
+it never authorizes another root. Custody creation is still a separate native
+authority operation, not an effect of submitting this decision.
+
+The decision binds the plan and Source text digest. An identical retry is
+idempotent; a contradictory decision is refused. A changed proposal cannot
+reuse an older acknowledgement. The worker reads participant-owned decisions
+across an explicitly configured numeric UID boundary and checks the current
+root-owned grant separately. It resumes on its next tick after a decision,
+including after a service restart. Intake cannot publish proposals, manufacture
+receipts or issue host grants. Missing or malformed decisions never complete a
+stage. The acknowledgement is an authenticated owner statement, not a claim
+of a separate human cryptographic signature.
+
 The current typed host adapter reconciles Incus environment preparation: exact
 image fingerprint, isolated instance, 8 GiB root and 22 GiB durable home.
 It refuses a foreign instance, home volume or attachment. Context and memory
@@ -89,6 +109,13 @@ receiving tools and selected transferable context; no identity, memory, bot
 credential or account cache is part of a code release. The mutable development
 checkout is captured, while the final artifact forbids group/other writes and
 is selected by its complete manifest digest.
+
+Live configurations also set `consent_state` to the private intake store and
+`consent_uid` to its dedicated service UID. Missing consent configuration stops
+before inheritance installation. The optional host-only `qualification: true`
+permits context-only disposable rehearsals with an exact host grant and a
+`qualify-` name; participant labels alone cannot select that exception. No
+qualification flag supplies native authority or receiving acceptance.
 
 The dedicated guest account uses UID/GID 1000. The qualified image carries
 receiving tools; bootstrap creates this new unprivileged account when absent,

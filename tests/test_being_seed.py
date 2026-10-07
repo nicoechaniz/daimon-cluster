@@ -246,6 +246,49 @@ def test_upload_unauthenticated_rejected_without_reading_body(tmp_path):
             assert b"401" in connection.recv(8192)
 
 
+def test_same_entrypoint_machine_formats_are_public_metadata_only(tmp_path):
+    with http_server(tmp_path) as (_server, request):
+        spec = {"name": "private-fixture", "label": "PrivateFixture", "mode": "new",
+                "soul": "Private autobiography unique to this fixture"}
+        assert request("/v1/seeds", "POST", spec, extra={"Idempotency-Key": KEY})[0] == 200
+        token = "123456789:" + "x" * 40
+        assert request("/v1/seeds/private-fixture/connections", "POST",
+                       {"telegram_bot_token": token, "telegram_chat_id": 1234})[0] == 200
+        for media, suffix in [("text/markdown", "markdown"), ("application/json", "json")]:
+            code, headers, body = request("/v1/onboarding", extra={"Authorization": "", "Accept": media})
+            assert code == 200 and headers["Content-Type"].startswith(media)
+            assert headers["Vary"] == "Accept" and headers["Cache-Control"] == "no-store"
+            assert 'rel="alternate"' in headers["Link"]
+            assert request("/v1/onboarding?format=" + suffix, extra={"Authorization": ""})[2] == body
+            serialized = json.dumps(body)
+            for private in [spec["name"], spec["label"], spec["soul"], token, str(tmp_path)]:
+                assert private not in serialized
+        code, _, guide = request("/v1/onboarding?format=json", extra={"Authorization": ""})
+        assert code == 200 and guide["schema"] == "cluster-onboarding-guide/v1"
+        assert guide["completion"]["active"] is False
+        assert guide["completion"]["automatic_runtime_activation"] is False
+        assert guide["api"]["servers"] == [{"url": "/", "description": "This HTTPS origin"}]
+        assert set(guide["api"]["paths"]) == {
+            "/v1/onboarding", "/v1/seed-access", "/v1/seeds", "/v1/seeds/{seed}/archive",
+            "/v1/seeds/{seed}/selection", "/v1/seeds/{seed}/prepare", "/v1/seeds/{seed}/connections"}
+        assert request("/v1/seeds", extra={"Authorization": ""})[0] == 401
+        assert request("/v1/seeds/private-fixture/selection", owner="sai")[0] == 404
+
+
+def test_machine_media_preferences_and_explicit_format_override(tmp_path):
+    with http_server(tmp_path) as (_server, request):
+        def get(path="/v1/onboarding", accept=""):
+            return request(path, extra={"Authorization": "", "Accept": accept})
+        assert get(accept="text/html;q=0.5, text/markdown;q=1")[1]["Content-Type"].startswith("text/markdown")
+        assert get(accept="text/markdown;q=0, text/html;q=1")[1]["Content-Type"].startswith("text/html")
+        assert get(accept="application/json, text/markdown")[1]["Content-Type"] == "application/json"
+        assert get("/v1/onboarding?format=html", "application/json")[1]["Content-Type"].startswith("text/html")
+        assert get(accept="*/*")[1]["Content-Type"].startswith("text/html")
+        assert get("/v1/onboarding?format=")[1]["Content-Type"].startswith("text/html")
+        for query in ["format=xml", "format=json&format=markdown"]:
+            assert get("/v1/onboarding?" + query)[0] == 400
+
+
 def test_operator_web_access_issuer_cannot_be_used_by_participants(tmp_path):
     with http_server(tmp_path) as (_server, request):
         assert request("/v1/seed-access", "POST", {"owner": "new-human"})[0] == 403

@@ -301,6 +301,7 @@ jobs:
           clusterd/confirm.py
           clusterd/handlers.py
           clusterd/seed_handlers.py
+          clusterd/seed_ui.py
           clusterd/openapi.py
           clusterd/routes.py
           clusterd/server.py

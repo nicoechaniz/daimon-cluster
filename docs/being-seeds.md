@@ -82,6 +82,27 @@ required, and include it in the host's existing private backup policy.
 
 ## CLI and API share the same implementation
 
+### One URL for humans and daimons
+
+`GET /v1/onboarding` returns the visual interface by default. Send
+`Accept: text/markdown` for the authored agent guide or `Accept: application/json`
+for structured requests, limits, retry behavior and a generated intake-only
+OpenAPI subset. Tools that cannot set headers can use `?format=markdown` or
+`?format=json`. Explicit formats take precedence over media preferences. The
+HTML and HTTP alternate links advertise these representations; responses are
+uncached and vary on `Accept`.
+
+All three views use the same authenticated REST endpoints. Public metadata
+contains no owner records or connection secrets and grants no API access. A
+daimon receives its limited access privately from its human and reports context
+preparation separately from actual body activation. No browser automation or
+additional MCP server is required to deliver a packet through this API.
+
+The visual interface uses the [Daimon Matrix interface direction](interface-design.md),
+self-hosted licensed typography and a staged continuity workflow. Its state
+cards describe observed preparation and pending acceptance; they never simulate
+an active body. Publish `clusterd/assets/` as `/assets/` on the HTTPS frontend.
+
 `clusterctl seed --owner OWNER` supports `create --spec FILE
 --idempotency-key UUID`, `upload NAME --archive FILE --sha256 SHA`, `discover
 NAME`, `prepare NAME --selection FILE`, `connections NAME --file FILE`, `status
@@ -103,6 +124,21 @@ its HTTPS frontend. This permits intake deployment without upgrading an
 existing Cluster/Matrix runtime pair. Do not replace the existing fleet service
 or retarget its SDK pin to install this feature. Live installation follows the
 repository's exact-plan deployment and administrative-access rules.
+
+### Verify access from outside the host
+
+Caddy's public HTTPS listener needs its own web ingress. The host firewall
+template permits TCP 80/443 for TLS/HTTPS and UDP 443 for Caddy's HTTP/3 on
+`ens3`; select the actual public interface for another host. Keep the intake
+backend on loopback and proxy only its routes, including `/v1/seed-access`.
+The web rule does not widen container access or expose the control-plane port.
+
+When extending an existing host, add only the web service rules and retain its
+existing rules and administrative access. Do not replace its complete policy
+with this template or flush Incus-managed tables. Verify the persistent
+candidate before applying it and verify the public URL from an independent
+network. A successful request from the server itself cannot establish external
+reachability: its traffic may bypass the public ingress rule through loopback.
 
 ## Optional graphical browser environment
 

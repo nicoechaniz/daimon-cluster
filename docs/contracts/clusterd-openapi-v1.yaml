@@ -16,7 +16,7 @@ paths:
   /v1/onboarding:
     get:
       operationId: seedOnboarding
-      summary: Private seed intake interface
+      summary: Human interface or public Markdown/JSON agent guide
       description: 'Uses `n/a` as its source; mutations retain the same clusterctl
         business-logic boundary while reads may add owner scoping, redaction, observation
         envelopes, and bounded snapshot pagination.
@@ -39,6 +39,15 @@ paths:
         schema:
           type: string
           default: anonymous
+      - name: format
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - html
+          - markdown
+          - json
       security: []
       responses:
         '200':

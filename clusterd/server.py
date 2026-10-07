@@ -307,6 +307,8 @@ class ClusterdHandler(BaseHTTPRequestHandler):
         handler = handlers.HANDLERS[route.handler]
         try:
             extra = {}
+            if route.handler == "seed_ui":
+                extra["_accept"] = self.headers.get("Accept", "")
             if archive:
                 self.connection.settimeout(30)
                 extra = {"_stream": self.rfile, "_length": self.headers.get("Content-Length"),

@@ -46,8 +46,11 @@ class Route:
 
 
 ROUTES: list[Route] = [
-    Route("GET", "/v1/onboarding", "seedOnboarding", "Private seed intake interface",
-          "seed_ui", "none", "n/a"),
+    Route("GET", "/v1/onboarding", "seedOnboarding", "Human interface or public Markdown/JSON agent guide",
+          "seed_ui", "none", "n/a", query_params=(
+              {"name": "format", "in": "query", "required": False,
+               "schema": {"type": "string", "enum": ["html", "markdown", "json"]}},
+          )),
     Route("GET", "/v1/seeds", "listSeeds", "Owner-scoped seed preparation progress",
           "list_seeds", "fleet:read", "clusterctl seed list --json", required_scope="fleet:read",
           query_params=(

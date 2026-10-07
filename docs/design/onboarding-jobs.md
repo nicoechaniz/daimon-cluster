@@ -480,3 +480,13 @@ Codex's idempotent singleton startup and readiness every five seconds. A failed
 native operation exits for systemd recovery; captured diagnostics stay private.
 It starts no model turn, reads no Matrix inbox and replays no Telegram input.
 Listener restarts retain a separate cgroup and the same receiving Codex home.
+
+## Independent worker installation
+
+`python -m tools.install_onboarding_worker --release /opt/daimon-cluster-releases/COMMIT
+--config /private/host.json --activate` installs a dedicated boot-enabled worker
+from the selected immutable host release. It validates the existing private
+configuration and that installation's exact SDK before publishing its unit.
+An existing changed unit is preserved and refused. Omitting `--activate`
+installs without starting. The worker uses the same engine and policy as web,
+agent API and CLI; no active Codex conversation is needed.

@@ -52,6 +52,7 @@ FILES = (
     "clusterctl/onboarding_qualification.py",
     "tools/build_onboarding_code.py",
     "tools/configure_onboarding_account.py",
+    "tools/install_onboarding_worker.py",
     "tools/build_onboarding_sdk.py",
     "clusterctl/browser.py",
     "clusterd/seed_handlers.py",

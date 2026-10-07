@@ -44,13 +44,14 @@ class HostConfig:
     custody: Path | None = None
     custody_grants: Path | None = None
     admission: Path | None = None
+    accounts: Path | None = None
 
     @classmethod
     def load(cls, path: Path) -> HostConfig:
         value = being_seed._read(path)
         consent_keys = {"consent_state", "consent_uid"}
         custody_keys = {"custody", "custody_grants"}
-        if (set(value) - consent_keys - custody_keys - {"qualification", "admission"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - {"qualification", "admission", "accounts"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -108,10 +109,16 @@ class HostConfig:
                 raise OnboardingError('invalid_onboarding_host_configuration')
             admission = Path(value['admission'])
             being_seed._read(admission)
+        accounts = None
+        if 'accounts' in value:
+            if (not isinstance(value['accounts'], str) or not Path(value['accounts']).is_absolute()
+                    or consent_state is None):
+                raise OnboardingError('invalid_onboarding_host_configuration')
+            accounts = private_directory(Path(value['accounts']))
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts)
 
     def approved_plans(self) -> list[dict]:
         private_directory(self.grants)
@@ -220,6 +227,9 @@ class HostBackend:
                 return Observation('waiting', reason='account_authorization_required')
             if not self._ssh_command(plan, 'observe', key)['installed']:
                 return Observation('absent', safe_to_execute=True)
+            if self.config.accounts is not None:
+                from .onboarding_accounts import ManagedAccount
+                return ManagedAccount(self).observe(plan)
             # A listening sshd is not a successful human login or a provider
             # turn. The access stage remains pending until both are observed.
             return Observation('waiting', reason='account_authorization_required')
@@ -263,6 +273,9 @@ class HostBackend:
             if key is None:
                 raise OnboardingError('account_authorization_required')
             self._ssh_command(plan, 'install', key)
+            if self.config.accounts is not None:
+                from .onboarding_accounts import ManagedAccount
+                ManagedAccount(self).execute(plan)
             return
         if stage == "matrix" and self.config.custody and self.config.custody_grants:
             decision = self._decision(plan)

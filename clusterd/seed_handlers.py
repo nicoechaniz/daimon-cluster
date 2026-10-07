@@ -66,6 +66,27 @@ def seed_onboarding_status(deps, ctx, seed, **params):
         return handlers.Response(409, {"error": "onboarding_progress_requires_attention"})
 
 
+def seed_onboarding_action(deps, ctx, seed, **params):
+    from . import handlers
+    from clusterctl.onboarding_actions import Actions
+
+    try:
+        being_seed.status(handlers._state_dir(deps), seed, owner=_owner(ctx))
+        if not deps.onboarding_progress:
+            return handlers.Response(200, {'action': None})
+        value = Actions(deps.onboarding_progress, worker_uid=deps.onboarding_worker_uid).read(seed, owner=_owner(ctx))
+        action = value['action']
+        if action is not None and action['deadline_ms'] <= int(time.time() * 1000):
+            value = {**value, 'action': None}
+        return handlers.Response(200, value)
+    except FileNotFoundError:
+        return handlers.Response(200, {'action': None})
+    except being_seed.SeedError as error:
+        return handlers.Response(error.status, {'error': str(error)})
+    except (OnboardingError, OSError, ValueError, TypeError, KeyError):
+        return handlers.Response(409, {'error': 'onboarding_action_requires_attention'})
+
+
 def seed_onboarding_review(deps, ctx, seed, _body=None, _submit=False, **params):
     from . import handlers
 

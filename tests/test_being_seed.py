@@ -267,6 +267,7 @@ def test_same_entrypoint_machine_formats_are_public_metadata_only(tmp_path):
         assert code == 200 and guide["schema"] == "cluster-onboarding-guide/v1"
         assert guide["completion"]["active"] is False
         assert guide["completion"]["automatic_runtime_activation"] is False
+        assert guide["api"]["servers"] == [{"url": "/", "description": "This HTTPS origin"}]
         assert set(guide["api"]["paths"]) == {
             "/v1/onboarding", "/v1/seed-access", "/v1/seeds", "/v1/seeds/{seed}/archive",
             "/v1/seeds/{seed}/selection", "/v1/seeds/{seed}/prepare", "/v1/seeds/{seed}/connections"}

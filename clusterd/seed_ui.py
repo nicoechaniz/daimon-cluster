@@ -141,6 +141,7 @@ def agent_guide() -> dict:
     api["paths"] = {path: value for path, value in api["paths"].items()
                     if path in {"/v1/onboarding", "/v1/seeds", "/v1/seed-access"}
                     or path.startswith("/v1/seeds/")}
+    api["servers"] = [{"url": "/", "description": "This HTTPS origin"}]
     return {
         "schema": "cluster-onboarding-guide/v1",
         "entrypoint": "/v1/onboarding",

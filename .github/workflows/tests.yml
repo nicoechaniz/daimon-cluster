@@ -10,17 +10,14 @@ permissions:
 
 jobs:
   test:
+    name: test (3.13.5)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.13.5"
           cache: pip
           cache-dependency-path: |
             requirements.txt
@@ -29,7 +26,7 @@ jobs:
             constraints.txt
       - name: Harden and record the trusted qualification interpreter
         env:
-          EXPECTED_PYTHON: ${{ matrix.python-version }}
+          EXPECTED_PYTHON: "3.13.5"
         run: |
           python - <<'PY'
           import hashlib
@@ -136,7 +133,7 @@ jobs:
           assert trusted_digest == source_executable_digest
           assert trusted.read_bytes()[:4] == b"\x7fELF"
           probe = subprocess.run(
-              [os.fspath(trusted), "-I", "-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}');print(sys.base_prefix)"],
+              [os.fspath(trusted), "-I", "-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}');print(sys.base_prefix)"],
               check=True,
               capture_output=True,
               env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
@@ -168,7 +165,7 @@ jobs:
           PY
       - name: Verify the private interpreter is selected
         env:
-          EXPECTED_PYTHON: ${{ matrix.python-version }}
+          EXPECTED_PYTHON: "3.13.5"
         run: |
           python - <<'PY'
           import os
@@ -180,7 +177,7 @@ jobs:
           executable = Path(sys.executable).resolve(strict=True)
           prefix = Path(sys.base_prefix).resolve(strict=True)
           private_root = (Path(os.environ["RUNNER_TEMP"]) / "daimon-private-python").resolve(strict=True)
-          assert f"{sys.version_info.major}.{sys.version_info.minor}" == os.environ["EXPECTED_PYTHON"]
+          assert f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}" == os.environ["EXPECTED_PYTHON"]
           assert prefix.is_relative_to(private_root)
           assert executable.parent == prefix / "bin"
           assert _owner_file(executable, executable=True) == executable
@@ -393,7 +390,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.13"
+          python-version: "3.13.5"
       - run: python -m pip install pytest==9.0.2
       - name: Verify disposable proof prerequisites
         run: |

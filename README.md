@@ -42,7 +42,8 @@ current threat model is
 [`docs/security/threat-model-rc.md`](docs/security/threat-model-rc.md).
 
 The complete unit/integration suite, exact Matrix pin check, lint, typing and
-compile gates run in CI for Python 3.11–3.14. Separate jobs exercise:
+compile gates run in CI on Python 3.13.5, matching the deployed host and
+receiving containers. Separate jobs exercise:
 
 - isolated recovery/rebirth with read-only two-file transfer; and
 - encrypted backup export, offline repository verification and restore.

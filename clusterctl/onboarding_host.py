@@ -45,13 +45,14 @@ class HostConfig:
     custody_grants: Path | None = None
     admission: Path | None = None
     accounts: Path | None = None
+    intake_policy: Path | None = None
 
     @classmethod
     def load(cls, path: Path) -> HostConfig:
         value = being_seed._read(path)
         consent_keys = {"consent_state", "consent_uid"}
         custody_keys = {"custody", "custody_grants"}
-        if (set(value) - consent_keys - custody_keys - {"qualification", "admission", "accounts"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - {"qualification", "admission", "accounts", "intake_policy"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -115,12 +116,23 @@ class HostConfig:
                     or consent_state is None):
                 raise OnboardingError('invalid_onboarding_host_configuration')
             accounts = private_directory(Path(value['accounts']))
+        intake_policy = None
+        if 'intake_policy' in value:
+            if (not isinstance(value['intake_policy'], str) or not Path(value['intake_policy']).is_absolute()
+                    or consent_state is None):
+                raise OnboardingError('invalid_onboarding_host_configuration')
+            intake_policy = Path(value['intake_policy'])
+            from .onboarding_intake import policy
+            policy(intake_policy, value['release_digest'])
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy)
 
     def approved_plans(self) -> list[dict]:
+        if self.intake_policy is not None:
+            from .onboarding_intake import Intake
+            Intake(self).once()
         private_directory(self.grants)
         plans = []
         for path in sorted(self.grants.iterdir()):
@@ -156,6 +168,10 @@ class HostBackend:
     def authorize(self, plan: dict, plan_digest: str) -> bool:
         if digest(validate_plan(plan)) != plan_digest or plan["release_digest"] != self.config.release_digest:
             return False
+        if self.config.intake_policy is not None:
+            from .onboarding_intake import allows
+            if not allows(self.config, plan):
+                return False
         try:
             private_directory(self.config.grants)
             grant = being_seed._read(self.config.grants / (plan["name"] + ".json"))

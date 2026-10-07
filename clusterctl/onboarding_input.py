@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import stat
+import uuid
 from pathlib import Path, PurePosixPath
 
 from . import being_seed
@@ -86,45 +87,71 @@ def inventory(root: Path, *, uid: int) -> list[dict]:
     return rows
 
 
-def capture(received: Path, destination: Path, *, source_uid: int) -> dict:
-    """Preserve partial captures on failure. Only a final marker makes one usable."""
+def capture(received: Path, destination: Path, *, source_uid: int, resume: bool = False) -> dict:
+    """Freeze immutable prepared bytes; optional recovery never replaces files."""
     before = inventory(received, uid=source_uid)
-    if destination.exists() or destination.is_symlink():
-        raise OnboardingError("onboarding_input_destination_exists")
-    private_directory(destination.parent)
-    destination.mkdir(mode=0o700)
-    target = destination / "received"
-    target.mkdir(mode=0o700)
-    for directory in sorted(path for path in received.rglob("*") if path.is_dir()):
-        (target / directory.relative_to(received)).mkdir(mode=0o700)
-    for row in before:
-        checksum, size = owned_digest(received / row["path"], uid=source_uid, copy=target / row["path"])
-        if (checksum, size) != (row["sha256"], row["size"]):
-            raise OnboardingError("onboarding_input_changed")
-    if inventory(received, uid=source_uid) != before:
-        raise OnboardingError("onboarding_input_changed")
-    report = being_seed._read(target / "preparation.json")
+    report_raw = (received / "preparation.json").read_bytes()
+    report = json.loads(report_raw)
     if (report.get("schema") != "dm.being-receiving-preparation/v1"
             or report.get("ready_for_context_install") is not True):
         raise OnboardingError("prepared_onboarding_input_required")
-    # The frozen original archive is checked using the maintained verifier.
-    being_seed.tool("export_being", ["verify", "--archive", str(target / "source.archive"),
-                                      "--sha256", report["archive_sha256"]])
     value = dict(schema=SCHEMA, files=before, archive_sha256=report["archive_sha256"])
     raw = json.dumps(value, sort_keys=True).encode()
     if len(raw) > MAX_MANIFEST:
         raise OnboardingError("onboarding_input_too_large")
-    descriptor = os.open(destination / "manifest.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(raw)
-        stream.flush()
-        os.fsync(stream.fileno())
-    descriptor = os.open(destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    return {"seed_digest": digest(value), "files": len(before)}
+    if destination.exists() or destination.is_symlink():
+        if not resume:
+            raise OnboardingError("onboarding_input_destination_exists")
+        private_directory(destination)
+    else:
+        private_directory(destination.parent)
+        destination.mkdir(mode=0o700)
+    from .onboarding_guest import new_bytes
+    from .matrix_host import _publish_directory_noreplace
+    with being_seed._locked(destination):
+        intent = destination / 'capture-intent.json'
+        # A crash before this publication cannot have copied any input.
+        if not intent.exists() and any(p.name != 'lock' for p in destination.iterdir()):
+            raise OnboardingError('existing_onboarding_input_preserved')
+        new_bytes(intent, raw)
+        target = destination / 'received'
+        private_directory(target, create=True)
+        staging = destination / '.capture-staging'
+        private_directory(staging, create=True)
+        for directory in sorted(path for path in received.rglob('*') if path.is_dir()):
+            private_directory(target / directory.relative_to(received), create=True)
+        for row in before:
+            copied = target / row['path']
+            if copied.exists():
+                if owned_digest(copied, uid=os.geteuid()) != (row['sha256'], row['size']):
+                    raise OnboardingError('existing_onboarding_input_preserved')
+                continue
+            temporary = staging / uuid.uuid4().hex
+            checksum, size = owned_digest(received / row['path'], uid=source_uid, copy=temporary)
+            if (checksum, size) != (row['sha256'], row['size']):
+                raise OnboardingError('onboarding_input_changed')
+            descriptor = os.open(destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                _publish_directory_noreplace(descriptor, str(temporary.relative_to(destination)),
+                    str(copied.relative_to(destination)), exists_code='existing_onboarding_input_preserved')
+                parent = os.open(copied.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(parent)
+                finally:
+                    os.close(parent)
+            finally:
+                os.close(descriptor)
+        if inventory(received, uid=source_uid) != before or inventory(target, uid=os.geteuid()) != before:
+            raise OnboardingError('onboarding_input_changed')
+        being_seed.tool('export_being', ['verify', '--archive', str(target / 'source.archive'),
+                                       '--sha256', report['archive_sha256']])
+        new_bytes(destination / 'manifest.json', raw)
+        descriptor = os.open(destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    return dict(seed_digest=digest(value), files=len(before))
 
 
 def verify(root: Path, expected: str, *, uid: int | None = None) -> dict:

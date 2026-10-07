@@ -294,4 +294,3 @@ chapters. The instance/home cleanup preserved the four pre-existing bodies.
 This used synthetic custody and an explicit receive-only configuration. It
 proves native service restart and physical presence, with zero canonical
 admissions, peer deliveries, provider calls or Telegram calls.
-

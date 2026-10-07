@@ -300,6 +300,8 @@ jobs:
           tests/test_onboarding_actions.py
           tests/test_onboarding_accounts.py
           tools/configure_onboarding_account.py
+          tools/install_onboarding_worker.py
+          tests/test_onboarding_worker_install.py
           clusterctl/onboarding_managed.py
           tests/test_onboarding_runtime.py
           tests/test_onboarding_service.py

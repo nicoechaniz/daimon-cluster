@@ -33,6 +33,7 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.cookies import CookieError, SimpleCookie
 from urllib.parse import parse_qs, urlsplit
 
 from clusterctl import audit
@@ -69,6 +70,17 @@ class ClusterdHandler(BaseHTTPRequestHandler):
         auth_header = self.headers.get("Authorization") or ""
         if auth_header.lower().startswith("bearer "):
             token = auth_header[len("bearer "):].strip() or None
+        # Participant browser sessions are restricted to the intake surface.
+        # Fleet/admin routes still require their explicit bearer credentials.
+        path = urlsplit(self.path).path
+        if not auth_header and (path in {"/v1/seeds", "/v1/seed-session"} or path.startswith("/v1/seeds/")):
+            cookie = SimpleCookie()
+            try:
+                cookie.load(self.headers.get("Cookie", ""))
+                if "dm_seed_access" in cookie:
+                    token = cookie["dm_seed_access"].value
+            except (CookieError, ValueError):
+                pass
         return handlers.RequestContext(
             request_id=request_id,
             actor=actor,
@@ -131,6 +143,8 @@ class ClusterdHandler(BaseHTTPRequestHandler):
                  params: dict, path: str, method: str, body: dict):
         """Return (ctx, None) when allowed, else (ctx, denial Response)."""
         if route.public:
+            if route.handler == "seed_access_request" and not self.server.rate_limiter.allow("public-seed-access-request"):
+                return ctx, handlers.Response(429, {"error": "access_request_rate_limited"})
             return ctx, None
         srv = self.server
 
@@ -142,6 +156,16 @@ class ClusterdHandler(BaseHTTPRequestHandler):
         # The token's actor is authoritative; X-Actor is advisory only.
         ctx = dataclasses.replace(ctx, actor=record["actor"],
                                   token_record=record)
+
+        if method != "GET" and not self.headers.get("Authorization") and self.headers.get("Cookie"):
+            try:
+                origin = urlsplit(self.headers.get("Origin", ""))
+                same_origin = (origin.scheme in {"http", "https"}
+                               and origin.netloc.lower() == self.headers.get("Host", "").lower())
+            except ValueError:
+                same_origin = False
+            if not same_origin:
+                return ctx, self._deny(ctx, route, path, 403, "browser_origin_required", "browser-origin-mismatch")
 
         # 2. scope check (403) ------------------------------------------
         if not auth.has_scope(record, route.required_scope):
@@ -277,7 +301,8 @@ class ClusterdHandler(BaseHTTPRequestHandler):
             if path == "/v1/health":
                 self._respond(ctx, handlers.Response(200, {"status": "ok", "service": "seed-intake"}))
                 return
-            if not (path in {"/v1/onboarding", "/v1/seeds", "/v1/seed-access"} or path.startswith("/v1/seeds/")):
+            if not (path in {"/v1/onboarding", "/v1/seeds", "/v1/seed-access", "/v1/seed-access-requests", "/v1/seed-session"}
+                    or path.startswith(("/v1/seeds/", "/v1/seed-access-requests/"))):
                 self.close_connection = True
                 self._respond(ctx, handlers.Response(404, {"error": "seed_intake_route_only"}))
                 return
@@ -309,6 +334,9 @@ class ClusterdHandler(BaseHTTPRequestHandler):
             extra = {}
             if route.handler == "seed_ui":
                 extra["_accept"] = self.headers.get("Accept", "")
+            if route.handler.startswith("seed_access_request"):
+                extra["_access_key"] = self.headers.get("X-Access-Request-Key")
+                extra["_delivery"] = self.headers.get("X-Access-Delivery")
             if archive:
                 self.connection.settimeout(30)
                 extra = {"_stream": self.rfile, "_length": self.headers.get("Content-Length"),

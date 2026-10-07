@@ -34,6 +34,8 @@ import fcntl
 import hmac
 import json
 import os
+import re
+import secrets
 import time
 import uuid
 from pathlib import Path
@@ -175,6 +177,135 @@ def list_tokens(state_dir: str | Path) -> list[dict]:
         }
         for rec in _load_tokens(state_dir)
     ]
+
+
+# Human-approved intake access. Public requests confer no authority; the
+# requester keeps a random proof key, and the operator confirms owner + code.
+ACCESS_REQUEST_TTL_MS = 30 * 60 * 1000
+MAX_ACCESS_REQUESTS = 64
+ACCESS_REQUEST_SCHEMA = "seed-access-request/v1"
+
+
+def _access_directory(state_dir):
+    from clusterctl import being_seed
+
+    path = being_seed._path(Path(state_dir) / "seed-access-requests")
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = path.stat()
+    if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise being_seed.SeedError("private_access_request_directory_required", 409)
+    return path
+
+
+def _access_projection(record):
+    return {"schema": ACCESS_REQUEST_SCHEMA,
+            **{key: record[key] for key in ("request_id", "owner", "verification_code", "expires_ms")},
+            "phase": "expired" if record["expires_ms"] <= now_ms() else record["phase"]}
+
+
+def request_seed_access(state_dir, spec):
+    from clusterctl import being_seed
+
+    if (not isinstance(spec, dict) or set(spec) != {"owner", "proof_sha256"}
+            or not isinstance(spec["owner"], str) or not being_seed.NAME.fullmatch(spec["owner"])
+            or not isinstance(spec["proof_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", spec["proof_sha256"])):
+        raise being_seed.SeedError("named_owner_and_private_request_proof_required")
+    directory = _access_directory(state_dir)
+    with being_seed._locked(directory):
+        rows = []
+        for path in directory.glob("*.json"):
+            record = being_seed._read(path)
+            if record["expires_ms"] <= now_ms():
+                path.unlink()
+                continue
+            rows.append(record)
+            if hmac.compare_digest(record["proof_sha256"], spec["proof_sha256"]):
+                if record["owner"] != spec["owner"]:
+                    raise being_seed.SeedError("access_request_owner_changed", 409)
+                return _access_projection(record)
+        if len(rows) >= MAX_ACCESS_REQUESTS:
+            raise being_seed.SeedError("access_request_capacity_reached", 429)
+        codes = {row["verification_code"] for row in rows}
+        code = secrets.token_hex(4).upper()
+        while code in codes:
+            code = secrets.token_hex(4).upper()
+        record = {"schema": ACCESS_REQUEST_SCHEMA, "request_id": str(uuid.uuid4()),
+                  "owner": spec["owner"], "proof_sha256": spec["proof_sha256"],
+                  "verification_code": code, "expires_ms": now_ms() + ACCESS_REQUEST_TTL_MS,
+                  "phase": "pending"}
+        being_seed._write(directory / (record["request_id"] + ".json"), record)
+        return _access_projection(record)
+
+
+def _access_record(directory, request_id, proof):
+    from clusterctl import being_seed
+
+    try:
+        if str(uuid.UUID(request_id)) != request_id:
+            raise ValueError()
+        record = being_seed._read(directory / (request_id + ".json"))
+    except (ValueError, TypeError, AttributeError, FileNotFoundError) as exc:
+        raise being_seed.SeedError("access_request_not_found", 404) from exc
+    if (not isinstance(proof, str) or not re.fullmatch(r"[0-9a-f]{64}", proof)
+            or not hmac.compare_digest(record["proof_sha256"], hash_token(proof))):
+        raise being_seed.SeedError("access_request_not_found", 404)
+    return record
+
+
+def seed_access_request_status(state_dir, request_id, proof):
+    return _access_projection(_access_record(_access_directory(state_dir), request_id, proof))
+
+
+def pending_seed_access(state_dir):
+    from clusterctl import being_seed
+
+    directory = _access_directory(state_dir)
+    with being_seed._locked(directory):
+        rows = [being_seed._read(path) for path in directory.glob("*.json")]
+    return [_access_projection(row) for row in rows
+            if row["phase"] == "pending" and row["expires_ms"] > now_ms()]
+
+
+def approve_seed_access(state_dir, *, owner, code):
+    from clusterctl import being_seed
+
+    directory = _access_directory(state_dir)
+    with being_seed._locked(directory):
+        for path in directory.glob("*.json"):
+            record = being_seed._read(path)
+            if record["owner"] == owner and record["verification_code"] == code:
+                if record["expires_ms"] <= now_ms():
+                    raise being_seed.SeedError("access_request_expired", 409)
+                if record["phase"] not in {"pending", "approved"}:
+                    raise being_seed.SeedError("access_request_already_claimed", 409)
+                record["phase"] = "approved"
+                being_seed._write(path, record)
+                return _access_projection(record)
+    raise being_seed.SeedError("access_request_owner_or_code_mismatch", 404)
+
+
+def claim_seed_access(state_dir, request_id, proof):
+    from clusterctl import being_seed
+
+    directory = _access_directory(state_dir)
+    with being_seed._locked(directory):
+        request = _access_record(directory, request_id, proof)
+        if request["expires_ms"] <= now_ms():
+            raise being_seed.SeedError("access_request_expired", 409)
+        if request["phase"] != "approved":
+            raise being_seed.SeedError("access_request_approval_required" if request["phase"] == "pending"
+                                       else "access_request_already_claimed", 409)
+        record, token = create_token(state_dir, actor=request["owner"], owner=request["owner"],
+                                     scopes=["fleet:read", "seed:write"], ttl_days=3)
+        try:
+            request["phase"] = "claimed"
+            request["token_id"] = record["token_id"]
+            being_seed._write(directory / (request_id + ".json"), request)
+        except BaseException:
+            revoke_token(state_dir, record["token_id"])
+            raise
+        return {"token": token, "owner": record["owner"], "expires_ms": record["expires_ms"]}
 
 
 # --------------------------------------------------------------------------

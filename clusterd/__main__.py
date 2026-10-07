@@ -77,6 +77,10 @@ def main(argv=None) -> int:
                         help="revoke --token-id immediately (no restart needed)")
     parser.add_argument("--token-list", action="store_true",
                         help="list token metadata (never hashes/material)")
+    parser.add_argument("--access-pending", action="store_true",
+                        help="list pending intake owner/code pairs; no credentials")
+    parser.add_argument("--access-approve", metavar="CODE", default=None,
+                        help="approve the human-confirmed request code for --owner; no credential output")
     parser.add_argument("--token-id", default=None, help="token id to revoke")
     parser.add_argument("--actor", default=None, help="token actor identity")
     parser.add_argument("--scopes", default="fleet:read",
@@ -97,6 +101,20 @@ def main(argv=None) -> int:
         return 0
 
     state_dir = args.state_dir or load_config(args.config).state_dir
+
+    if args.access_pending:
+        print(json.dumps(auth.pending_seed_access(state_dir), indent=2))
+        return 0
+    if args.access_approve:
+        from clusterctl.being_seed import SeedError
+
+        try:
+            result = auth.approve_seed_access(state_dir, owner=args.owner, code=args.access_approve)
+        except SeedError as error:
+            print(json.dumps({"error": str(error)}), file=sys.stderr)
+            return 2
+        print(json.dumps(result))
+        return 0
 
     if args.token_create:
         if not args.actor:

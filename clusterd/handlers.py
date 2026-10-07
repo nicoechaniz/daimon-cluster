@@ -2049,6 +2049,11 @@ document.addEventListener('click',function(ev){
 
 
 HANDLERS = {
+    "seed_access_request": seed_handlers.seed_access_request,
+    "seed_access_request_status": seed_handlers.seed_access_request_status,
+    "seed_access_request_claim": seed_handlers.seed_access_request_claim,
+    "seed_session": seed_handlers.seed_session,
+    "seed_session_logout": seed_handlers.seed_session_logout,
     "seed_ui": seed_handlers.seed_ui,
     "seed_access": seed_handlers.seed_access,
     "list_seeds": seed_handlers.list_seeds,

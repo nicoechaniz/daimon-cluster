@@ -270,7 +270,9 @@ def test_same_entrypoint_machine_formats_are_public_metadata_only(tmp_path):
         assert guide["api"]["servers"] == [{"url": "/", "description": "This HTTPS origin"}]
         assert set(guide["api"]["paths"]) == {
             "/v1/onboarding", "/v1/seed-access", "/v1/seeds", "/v1/seeds/{seed}/archive",
-            "/v1/seeds/{seed}/selection", "/v1/seeds/{seed}/prepare", "/v1/seeds/{seed}/connections"}
+            "/v1/seeds/{seed}/selection", "/v1/seeds/{seed}/prepare", "/v1/seeds/{seed}/connections",
+            "/v1/seed-access-requests", "/v1/seed-access-requests/{request_id}",
+            "/v1/seed-access-requests/{request_id}/claim", "/v1/seed-session"}
         assert request("/v1/seeds", extra={"Authorization": ""})[0] == 401
         assert request("/v1/seeds/private-fixture/selection", owner="sai")[0] == 404
 
@@ -287,6 +289,107 @@ def test_machine_media_preferences_and_explicit_format_override(tmp_path):
         assert get("/v1/onboarding?format=")[1]["Content-Type"].startswith("text/html")
         for query in ["format=xml", "format=json&format=markdown"]:
             assert get("/v1/onboarding?" + query)[0] == 400
+
+
+def test_public_access_request_requires_exact_human_approval_and_private_proof(tmp_path):
+    key = "a" * 64
+    spec = {"owner": "fresh-human", "proof_sha256": auth.hash_token(key)}
+    with http_server(tmp_path) as (_server, request):
+        public = {"Authorization": ""}
+        code, _, pending = request("/v1/seed-access-requests", "POST", spec, extra=public)
+        assert code == 200 and pending["phase"] == "pending"
+        assert "proof_sha256" not in pending and "token" not in pending
+        assert request("/v1/seed-access-requests", "POST", spec, extra=public)[2] == pending
+        assert request("/v1/seed-access-requests", "POST", {**spec, "owner": "other-human"}, extra=public)[0] == 409
+        assert request("/v1/seed-access-requests", "POST", {**spec, "owner": "*"}, extra=public)[0] == 400
+        assert request("/v1/seed-access-requests", "POST", {**spec, "scopes": ["destroy:write"]}, extra=public)[0] == 400
+        path = "/v1/seed-access-requests/" + pending["request_id"]
+        proof = {**public, "X-Access-Request-Key": key}
+        assert request(path, extra=public)[0] == 404
+        assert request(path, extra={**public, "X-Access-Request-Key": "b" * 64})[0] == 404
+        assert request(path + "/claim", "POST", {}, extra=proof)[0] == 409
+        with pytest.raises(seeds.SeedError, match="owner_or_code_mismatch"):
+            auth.approve_seed_access(tmp_path, owner="other-human", code=pending["verification_code"])
+        assert auth.list_tokens(tmp_path)[-1]["actor"] == "operator"
+        assert auth.approve_seed_access(tmp_path, owner=spec["owner"], code=pending["verification_code"])["phase"] == "approved"
+        code, headers, granted = request(path + "/claim", "POST", {}, extra=proof)
+        assert code == 200 and headers["Cache-Control"] == "no-store"
+        record, reason = auth.authenticate(auth.TokenStore(tmp_path), granted["token"])
+        assert reason is None and record["owner"] == spec["owner"]
+        assert record["scopes"] == ["fleet:read", "seed:write"]
+        assert request(path + "/claim", "POST", {}, extra=proof)[0] == 409
+        assert request(path, extra=proof)[2]["phase"] == "claimed"
+        for file in tmp_path.rglob("*.json"):
+            assert key not in file.read_text() and granted["token"] not in file.read_text()
+
+
+def test_browser_access_cookie_is_private_intake_only_and_requires_same_origin(tmp_path):
+    key = "c" * 64
+    with http_server(tmp_path) as (server, request):
+        public = {"Authorization": ""}
+        spec = {"owner": "browser-human", "proof_sha256": auth.hash_token(key)}
+        pending = request("/v1/seed-access-requests", "POST", spec, extra=public)[2]
+        auth.approve_seed_access(tmp_path, owner=spec["owner"], code=pending["verification_code"])
+        code, headers, granted = request("/v1/seed-access-requests/" + pending["request_id"] + "/claim",
+                                         "POST", {}, extra={**public, "X-Access-Request-Key": key,
+                                                            "X-Access-Delivery": "browser"})
+        assert code == 200 and "token" not in granted
+        assert all(flag in headers["Set-Cookie"] for flag in ["Secure", "HttpOnly", "SameSite=Strict", "Path=/v1"])
+        cookie = {**public, "Cookie": headers["Set-Cookie"].split(";")[0]}
+        assert request("/v1/seed-session", extra=cookie)[2]["owner"] == spec["owner"]
+        assert request("/v1/instances", extra=cookie)[0] == 401
+        assert request("/v1/seed-access", "POST", {"owner": "other"}, extra=cookie)[0] == 401
+        assert request("/v1/seeds", extra={**cookie, "Authorization": "Bearer wrong"})[0] == 401
+        seed_spec = {"name": "private", "label": "Private", "mode": "new", "soul": "My beginning"}
+        write = {**cookie, "Idempotency-Key": KEY}
+        for origin in [None, "https://elsewhere.invalid", "http://["]:
+            extra = write if origin is None else {**write, "Origin": origin}
+            assert request("/v1/seeds", "POST", seed_spec, extra=extra)[0] == 403
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        assert request("/v1/seeds", "POST", seed_spec, extra={**write, "Origin": origin})[0] == 200
+        assert request("/v1/seeds", owner="sai")[2]["items"] == []
+        code, headers, result = request("/v1/seed-session", "DELETE", extra={**cookie, "Origin": origin})
+        assert code == 200 and result["signed_out"] is True and "Max-Age=0" in headers["Set-Cookie"]
+        assert request("/v1/seed-session", extra=cookie)[0] == 401
+
+
+def test_access_request_bounds_expiry_and_concurrent_claim(tmp_path, monkeypatch):
+    monkeypatch.setattr(auth, "MAX_ACCESS_REQUESTS", 2)
+    key = "d" * 64
+    first = auth.request_seed_access(tmp_path, {"owner": "one", "proof_sha256": auth.hash_token(key)})
+    auth.request_seed_access(tmp_path, {"owner": "two", "proof_sha256": auth.hash_token("e" * 64)})
+    with pytest.raises(seeds.SeedError, match="capacity"):
+        auth.request_seed_access(tmp_path, {"owner": "three", "proof_sha256": auth.hash_token("f" * 64)})
+    auth.approve_seed_access(tmp_path, owner="one", code=first["verification_code"])
+    def claim(_):
+        try:
+            return auth.claim_seed_access(tmp_path, first["request_id"], key)
+        except seeds.SeedError:
+            return None
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(claim, range(8)))
+    assert sum(result is not None for result in results) == len(auth.list_tokens(tmp_path)) == 1
+    monkeypatch.setattr(auth, "now_ms", lambda: first["expires_ms"] + 1)
+    assert auth.seed_access_request_status(tmp_path, first["request_id"], key)["phase"] == "expired"
+    with pytest.raises(seeds.SeedError, match="expired"):
+        auth.claim_seed_access(tmp_path, first["request_id"], key)
+    assert auth.request_seed_access(tmp_path, {"owner": "three", "proof_sha256": auth.hash_token("f" * 64)})["phase"] == "pending"
+
+
+def test_access_approval_cli_exposes_only_the_confirmed_request_metadata(tmp_path, capsys):
+    from clusterd.__main__ import main
+
+    key = "9" * 64
+    pending = auth.request_seed_access(tmp_path, {"owner": "ani", "proof_sha256": auth.hash_token(key)})
+    args = ["--state-dir", str(tmp_path)]
+    assert main([*args, "--access-pending"]) == 0
+    listed = capsys.readouterr().out
+    assert pending["verification_code"] in listed and key not in listed and "token" not in listed
+    assert main([*args, "--access-approve", pending["verification_code"], "--owner", "sai"]) == 2
+    capsys.readouterr()
+    assert main([*args, "--access-approve", pending["verification_code"], "--owner", "ani"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["phase"] == "approved" and "token" not in result and key not in str(result)
 
 
 def test_operator_web_access_issuer_cannot_be_used_by_participants(tmp_path):

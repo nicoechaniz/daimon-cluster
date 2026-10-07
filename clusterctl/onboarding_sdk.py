@@ -19,7 +19,7 @@ from . import being_seed, onboarding_release
 from .onboarding import OnboardingError, digest, private_directory
 
 SCHEMA = "cluster-onboarding-sdk/v1"
-MATRIX_COMMIT = "52945123ec4d323c03eaafe216dce8a1d7e48565"
+MATRIX_COMMIT = "196ec7219f954cf4e514a1f61ae72eb3451d851e"
 
 
 def wheel(path: Path, *, uid: int) -> dict:

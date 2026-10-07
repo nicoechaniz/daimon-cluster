@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
+import uuid
 from pathlib import Path
 
 from . import being_seed, onboarding_input
@@ -13,6 +15,59 @@ from .onboarding import OnboardingError, digest, private_directory
 GUEST_UID = 1000
 GUEST_GID = 1000
 GUEST_HOME = Path('/home/agent')
+
+
+def prepare_matrix_public(views: Path, plan: dict, documents: dict[str, dict]) -> Path:
+    """Publish only native public authorization to a read-only receiving mount."""
+    from daimon_matrix import canonical, keystore
+    from .matrix_host import _publish_directory_noreplace
+    if not documents or not set(documents) <= {'genesis.json', 'activation.json'}:
+        raise OnboardingError('invalid_onboarding_public_matrix_documents')
+    private_directory(views)
+    parent = views / digest(plan)
+    private_directory(parent, create=True)
+    target = parent / 'matrix-public'
+    being_seed._path(target)
+    target.mkdir(mode=0o755, exist_ok=True)
+    info = target.stat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in {os.geteuid(), GUEST_UID}
+            or info.st_mode & 0o022 or any(item.name not in {'genesis.json', 'activation.json'} for item in target.iterdir())):
+        raise OnboardingError('existing_onboarding_public_matrix_preserved')
+    # Keep the publisher's directory ownership. Native atomic writes require
+    # it; only individual public documents are owned by the receiving UID.
+    # The private host parent and read-only guest mount protect this directory.
+    os.chown(target, os.geteuid(), os.getegid(), follow_symlinks=False)
+    target.chmod(0o755)
+    with being_seed._locked(parent):
+        for name, value in documents.items():
+            raw = canonical.canonical_bytes(value)
+            path = target / name
+            if path.exists():
+                owner = path.stat().st_uid
+                if (owner not in {os.geteuid(), GUEST_UID}
+                        or onboarding_input.owned_digest(path, uid=owner)[0] != hashlib.sha256(raw).hexdigest()):
+                    raise OnboardingError('existing_onboarding_public_matrix_preserved')
+            else:
+                # Native staging remains in the private publisher directory.
+                # Publication into the readable, read-only mount must neither
+                # require its consumer UID nor replace a concurrent document.
+                temporary = parent / ('.matrix-public-' + uuid.uuid4().hex)
+                keystore._atomic_write(temporary, raw)
+                os.chown(temporary, GUEST_UID, GUEST_GID, follow_symlinks=False)
+                descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    _publish_directory_noreplace(descriptor, temporary.name, 'matrix-public/' + name,
+                        exists_code='existing_onboarding_public_matrix_preserved')
+                    target_descriptor = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                    try:
+                        os.fsync(target_descriptor)
+                    finally:
+                        os.close(target_descriptor)
+                finally:
+                    os.close(descriptor)
+                    temporary.unlink(missing_ok=True)
+            os.chown(path, GUEST_UID, GUEST_GID, follow_symlinks=False)
+    return target
 
 
 def _directories(root: Path, target: Path) -> None:

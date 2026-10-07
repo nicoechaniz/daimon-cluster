@@ -30,7 +30,7 @@ from typing import Any
 from .embodiments import Registry, RegistryError
 from .fences import FenceError, ResourceFenceStore
 
-MATRIX_CONTRACT_COMMIT = "52945123ec4d323c03eaafe216dce8a1d7e48565"
+MATRIX_CONTRACT_COMMIT = "196ec7219f954cf4e514a1f61ae72eb3451d851e"
 MATRIX_ROOT_SCHEMA = "dm.cluster-matrix-root/v1"
 MATRIX_SNAPSHOT_SCHEMA = "dm.cluster-matrix-snapshot/v1"
 MATRIX_RECOVERY_SNAPSHOT_SCHEMA = "dm.cluster-matrix-recovery-snapshot/v1"
@@ -145,6 +145,7 @@ def _matrix_api() -> dict[str, Any]:
             curator,
             daemon,
             memory_projection,
+            native_egress,
             operator_bootstrap,
             operator_capabilities,
             operator_rebirth,
@@ -180,6 +181,8 @@ def _matrix_api() -> dict[str, Any]:
     ):
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     if getattr(runtime, "BUNDLE_SCHEMA_V7", None) != "dm.runtime.bundle/v7":
+        raise MatrixHostError("daimon_matrix_contract_mismatch")
+    if getattr(runtime, "BUNDLE_SCHEMA_V8", None) != "dm.runtime.bundle/v8":
         raise MatrixHostError("daimon_matrix_contract_mismatch")
     if getattr(client, "CLIENT_CONFIG_SCHEMA_V3", None) != "dm.local.client-config/v3":
         raise MatrixHostError("daimon_matrix_contract_mismatch")
@@ -288,6 +291,7 @@ def _matrix_api() -> dict[str, Any]:
         "curator": curator,
         "daemon": daemon,
         "memory_projection": memory_projection,
+        "native_egress": native_egress,
         "operator_capabilities": operator_capabilities,
         "operator_rebirth": operator_rebirth,
         "publication": publication,
@@ -619,7 +623,7 @@ def _public_bundle(root: Path, bundle_name: str) -> dict[str, Any]:
         raise
     except (FileNotFoundError, OSError, json.JSONDecodeError) as exception:
         raise MatrixHostError("matrix_bundle_unreadable") from exception
-    if not isinstance(value, dict) or value.get("schema") != "dm.runtime.bundle/v7":
+    if not isinstance(value, dict) or value.get("schema") not in {"dm.runtime.bundle/v7", "dm.runtime.bundle/v8"}:
         raise MatrixHostError("matrix_bundle_rejected")
     return value
 
@@ -976,7 +980,7 @@ def _snapshot_files(
         {bundle_name, ledger_name} if custody_free else configured_required_files
     )
     sqlite_sidecars = {f"{ledger_name}-wal", f"{ledger_name}-shm"}
-    if bundle.get("schema") == "dm.runtime.bundle/v7":
+    if bundle.get("schema") in {"dm.runtime.bundle/v7", "dm.runtime.bundle/v8"}:
         # These paths are secret-bearing by contract. Exclude them before
         # interpreting public profile metadata, then require the complete exact
         # profile table so a truncated or relabelled bundle cannot weaken the
@@ -1369,12 +1373,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--password-fd", type=int, required=True)
     parser.add_argument("--ready-fd", type=int)
     parser.add_argument("--guardian-pid", type=int)
+    parser.add_argument("--visibility-installation", type=Path)
+    parser.add_argument("--provision-visibility", action="store_true")
     parser.add_argument(
         "--production-fence-verifier",
         action="store_true",
         help="verify Cluster's production fence database without signing custody",
     )
     args = parser.parse_args(argv)
+    if args.provision_visibility and (
+        args.visibility_installation is not None or args.ready_fd is not None
+    ):
+        _diagnostic("matrix_visibility_provision_never_serves")
+        return 2
     lock_descriptor: int | None = None
     stopping = threading.Event()
     guardian: threading.Thread | None = None
@@ -1400,12 +1411,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.production_fence_verifier
             else None
         )
-        adapter = MatrixHostAdapter(
+        adapter = None if args.provision_visibility else MatrixHostAdapter(
             args.state_dir, args.embodiment_id, fence_store=fence_store
         )
         root = _owner_directory(matrix_root(args.state_dir, args.embodiment_id))
         bundle = _public_bundle(root, args.bundle)
-        adapter.require_origin(_origin(bundle.get("local_origin")))
+        origin = _origin(bundle.get("local_origin"))
+        if args.provision_visibility:
+            record = Registry(args.state_dir).status(args.embodiment_id)
+            if (origin["embodiment_id"] != args.embodiment_id
+                    or record.get("body_ref") != origin["body_ref"]
+                    or record.get("status") != "stopped"
+                    or record.get("current_incarnation_id") is not None):
+                raise MatrixHostError("matrix_visibility_requires_stopped_body")
+        else:
+            assert adapter is not None
+            adapter.require_origin(origin)
         socket_name = bundle.get("socket")
         if (
             not isinstance(socket_name, str)
@@ -1415,15 +1436,50 @@ def main(argv: Sequence[str] | None = None) -> int:
         ):
             raise MatrixHostError("matrix_socket_path_rejected")
         lock_descriptor = api["daemon"].acquire_lock(root)
+        def clock() -> int:
+            return time.time_ns() // 1_000_000
+        visibility_options = {}
+        if args.visibility_installation is not None:
+            visibility_options["egress_factory"] = api["daemon"]._visibility_factory(
+                args.visibility_installation, clock=clock
+            )
+        elif args.provision_visibility:
+            controller = api["native_egress"].closed_visibility(
+                clock=clock, catalog_mode="migrate"
+            )
+            # Native composition initializes base tables. Refuse incompatible
+            # existing visibility journals before that composition writes DDL.
+            catalogs = []
+            peer = bundle.get("peer_transport")
+            if peer is not None:
+                catalogs.extend([
+                    ("runtime-peer-responses", peer["exchange_filename"]),
+                    ("runtime-peer-requests", peer["outbox_filename"]),
+                ])
+            if bundle.get("routing") is not None:
+                catalogs.append(("runtime-route-requests", bundle["ledger"]))
+            for catalog_id, filename in catalogs:
+                path = api["runtime"]._safe_file(root, filename, must_exist=False)
+                if path.exists():
+                    controller._preflight_migration(path, catalog_id)
+            visibility_options["egress"] = controller
         runtime = api["runtime"].load_runtime(
             root,
             args.bundle,
             _password_reader(args.password_fd),
-            clock=lambda: time.time_ns() // 1_000_000,
-            body_reader=adapter.body_snapshot,
-            curator_fence_verifier=adapter.verify_fence,
-            curator_effect_observer=adapter.effect_observer,
+            clock=clock,
+            body_reader=None if adapter is None else adapter.body_snapshot,
+            curator_fence_verifier=None if adapter is None else adapter.verify_fence,
+            curator_effect_observer=None if adapter is None else adapter.effect_observer,
+            **visibility_options,
         )
+        if args.provision_visibility:
+            runtime.egress.migrate_registered_catalogs(
+                version=api["native_egress"].VISIBILITY_SCHEMA_VERSION
+            )
+            runtime.egress.validate_registered_catalogs()
+            _diagnostic("matrix_visibility_provisioned")
+            return 0
 
         def request_stop(_number: int, _frame: object) -> None:
             stopping.set()

@@ -281,6 +281,7 @@ jobs:
           clusterctl/onboarding_custody.py
           clusterctl/onboarding_holder_backup.py
           clusterctl/onboarding_sdk.py
+          clusterctl/onboarding_target.py
           clusterctl/browser.py
           clusterctl/distributed_rebirth.py
           clusterctl/embodiments.py
@@ -311,12 +312,14 @@ jobs:
           clusterd/server.py
           steward_tools/mutations.py
           tests/test_matrix_host.py
+          tests/test_matrix_v8_snapshot.py
           tests/test_embodiments.py
           tests/test_being_seed.py
           tests/test_onboarding_consent.py
           tests/test_onboarding_custody.py
           tests/test_onboarding_sdk.py
           tests/test_onboarding_target_authorization.py
+          tests/test_onboarding_target.py
           scripts/being-seed
           tests/test_admission.py
           tests/test_matrix_host_process.py
@@ -384,7 +387,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: AlterMundi/daimon-matrix
-          ref: 52945123ec4d323c03eaafe216dce8a1d7e48565
+          ref: 196ec7219f954cf4e514a1f61ae72eb3451d851e
           path: matrix-source
           fetch-depth: 0
           persist-credentials: false
@@ -400,7 +403,7 @@ jobs:
           done
           docker version
           test "$(git -C matrix-source rev-parse HEAD)" = \
-            52945123ec4d323c03eaafe216dce8a1d7e48565
+            196ec7219f954cf4e514a1f61ae72eb3451d851e
       - name: Prove isolated recovery roles and read-only snapshot restore
         env:
           DAIMON_RUN_DOCKER_RECOVERY_TESTS: "1"

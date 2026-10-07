@@ -160,3 +160,28 @@ def test_bootstrap_creates_only_the_dedicated_guest_account_and_empty_home(tmp_p
     with pytest.raises(OnboardingError, match='existing_guest_home_preserved'):
         onboarding_mounts.bootstrap_home(home)
     assert len(calls) == 1 and (home / 'old-file').read_text() == 'preserved'
+
+
+def test_public_matrix_publisher_adds_authorization_without_replacing_genesis(tmp_path):
+    from tests.test_onboarding import plan
+    views = tmp_path / 'views'
+    views.mkdir(mode=0o700)
+    value = plan()
+    target = onboarding_mounts.prepare_matrix_public(views, value, {'genesis.json': {'public': 'genesis'}})
+    before = (target / 'genesis.json').read_bytes()
+    assert target.stat().st_mode & 0o077 == 0o055
+    assert onboarding_mounts.prepare_matrix_public(views, value, {'activation.json': {'public': 'activation'}}) == target
+    assert (target / 'genesis.json').read_bytes() == before
+    with pytest.raises(OnboardingError, match='existing_onboarding_public_matrix_preserved'):
+        onboarding_mounts.prepare_matrix_public(views, value, {'genesis.json': {'public': 'replacement'}})
+    assert (target / 'genesis.json').read_bytes() == before
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason='actual publisher/consumer UID separation requires root')
+def test_root_publisher_does_not_use_consumer_owned_private_staging(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_UID', 1000)
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_GID', 1000)
+    test_public_matrix_publisher_adds_authorization_without_replacing_genesis(tmp_path)
+    target = next((tmp_path/'views').glob('*/matrix-public'))
+    assert target.stat().st_uid == 0
+    assert {path.stat().st_uid for path in target.iterdir()} == {1000}

@@ -563,6 +563,7 @@ def launch_rebirth_host(
     production_fence_verifier: bool = False,
     admission_client: AdmissionClient | None = None,
     admission_lease_ttl_s: int = DEFAULT_LEASE_TTL_S,
+    visibility_installation: Path | None = None,
 ) -> tuple[subprocess.Popen[bytes], dict[str, Any]]:
     """Admit, start and authenticate one installed fresh embodiment."""
 
@@ -811,6 +812,8 @@ def launch_rebirth_host(
             ]
             if production_fence_verifier:
                 command.append("--production-fence-verifier")
+            if visibility_installation is not None:
+                command.extend(["--visibility-installation", str(visibility_installation)])
             process: subprocess.Popen[bytes] | None = None
             try:
                 process = subprocess.Popen(

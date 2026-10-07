@@ -90,6 +90,34 @@ is reconciled by native validation of the existing public artifact without
 another holder invocation. Target custody stays on the receiving side. The
 native V7 package fixture is not current V8 or physical admission acceptance.
 
+The worker now connects this exchange to the actual receiving environment.
+The receiving process generates its own encrypted target custody, publishes
+only its native request, and activates the Root-authorized package locally.
+Its protected plan/genesis binding and existing preparation are checked before
+retry. Lost acknowledgement after native package publication preserves the
+same keys, origin and later receiving writes. Missing unlock material refuses
+rekeying. The host publishes only genesis and activation through a read-only
+mount, staging in its private publisher directory and using no-replace
+publication. No holder package or unlock enters that mount. The prepared V7
+phase remains waiting until V8 migration and canonical physical admission.
+
+The maintained SDK successor is
+`196ec7219f954cf4e514a1f61ae72eb3451d851e`. The previous `52945123` artifact
+is retained as V7 evidence, not used as a V8 implementation. Installation must
+verify the exact VCS commit: reinstalling a different source with the same
+package version requires explicit replacement of the development dependency.
+Guest artifacts retain their own complete wheel hashes and release digest.
+
+The host adapter supports the native signed owner visibility installation via
+`--visibility-installation`. The rebirth launcher forwards the same selection;
+it never substitutes synthetic visibility or falls back after a rejected signed
+installation. For a stopped receive-only body, `--provision-visibility` prepares
+and validates the native journals under the daemon lock, then exits without a
+listener or readiness signal. Existing incompatible visibility catalogs are
+preflighted before native composition writes tables. Provisioning cannot serve
+or grant messaging authority. Disposable rebirth/recovery proofs explicitly
+prepare their own closed catalogs before default validation and restart.
+
 ## Execution and recovery
 
 A plan binds owner, environment name, receiving input digest, qualified release,

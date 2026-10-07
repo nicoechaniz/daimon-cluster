@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import being_seed, onboarding_consent, onboarding_input, onboarding_mounts, onboarding_release
-from .onboarding_custody import FirstCustody
+from .onboarding_custody import FirstCustody, document
 from .onboarding import Observation, OnboardingError, digest, private_directory, validate_plan
 from .onboarding_progress import Progress
 
@@ -214,8 +214,15 @@ class HostBackend:
             observed = ceremony.observe(plan)
             if observed is None or not observed["backup_restore_verified"]:
                 return Observation("absent", safe_to_execute=True)
-            # Genesis custody is not a body enrollment. Native target preparation,
-            # restore and physical admission must finish before this stage does.
+            if self.config.code and self.config.views and (self.config.code / "sdk/sdk.json").exists():
+                _, _, mounts = self._guest_paths(plan)
+                mounts["onboarding-matrix-public"] = self._matrix_mount(plan)
+                if not self._mounted(plan, mounts):
+                    return Observation("absent", safe_to_execute=True)
+                target = self._matrix_command(plan, "observe")
+                if target["phase"] in {"absent", "prepared"}:
+                    return Observation("absent", safe_to_execute=True)
+            # Prepared V7 is not current V8 or physical/canonical admission.
             return Observation("waiting", reason="backend_unavailable")
         # Do not invent success for native enrollment or receiving acceptance.
         # The remaining typed stage adapters are added with their actual tests.
@@ -235,8 +242,12 @@ class HostBackend:
             decision = self._decision(plan)
             if decision is None:
                 raise OnboardingError("identity_authorization_required")
-            FirstCustody(self.config.custody, self.config.custody_grants).prepare(
-                plan, identity_mode=decision["matrix_identity_mode"])
+            ceremony = FirstCustody(self.config.custody, self.config.custody_grants)
+            prior = ceremony.observe(plan)
+            if prior is None or not prior["backup_restore_verified"]:
+                ceremony.prepare(plan, identity_mode=decision["matrix_identity_mode"])
+            if self.config.code and self.config.views and (self.config.code / "sdk/sdk.json").exists():
+                self._matrix_execute(plan, ceremony)
             return
         if stage != "environment":
             raise OnboardingError("unsupported_onboarding_host_stage")
@@ -356,6 +367,52 @@ class HostBackend:
                     self._dispatch(plan, ["config", "device", "add", self.instance(plan), name, "disk",
                         *[key + "=" + value for key, value in device.items() if key != "type"]])
         self._guest_command(plan, "execute", stage, guest_code)
+
+    def _matrix_mount(self, plan: dict) -> dict:
+        if self.config.views is None:
+            raise OnboardingError("receiving_code_configuration_required")
+        return dict(type="disk", source=str(self.config.views / digest(plan) / "matrix-public"),
+                    path="/home/agent/.onboarding-matrix", readonly="true", shift="true")
+
+    def _matrix_command(self, plan: dict, action: str) -> dict:
+        if self.config.custody is None or self.config.custody_grants is None:
+            raise OnboardingError("identity_authorization_required")
+        if not FirstCustody(self.config.custody, self.config.custody_grants).authorize(plan):
+            raise OnboardingError("identity_authorization_required")
+        _, guest_code, _ = self._guest_paths(plan)
+        launcher = ("import sys; sys.path.insert(0,sys.argv.pop(1)); "
+                    "from clusterctl.onboarding_target import main; raise SystemExit(main())")
+        public = "/home/agent/.onboarding-matrix"
+        result = self._dispatch(plan, ["exec", self.instance(plan), "--user", "1000", "--group", "1000",
+            "--env", "HOME=/home/agent", "--", "python3", "-B", "-I", "-c", launcher, str(guest_code),
+            action, "--home", "/home/agent", "--code", str(guest_code),
+            "--plan", "/home/agent/.onboarding-input/plan.json", "--genesis", public + "/genesis.json",
+            "--activation", public + "/activation.json"])
+        value = json.loads(result)
+        if (not isinstance(value, dict) or set(value) != {"phase", "request", "receipt"}
+                or value["phase"] not in {"absent", "prepared", "v7"}):
+            raise OnboardingError("invalid_onboarding_observation")
+        return value
+
+    def _matrix_execute(self, plan: dict, ceremony: FirstCustody) -> None:
+        if self._environment(plan).state != "complete" or self.config.views is None:
+            raise OnboardingError("qualified_guest_environment_required")
+        root = ceremony.root / digest(plan)
+        genesis = document(root / "genesis.json")
+        onboarding_mounts.prepare_matrix_public(self.config.views, plan, {"genesis.json": genesis})
+        mount = self._matrix_mount(plan)
+        instances, _ = self._inventory()
+        row = next(row for row in instances if row.get("name") == self.instance(plan))
+        current = row.get("expanded_devices", {}).get("onboarding-matrix-public")
+        if current is not None and current != mount:
+            raise OnboardingError("foreign_receiving_mount_preserved")
+        if current is None:
+            self._dispatch(plan, ["config", "device", "add", self.instance(plan), "onboarding-matrix-public", "disk",
+                                  *[key + "=" + value for key, value in mount.items() if key != "type"]])
+        target = self._matrix_command(plan, "prepare")
+        activation = ceremony.authorize_target(plan, target["request"])
+        onboarding_mounts.prepare_matrix_public(self.config.views, plan, {"activation.json": activation})
+        self._matrix_command(plan, "activate")
 
     def _dispatch(self, plan: dict, argv: list[str]) -> str:
         # A revoked plan stops before the next concrete effect, including

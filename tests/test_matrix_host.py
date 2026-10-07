@@ -498,7 +498,7 @@ def test_public_bundle_rejects_an_unpinned_successor_schema(tmp_path):
     root = tmp_path / "runtime"
     root.mkdir(mode=0o700)
     bundle = root / "runtime.json"
-    bundle.write_text(json.dumps({"schema": "dm.runtime.bundle/v8"}), encoding="utf-8")
+    bundle.write_text(json.dumps({"schema": "dm.runtime.bundle/v9"}), encoding="utf-8")
     bundle.chmod(0o600)
 
     with pytest.raises(MatrixHostError, match="matrix_bundle_rejected"):

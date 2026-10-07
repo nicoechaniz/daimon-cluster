@@ -1,0 +1,384 @@
+"""Private portable-context intake, independent of Matrix custody and Incus.
+
+The preserved context utility is an exact upstream snapshot, not another archive
+implementation. Preparation is not enrollment or an observed running body.
+"""
+from __future__ import annotations
+
+import contextlib
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+from typing import BinaryIO
+
+TOOL_COMMIT = "4d4ccd5e9eaf4092e62cbdefa9fbc6288d2cbcd8"
+TOOL_HASHES = {
+    "export_being.py": "4616f43c2914cc1dd1441d4eb244983b35ac4f45e0eb7c64032b90a75d41cf08",
+    "receive_being.py": "fa8fb24b5959f62e38254d8362afcb79dfbd803a5f7561e604b3cae3c98ab3ce",
+    "install_codex_identity.py": "cb98a8a5e1c04777b78b19ea9755116998d371ed541d14a4cf7eb34b47f5b8b0",
+}
+NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,30}\Z")
+LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}\Z")
+MAX_UPLOAD = 512 * 1024**2
+MAX_RECORD = 65536
+MAX_SEEDS = 200
+MAX_OWNER_SEEDS = 8
+SCHEMA = "cluster-being-seed/v1"
+PHASES = {"awaiting-upload", "uploaded", "preparing", "prepared", "attention-required"}
+
+
+class SeedError(ValueError):
+    def __init__(self, code: str, status: int = 400):
+        super().__init__(code)
+        self.status = status
+
+
+def _path(path: Path) -> Path:
+    path = path.absolute()
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise SeedError("seed_symlink_path_refused")
+    return path
+
+
+def _read(path: Path) -> dict:
+    _path(path)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077 or info.st_size > MAX_RECORD):
+            raise SeedError("private_seed_record_required")
+        value = json.load(stream)
+    if not isinstance(value, dict):
+        raise SeedError("invalid_seed_record")
+    return value
+
+
+def _write(path: Path, value: dict) -> None:
+    _path(path)
+    raw = json.dumps(value, sort_keys=True).encode()
+    if len(raw) > MAX_RECORD:
+        raise SeedError("seed_record_too_large")
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex)
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _directory(state_dir: str | Path, name: str) -> Path:
+    if not isinstance(name, str) or not NAME.fullmatch(name):
+        raise SeedError("invalid_seed_name")
+    return _path(Path(state_dir) / "being-seeds" / name)
+
+
+def _record(state_dir: str | Path, name: str, owner: str) -> tuple[Path, dict]:
+    directory = _directory(state_dir, name)
+    try:
+        record = _read(directory / "record.json")
+    except FileNotFoundError as exc:
+        raise SeedError("seed_not_found", 404) from exc
+    if owner != "*" and record.get("created_by") != owner:
+        raise SeedError("seed_not_found", 404)
+    if record.get("schema") != SCHEMA or record.get("name") != name:
+        raise SeedError("invalid_seed_record")
+    return directory, record
+
+
+@contextlib.contextmanager
+def _locked(directory: Path):
+    fd = os.open(_path(directory / "lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise SeedError("seed_operation_in_progress", 409) from exc
+        yield
+    finally:
+        os.close(fd)
+
+
+def _fingerprint(value: dict) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def tool(name: str, arguments: list[str], *, timeout: int = 600) -> dict:
+    root = Path(__file__).resolve().parents[1] / "support/being-seed-tools"
+    for filename, expected in TOOL_HASHES.items():
+        raw = _path(root / "tools" / filename).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != expected:
+            raise SeedError("pinned_seed_tool_mismatch", 503)
+    launcher = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
+                f"from tools.{name} import main; raise SystemExit(main())")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", launcher, str(root), *arguments],
+            capture_output=True, timeout=timeout, check=False,
+        )
+        value = json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, ValueError) as exc:
+        raise SeedError("seed_tool_incomplete", 409) from exc
+    if result.returncode or not isinstance(value, dict):
+        # No upstream stderr, archive contents or private paths in the API.
+        raise SeedError("seed_verification_or_preparation_refused")
+    return value
+
+
+def create(state_dir: str | Path, spec: dict, *, owner: str, key: str) -> dict:
+    if not isinstance(spec, dict) or set(spec) - {"name", "label", "mode", "browser", "soul"}:
+        raise SeedError("invalid_seed_request")
+    if (spec.get("mode") not in {"import", "new"}
+            or not isinstance(spec.get("label"), str) or not LABEL.fullmatch(spec["label"])
+            or type(spec.get("browser", False)) is not bool):
+        raise SeedError("invalid_seed_request")
+    try:
+        uuid.UUID(key)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise SeedError("seed_idempotency_key_required") from exc
+    if spec["mode"] == "new":
+        soul = spec.get("soul")
+        if not isinstance(soul, str) or not soul.strip() or len(soul.encode()) > 24000 or "\0" in soul:
+            raise SeedError("new_seed_initial_soul_required")
+    elif "soul" in spec:
+        raise SeedError("import_seed_preserves_original_soul")
+    directory = _directory(state_dir, spec.get("name", ""))
+    parent = directory.parent
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if parent.stat().st_uid != os.geteuid() or parent.stat().st_mode & 0o077:
+        raise SeedError("private_seed_directory_required")
+    fingerprint = _fingerprint({"spec": spec, "owner": owner, "key": key})
+    with _locked(parent):
+        if directory.exists():
+            _, old = _record(state_dir, spec["name"], owner)
+            if old.get("request_fingerprint") != fingerprint:
+                raise SeedError("seed_name_or_request_conflict", 409)
+            return project(old)
+        key_digest = hashlib.sha256(key.encode()).hexdigest()
+        owned = 0
+        for existing in parent.glob("*/record.json"):
+            old = _read(existing)
+            owned += old.get("created_by") == owner
+            if old.get("created_by") == owner and old.get("idempotency_digest") == key_digest:
+                raise SeedError("seed_idempotency_key_reuse", 409)
+        if owned >= MAX_OWNER_SEEDS:
+            raise SeedError("owner_seed_intake_capacity_reached", 409)
+        if len(list(parent.glob("*/record.json"))) >= MAX_SEEDS:
+            raise SeedError("seed_intake_capacity_reached", 409)
+        directory.mkdir(mode=0o700)
+        record = {
+            "schema": SCHEMA, "name": spec["name"], "label": spec["label"],
+            "mode": spec["mode"], "created_by": owner,
+            "request_fingerprint": fingerprint, "created_ms": int(time.time() * 1000),
+            "idempotency_digest": key_digest,
+            "phase": "awaiting-upload", "browser_requested": spec.get("browser", False),
+            "tool_commit": TOOL_COMMIT,
+        }
+        if spec["mode"] == "new":
+            _write(directory / "initial-context.json", {"soul": spec["soul"]})
+            record["phase"] = "uploaded"
+        _write(directory / "record.json", record)
+    return project(record)
+
+
+def upload(state_dir: str | Path, name: str, *, owner: str,
+           stream: BinaryIO, length: int, sha256: str) -> dict:
+    directory, _ = _record(state_dir, name, owner)
+    if (not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256)
+            or type(length) is not int or not 0 < length <= MAX_UPLOAD):
+        raise SeedError("bounded_archive_and_sha256_required", 413)
+    with _locked(directory):
+        _, record = _record(state_dir, name, owner)
+        if record["mode"] != "import":
+            raise SeedError("new_seed_has_no_source_archive", 409)
+        if record.get("archive_sha256") == sha256 and record.get("archive_size") == length:
+            return project(record)
+        if record["phase"] != "awaiting-upload":
+            raise SeedError("seed_archive_already_present", 409)
+        # Upstream permits at most 5 GiB of expanded payload. Reserve space
+        # for preserved and working copies plus uploaded archive copies.
+        if shutil.disk_usage(directory).free < 10 * 1024**3 + 3 * length:
+            raise SeedError("seed_staging_storage_required", 409)
+        path = directory / ("upload-" + uuid.uuid4().hex + ".partial")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        digest = hashlib.sha256()
+        try:
+            with os.fdopen(fd, "wb") as destination:
+                remaining = length
+                while remaining:
+                    chunk = stream.read(min(remaining, 1024 * 1024))
+                    if not chunk:
+                        raise SeedError("incomplete_seed_upload")
+                    destination.write(chunk)
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+                destination.flush()
+                os.fsync(destination.fileno())
+            if digest.hexdigest() != sha256:
+                raise SeedError("seed_archive_hash_mismatch")
+            os.rename(path, directory / "source.archive")
+            record.update(phase="uploaded", archive_sha256=sha256, archive_size=length)
+        except (OSError, SeedError):
+            record["phase"] = "attention-required"
+            _write(directory / "record.json", record)
+            raise
+        _write(directory / "record.json", record)
+    return project(record)
+
+
+def discovery(state_dir: str | Path, name: str, *, owner: str) -> dict:
+    directory, record = _record(state_dir, name, owner)
+    with _locked(directory):
+        if record["mode"] != "import" or record["phase"] not in {"uploaded", "prepared"}:
+            raise SeedError("seed_discovery_requires_uploaded_archive", 409)
+        selection_path = directory / "discovery.json"
+        if not selection_path.exists():
+            tool("receive_being", ["discover", "--archive", str(directory / "source.archive"),
+                                  "--sha256", record["archive_sha256"],
+                                  "--output", str(selection_path)])
+        return _read(selection_path)
+
+
+def prepare(state_dir: str | Path, name: str, selection: dict | None, *, owner: str) -> dict:
+    directory, _ = _record(state_dir, name, owner)
+    with _locked(directory):
+        _, record = _record(state_dir, name, owner)
+        fingerprint = _fingerprint({"selection": selection})
+        if record["phase"] == "prepared" and record.get("preparation_fingerprint") == fingerprint:
+            return project(record)
+        if record["phase"] != "uploaded":
+            raise SeedError("seed_preparation_preserves_existing_attempt", 409)
+        if record["mode"] == "import" and not isinstance(selection, dict):
+            raise SeedError("explicit_receiving_selection_required")
+        if record["mode"] == "new" and selection is not None:
+            raise SeedError("new_seed_has_no_historical_selection")
+        record.update(phase="preparing", preparation_fingerprint=fingerprint)
+        _write(directory / "record.json", record)
+        try:
+            if record["mode"] == "new":
+                source = directory / "initial-source"
+                source.mkdir(mode=0o700)
+                soul = _read(directory / "initial-context.json")["soul"]
+                fd = os.open(source / "SOUL.md", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(soul.encode())
+                plan = directory / "export-plan.json"
+                tool("export_being", ["discover", "--being", record["label"],
+                                     "--context-root", str(source), "--output", str(plan)])
+                exported = tool("export_being", ["export", "--plan", str(plan),
+                                                "--output", str(directory / "generated.tgz"),
+                                                "--writers-stopped"])
+                os.rename(directory / "generated.tgz", directory / "source.archive")
+                record["archive_sha256"] = exported["sha256"]
+                tool("receive_being", ["discover", "--archive", str(directory / "source.archive"),
+                                      "--sha256", record["archive_sha256"],
+                                      "--output", str(directory / "discovery.json")])
+                selection = _read(directory / "discovery.json")
+            assert isinstance(selection, dict)
+            _write(directory / "selection.json", selection)
+            tool("receive_being", ["prepare", "--archive", str(directory / "source.archive"),
+                                  "--sha256", record["archive_sha256"],
+                                  "--selection", str(directory / "selection.json"),
+                                  "--output", str(directory / "received")])
+            report = _read(directory / "received/preparation.json")
+            if report.get("schema") != "dm.being-receiving-preparation/v1" or not report.get("ready_for_context_install"):
+                raise SeedError("seed_preparation_marker_missing")
+            counts = [row["sqlite"]["table_counts"].get("chapters") for row in report["memory"]]
+            record.update(phase="prepared", prepared_ms=int(time.time() * 1000),
+                          memory_coverage="empty-new" if record["mode"] == "new" else report["memory_coverage"],
+                          memory_stores=len(counts),
+                          memory_chapters=sum(counts) if all(type(c) is int for c in counts) else None,
+                          skills=len(report["selection"]["skills"]))
+        except (SeedError, OSError, ValueError, KeyError, TypeError):
+            record["phase"] = "attention-required"
+            _write(directory / "record.json", record)
+            raise SeedError("seed_preparation_requires_attention", 409) from None
+        _write(directory / "record.json", record)
+        return project(record)
+
+
+def connections(state_dir: str | Path, name: str, value: dict, *, owner: str) -> dict:
+    directory, _ = _record(state_dir, name, owner)
+    allowed = {"telegram_bot_token", "telegram_chat_id", "telegram_topic_id", "ssh_public_key"}
+    if not isinstance(value, dict) or not value or set(value) - allowed:
+        raise SeedError("invalid_seed_connection_fields")
+    if "telegram_bot_token" in value and not re.fullmatch(r"[0-9]{6,15}:[A-Za-z0-9_-]{30,80}", str(value["telegram_bot_token"])):
+        raise SeedError("invalid_telegram_bot_token")
+    for field in ("telegram_chat_id", "telegram_topic_id"):
+        if field in value and (type(value[field]) is not int or value[field] == 0):
+            raise SeedError("invalid_telegram_destination")
+    if "ssh_public_key" in value and not re.fullmatch(r"(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]{40,1600}(?: [^\r\n]{0,80})?", str(value["ssh_public_key"])):
+        raise SeedError("ssh_public_key_required")
+    with _locked(directory):
+        _, record = _record(state_dir, name, owner)
+        old = _read(directory / "connections.json") if (directory / "connections.json").exists() else {}
+        old.update(value)
+        _write(directory / "connections.json", old)
+        record["connection_fields"] = sorted(old)
+        _write(directory / "record.json", record)
+        return project(record)
+
+
+def project(record: dict) -> dict:
+    """Closed read model: no identity text, paths, credentials or raw errors."""
+    if (record.get("phase") not in PHASES or not NAME.fullmatch(str(record.get("name", "")))
+            or not LABEL.fullmatch(str(record.get("label", "")))):
+        raise SeedError("invalid_seed_record")
+    fields = {"telegram_bot_token", "telegram_chat_id", "telegram_topic_id", "ssh_public_key"}
+    supplied = set(record.get("connection_fields", [])) & fields
+    return {
+        "schema": SCHEMA, "name": record["name"], "label": record["label"],
+        "mode": record["mode"] if record.get("mode") in {"import", "new"} else "unknown",
+        "phase": record["phase"], "tool_commit": TOOL_COMMIT,
+        "created_ms": record.get("created_ms") if type(record.get("created_ms")) is int else None,
+        "prepared_ms": record.get("prepared_ms") if type(record.get("prepared_ms")) is int else None,
+        "archive_sha256": record.get("archive_sha256") if re.fullmatch(r"[0-9a-f]{64}", str(record.get("archive_sha256", ""))) else None,
+        "memory_coverage": record.get("memory_coverage") if record.get("memory_coverage") in {"owner-selected", "complete-authorized", "empty-new"} else "not-verified",
+        **{field: record.get(field) if type(record.get(field)) is int else None
+           for field in ("memory_stores", "memory_chapters", "skills")},
+        "browser": "requested; not accepted" if record.get("browser_requested") is True else "not requested",
+        "ssh": "key supplied; not accepted" if "ssh_public_key" in supplied else "key required",
+        "telegram": "data supplied; not accepted" if {"telegram_bot_token", "telegram_chat_id"} <= supplied else "bot data required",
+        "pending": ["context installation", "native memory acceptance", "signed embodiment enrollment",
+                    "dedicated SSH", "fresh provider login", "Telegram acceptance"],
+        "active": False,
+    }
+
+
+def status(state_dir: str | Path, name: str, *, owner: str = "*") -> dict:
+    return project(_record(state_dir, name, owner)[1])
+
+
+def list_seeds(state_dir: str | Path, *, owner: str = "*") -> list[dict]:
+    parent = _path(Path(state_dir) / "being-seeds")
+    if not parent.exists():
+        return []
+    rows = []
+    for path in sorted(parent.iterdir()):
+        if not NAME.fullmatch(path.name):
+            continue
+        try:
+            rows.append(status(state_dir, path.name, owner=owner))
+        except (SeedError, OSError, ValueError, TypeError):
+            continue
+        if len(rows) >= MAX_SEEDS:
+            break
+    return rows

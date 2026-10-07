@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""Standard seed exporter for Hermes, Codex and explicitly selected mixed homes.
+
+Only Python 3.11+ is needed; no Cluster daemon, SDK, enrollment or provider login.
+Arguments and preservation semantics are those of the pinned Matrix exporter.
+"""
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from clusterctl.being_seed import SeedError, tool  # noqa: E402
+
+try:
+    print(json.dumps(tool("export_being", sys.argv[1:])))
+except SeedError as error:
+    print(json.dumps({"error": str(error)}))
+    raise SystemExit(1) from None

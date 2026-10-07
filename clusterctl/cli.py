@@ -27,7 +27,7 @@ from pathlib import Path
 
 import yaml
 
-from . import audit, distributed_rebirth, lifecycle, rebirth, recovery_rebirth
+from . import audit, being_seed, distributed_rebirth, lifecycle, rebirth, recovery_rebirth
 from .adapters import IncusAdapter, IncusError
 from .config import Config, ConfigError, load_config
 from .inventory import SpecError, find_record, load_specs, reconcile
@@ -311,6 +311,23 @@ def _build_parser() -> argparse.ArgumentParser:
     p_recovery.add_argument("--password-fd", required=True, type=int)
     p_recovery.add_argument("--idempotency-key", required=True)
     p_recovery.add_argument("--json", action="store_true", help="emit JSON")
+    seeds = sub.add_parser("seed", help="receive private portable context or prepare a new being")
+    seeds.add_argument("--owner", default="clusterctl-cli", help="owner of the private intake")
+    commands = seeds.add_subparsers(dest="seed_command", required=True)
+    for command in ("create", "upload", "discover", "prepare", "connections", "status", "list"):
+        p = commands.add_parser(command)
+        p.add_argument("--json", action="store_true")
+        if command not in {"create", "list"}:
+            p.add_argument("name")
+        if command == "create":
+            p.add_argument("--spec", required=True, type=Path)
+            p.add_argument("--idempotency-key", required=True)
+        if command == "upload":
+            p.add_argument("--archive", required=True, type=Path)
+            p.add_argument("--sha256", required=True)
+        if command in {"prepare", "connections"}:
+            p.add_argument("--selection" if command == "prepare" else "--file", type=Path,
+                           required=command == "connections")
     return parser
 
 
@@ -400,6 +417,39 @@ def run(argv=None, adapter=None) -> int:
     args = _build_parser().parse_args(argv)
     try:
         cfg = _resolve_config(args)
+
+        if args.command == "seed":
+            try:
+                seed_result: dict | list
+                base = cfg.state_dir
+                options = {"owner": args.owner}
+                if args.seed_command == "create":
+                    seed_result = being_seed.create(base, json.loads(args.spec.read_bytes()),
+                                               key=args.idempotency_key, **options)
+                elif args.seed_command == "upload":
+                    with args.archive.open("rb") as stream:
+                        seed_result = being_seed.upload(base, args.name, stream=stream,
+                                                   length=args.archive.stat().st_size,
+                                                   sha256=args.sha256, **options)
+                elif args.seed_command == "prepare":
+                    selection = json.loads(args.selection.read_bytes()) if args.selection else None
+                    seed_result = being_seed.prepare(base, args.name, selection, **options)
+                elif args.seed_command == "connections":
+                    seed_result = being_seed.connections(base, args.name, json.loads(args.file.read_bytes()), **options)
+                elif args.seed_command == "discover":
+                    seed_result = being_seed.discovery(base, args.name, **options)
+                elif args.seed_command == "status":
+                    seed_result = being_seed.status(base, args.name, **options)
+                else:
+                    seed_result = being_seed.list_seeds(base, **options)
+                print(json.dumps(seed_result, indent=2))
+                return EXIT_OK
+            except being_seed.SeedError as error:
+                print(json.dumps({"error": str(error)}))
+                return {404: EXIT_NOT_FOUND, 409: EXIT_CONFLICT}.get(error.status, 2)
+            except (OSError, ValueError, TypeError, KeyError):
+                print(json.dumps({"error": "seed_operation_requires_attention"}))
+                return EXIT_CONFLICT
 
         if args.command in (
             "create",

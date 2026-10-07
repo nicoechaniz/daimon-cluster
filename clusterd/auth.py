@@ -50,6 +50,7 @@ VALID_SCOPES = (
     "backup:write",
     "restore:write",
     "destroy:write",
+    "seed:write",
 )
 
 MUTATION_RATE_LIMIT = 60          # mutations ...

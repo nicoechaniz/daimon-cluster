@@ -57,3 +57,27 @@ def test_source_link_or_drift_never_publishes_a_capture_marker(tmp_path, packet,
     alias.symlink_to(source / "context/SOUL.md")
     with pytest.raises(being_seed.SeedError, match="symlink"):
         onboarding_input.capture(source, destination.parent / "second", source_uid=os.geteuid())
+
+
+def test_interrupted_copy_resumes_exact_input_without_publishing_partial_files(tmp_path, packet, monkeypatch):
+    source, destination = prepared(tmp_path, packet)
+    original = onboarding_input.owned_digest
+    interrupted = False
+    def copy(path, *, uid, copy=None):
+        nonlocal interrupted
+        if copy is not None and not interrupted:
+            interrupted = True
+            copy.write_bytes(b'partial interrupted copy')
+            copy.chmod(0o600)
+            raise OSError('fixture process interruption')
+        return original(path, uid=uid, copy=copy)
+    monkeypatch.setattr(onboarding_input, 'owned_digest', copy)
+    with pytest.raises(OSError):
+        onboarding_input.capture(source, destination, source_uid=os.geteuid(), resume=True)
+    assert not (destination / 'manifest.json').exists()
+    assert not any(path.is_file() for path in (destination / 'received').rglob('*'))
+    monkeypatch.setattr(onboarding_input, 'owned_digest', original)
+    result = onboarding_input.capture(source, destination, source_uid=os.geteuid(), resume=True)
+    assert onboarding_input.verify(destination, result['seed_digest'])['files'] == onboarding_input.inventory(source, uid=os.geteuid())
+    assert onboarding_input.capture(source, destination, source_uid=os.geteuid(), resume=True) == result
+    assert list((destination / '.capture-staging').iterdir())  # Preserved interruption evidence.

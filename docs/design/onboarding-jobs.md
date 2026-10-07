@@ -437,3 +437,27 @@ owned unit's live binary process. Real conversation, permanent final replies,
 steering, independent topics, restart continuity and CLI resume remain separate
 acceptance requirements. Listener readiness never sets `telegram_verified` or
 activates the being.
+
+## Prepared intake to durable job
+
+An optional root-private `intake_policy` in the host configuration selects exact
+being/owner pairs, account profiles, browser choices and the qualified release.
+The worker discovers only those pairs' prepared seeds. Uploading or choosing a
+name cannot authorize resources. The bridge freezes the complete received
+input and publishes the exact Source proposal through the existing owner-only
+portal/API/CLI review. Before acceptance its progress is explicitly waiting,
+with no body, resource grant or custody created.
+
+After the pair accepts that proposal, the same worker issues its policy-bound
+resource grant and submits the unchanged plan through the ordinary job engine.
+Restarting or retrying uses the same input, proposal and plan. Policy revocation
+also disables already-issued resource grants at every dispatch boundary.
+Native custody authorization remains separate: an owner acknowledgement or
+host resource policy cannot manufacture a signed being identity.
+
+Capture publishes each completed file without replacement before publishing a
+final manifest. Interrupted partial copies stay in private staging, outside the
+usable input inventory. A retry completes missing files and verifies both the
+source and receiving inventory. Contradictory files or changed source intent
+remain preserved and refused. One bad intake does not block other selected
+pairs, and an existing progress record exposes its verification failure.

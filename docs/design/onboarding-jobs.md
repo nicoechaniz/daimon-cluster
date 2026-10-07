@@ -53,6 +53,24 @@ Matrix, access, Telegram and acceptance adapters are still being integrated
 and currently return explicit waiting states. This is a foundation for complete onboarding, not a deployed end-to-end
 activation claim. Real cohort activation and human acceptance remain pending.
 
+The Matrix stage now dispatches native first-genesis preparation when the pair
+selected its first signed identity and a separate exact custody grant exists.
+Root and Recovery are separate encrypted native packages. Each native holder
+command opens only its own package; aggregation uses public shares. The fixed
+installed SDK is checked before dispatch, unlock material travels only through
+private file descriptors, and command output is never public progress. An
+interrupted acknowledgement preserves the published genesis; native retries
+validate existing packages instead of rekeying. Missing unlock material,
+foreign intent or changed grant stops without replacing identity. Grant
+revocation is rechecked between holder operations.
+
+Custody preparation does not mark Matrix enrollment complete. Its receipt
+explicitly leaves backup/restore and enrollment unverified until their actual
+native operations are connected. Existing identity selections never run this
+first-genesis ceremony. Native target preparation, current V8 authority,
+backup/restore, physical admission and canonical registry projection remain
+required before a hosted Matrix body can pass acceptance.
+
 ## Execution and recovery
 
 A plan binds owner, environment name, receiving input digest, qualified release,
@@ -116,6 +134,21 @@ before inheritance installation. The optional host-only `qualification: true`
 permits context-only disposable rehearsals with an exact host grant and a
 `qualify-` name; participant labels alone cannot select that exception. No
 qualification flag supplies native authority or receiving acceptance.
+
+Optional `custody` and `custody_grants` directories are owner-private and
+disjoint from each other, intake, guest-mountable code/inputs/views and request
+state. A `cluster-onboarding-custody-grant/v1` binds the exact plan, first
+ceremony, numeric execution UID, authenticated Source binding evidence,
+owner-instruction evidence and Root/Recovery/backup/restore scope. A pair's
+portal decision and a resource grant cannot create this native custody grant.
+Actual Source online-custody authorization and consumer-denial qualification
+are required for live use; disposable native protocol tests do not establish
+either. No live cohort custody or genesis has been created by this candidate.
+
+Canonical registry writers share the reviewed kernel lock from Cluster #114.
+The mainline rollback operation uses that same lock and retains its narrow
+compensation condition. This preserves history across concurrent body jobs;
+read-only status does not create a lock or manufacture physical presence.
 
 The dedicated guest account uses UID/GID 1000. The qualified image carries
 receiving tools; bootstrap creates this new unprivileged account when absent,

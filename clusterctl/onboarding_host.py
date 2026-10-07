@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import being_seed, onboarding_consent, onboarding_input, onboarding_mounts, onboarding_release
+from .onboarding_custody import FirstCustody
 from .onboarding import Observation, OnboardingError, digest, private_directory, validate_plan
 from .onboarding_progress import Progress
 
@@ -40,12 +41,15 @@ class HostConfig:
     consent_state: Path | None = None
     consent_uid: int | None = None
     qualification: bool = False
+    custody: Path | None = None
+    custody_grants: Path | None = None
 
     @classmethod
     def load(cls, path: Path) -> HostConfig:
         value = being_seed._read(path)
         consent_keys = {"consent_state", "consent_uid"}
-        if (set(value) - consent_keys - {"qualification"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        custody_keys = {"custody", "custody_grants"}
+        if (set(value) - consent_keys - custody_keys - {"qualification"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -81,10 +85,25 @@ class HostConfig:
             info = consent_state.stat()
             if info.st_uid != consent_uid or info.st_mode & 0o077 or not consent_state.is_dir():
                 raise OnboardingError("invalid_onboarding_host_configuration")
+        custody, custody_grants = None, None
+        if custody_keys & set(value):
+            if not custody_keys <= set(value) or consent_state is None:
+                raise OnboardingError("invalid_onboarding_host_configuration")
+            for key in custody_keys:
+                if not isinstance(value[key], str) or not Path(value[key]).is_absolute():
+                    raise OnboardingError("invalid_onboarding_host_configuration")
+                private_directory(Path(value[key]))
+            custody, custody_grants = Path(value["custody"]), Path(value["custody_grants"])
+            boundaries = set(directories.values()) | {progress, consent_state, code}
+            if (any(path == other or path.is_relative_to(other) or other.is_relative_to(path)
+                    for path in (custody, custody_grants) for other in boundaries)
+                    or custody == custody_grants or custody.is_relative_to(custody_grants)
+                    or custody_grants.is_relative_to(custody)):
+                raise OnboardingError("separate_onboarding_custody_required")
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False))
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants)
 
     def approved_plans(self) -> list[dict]:
         private_directory(self.grants)
@@ -187,6 +206,16 @@ class HostBackend:
             return Observation("waiting", reason="identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
             return self._guest_observe(plan, stage)
+        if stage == "matrix" and self.config.custody and self.config.custody_grants:
+            ceremony = FirstCustody(self.config.custody, self.config.custody_grants)
+            decision = self._decision(plan)
+            if decision is None or decision["matrix_identity_mode"] != "first" or not ceremony.authorize(plan):
+                return Observation("waiting", reason="identity_authorization_required")
+            if ceremony.observe(plan) is None:
+                return Observation("absent", safe_to_execute=True)
+            # Genesis custody is not a body enrollment. Native target preparation,
+            # restore and physical admission must finish before this stage does.
+            return Observation("waiting", reason="backend_unavailable")
         # Do not invent success for native enrollment or receiving acceptance.
         # The remaining typed stage adapters are added with their actual tests.
         reason = {"matrix": "identity_authorization_required", "access": "account_authorization_required",
@@ -200,6 +229,13 @@ class HostBackend:
             raise OnboardingError("identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
             self._guest_execute(plan, stage)
+            return
+        if stage == "matrix" and self.config.custody and self.config.custody_grants:
+            decision = self._decision(plan)
+            if decision is None:
+                raise OnboardingError("identity_authorization_required")
+            FirstCustody(self.config.custody, self.config.custody_grants).prepare(
+                plan, identity_mode=decision["matrix_identity_mode"])
             return
         if stage != "environment":
             raise OnboardingError("unsupported_onboarding_host_stage")
@@ -231,6 +267,9 @@ class HostBackend:
         # A deployed host config supplies the private intake boundary.
         if self.config.consent_state is None:
             return stage == "context" and self.config.qualification and plan["name"].startswith("qualify-")
+        return self._decision(plan) is not None
+
+    def _decision(self, plan: dict) -> dict | None:
         if self.config.consent_uid is None or self.config.progress is None or self.config.code is None:
             raise OnboardingError("invalid_onboarding_host_configuration")
         onboarding_release.verify(self.config.code, plan["release_digest"], uid=os.geteuid())
@@ -242,7 +281,9 @@ class HostBackend:
             existing = None
         if existing != proposal:
             reviews.publish(proposal)
-        return onboarding_consent.read(self.config.consent_state, proposal, intake_uid=self.config.consent_uid) is not None
+        if self.config.consent_state is None:
+            raise OnboardingError("invalid_onboarding_host_configuration")
+        return onboarding_consent.read(self.config.consent_state, proposal, intake_uid=self.config.consent_uid)
 
     def _guest_paths(self, plan: dict) -> tuple[Path, Path, dict]:
         if self.config.code is None or self.config.inputs is None or self.config.views is None:

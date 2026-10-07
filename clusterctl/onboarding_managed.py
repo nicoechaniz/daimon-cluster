@@ -46,8 +46,14 @@ class ManagedRuntime:
             raise OnboardingError('invalid_onboarding_managed_configuration')
 
     def _ready(self, plan: dict) -> bool:
-        return self.settings['visibility_installation'] is not None or (
+        return self._selection(plan)[1] is not None or (
             self.backend.config.qualification and plan['name'].startswith('qualify-'))
+
+    def _selection(self, plan: dict) -> tuple[str | None, str | None]:
+        if getattr(self.backend.config, 'peer', None) is not None:
+            from .onboarding_peer_host import PeerHost
+            return PeerHost(self.backend).application(plan) or (None, None)
+        return self.settings.get('messaging_application'), self.settings['visibility_installation']
 
     def _expected(self, plan: dict) -> dict:
         config = self.backend.config
@@ -160,10 +166,10 @@ class ManagedRuntime:
         runtime_code, runtime_args, _ = self.backend._runtime_paths(plan, code)
         launcher = ('import sys;sys.path.insert(0,sys.argv.pop(1));'
                     'from clusterctl.onboarding_service import main;raise SystemExit(main())')
-        selection = (['--receive-only'] if self.settings['visibility_installation'] is None else
-                     ['--visibility-installation', self.settings['visibility_installation']])
-        if self.settings.get('messaging_application') is not None:
-            selection += ['--messaging-application', self.settings['messaging_application']]
+        application, visibility = self._selection(plan)
+        selection = (['--receive-only'] if visibility is None else ['--visibility-installation', visibility])
+        if application is not None:
+            selection += ['--messaging-application', application]
         self.backend._dispatch(plan, ['exec', self.backend.instance(plan), '--', 'python3', '-B', '-I', '-c',
             launcher, str(runtime_code), '--code', str(code), *runtime_args, '--plan', '/home/agent/.onboarding-input/plan.json', *selection])
         # Observe authenticated, admitted presence before committing canonical state.

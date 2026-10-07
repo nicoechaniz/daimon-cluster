@@ -91,6 +91,17 @@ def test_wait_resumes_original_job_and_revocation_prevents_next_effect(tmp_path)
     assert advance(store, backend, count=5)["active"] is True
 
 
+def test_existing_identity_conflict_is_visible_and_stops_before_acceptance(tmp_path):
+    store, backend = setup(tmp_path)
+    advance(store, backend, count=3)
+    def conflict(*args):
+        raise ob.OnboardingError('existing_identity_conflict')
+    backend.observe = conflict
+    result = store.tick('eko', backend)
+    assert result['reason'] == 'existing_identity_conflict'
+    assert result['completed_steps'] == list(ob.STAGES[:3]) and len(backend.calls) == 3
+
+
 def test_uncertain_welcome_is_never_automatically_replayed(tmp_path):
     store, backend = setup(tmp_path)
     advance(store, backend, count=6)

@@ -118,6 +118,9 @@ def test_real_existing_identity_export_and_signature_verification_no_new_custody
         export(root, password, output, peer_file=asset)
     actual = onboarding_peer.native
     monkeypatch.setattr(onboarding_peer, 'native', lambda code, uid=0: actual(code, uid=os.geteuid()))
+    assert local.worker_identity(state, task, intake_uid=os.geteuid()) == identity
+    with pytest.raises(Exception, match='private_local_body_report_required'):
+        local.worker_identity(state, task, intake_uid=os.geteuid() + 1)
     progress = tmp_path / 'progress'
     progress.mkdir(mode=0o750)
     local.Requests(progress, worker_uid=os.geteuid()).publish(task)

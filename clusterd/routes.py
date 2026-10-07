@@ -46,6 +46,16 @@ class Route:
 
 
 ROUTES: list[Route] = [
+    Route("POST", "/v1/seed-access-requests", "requestSeedAccess", "Request human-approved private intake access",
+          "seed_access_request", "none", "n/a", mutation=True),
+    Route("GET", "/v1/seed-access-requests/{request_id}", "seedAccessRequestStatus", "Read own request with private proof header",
+          "seed_access_request_status", "request-proof", "n/a"),
+    Route("POST", "/v1/seed-access-requests/{request_id}/claim", "claimSeedAccess", "Claim human-approved access with private proof header",
+          "seed_access_request_claim", "request-proof", "n/a", mutation=True),
+    Route("GET", "/v1/seed-session", "seedSession", "Read own private intake session",
+          "seed_session", "fleet:read", "n/a", required_scope="fleet:read"),
+    Route("DELETE", "/v1/seed-session", "seedSessionLogout", "Revoke own intake session",
+          "seed_session_logout", "fleet:read", "n/a", required_scope="fleet:read", mutation=True),
     Route("GET", "/v1/onboarding", "seedOnboarding", "Human interface or public Markdown/JSON agent guide",
           "seed_ui", "none", "n/a", query_params=(
               {"name": "format", "in": "query", "required": False,

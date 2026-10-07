@@ -57,6 +57,14 @@ def _operation(route) -> dict:
         })
     for query_param in route.query_params:
         parameters.append(dict(query_param))
+    if route.handler in {"seed_access_request_status", "seed_access_request_claim"}:
+        parameters.append({"name": "X-Access-Request-Key", "in": "header", "required": True,
+                           "description": "Private random hex key retained by the requester; never put it in a URL.",
+                           "schema": {"type": "string", "pattern": "^[0-9a-f]{64}$"}})
+    if route.handler == "seed_access_request_claim":
+        parameters.append({"name": "X-Access-Delivery", "in": "header", "required": False,
+                           "description": "Browser delivery sets an HttpOnly cookie instead of returning a bearer.",
+                           "schema": {"type": "string", "enum": ["browser"]}})
     if route.body_format == "archive":
         parameters.append({"name": "X-Archive-SHA256", "in": "header", "required": True,
                            "schema": {"type": "string", "pattern": "^[0-9a-f]{64}$"}})
@@ -183,6 +191,8 @@ def _operation(route) -> dict:
                         "content": err_content}
 
     security: list[dict] = [] if route.public else [{"bearerAuth": []}]
+    if route.path in {"/v1/seeds", "/v1/seed-session"} or route.path.startswith("/v1/seeds/"):
+        security.append({"intakeCookie": []})
     operation = {
         "operationId": route.operation_id,
         "summary": route.summary,
@@ -203,9 +213,19 @@ def _operation(route) -> dict:
     if route.body_format == "archive":
         operation["requestBody"] = {"required": True, "content": {
             "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}}
-    elif (route.path.startswith("/v1/seeds") or route.path == "/v1/seed-access") and route.method == "POST":
+    elif (route.path.startswith(("/v1/seeds", "/v1/seed-access-requests")) or route.path == "/v1/seed-access") and route.method == "POST":
         operation["requestBody"] = {"required": True, "content": {
             "application/json": {"schema": {"type": "object"}}}}
+    if route.handler == "seed_access_request":
+        operation["requestBody"]["content"]["application/json"]["schema"] = {
+            "type": "object", "additionalProperties": False, "required": ["owner", "proof_sha256"],
+            "properties": {"owner": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,30}$"},
+                           "proof_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}}
+        operation["description"] = "Create a pending access request. This grants no authority. The host must approve the exact owner and verification code."
+    if route.handler in {"seed_access_request_status", "seed_access_request_claim"}:
+        operation["description"] = "Only the requester possessing the private proof key can access this request. Claims require host approval, expire after 30 minutes and succeed once."
+    if {"intakeCookie": []} in security:
+        operation["description"] += " Browser-cookie mutations require an Origin header matching this HTTPS host; explicit API bearer requests are unchanged."
     return operation
 
 
@@ -293,6 +313,8 @@ def build_openapi() -> dict:
                 },
             },
             "securitySchemes": {
+                "intakeCookie": {"type": "apiKey", "in": "cookie", "name": "dm_seed_access",
+                                 "description": "Three-day Secure HttpOnly SameSite=Strict browser access; accepted only by seed and seed-session routes."},
                 "bearerAuth": {
                     "type": "http",
                     "scheme": "bearer",
@@ -306,8 +328,8 @@ def build_openapi() -> dict:
                         "operation classes (fleet:read, lifecycle:write, "
                         "backup:write, etc.). Owner-scoped tokens may only touch their "
                         "own daimons. Revocation takes effect without "
-                        "restart. Every route except GET /v1/health "
-                        "requires a token (default-deny)."
+                        "restart. Intake metadata and access requests are public; "
+                        "participant data and fleet routes require authorized access."
                     ),
                 },
             },

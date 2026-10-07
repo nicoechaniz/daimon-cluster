@@ -1,4 +1,4 @@
-"""Private intake presentation: local assets, explicit state, no stored secrets."""
+"""Private intake presentation with local assets and HttpOnly browser access."""
 
 HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -34,7 +34,10 @@ button,input,select,textarea{font:inherit}button,a,input,select,textarea{touch-a
 <div class="lcars-line" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
 <div class="workspace"><div>
 <section class="card access" aria-label="Private workspace access"><div class="access-heading"><h2 class="access-title">Your private workspace</h2><span id="access-state" class="eyebrow">Access required</span></div>
-<div class="access-row"><label class="sr-label" hidden for="token">Private access token</label><input id="token" type="password" autocomplete="off" aria-label="Private access token" placeholder="Enter your private access"><button id="unlock" class="button secondary" type="button">Connect <span class="arrow" aria-hidden="true">↗</span></button></div><p class="access-note">Use the access shared by your host. Only your deliveries appear here.</p>
+<div id="request-access-fields"><p class="access-note">Ask for your own space. Your host approves the request; access arrives directly here.</p><div class="access-row"><label class="sr-label" hidden for="request-owner">Your workspace name</label><input id="request-owner" aria-label="Your workspace name" placeholder="ani or sai" maxlength="31" autocomplete="username"><button id="request-access" class="button primary" type="button">Request access <span class="arrow" aria-hidden="true">↗</span></button></div></div>
+<div id="access-request-panel" class="new-continuity" style="margin-top:18px" hidden><strong>Waiting for your host</strong><p id="request-instructions"></p><div id="request-code" style="font-size:32px;letter-spacing:.12em;font-family:ui-monospace,monospace;margin:12px 0;color:var(--ink)"></div><p>Keep this page open. This code identifies your request; it is safe to share with your host.</p><button id="cancel-access" type="button" class="button quiet" style="margin-top:12px">Cancel this wait</button></div>
+<div id="connected-access" hidden><p id="connected-owner" class="access-note"></p><button id="sign-out" class="button quiet" type="button" style="margin-top:12px">Sign out</button></div>
+<details class="host-access"><summary>Already have private access?</summary><div class="access-row"><label class="sr-label" hidden for="token">Private access token</label><input id="token" type="password" autocomplete="off" aria-label="Private access token" placeholder="Enter existing private access"><button id="unlock" class="button secondary" type="button">Connect <span class="arrow" aria-hidden="true">↗</span></button></div><p class="access-note">Only your deliveries appear in this workspace.</p></details>
 <details class="host-access"><summary>Host operator access</summary><p class="hint">For the first connection, run <code>daimon-cluster-access</code> in your host terminal. Then issue separate access for each human.</p><div class="field"><label class="field-label" for="invite-owner">Human's workspace ID</label><input id="invite-owner" placeholder="ani or sai" autocomplete="off"></div><div class="host-actions"><button id="invite" type="button" class="button secondary">Create 3-day access</button></div><div class="field"><label class="field-label" for="invite-token">Private access · shown once</label><input id="invite-token" type="password" readonly autocomplete="off"></div><button id="copy-invite" class="button secondary" type="button">Copy private access</button><p class="hint">Share this access through your private human channel.</p></details></section>
 <section class="card"><nav class="journey-nav" aria-label="Your journey"><button class="journey-tab" data-step="1" type="button" aria-current="step"><span class="number">01</span> Origin</button><button class="journey-tab" data-step="2" type="button"><span class="number">02</span> Continuity</button><button class="journey-tab" data-step="3" type="button"><span class="number">03</span> Connections</button></nav>
 <div class="card-body"><section data-panel="1"><div class="section-kicker">01 / ORIGIN</div><h2 class="section-title">Where does your story begin?</h2><p class="section-copy">Continue an established being, or give a new daimon their first spark.</p>
@@ -61,7 +64,7 @@ button,input,select,textarea{font:inherit}button,a,input,select,textarea{touch-a
 SCRIPT = r'''
 const field=id=>document.getElementById(id);
 const requestKeys=new Map();
-let connected=false,currentRecord=null,selectionData=null,records=[],busy=false;
+let connected=false,currentRecord=null,selectionData=null,records=[],busy=false,accessPending=null;
 const selectedName=()=>encodeURIComponent(field('name').value.trim());
 const phases={'awaiting-upload':'Waiting for continuity','uploaded':'Package delivered','preparing':'Preparing preserved context','prepared':'Context preserved','attention-required':'Host attention required'};
 const errorCopy={unauthorized:'Connect with a valid private access.',forbidden:'This access does not permit that operation.',seed_operator_access_required:'Use host operator access to issue invitations.',seed_not_found:'This home is not available in your workspace.',staging_storage_required:'The host needs more working space before accepting this package.',seed_archive_already_present:'This package is already preserved. Review the uploaded package.',invalid_telegram_bot_token:'Check the exact token from BotFather.',invalid_telegram_destination:'Use the numeric Telegram destination, not a username.',ssh_public_key_required:'Use a complete public SSH key.',seed_name_already_present:'This home already exists. Select it from your workspace.',seed_verification_or_preparation_refused:'The package or receiving selection needs attention. Check the checksum and the selected identity.',idempotency_key_reuse:'The intake changed after creation. Select the existing home or choose a new environment ID.'};
@@ -71,7 +74,7 @@ function step(number){document.querySelectorAll('[data-panel]').forEach(p=>p.hid
 function mode(value){field('mode').value=value;const isNew=value==='new';field('new-fields').hidden=!isNew;field('import-fields').hidden=isNew;field('new-continuity').hidden=!isNew;field('choose-import').setAttribute('aria-pressed',String(!isNew));field('choose-new').setAttribute('aria-pressed',String(isNew));field('continuity-copy').textContent=isNew?'Give the initial SOUL a preserved beginning. Their own memory starts here.':'Deliver the verified package from your current home. Originals and provenance stay preserved.';}
 async function api(path,method='GET',body=null,headers={}){
  if(location.hostname!=='localhost'&&location.hostname!=='127.0.0.1'&&location.protocol!=='https:')throw Error('Use your host’s HTTPS address.');
- headers.Authorization='Bearer '+field('token').value.trim();const options={method,headers,credentials:'omit'};
+ if(field('token').value.trim())headers.Authorization='Bearer '+field('token').value.trim();const options={method,headers,credentials:'same-origin'};
  if(body!==null){if(body instanceof File){options.body=body;headers['Content-Type']='application/octet-stream'}else{headers['Content-Type']='application/json';options.body=JSON.stringify(body)}}
  const response=await fetch(path,options);let data;try{data=await response.json()}catch{throw Error('The host did not return a valid response. Please try again.')}
  if(!response.ok)throw Error(errorCopy[data.error]||String(data.error||'The operation needs host attention.').replaceAll('_',' '));return data;
@@ -100,8 +103,15 @@ document.querySelectorAll('[data-step]').forEach(button=>button.onclick=()=>step
 field('choose-import').onclick=()=>{if(currentRecord){message('Select a new environment ID to begin another home.');return}mode('import')};field('choose-new').onclick=()=>{if(currentRecord){message('Select a new environment ID to begin another home.');return}mode('new')};field('mode').onchange=()=>mode(field('mode').value);
 field('label').oninput=()=>{if(!currentRecord){field('name').value=field('label').value.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,31)}};
 field('name').oninput=()=>{if(currentRecord&&currentRecord.name!==field('name').value.trim()){currentRecord=null;resetSelection();clearConnections();updateActions()}};
-field('token').oninput=()=>{connected=false;currentRecord=null;records=[];resetSelection();clearConnections();field('invite-token').value='';field('access-state').textContent='Access required';field('deliveries').replaceChildren();field('progress').replaceChildren(node('h3','empty-title','Connect your workspace.'),node('p','empty-copy','Your deliveries appear after private access is verified.'));updateActions()};
-field('unlock').onclick=()=>action(async()=>{const data=await api('/v1/seeds');connected=true;field('access-state').textContent='Connected';listRecords(data.items);if(!data.items.length)field('progress').replaceChildren(node('h3','empty-title','Your next chapter starts here.'),node('p','empty-copy','Choose an origin. This workspace has no delivered packages yet.'));else selectRecord(data.items[0]);},'Connecting your private workspace…','Workspace connected.');
+field('token').oninput=()=>{accessPending=null;field('access-request-panel').hidden=true;field('connected-access').hidden=true;field('request-access-fields').hidden=false;connected=false;currentRecord=null;records=[];resetSelection();clearConnections();field('invite-token').value='';field('access-state').textContent='Access required';field('deliveries').replaceChildren();field('progress').replaceChildren(node('h3','empty-title','Connect your workspace.'),node('p','empty-copy','Your deliveries appear after private access is verified.'));updateActions()};
+async function connectWorkspace(){const session=await api('/v1/seed-session');const data=await api('/v1/seeds');connected=true;field('access-state').textContent='Connected';field('request-access-fields').hidden=true;field('connected-access').hidden=false;field('connected-owner').textContent='Private workspace: '+session.owner+'. Access is valid for 3 days.';listRecords(data.items);if(!data.items.length)field('progress').replaceChildren(node('h3','empty-title','Your next chapter starts here.'),node('p','empty-copy','Choose an origin. This workspace has no delivered packages yet.'));else selectRecord(data.items[0]);updateActions();}
+field('unlock').onclick=()=>action(connectWorkspace,'Connecting your private workspace…','Workspace connected.');
+async function waitForAccess(request){try{while(accessPending===request&&Date.now()<request.expires_ms){const status=await api('/v1/seed-access-requests/'+request.request_id,'GET',null,{'X-Access-Request-Key':request.key});if(accessPending!==request)return;if(status.phase==='approved'){if(busy){await new Promise(resolve=>setTimeout(resolve,1000));continue;}await action(async()=>{if(accessPending!==request)return;await api('/v1/seed-access-requests/'+request.request_id+'/claim','POST',{}, {'X-Access-Request-Key':request.key,'X-Access-Delivery':'browser'});accessPending=null;field('token').value='';field('access-request-panel').hidden=true;await connectWorkspace();},'Receiving your approved private access…','Your host approved access. This workspace is yours.');return;}if(status.phase!=='pending')throw Error('This request is '+status.phase+'. Request access again if needed.');await new Promise(resolve=>setTimeout(resolve,4000));}if(accessPending===request)throw Error('This request expired. Request access again.');}catch(error){if(accessPending===request){accessPending=null;field('access-request-panel').hidden=true;field('request-access-fields').hidden=false;message(error.message,'error');}}}
+field('request-access').onclick=()=>action(async()=>{const owner=field('request-owner').value.trim().toLowerCase();if(!/^[a-z0-9][a-z0-9-]{0,30}$/.test(owner))throw Error('Enter a short workspace name, such as ani or sai.');const key=[...crypto.getRandomValues(new Uint8Array(32))].map(b=>b.toString(16).padStart(2,'0')).join('');const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(key));const proof_sha256=[...new Uint8Array(hash)].map(b=>b.toString(16).padStart(2,'0')).join('');const request=await api('/v1/seed-access-requests','POST',{owner,proof_sha256});accessPending={...request,key};field('request-code').textContent=request.verification_code;field('request-instructions').textContent='Ask your host to approve workspace '+owner+' with this code:';field('access-request-panel').hidden=false;field('request-access-fields').hidden=true;waitForAccess(accessPending);},'Creating your private access request…','Share the workspace name and code with your host. Access will arrive here.');
+field('cancel-access').onclick=()=>{accessPending=null;field('access-request-panel').hidden=true;field('request-access-fields').hidden=false;message('Waiting cancelled. No access was granted by this page.');};
+field('sign-out').onclick=()=>action(async()=>{await api('/v1/seed-session','DELETE');field('token').value='';field('token').oninput();field('connected-access').hidden=true;field('request-access-fields').hidden=false;},'Signing out…','Signed out. This access was revoked.');
+// This user-opened page resumes only its private intake session, never Matrix attention.
+field('request-access').disabled=true;connectWorkspace().catch(()=>{}).finally(()=>{field('request-access').disabled=false;});
 field('create').onclick=()=>action(async()=>{if(!connected)throw Error('Connect your workspace first.');const name=field('name').value.trim(),label=field('label').value.trim();if(!name||!label)throw Error('Choose a daimon name and environment ID.');if(!requestKeys.has(name))requestKeys.set(name,crypto.randomUUID());const spec={name,label,mode:field('mode').value,browser:field('browser').checked};if(spec.mode==='new')spec.soul=field('soul').value;showRecord(await api('/v1/seeds','POST',spec,{'Idempotency-Key':requestKeys.get(name)}));await refresh();step(2);},'Preparing your intake…','Home prepared for intake. Continue with preservation.');
 field('archive').onchange=fileSelected;const drop=field('drop-zone');drop.ondragover=event=>{event.preventDefault();drop.classList.add('dragging')};drop.ondragleave=()=>drop.classList.remove('dragging');drop.ondrop=event=>{event.preventDefault();drop.classList.remove('dragging');if(event.dataTransfer.files.length!==1){message('Choose one verified package.','error');return}field('archive').files=event.dataTransfer.files;fileSelected()};
 field('upload').onclick=()=>action(async()=>{requireHome();const file=field('archive').files[0];if(!file)throw Error('Choose the continuity package.');if(file.size>512*1024*1024)throw Error('This package exceeds 512 MiB.');if(!/^[a-f0-9]{64}$/.test(field('sha256').value.trim()))throw Error('Enter the 64-character SHA-256 from your exporter.');showRecord(await api('/v1/seeds/'+selectedName()+'/archive','POST',file,{'X-Archive-SHA256':field('sha256').value.trim()}));reviewSelection(await api('/v1/seeds/'+selectedName()+'/selection'));},'Delivering and verifying the preserved package…','Package verified. Review the identity and memories to carry.');
@@ -139,15 +149,20 @@ def agent_guide() -> dict:
 
     api = build_openapi()
     api["paths"] = {path: value for path, value in api["paths"].items()
-                    if path in {"/v1/onboarding", "/v1/seeds", "/v1/seed-access"}
-                    or path.startswith("/v1/seeds/")}
+                    if path in {"/v1/onboarding", "/v1/seeds", "/v1/seed-access", "/v1/seed-access-requests", "/v1/seed-session"}
+                    or path.startswith(("/v1/seeds/", "/v1/seed-access-requests/"))}
     api["servers"] = [{"url": "/", "description": "This HTTPS origin"}]
     return {
         "schema": "cluster-onboarding-guide/v1",
         "entrypoint": "/v1/onboarding",
         "representations": {"html": "/v1/onboarding", "markdown": "/v1/onboarding?format=markdown",
                             "json": "/v1/onboarding?format=json"},
-        "authentication": {"scheme": "Bearer", "source": "private access supplied by the human or host",
+        "authentication": {"scheme": "Bearer", "source": "request access here; host approves owner and verification code",
+                           "request": {"path": "/v1/seed-access-requests", "proof": "SHA-256 of a locally generated random 32-byte hex key",
+                                       "status": "/v1/seed-access-requests/{request_id}", "claim": "/v1/seed-access-requests/{request_id}/claim",
+                                       "proof_header": "X-Access-Request-Key", "request_expires_minutes": 30,
+                                       "browser_delivery": "Secure HttpOnly SameSite=Strict session cookie",
+                                       "agent_delivery": "raw limited bearer returned once by claim"},
                            "participant_scopes": ["fleet:read", "seed:write"],
                            "operator_issuer": "/v1/seed-access", "participant_can_issue_access": False},
         "limits": {"archive_bytes": MAX_UPLOAD, "expanded_archive_bytes": 5 * 1024**3,
@@ -206,11 +221,41 @@ Telegram consumer still require actual receiving acceptance by the host.
 
 ## Private access
 
-Your human or host supplies a limited participant access token privately.
-Use `Authorization: Bearer <private access>` for the API. Each participant sees
-only their own deliveries. Keep access and connection values in private files
+You can obtain access from this same URL, without a separately delivered token:
+
+1. Generate a private 32-byte random key, encoded as 64 lowercase hex characters.
+   Keep it in process memory or an owner-private file. Compute the SHA-256 of
+   that hex string's UTF-8 bytes.
+2. `POST /v1/seed-access-requests` with `{"owner":"ani","proof_sha256":"..."}`.
+   Reusing the same key/owner replays the same request. Names are workspace
+   labels; requesting a name grants no authority.
+3. Give your human the returned owner and `verification_code`. They confirm
+   that exact pair with the host. Do not send the private key. Approval is
+   host-local: `clusterd --access-approve CODE --owner ani`.
+4. Read `GET /v1/seed-access-requests/{request_id}` with
+   `X-Access-Request-Key: <private hex key>`. Poll only for this explicit request,
+   at least four seconds apart, until approved or the 30-minute expiry.
+5. Once approved, `POST .../{request_id}/claim` with `{}` and the same proof
+   header. For API clients the limited three-day bearer is returned once.
+   Claim exactly once; a lost response needs a new request/approval. The
+   browser instead receives a Secure HttpOnly SameSite=Strict session cookie
+   and resumes it on refresh. No access credential belongs in a URL or issue.
+
+Use `Authorization: Bearer <private access>` for subsequent API requests. Each participant sees
+only their own deliveries. Keep API access and connection values in private files
 or process memory; do not paste them into public issues, logs or the archive.
 This entrypoint is public metadata and contains no participant records.
+
+## If you already followed the previous guide
+
+Keep your existing verified archive, SHA-256, source selection and local Codex
+work. This update changes access delivery; no new export is needed. Re-read
+this guide, request workspace `ani` for Oliva or `sai` for Eko, and send only the
+workspace name and verification code through your human to Nicolas/CompAII.
+After approval, access arrives directly in the original client. If you already
+have valid participant access, continue using it. List existing deliveries
+before creating one, reuse uploaded archives and resume prepared records.
+Never restart a source bot or upload an archive merely to adopt this update.
 
 ## Continue an existing being
 

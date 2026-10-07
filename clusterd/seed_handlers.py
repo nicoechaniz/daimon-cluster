@@ -54,7 +54,56 @@ def seed_access(deps, ctx, _body=None, **params):
     record, token = auth.create_token(handlers._state_dir(deps), actor=_body["owner"],
                                       owner=_body["owner"], scopes=["fleet:read", "seed:write"], ttl_days=3)
     return handlers.Response(200, {"token": token, "token_id": record["token_id"],
-                                   "owner": record["owner"], "expires_ms": record["expires_ms"]})
+                                 "owner": record["owner"], "expires_ms": record["expires_ms"]})
+
+
+def seed_access_request(deps, ctx, _body=None, **params):
+    from . import handlers
+
+    try:
+        return handlers.Response(200, auth.request_seed_access(handlers._state_dir(deps), _body))
+    except being_seed.SeedError as error:
+        return handlers.Response(error.status, {"error": str(error)})
+
+
+def seed_access_request_status(deps, ctx, request_id, _access_key=None, **params):
+    from . import handlers
+
+    try:
+        return handlers.Response(200, auth.seed_access_request_status(handlers._state_dir(deps), request_id, _access_key))
+    except being_seed.SeedError as error:
+        return handlers.Response(error.status, {"error": str(error)})
+
+
+def seed_access_request_claim(deps, ctx, request_id, _access_key=None, _delivery=None, _body=None, **params):
+    from . import handlers
+
+    if _body != {} or _delivery not in {None, "browser"}:
+        return handlers.Response(400, {"error": "invalid_access_claim"})
+    try:
+        data = auth.claim_seed_access(handlers._state_dir(deps), request_id, _access_key)
+    except being_seed.SeedError as error:
+        return handlers.Response(error.status, {"error": str(error)})
+    if _delivery == "browser":
+        cookie = ("dm_seed_access=" + data.pop("token")
+                  + "; Path=/v1; Secure; HttpOnly; SameSite=Strict; Max-Age=259200")
+        return handlers.Response(200, data, headers={"Set-Cookie": cookie})
+    return handlers.Response(200, data)
+
+
+def seed_session(deps, ctx, **params):
+    from . import handlers
+
+    record = ctx.token_record
+    return handlers.Response(200, {"owner": record["owner"], "expires_ms": record["expires_ms"]})
+
+
+def seed_session_logout(deps, ctx, **params):
+    from . import handlers
+
+    auth.revoke_token(handlers._state_dir(deps), ctx.token_record["token_id"])
+    return handlers.Response(200, {"signed_out": True}, headers={"Set-Cookie":
+                            "dm_seed_access=; Path=/v1; Secure; HttpOnly; SameSite=Strict; Max-Age=0"})
 
 
 def upload_seed(deps, ctx, seed, _stream, _length, _sha256, _transfer_encoding=None, **params):

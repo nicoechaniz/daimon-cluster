@@ -47,15 +47,39 @@ parser. No code from an incoming archive is executed.
 
 ## Private web delivery
 
-Open `/v1/onboarding` on the host's HTTPS address. The page contains no owner
-data, external scripts or persistent credential storage. API requests require
-an expiring, revocable owner-scoped bearer token. Issue `seed:write` and
-`fleet:read` to each human; do not hand out an operator wildcard token.
-The host operator can issue a three-day owner-scoped access from this web page;
-`POST /v1/seed-access` requires an operator-owned `*` token with `seed:write`.
-The new access is shown once to that private browser, hashed at rest, and shared
-privately by the operator. A participant cannot issue or widen access. Bootstrap
-the operator using the existing owner-local token CLI; never put tokens in URLs.
+Open `/v1/onboarding` on the host's HTTPS address. The same URL supplies the
+tools, instructions and private access request. Enter a workspace name such as
+`ani` or `sai`, request access and give the host the displayed name and
+verification code. Keep that browser page or agent request alive. The host
+confirms who made the request and approves that exact pair locally:
+
+```sh
+python -m clusterd --config CONFIG --access-pending
+python -m clusterd --config CONFIG --access-approve CODE --owner ani
+```
+
+The original requester then receives access directly. A workspace label alone
+confers no authority. There is no public approval/listing endpoint and no token
+to relay manually. Requests expire after 30 minutes, are rate/capacity bounded,
+and require a private random proof key. The server retains only its SHA-256.
+An approved claim succeeds once; a lost API claim response requires a new
+request and approval. The machine guide below describes the complete API flow.
+
+Access lasts three days, is revocable and has exactly `fleet:read` and
+`seed:write` for the approved owner. API agents receive a bearer once. Browsers
+receive a Secure HttpOnly SameSite=Strict cookie restricted to the intake
+routes, resume on refresh and can sign out to revoke access. Cookie mutations
+require a matching Origin. No credential is placed in a URL, localStorage or
+sessionStorage; public views contain no owner data or external scripts.
+
+The previous operator issuer remains available under Advanced access:
+`POST /v1/seed-access` requires an operator-owned `*` bearer with `seed:write`.
+A participant cannot issue or widen access. Never hand out the operator token.
+
+An existing verified export, local receiving context and valid participant
+access remain usable. Read existing deliveries before creating another record;
+resume uploaded/prepared packages without re-exporting or re-uploading them.
+Only a requester without valid access needs the new owner/code approval flow.
 
 1. Choose import or new, the environment name, being label and browser option.
 2. Import: upload the `.tgz`/`.zip` and the SHA-256 from the source exporter.
@@ -94,7 +118,7 @@ uncached and vary on `Accept`.
 
 All three views use the same authenticated REST endpoints. Public metadata
 contains no owner records or connection secrets and grants no API access. A
-daimon receives its limited access privately from its human and reports context
+daimon requests limited access here, receives it after host confirmation and reports context
 preparation separately from actual body activation. No browser automation or
 additional MCP server is required to deliver a packet through this API.
 
@@ -119,7 +143,9 @@ excluded. The existing dashboard has a seed progress card.
 An additive intake service can run `python -m clusterd --seed-only` with a
 dedicated private state directory and loopback port. This mode serves only
 intake and liveness routes, without initializing a Matrix client or exposing
-fleet operations. A host can proxy just `/v1/onboarding` and `/v1/seeds*` from
+fleet operations. A host proxies `/v1/onboarding`, `/v1/seeds`, `/v1/seeds/*`,
+`/v1/seed-access`, `/v1/seed-access-requests`, `/v1/seed-access-requests/*` and
+`/v1/seed-session` from
 its HTTPS frontend. This permits intake deployment without upgrading an
 existing Cluster/Matrix runtime pair. Do not replace the existing fleet service
 or retarget its SDK pin to install this feature. Live installation follows the

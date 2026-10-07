@@ -75,7 +75,7 @@ def test_host_retry_reuses_signed_response_and_retains_native_source(journey, tm
         return onboarding_peer.accept(target, arguments['peer_packet'], expected_being=source_being)
     backend = SimpleNamespace(config=SimpleNamespace(peer=path, custody=None, custody_grants=None,
         consent_state=None, progress=None), _target_call=target_call,
-        _matrix_command=lambda p, a: target.observe())
+        _matrix_command=lambda p, a: target.observe(), authorize=lambda p, d: True)
     host = PeerHost(backend)
     monkeypatch.setattr(host, '_proxies', lambda p, **k: True)
     monkeypatch.setattr(host, '_ports', lambda p: tuple(int(x.rsplit(':', 1)[1]) for x in journey[4]['plan']['endpoints']))
@@ -150,3 +150,32 @@ def test_loopback_proxies_preserve_foreign_devices_and_retain_port_leases(tmp_pa
     rows.append(dict(name='foreign', expanded_devices={'proxy': dict(type='proxy', bind='host', listen='tcp:127.0.0.1:23001')}))
     with pytest.raises(OnboardingError, match='onboarding_runtime_listener_collision'):
         host._proxies(first)
+
+
+def test_revocation_between_peer_effects_restores_source_without_finishing(tmp_path, monkeypatch):
+    from tests.test_onboarding import plan
+    host = object.__new__(PeerHost)
+    host.state = tmp_path
+    tmp_path.chmod(0o700)
+    host.settings = {'source_being_ref': 'approved-source'}
+    approved = [True]
+    def receive(*a, **k):
+        approved[0] = False
+        return {'signed': 'response'}
+    host.backend = SimpleNamespace(authorize=lambda *a: approved[0], _target_call=receive)
+    host.application = lambda p: None
+    host._identity = lambda p: {}
+    host._proxies = lambda p, **k: True
+    host._ports = lambda p: (24000, 24001)
+    services, effects = [], []
+    host._service = services.append
+    def source(action, value):
+        effects.append(action)
+        assert action == 'offer'
+        return {'sender_identity': {}}
+    host._source = source
+    monkeypatch.setattr(onboarding_peer, 'native', lambda *a: SimpleNamespace(
+        verify_identity=lambda v: SimpleNamespace(state=SimpleNamespace(being_ref='approved-source'))))
+    with pytest.raises(OnboardingError, match='host_authorization_required'):
+        host.execute(plan())
+    assert effects == ['offer'] and services == ['stop', 'start']

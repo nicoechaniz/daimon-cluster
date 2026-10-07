@@ -192,11 +192,13 @@ class PeerHost:
         # Cache every public boundary before advancing. The native owner tool
         # preserves encrypted proposals, local custody and signed drafts itself.
         response_path = directory / 'response.json'
+        self._approved(plan)
         self._service('stop')
         try:
             if response_path.exists():
                 response = being_seed._read(response_path)
             else:
+                self._approved(plan)
                 packet = self._source('offer', dict(plan_digest=digest(plan), peer=peer,
                     endpoints=[f'http://127.0.0.1:{source}', f'http://127.0.0.1:{target}']))
                 signer = onboarding_peer.native(Path(__file__).resolve().parents[1]).verify_identity(packet['sender_identity'])
@@ -205,7 +207,9 @@ class PeerHost:
                 response = self.backend._target_call(plan, 'peer-accept', peer_packet=packet,
                     peer_being_ref=self.settings['source_being_ref'])
                 being_seed._write(response_path, response)
+            self._approved(plan)
             self._source('finish', dict(plan_digest=digest(plan), response=response))
+            self._approved(plan)
             self._source('register', dict(plan_digest=digest(plan), unit=self.settings['source_unit'],
                 unit_sha256=self.settings['source_unit_sha256'], python=self.settings['source_python']))
             self._service('daemon-reload')
@@ -213,3 +217,7 @@ class PeerHost:
             self._service('start')
         being_seed._write(directory / 'complete.json', dict(schema='cluster-onboarding-peer-complete/v1',
             plan_digest=digest(plan), source_being_ref=self.settings['source_being_ref']))
+
+    def _approved(self, plan: dict) -> None:
+        if not self.backend.authorize(plan, digest(plan)):
+            raise OnboardingError('host_authorization_required')

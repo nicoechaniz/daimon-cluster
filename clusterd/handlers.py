@@ -2066,6 +2066,7 @@ HANDLERS = {
     "seed_connections": seed_handlers.seed_connections,
     "seed_onboarding_status": seed_handlers.seed_onboarding_status,
     "seed_onboarding_action": seed_handlers.seed_onboarding_action,
+    "seed_onboarding_access": seed_handlers.seed_onboarding_access,
     "seed_onboarding_review": seed_handlers.seed_onboarding_review,
     "seed_onboarding_consent": seed_handlers.seed_onboarding_consent,
     "health": health,

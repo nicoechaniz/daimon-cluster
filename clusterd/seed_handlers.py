@@ -87,6 +87,24 @@ def seed_onboarding_action(deps, ctx, seed, **params):
         return handlers.Response(409, {'error': 'onboarding_action_requires_attention'})
 
 
+def seed_onboarding_access(deps, ctx, seed, **params):
+    from . import handlers
+    from clusterctl.onboarding_ingress import Access
+
+    try:
+        being_seed.status(handlers._state_dir(deps), seed, owner=_owner(ctx))
+        if not deps.onboarding_progress:
+            return handlers.Response(200, {'ssh': None})
+        value = Access(deps.onboarding_progress, worker_uid=deps.onboarding_worker_uid).read(seed, owner=_owner(ctx))
+        return handlers.Response(200, value)
+    except FileNotFoundError:
+        return handlers.Response(200, {'ssh': None})
+    except being_seed.SeedError as error:
+        return handlers.Response(error.status, {'error': str(error)})
+    except (OnboardingError, OSError, ValueError, TypeError, KeyError):
+        return handlers.Response(409, {'error': 'onboarding_access_requires_attention'})
+
+
 def seed_onboarding_review(deps, ctx, seed, _body=None, _submit=False, **params):
     from . import handlers
 

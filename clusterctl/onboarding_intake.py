@@ -111,7 +111,8 @@ class Intake:
                 custody=custody.review() if custody is not None else None)
             reviews = onboarding_consent.Reviews(config.progress, worker_uid=os.geteuid())
             reviews.publish(proposal)
-            decision = onboarding_consent.read(config.consent_state, proposal, intake_uid=config.consent_uid)
+            from .onboarding_approvals import decision as owner_decision
+            decision = owner_decision(config, proposal)
             if custody is not None and decision is not None:
                 if config.custody_grants is None:
                     raise OnboardingError('identity_authorization_required')

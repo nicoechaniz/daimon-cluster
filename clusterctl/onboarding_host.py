@@ -48,13 +48,14 @@ class HostConfig:
     intake_policy: Path | None = None
     custody_policy: Path | None = None
     ssh_ingress: Path | None = None
+    owner_approval_policy: Path | None = None
 
     @classmethod
     def load(cls, path: Path) -> HostConfig:
         value = being_seed._read(path)
         consent_keys = {"consent_state", "consent_uid"}
         custody_keys = {"custody", "custody_grants"}
-        if (set(value) - consent_keys - custody_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -142,10 +143,18 @@ class HostConfig:
             from .onboarding_ingress import policy as ingress_policy
             ssh_ingress = Path(value['ssh_ingress'])
             ingress_policy(ssh_ingress)
+        owner_approval_policy = None
+        if 'owner_approval_policy' in value:
+            if (custody_policy is None or not isinstance(value['owner_approval_policy'], str)
+                    or not Path(value['owner_approval_policy']).is_absolute()):
+                raise OnboardingError('invalid_onboarding_host_configuration')
+            from .onboarding_approvals import Approvals
+            owner_approval_policy = Path(value['owner_approval_policy'])
+            Approvals(owner_approval_policy)
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -513,7 +522,8 @@ class HostBackend:
             reviews.publish(proposal)
         if self.config.consent_state is None:
             raise OnboardingError("invalid_onboarding_host_configuration")
-        return onboarding_consent.read(self.config.consent_state, proposal, intake_uid=self.config.consent_uid)
+        from .onboarding_approvals import decision
+        return decision(self.config, proposal)
 
     def _guest_paths(self, plan: dict) -> tuple[Path, Path, dict]:
         if self.config.code is None or self.config.inputs is None or self.config.views is None:

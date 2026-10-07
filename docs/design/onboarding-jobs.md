@@ -32,6 +32,25 @@ keys: the existing native worker adapter performs the resumable ceremony.
 Root and Recovery packages occupy separate stores and processes on this host;
 they share its administrator and are not independent administrative custodians.
 
+When the local human has already confirmed a pair's complete approval, the
+operator can publish a separate `owner_approval_policy`. It pins the exact
+reviewed Source text and custody policy, names the receiving pair and identity
+mode, and retains the digest of the private human instruction. The worker
+records the actual delegated author in its own store; it does not forge a
+participant intake submission. A participant's own decision takes precedence.
+Changed Source or custody terms, an unlisted pair, or revocation prevent reuse.
+The owner portal reports the worker's current recorded approval and attribution.
+
+Accounts retain independent native homes and session history. The account
+configuration tool can authorize selected pairs to reuse an existing provider
+login with `--shared-pair BEING=OWNER`, a private `--instruction` and its numeric
+owner UID. Without that explicit policy the existing device-login flow remains
+available. The worker checks the selected account, transfers only its private
+provider credential through a temporary read-only mount, preserves foreign
+receiving credentials and reconciles an interrupted atomic installation. No
+Matrix custody, memory or conversation history is part of this transfer. Real
+provider inference remains required before access readiness is complete.
+
 The private intake policy may prepare the empty 30 GiB environment before the
 pair reviews inheritance. This is resource authorization only: context and
 Matrix stages still wait for the exact review. The worker publishes its actual

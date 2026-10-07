@@ -127,8 +127,19 @@ the native V1-to-V2 credential references and next manifest revision. Native
 validators verify both artifacts, and a fixture compares the result byte-for-byte
 with the maintained full constructors. Lost acknowledgement reuses the existing
 public response without another holder call; altered requests or revoked custody
-grants refuse signing. This does not yet publish V8 on the receiving filesystem
-or establish physical admission.
+grants refuse signing.
+
+The receiving worker now persists the original V7 bundle and one Body-accepted
+proposal before contacting Root. It retains the verified response and exact
+candidate before atomically replacing only the authorized original bundle.
+Publication holds the native daemon writer lock and refuses a running writer or
+an unrelated changed bundle. Native visibility provisioning and runtime loading
+must pass before the current-credential receipt is published. Crashes after the
+response, candidate, runtime or receipt write reconcile the same artifacts and
+origin. Original custody, memory and later receiving files are preserved. A
+published bundle without its completion receipt is observable as `v8-published`
+and automatically finishes verification on retry. Current V8 remains distinct
+from canonical physical admission and full hosted acceptance.
 
 ## Execution and recovery
 

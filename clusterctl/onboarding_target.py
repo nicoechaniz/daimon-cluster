@@ -6,12 +6,15 @@ Root authorization cross this boundary. Preparation never means admission.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from . import being_seed, onboarding_release, onboarding_sdk
 from .onboarding import OnboardingError, digest, private_directory, validate_plan
@@ -44,6 +47,7 @@ class Target:
         self.root = home / ".local/state/daimon-onboarding" / plan["name"] / "matrix"
         self.preparation = self.root / "preparation"
         self.package = self.root / "package"
+        self.credential = self.root / "credential"
 
     def _reader(self) -> bytearray:
         password = self.root / "body.unlock"
@@ -55,6 +59,15 @@ class Target:
     def _binding(self) -> dict:
         return dict(schema="cluster-onboarding-target/v1", plan_digest=digest(self.plan),
                     genesis_digest=digest(self.genesis))
+
+    @contextmanager
+    def _runtime_writer(self) -> Iterator[None]:
+        from daimon_matrix import daemon
+        descriptor = daemon.acquire_lock(self.package / "runtime")
+        try:
+            yield
+        finally:
+            os.close(descriptor)
 
     def _validate(self) -> tuple[dict, dict]:
         from daimon_matrix import operator_first_embodiment as first, operator_rebirth
@@ -117,9 +130,10 @@ class Target:
         _, authority = first.validate_activation(self.genesis, request, activation)
         receipt = document(self.package / "receipt.json")
         bundle = document(self.package / "runtime/runtime.json")
+        original = document(self.credential / "original.json") if (self.credential / "original.json").exists() else bundle
         if (receipt["origin"] != request["body"]["origin"] or bundle["local_origin"] != receipt["origin"]
-                or bundle["manifest"] != authority.manifest.value
-                or receipt["runtime_sha256"] != hashlib.sha256(canonical.canonical_bytes(bundle)).hexdigest()
+                or original["manifest"] != authority.manifest.value
+                or receipt["runtime_sha256"] != hashlib.sha256(canonical.canonical_bytes(original)).hexdigest()
                 or receipt["root_seeds_in_target"] is not False):
             raise OnboardingError("onboarding_target_runtime_conflict")
         store = keystore.EncryptedKeystore(self.package / "runtime/custody.json").open(
@@ -127,16 +141,115 @@ class Target:
         signing = store.secrets[bundle["keystore"]["signing_slot"]]
         if identity.signing_descriptor(signing) != activation["body"]["credential"]["body"]["signing_key"]:
             raise OnboardingError("onboarding_target_runtime_conflict")
+        if bundle != original:
+            expected = self._credential_bundle(original, document(self.credential / "response.json"))
+            if bundle != expected or document(self.credential / "candidate.json") != expected:
+                raise OnboardingError("existing_onboarding_target_preserved")
+            current_receipt = self._credential_receipt(original, expected)
+            complete = self.credential / "receipt.json"
+            if complete.exists() and document(complete) != current_receipt:
+                raise OnboardingError("onboarding_target_runtime_conflict")
+            return dict(phase="v8" if complete.exists() else "v8-published", request=request, receipt=current_receipt)
         return dict(phase="v7", request=request, receipt=receipt)
+
+    def credential_request(self) -> dict:
+        """Persist one Body-accepted native proposal before contacting Root."""
+        from daimon_matrix import canonical, keystore, operator_rebirth
+        from . import onboarding_credential
+        private_directory(self.root)
+        with being_seed._locked(self.root), self._runtime_writer():
+            observed = self.observe()
+            if observed["phase"] not in {"v7", "v8-published", "v8"}:
+                raise OnboardingError("prepared_onboarding_target_required")
+            private_directory(self.credential, create=True)
+            original_path = self.credential / "original.json"
+            if not original_path.exists():
+                keystore._atomic_write(original_path, canonical.canonical_bytes(document(self.package / "runtime/runtime.json")))
+            original = document(original_path)
+            previous = operator_rebirth.authority_from_runtime_bundle(original)
+            request_path = self.credential / "request.json"
+            if not request_path.exists():
+                if any((self.credential / name).exists() for name in ("response.json", "candidate.json", "receipt.json")):
+                    raise OnboardingError("existing_onboarding_target_preserved")
+                store = keystore.EncryptedKeystore(self.package / "runtime/custody.json").open(
+                    self._reader, minimum_counter=1, required_control_head=previous.state.head)
+                signing = store.secrets[original["keystore"]["signing_slot"]]
+                request = onboarding_credential.receiving_request(previous, original["local_origin"], self.plan, signing,
+                    issued_at_ms=time.time_ns() // 1_000_000)
+                keystore._atomic_write(request_path, canonical.canonical_bytes(request))
+            request = document(request_path)
+            onboarding_credential.validate_request(previous, self.plan, request, observed_at_ms=request["issued_at_ms"])
+            return request
+
+    def _credential_bundle(self, original: dict, response: dict) -> dict:
+        from daimon_matrix import operator_rebirth
+        from . import onboarding_credential
+        previous = operator_rebirth.authority_from_runtime_bundle(original)
+        request = document(self.credential / "request.json")
+        successor = onboarding_credential.verify_response(previous, self.plan, request, response)
+        result = copy.deepcopy(original)
+        result.update(schema="dm.runtime.bundle/v8", manifest=response["manifest"],
+            credentials=list(successor.credentials.values()), incarnations=list(successor.incarnations.values()),
+            authority_history=[*original["authority_history"],
+                               {"manifest": previous.manifest.value, "successor": response["succession"]}])
+        operator_rebirth.authority_from_runtime_bundle(result)
+        return result
+
+    def _credential_receipt(self, original: dict, candidate: dict) -> dict:
+        from daimon_matrix import canonical
+        return dict(schema="cluster-onboarding-credential-receipt/v1", plan_digest=digest(self.plan),
+            origin=candidate["local_origin"], original_runtime_sha256=hashlib.sha256(canonical.canonical_bytes(original)).hexdigest(),
+            runtime_sha256=hashlib.sha256(canonical.canonical_bytes(candidate)).hexdigest(),
+            response_digest=digest(document(self.credential / "response.json")))
+
+    def apply_credential(self, response: dict) -> dict:
+        """Publish only the exact native successor while the runtime is stopped."""
+        from daimon_matrix import canonical, daemon, keystore, native_egress, runtime
+        private_directory(self.credential)
+        with being_seed._locked(self.root):
+            self.observe()
+            original = document(self.credential / "original.json")
+            candidate = self._credential_bundle(original, response)
+            descriptor = daemon.acquire_lock(self.package / "runtime")
+            try:
+                current = self.package / "runtime/runtime.json"
+                if document(current) not in (original, candidate):
+                    raise OnboardingError("existing_onboarding_target_preserved")
+                for name, value in (("response.json", response), ("candidate.json", candidate)):
+                    path = self.credential / name
+                    if path.exists():
+                        if document(path) != value:
+                            raise OnboardingError("existing_onboarding_target_preserved")
+                    else:
+                        keystore._atomic_write(path, canonical.canonical_bytes(value))
+                if document(current) == original:
+                    keystore._atomic_write(current, canonical.canonical_bytes(candidate))
+                receipt = self._credential_receipt(original, candidate)
+                marker = self.credential / "receipt.json"
+                if marker.exists():
+                    if document(marker) != receipt:
+                        raise OnboardingError("existing_onboarding_target_preserved")
+                else:
+                    def clock() -> int:
+                        return time.time_ns() // 1_000_000
+                    hosted = runtime.load_runtime(self.package / "runtime", "runtime.json", self._reader, clock=clock,
+                        egress=native_egress.closed_visibility(clock=clock, catalog_mode="migrate"))
+                    hosted.egress.migrate_registered_catalogs(version=native_egress.VISIBILITY_SCHEMA_VERSION)
+                    hosted.egress.validate_registered_catalogs()
+                    keystore._atomic_write(marker, canonical.canonical_bytes(receipt))
+                return self.observe()
+            finally:
+                os.close(descriptor)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "activate", "observe"))
+    parser.add_argument("action", choices=("prepare", "activate", "observe", "credential-prepare", "credential-apply"))
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--genesis", type=Path, required=True)
     parser.add_argument("--activation", type=Path)
+    parser.add_argument("--credential-response", type=Path)
     parser.add_argument("--code", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
@@ -155,7 +268,14 @@ def main(argv: list[str] | None = None) -> int:
             if args.activation is None:
                 raise OnboardingError("onboarding_target_activation_required")
             target.activate(document(args.activation))
-        print(json.dumps(target.observe()))
+        elif args.action == "credential-apply":
+            if args.credential_response is None:
+                raise OnboardingError("onboarding_target_activation_required")
+            target.apply_credential(document(args.credential_response))
+        result = target.observe()
+        if args.action == "credential-prepare":
+            result["request"] = target.credential_request()
+        print(json.dumps(result))
         return 0
     except Exception:
         print(json.dumps({"error": "native_onboarding_target_refused"}))

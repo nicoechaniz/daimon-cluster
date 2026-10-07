@@ -20,7 +20,7 @@ HMK_COMMIT = "518f350889001b7f70ac3dd4f843a9e0c16d256c"
 ROOT = Path(__file__).resolve().parents[1]
 MODULES = ("__init__.py", "being_seed.py", "onboarding.py", "onboarding_input.py",
            "onboarding_release.py", "onboarding_guest.py", "onboarding_mounts.py", "onboarding_sdk.py",
-           "onboarding_target.py")
+           "onboarding_target.py", "onboarding_credential.py")
 
 
 def copy_code(source: Path, target: Path) -> None:

@@ -73,3 +73,84 @@ def test_missing_unlock_or_changed_plan_cannot_replace_existing_identity(tmp_pat
     with pytest.raises(OnboardingError, match="onboarding_target_binding_conflict"):
         other.prepare()
     assert files(target.preparation) == original
+
+
+def test_receiving_credential_upgrade_keeps_origin_memory_and_runtime_reload(tmp_path):
+    from clusterctl.onboarding_target import document
+    ceremony, plan, target = receiving(tmp_path)
+    request = target.prepare()
+    before = target.activate(ceremony.authorize_target(plan, request))
+    memory = target.home / "preserved-memory.db"
+    memory.write_bytes(b"Own memory is outside native authority publication")
+    prepared = files(target.preparation)
+    native_keys = (target.package / "runtime/custody.json").read_bytes()
+    proposal = target.credential_request()
+    assert target.credential_request() == proposal
+    response = ceremony.authorize_credential(plan, proposal)
+    complete = target.apply_credential(response)
+    assert complete["phase"] == "v8"
+    assert complete["receipt"]["origin"] == before["receipt"]["origin"]
+    assert target.apply_credential(response) == complete
+    assert target.activate(ceremony.authorize_target(plan, request)) == complete
+    assert files(target.preparation) == prepared
+    assert (target.package / "runtime/custody.json").read_bytes() == native_keys
+    assert memory.read_bytes() == b"Own memory is outside native authority publication"
+    from daimon_matrix.runtime import load_runtime
+    import time
+    hosted = load_runtime(target.package / "runtime", "runtime.json", target._reader,
+                          clock=lambda: time.time_ns() // 1_000_000)
+    assert hosted.service.ledger.local_origin == before["receipt"]["origin"]
+    assert document(target.package / "runtime/runtime.json")["authority_history"]
+
+
+@pytest.mark.parametrize("phase", ["response", "candidate", "runtime", "receipt"])
+def test_native_credential_publication_recovers_each_lost_ack_without_new_identity(tmp_path, monkeypatch, phase):
+    from daimon_matrix import keystore
+    ceremony, plan, target = receiving(tmp_path)
+    original = target.activate(ceremony.authorize_target(plan, target.prepare()))
+    proposed = target.credential_request()
+    response = ceremony.authorize_credential(plan, proposed)
+    interrupted_path = target.package / "runtime/runtime.json" if phase == "runtime" else target.credential / (phase + ".json")
+    actual = keystore._atomic_write
+    failures = []
+    def interrupted(path, value):
+        actual(path, value)
+        if path == interrupted_path and not failures:
+            failures.append(path)
+            raise RuntimeError("acknowledgement lost after durable publication")
+    monkeypatch.setattr(keystore, "_atomic_write", interrupted)
+    with pytest.raises(RuntimeError, match="acknowledgement lost"):
+        target.apply_credential(response)
+    observed = target.observe()
+    assert observed["phase"] in {"v7", "v8-published", "v8"}
+    assert target.credential_request() == proposed
+    assert ceremony.authorize_credential(plan, proposed) == response
+    completed = target.apply_credential(response)
+    assert completed["phase"] == "v8"
+    assert completed["receipt"]["origin"] == original["receipt"]["origin"]
+    assert len(failures) == 1
+
+
+def test_credential_publication_refuses_running_writer_and_preserves_changed_runtime(tmp_path):
+    import os
+    from daimon_matrix import daemon, keystore, canonical
+    ceremony, plan, target = receiving(tmp_path)
+    target.activate(ceremony.authorize_target(plan, target.prepare()))
+    proposed = target.credential_request()
+    response = ceremony.authorize_credential(plan, proposed)
+    descriptor = daemon.acquire_lock(target.package / "runtime")
+    try:
+        with pytest.raises(BlockingIOError):
+            target.apply_credential(response)
+        assert not (target.credential / "response.json").exists()
+    finally:
+        os.close(descriptor)
+    target.apply_credential(response)
+    from clusterctl.onboarding_target import document
+    path = target.package / "runtime/runtime.json"
+    changed = {**document(path), "runtime_label": "own-changed-runtime"}
+    raw = canonical.canonical_bytes(changed)
+    keystore._atomic_write(path, raw)
+    with pytest.raises(OnboardingError, match="existing_onboarding_target_preserved"):
+        target.apply_credential(response)
+    assert path.read_bytes() == raw

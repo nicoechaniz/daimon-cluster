@@ -220,9 +220,9 @@ class HostBackend:
                 if not self._mounted(plan, mounts):
                     return Observation("absent", safe_to_execute=True)
                 target = self._matrix_command(plan, "observe")
-                if target["phase"] in {"absent", "prepared"}:
+                if target["phase"] in {"absent", "prepared", "v7", "v8-published"}:
                     return Observation("absent", safe_to_execute=True)
-            # Prepared V7 is not current V8 or physical/canonical admission.
+            # Current receiving authority is not physical/canonical admission.
             return Observation("waiting", reason="backend_unavailable")
         # Do not invent success for native enrollment or receiving acceptance.
         # The remaining typed stage adapters are added with their actual tests.
@@ -387,10 +387,10 @@ class HostBackend:
             "--env", "HOME=/home/agent", "--", "python3", "-B", "-I", "-c", launcher, str(guest_code),
             action, "--home", "/home/agent", "--code", str(guest_code),
             "--plan", "/home/agent/.onboarding-input/plan.json", "--genesis", public + "/genesis.json",
-            "--activation", public + "/activation.json"])
+            "--activation", public + "/activation.json", "--credential-response", public + "/credential-response.json"])
         value = json.loads(result)
         if (not isinstance(value, dict) or set(value) != {"phase", "request", "receipt"}
-                or value["phase"] not in {"absent", "prepared", "v7"}):
+                or value["phase"] not in {"absent", "prepared", "v7", "v8-published", "v8"}):
             raise OnboardingError("invalid_onboarding_observation")
         return value
 
@@ -413,6 +413,10 @@ class HostBackend:
         activation = ceremony.authorize_target(plan, target["request"])
         onboarding_mounts.prepare_matrix_public(self.config.views, plan, {"activation.json": activation})
         self._matrix_command(plan, "activate")
+        proposed = self._matrix_command(plan, "credential-prepare")
+        response = ceremony.authorize_credential(plan, proposed["request"])
+        onboarding_mounts.prepare_matrix_public(self.config.views, plan, {"credential-response.json": response})
+        self._matrix_command(plan, "credential-apply")
 
     def _dispatch(self, plan: dict, argv: list[str]) -> str:
         # A revoked plan stops before the next concrete effect, including

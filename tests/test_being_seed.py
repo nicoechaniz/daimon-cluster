@@ -278,7 +278,7 @@ def test_web_upload_full_workflow_owner_isolation_and_no_secret_echo(tmp_path, p
         code, headers, html = request("/v1/onboarding")
         assert code == 200
         assert "default-src 'none'" in headers["Content-Security-Policy"]
-        assert "https://" not in html and "sessionStorage" not in html
+        assert "https://" not in html.replace("https://auth.openai.com/codex/device", "") and "sessionStorage" not in html
         assert hashlib.sha256(seed_handlers.SCRIPT.encode()).digest()
 
 
@@ -343,7 +343,7 @@ def test_same_entrypoint_machine_formats_are_public_metadata_only(tmp_path):
             "/v1/seeds/{seed}/selection", "/v1/seeds/{seed}/prepare", "/v1/seeds/{seed}/connections", "/v1/seeds/{seed}/onboarding",
             "/v1/seed-access-requests", "/v1/seed-access-requests/{request_id}",
             "/v1/seed-access-requests/{request_id}/claim", "/v1/seed-session",
-            "/v1/seeds/{seed}/onboarding/review"}
+            "/v1/seeds/{seed}/onboarding/review", "/v1/seeds/{seed}/onboarding/action"}
         assert request("/v1/seeds", extra={"Authorization": ""})[0] == 401
         assert request("/v1/seeds/private-fixture/selection", owner="sai")[0] == 404
 

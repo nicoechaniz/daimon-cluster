@@ -83,6 +83,8 @@ ROUTES: list[Route] = [
           "seed_connections", "seed:write", "clusterctl seed connections", mutation=True, required_scope="seed:write"),
     Route("GET", "/v1/seeds/{seed}/onboarding", "seedOnboardingStatus", "Read owner-scoped receiving activation progress",
           "seed_onboarding_status", "fleet:read", "onboarding worker read model", required_scope="fleet:read"),
+    Route("GET", "/v1/seeds/{seed}/onboarding/action", "seedOnboardingAction", "Read private account authorization action",
+          "seed_onboarding_action", "seed:write", "native Codex device login", required_scope="seed:write"),
     Route("GET", "/v1/seeds/{seed}/onboarding/review", "seedOnboardingReview", "Review the exact plan and proposed Source context",
           "seed_onboarding_review", "seed:write", "clusterctl seed review", required_scope="seed:write"),
     Route("POST", "/v1/seeds/{seed}/onboarding/review", "seedOnboardingConsent", "Record the pair's exact plan acknowledgement",

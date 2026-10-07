@@ -379,3 +379,31 @@ provider entitlement. A listening service alone never completes access:
 real SSH/Codex and provider acceptance are still required. External ingress
 and real cohort activation remain pending; disposable pinned-host-key login,
 retry, restart and stopped-listener checks qualify this implementation slice.
+
+## Independent native account login
+
+An optional root-owned `accounts` directory selects an OpenAI account ID for
+each host-approved account profile. `tools.configure_onboarding_account` reads
+only operator-selected native cache metadata into that profile; it copies no
+credentials and preserves the original cache. Each receiving body completes
+its own native `codex login --device-auth` in a dedicated supervised guest
+service, with its own persistent Codex home and private login output.
+
+The worker publishes only the bounded native device URI, one-time code and
+attempt deadline to `GET /v1/seeds/{seed}/onboarding/action`. This endpoint
+requires the selected owner's private access, has no POST execution surface
+and clears expired or completed actions. Public HTML/agent guidance, seed
+lists and redacted job progress never contain an actual code or credential.
+The same portal displays the approval action without accepting passwords.
+A pending login remains waiting; the worker resumes after native completion.
+A different account cannot advance the selected profile.
+
+Login status is not entitlement. The provider adapter requires a real native
+model response on the selected account and model. Its durable dispatch intent
+and private native output recover completed responses after a lost ACK without
+another inference; uncertain output stays pending rather than being replayed.
+A successful provider check alone does not complete real SSH/CLI acceptance.
+Disposable native device-flow qualification verifies service, own home,
+read-only account metadata and private owner action without approving an
+account or running inference. Real cohort provider and SSH acceptance remain
+pending.

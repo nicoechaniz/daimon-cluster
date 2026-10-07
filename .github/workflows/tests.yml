@@ -289,6 +289,13 @@ jobs:
           clusterctl/onboarding_service.py
           clusterctl/onboarding_ssh.py
           tests/test_onboarding_ssh.py
+          clusterctl/onboarding_provider.py
+          clusterctl/onboarding_accounts.py
+          clusterctl/onboarding_actions.py
+          tests/test_onboarding_provider.py
+          tests/test_onboarding_actions.py
+          tests/test_onboarding_accounts.py
+          tools/configure_onboarding_account.py
           clusterctl/onboarding_managed.py
           tests/test_onboarding_runtime.py
           tests/test_onboarding_service.py

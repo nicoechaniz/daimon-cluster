@@ -263,3 +263,29 @@ def test_observation_refuses_signed_application_drift_and_broken_visibility(jour
     # A valid Body signature is necessary but does not change the approved plan.
     with pytest.raises(OnboardingError, match='native_onboarding_peer_plan_conflict'):
         target.observe()
+
+
+def test_captured_runtime_can_load_peer_tool_without_checkout_modules(tmp_path):
+    import json
+    import subprocess
+    import sys
+    from clusterctl.onboarding_code_successor import build
+    from tests.test_onboarding_code_successor import fixture
+    from tools.build_onboarding_code import MODULES
+    base, original, _, _ = fixture(tmp_path)
+    output = tmp_path / 'captured'
+    source = Path(__file__).resolve().parents[1] / 'clusterctl'
+    build(base, original, source, MODULES, output)
+    launch = ('import sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);'
+              'from clusterctl.onboarding_peer import native;'
+              'print(native(Path(sys.argv[1]),uid=int(sys.argv[2])).__file__)')
+    result = subprocess.run([sys.executable, '-B', '-I', '-c', launch, str(output), str(os.geteuid())],
+        capture_output=True, check=True, text=True)
+    assert result.stdout.strip() == str(output / 'clusterctl/onboarding_peer_native.py')
+    assert not (output / 'clusterctl/matrix_host.py').exists()
+    # The receiving branch needs its approved offline installation receipt,
+    # never a host-only import or the host VCS metadata as a fallback.
+    (output / 'sdk/sdk.json').write_text(json.dumps(dict(matrix_commit='0' * 40, wheels=[])))
+    denied = subprocess.run([sys.executable, '-B', '-I', '-c', launch, str(output), str(os.geteuid())],
+        capture_output=True, check=False, text=True)
+    assert denied.returncode != 0

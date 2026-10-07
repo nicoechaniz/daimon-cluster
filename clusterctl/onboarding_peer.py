@@ -25,8 +25,26 @@ TOOL_COMMIT = '53179a770abbc2a5f41329aade30ac1c8d28c11d'
 
 
 def native(code: Path, *, uid: int = 0):
-    from .matrix_host import _matrix_api
-    _matrix_api()  # This exact tool successor is qualified on the pinned SDK.
+    import importlib.metadata
+    import sys
+    from .onboarding_sdk import MATRIX_COMMIT
+    # Entry points verify every installed wheel byte before importing Matrix.
+    # The offline body has a pinned installation receipt, not VCS direct_url.
+    # Host/source invocation instead retains the exact installed VCS guard.
+    manifest = code / 'sdk/sdk.json'
+    if manifest.exists():
+        sdk = json.loads(onboarding_release.regular(manifest, uid=uid))
+        prefix = Path(sys.prefix)
+        receipt = json.loads(onboarding_release.regular(prefix.parent / 'installation.json', uid=os.geteuid()))
+        expected = dict(schema='cluster-onboarding-sdk-installation/v1', sdk_digest=digest(sdk),
+            matrix_commit=MATRIX_COMMIT, wheel_count=len(sdk['wheels']))
+        if (sdk['matrix_commit'] != MATRIX_COMMIT or prefix.name != 'venv'
+                or prefix.parent.name != digest(sdk) or receipt != expected):
+            raise OnboardingError('qualified_native_peer_sdk_required')
+    else:
+        installed = json.loads(importlib.metadata.distribution('daimon-matrix').read_text('direct_url.json') or '{}')
+        if installed.get('vcs_info', {}).get('commit_id') != MATRIX_COMMIT:
+            raise OnboardingError('qualified_native_peer_sdk_required')
     path = code / 'clusterctl' / TOOL_MODULE
     raw = onboarding_release.regular(path, uid=uid)
     if hashlib.sha256(raw).hexdigest() != TOOL_SHA256:

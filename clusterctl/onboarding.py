@@ -29,7 +29,7 @@ REASONS = frozenset({
 FACTS = frozenset({
     "verified", "root_gib", "home_gib", "memory_stores", "memory_chapters", "skills",
     "identity_verified", "context_verified", "ssh_verified", "provider_verified", "browser_verified",
-    "telegram_verified", "welcome_delivered", "human_contact_verified",
+    "telegram_ready", "telegram_verified", "welcome_delivered", "human_contact_verified",
     "steering_verified", "topics_verified", "restart_verified", "cli_resume_verified",
     "matrix_delivery_verified",
 })
@@ -44,7 +44,7 @@ STAGE_FACTS: dict[str, dict[str, Any]] = {
     "memory": {},
     "matrix": {"identity_verified": True},
     "access": {"ssh_verified": True, "provider_verified": True},
-    "telegram": {"telegram_verified": True},
+    "telegram": {"telegram_ready": True},
     "welcome": {"welcome_delivered": True},
     "acceptance": {},
 }

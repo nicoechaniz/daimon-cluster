@@ -17,6 +17,49 @@ GUEST_GID = 1000
 GUEST_HOME = Path('/home/agent')
 
 
+def prepare_connections(views: Path, plan: dict, value: dict) -> Path:
+    """Publish only this body's bot connection to an isolated read-only mount."""
+    from daimon_matrix import keystore
+    from .matrix_host import _publish_directory_noreplace
+    from .onboarding_telegram import connections
+    value = connections(value)
+    private_directory(views)
+    parent = views / digest(plan)
+    private_directory(parent)
+    target = parent / 'connections'
+    being_seed._path(target)
+    target.mkdir(mode=0o700, exist_ok=True)
+    info = target.stat()
+    if (info.st_uid not in {os.geteuid(), GUEST_UID} or info.st_mode & 0o077
+            or not target.is_dir() or any(p.name != 'connections.json' for p in target.iterdir())):
+        raise OnboardingError('existing_onboarding_connections_preserved')
+    raw = json.dumps(value, sort_keys=True).encode()
+    path = target / 'connections.json'
+    with being_seed._locked(parent):
+        if path.exists():
+            from .onboarding_release import regular
+            if regular(path, uid=GUEST_UID, limit=65536) != raw or path.stat().st_mode & 0o077:
+                raise OnboardingError('existing_onboarding_connections_preserved')
+        else:
+            temporary = parent / ('.connections-' + uuid.uuid4().hex)
+            keystore._atomic_write(temporary, raw)
+            os.chown(temporary, GUEST_UID, GUEST_GID, follow_symlinks=False)
+            descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                _publish_directory_noreplace(descriptor, temporary.name, 'connections/connections.json',
+                    exists_code='existing_onboarding_connections_preserved')
+                directory = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            finally:
+                os.close(descriptor)
+                temporary.unlink(missing_ok=True)
+        os.chown(target, GUEST_UID, GUEST_GID, follow_symlinks=False)
+    return target
+
+
 def prepare_matrix_public(views: Path, plan: dict, documents: dict[str, dict]) -> Path:
     """Publish only native public authorization to a read-only receiving mount."""
     from daimon_matrix import canonical, keystore

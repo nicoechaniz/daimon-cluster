@@ -39,6 +39,7 @@ FILES = (
     "clusterctl/onboarding_service.py",
     "clusterctl/onboarding_ssh.py",
     "clusterctl/onboarding_provider.py",
+    "clusterctl/onboarding_telegram.py",
     "clusterctl/onboarding_accounts.py",
     "clusterctl/onboarding_actions.py",
     "clusterctl/onboarding_managed.py",

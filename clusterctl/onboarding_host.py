@@ -233,6 +233,18 @@ class HostBackend:
             # A listening sshd is not a successful human login or a provider
             # turn. The access stage remains pending until both are observed.
             return Observation('waiting', reason='account_authorization_required')
+        if stage == 'telegram' and self.config.code and self.config.consent_state:
+            supplied = self._telegram_connections(plan)
+            if supplied is None:
+                return Observation('waiting', reason='connection_data_required')
+            if not self._mounted(plan, {'onboarding-connections': self._telegram_mount(plan)}):
+                return Observation('absent', safe_to_execute=True)
+            value = self._telegram_command(plan, 'observe')
+            if not value.get('configured') or not value.get('listening'):
+                return Observation('absent', safe_to_execute=True)
+            # Service readiness is recorded separately from the real human
+            # conversation, steering/topics and continuity acceptance.
+            return Observation('complete', dict(verified=True, telegram_ready=True))
         if stage == "matrix" and self.config.custody and self.config.custody_grants:
             ceremony = FirstCustody(self.config.custody, self.config.custody_grants)
             decision = self._decision(plan)
@@ -276,6 +288,22 @@ class HostBackend:
             if self.config.accounts is not None:
                 from .onboarding_accounts import ManagedAccount
                 ManagedAccount(self).execute(plan)
+            return
+        if stage == 'telegram' and self.config.code and self.config.consent_state:
+            supplied = self._telegram_connections(plan)
+            if supplied is None or self.config.views is None:
+                raise OnboardingError('connection_data_required')
+            from .onboarding_telegram import reserve
+            reserve(self.config.jobs, plan, supplied)
+            onboarding_mounts.prepare_connections(self.config.views, plan, supplied)
+            mount = self._telegram_mount(plan)
+            if not self._mounted(plan, {'onboarding-connections': mount}):
+                self._dispatch(plan, ['config', 'device', 'add', self.instance(plan), 'onboarding-connections', 'disk',
+                    *[key + '=' + value for key, value in mount.items() if key != 'type']])
+            self._telegram_command(plan, 'prepare')
+            self._telegram_command(plan, 'native-install')
+            self._telegram_probe(plan)
+            self._telegram_command(plan, 'install')
             return
         if stage == "matrix" and self.config.custody and self.config.custody_grants:
             decision = self._decision(plan)
@@ -325,6 +353,18 @@ class HostBackend:
 
     def _ssh_key(self, plan: dict) -> str | None:
         """Read only the selected participant's public key at the intake boundary."""
+        value = self._connection_data(plan)
+        if value is None:
+            return None
+        from .onboarding_ssh import public_key
+        key = value.get('ssh_public_key')
+        if key is None:
+            return None
+        public_key(key)
+        return key
+
+    def _connection_data(self, plan: dict) -> dict | None:
+        """Private intake data stays within the selected host-owned job."""
         if self.config.consent_state is None or self.config.consent_uid is None:
             raise OnboardingError('account_authorization_required')
         intake_uid = self.config.consent_uid
@@ -349,12 +389,7 @@ class HostBackend:
             value = read_private('connections.json')
         except FileNotFoundError:
             return None
-        from .onboarding_ssh import public_key
-        key = value.get('ssh_public_key')
-        if key is None:
-            return None
-        public_key(key)
-        return key
+        return value
 
     def _ssh_command(self, plan: dict, action: str, key: str) -> dict:
         if self._environment(plan).state != 'complete':
@@ -371,6 +406,47 @@ class HostBackend:
                 or value.get('plan_digest') != digest(plan) or value.get('port') != 2222):
             raise OnboardingError('invalid_onboarding_observation')
         return value
+
+    def _telegram_connections(self, plan: dict) -> dict | None:
+        value = self._connection_data(plan)
+        if value is None or not {'telegram_bot_token', 'telegram_chat_id'} <= set(value):
+            return None
+        from .onboarding_telegram import connections
+        return connections({key: value[key] for key in ('telegram_bot_token', 'telegram_chat_id')})
+
+    def _telegram_mount(self, plan: dict) -> dict:
+        if self.config.views is None:
+            raise OnboardingError('receiving_code_configuration_required')
+        return dict(type='disk', source=str(self.config.views / digest(plan) / 'connections'),
+                    path='/home/agent/.onboarding-connections', readonly='true', shift='true')
+
+    def _telegram_command(self, plan: dict, action: str) -> dict:
+        if self._environment(plan).state != 'complete':
+            raise OnboardingError('qualified_guest_environment_required')
+        _, code, mounts = self._guest_paths(plan)
+        mounts['onboarding-connections'] = self._telegram_mount(plan)
+        if not self._mounted(plan, mounts):
+            raise OnboardingError('qualified_guest_environment_required')
+        launcher = ('import sys;sys.path.insert(0,sys.argv.pop(1));'
+                    'from clusterctl.onboarding_telegram import main;raise SystemExit(main())')
+        identity = [] if action in {'install', 'observe', 'native-install'} else ['--user', '1000', '--group', '1000', '--env', 'HOME=/home/agent']
+        value = json.loads(self._dispatch(plan, ['exec', self.instance(plan), *identity, '--', 'python3', '-B', '-I',
+            '-c', launcher, str(code), action, '--code', str(code), '--plan', '/home/agent/.onboarding-input/plan.json']))
+        if (not isinstance(value, dict) or action != 'probe' and value.get('plan_digest') != digest(plan)):
+            raise OnboardingError('invalid_onboarding_observation')
+        return value
+
+    def _telegram_probe(self, plan: dict) -> None:
+        from .onboarding_release import verify
+        value = self._telegram_command(plan, 'probe').get('native_probe')
+        if self.config.code is None:
+            raise OnboardingError('receiving_code_configuration_required')
+        expected = verify(self.config.code, plan['release_digest'], uid=os.geteuid())['profile']['skills']
+        if (not isinstance(value, dict) or value.get('skill_errors') != 0
+                or value.get('model_turns_started') != 0 or value.get('skills_force_reload') is not True
+                or not isinstance(value.get('enabled_skills'), list)
+                or not set(expected) <= set(value['enabled_skills'])):
+            raise OnboardingError('native_telegram_probe_failed')
 
     def _decision(self, plan: dict) -> dict | None:
         if self.config.consent_uid is None or self.config.progress is None or self.config.code is None:

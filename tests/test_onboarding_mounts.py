@@ -185,3 +185,22 @@ def test_root_publisher_does_not_use_consumer_owned_private_staging(tmp_path, mo
     target = next((tmp_path/'views').glob('*/matrix-public'))
     assert target.stat().st_uid == 0
     assert {path.stat().st_uid for path in target.iterdir()} == {1000}
+
+
+def test_private_connections_retry_preserves_original_and_refuses_changed_bot(tmp_path):
+    from tests.test_onboarding import plan
+    views = tmp_path / 'views'
+    views.mkdir(mode=0o700)
+    value = plan()
+    (views / digest(value)).mkdir(mode=0o700)
+    supplied = dict(telegram_bot_token='123456789:' + 'x' * 40, telegram_chat_id=1234)
+    target = onboarding_mounts.prepare_connections(views, value, supplied)
+    before = (target / 'connections.json').read_bytes()
+    assert onboarding_mounts.prepare_connections(views, value, supplied) == target
+    with pytest.raises(OnboardingError, match='existing_onboarding_connections_preserved'):
+        onboarding_mounts.prepare_connections(views, value, {**supplied, 'telegram_chat_id': 5678})
+    assert (target / 'connections.json').read_bytes() == before
+    assert (target / 'connections.json').stat().st_mode & 0o077 == 0
+    assert target.stat().st_mode & 0o077 == 0
+    with pytest.raises(OnboardingError, match='connection_data_required'):
+        onboarding_mounts.prepare_connections(views, value, {**supplied, 'ssh_public_key': 'excluded'})

@@ -314,7 +314,7 @@ def _build_parser() -> argparse.ArgumentParser:
     seeds = sub.add_parser("seed", help="receive private portable context or prepare a new being")
     seeds.add_argument("--owner", default="clusterctl-cli", help="owner of the private intake")
     commands = seeds.add_subparsers(dest="seed_command", required=True)
-    for command in ("create", "upload", "discover", "prepare", "connections", "status", "list", "review", "consent"):
+    for command in ("create", "upload", "discover", "prepare", "connections", "status", "list", "review", "consent", "ssh"):
         p = commands.add_parser(command)
         p.add_argument("--json", action="store_true")
         if command not in {"create", "list"}:
@@ -333,6 +333,9 @@ def _build_parser() -> argparse.ArgumentParser:
             p.add_argument("--worker-uid", default=0, type=int)
         if command == "consent":
             p.add_argument("--file", required=True, type=Path)
+        if command == "ssh":
+            p.add_argument("--progress", required=True, type=Path)
+            p.add_argument("--worker-uid", default=0, type=int)
     return parser
 
 
@@ -445,6 +448,13 @@ def run(argv=None, adapter=None) -> int:
                     seed_result = being_seed.discovery(base, args.name, **options)
                 elif args.seed_command == "status":
                     seed_result = being_seed.status(base, args.name, **options)
+                elif args.seed_command == "ssh":
+                    from .onboarding_ingress import Access
+                    being_seed.status(base, args.name, **options)
+                    try:
+                        seed_result = Access(args.progress, worker_uid=args.worker_uid).read(args.name, **options)
+                    except FileNotFoundError:
+                        seed_result = {"ssh": None}
                 elif args.seed_command in {"review", "consent"}:
                     from .onboarding_consent import Reviews, read, submit
                     reviews = Reviews(args.reviews, worker_uid=args.worker_uid)

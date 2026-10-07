@@ -43,6 +43,20 @@ unit digest. The installer preserves its predecessor, serializes publication,
 and refuses a different unit. Updating the worker does not change the frozen
 plan, identity, receiving memory or native conversation state.
 
+Optional `ssh_ingress` names a private operator policy with the host name,
+IPv4 listen address and a bounded port range between 20000 and 50000. A durable
+reservation precedes each new Incus proxy. Existing sockets, foreign proxies
+and other job reservations are excluded; retries reuse their original port
+and host key. Only the new guest's dedicated port 2222 is forwarded. No
+administrative login, key file or management firewall is edited.
+
+`GET /v1/seeds/{seed}/onboarding/access` and the same portal publish owner-only
+coordinates after the actual SSH host key is observed through that port.
+Coordinates are absent from fleet listings and job progress. This establishes
+listener readiness, not a real owner login, native Codex session or CLI resume;
+those remain receiving acceptance requirements. Revocation clears readiness
+and prevents new effects while preserving the existing body and reservation.
+
 The decision binds the plan and Source text digest. An identical retry is
 idempotent; a contradictory decision is refused. A changed proposal cannot
 reuse an older acknowledgement. The worker reads participant-owned decisions

@@ -29,6 +29,8 @@ NEVER any token material (not even a prefix).
 from __future__ import annotations
 
 import hashlib
+import contextlib
+import fcntl
 import hmac
 import json
 import os
@@ -98,6 +100,18 @@ def _save_tokens(state_dir: str | Path, tokens: list[dict]) -> None:
     os.replace(tmp, store_path(state_dir))
 
 
+@contextlib.contextmanager
+def _token_writer(state_dir: str | Path):
+    directory = auth_dir(state_dir)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(directory / "writer.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def create_token(state_dir: str | Path, *, actor: str,
                  scopes: list[str], owner: str,
                  ttl_days: int) -> tuple[dict, str]:
@@ -125,23 +139,25 @@ def create_token(state_dir: str | Path, *, actor: str,
         "expires_ms": created + int(ttl_days * 86_400_000),
         "revoked": False,
     }
-    tokens = _load_tokens(state_dir)
-    tokens.append(record)
-    _save_tokens(state_dir, tokens)
+    with _token_writer(state_dir):
+        tokens = _load_tokens(state_dir)
+        tokens.append(record)
+        _save_tokens(state_dir, tokens)
     return record, raw_token
 
 
 def revoke_token(state_dir: str | Path, token_id: str) -> dict | None:
     """Revoke by token_id; effective on the very next request (the
     server's TokenStore reloads on mtime change). Returns the record."""
-    tokens = _load_tokens(state_dir)
-    found = None
-    for rec in tokens:
-        if rec.get("token_id") == token_id:
-            rec["revoked"] = True
-            found = rec
-    if found is not None:
-        _save_tokens(state_dir, tokens)
+    with _token_writer(state_dir):
+        tokens = _load_tokens(state_dir)
+        found = None
+        for rec in tokens:
+            if rec.get("token_id") == token_id:
+                rec["revoked"] = True
+                found = rec
+        if found is not None:
+            _save_tokens(state_dir, tokens)
     return found
 
 

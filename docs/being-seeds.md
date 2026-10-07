@@ -51,6 +51,11 @@ Open `/v1/onboarding` on the host's HTTPS address. The page contains no owner
 data, external scripts or persistent credential storage. API requests require
 an expiring, revocable owner-scoped bearer token. Issue `seed:write` and
 `fleet:read` to each human; do not hand out an operator wildcard token.
+The host operator can issue a three-day owner-scoped access from this web page;
+`POST /v1/seed-access` requires an operator-owned `*` token with `seed:write`.
+The new access is shown once to that private browser, hashed at rest, and shared
+privately by the operator. A participant cannot issue or widen access. Bootstrap
+the operator using the existing owner-local token CLI; never put tokens in URLs.
 
 1. Choose import or new, the environment name, being label and browser option.
 2. Import: upload the `.tgz`/`.zip` and the SHA-256 from the source exporter.

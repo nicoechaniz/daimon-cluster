@@ -2050,6 +2050,7 @@ document.addEventListener('click',function(ev){
 
 HANDLERS = {
     "seed_ui": seed_handlers.seed_ui,
+    "seed_access": seed_handlers.seed_access,
     "list_seeds": seed_handlers.list_seeds,
     "create_seed": seed_handlers.create_seed,
     "upload_seed": seed_handlers.upload_seed,

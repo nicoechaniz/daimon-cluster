@@ -198,6 +198,80 @@ paths:
           application/json:
             schema:
               type: object
+  /v1/seed-access:
+    post:
+      operationId: createSeedAccess
+      summary: Operator issues a short-lived owner-scoped access token once
+      description: "Uses `clusterd --token-create` as its source; mutations retain\
+        \ the same clusterctl business-logic boundary while reads may add owner scoping,\
+        \ redaction, observation envelopes, and bounded snapshot pagination.\n\nRequired\
+        \ bearer scope: `seed:write` \u2014 enforced (issue #18). Owner-scoped tokens\
+        \ may only touch daimons whose spec created_by matches the owner."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: Advisory only. Authenticated routes use the bearer token actor
+          as the authoritative actor.
+        schema:
+          type: string
+          default: anonymous
+      - name: X-Human-Approval
+        in: header
+        required: false
+        description: Base64url clusterd-human-approval/v1 artifact. Required for steward@*
+          execution and signed by a separately provisioned human authority over the
+          exact 409 intent. Caller attendance headers carry no authority.
+        schema:
+          type: string
+          maxLength: 16384
+      - name: X-Confirm
+        in: header
+        required: false
+        description: '''none'' executes non-destructive mutations (start/stop/restart)
+          directly. Destructive-class routes ALWAYS require a confirmation token regardless.'
+        schema:
+          type: string
+          enum:
+          - none
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id003
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id003
+        '409':
+          description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
+          content: *id003
+        '429':
+          description: 'mutation rate limit: 60 mutations/minute per token (sliding
+            window)'
+          content: *id003
+        '500':
+          description: internal error (CLI exit 10)
+          content: *id003
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
   /v1/seeds/{seed}/archive:
     post:
       operationId: uploadSeed
@@ -259,27 +333,27 @@ paths:
           description: clusterctl result JSON (exit 0)
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: &id003
+          content: &id004
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
-          content: *id003
+          content: *id004
         '404':
           description: not found (CLI exit 3)
-          content: *id003
+          content: *id004
         '409':
           description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
-          content: *id003
+          content: *id004
         '429':
           description: 'mutation rate limit: 60 mutations/minute per token (sliding
             window)'
-          content: *id003
+          content: *id004
         '500':
           description: internal error (CLI exit 10)
-          content: *id003
+          content: *id004
       requestBody:
         required: true
         content:
@@ -324,75 +398,6 @@ paths:
           description: clusterctl result JSON (exit 0)
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: &id004
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorEnvelope'
-        '403':
-          description: 'authenticated but denied: insufficient scope, not your daimon
-            (owner mismatch), or unattended-steward-denied'
-          content: *id004
-        '404':
-          description: not found (CLI exit 3)
-          content: *id004
-        '500':
-          description: internal error (CLI exit 10)
-          content: *id004
-  /v1/seeds/{seed}/prepare:
-    post:
-      operationId: prepareSeed
-      summary: Preserve originals and prepare receiving context
-      description: "Uses `clusterctl seed prepare` as its source; mutations retain\
-        \ the same clusterctl business-logic boundary while reads may add owner scoping,\
-        \ redaction, observation envelopes, and bounded snapshot pagination.\n\nRequired\
-        \ bearer scope: `seed:write` \u2014 enforced (issue #18). Owner-scoped tokens\
-        \ may only touch daimons whose spec created_by matches the owner."
-      parameters:
-      - name: X-Request-Id
-        in: header
-        required: false
-        description: Echoed back; a uuid4 is generated when absent.
-        schema:
-          type: string
-          format: uuid
-      - name: X-Actor
-        in: header
-        required: false
-        description: Advisory only. Authenticated routes use the bearer token actor
-          as the authoritative actor.
-        schema:
-          type: string
-          default: anonymous
-      - name: seed
-        in: path
-        required: true
-        schema:
-          type: string
-      - name: X-Human-Approval
-        in: header
-        required: false
-        description: Base64url clusterd-human-approval/v1 artifact. Required for steward@*
-          execution and signed by a separately provisioned human authority over the
-          exact 409 intent. Caller attendance headers carry no authority.
-        schema:
-          type: string
-          maxLength: 16384
-      - name: X-Confirm
-        in: header
-        required: false
-        description: '''none'' executes non-destructive mutations (start/stop/restart)
-          directly. Destructive-class routes ALWAYS require a confirmation token regardless.'
-        schema:
-          type: string
-          enum:
-          - none
-      security:
-      - bearerAuth: []
-      responses:
-        '200':
-          description: clusterctl result JSON (exit 0)
-        '401':
-          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
           content: &id005
             application/json:
               schema:
@@ -404,27 +409,14 @@ paths:
         '404':
           description: not found (CLI exit 3)
           content: *id005
-        '409':
-          description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
-          content: *id005
-        '429':
-          description: 'mutation rate limit: 60 mutations/minute per token (sliding
-            window)'
-          content: *id005
         '500':
           description: internal error (CLI exit 10)
           content: *id005
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-  /v1/seeds/{seed}/connections:
+  /v1/seeds/{seed}/prepare:
     post:
-      operationId: seedConnections
-      summary: Store private bot data and a public SSH key
-      description: "Uses `clusterctl seed connections` as its source; mutations retain\
+      operationId: prepareSeed
+      summary: Preserve originals and prepare receiving context
+      description: "Uses `clusterctl seed prepare` as its source; mutations retain\
         \ the same clusterctl business-logic boundary while reads may add owner scoping,\
         \ redaction, observation envelopes, and bounded snapshot pagination.\n\nRequired\
         \ bearer scope: `seed:write` \u2014 enforced (issue #18). Owner-scoped tokens\
@@ -502,6 +494,88 @@ paths:
           application/json:
             schema:
               type: object
+  /v1/seeds/{seed}/connections:
+    post:
+      operationId: seedConnections
+      summary: Store private bot data and a public SSH key
+      description: "Uses `clusterctl seed connections` as its source; mutations retain\
+        \ the same clusterctl business-logic boundary while reads may add owner scoping,\
+        \ redaction, observation envelopes, and bounded snapshot pagination.\n\nRequired\
+        \ bearer scope: `seed:write` \u2014 enforced (issue #18). Owner-scoped tokens\
+        \ may only touch daimons whose spec created_by matches the owner."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: Advisory only. Authenticated routes use the bearer token actor
+          as the authoritative actor.
+        schema:
+          type: string
+          default: anonymous
+      - name: seed
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Human-Approval
+        in: header
+        required: false
+        description: Base64url clusterd-human-approval/v1 artifact. Required for steward@*
+          execution and signed by a separately provisioned human authority over the
+          exact 409 intent. Caller attendance headers carry no authority.
+        schema:
+          type: string
+          maxLength: 16384
+      - name: X-Confirm
+        in: header
+        required: false
+        description: '''none'' executes non-destructive mutations (start/stop/restart)
+          directly. Destructive-class routes ALWAYS require a confirmation token regardless.'
+        schema:
+          type: string
+          enum:
+          - none
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id007
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id007
+        '404':
+          description: not found (CLI exit 3)
+          content: *id007
+        '409':
+          description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
+          content: *id007
+        '429':
+          description: 'mutation rate limit: 60 mutations/minute per token (sliding
+            window)'
+          content: *id007
+        '500':
+          description: internal error (CLI exit 10)
+          content: *id007
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
   /v1/health:
     get:
       operationId: getHealth
@@ -571,17 +645,17 @@ paths:
           description: clusterctl result JSON (exit 0)
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: &id007
+          content: &id008
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
-          content: *id007
+          content: *id008
         '500':
           description: internal error (CLI exit 10)
-          content: *id007
+          content: *id008
   /v1/instances:
     get:
       operationId: listInstances
@@ -634,23 +708,23 @@ paths:
                 $ref: '#/components/schemas/SnapshotPage'
         '400':
           description: invalid limit/cursor or cursor scope mismatch
-          content: &id008
+          content: &id009
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '409':
           description: cursor snapshot expired or was evicted; restart pagination
-          content: *id008
+          content: *id009
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: *id008
+          content: *id009
         '403':
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
-          content: *id008
+          content: *id009
         '500':
           description: internal error (CLI exit 10)
-          content: *id008
+          content: *id009
   /v1/instances/{name}:
     get:
       operationId: getInstance
@@ -688,20 +762,20 @@ paths:
           description: clusterctl result JSON (exit 0)
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: &id009
+          content: &id010
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
-          content: *id009
+          content: *id010
         '404':
           description: not found (CLI exit 3)
-          content: *id009
+          content: *id010
         '500':
           description: internal error (CLI exit 10)
-          content: *id009
+          content: *id010
   /v1/backups:
     get:
       operationId: listBackups
@@ -735,17 +809,17 @@ paths:
           description: clusterctl result JSON (exit 0)
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: &id010
+          content: &id011
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
-          content: *id010
+          content: *id011
         '500':
           description: internal error (CLI exit 10)
-          content: *id010
+          content: *id011
   /v1/instances/{name}/logs:
     get:
       operationId: getInstanceLogs
@@ -794,85 +868,6 @@ paths:
           description: clusterctl result JSON (exit 0)
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: &id011
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorEnvelope'
-        '403':
-          description: 'authenticated but denied: insufficient scope, not your daimon
-            (owner mismatch), or unattended-steward-denied'
-          content: *id011
-        '404':
-          description: not found (CLI exit 3)
-          content: *id011
-        '500':
-          description: internal error (CLI exit 10)
-          content: *id011
-  /v1/instances/{name}/start:
-    post:
-      operationId: startInstance
-      summary: Start a declared instance
-      description: "Uses `clusterctl start <name> --idempotency-key <key> --json`\
-        \ as its source; mutations retain the same clusterctl business-logic boundary\
-        \ while reads may add owner scoping, redaction, observation envelopes, and\
-        \ bounded snapshot pagination.\n\nRequired bearer scope: `lifecycle:write`\
-        \ \u2014 enforced (issue #18). Owner-scoped tokens may only touch daimons\
-        \ whose spec created_by matches the owner."
-      parameters:
-      - name: X-Request-Id
-        in: header
-        required: false
-        description: Echoed back; a uuid4 is generated when absent.
-        schema:
-          type: string
-          format: uuid
-      - name: X-Actor
-        in: header
-        required: false
-        description: Advisory only. Authenticated routes use the bearer token actor
-          as the authoritative actor.
-        schema:
-          type: string
-          default: anonymous
-      - name: name
-        in: path
-        required: true
-        schema:
-          type: string
-      - name: Idempotency-Key
-        in: header
-        required: true
-        description: 'uuid. Retry with the same key replays the cached clusterctl
-          result (idempotent-replay: true); reuse for a different operation/target
-          is a 409 conflict. Dedupe is clusterctl''s own idempotency store.'
-        schema:
-          type: string
-          format: uuid
-      - name: X-Human-Approval
-        in: header
-        required: false
-        description: Base64url clusterd-human-approval/v1 artifact. Required for steward@*
-          execution and signed by a separately provisioned human authority over the
-          exact 409 intent. Caller attendance headers carry no authority.
-        schema:
-          type: string
-          maxLength: 16384
-      - name: X-Confirm
-        in: header
-        required: false
-        description: '''none'' executes non-destructive mutations (start/stop/restart)
-          directly. Destructive-class routes ALWAYS require a confirmation token regardless.'
-        schema:
-          type: string
-          enum:
-          - none
-      security:
-      - bearerAuth: []
-      responses:
-        '200':
-          description: clusterctl result JSON (exit 0)
-        '401':
-          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
           content: &id012
             application/json:
               schema:
@@ -881,28 +876,18 @@ paths:
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
           content: *id012
-        '400':
-          description: missing Idempotency-Key
-          content: *id012
         '404':
           description: not found (CLI exit 3)
-          content: *id012
-        '409':
-          description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
-          content: *id012
-        '429':
-          description: 'mutation rate limit: 60 mutations/minute per token (sliding
-            window)'
           content: *id012
         '500':
           description: internal error (CLI exit 10)
           content: *id012
-  /v1/instances/{name}/stop:
+  /v1/instances/{name}/start:
     post:
-      operationId: stopInstance
-      summary: Stop a declared instance
-      description: "Uses `clusterctl stop <name> --idempotency-key <key> --json` as\
-        \ its source; mutations retain the same clusterctl business-logic boundary\
+      operationId: startInstance
+      summary: Start a declared instance
+      description: "Uses `clusterctl start <name> --idempotency-key <key> --json`\
+        \ as its source; mutations retain the same clusterctl business-logic boundary\
         \ while reads may add owner scoping, redaction, observation envelopes, and\
         \ bounded snapshot pagination.\n\nRequired bearer scope: `lifecycle:write`\
         \ \u2014 enforced (issue #18). Owner-scoped tokens may only touch daimons\
@@ -986,12 +971,12 @@ paths:
         '500':
           description: internal error (CLI exit 10)
           content: *id013
-  /v1/instances/{name}/restart:
+  /v1/instances/{name}/stop:
     post:
-      operationId: restartInstance
-      summary: Restart a declared (running) instance
-      description: "Uses `clusterctl restart <name> --idempotency-key <key> --json`\
-        \ as its source; mutations retain the same clusterctl business-logic boundary\
+      operationId: stopInstance
+      summary: Stop a declared instance
+      description: "Uses `clusterctl stop <name> --idempotency-key <key> --json` as\
+        \ its source; mutations retain the same clusterctl business-logic boundary\
         \ while reads may add owner scoping, redaction, observation envelopes, and\
         \ bounded snapshot pagination.\n\nRequired bearer scope: `lifecycle:write`\
         \ \u2014 enforced (issue #18). Owner-scoped tokens may only touch daimons\
@@ -1075,6 +1060,95 @@ paths:
         '500':
           description: internal error (CLI exit 10)
           content: *id014
+  /v1/instances/{name}/restart:
+    post:
+      operationId: restartInstance
+      summary: Restart a declared (running) instance
+      description: "Uses `clusterctl restart <name> --idempotency-key <key> --json`\
+        \ as its source; mutations retain the same clusterctl business-logic boundary\
+        \ while reads may add owner scoping, redaction, observation envelopes, and\
+        \ bounded snapshot pagination.\n\nRequired bearer scope: `lifecycle:write`\
+        \ \u2014 enforced (issue #18). Owner-scoped tokens may only touch daimons\
+        \ whose spec created_by matches the owner."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: Advisory only. Authenticated routes use the bearer token actor
+          as the authoritative actor.
+        schema:
+          type: string
+          default: anonymous
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        required: true
+        description: 'uuid. Retry with the same key replays the cached clusterctl
+          result (idempotent-replay: true); reuse for a different operation/target
+          is a 409 conflict. Dedupe is clusterctl''s own idempotency store.'
+        schema:
+          type: string
+          format: uuid
+      - name: X-Human-Approval
+        in: header
+        required: false
+        description: Base64url clusterd-human-approval/v1 artifact. Required for steward@*
+          execution and signed by a separately provisioned human authority over the
+          exact 409 intent. Caller attendance headers carry no authority.
+        schema:
+          type: string
+          maxLength: 16384
+      - name: X-Confirm
+        in: header
+        required: false
+        description: '''none'' executes non-destructive mutations (start/stop/restart)
+          directly. Destructive-class routes ALWAYS require a confirmation token regardless.'
+        schema:
+          type: string
+          enum:
+          - none
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id015
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id015
+        '400':
+          description: missing Idempotency-Key
+          content: *id015
+        '404':
+          description: not found (CLI exit 3)
+          content: *id015
+        '409':
+          description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
+          content: *id015
+        '429':
+          description: 'mutation rate limit: 60 mutations/minute per token (sliding
+            window)'
+          content: *id015
+        '500':
+          description: internal error (CLI exit 10)
+          content: *id015
   /v1/instances/{name}/destroy:
     post:
       operationId: destroyInstance
@@ -1140,17 +1214,17 @@ paths:
           description: clusterctl result JSON (exit 0)
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: &id015
+          content: &id016
             application/json:
-              schema: &id016
+              schema: &id017
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
-          content: *id015
+          content: *id016
         '404':
           description: not found (CLI exit 3)
-          content: *id015
+          content: *id016
         '409':
           description: 'confirmation required: body is a confirmation/v1 challenge
             (first POST) or a rejection (expired/reused/altered-digest/wrong-actor/wrong-target
@@ -1160,17 +1234,17 @@ paths:
               schema:
                 oneOf:
                 - $ref: '#/components/schemas/ConfirmationChallenge'
-                - *id016
+                - *id017
         '429':
           description: 'mutation rate limit: 60 mutations/minute per token (sliding
             window)'
-          content: *id015
+          content: *id016
         '501':
           description: confirmation validated; destroy execution is a later milestone
-          content: *id015
+          content: *id016
         '500':
           description: internal error (CLI exit 10)
-          content: *id015
+          content: *id016
   /v1/instances/{name}/snapshot:
     post:
       operationId: snapshotInstance
@@ -1228,92 +1302,6 @@ paths:
           description: clusterctl result JSON (exit 0)
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: &id017
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorEnvelope'
-        '403':
-          description: 'authenticated but denied: insufficient scope, not your daimon
-            (owner mismatch), or unattended-steward-denied'
-          content: *id017
-        '404':
-          description: not found (CLI exit 3)
-          content: *id017
-        '409':
-          description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
-          content: *id017
-        '429':
-          description: 'mutation rate limit: 60 mutations/minute per token (sliding
-            window)'
-          content: *id017
-        '500':
-          description: internal error (CLI exit 10)
-          content: *id017
-  /v1/instances/{name}/park:
-    post:
-      operationId: parkInstance
-      summary: 'Park a daimon''s writers (SIGSTOP hermes; issue #23)'
-      description: "Uses `clusterctl park <name> --idempotency-key <key> --json` as\
-        \ its source; mutations retain the same clusterctl business-logic boundary\
-        \ while reads may add owner scoping, redaction, observation envelopes, and\
-        \ bounded snapshot pagination.\n\nRequired bearer scope: `lifecycle:write`\
-        \ \u2014 enforced (issue #18). Owner-scoped tokens may only touch daimons\
-        \ whose spec created_by matches the owner."
-      parameters:
-      - name: X-Request-Id
-        in: header
-        required: false
-        description: Echoed back; a uuid4 is generated when absent.
-        schema:
-          type: string
-          format: uuid
-      - name: X-Actor
-        in: header
-        required: false
-        description: Advisory only. Authenticated routes use the bearer token actor
-          as the authoritative actor.
-        schema:
-          type: string
-          default: anonymous
-      - name: name
-        in: path
-        required: true
-        schema:
-          type: string
-      - name: Idempotency-Key
-        in: header
-        required: true
-        description: 'uuid. Retry with the same key replays the cached clusterctl
-          result (idempotent-replay: true); reuse for a different operation/target
-          is a 409 conflict. Dedupe is clusterctl''s own idempotency store.'
-        schema:
-          type: string
-          format: uuid
-      - name: X-Human-Approval
-        in: header
-        required: false
-        description: Base64url clusterd-human-approval/v1 artifact. Required for steward@*
-          execution and signed by a separately provisioned human authority over the
-          exact 409 intent. Caller attendance headers carry no authority.
-        schema:
-          type: string
-          maxLength: 16384
-      - name: X-Confirm
-        in: header
-        required: false
-        description: '''none'' executes non-destructive mutations (start/stop/restart)
-          directly. Destructive-class routes ALWAYS require a confirmation token regardless.'
-        schema:
-          type: string
-          enum:
-          - none
-      security:
-      - bearerAuth: []
-      responses:
-        '200':
-          description: clusterctl result JSON (exit 0)
-        '401':
-          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
           content: &id018
             application/json:
               schema:
@@ -1322,9 +1310,6 @@ paths:
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
           content: *id018
-        '400':
-          description: missing Idempotency-Key
-          content: *id018
         '404':
           description: not found (CLI exit 3)
           content: *id018
@@ -1338,11 +1323,11 @@ paths:
         '500':
           description: internal error (CLI exit 10)
           content: *id018
-  /v1/instances/{name}/wake:
+  /v1/instances/{name}/park:
     post:
-      operationId: wakeInstance
-      summary: 'Wake a parked daimon (SIGCONT hermes; issue #23)'
-      description: "Uses `clusterctl wake <name> --idempotency-key <key> --json` as\
+      operationId: parkInstance
+      summary: 'Park a daimon''s writers (SIGSTOP hermes; issue #23)'
+      description: "Uses `clusterctl park <name> --idempotency-key <key> --json` as\
         \ its source; mutations retain the same clusterctl business-logic boundary\
         \ while reads may add owner scoping, redaction, observation envelopes, and\
         \ bounded snapshot pagination.\n\nRequired bearer scope: `lifecycle:write`\
@@ -1427,6 +1412,95 @@ paths:
         '500':
           description: internal error (CLI exit 10)
           content: *id019
+  /v1/instances/{name}/wake:
+    post:
+      operationId: wakeInstance
+      summary: 'Wake a parked daimon (SIGCONT hermes; issue #23)'
+      description: "Uses `clusterctl wake <name> --idempotency-key <key> --json` as\
+        \ its source; mutations retain the same clusterctl business-logic boundary\
+        \ while reads may add owner scoping, redaction, observation envelopes, and\
+        \ bounded snapshot pagination.\n\nRequired bearer scope: `lifecycle:write`\
+        \ \u2014 enforced (issue #18). Owner-scoped tokens may only touch daimons\
+        \ whose spec created_by matches the owner."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: Advisory only. Authenticated routes use the bearer token actor
+          as the authoritative actor.
+        schema:
+          type: string
+          default: anonymous
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        required: true
+        description: 'uuid. Retry with the same key replays the cached clusterctl
+          result (idempotent-replay: true); reuse for a different operation/target
+          is a 409 conflict. Dedupe is clusterctl''s own idempotency store.'
+        schema:
+          type: string
+          format: uuid
+      - name: X-Human-Approval
+        in: header
+        required: false
+        description: Base64url clusterd-human-approval/v1 artifact. Required for steward@*
+          execution and signed by a separately provisioned human authority over the
+          exact 409 intent. Caller attendance headers carry no authority.
+        schema:
+          type: string
+          maxLength: 16384
+      - name: X-Confirm
+        in: header
+        required: false
+        description: '''none'' executes non-destructive mutations (start/stop/restart)
+          directly. Destructive-class routes ALWAYS require a confirmation token regardless.'
+        schema:
+          type: string
+          enum:
+          - none
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id020
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id020
+        '400':
+          description: missing Idempotency-Key
+          content: *id020
+        '404':
+          description: not found (CLI exit 3)
+          content: *id020
+        '409':
+          description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
+          content: *id020
+        '429':
+          description: 'mutation rate limit: 60 mutations/minute per token (sliding
+            window)'
+          content: *id020
+        '500':
+          description: internal error (CLI exit 10)
+          content: *id020
   /v1/audit:
     get:
       operationId: listAuditEvents
@@ -1498,23 +1572,23 @@ paths:
                 $ref: '#/components/schemas/SnapshotPage'
         '400':
           description: invalid limit/cursor or cursor scope mismatch
-          content: &id020
+          content: &id021
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '409':
           description: cursor snapshot expired or was evicted; restart pagination
-          content: *id020
+          content: *id021
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: *id020
+          content: *id021
         '403':
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
-          content: *id020
+          content: *id021
         '500':
           description: internal error (CLI exit 10)
-          content: *id020
+          content: *id021
   /v1/dashboard:
     get:
       operationId: getDashboard
@@ -1523,50 +1597,6 @@ paths:
         \ as its source; mutations retain the same clusterctl business-logic boundary\
         \ while reads may add owner scoping, redaction, observation envelopes, and\
         \ bounded snapshot pagination.\n\nRequired bearer scope: `dashboard:read`\
-        \ \u2014 enforced (issue #18). Owner-scoped tokens may only touch daimons\
-        \ whose spec created_by matches the owner."
-      parameters:
-      - name: X-Request-Id
-        in: header
-        required: false
-        description: Echoed back; a uuid4 is generated when absent.
-        schema:
-          type: string
-          format: uuid
-      - name: X-Actor
-        in: header
-        required: false
-        description: Advisory only. Authenticated routes use the bearer token actor
-          as the authoritative actor.
-        schema:
-          type: string
-          default: anonymous
-      security:
-      - bearerAuth: []
-      responses:
-        '200':
-          description: clusterctl result JSON (exit 0)
-        '401':
-          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: &id021
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorEnvelope'
-        '403':
-          description: 'authenticated but denied: insufficient scope, not your daimon
-            (owner mismatch), or unattended-steward-denied'
-          content: *id021
-        '500':
-          description: internal error (CLI exit 10)
-          content: *id021
-  /v1/embodiments:
-    get:
-      operationId: listEmbodiments
-      summary: List body embodiments and their incarnation histories
-      description: "Uses `reads state_dir/embodiments.json (same registry clusterctl\
-        \ writes)` as its source; mutations retain the same clusterctl business-logic\
-        \ boundary while reads may add owner scoping, redaction, observation envelopes,\
-        \ and bounded snapshot pagination.\n\nRequired bearer scope: `fleet:read`\
         \ \u2014 enforced (issue #18). Owner-scoped tokens may only touch daimons\
         \ whose spec created_by matches the owner."
       parameters:
@@ -1603,16 +1633,16 @@ paths:
         '500':
           description: internal error (CLI exit 10)
           content: *id022
-  /v1/resource-fences:
+  /v1/embodiments:
     get:
-      operationId: listResourceFences
-      summary: List active CAS/TTL fences for concrete writable resources
-      description: "Uses `reads state_dir/leases/*.json resource-fence/v1 records`\
-        \ as its source; mutations retain the same clusterctl business-logic boundary\
-        \ while reads may add owner scoping, redaction, observation envelopes, and\
-        \ bounded snapshot pagination.\n\nRequired bearer scope: `fleet:read` \u2014\
-        \ enforced (issue #18). Owner-scoped tokens may only touch daimons whose spec\
-        \ created_by matches the owner."
+      operationId: listEmbodiments
+      summary: List body embodiments and their incarnation histories
+      description: "Uses `reads state_dir/embodiments.json (same registry clusterctl\
+        \ writes)` as its source; mutations retain the same clusterctl business-logic\
+        \ boundary while reads may add owner scoping, redaction, observation envelopes,\
+        \ and bounded snapshot pagination.\n\nRequired bearer scope: `fleet:read`\
+        \ \u2014 enforced (issue #18). Owner-scoped tokens may only touch daimons\
+        \ whose spec created_by matches the owner."
       parameters:
       - name: X-Request-Id
         in: header
@@ -1647,6 +1677,50 @@ paths:
         '500':
           description: internal error (CLI exit 10)
           content: *id023
+  /v1/resource-fences:
+    get:
+      operationId: listResourceFences
+      summary: List active CAS/TTL fences for concrete writable resources
+      description: "Uses `reads state_dir/leases/*.json resource-fence/v1 records`\
+        \ as its source; mutations retain the same clusterctl business-logic boundary\
+        \ while reads may add owner scoping, redaction, observation envelopes, and\
+        \ bounded snapshot pagination.\n\nRequired bearer scope: `fleet:read` \u2014\
+        \ enforced (issue #18). Owner-scoped tokens may only touch daimons whose spec\
+        \ created_by matches the owner."
+      parameters:
+      - name: X-Request-Id
+        in: header
+        required: false
+        description: Echoed back; a uuid4 is generated when absent.
+        schema:
+          type: string
+          format: uuid
+      - name: X-Actor
+        in: header
+        required: false
+        description: Advisory only. Authenticated routes use the bearer token actor
+          as the authoritative actor.
+        schema:
+          type: string
+          default: anonymous
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: clusterctl result JSON (exit 0)
+        '401':
+          description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
+          content: &id024
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: 'authenticated but denied: insufficient scope, not your daimon
+            (owner mismatch), or unattended-steward-denied'
+          content: *id024
+        '500':
+          description: internal error (CLI exit 10)
+          content: *id024
   /v1/weave/status:
     get:
       operationId: getWeaveStatus
@@ -1680,20 +1754,20 @@ paths:
           description: clusterctl result JSON (exit 0)
         '503':
           description: membership-safe Matrix read unavailable
-          content: &id024
+          content: &id025
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: *id024
+          content: *id025
         '403':
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
-          content: *id024
+          content: *id025
         '500':
           description: internal error (CLI exit 10)
-          content: *id024
+          content: *id025
   /v1/weave/differences:
     get:
       operationId: listWeaveDifferences
@@ -1753,26 +1827,26 @@ paths:
                 $ref: '#/components/schemas/SnapshotPage'
         '400':
           description: invalid limit/cursor or cursor scope mismatch
-          content: &id025
+          content: &id026
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '409':
           description: cursor snapshot expired or was evicted; restart pagination
-          content: *id025
+          content: *id026
         '503':
           description: membership-safe Matrix read unavailable
-          content: *id025
+          content: *id026
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: *id025
+          content: *id026
         '403':
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
-          content: *id025
+          content: *id026
         '500':
           description: internal error (CLI exit 10)
-          content: *id025
+          content: *id026
   /v1/dashboard/prepare:
     post:
       operationId: prepareDashboardMutation
@@ -1806,17 +1880,17 @@ paths:
           description: clusterctl result JSON (exit 0)
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: &id026
+          content: &id027
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
-          content: *id026
+          content: *id027
         '500':
           description: internal error (CLI exit 10)
-          content: *id026
+          content: *id027
   /v1/dashboard/confirm:
     post:
       operationId: confirmDashboardMutation
@@ -1869,24 +1943,24 @@ paths:
           description: clusterctl result JSON (exit 0)
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: &id027
+          content: &id028
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
-          content: *id027
+          content: *id028
         '409':
           description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
-          content: *id027
+          content: *id028
         '429':
           description: 'mutation rate limit: 60 mutations/minute per token (sliding
             window)'
-          content: *id027
+          content: *id028
         '500':
           description: internal error (CLI exit 10)
-          content: *id027
+          content: *id028
   /v1/instances/{name}/restore:
     post:
       operationId: restoreInstance
@@ -1944,27 +2018,27 @@ paths:
           description: clusterctl result JSON (exit 0)
         '401':
           description: 'missing/unknown/expired/revoked bearer token ({error: unauthorized})'
-          content: &id028
+          content: &id029
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           description: 'authenticated but denied: insufficient scope, not your daimon
             (owner mismatch), or unattended-steward-denied'
-          content: *id028
+          content: *id029
         '404':
           description: not found (CLI exit 3)
-          content: *id028
+          content: *id029
         '409':
           description: 'conflict (CLI exit 6: idempotency-key reuse, lock held)'
-          content: *id028
+          content: *id029
         '429':
           description: 'mutation rate limit: 60 mutations/minute per token (sliding
             window)'
-          content: *id028
+          content: *id029
         '500':
           description: internal error (CLI exit 10)
-          content: *id028
+          content: *id029
 components:
   schemas:
     ErrorEnvelope:

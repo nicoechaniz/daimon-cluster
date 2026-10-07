@@ -203,7 +203,7 @@ def _operation(route) -> dict:
     if route.body_format == "archive":
         operation["requestBody"] = {"required": True, "content": {
             "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}}
-    elif route.path.startswith("/v1/seeds") and route.method == "POST":
+    elif (route.path.startswith("/v1/seeds") or route.path == "/v1/seed-access") and route.method == "POST":
         operation["requestBody"] = {"required": True, "content": {
             "application/json": {"schema": {"type": "object"}}}}
     return operation

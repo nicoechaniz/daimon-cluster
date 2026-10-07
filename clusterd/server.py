@@ -277,7 +277,7 @@ class ClusterdHandler(BaseHTTPRequestHandler):
             if path == "/v1/health":
                 self._respond(ctx, handlers.Response(200, {"status": "ok", "service": "seed-intake"}))
                 return
-            if not (path == "/v1/onboarding" or path == "/v1/seeds" or path.startswith("/v1/seeds/")):
+            if not (path in {"/v1/onboarding", "/v1/seeds", "/v1/seed-access"} or path.startswith("/v1/seeds/")):
                 self.close_connection = True
                 self._respond(ctx, handlers.Response(404, {"error": "seed_intake_route_only"}))
                 return
@@ -316,7 +316,7 @@ class ClusterdHandler(BaseHTTPRequestHandler):
                            _body=_body, **extra, **params)
         except Exception as exc:  # noqa: BLE001  # pragma: no cover - defensive
             resp = handlers.Response(500, {
-                "error": "seed_operation_failed" if route.handler.endswith("seed") or route.path.startswith("/v1/seeds") else f"clusterd internal error: {exc!r}",
+                "error": "seed_operation_failed" if route.handler.startswith("seed_") or route.path.startswith("/v1/seeds") else f"clusterd internal error: {exc!r}",
                 "action": route.operation_id,
                 "target": path,
                 "request_id": ctx.request_id,

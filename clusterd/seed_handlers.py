@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 import time
 
 from clusterctl import being_seed
 
-from . import handlers
+from . import auth, handlers
 
 
 def _owner(ctx):
@@ -32,6 +33,21 @@ def list_seeds(deps, ctx, query=None, **params):
 
 def create_seed(deps, ctx, _body=None, **params):
     return _call(deps, ctx, being_seed.create, _body, key=ctx.idempotency_key)
+
+
+def seed_access(deps, ctx, _body=None, **params):
+    if _owner(ctx) != "*":
+        return handlers.Response(403, {"error": "seed_operator_access_required"})
+    if (not isinstance(_body, dict) or set(_body) != {"owner"}
+            or not isinstance(_body["owner"], str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,30}", _body["owner"])):
+        return handlers.Response(400, {"error": "named_seed_owner_required"})
+    # Same token store as the existing owner-local issuer. Only the hash is
+    # retained; the private human browser receives the raw access once.
+    record, token = auth.create_token(handlers._state_dir(deps), actor=_body["owner"],
+                                      owner=_body["owner"], scopes=["fleet:read", "seed:write"], ttl_days=3)
+    return handlers.Response(200, {"token": token, "token_id": record["token_id"],
+                                   "owner": record["owner"], "expires_ms": record["expires_ms"]})
 
 
 def upload_seed(deps, ctx, seed, _stream, _length, _sha256, _transfer_encoding=None, **params):
@@ -77,6 +93,10 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}section{border-top:1px solid #52
 <p>Continue an existing being or prepare a new one. This prepares private context; the body becomes active after its connection and runtime checks.</p>
 <label>Private access token <input id="token" type="password" autocomplete="off"></label>
 <p>Use the private HTTPS address provided by your host. Tokens and bot credentials stay in this page's memory.</p>
+<details><summary>Host operator: give another human private access</summary>
+<label>Owner name <input id="invite-owner" placeholder="ani or sai"></label>
+<button id="invite">Create access valid for 3 days</button>
+<label>New access token (shown once; share privately) <input id="invite-token" type="password" readonly autocomplete="off"></label></details>
 <section><h2>1. Choose the starting point</h2>
 <label>Environment name <input id="name" placeholder="eko" pattern="[a-z0-9][a-z0-9-]{0,30}"></label>
 <label>Daimon name <input id="label" placeholder="Eko"></label>
@@ -120,6 +140,8 @@ field('mode').onchange=()=>{const isNew=field('mode').value==='new';field('new-f
 field('create').onclick=()=>action(()=>{let value={name:field('name').value.trim(),label:field('label').value.trim(),mode:field('mode').value,browser:field('browser').checked};
   if(value.mode==='new')value.soul=field('soul').value;return api('/v1/seeds','POST',value,{'Idempotency-Key':requestKey()})});
 field('refresh').onclick=()=>action(()=>api('/v1/seeds'));
+field('invite').onclick=()=>action(async()=>{const data=await api('/v1/seed-access','POST',{owner:field('invite-owner').value.trim()});
+  field('invite-token').value=data.token;return {owner:data.owner,expires_ms:data.expires_ms,private_access:'Token shown once in the private access field'};});
 field('upload').onclick=()=>action(async()=>{const archive=field('archive').files[0];if(!archive)throw Error('Choose the portable seed archive');
   if(archive.size>512*1024*1024)throw Error('Archive exceeds 512 MiB');
   await api('/v1/seeds/'+selectedName()+'/archive','POST',archive,{'X-Archive-SHA256':field('sha256').value.trim()});

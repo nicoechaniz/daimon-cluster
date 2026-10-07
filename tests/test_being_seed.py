@@ -8,6 +8,7 @@ import threading
 import urllib.error
 import urllib.request
 from contextlib import closing, contextmanager
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -174,8 +175,8 @@ def test_symlink_paths_and_changed_pinned_tool_fail_closed(tmp_path, monkeypatch
 @contextmanager
 def http_server(state):
     credentials = {}
-    for owner, scopes in [("ani", ["fleet:read", "seed:write"]), ("sai", ["fleet:read", "seed:write"]), ("reader", ["fleet:read"])]:
-        _, credentials[owner] = auth.create_token(state, actor=owner, scopes=scopes, owner=owner, ttl_days=1)
+    for owner, scopes in [("ani", ["fleet:read", "seed:write"]), ("sai", ["fleet:read", "seed:write"]), ("reader", ["fleet:read"]), ("operator", ["fleet:read", "seed:write"])]:
+        _, credentials[owner] = auth.create_token(state, actor=owner, scopes=scopes, owner="*" if owner == "operator" else owner, ttl_days=1)
     server = make_server(handlers.Deps("configs/clusterctl.yaml", state_dir=str(state)), "127.0.0.1", 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -230,6 +231,31 @@ def test_upload_unauthenticated_rejected_without_reading_body(tmp_path):
         with socket.create_connection(server.server_address, timeout=3) as connection:
             connection.sendall(b"POST /v1/seeds/no/archive HTTP/1.1\r\nHost: localhost\r\nContent-Length: 99999999\r\n\r\n")
             assert b"401" in connection.recv(8192)
+
+
+def test_operator_web_access_issuer_cannot_be_used_by_participants(tmp_path):
+    with http_server(tmp_path) as (_server, request):
+        assert request("/v1/seed-access", "POST", {"owner": "new-human"})[0] == 403
+        assert request("/v1/seed-access", "POST", {"owner": "*"}, owner="operator")[0] == 400
+        code, headers, issued = request("/v1/seed-access", "POST", {"owner": "new-human"}, owner="operator")
+        assert code == 200 and headers["Cache-Control"] == "no-store"
+        record, reason = auth.authenticate(auth.TokenStore(tmp_path), issued["token"])
+        assert reason is None
+        assert record["owner"] == record["actor"] == "new-human"
+        assert record["scopes"] == ["fleet:read", "seed:write"]
+        assert issued["token"] not in (tmp_path / "auth/tokens.json").read_text()
+
+
+def test_concurrent_private_access_issuance_keeps_every_token(tmp_path):
+    def issue(number):
+        return auth.create_token(tmp_path, actor=f"human-{number}", owner=f"human-{number}",
+                                 scopes=["fleet:read", "seed:write"], ttl_days=3)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        issued = list(pool.map(issue, range(20)))
+    store = auth.TokenStore(tmp_path)
+    assert len(auth.list_tokens(tmp_path)) == 20
+    for record, token in issued:
+        assert auth.authenticate(store, token)[0]["token_id"] == record["token_id"]
 
 
 def test_seed_cli_never_contacts_incus(tmp_path, capsys):

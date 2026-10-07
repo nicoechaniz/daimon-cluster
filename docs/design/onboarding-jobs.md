@@ -32,6 +32,17 @@ keys: the existing native worker adapter performs the resumable ceremony.
 Root and Recovery packages occupy separate stores and processes on this host;
 they share its administrator and are not independent administrative custodians.
 
+The private intake policy may prepare the empty 30 GiB environment before the
+pair reviews inheritance. This is resource authorization only: context and
+Matrix stages still wait for the exact review. The worker publishes its actual
+completed environment step rather than making the human wait to approve an
+empty volume. Missing uploads do not enqueue a job for sleeping participants.
+
+Worker software upgrades use `--replace-unit-sha256` with the exact installed
+unit digest. The installer preserves its predecessor, serializes publication,
+and refuses a different unit. Updating the worker does not change the frozen
+plan, identity, receiving memory or native conversation state.
+
 The decision binds the plan and Source text digest. An identical retry is
 idempotent; a contradictory decision is refused. A changed proposal cannot
 reuse an older acknowledgement. The worker reads participant-owned decisions

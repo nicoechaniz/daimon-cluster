@@ -4,13 +4,32 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  scope:
+    runs-on: ubuntu-latest
+    outputs:
+      profile: ${{ steps.scope.outputs.profile }}
+      pytest_args: ${{ steps.scope.outputs.pytest_args }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - id: scope
+        env:
+          CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 tools/ci_scope.py --base "$CI_BASE"
   test:
     name: test (3.13.5)
+    needs: scope
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -25,6 +44,7 @@ jobs:
             requirements-dev.txt
             constraints.txt
       - name: Harden and record the trusted qualification interpreter
+        if: needs.scope.outputs.profile == 'full'
         env:
           EXPECTED_PYTHON: "3.13.5"
         run: |
@@ -111,7 +131,7 @@ jobs:
           source_executable = Path(sys.executable).resolve(strict=True)
           source_prefix = Path(sys.base_prefix).resolve(strict=True)
           tool_cache = Path(os.environ["RUNNER_TOOL_CACHE"]).resolve(strict=True)
-          assert f"{sys.version_info.major}.{sys.version_info.minor}" == os.environ["EXPECTED_PYTHON"]
+          assert f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}" == os.environ["EXPECTED_PYTHON"]
           assert source_prefix.is_relative_to(tool_cache / "Python")
           relative_executable = source_executable.relative_to(source_prefix)
           assert relative_executable.parent == Path("bin")
@@ -164,6 +184,7 @@ jobs:
           }, sort_keys=True))
           PY
       - name: Verify the private interpreter is selected
+        if: needs.scope.outputs.profile == 'full'
         env:
           EXPECTED_PYTHON: "3.13.5"
         run: |
@@ -183,6 +204,7 @@ jobs:
           assert _owner_file(executable, executable=True) == executable
           PY
       - name: Install the offline qualification sandbox
+        if: needs.scope.outputs.profile == 'full'
         run: |
           set -eu
           if ! compgen -G '/var/lib/apt/lists/*_Packages*' >/dev/null; then
@@ -202,6 +224,7 @@ jobs:
           test "$(dpkg-query -W -f='${Status}' bubblewrap)" = 'install ok installed'
           test -x /usr/bin/bwrap
       - name: Prove the disposable runner supports the qualification sandbox
+        if: needs.scope.outputs.profile == 'full'
         run: |
           set -eu
           restriction=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
@@ -366,6 +389,8 @@ jobs:
           tests/test_volume_relocation.py
           tests/test_human_approvals.py
           tests/test_ci_workflow.py
+          tools/ci_scope.py
+          tests/test_ci_scope.py
           tests/test_physical_preflight.py
           tests/test_rc_manifest.py
           scripts/h3-volume-drill.py
@@ -380,10 +405,14 @@ jobs:
           python -m compileall -q clusterctl clusterd steward_tools tests tools
       - run: >-
           python -m pytest -q
+          ${{ needs.scope.outputs.pytest_args }}
           -W error::ResourceWarning
           -W error::pytest.PytestUnraisableExceptionWarning
+          --durations=10
 
   backup-export-disposable:
+    needs: scope
+    if: needs.scope.outputs.profile != 'ci'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -409,6 +438,8 @@ jobs:
           tests/integration/test_restic_export_container.py
 
   recovery-rebirth-disposable-hosts:
+    needs: scope
+    if: needs.scope.outputs.profile != 'ci'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

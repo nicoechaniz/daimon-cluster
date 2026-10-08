@@ -592,6 +592,7 @@ def cli_admission_guard(home, owner):
         'print(json.dumps({"idle":idle}),flush=True);sys.stdin.buffer.read(1);c.rollback();c.close()')
     process = subprocess.Popen([sys.executable, '-B', '-I', '-c', program, str(database)],
         user=owner, group=owner, extra_groups=[] if os.geteuid() == 0 else None, umask=0o077,
+        env={'HOME': str(home), 'PATH': os.defpath, 'LANG': 'C.UTF-8'},
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
         if not select.select([process.stdout], [], [], 30)[0]:
@@ -703,6 +704,7 @@ def cli_resume_probe(home, plan, thread, model, reasoning, runner=None,
             'print(json.dumps({"idle":idle,"rollout":row[0] if row else None}))')
         result = run([sys.executable, '-B', '-I', '-c', code, str(home), thread],
             user=owner, group=owner, extra_groups=[], umask=0o077,
+            env={'HOME': str(home), 'PATH': os.defpath, 'LANG': 'C.UTF-8'},
             capture_output=True, text=True, timeout=30, check=True)
         value = json.loads(result.stdout)
         if set(value) != {'idle', 'rollout'} or type(value['idle']) is not bool:
@@ -827,10 +829,15 @@ def cli_resume_probe(home, plan, thread, model, reasoning, runner=None,
             proof = {'schema': 'cluster-native-cli-resume/v1', 'plan_digest': fingerprint, 'thread_id': thread,
                 'verified': True, 'original_history_sha256': intent['history_sha256'],
                 'cli_sha256': binding['cli_sha256'], 'provider_stream_sha256': hash_file(output_path)}
+            owned(executable, coordinator, False)
+            if hash_file(executable) != binding['cli_sha256']:
+                raise ValueError('existing_cli_resume_probe_preserved')
             publish(root / 'proof.json', proof)
             return proof
         finally:
             if stopped or intent is not None:
+                for name in unit_hashes:
+                    owned(units / name, coordinator, False)
                 if any(hash_file(units / name) != expected for name, expected in unit_hashes.items()):
                     raise ValueError('foreign_cli_service_state_preserved')
                 # Software/services only. Never restore history, SQLite or offsets.

@@ -228,6 +228,12 @@ def agent_guide() -> dict:
                 "reply_body": {"schema": "cluster-onboarding-enrollment-reply/v1", "request_digest": "exact handoff request_digest", "response": "public signed response emitted by the maintained local Root signer"},
                 "submit": "POST the same path. Intake grants no authority; native host verification and exact recorded existing-identity approval remain required.",
                 "signer": "/v1/onboarding/local-body/tools/existing_root_signer.zip"},
+            "participant_continuation": {"bundle": "/v1/onboarding/local-body/tools/existing_root_signer.zip",
+                "client": "continue_seed_onboarding.py inside the qualified signer bundle",
+                "meaning": "finite owner-invoked local command sends only missing public source and hosted connections, processes both Root handoffs locally, and waits for the hosted conversation; rerunning preserves replies and inputs",
+                "local_only": ["Root custody", "password", "provider credentials"],
+                "private_host_input": ["dedicated hosted bot token", "Telegram destination", "SSH public key"],
+                "no_repeat": ["archive upload", "accepted selection", "account choice", "recorded approval"]},
             "local_body_report": {"method": "POST", "path": "/v1/onboarding/local-body/{name}",
                 "body": {"schema": "cluster-onboarding-local-body-report/v1", "request_id": "UUID from the request",
                     "checked_at_ms": "current Unix milliseconds", "checks": {key: "passed, missing, failed or not-checked"
@@ -300,9 +306,10 @@ collect private bot/SSH connection data. Imports continue established beings;
 new beings start with an initial SOUL and explicitly empty history.
 
 `prepared` is context preparation. It does not mean an active or signed body.
-Automatic runtime activation and the first bot welcome are not shipped yet.
-Native HMK acceptance, canonical enrollment, SSH, provider login and the single
-Telegram consumer still require actual receiving acceptance by the host.
+The service worker advances the authorized receiving plan, enrollment, SSH,
+provider setup and dedicated Telegram consumer. Required local Root signatures
+and missing private connection inputs remain explicit waiting states. Hosted
+acceptance requires observed effects; prepared context alone is insufficient.
 
 ## Local Codex verification on your existing computer
 
@@ -363,6 +370,21 @@ The worker publishes dedicated SSH coordinates through
 key through that listener. Connect as `agent` using your existing private key,
 compare `host_key_fingerprint`, then run `codex` or `codex resume`. A ready
 listener is not proof of a completed human login or CLI resume.
+
+## Finite continuation from your existing computer
+
+Download `/v1/onboarding/local-body/tools/existing_root_signer.zip` using your
+existing workspace access. Its `CONTINUE.txt` explains how to run
+`continue_seed_onboarding.py` once with an owner-private state directory, access
+file, public existing-source packet, private dedicated bot/SSH input file and
+your existing local Root holder. It sends only missing inputs, waits for the
+receiving worker, and signs the two exact public handoffs with the maintained
+native signer. Root custody and its password remain on your computer. The hosted
+bot token must reach the private connections API; it never belongs in a public
+source packet, diagnostic or archive. Preserve originals and existing approvals.
+The default foreground deadline is four hours. Rerun with the same state to
+reuse accepted inputs and cached public signatures. This installs no attention
+hook, inbox listener or automatic conversation responder.
 
 ## Private access
 

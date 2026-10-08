@@ -25,6 +25,10 @@ def sealed_signer(tmp_path, monkeypatch):
     captured = tmp_path / "sealed-signer-code"
     (captured / "clusterd").mkdir(parents=True)
     (captured / "clusterctl").mkdir()
+    (captured / "tools").mkdir()
+    shutil.copyfile(source / 'tools/continue_seed_onboarding.py',
+        captured / 'tools/continue_seed_onboarding.py')
+    (captured / 'tools/continue_seed_onboarding.py').chmod(0o644)
     for name in seed_handlers.SIGNER_MODULES:
         path = captured / "clusterctl" / (name + ".py")
         shutil.copyfile(source / "clusterctl" / (name + ".py"), path)

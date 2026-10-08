@@ -91,16 +91,18 @@ def read(state: Path, request: dict) -> dict:
     try:
         seed = being_seed.status(state, request['name'], owner=request['owner'])
         received = dict(context_prepared=seed['phase'] == 'prepared', archive_received=seed['archive_sha256'] is not None,
+            receiving_selection_received=seed['phase'] == 'prepared' or seed.get('preparation_queued') is True,
             ssh_key_received=seed['ssh'].startswith('key supplied'),
             telegram_data_received=seed['telegram'].startswith('data supplied'))
     except being_seed.SeedError as exc:
         if exc.status != 404:
             raise
-        received = dict(context_prepared=False, archive_received=False, ssh_key_received=False, telegram_data_received=False)
+        received = dict(context_prepared=False, archive_received=False, receiving_selection_received=False,
+            ssh_key_received=False, telegram_data_received=False)
     pending = []
     if not received['archive_received']:
         pending.append('archive')
-    if not received['context_prepared']:
+    if not received['receiving_selection_received']:
         pending.append('receiving_selection_and_preparation')
     if not received['telegram_data_received']:
         pending.append('telegram_bot_and_destination')
@@ -111,6 +113,16 @@ def read(state: Path, request: dict) -> dict:
         pending.append('signed_existing_matrix_source')
     return {**request, 'checks': CHECKS, 'report': summary, 'received': received,
         'pending_inputs': pending,
+        'host_tasks': ['context_preparation'] if received['receiving_selection_received'] and not received['context_prepared'] else [],
+        'pending_actions': {key: value for key, value in {
+            'receiving_selection_and_preparation': dict(method='POST', path='/v1/seeds/' + request['name'] + '/prepare',
+                meaning='Submit the active own SOUL and authorized memory selection with defer:true. Historical skills stay preserved; select no working copies unless reviewed.'),
+            'telegram_bot_and_destination': dict(method='POST', path='/v1/seeds/' + request['name'] + '/connections',
+                fields=['telegram_bot_token', 'telegram_chat_id'], meaning='Send this hosted body dedicated bot token and destination through authenticated private HTTPS. Do not consume another body bot.'),
+            'ssh_public_key': dict(method='POST', path='/v1/seeds/' + request['name'] + '/connections', fields=['ssh_public_key']),
+            'signed_existing_matrix_source': dict(method='POST', path='/v1/onboarding/local-body/' + request['name'] + '/enrollment',
+                fields=['schema', 'request_id', 'identity', 'routes'], meaning='Public signed identity and explicit existing-body routes only; keep Root custody and passwords local.'),
+        }.items() if key in pending},
         'diagnostic': diagnostic_summary(state, request),
         'diagnostic_path': '/v1/onboarding/local-body/' + request['name'] + '/diagnostic',
         'enrollment_path': '/v1/onboarding/local-body/' + request['name'] + '/enrollment',
@@ -119,7 +131,7 @@ def read(state: Path, request: dict) -> dict:
             'Keep the already selected shared account and recorded human approvals.',
             'If a signed Matrix identity exists, export only its public signed identity with the provided existing-body exporter, which calls maintained native chat-link public_identity.',
             'Use its existing authority. A Hermes identity proves that being, but does not prove a local Codex embodiment exists.',
-            'Respect the local daemon writer lock. Keep custody, private keys, passwords, paths, bot tokens and provider credentials local.',
+            'Respect the local daemon writer lock. Keep Matrix custody, private keys, passwords and provider credentials local. Send only the hosted body dedicated bot token through the authenticated private connections endpoint, never in a diagnostic, public source packet or command argument.',
             'If no identity can be found, report not-found; do not create another Root to satisfy this check.',
             'If an exporter or local check is blocked, send its nonsecret reproducible JSON report through diagnostic_path. Do not repeat an archive already received. Preserve originals and credential-bearing history while the host resolves the blocker.',
             'Submit results through the response_path. A missing check is useful evidence, not a request for Nicolas to relay technical details.',

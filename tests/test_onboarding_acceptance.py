@@ -4,6 +4,7 @@ import dataclasses
 import json
 import os
 import sqlite3
+from contextlib import closing
 import time
 import uuid
 from types import SimpleNamespace
@@ -15,6 +16,146 @@ from clusterctl.cli import run
 from clusterctl.onboarding import OnboardingError, digest
 from tests.test_being_seed import KEY, http_server
 from tests.test_onboarding import advance, plan, setup
+
+
+def memory_fixture(tmp_path):
+    home = tmp_path / 'home'
+    state = home / '.local/state/daimon-onboarding/eko'
+    state.mkdir(mode=0o700, parents=True)
+    value = plan()
+    being_seed._write(state / 'memory.json', dict(plan_digest=digest(value), stores=[{'name': 'store-001'}]))
+    wrapper = state / 'hmk-store-001.py'
+    wrapper.write_text('# Explicit native test transport.\n')
+    wrapper.chmod(0o600)
+    database = home / '.agents/memory/eko/received/memory/store-001/library.db'
+    database.parent.mkdir(mode=0o700, parents=True)
+    with closing(sqlite3.connect(database)) as db:
+        db.executescript('CREATE TABLE chapters(id INTEGER PRIMARY KEY,title TEXT,raw TEXT,access_count INTEGER DEFAULT 0); CREATE TABLE original_vectors(id INTEGER PRIMARY KEY,value BLOB);')
+        db.execute('INSERT INTO chapters(title,raw) VALUES (?,?)', ('Own older memory', 'preserved original'))
+        db.execute('INSERT INTO original_vectors VALUES (?,?)', (1, b'original vector'))
+        db.commit()
+    database.chmod(0o600)
+    calls = []
+    def native(args):
+        calls.append(args[0])
+        with closing(sqlite3.connect(database)) as db:
+            if args[0] == 'stats':
+                result = {'db_path': str(database)}
+            elif args[0] == 'add-text':
+                title, raw = args[args.index('--title') + 1], args[args.index('--raw') + 1]
+                db.execute('INSERT INTO chapters(title,raw) VALUES (?,?)', (title, raw))
+                result = {}
+            elif args[0] == 'expand':
+                cid = int(args[2])
+                row = db.execute('SELECT id,title,raw FROM chapters WHERE id=?', (cid,)).fetchone()
+                result = dict(zip(('id', 'title', 'raw'), row))
+                db.execute('UPDATE chapters SET access_count=access_count+1 WHERE id=?', (cid,))
+            else:
+                assert args[0] == 'delete'
+                db.execute('DELETE FROM chapters WHERE id=?', (int(args[2]),))
+                result = {}
+            db.commit()
+        return result
+    return home, value, database, state, native, calls
+
+
+@pytest.mark.parametrize('interruption', ['add-text', 'delete'])
+def test_native_memory_write_resumes_lost_ack_preserves_originals_and_new_writes(tmp_path, interruption):
+    home, value, database, state, native, calls = memory_fixture(tmp_path)
+    def lost_ack(args):
+        result = native(args)
+        if args[0] == interruption:
+            raise OSError('fixture acknowledgement interrupted after native commit')
+        return result
+    with pytest.raises(OSError):
+        checks.memory_write_probe(home, value, 'store-001', lost_ack)
+    # Another receiving writer is legitimate and must never be rolled back.
+    with closing(sqlite3.connect(database)) as db:
+        db.execute('INSERT INTO chapters(title,raw) VALUES (?,?)', ('New work', 'receiving write'))
+        db.commit()
+    proof = checks.memory_write_probe(home, value, 'store-001', native)
+    assert proof['verified'] is True and proof['plan_digest'] == digest(value)
+    assert calls.count('add-text') == calls.count('expand') == calls.count('delete') == 1
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute('SELECT title,raw FROM chapters ORDER BY id').fetchall() == [
+            ('Own older memory', 'preserved original'), ('New work', 'receiving write')]
+        assert db.execute('SELECT value FROM original_vectors').fetchone() == (b'original vector',)
+    assert checks.memory_write_probe(home, value, 'store-001', lambda args:pytest.fail('completed probe repeated')) == proof
+    backup = state / 'memory-write/store-001/backup.db'
+    assert backup.stat().st_mode & 0o077 == 0
+    with closing(sqlite3.connect(backup)) as db:
+        assert db.execute('SELECT COUNT(*) FROM chapters').fetchone()[0] == 1
+
+
+def test_native_memory_write_requires_verified_backup_and_refuses_loss_of_history(tmp_path):
+    home, value, database, state, native, calls = memory_fixture(tmp_path)
+    root = state / 'memory-write/store-001'
+    root.parent.mkdir(mode=0o700)
+    root.mkdir(mode=0o700)
+    backup = root / 'backup.db'
+    backup.write_bytes(b'invalid SQLite')
+    backup.chmod(0o600)
+    with pytest.raises(sqlite3.DatabaseError):
+        checks.memory_write_probe(home, value, 'store-001', native)
+    assert not calls
+    backup.unlink()
+    def corrupt_original(args):
+        result = native(args)
+        if args[0] == 'delete':
+            with closing(sqlite3.connect(database)) as db:
+                db.execute('DELETE FROM original_vectors')
+                db.commit()
+        return result
+    with pytest.raises(ValueError, match='native_memory_write_verification_failed'):
+        checks.memory_write_probe(home, value, 'store-001', corrupt_original)
+    assert not (root / 'proof.json').exists()
+    with closing(sqlite3.connect(backup)) as db:
+        assert db.execute('SELECT value FROM original_vectors').fetchone() == (b'original vector',)
+
+
+def test_host_executes_finite_guest_memory_probe_and_reuses_root_owned_evidence(tmp_path):
+    home, value, database, state, runner, native_calls = memory_fixture(tmp_path)
+    store, fixture = setup(tmp_path, value)
+    advance(store, fixture, count=7)
+    inputs, progress = tmp_path / 'inputs', tmp_path / 'progress'
+    progress.mkdir(mode=0o750)
+    received = inputs / 'eko/received'
+    received.mkdir(mode=0o700, parents=True)
+    being_seed._write(received / 'preparation.json', {'selection': {'memory': [{'name': 'store-001'}]}})
+    calls = []
+    def dispatch(plan, argv):
+        calls.append(argv)
+        assert argv[:7] == ['exec', 'dm-eko', '--user', '1000', '--group', '1000', '--']
+        assert json.loads(argv[-2]) == value and argv[-1] == 'store-001'
+        compile(argv[-3], '<captured-host-probe>', 'exec')
+        return json.dumps(checks.memory_write_probe(home, value, 'store-001', runner))
+    backend = SimpleNamespace(config=SimpleNamespace(inputs=inputs, progress=progress, jobs=store.root),
+        instance=lambda plan:'dm-eko', _dispatch=dispatch)
+    adapter = checks.HostedChecks(backend)
+    assert adapter.memory_write_observe(value).safe_to_execute
+    adapter.verify_memory_write(value)
+    assert adapter.memory_write_observe(value).state == 'complete'
+    adapter.verify_memory_write(value)
+    assert len(calls) == 1 and native_calls == ['stats', 'add-text', 'expand', 'delete']
+    record = checks.MemoryWrites(progress, worker_uid=os.geteuid()).read('eko', owner='sai')
+    assert record['stores'][0]['verified'] is True
+    with pytest.raises(OnboardingError, match='onboarding_job_not_found'):
+        checks.MemoryWrites(progress, worker_uid=os.geteuid()).read('eko', owner='ani')
+    with pytest.raises(OnboardingError, match='existing_hosted_checks_preserved'):
+        adapter.memory_write_observe({**value, 'browser': not value['browser']})
+
+
+def test_memory_probe_refuses_other_store_binding_before_any_write(tmp_path):
+    home, value, database, state, runner, calls = memory_fixture(tmp_path)
+    def wrong_binding(args):
+        assert args == ['stats']
+        return {'db_path': '/another/being/library.db'}
+    with pytest.raises(ValueError, match='native_memory_write_verification_failed'):
+        checks.memory_write_probe(home, value, 'store-001', wrong_binding)
+    assert not calls
+    assert not (state / 'memory-write/store-001/proof.json').exists()
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute('SELECT COUNT(*) FROM chapters').fetchone()[0] == 1
 
 
 def native(instance=None, topics=1, steered=False, first=1):

@@ -55,6 +55,192 @@ CHECKS = {
 BROWSER = "In the hosted browser, verify the supported browser session works."
 
 
+def memory_write_probe(home, plan, store, native_runner=None):
+    """Finite native write/read/delete; preserve original rows and crash state.
+
+    Dispatched as the receiving user. This self-contained stdlib program never
+    restores a database, reads credentials or calls an embedding provider.
+    """
+    import contextlib
+    import collections
+    import fcntl
+    import hashlib
+    import json
+    import os
+    import re
+    import sqlite3
+    import stat
+    import subprocess
+    import sys
+    import uuid
+    from pathlib import Path
+
+    def refuse():
+        raise ValueError('native_memory_write_verification_failed')
+
+    def owned(path):
+        if any(p.is_symlink() for p in (path, *path.parents)):
+            refuse()
+        info = path.stat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077 or info.st_nlink != 1):
+            refuse()
+
+    def read(path):
+        owned(path)
+        if path.stat().st_size > 65536:
+            refuse()
+        value = json.loads(path.read_bytes())
+        if not isinstance(value, dict):
+            refuse()
+        return value
+
+    def publish(path, value):
+        raw = json.dumps(value, sort_keys=True).encode()
+        temporary = path.with_name('.' + path.name + '.' + uuid.uuid4().hex)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    if (not isinstance(plan, dict) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', plan.get('name', ''))
+            or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', store)):
+        refuse()
+    fingerprint = hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    home = Path(home)
+    state = home / '.local/state/daimon-onboarding' / plan['name']
+    marker = read(state / 'memory.json')
+    if marker.get('plan_digest') != fingerprint or store not in {r['name'] for r in marker['stores']}:
+        refuse()
+    root = state / 'memory-write' / store
+    if any(p.is_symlink() for p in (root, *root.parents)):
+        refuse()
+    for path in (root.parent, root):
+        path.mkdir(mode=0o700, exist_ok=True)
+        info = path.stat()
+        if not path.is_dir() or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            refuse()
+    lock = os.open(root / 'lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        owned(root / 'lock')
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        schema = 'cluster-native-memory-write-proof/v1'
+        if (root / 'proof.json').exists():
+            proof = read(root / 'proof.json')
+            if (set(proof) != {'schema', 'plan_digest', 'store', 'verified', 'backup_sha256', 'probe_sha256'}
+                    or proof['schema'] != schema or proof['plan_digest'] != fingerprint
+                    or proof['store'] != store or proof['verified'] is not True
+                    or any(not re.fullmatch('[0-9a-f]{64}', proof[k]) for k in ('backup_sha256', 'probe_sha256'))):
+                refuse()
+            return proof
+        database = home / '.agents/memory' / plan['name'] / 'received/memory' / store / 'library.db'
+        owned(database)
+        backup = root / 'backup.db'
+        if not backup.exists():
+            temporary = root / (uuid.uuid4().hex + '.partial')
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.close(fd)
+            with contextlib.closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)) as source:
+                with contextlib.closing(sqlite3.connect(temporary)) as snapshot:
+                    source.backup(snapshot)
+                    if snapshot.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
+                        refuse()
+            fd = os.open(temporary, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.rename(temporary, backup)
+        owned(backup)
+        with contextlib.closing(sqlite3.connect(backup.as_uri() + '?mode=ro', uri=True)) as snapshot:
+            if snapshot.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
+                refuse()
+        if not (root / 'intent.json').exists():
+            publish(root / 'intent.json', dict(plan_digest=fingerprint, nonce=str(uuid.uuid4()), read_verified=False))
+        intent = read(root / 'intent.json')
+        if (set(intent) != {'plan_digest', 'nonce', 'read_verified'} or intent['plan_digest'] != fingerprint
+                or str(uuid.UUID(intent['nonce'])) != intent['nonce'] or type(intent['read_verified']) is not bool):
+            refuse()
+        title = 'Onboarding native memory verification ' + intent['nonce']
+        raw = 'Temporary native write/read verification; original history remains preserved. ' + intent['nonce']
+        wrapper = state / ('hmk-' + store + '.py')
+        owned(wrapper)
+
+        def native(arguments):
+            if native_runner is not None:
+                return native_runner(arguments)
+            result = subprocess.run([sys.executable, '-B', str(wrapper), 'memoryctl.py', *arguments],
+                capture_output=True, timeout=120)
+            if result.returncode:
+                refuse()
+            return json.loads(result.stdout)
+
+        def candidate():
+            with contextlib.closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)) as current:
+                rows = current.execute('SELECT id,raw FROM chapters WHERE title=?', (title,)).fetchall()
+            if len(rows) > 1 or rows and rows[0][1] != raw:
+                refuse()
+            return rows[0][0] if rows else None
+
+        stats = native(['stats'])
+        if stats.get('db_path') != str(database):
+            refuse()
+        chapter = candidate()
+        if chapter is None and not intent['read_verified']:
+            native(['add-text', '--shelf', 'evidence', '--title', title, '--raw', raw,
+                '--actor', 'cluster-onboarding-verification'])
+            chapter = candidate()
+            if chapter is None:
+                refuse()
+        if not intent['read_verified']:
+            recalled = native(['expand', '--id', str(chapter)])
+            if recalled.get('id') != chapter or recalled.get('title') != title or recalled.get('raw') != raw:
+                refuse()
+            intent['read_verified'] = True
+            publish(root / 'intent.json', intent)
+        if chapter is not None:
+            native(['delete', '--id', str(chapter)])
+        if candidate() is not None:
+            refuse()
+        # Preserve every original row, including variants, vectors and history.
+        # Native expand legitimately changes only chapter access counters.
+        with contextlib.closing(sqlite3.connect(backup.as_uri() + '?mode=ro', uri=True)) as original:
+            with contextlib.closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)) as current:
+                if original.execute('PRAGMA integrity_check').fetchall() != [('ok',)] or current.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
+                    refuse()
+                for name, sql in original.execute("SELECT name,sql FROM sqlite_master WHERE type='table'"):
+                    if name.startswith(('sqlite_', 'chapters_fts')) or 'VIRTUAL TABLE' in (sql or '').upper():
+                        continue
+                    quoted = '"' + name.replace('"', '""') + '"'
+                    columns = [r[1] for r in original.execute('PRAGMA table_info(' + quoted + ')')]
+                    if name == 'chapters':
+                        columns = [c for c in columns if c not in {'last_access', 'access_count'}]
+                    selection = ','.join('"' + c.replace('"', '""') + '"' for c in columns)
+                    remaining = collections.Counter(original.execute('SELECT ' + selection + ' FROM ' + quoted))
+                    for row in current.execute('SELECT ' + selection + ' FROM ' + quoted):
+                        if remaining[row] > 0:
+                            remaining[row] -= 1
+                    if any(remaining.values()):
+                        refuse()
+        checksum = hashlib.sha256()
+        with backup.open('rb') as stream:
+            while chunk := stream.read(1024 * 1024):
+                checksum.update(chunk)
+        proof = dict(schema=schema, plan_digest=fingerprint, store=store, verified=True,
+            backup_sha256=checksum.hexdigest(), probe_sha256=hashlib.sha256(raw.encode()).hexdigest())
+        publish(root / 'proof.json', proof)
+        return proof
+    finally:
+        os.close(lock)
+
+
 def _uuid(value: object) -> bool:
     try:
         return isinstance(value, str) and str(uuid.UUID(value)) == value
@@ -323,9 +509,75 @@ def worker_report(state: Path, request: dict, *, intake_uid: int) -> dict | None
     return _report(request, read_private, root)
 
 
+class MemoryWrites(Progress):
+    suffix = '.memory-write.json'
+
+    @staticmethod
+    def validate(value):
+        if (not isinstance(value, dict) or set(value) != {'schema', 'name', 'owner', 'plan_digest', 'stores'}
+                or value['schema'] != 'cluster-hosted-memory-write/v1'
+                or any(not isinstance(value[k], str) or not being_seed.NAME.fullmatch(value[k]) for k in ('name', 'owner'))
+                or not isinstance(value['plan_digest'], str) or not re.fullmatch('[0-9a-f]{64}', value['plan_digest'])
+                or not isinstance(value['stores'], list) or len(value['stores']) > 200):
+            raise OnboardingError('invalid_hosted_memory_write_evidence')
+        stores = set()
+        for proof in value['stores']:
+            if (not isinstance(proof, dict) or set(proof) != {'schema', 'plan_digest', 'store', 'verified', 'backup_sha256', 'probe_sha256'}
+                    or proof['schema'] != 'cluster-native-memory-write-proof/v1'
+                    or proof['plan_digest'] != value['plan_digest'] or proof['verified'] is not True
+                    or not isinstance(proof['store'], str) or not being_seed.NAME.fullmatch(proof['store'])
+                    or proof['store'] in stores
+                    or any(not isinstance(proof[k], str) or not re.fullmatch('[0-9a-f]{64}', proof[k]) for k in ('backup_sha256', 'probe_sha256'))):
+                raise OnboardingError('invalid_hosted_memory_write_evidence')
+            stores.add(proof['store'])
+        return value
+
+
 class HostedChecks:
     def __init__(self, backend):
         self.backend = backend
+
+    def _memory_stores(self, plan):
+        config = self.backend.config
+        if config.inputs is None:
+            raise OnboardingError('prepared_onboarding_input_required')
+        report = json.loads(regular(config.inputs / plan['name'] / 'received/preparation.json',
+            uid=os.geteuid(), limit=being_seed.MAX_PREPARATION))
+        stores = [row['name'] for row in report['selection']['memory']]
+        if len(set(stores)) != len(stores) or any(not being_seed.NAME.fullmatch(s) for s in stores):
+            raise OnboardingError('prepared_onboarding_input_required')
+        return stores
+
+    def memory_write_observe(self, plan):
+        config = self.backend.config
+        proofs = MemoryWrites(config.progress, worker_uid=os.geteuid())
+        try:
+            value = proofs.read(plan['name'], owner=plan['owner'])
+        except FileNotFoundError:
+            return Observation('absent', safe_to_execute=True)
+        if (value['plan_digest'] != digest(plan)
+                or {r['store'] for r in value['stores']} != set(self._memory_stores(plan))):
+            raise OnboardingError('existing_hosted_checks_preserved')
+        return Observation('complete', {'verified': True})
+
+    def verify_memory_write(self, plan):
+        if self.memory_write_observe(plan).state == 'complete':
+            return
+        config = self.backend.config
+        job = JobStore(config.jobs)._load(plan['name'])
+        if job['plan'] != plan or job['steps']['memory']['state'] != 'complete':
+            raise OnboardingError('receiving_context_required')
+        program = ('import json,sys;\n' + inspect.getsource(memory_write_probe)
+            + '\nprint(json.dumps(memory_write_probe("/home/agent",json.loads(sys.argv[1]),sys.argv[2])))')
+        stores = []
+        for store in self._memory_stores(plan):
+            result = self.backend._dispatch(plan, ['exec', self.backend.instance(plan), '--user', '1000',
+                '--group', '1000', '--', 'python3', '-B', '-I', '-c', program, json.dumps(plan), store])
+            stores.append(json.loads(result))
+        # No store is created for an explicitly empty-history seed.
+        MemoryWrites(config.progress, worker_uid=os.geteuid()).publish(dict(
+            schema='cluster-hosted-memory-write/v1', name=plan['name'], owner=plan['owner'],
+            plan_digest=digest(plan), stores=stores))
 
     def observe(self, plan: dict) -> Observation:
         config = self.backend.config
@@ -414,6 +666,12 @@ class HostedChecks:
             steering_verified=bool(native["steered_turns"]),
             restart_verified=restarted,
         )
+        try:
+            memory_proof = MemoryWrites(config.progress, worker_uid=os.geteuid()).read(plan['name'], owner=plan['owner'])
+        except FileNotFoundError:
+            memory_proof = None
+        if memory_proof is not None:
+            technical['memory_write_verified'] = self.memory_write_observe(plan).state == 'complete'
         if previous and previous["technical"]["restart_verified"]:
             # Historical continuation evidence survives later normal restarts.
             technical["restart_verified"] = True

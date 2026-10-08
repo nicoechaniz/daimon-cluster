@@ -2061,6 +2061,7 @@ HANDLERS = {
     "list_seeds": seed_handlers.list_seeds,
     "create_seed": seed_handlers.create_seed,
     "upload_seed": seed_handlers.upload_seed,
+    "seed_upload_progress": seed_handlers.seed_upload_progress,
     "seed_transfer": seed_handlers.seed_transfer,
     "seed_transfer_request": seed_handlers.seed_transfer_request,
     "discover_seed": seed_handlers.discover_seed,

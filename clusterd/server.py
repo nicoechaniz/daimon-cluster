@@ -344,6 +344,9 @@ class ClusterdHandler(BaseHTTPRequestHandler):
                 self.connection.settimeout(30)
                 extra = {"_stream": self.rfile, "_length": self.headers.get("Content-Length"),
                          "_sha256": self.headers.get("X-Archive-SHA256"),
+                         "_offset": self.headers.get("X-Archive-Offset"),
+                         "_total": self.headers.get("X-Archive-Size"),
+                         "_prefix": self.headers.get("X-Archive-Prefix-SHA256"),
                          "_transfer_encoding": self.headers.get("Transfer-Encoding")}
             resp = handler(self.server.deps, ctx, route=route, query=query,
                            _body=_body, **extra, **params)

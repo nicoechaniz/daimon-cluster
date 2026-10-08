@@ -235,44 +235,122 @@ def _retryable_upload(directory: Path, record: dict) -> bool:
     return partials > 0
 
 
-def upload(state_dir: str | Path, name: str, *, owner: str,
-           stream: BinaryIO, length: int, sha256: str) -> dict:
+def _partial_digest(path: Path) -> tuple[int, str]:
+    fd = os.open(_path(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077 or info.st_nlink != 1):
+            raise SeedError("private_upload_partial_required", 409)
+        return info.st_size, hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _resume_partial(directory: Path, record: dict) -> tuple[Path | None, int, str]:
+    candidates = sorted(directory.glob("upload-*.partial"),
+                        key=lambda p: (-p.lstat().st_size, p.name))
+    for path in candidates:
+        if not re.fullmatch(r"upload-[0-9a-f]{32}\.partial", path.name):
+            raise SeedError("private_upload_partial_required", 409)
+        size, digest = _partial_digest(path)
+        if 0 < size <= record["upload_size"]:
+            # A complete but corrupt attempt cannot be extended or published.
+            if size == record["upload_size"] and digest != record["upload_sha256"]:
+                continue
+            return path, size, digest
+    return None, 0, hashlib.sha256(b"").hexdigest()
+
+
+def upload_progress(state_dir: str | Path, name: str, *, owner: str) -> dict:
+    """Owner-only durable offset. The client verifies its exact local prefix."""
     directory, _ = _record(state_dir, name, owner)
+    with _locked(directory):
+        _, record = _record(state_dir, name, owner)
+        if record["mode"] != "import":
+            raise SeedError("new_seed_has_no_source_archive", 409)
+        if record.get("archive_sha256") is not None:
+            return dict(complete=True, offset=record["archive_size"],
+                        size=record["archive_size"], sha256=record["archive_sha256"],
+                        prefix_sha256=record["archive_sha256"])
+        if record["phase"] != "awaiting-upload" and not _retryable_upload(directory, record):
+            raise SeedError("seed_upload_not_resumable", 409)
+        size, digest = record.get("upload_size"), record.get("upload_sha256")
+        if size is None or digest is None:
+            return dict(complete=False, offset=0, size=None, sha256=None,
+                        prefix_sha256=hashlib.sha256(b"").hexdigest())
+        _, offset, prefix = _resume_partial(directory, record)
+        return dict(complete=False, offset=offset, size=size, sha256=digest,
+                    prefix_sha256=prefix)
+
+
+def upload(state_dir: str | Path, name: str, *, owner: str,
+           stream: BinaryIO, length: int, sha256: str, offset: int | None = None,
+           total: int | None = None, prefix_sha256: str | None = None) -> dict:
+    directory, _ = _record(state_dir, name, owner)
+    resume = offset is not None or total is not None or prefix_sha256 is not None
+    if resume:
+        if (type(offset) is not int or type(total) is not int
+                or not 0 <= offset <= total or length != total - offset
+                or not isinstance(prefix_sha256, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", prefix_sha256)):
+            raise SeedError("seed_upload_resume_headers_required")
+        size = total
+    else:
+        size = length
     if (not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256)
-            or type(length) is not int or not 0 < length <= MAX_UPLOAD):
+            or type(length) is not int or not 0 < size <= MAX_UPLOAD):
         raise SeedError("bounded_archive_and_sha256_required", 413)
     with _locked(directory):
         _, record = _record(state_dir, name, owner)
         if record["mode"] != "import":
             raise SeedError("new_seed_has_no_source_archive", 409)
-        if record.get("archive_sha256") == sha256 and record.get("archive_size") == length:
+        if record.get("archive_sha256") == sha256 and record.get("archive_size") == size:
             return project(record)
         if record["phase"] != "awaiting-upload" and not _retryable_upload(directory, record):
             raise SeedError("seed_archive_already_present", 409)
         if (record.get("upload_sha256", sha256) != sha256
-                or record.get("upload_size", length) != length):
+                or record.get("upload_size", size) != size):
             raise SeedError("seed_upload_retry_requires_same_archive", 409)
         # Upstream permits at most 5 GiB of expanded payload. Reserve space
         # for preserved and working copies plus uploaded archive copies.
-        if shutil.disk_usage(directory).free < 10 * 1024**3 + 3 * length:
+        if shutil.disk_usage(directory).free < 10 * 1024**3 + 3 * size:
             raise SeedError("seed_staging_storage_required", 409)
-        record.update(upload_sha256=sha256, upload_size=length)
+        path = None
+        if resume and offset:
+            if record.get("upload_sha256") != sha256 or record.get("upload_size") != size:
+                raise SeedError("seed_upload_retry_requires_same_archive", 409)
+            path, actual, prefix = _resume_partial(directory, record)
+            if actual != offset or prefix != prefix_sha256 or path is None:
+                raise SeedError("seed_upload_resume_offset_changed", 409)
+        elif resume and prefix_sha256 != hashlib.sha256(b"").hexdigest():
+            raise SeedError("seed_upload_resume_prefix_mismatch", 409)
+        record.update(upload_sha256=sha256, upload_size=size)
         _write(directory / "record.json", record)
-        path = directory / ("upload-" + uuid.uuid4().hex + ".partial")
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        if path is None:
+            path = directory / ("upload-" + uuid.uuid4().hex + ".partial")
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        else:
+            fd = os.open(_path(path), os.O_RDWR | os.O_NOFOLLOW)
         digest = hashlib.sha256()
         try:
-            with os.fdopen(fd, "wb") as destination:
+            with os.fdopen(fd, "r+b") as destination:
+                if resume and offset:
+                    while chunk := destination.read(1024 * 1024):
+                        digest.update(chunk)
+                    if destination.tell() != offset or digest.hexdigest() != prefix_sha256:
+                        raise SeedError("seed_upload_resume_offset_changed", 409)
                 remaining = length
-                while remaining:
-                    chunk = stream.read(min(remaining, 1024 * 1024))
-                    if not chunk:
-                        raise SeedError("incomplete_seed_upload")
-                    destination.write(chunk)
-                    digest.update(chunk)
-                    remaining -= len(chunk)
-                destination.flush()
-                os.fsync(destination.fileno())
+                read = getattr(stream, "read1", stream.read)
+                try:
+                    while remaining:
+                        chunk = read(min(remaining, 1024 * 1024))
+                        if not chunk:
+                            raise SeedError("incomplete_seed_upload")
+                        destination.write(chunk)
+                        digest.update(chunk)
+                        remaining -= len(chunk)
+                finally:
+                    destination.flush()
+                    os.fsync(destination.fileno())
             if digest.hexdigest() != sha256:
                 raise SeedError("seed_archive_hash_mismatch")
             from .onboarding_transfer import MAGIC
@@ -283,7 +361,7 @@ def upload(state_dir: str | Path, name: str, *, owner: str,
                 _, _, recipient_digest = _packet(directory, record)
                 record["transfer_recipient_sha256"] = recipient_digest
             os.link(path, directory / "source.archive")
-            record.update(phase="uploaded", archive_sha256=sha256, archive_size=length)
+            record.update(phase="uploaded", archive_sha256=sha256, archive_size=size)
         except (OSError, SeedError):
             record["phase"] = "attention-required"
             _write(directory / "record.json", record)

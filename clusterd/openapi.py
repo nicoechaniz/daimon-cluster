@@ -68,6 +68,12 @@ def _operation(route) -> dict:
     if route.body_format == "archive":
         parameters.append({"name": "X-Archive-SHA256", "in": "header", "required": True,
                            "schema": {"type": "string", "pattern": "^[0-9a-f]{64}$"}})
+        for name, description, schema in (
+                ("X-Archive-Offset", "Durable offset from GET the same path; send only remaining bytes.", {"type": "integer", "minimum": 0}),
+                ("X-Archive-Size", "Complete original archive size. Required together with offset and prefix checksum.", {"type": "integer", "minimum": 1}),
+                ("X-Archive-Prefix-SHA256", "SHA-256 of the exact local prefix through offset; must match the server.", {"type": "string", "pattern": "^[0-9a-f]{64}$"})):
+            parameters.append({"name": name, "in": "header", "required": False,
+                               "description": description, "schema": schema})
     if route.idempotency_required:
         parameters.append({
             "name": "Idempotency-Key",

@@ -15,6 +15,16 @@ from pathlib import Path
 
 CI_FILES = {'.github/workflows/tests.yml', 'README.md', 'tools/ci_scope.py',
             'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'}
+UPLOAD_FILES = {'clusterctl/being_seed.py', 'clusterd/seed_handlers.py',
+    'clusterd/seed_ui.py', 'clusterd/routes.py', 'clusterd/server.py',
+    'clusterd/handlers.py', 'clusterd/openapi.py', 'tests/test_being_seed.py',
+    'tools/resume_seed_upload.py'}
+UPLOAD_TESTS = ('tests/test_being_seed.py', 'tests/test_onboarding_transfer.py',
+    'tests/test_onboarding_input.py', 'tests/test_onboarding_intake.py',
+    'tests/test_onboarding_local_body.py', 'tests/test_clusterd.py',
+    'tests/test_auth.py', 'tests/test_human_approvals.py',
+    'tests/test_onboarding_release.py',
+    'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 ONBOARDING_FILES = {'clusterctl/being_seed.py', 'clusterctl/onboarding.py',
     'clusterd/seed_handlers.py', 'clusterd/seed_ui.py', 'scripts/being-seed',
     'tools/build_onboarding_code.py', 'tools/build_onboarding_sdk.py',
@@ -123,6 +133,12 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'clusterctl/being_seed.py', 'tests/test_being_seed.py'}
+            and set(changed) <= UPLOAD_FILES | CI_FILES
+            and all((root / path).is_file() for path in UPLOAD_TESTS)):
+        # Stream framing/resumption retains owner authorization, protected
+        # archive integrity and receiving intake; no runtime/custody changes.
+        return 'portal', list(UPLOAD_TESTS)
     if (set(changed) & {'clusterctl/onboarding_enrollment.py', 'tests/test_onboarding_existing.py'}
             and set(changed) <= ENROLLMENT_FILES | CI_FILES
             and all((root / path.split("::", 1)[0]).is_file() for path in ENROLLMENT_TESTS)):

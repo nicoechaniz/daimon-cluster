@@ -161,6 +161,84 @@ def test_failed_upload_preserves_partial_and_blocks_different_archive(tmp_path):
         seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(b"short"), length=5, sha256="0" * 64)
 
 
+def test_resume_uses_longest_legacy_partial_and_survives_another_interruption(tmp_path, packet):
+    raw, digest = packet[0].read_bytes(), packet[1]
+    seeds.create(tmp_path, {"name": "one", "label": "One", "mode": "import"}, owner="ani", key=KEY)
+    seeds.connections(tmp_path, "one", {"telegram_chat_id": 1234}, owner="ani")
+    directory = tmp_path / "being-seeds/one"
+    for count in (30, 10):
+        with pytest.raises(seeds.SeedError, match="incomplete"):
+            seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(raw[:count]), length=len(raw), sha256=digest)
+    connections = (directory / "connections.json").read_bytes()
+    progress = seeds.upload_progress(tmp_path, "one", owner="ani")
+    assert progress == dict(complete=False, offset=30, size=len(raw), sha256=digest,
+                           prefix_sha256=hashlib.sha256(raw[:30]).hexdigest())
+    with pytest.raises(seeds.SeedError, match="incomplete"):
+        seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(raw[30:50]),
+                     length=len(raw)-30, sha256=digest, offset=30, total=len(raw),
+                     prefix_sha256=progress["prefix_sha256"])
+    progress = seeds.upload_progress(tmp_path, "one", owner="ani")
+    assert progress["offset"] == 50
+    result = seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(raw[50:]),
+                          length=len(raw)-50, sha256=digest, offset=50, total=len(raw),
+                          prefix_sha256=progress["prefix_sha256"])
+    assert result["phase"] == "uploaded"
+    assert (directory / "source.archive").read_bytes() == raw
+    assert (directory / "connections.json").read_bytes() == connections
+    assert [p.read_bytes() for p in directory.glob("*.partial")] == [raw[:10]]
+    assert seeds.upload_progress(tmp_path, "one", owner="ani")["complete"] is True
+    assert seeds.discovery(tmp_path, "one", owner="ani")["schema"]
+
+
+@pytest.mark.parametrize("change", ["offset", "total", "prefix_sha256", "sha256"])
+def test_resume_refuses_changed_identity_or_stale_prefix_before_reading(tmp_path, change):
+    raw = b"a preserved original archive"
+    digest = hashlib.sha256(raw).hexdigest()
+    seeds.create(tmp_path, {"name": "one", "label": "One", "mode": "import"}, owner="ani", key=KEY)
+    with pytest.raises(seeds.SeedError):
+        seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(raw[:8]), length=len(raw), sha256=digest)
+    original = next((tmp_path / "being-seeds/one").glob("*.partial"))
+    args = dict(offset=8, total=len(raw), prefix_sha256=hashlib.sha256(raw[:8]).hexdigest(), sha256=digest)
+    args[change] = args[change]+1 if change in {"offset", "total"} else "0"*64
+    stream = io.BytesIO(raw[args["offset"]:])
+    with pytest.raises(seeds.SeedError):
+        seeds.upload(tmp_path, "one", owner="ani", stream=stream,
+                     length=args["total"]-args["offset"], **args)
+    assert stream.tell() == 0
+    assert original.read_bytes() == raw[:8]
+
+
+def test_resume_finalize_complete_partial_after_publication_failure(tmp_path, monkeypatch):
+    raw = b"complete bytes received before publication"
+    digest = hashlib.sha256(raw).hexdigest()
+    seeds.create(tmp_path, {"name": "one", "label": "One", "mode": "import"}, owner="ani", key=KEY)
+    link = seeds.os.link
+    def interrupted(*args):
+        raise OSError("publication interrupted")
+    monkeypatch.setattr(seeds.os, "link", interrupted)
+    with pytest.raises(OSError):
+        seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(raw), length=len(raw), sha256=digest)
+    progress = seeds.upload_progress(tmp_path, "one", owner="ani")
+    assert not progress["complete"] and progress["offset"] == len(raw)
+    monkeypatch.setattr(seeds.os, "link", link)
+    assert seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(b""), length=0,
+                        sha256=digest, offset=len(raw), total=len(raw), prefix_sha256=digest)["phase"] == "uploaded"
+
+
+def test_resume_full_checksum_mismatch_never_publishes(tmp_path):
+    raw = b"the same original bytes"
+    digest = hashlib.sha256(raw).hexdigest()
+    seeds.create(tmp_path, {"name": "one", "label": "One", "mode": "import"}, owner="ani", key=KEY)
+    with pytest.raises(seeds.SeedError):
+        seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(raw[:5]), length=len(raw), sha256=digest)
+    with pytest.raises(seeds.SeedError, match="hash_mismatch"):
+        seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(b"x"*(len(raw)-5)),
+                     length=len(raw)-5, sha256=digest, offset=5, total=len(raw),
+                     prefix_sha256=hashlib.sha256(raw[:5]).hexdigest())
+    assert not (tmp_path / "being-seeds/one/source.archive").exists()
+    assert seeds.upload_progress(tmp_path, "one", owner="ani")["offset"] == 0
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 def test_interrupted_upload_retry_preserves_partial_and_connections(tmp_path, packet, legacy):
     archive, digest = packet
@@ -281,6 +359,61 @@ def http_server(state):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_real_http_resume_client_owner_isolation_and_download(tmp_path, packet, monkeypatch, capsys):
+    from tools import resume_seed_upload as client
+    raw, digest = packet[0].read_bytes(), packet[1]
+    seeds.create(tmp_path, {"name": "one", "label": "One", "mode": "import"}, owner="ani", key=KEY)
+    with pytest.raises(seeds.SeedError):
+        seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(raw[:30]), length=len(raw), sha256=digest)
+    _, token = auth.create_token(tmp_path, actor="ani", scopes=["seed:write"], owner="ani", ttl_days=1)
+    with http_server(tmp_path) as (server, request):
+        path = "/v1/seeds/one/archive"
+        assert request(path, owner="sai")[0] == 404
+        assert request(path, owner="reader")[0] == 403
+        code, _, progress = request(path)
+        assert code == 200 and progress["offset"] == 30
+        directory = tmp_path / "being-seeds/one"
+        with seeds._locked(directory):
+            assert request(path)[0] == 409
+        assert request(path, "POST", raw[30:], extra={"X-Archive-SHA256": digest,
+                       "X-Archive-Offset": "30"})[0] == 400
+        connection = client.http.client.HTTPConnection
+        monkeypatch.setattr(client.http.client, "HTTPSConnection",
+                            lambda host, port, timeout: connection("127.0.0.1", server.server_address[1], timeout=timeout))
+        value = client.upload("https://fixture.invalid", "one", packet[0], digest, token)
+        assert value["phase"] == "uploaded"
+        assert (directory / "source.archive").read_bytes() == raw
+        assert client.upload("https://fixture.invalid", "one", packet[0], digest, token)["complete"]
+        output = capsys.readouterr().out
+        assert "Continuing from 30" in output and token not in output
+        code, _, download = request("/v1/onboarding/local-body/tools/resume_seed_upload.py")
+        assert code == 200 and "def upload(" in download
+
+
+def test_resume_client_rejects_local_prefix_disagreement(tmp_path, packet, monkeypatch):
+    from tools import resume_seed_upload as client
+    raw, digest = packet[0].read_bytes(), packet[1]
+    seeds.create(tmp_path, {"name": "one", "label": "One", "mode": "import"}, owner="ani", key=KEY)
+    with pytest.raises(seeds.SeedError):
+        seeds.upload(tmp_path, "one", owner="ani", stream=io.BytesIO(b"x"*30), length=len(raw), sha256=digest)
+    _, token = auth.create_token(tmp_path, actor="ani", scopes=["seed:write"], owner="ani", ttl_days=1)
+    with http_server(tmp_path) as (server, _):
+        connection = client.http.client.HTTPConnection
+        monkeypatch.setattr(client.http.client, "HTTPSConnection",
+                            lambda host, port, timeout: connection("127.0.0.1", server.server_address[1], timeout=timeout))
+        with pytest.raises(client.UploadError, match="prefix_disagrees_no_bytes_sent"):
+            client.upload("https://fixture.invalid", "one", packet[0], digest, token)
+    assert next((tmp_path / "being-seeds/one").glob("*.partial")).read_bytes() == b"x"*30
+
+
+def test_resume_guide_documents_exact_post_protocol_and_browser_remaining_slice():
+    from clusterd.seed_ui import SCRIPT, agent_guide, agent_markdown
+    resume = agent_guide()["requests"]["upload"]["resume"]
+    assert set(resume["headers"]) == {"X-Archive-Offset", "X-Archive-Size", "X-Archive-Prefix-SHA256"}
+    assert "resume instead of restarting from zero" in agent_markdown()
+    assert "file.slice(offset)" in SCRIPT and "body instanceof Blob" in SCRIPT
 
 
 def test_web_upload_full_workflow_owner_isolation_and_no_secret_echo(tmp_path, packet):

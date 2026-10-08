@@ -54,6 +54,8 @@ class HostConfig:
     runtime_digest: str | None = None
     peer: Path | None = None
     runtime_by_name: dict[str, tuple[Path, str]] | None = None
+    telegram_code: Path | None = None
+    telegram_digest: str | None = None
 
     @classmethod
     def load(cls, path: Path) -> HostConfig:
@@ -61,7 +63,8 @@ class HostConfig:
         consent_keys = {"consent_state", "consent_uid"}
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        telegram_keys = {"telegram_code", "telegram_digest"}
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -97,6 +100,18 @@ class HostConfig:
             onboarding_code_successor.verify(runtime_code, runtime_digest, code,
                                              value['release_digest'], uid=path.stat().st_uid)
         consent_state, consent_uid = None, None
+        telegram_code, telegram_digest = None, None
+        if telegram_keys & set(value):
+            if (not telegram_keys <= set(value) or not sha(value['telegram_digest'])
+                    or not isinstance(value['telegram_code'], str)
+                    or not Path(value['telegram_code']).is_absolute()):
+                raise OnboardingError('invalid_onboarding_host_configuration')
+            telegram_code, telegram_digest = Path(value['telegram_code']), value['telegram_digest']
+            onboarding_code_successor.verify(telegram_code, telegram_digest, code,
+                                             value['release_digest'], uid=path.stat().st_uid)
+            from .onboarding_telegram import artifact, COMMIT
+            if artifact(telegram_code, uid=path.stat().st_uid)['commit'] != COMMIT:
+                raise OnboardingError('qualified_telegram_successor_required')
         runtime_by_name = None
         if "runtime_by_name" in value:
             runtime_by_name = {}
@@ -133,6 +148,8 @@ class HostConfig:
             if runtime_code is not None:
                 boundaries.add(runtime_code)
             boundaries.update(row[0] for row in (runtime_by_name or {}).values())
+            if telegram_code is not None:
+                boundaries.add(telegram_code)
             if (any(path == other or path.is_relative_to(other) or other.is_relative_to(path)
                     for path in (custody, custody_grants) for other in boundaries)
                     or custody == custody_grants or custody.is_relative_to(custody_grants)
@@ -192,7 +209,7 @@ class HostConfig:
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -306,6 +323,10 @@ class HostBackend:
             from .onboarding_welcome import Welcome
             return Welcome(self).observe(plan)
         if stage == 'acceptance' and self.config.admission is not None:
+            if self.config.telegram_code is not None:
+                current_telegram = self._telegram_observation(plan)
+                if current_telegram.state != 'complete':
+                    return current_telegram
             from .onboarding_managed import ManagedRuntime
             from .onboarding_owner_client import OwnerClient
             managed = ManagedRuntime(self)
@@ -342,7 +363,9 @@ class HostBackend:
             supplied = self._telegram_connections(plan)
             if supplied is None:
                 return Observation('waiting', reason='connection_data_required')
-            if not self._mounted(plan, {'onboarding-connections': self._telegram_mount(plan)}):
+            _, base, _ = self._guest_paths(plan)
+            _, _, software_mounts = self._telegram_paths(plan, base)
+            if not self._mounted(plan, {'onboarding-connections': self._telegram_mount(plan), **software_mounts}):
                 return Observation('absent', safe_to_execute=True)
             value = self._telegram_command(plan, 'observe')
             if not value.get('configured') or not value.get('listening'):
@@ -394,6 +417,9 @@ class HostBackend:
             Welcome(self).execute(plan)
             return
         if stage == 'acceptance' and self.config.admission is not None:
+            if self.config.telegram_code is not None and self._telegram_observation(plan).state != 'complete':
+                self.upgrade_telegram(plan)
+                return
             from .onboarding_managed import ManagedRuntime
             from .onboarding_owner_client import OwnerClient
             managed = ManagedRuntime(self)
@@ -425,6 +451,7 @@ class HostBackend:
             from .onboarding_telegram import reserve
             reserve(self.config.jobs, plan, supplied)
             onboarding_mounts.prepare_connections(self.config.views, plan, supplied)
+            self._attach_telegram(plan)
             mount = self._telegram_mount(plan)
             if not self._mounted(plan, {'onboarding-connections': mount}):
                 self._dispatch(plan, ['config', 'device', 'add', self.instance(plan), 'onboarding-connections', 'disk',
@@ -556,18 +583,61 @@ class HostBackend:
     def _telegram_command(self, plan: dict, action: str) -> dict:
         if self._environment(plan).state != 'complete':
             raise OnboardingError('qualified_guest_environment_required')
-        _, code, mounts = self._guest_paths(plan)
+        _, base, mounts = self._guest_paths(plan)
+        code, software_args, software_mounts = self._telegram_paths(plan, base)
+        mounts.update(software_mounts)
         mounts['onboarding-connections'] = self._telegram_mount(plan)
         if not self._mounted(plan, mounts):
             raise OnboardingError('qualified_guest_environment_required')
         launcher = ('import sys;sys.path.insert(0,sys.argv.pop(1));'
                     'from clusterctl.onboarding_telegram import main;raise SystemExit(main())')
-        identity = [] if action in {'install', 'observe', 'native-install'} else ['--user', '1000', '--group', '1000', '--env', 'HOME=/home/agent']
+        identity = [] if action in {'install', 'observe', 'native-install', 'upgrade'} else ['--user', '1000', '--group', '1000', '--env', 'HOME=/home/agent']
         value = json.loads(self._dispatch(plan, ['exec', self.instance(plan), *identity, '--', 'python3', '-B', '-I',
-            '-c', launcher, str(code), action, '--code', str(code), '--plan', '/home/agent/.onboarding-input/plan.json']))
+            '-c', launcher, str(code), action, '--code', str(base), *software_args, '--plan', '/home/agent/.onboarding-input/plan.json']))
         if (not isinstance(value, dict) or action != 'probe' and value.get('plan_digest') != digest(plan)):
             raise OnboardingError('invalid_onboarding_observation')
         return value
+
+    def _telegram_paths(self, plan: dict, base: Path) -> tuple[Path, list[str], dict]:
+        if self.config.telegram_code is None and self.config.telegram_digest is None:
+            return base, [], {}
+        if self.config.code is None or self.config.telegram_code is None or self.config.telegram_digest is None:
+            raise OnboardingError('qualified_telegram_successor_required')
+        fingerprint = self.config.telegram_digest
+        onboarding_code_successor.verify(self.config.telegram_code, fingerprint,
+            self.config.code, plan['release_digest'], uid=os.geteuid())
+        code = Path('/opt/daimon-onboarding-telegram') / fingerprint
+        mount = dict(type='disk', source=str(self.config.telegram_code), path=str(code), readonly='true', shift='true')
+        return code, ['--runtime-code', str(code), '--runtime-digest', fingerprint], {
+            'telegram-' + fingerprint[:54]: mount}
+
+    def _attach_telegram(self, plan: dict) -> None:
+        _, base, _ = self._guest_paths(plan)
+        _, _, mounts = self._telegram_paths(plan, base)
+        if not self._mounted(plan, mounts):
+            for name, mount in mounts.items():
+                self._dispatch(plan, ['config', 'device', 'add', self.instance(plan), name, 'disk',
+                    *[key + '=' + value for key, value in mount.items() if key != 'type']])
+
+    def _telegram_observation(self, plan: dict) -> Observation:
+        _, base, _ = self._guest_paths(plan)
+        _, _, mounts = self._telegram_paths(plan, base)
+        if not self._mounted(plan, mounts):
+            return Observation('absent', safe_to_execute=True)
+        value = self._telegram_command(plan, 'observe')
+        if value.get('upgrade_waiting'):
+            return Observation('waiting', reason='telegram_idle_required')
+        if not value.get('listening'):
+            return Observation('absent', safe_to_execute=True)
+        return Observation('complete', dict(verified=True, telegram_ready=True))
+
+    def upgrade_telegram(self, plan: dict) -> dict:
+        """Explicit selected software only; no native daemon or Matrix restart."""
+        if self.config.telegram_code is None:
+            raise OnboardingError('qualified_telegram_successor_required')
+        self._attach_telegram(plan)
+        self._telegram_probe(plan)
+        return self._telegram_command(plan, 'upgrade')
 
     def _telegram_probe(self, plan: dict) -> None:
         from .onboarding_release import verify
@@ -815,9 +885,12 @@ class HostBackend:
 
     def _sdk_successor(self, plan: dict) -> bool:
         runtime_code, _ = self._runtime_selection(plan)
-        return (runtime_code is not None and json.loads(onboarding_release.regular(
-            runtime_code / onboarding_code_successor.MARKER, uid=os.geteuid()))['schema']
-            == onboarding_code_successor.SDK_SCHEMA)
+        if runtime_code is None:
+            return False
+        marker = json.loads(onboarding_release.regular(
+            runtime_code / onboarding_code_successor.MARKER, uid=os.geteuid()))
+        return marker['schema'] == onboarding_code_successor.SDK_SCHEMA or (
+            marker['schema'] == onboarding_code_successor.TELEGRAM_SCHEMA and 'sdk_digest' in marker)
 
     def _dispatch(self, plan: dict, argv: list[str]) -> str:
         # A revoked plan stops before the next concrete effect, including

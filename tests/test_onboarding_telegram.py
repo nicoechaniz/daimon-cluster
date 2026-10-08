@@ -1,5 +1,8 @@
 """Dedicated listener defaults and preservation before any live bot consumer."""
 import json
+import os
+import sqlite3
+from contextlib import closing
 import tomllib
 from pathlib import Path
 
@@ -139,3 +142,127 @@ def test_native_supervisor_reconciles_singleton_without_model_or_message_command
     with pytest.raises(OnboardingError, match='native_codex_daemon_start_failed'):
         native_serve(Path('/home/agent'), Path('/usr/local/bin/codex'),
                      run=lambda *a, **k: SimpleNamespace(returncode=1), wait=waits.append, cycles=1)
+
+
+def upgrade_fixture(tmp_path):
+    from types import SimpleNamespace
+    home = tmp_path / 'home'
+    state = home / '.local/state/daimon-onboarding/telegram'
+    state.mkdir(mode=0o700, parents=True)
+    database = state / 'telegram.sqlite3'
+    connection = sqlite3.connect(database)
+    connection.executescript('CREATE TABLE sessions(id INTEGER PRIMARY KEY,busy INTEGER, codex_thread_id TEXT);'
+                            'CREATE TABLE turns(status TEXT);'
+                            'CREATE TABLE incoming_updates(update_id INTEGER PRIMARY KEY,status TEXT);'
+                            'CREATE TABLE bot_state(key TEXT PRIMARY KEY,value TEXT);'
+                            "INSERT INTO sessions VALUES(1,0,'preserved-native-thread');"
+                            "INSERT INTO turns VALUES('completed');"
+                            "INSERT INTO incoming_updates VALUES(1,'completed');"
+                            "INSERT INTO bot_state VALUES('offset','2');")
+    connection.commit()
+    connection.close()
+    database.chmod(0o600)
+    base, new, codex = tmp_path / 'old-code', tmp_path / 'new-code', Path('/usr/bin/codex')
+    directory = tmp_path / 'units'
+    directory.mkdir(mode=0o755)
+    unit = directory / 'daimon-onboarding-telegram.service'
+    unit.write_bytes(service(home, base, codex))
+    unit.chmod(0o644)
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0)
+    args = dict(directory=directory, journal_root=tmp_path / 'journal', owner_uid=os.geteuid(), run=run)
+    return home, base, new, codex, database, unit, calls, args
+
+
+def test_idle_upgrade_preserves_bindings_input_journal_and_verified_sqlite_backup(tmp_path):
+    from clusterctl.onboarding_telegram import UNIT, upgrade
+    from clusterctl.onboarding import digest
+    home, base, new, codex, database, unit, calls, args = upgrade_fixture(tmp_path)
+    original = database.read_bytes()
+    result = upgrade(home, base, new, codex, plan(), **args)
+    assert result['upgraded'] and result['database_restored'] is False
+    assert database.read_bytes() == original
+    assert unit.read_bytes() == service(home, new, codex)
+    assert calls == [['systemctl', 'stop', UNIT], ['systemctl', 'daemon-reload'], ['systemctl', 'start', UNIT]]
+    backup = args['journal_root'] / (digest(plan()) + '.sqlite3')
+    with closing(sqlite3.connect(backup)) as restored, restored:
+        assert restored.execute('PRAGMA quick_check').fetchone() == ('ok',)
+        assert restored.execute('SELECT codex_thread_id FROM sessions').fetchone() == ('preserved-native-thread',)
+        assert restored.execute('SELECT value FROM bot_state').fetchone() == ('2',)
+    assert backup.stat().st_mode & 0o077 == 0
+    # An idempotent retry and recovery after unit publication never use backup
+    # contents to rewind subsequent accepted inputs or their polling offset.
+    with closing(sqlite3.connect(database)) as current, current:
+        current.execute("INSERT INTO incoming_updates VALUES(2,'received')")
+        current.execute("UPDATE bot_state SET value='3'")
+    assert upgrade(home, base, new, codex, plan(), **args)['upgraded']
+    with closing(sqlite3.connect(database)) as current, current:
+        assert current.execute('SELECT count(*) FROM incoming_updates').fetchone() == (2,)
+        assert current.execute('SELECT value FROM bot_state').fetchone() == ('3',)
+    assert all('daimon-onboarding-codex.service' not in argv for argv in calls)
+
+
+def test_busy_turn_waits_without_stopping_consumer_or_changing_unit(tmp_path):
+    from clusterctl.onboarding_telegram import upgrade
+    home, base, new, codex, database, unit, calls, args = upgrade_fixture(tmp_path)
+    original = unit.read_bytes()
+    with closing(sqlite3.connect(database)) as current, current:
+        current.execute('UPDATE sessions SET busy=1')
+    result = upgrade(home, base, new, codex, plan(), **args)
+    assert result['upgrade_waiting'] and not result['upgraded']
+    assert not calls and unit.read_bytes() == original
+
+
+def test_verified_backup_includes_committed_wal_without_changing_original_writers_files(tmp_path):
+    from clusterctl.onboarding_telegram import upgrade
+    from clusterctl.onboarding import digest
+    home, base, new, codex, database, _, _, args = upgrade_fixture(tmp_path)
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute('PRAGMA journal_mode=WAL')
+        connection.execute('PRAGMA wal_autocheckpoint=0')
+        connection.execute("INSERT INTO incoming_updates VALUES(2,'received')")
+        connection.execute("UPDATE bot_state SET value='3'")
+        connection.commit()
+        wal = database.with_name(database.name + '-wal')
+        original_db, original_wal = database.read_bytes(), wal.read_bytes()
+        assert upgrade(home, base, new, codex, plan(), **args)['upgraded']
+        assert database.read_bytes() == original_db and wal.read_bytes() == original_wal
+        backup = args['journal_root'] / (digest(plan()) + '.sqlite3')
+        with closing(sqlite3.connect(backup)) as saved:
+            assert saved.execute('SELECT count(*) FROM incoming_updates').fetchone() == (2,)
+            assert saved.execute('SELECT value FROM bot_state').fetchone() == ('3',)
+    finally:
+        connection.close()
+
+
+def test_failed_new_consumer_rolls_back_software_preserving_newly_accepted_input(tmp_path):
+    from types import SimpleNamespace
+    from clusterctl.onboarding_telegram import UNIT, upgrade
+    home, base, new, codex, database, unit, calls, args = upgrade_fixture(tmp_path)
+    original = unit.read_bytes()
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ['systemctl', 'start', UNIT] and unit.read_bytes() != original:
+            with closing(sqlite3.connect(database)) as current, current:
+                current.execute("INSERT INTO incoming_updates VALUES(2,'undetermined')")
+                current.execute("UPDATE bot_state SET value='3'")
+            return SimpleNamespace(returncode=1)
+        return SimpleNamespace(returncode=0)
+    with pytest.raises(OnboardingError, match='telegram_service_failed'):
+        upgrade(home, base, new, codex, plan(), **{**args, 'run': run})
+    assert unit.read_bytes() == original
+    with closing(sqlite3.connect(database)) as current, current:
+        assert current.execute('SELECT count(*) FROM incoming_updates').fetchone() == (2,)
+        assert current.execute('SELECT value FROM bot_state').fetchone() == ('3',)
+
+
+def test_foreign_unit_is_preserved_before_any_upgrade_effect(tmp_path):
+    from clusterctl.onboarding_telegram import upgrade
+    home, base, new, codex, _, unit, calls, args = upgrade_fixture(tmp_path)
+    unit.write_bytes(b'An unrelated receiving service.')
+    with pytest.raises(OnboardingError, match='existing_telegram_service_preserved'):
+        upgrade(home, base, new, codex, plan(), **args)
+    assert unit.read_bytes() == b'An unrelated receiving service.' and not calls

@@ -17,6 +17,7 @@ from .onboarding import OnboardingError, digest
 
 SCHEMA = 'cluster-onboarding-runtime-successor/v1'
 SDK_SCHEMA = 'cluster-onboarding-runtime-successor/v2'
+TELEGRAM_SCHEMA = 'cluster-onboarding-runtime-successor/v3'
 MARKER = 'runtime-successor.json'
 
 
@@ -25,7 +26,8 @@ def verify(code: Path, fingerprint: str, base: Path, base_fingerprint: str, *, u
     successor = onboarding_release.verify(code, fingerprint, uid=uid)
     marker = json.loads(onboarding_release.regular(code / MARKER, uid=uid))
     ordinary = dict(schema=SCHEMA, base_release_digest=base_fingerprint)
-    sdk_change = marker.get('schema') == SDK_SCHEMA
+    telegram_change = marker.get('schema') == TELEGRAM_SCHEMA
+    sdk_change = marker.get('schema') == SDK_SCHEMA or telegram_change and 'sdk_digest' in marker
     if sdk_change:
         from . import onboarding_sdk
         previous = onboarding_sdk.verify(base, uid=uid,
@@ -35,6 +37,14 @@ def verify(code: Path, fingerprint: str, base: Path, base_fingerprint: str, *, u
             previous_sdk_digest=digest(previous), sdk_digest=digest(current))
     else:
         expected = ordinary
+    if telegram_change:
+        from . import onboarding_telegram
+        previous_telegram = onboarding_telegram.artifact(base, uid=uid)
+        current_telegram = onboarding_telegram.artifact(code, uid=uid)
+        if current_telegram['commit'] != onboarding_telegram.COMMIT or previous_telegram == current_telegram:
+            raise OnboardingError('qualified_telegram_successor_required')
+        expected.update(schema=TELEGRAM_SCHEMA,
+            previous_telegram_digest=digest(previous_telegram), telegram_digest=digest(current_telegram))
     if (code.absolute() == base.absolute() or fingerprint == base_fingerprint
             or marker != expected or original['profile'] != successor['profile']):
         raise OnboardingError('compatible_onboarding_runtime_successor_required')
@@ -45,10 +55,12 @@ def verify(code: Path, fingerprint: str, base: Path, base_fingerprint: str, *, u
     def sdk(name: str) -> bool:
         return sdk_change and (name in {'sdk/sdk.json', 'sdk/requirements.txt'}
             or re.fullmatch(r'sdk/wheels/[A-Za-z0-9_.+-]+\.whl', name) is not None)
+    def telegram(name: str) -> bool:
+        return telegram_change and name in {'telegram/telecodex', 'telegram/artifact.json'}
     if (not {name for name in before if not sdk(name)} <= set(after)
             or any(after.get(name) != checksum for name, checksum in before.items()
-                   if not module(name) and not sdk(name))
-            or any(name not in before and name != MARKER and not module(name) and not sdk(name) for name in after)):
+                   if not module(name) and not sdk(name) and not telegram(name))
+            or any(name not in before and name != MARKER and not module(name) and not sdk(name) and not telegram(name) for name in after)):
         raise OnboardingError('original_onboarding_context_preserved')
     return successor
 
@@ -73,7 +85,7 @@ def selection(code: Path | None, fingerprint: str | None, base: Path, base_finge
 
 
 def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, ...], output: Path,
-          *, sdk: Path | None = None) -> dict:
+          *, sdk: Path | None = None, telegram: Path | None = None) -> dict:
     """Capture a code-only successor; never read receiving home or custody."""
     from . import being_seed
     from tools.build_onboarding_code import copy_code, capture_peer_tool
@@ -88,6 +100,15 @@ def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, .
         current = onboarding_sdk.verify(sdk.parent, uid=os.geteuid())
         marker = dict(schema=SDK_SCHEMA, base_release_digest=base_fingerprint,
             previous_sdk_digest=digest(previous), sdk_digest=digest(current))
+    if telegram is not None:
+        from . import onboarding_telegram
+        # Validate before creating output; no receiving home or token is read.
+        previous_telegram = onboarding_telegram.artifact(base, uid=os.geteuid())
+        current_telegram = onboarding_telegram.artifact_directory(telegram, uid=os.geteuid())
+        if current_telegram['commit'] != onboarding_telegram.COMMIT or current_telegram == previous_telegram:
+            raise OnboardingError('qualified_telegram_successor_required')
+        marker.update(schema=TELEGRAM_SCHEMA, previous_telegram_digest=digest(previous_telegram),
+                      telegram_digest=digest(current_telegram))
     being_seed._path(output)
     if (output.exists() or output.is_symlink() or output.is_relative_to(base)
             or base.is_relative_to(output)):
@@ -97,6 +118,8 @@ def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, .
         raise OnboardingError('qualified_onboarding_runtime_required')
     output.mkdir(mode=0o755)
     replaced = {'clusterctl/' + name for name in modules}
+    if telegram is not None:
+        replaced.update({'telegram/telecodex', 'telegram/artifact.json'})
     if 'onboarding_peer.py' in modules:
         replaced.add('clusterctl/onboarding_peer_native.py')
     for row in original['files']:
@@ -111,6 +134,9 @@ def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, .
         for path in sorted(sdk.rglob('*')):
             if path.is_file():
                 copy_code(path, output / 'sdk' / path.relative_to(sdk))
+    if telegram is not None:
+        for name in ('telecodex', 'artifact.json'):
+            copy_code(telegram / name, output / 'telegram' / name)
     (output / MARKER).write_text(json.dumps(marker, sort_keys=True))
     (output / MARKER).chmod(0o644)
     for directory in output.rglob('*'):

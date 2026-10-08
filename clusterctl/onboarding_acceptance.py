@@ -575,6 +575,43 @@ class SSHLogins(Progress):
         return value
 
 
+def cli_admission_guard(home, owner):
+    """Hold the receiving user's SQLite writer lock until admission stops."""
+    import json
+    import os
+    import select
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    database = Path(home) / '.local/state/daimon-onboarding/telegram/telegram.sqlite3'
+    program = ('import sqlite3,json,sys;'
+        'c=sqlite3.connect(sys.argv[1],timeout=20);c.execute("BEGIN IMMEDIATE");'
+        'idle=c.execute("SELECT COUNT(*) FROM sessions WHERE busy!=0").fetchone()[0]==0 '
+        'and c.execute("SELECT COUNT(*) FROM turns WHERE status=\'running\'").fetchone()[0]==0;'
+        'print(json.dumps({"idle":idle}),flush=True);sys.stdin.buffer.read(1);c.rollback();c.close()')
+    process = subprocess.Popen([sys.executable, '-B', '-I', '-c', program, str(database)],
+        user=owner, group=owner, extra_groups=[] if os.geteuid() == 0 else None, umask=0o077,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        if not select.select([process.stdout], [], [], 30)[0]:
+            raise ValueError('cli_admission_lock_unavailable')
+        value = json.loads(process.stdout.readline())
+        if set(value) != {'idle'} or type(value['idle']) is not bool:
+            raise ValueError('cli_admission_lock_unavailable')
+        yield value['idle']
+    finally:
+        if process.stdin is not None:
+            process.stdin.close()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+        if process.stdout is not None:
+            process.stdout.close()
+
+
 def cli_resume_probe(home, plan, thread, model, reasoning, runner=None,
                      journal_root=None, unit_root=None, codex_path=None):
     """One bounded CLI resume; keep history, offsets and uncertain output.
@@ -594,6 +631,7 @@ def cli_resume_probe(home, plan, thread, model, reasoning, runner=None,
     import sys
     import uuid
     from pathlib import Path
+    from contextlib import contextmanager
 
     run = runner or subprocess.run
     coordinator = os.geteuid()
@@ -712,9 +750,21 @@ def cli_resume_probe(home, plan, thread, model, reasoning, runner=None,
                 if not metadata()['idle']:
                     return {'verified': False, 'waiting': True}
                 system('is-active', names)
-                # Stop input admission first, then recheck the turn race.
-                stopped = True
-                system('stop', names[:1])
+                # Native Telegram marks busy before provider dispatch. Hold its
+                # writer lock while stopping admission so no new turn can start
+                # between the idle observation and service shutdown.
+                if runner is None:
+                    admission = contextmanager(cli_admission_guard)(home, owner)
+                else:
+                    @contextmanager
+                    def fixture_admission():
+                        yield metadata()['idle']
+                    admission = fixture_admission()
+                with admission as idle:
+                    if not idle:
+                        return {'verified': False, 'waiting': True}
+                    stopped = True
+                    system('stop', names[:1])
                 information = metadata()
                 if not information['idle']:
                     return {'verified': False, 'waiting': True}
@@ -938,7 +988,7 @@ class HostedChecks:
         from .onboarding_release import verify
         settings = verify(profile, plan['release_digest'], uid=os.geteuid())['profile']
         thread = request['native']['sessions'][0]['codex_thread_id']
-        program = ('import json,sys;\n' + inspect.getsource(cli_resume_probe)
+        program = ('import json,sys;\n' + inspect.getsource(cli_admission_guard) + '\n' + inspect.getsource(cli_resume_probe)
             + '\np=json.loads(sys.argv[1]);print(json.dumps(cli_resume_probe("/home/agent",'
             + 'p["plan"],p["thread"],p["model"],p["reasoning"])))')
         payload = {'plan': plan, 'thread': thread, 'model': settings['model'], 'reasoning': settings['reasoning']}

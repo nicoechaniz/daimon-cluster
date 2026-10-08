@@ -8,7 +8,7 @@ import os
 import sqlite3
 import subprocess
 import sys
-from contextlib import closing
+from contextlib import closing, contextmanager
 import time
 import uuid
 from types import SimpleNamespace
@@ -103,6 +103,29 @@ def test_empty_native_ssh_journal_is_missing_proof_and_command_errors_are_not_ac
     assert not (progress / 'eko.ssh-login.json').exists()
 
 
+def test_native_cli_admission_lock_prevents_turn_start_and_releases_without_row_changes(tmp_path):
+    database = tmp_path / '.local/state/daimon-onboarding/telegram/telegram.sqlite3'
+    database.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.executescript('CREATE TABLE sessions(busy INTEGER);INSERT INTO sessions VALUES(0);'
+            'CREATE TABLE turns(status TEXT);')
+    guard = contextmanager(checks.cli_admission_guard)
+    with guard(tmp_path, os.geteuid()) as idle:
+        assert idle is True
+        with closing(sqlite3.connect(database, timeout=0)) as competing:
+            with pytest.raises(sqlite3.OperationalError, match='locked'):
+                competing.execute('UPDATE sessions SET busy=1')
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute('SELECT busy FROM sessions').fetchone() == (0,)
+        connection.execute('UPDATE sessions SET busy=1')
+        connection.commit()
+    with guard(tmp_path, os.geteuid()) as idle:
+        assert idle is False
+    with closing(sqlite3.connect(database, timeout=0)) as connection:
+        connection.execute('UPDATE sessions SET busy=0')
+        connection.commit()
+
+
 def cli_fixture(tmp_path):
     home = tmp_path / 'home'
     history = home / '.codex/sessions/selected.jsonl'
@@ -119,7 +142,7 @@ def cli_fixture(tmp_path):
         (units / name).write_bytes(b'qualified dedicated unit\n')
         (units / name).chmod(0o644)
     thread = str(uuid.uuid4())
-    options = {'idle': [True, True], 'output': 'complete', 'lost_ack': False, 'changed_history': False, 'changed_unit': False}
+    options = {'idle': [True, True, True], 'output': 'complete', 'lost_ack': False, 'changed_history': False, 'changed_unit': False}
     calls = []
 
     def runner(argv, **kwargs):

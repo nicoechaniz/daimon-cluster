@@ -97,7 +97,9 @@ if payload['install']:
  opened=os.fstat(descriptor)
  assert (opened.st_dev,opened.st_ino)==(info.st_dev,info.st_ino)
  config=ClientConfig.load(runtime/'client.json',read_capability_key(descriptor))
- _,response=LocalClient(runtime/'matrix.sock',config).runtime_status()
+ # Match the rendered native owner's bounded daemon response window.
+ # A five-second observation timeout does not prove that this body stopped.
+ _,response=LocalClient(runtime/'matrix.sock',config,timeout_seconds=40).runtime_status()
  assert response.get('ok') is True
  current=response['result']
  assert current['being_ref']==payload['being_ref'] and current['integrity']=='ok'
@@ -107,7 +109,7 @@ if payload['install']:
   from daimon_matrix.messaging_config import protected_read
   peer=ClientConfig.load(Path(chat['application'])/'client.json',protected_read(Path(chat['application'])/'client.key',size=32))
   assert peer.expected_server==config.expected_server and peer.runtime_id==config.runtime_id
-  _,response=LocalClient(Path(chat['socket']),peer).invoke('messaging.send',{})
+  _,response=LocalClient(Path(chat['socket']),peer,timeout_seconds=40).invoke('messaging.send',{})
   assert response.get('error',{}).get('code')=='invalid_params'
   import argparse,types
   installer=types.ModuleType('qualified_agent_chat_installer')

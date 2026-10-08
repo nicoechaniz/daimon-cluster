@@ -8,7 +8,9 @@ inside the receiving home. No inbox, offline runtime or provider is opened.
 from __future__ import annotations
 
 import json
-from . import onboarding_sdk
+import hashlib
+from pathlib import Path
+from . import onboarding_release, onboarding_sdk
 from .onboarding import Observation, OnboardingError, digest, validate_plan
 
 # This maintained program runs as the receiving owner, using the already
@@ -27,7 +29,7 @@ def directory(path,create=False):
  if create and not path.exists():path.mkdir(mode=0o700)
  info=path.lstat()
  assert stat.S_ISDIR(info.st_mode) and info.st_uid==os.geteuid() and not info.st_mode&0o022
-def check(path,raw,mode):
+def check(path,raw,mode,previous=None):
  directory(path.parent)
  try:info=path.lstat()
  except FileNotFoundError:return False
@@ -37,18 +39,29 @@ def check(path,raw,mode):
  with os.fdopen(descriptor,'rb') as source:
   opened=os.fstat(source.fileno())
   assert (opened.st_dev,opened.st_ino)==(info.st_dev,info.st_ino)
-  assert source.read(len(raw)+1)==raw
+  actual=source.read(max(len(raw),len(previous or b''))+1)
+  if actual!=raw:
+   assert previous is not None and actual==previous
+   return False
  return True
-def publish(path,raw,mode):
+def publish(path,raw,mode,previous=None):
  directory(path.parent,True)
- if check(path,raw,mode):return
+ if check(path,raw,mode,previous):return
+ replacing=path.exists()
+ if replacing:
+  assert previous is not None
+  backup=root/'owner-client'/('previous-'+hashlib.sha256(previous).hexdigest())
+  publish(backup,previous,mode)
  import uuid
  temporary=path.parent/('.owner-client-'+uuid.uuid4().hex)
  descriptor=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,mode)
  try:
   with os.fdopen(descriptor,'wb') as output:
    os.fchmod(output.fileno(),mode);output.write(raw);output.flush();os.fsync(output.fileno())
-  os.link(temporary,path,follow_symlinks=False)
+  if replacing:
+   assert not check(path,raw,mode,previous)
+   os.replace(temporary,path)
+  else:os.link(temporary,path,follow_symlinks=False)
   descriptor=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
   try:os.fsync(descriptor)
   finally:os.close(descriptor)
@@ -65,9 +78,14 @@ binding=dict(schema='cluster-onboarding-owner-client/v1',plan_digest=payload['pl
              instructions_sha256=hashlib.sha256(payload['instructions'].encode()).hexdigest())
 artifacts=[(script,raw,0o700),(instructions,payload['instructions'].encode(),0o600),
            (receipt,json.dumps(binding,sort_keys=True).encode(),0o600)]
+legacy=payload.get('legacy_instructions')
+predecessors=[None,None,None]
+if legacy is not None:
+ old_binding={**binding,'instructions_sha256':hashlib.sha256(legacy.encode()).hexdigest()}
+ predecessors=[None,legacy.encode(),json.dumps(old_binding,sort_keys=True).encode()]
 present=[]
-for path,data,mode in artifacts:
- try:present.append(check(path,data,mode))
+for (path,data,mode),previous in zip(artifacts,predecessors):
+ try:present.append(check(path,data,mode,previous))
  except FileNotFoundError:present.append(False)
 if payload['install']:
  from daimon_matrix.client import ClientConfig,LocalClient,read_capability_key
@@ -84,7 +102,21 @@ if payload['install']:
  current=response['result']
  assert current['being_ref']==payload['being_ref'] and current['integrity']=='ok'
  assert all(current['local_origin'].get(key)==value for key,value in payload['origin'].items())
- for path,data,mode in artifacts[:2]:publish(path,data,mode)
+ chat=payload.get('chat')
+ if chat is not None:
+  from daimon_matrix.messaging_config import protected_read
+  peer=ClientConfig.load(Path(chat['application'])/'client.json',protected_read(Path(chat['application'])/'client.key',size=32))
+  assert peer.expected_server==config.expected_server and peer.runtime_id==config.runtime_id
+  _,response=LocalClient(Path(chat['socket']),peer).invoke('messaging.send',{})
+  assert response.get('error',{}).get('code')=='invalid_params'
+  import argparse,types
+  installer=types.ModuleType('qualified_agent_chat_installer')
+  assert hashlib.sha256(chat['installer'].encode()).hexdigest()==chat['installer_sha256']
+  exec(compile(chat['installer'],'<qualified-agent-chat-installer>','exec'),installer.__dict__)
+  installer.install(argparse.Namespace(attachment=Path(chat['attachment']),socket=Path(chat['socket']),
+   client_config=Path(chat['application'])/'client.json',client_key=Path(chat['application'])/'client.key',
+   incoming=['peer-in'],outgoing=['peer-out'],hermes_home=None,skills_dir=None))
+ for (path,data,mode),previous in zip(artifacts[:2],predecessors[:2]):publish(path,data,mode,previous)
 elif not all(present):
  print(json.dumps(dict(installed=False)));raise SystemExit(0)
 result=subprocess.run([sys.executable,'-B','-I',str(script),'status'],capture_output=True,
@@ -94,7 +126,41 @@ status=json.loads(result.stdout)
 assert status['being_ref']==payload['being_ref']
 assert all(status['local_origin'].get(key)==value for key,value in payload['origin'].items())
 assert status['integrity']=='ok'
-if payload['install']:publish(*artifacts[2])
+chat=payload.get('chat')
+if chat is not None:
+ from daimon_matrix.agent_chat import load_binding,bridge
+ from daimon_matrix.messaging_config import protected_read
+ attachment=Path(chat['attachment'])
+ if not all((attachment/name).exists() for name in ('binding.json','connection.json')) or (not payload['install'] and not (attachment/'installation.json').exists()):
+  print(json.dumps(dict(installed=False)));raise SystemExit(0)
+ candidate=load_binding(attachment/'binding.json')
+ assert candidate==dict(schema='dm.agent-chat.binding/v1',socket=chat['socket'],
+  client_config=str(Path(chat['application'])/'client.json'),client_key=str(Path(chat['application'])/'client.key'),
+  request_dir=str(attachment/'requests'),incoming_channels=['peer-in'],outgoing_channels=['peer-out'])
+ peer=bridge(candidate).client
+ from daimon_matrix.client import ClientConfig
+ native=ClientConfig.load(root/'runtime/client.json',bytearray(protected_read(root/'runtime/client.key',size=32)))
+ assert peer.config.expected_server==native.expected_server and peer.config.runtime_id==native.runtime_id
+ connection=json.loads(protected_read(attachment/'connection.json'))
+ assert connection['command']==[sys.executable,'-I','-m','daimon_matrix.agent_chat','--binding',str(attachment/'binding.json')]
+ assert connection['incoming_channels']==['peer-in']
+ from daimon_matrix.mcp_server import MESSAGING_TOOL_CONTRACTS
+ tools={tool['name']:tool for tool in connection['tools']}
+ assert set(tools)=={'messaging_channels',*MESSAGING_TOOL_CONTRACTS}
+ for name,(_,schema,_) in MESSAGING_TOOL_CONTRACTS.items():assert tools[name]['parameters']==schema
+ if payload['install']:
+  chat_receipt=dict(schema='cluster-onboarding-chat-attachment/v1',plan_digest=payload['plan_digest'],
+   origin=payload['origin'],being_ref=payload['being_ref'],installer_sha256=chat['installer_sha256'],
+   binding_sha256=hashlib.sha256(protected_read(attachment/'binding.json')).hexdigest(),
+   connection_sha256=hashlib.sha256(protected_read(attachment/'connection.json')).hexdigest())
+  publish(attachment/'installation.json',json.dumps(chat_receipt,sort_keys=True).encode(),0o600)
+ else:
+  saved=json.loads(protected_read(attachment/'installation.json'))
+  assert saved==dict(schema='cluster-onboarding-chat-attachment/v1',plan_digest=payload['plan_digest'],
+   origin=payload['origin'],being_ref=payload['being_ref'],installer_sha256=chat['installer_sha256'],
+   binding_sha256=hashlib.sha256(protected_read(attachment/'binding.json')).hexdigest(),
+   connection_sha256=hashlib.sha256(protected_read(attachment/'connection.json')).hexdigest())
+if payload['install']:publish(*artifacts[2],predecessors[2])
 print(json.dumps(dict(installed=True,plan_digest=payload['plan_digest'],
                      origin=payload['origin'],being_ref=payload['being_ref'])))
 """
@@ -150,7 +216,7 @@ class OwnerClient:
             "Reading does not authorize replying. Require observed receipts for delivery claims.\n"
             "Distinct beings remain distinct; /we refers to your own embodiments.\n"
         )
-        return dict(
+        payload = dict(
             home="/home/agent",
             state_relative=relative,
             prog=prog,
@@ -163,6 +229,43 @@ class OwnerClient:
             runtime_code=str(runtime_code),
             install=install,
         )
+        if self.host.config.peer is not None:
+            from .onboarding_peer_host import PeerHost
+
+            selected = PeerHost(self.host).application(plan)
+            if selected is None:
+                raise OnboardingError("backend_unavailable")
+            application, _ = selected
+            installer = (
+                Path(__file__).resolve().parents[1]
+                / "support/matrix-agent-chat/install_agent_chat.py"
+            )
+            raw = onboarding_release.regular(installer, uid=0)
+            expected_sha = (
+                "033aa63716b292c333e237fd055ba0743a539823917889fcf19ee9be99243465"
+            )
+            if hashlib.sha256(raw).hexdigest() != expected_sha:
+                raise OnboardingError("qualified_native_peer_tool_required")
+            attachment = application.removesuffix("/application") + "/owner-client"
+            payload["chat"] = dict(
+                application=application,
+                attachment=attachment,
+                socket="/home/agent/" + relative + "/runtime/peer.sock",
+                installer=raw.decode(),
+                installer_sha256=expected_sha,
+            )
+            payload["legacy_instructions"] = instructions
+            payload["instructions"] += (
+                "\n# Native Matrix messaging\n\n"
+                f"The body-local connection is {attachment}/connection.json.\n"
+                "Read its command argv and append channels or call messaging_send, messaging_reply,\n"
+                "messaging_delivery or messaging_inbox only for the current human request.\n"
+                "Pass JSON parameters on stdin; preserve exact send_id and parameters across retries.\n"
+                "Configured peer-in and peer-out reach the approved Source relation; require native receipts.\n"
+                "Use the existing signed application and mandatory visibility. No direct Telegram fallback.\n"
+                "This manual helper starts no daemon, inbox polling, MCP service or model turn.\n"
+            )
+        return payload
 
     def _call(self, plan: dict, expected: dict, *, install: bool) -> bool:
         payload = self._payload(plan, expected, install=install)

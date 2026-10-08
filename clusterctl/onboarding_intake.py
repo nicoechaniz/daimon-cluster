@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -88,6 +90,32 @@ class Intake:
         if (record.get('schema') != being_seed.SCHEMA or record.get('name') != name
                 or record.get('created_by') != entry['owner']):
             raise OnboardingError('onboarding_job_not_found')
+        resume_marker = (record.get('phase') in {'preparing', 'attention-required'}
+            and (directory / 'received/preparation.json').exists())
+        if ((record.get('phase') == 'uploaded' or resume_marker)
+                and (directory / 'preparation-request.json').exists()):
+            # Root never decrypts or installs participant context as the intake
+            # owner. Drop privileges for the maintained receiving tool, then
+            # independently capture/verify the resulting frozen input below.
+            permissions = {}
+            if config.consent_uid != os.geteuid():
+                if os.geteuid() != 0:
+                    raise OnboardingError('private_onboarding_consent_required')
+                permissions = dict(user=config.consent_uid,
+                    group=config.consent_state.stat().st_gid, extra_groups=(), umask=0o077)
+            launcher = ('import sys; sys.path.insert(0,sys.argv[1]); '
+                'from clusterctl.being_seed import process_preparation; '
+                'process_preparation(sys.argv[2],sys.argv[3],owner=sys.argv[4])')
+            try:
+                result = subprocess.run([sys.executable, '-B', '-I', '-c', launcher,
+                    str(Path(__file__).resolve().parents[1]), str(config.consent_state),
+                    name, entry['owner']], capture_output=True, timeout=660, **permissions)
+            except subprocess.TimeoutExpired:
+                raise OnboardingError('onboarding_host_operation_failed') from None
+            if result.returncode:
+                raise OnboardingError('onboarding_host_operation_failed')
+            record = json.loads(onboarding_release.regular(record_path,
+                uid=config.consent_uid, limit=65536))
         if record.get('phase') != 'prepared':
             return None
         # Serialize intake-to-plan publication separately from job dispatch.

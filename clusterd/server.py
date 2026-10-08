@@ -318,7 +318,13 @@ class ClusterdHandler(BaseHTTPRequestHandler):
                     cl = int(self.headers.get("Content-Length", 0))
                 except ValueError:
                     cl = -1
-                if not 0 <= cl < 65536 or self.headers.get("Transfer-Encoding"):
+                # Large receiving selections contain only owner-reviewed
+                # archive paths. Keep every other JSON endpoint's old bound.
+                json_limit = 65536
+                if route.handler == "prepare_seed":
+                    from clusterctl.being_seed import MAX_SELECTION
+                    json_limit = MAX_SELECTION
+                if not 0 <= cl < json_limit or self.headers.get("Transfer-Encoding"):
                     self.close_connection = True
                     self._respond(ctx, handlers.Response(413, {"error": "bounded_json_body_required"}))
                     return

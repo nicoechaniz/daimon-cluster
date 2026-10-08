@@ -74,6 +74,23 @@ OWNER_CLIENT_FILES = {'clusterctl/onboarding_owner_client.py', 'clusterctl/onboa
 OWNER_CLIENT_TESTS = (*WELCOME_TESTS, *PEER_TESTS, 'tests/test_onboarding_owner_client.py',
                       'tests/test_onboarding_target.py', 'tests/test_onboarding_runtime.py',
                       'tests/test_onboarding_sdk.py', 'tests/test_onboarding_peer.py')
+HOSTED_CHECK_FILES = PORTAL_FILES | {'clusterctl/onboarding_acceptance.py',
+    'clusterctl/onboarding.py', 'clusterctl/onboarding_host.py', 'clusterctl/cli.py',
+    'tests/test_onboarding_acceptance.py', 'tests/test_being_seed.py'}
+HOSTED_CHECK_TESTS = (*PORTAL_TESTS, 'tests/test_onboarding_acceptance.py',
+    'tests/test_onboarding.py', 'tests/test_onboarding_host.py',
+    'tests/test_onboarding_owner_client.py', 'tests/test_onboarding_worker_install.py',
+    'tests/test_onboarding_progress.py', 'tests/test_onboarding_host_ownership.py')
+
+TRANSFER_FILES = HOSTED_CHECK_FILES | EXPORT_FILES | {
+    'clusterctl/onboarding_transfer.py', 'clusterctl/onboarding_input.py', 'clusterctl/onboarding_release.py',
+    'tests/test_onboarding_transfer.py', 'tests/test_onboarding_release.py',
+    'support/being-seed-tools/tools/receive_being.py',
+    'support/being-seed-tools/tools/protected_being.py',
+    'tools/build_onboarding_code.py'}
+TRANSFER_TESTS = tuple(sorted(set(HOSTED_CHECK_TESTS) | set(EXPORT_TESTS) | {
+    'tests/test_onboarding_transfer.py', 'tests/test_onboarding_intake.py',
+    'tests/test_onboarding_code_successor.py'}))
 
 
 def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
@@ -81,6 +98,20 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'clusterctl/onboarding_transfer.py', 'tests/test_onboarding_transfer.py'}
+            and set(changed) <= TRANSFER_FILES | CI_FILES
+            and all((root / path).is_file() for path in TRANSFER_TESTS)):
+        # Recipient and authenticated archive boundaries retain real receiving,
+        # host input/plan, retry, native-owner and HTTP authorization contracts.
+        # SDK/dependency/custody changes cannot select this narrow profile.
+        return 'portal', list(TRANSFER_TESTS)
+    if (set(changed) & {'clusterctl/onboarding_acceptance.py', 'tests/test_onboarding_acceptance.py'}
+            and set(changed) <= HOSTED_CHECK_FILES | CI_FILES
+            and all((root / path).is_file() for path in HOSTED_CHECK_TESTS)):
+        # Read-only hosted metadata and owner witnesses retain the exact native
+        # owner-client prerequisite, job/retry and HTTP isolation contracts.
+        # Guest SDK, custody and dependency changes still require wider coverage.
+        return 'portal', sorted(set(HOSTED_CHECK_TESTS))
     if (set(changed) & {'clusterctl/onboarding_owner_client.py', 'tests/test_onboarding_owner_client.py'}
             and set(changed) <= OWNER_CLIENT_FILES | CI_FILES
             and all((root / path).is_file() for path in OWNER_CLIENT_TESTS)):

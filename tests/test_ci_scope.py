@@ -6,6 +6,35 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_hosted_witness_keeps_native_prerequisite_job_retry_and_owner_http_scope(tmp_path):
+    changed = ['clusterctl/onboarding_acceptance.py', 'clusterctl/onboarding_host.py',
+        'clusterctl/onboarding.py', 'clusterctl/cli.py', 'clusterd/routes.py',
+        'clusterd/seed_handlers.py', 'clusterd/handlers.py', 'clusterd/seed_ui.py',
+        'tests/test_onboarding_acceptance.py', 'tests/test_being_seed.py', 'tools/check_rc_types.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'portal'
+    assert {'tests/test_onboarding.py', 'tests/test_onboarding_acceptance.py',
+        'tests/test_onboarding_worker_install.py', 'tests/test_onboarding_progress.py',
+        'tests/test_onboarding_owner_client.py', 'tests/test_auth.py',
+        'tests/test_clusterd.py', 'tests/test_human_approvals.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])
+
+
+def test_protected_transfer_keeps_auth_actual_crypto_receiving_and_host_retry_scope(tmp_path):
+    from tools.ci_scope import TRANSFER_FILES
+    changed = sorted(TRANSFER_FILES)
+    profile, tests = select(changed, ROOT)
+    assert profile == 'portal'
+    assert {'tests/test_onboarding_transfer.py', 'tests/test_being_seed.py',
+        'tests/test_onboarding_input.py', 'tests/test_onboarding_intake.py',
+        'tests/test_onboarding_release.py', 'tests/test_onboarding_guest.py',
+        'tests/test_auth.py', 'tests/test_clusterd.py',
+        'tests/test_onboarding_owner_client.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])
+
+
 def test_owner_client_keeps_native_authority_and_context_without_unchanged_sdk_rebuild(tmp_path):
     changed = ['clusterctl/onboarding_owner_client.py', 'clusterctl/onboarding_host.py',
                'tests/test_onboarding_owner_client.py', 'tools/check_rc_types.py', 'tools/ci_scope.py',

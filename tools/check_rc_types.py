@@ -59,6 +59,8 @@ FILES = (
     "clusterctl/onboarding_peer_host.py",
     "clusterctl/onboarding_source.py",
     "clusterctl/onboarding_local_body.py",
+    "clusterctl/onboarding_acceptance.py",
+    "clusterctl/onboarding_transfer.py",
     "clusterctl/onboarding_guest.py",
     "clusterctl/onboarding_mounts.py",
     "clusterctl/onboarding_qualification.py",

@@ -99,7 +99,12 @@ def verify(root: Path, expected: str, *, uid: int) -> dict:
     paths = {row["path"] for row in value["files"]}
     required = {"inheritance.md", "hmk/scripts/memoryctl.py", "hmk/scripts/native_records.py"}
     required.update("skills/" + name + "/SKILL.md" for name in value["profile"]["skills"])
-    required.update("support/being-seed-tools/tools/" + name for name in being_seed.TOOL_HASHES)
+    # Qualified older contexts retain their captured ordinary archive tools.
+    # The current host's tool table must not invalidate their frozen digest.
+    required.update("support/being-seed-tools/tools/" + name for name in (
+        "export_being.py", "receive_being.py", "install_codex_identity.py"))
+    if "clusterctl/onboarding_transfer.py" in paths:
+        required.add("support/being-seed-tools/tools/protected_being.py")
     if not required <= paths:
         raise OnboardingError("receiving_release_incomplete")
     return value

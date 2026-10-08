@@ -24,7 +24,7 @@ REASONS = frozenset({
     "host_authorization_required", "capacity_required", "connection_data_required",
     "identity_authorization_required", "account_authorization_required",
     "human_contact_required", "uncertain_external_effect", "observed_state_conflict",
-    "backend_unavailable", "verification_failed", "existing_identity_conflict",
+    "backend_unavailable", "verification_failed", "existing_identity_conflict", "hosted_checks_required",
 })
 FACTS = frozenset({
     "verified", "root_gib", "home_gib", "memory_stores", "memory_chapters", "skills",

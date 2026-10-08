@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import stat
+import tempfile
 import uuid
 from pathlib import Path, PurePosixPath
 
@@ -87,6 +88,42 @@ def inventory(root: Path, *, uid: int) -> list[dict]:
     return rows
 
 
+def verify_received_archive(received: Path, copied: Path, report: dict, source_uid: int) -> None:
+    """The worker verifies actual cipher/key integrity, never a report marker."""
+    transport = report.get('protected_transport')
+    if transport is None:
+        being_seed.tool('export_being', ['verify', '--archive', str(copied / 'source.archive'),
+                                       '--sha256', report['archive_sha256']])
+        return
+    from . import onboarding_release, onboarding_transfer
+    tool = onboarding_transfer.protection()
+    source = being_seed._path(received.parent / 'transfer')
+    info = source.stat()
+    if not source.is_dir() or info.st_uid != source_uid or info.st_mode & 0o077:
+        raise OnboardingError('private_transfer_directory_required')
+    packet = tool.validate_recipient(json.loads(onboarding_release.regular(
+        source / 'recipient.json', uid=source_uid, limit=65536)), check_expiry=False)
+    if (not isinstance(transport, dict)
+            or transport.get('recipient_digest') != tool.fingerprint(packet)
+            or owned_digest(copied / 'source.archive', uid=os.geteuid())[0] != report['archive_sha256']):
+        raise OnboardingError('protected_onboarding_input_mismatch')
+    # The intake transport key is not Matrix custody. Copy only this bounded
+    # key to ephemeral worker-private verification, never into guest context.
+    with tempfile.TemporaryDirectory(prefix='.verify-transfer-', dir=copied.parent) as name:
+        temporary = Path(name)
+        private = temporary / 'private.key'
+        _, size = owned_digest(source / 'private.key', uid=source_uid, copy=private)
+        if size != 32:
+            raise OnboardingError('private_transfer_key_required')
+        opened = temporary / 'plaintext.archive'
+        proof = tool.open_archive(copied / 'source.archive', opened, packet, private)
+        if (any(transport.get(key) != value for key, value in proof.items())
+                or owned_digest(copied / 'plaintext.archive', uid=os.geteuid())[0] != proof['plaintext_sha256']):
+            raise OnboardingError('protected_onboarding_input_mismatch')
+        being_seed.tool('export_being', ['verify', '--archive', str(opened),
+                                       '--sha256', proof['plaintext_sha256']])
+
+
 def capture(received: Path, destination: Path, *, source_uid: int, resume: bool = False) -> dict:
     """Freeze immutable prepared bytes; optional recovery never replaces files."""
     before = inventory(received, uid=source_uid)
@@ -143,8 +180,7 @@ def capture(received: Path, destination: Path, *, source_uid: int, resume: bool 
                 os.close(descriptor)
         if inventory(received, uid=source_uid) != before or inventory(target, uid=os.geteuid()) != before:
             raise OnboardingError('onboarding_input_changed')
-        being_seed.tool('export_being', ['verify', '--archive', str(target / 'source.archive'),
-                                       '--sha256', report['archive_sha256']])
+        verify_received_archive(received, target, report, source_uid)
         new_bytes(destination / 'manifest.json', raw)
         descriptor = os.open(destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:

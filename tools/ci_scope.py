@@ -83,7 +83,8 @@ HOSTED_CHECK_TESTS = (*PORTAL_TESTS, 'tests/test_onboarding_acceptance.py',
     'tests/test_onboarding_progress.py', 'tests/test_onboarding_host_ownership.py')
 
 TRANSFER_FILES = HOSTED_CHECK_FILES | EXPORT_FILES | {
-    'clusterctl/onboarding_transfer.py', 'clusterctl/onboarding_input.py', 'tests/test_onboarding_transfer.py',
+    'clusterctl/onboarding_transfer.py', 'clusterctl/onboarding_input.py', 'clusterctl/onboarding_release.py',
+    'tests/test_onboarding_transfer.py', 'tests/test_onboarding_release.py',
     'support/being-seed-tools/tools/receive_being.py',
     'support/being-seed-tools/tools/protected_being.py',
     'tools/build_onboarding_code.py'}

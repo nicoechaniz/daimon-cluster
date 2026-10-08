@@ -12,6 +12,28 @@ from clusterctl.onboarding import OnboardingError
 from tools import build_onboarding_code as builder
 
 
+def test_qualified_ordinary_context_remains_valid_after_host_transfer_upgrade(tmp_path):
+    from tests.test_onboarding_code_successor import fixture
+    base, _, _, selected = fixture(tmp_path)
+    (base / 'release.json').unlink()
+    (base / 'support/being-seed-tools/tools/protected_being.py').unlink()
+    frozen = onboarding_release.seal(base, selected)
+    original = {p.relative_to(base).as_posix(): p.read_bytes()
+                for p in base.rglob('*') if p.is_file()}
+    assert onboarding_release.verify(base, frozen, uid=os.geteuid())['profile'] == selected
+    assert {p.relative_to(base).as_posix(): p.read_bytes()
+            for p in base.rglob('*') if p.is_file()} == original
+    # A context that actually captures the new transfer implementation must
+    # carry its exact protected helper too, even when separately resealed.
+    transfer = base / 'clusterctl/onboarding_transfer.py'
+    transfer.write_text('# Synthetic transfer fixture.\n')
+    transfer.chmod(0o644)
+    (base / 'release.json').unlink()
+    upgraded = onboarding_release.seal(base, selected)
+    with pytest.raises(OnboardingError, match='receiving_release_incomplete'):
+        onboarding_release.verify(base, upgraded, uid=os.geteuid())
+
+
 def test_builder_captures_mutable_code_but_publishes_qualified_read_only_artifact(tmp_path, monkeypatch):
     archive = io.BytesIO()
     with tarfile.open(fileobj=archive, mode='w') as stream:

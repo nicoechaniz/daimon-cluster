@@ -7,7 +7,11 @@ import json
 import os
 import re
 import shutil
+import sqlite3
+import stat
 import subprocess
+import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -18,12 +22,37 @@ from .onboarding import OnboardingError, digest, validate_plan
 from .onboarding_guest import mkdir_chain, new_bytes
 from .onboarding_service import publish
 
-COMMIT = '5af79bdf0716dadf92ae982bfbeafdf2eb21f6a9'
-ARCHIVE = '6ab8a38ec08274eeb036c40632ffbeb6dc8b5d14d385d7d5de4a8428a3fcd9b5'
-BINARY = 'e29bff3da0682e4c8f37ae75c9a724f5c0f3be6238063f14d86eb1123fd2e620'
+PREVIOUS_COMMIT = '5af79bdf0716dadf92ae982bfbeafdf2eb21f6a9'
+PREVIOUS_ARCHIVE = '6ab8a38ec08274eeb036c40632ffbeb6dc8b5d14d385d7d5de4a8428a3fcd9b5'
+PREVIOUS_BINARY = 'e29bff3da0682e4c8f37ae75c9a724f5c0f3be6238063f14d86eb1123fd2e620'
+COMMIT = 'ee5f8837ab51da99034fcd4285b0c7916c96651f'
+ARCHIVE = 'f586c9ace3fd91aaded87859e1d37c5a8dd71749777c8264a2cdcf0f76ece06b'
+BINARY = 'deb7aa777e75f7b8865f8a2060f7cd0d138aa5ce1fe1da0feee470530bbdafcc'
 SCHEMA = 'cluster-onboarding-telegram/v1'
 UNIT = 'daimon-onboarding-telegram.service'
 NATIVE_UNIT = 'daimon-onboarding-codex.service'
+
+
+def artifact(code: Path, *, uid: int) -> dict:
+    return artifact_directory(code / 'telegram', uid=uid)
+
+
+def artifact_directory(directory: Path, *, uid: int) -> dict:
+    """Only explicitly qualified text binaries; labels never select software."""
+    value = json.loads(onboarding_release.regular(directory / 'artifact.json', uid=uid, limit=65536))
+    if not isinstance(value, dict):
+        raise OnboardingError('qualified_telegram_binary_required')
+    value = dict(value)
+    if 'rust' in value and 'rust_toolchain' not in value:
+        value['rust_toolchain'] = value.pop('rust')
+    common = dict(rust_toolchain='1.95.0', features='--no-default-features')
+    qualified = [dict(commit=c, archive_sha256=a, binary_sha256=b, **common) for c, a, b in (
+        (PREVIOUS_COMMIT, PREVIOUS_ARCHIVE, PREVIOUS_BINARY), (COMMIT, ARCHIVE, BINARY))]
+    binary = directory / 'telecodex'
+    if (value not in qualified or binary.stat().st_mode & 0o111 != 0o111
+            or hashlib.sha256(onboarding_release.regular(binary, uid=uid)).hexdigest() != value['binary_sha256']):
+        raise OnboardingError('qualified_telegram_binary_required')
+    return value
 
 
 def connections(value: object) -> dict:
@@ -173,10 +202,197 @@ def reserve(root: Path, plan: dict, supplied: dict) -> None:
             being_seed._write(path, record)
 
 
+def idle(database: Path, *, uid: int) -> bool:
+    """Read operational activity only, never message text or native history."""
+    being_seed._path(database)
+    info = database.stat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != uid
+            or info.st_mode & 0o077 or info.st_nlink != 1):
+        raise OnboardingError('private_telegram_database_required')
+    for suffix in ('-wal', '-shm'):
+        path = database.with_name(database.name + suffix)
+        if path.exists():
+            being_seed._path(path)
+            info = path.stat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != uid or info.st_mode & 0o077:
+                raise OnboardingError('private_telegram_database_required')
+    if os.geteuid() != uid:
+        # The database owner also owns SQLite's operational SHM read marks.
+        script = ("import sqlite3,sys,json;from pathlib import Path;"
+                  "c=sqlite3.connect(Path(sys.argv[1]).as_uri()+'?mode=ro',uri=True,timeout=5);"
+                  "v=c.execute('SELECT count(*) FROM sessions WHERE busy != 0').fetchone()[0]==0 "
+                  "and c.execute(\"SELECT count(*) FROM turns WHERE status='running'\").fetchone()[0]==0;"
+                  "c.close();print(json.dumps(v))")
+        result = subprocess.run([sys.executable, '-B', '-I', '-c', script, str(database)],
+            user=uid, group=database.stat().st_gid, capture_output=True, text=True, timeout=15, check=False)
+        if result.returncode or result.stdout.strip() not in {'true', 'false'}:
+            raise OnboardingError('telegram_activity_requires_attention')
+        return result.stdout.strip() == 'true'
+    connection = sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=5)
+    try:
+        return (connection.execute('SELECT count(*) FROM sessions WHERE busy != 0').fetchone()[0] == 0
+                and connection.execute("SELECT count(*) FROM turns WHERE status='running'").fetchone()[0] == 0)
+    finally:
+        connection.close()
+
+
+def upgrade(home: Path, base: Path, code: Path, codex: Path, plan: dict, *,
+            directory: Path = Path('/etc/systemd/system'),
+            journal_root: Path = Path('/var/lib/daimon-onboarding-telegram-upgrade'),
+            owner_uid: int = 1000, run=subprocess.run) -> dict:
+    """One idle consumer; back up SQLite but never roll back accepted inputs."""
+    from .onboarding import private_directory
+    private_directory(journal_root, create=True)
+    with being_seed._locked(journal_root):
+        return _upgrade(home, base, code, codex, plan, directory=directory,
+                        journal_root=journal_root, owner_uid=owner_uid, run=run)
+
+
+def _upgrade(home: Path, base: Path, code: Path, codex: Path, plan: dict, *,
+             directory: Path, journal_root: Path, owner_uid: int, run) -> dict:
+    validate_plan(plan)
+    if code == base:
+        raise OnboardingError('qualified_telegram_successor_required')
+    unit = directory / UNIT
+    old, new = service(home, base, codex), service(home, code, codex)
+    current = onboarding_release.regular(unit, uid=os.geteuid(), limit=65536)
+    if current not in (old, new):
+        raise OnboardingError('existing_telegram_service_preserved')
+    database = home / '.local/state/daimon-onboarding/telegram/telegram.sqlite3'
+    transaction = journal_root / (digest(plan) + '.json')
+    binding = dict(schema='cluster-onboarding-telegram-upgrade/v1', plan_digest=digest(plan),
+                   before_sha256=hashlib.sha256(old).hexdigest(), after_sha256=hashlib.sha256(new).hexdigest())
+    record = being_seed._read(transaction) if transaction.exists() else None
+    if record is not None and any(record.get(k) != v for k, v in binding.items()):
+        raise OnboardingError('existing_telegram_upgrade_preserved')
+    def command(argv):
+        result = run(['systemctl', *argv], capture_output=True, text=True, timeout=40, check=False)
+        if result.returncode:
+            raise OnboardingError('telegram_service_failed')
+    if current == new:
+        # Recover a crash after publication, with the current DB untouched.
+        command(['daemon-reload'])
+        command(['start', UNIT])
+        if record is not None:
+            being_seed._write(transaction, {**binding, 'phase': 'active'})
+        return dict(plan_digest=digest(plan), upgraded=True, database_restored=False)
+    if not idle(database, uid=owner_uid):
+        return dict(plan_digest=digest(plan), upgraded=False, upgrade_waiting=True)
+    being_seed._write(transaction, {**binding, 'phase': 'prepared'})
+    command(['stop', UNIT])
+    if not idle(database, uid=owner_uid):
+        command(['start', UNIT])
+        return dict(plan_digest=digest(plan), upgraded=False, upgrade_waiting=True)
+    def replace(before, after):
+        if onboarding_release.regular(unit, uid=os.geteuid(), limit=65536) != before:
+            raise OnboardingError('existing_telegram_service_preserved')
+        import uuid
+        temporary = unit.with_name('.telegram-upgrade-' + uuid.uuid4().hex)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        try:
+            with os.fdopen(fd, 'wb') as output:
+                os.fchmod(output.fileno(), 0o644)
+                output.write(after)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, unit)
+            parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(parent)
+            finally:
+                os.close(parent)
+        finally:
+            temporary.unlink(missing_ok=True)
+    try:
+        backup = journal_root / (digest(plan) + '.sqlite3')
+        if not backup.exists():
+            # SQLite's readonly connection may write SHM read marks. Copy the
+            # stopped consumer's DB and journals before the backup API; never
+            # create root-owned sidecars in the receiving user's runtime.
+            with tempfile.TemporaryDirectory(prefix='.telegram-backup-', dir=journal_root) as scratch:
+                snapshot = Path(scratch) / 'source.sqlite3'
+                observed = {}
+                for suffix in ('', '-wal', '-shm'):
+                    original = database.with_name(database.name + suffix)
+                    if not original.exists():
+                        continue
+                    being_seed._path(original)
+                    fd = os.open(original, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    with os.fdopen(fd, 'rb') as incoming:
+                        info = os.fstat(incoming.fileno())
+                        if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner_uid
+                                or info.st_mode & 0o077 or info.st_nlink != 1):
+                            raise OnboardingError('private_telegram_database_required')
+                        copied = snapshot.with_name(snapshot.name + suffix)
+                        with copied.open('xb') as output:
+                            shutil.copyfileobj(incoming, output)
+                        copied.chmod(0o600)
+                        observed[original] = (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                for original, before in observed.items():
+                    info = original.stat()
+                    if before != (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns):
+                        raise OnboardingError('telegram_snapshot_changed')
+                pending = Path(scratch) / 'verified.sqlite3'
+                source = sqlite3.connect(snapshot.as_uri() + '?mode=ro', uri=True, timeout=5)
+                target = sqlite3.connect(pending)
+                try:
+                    source.backup(target)
+                    if target.execute('PRAGMA quick_check').fetchone() != ('ok',):
+                        raise OnboardingError('verified_telegram_backup_required')
+                finally:
+                    source.close()
+                    target.close()
+                pending.chmod(0o600)
+                fd = os.open(pending, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                if backup.exists():
+                    raise OnboardingError('existing_telegram_upgrade_preserved')
+                os.replace(pending, backup)
+                parent = os.open(journal_root, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(parent)
+                finally:
+                    os.close(parent)
+        being_seed._path(backup)
+        info = backup.stat()
+        if info.st_uid != os.geteuid() or info.st_mode & 0o077 or info.st_nlink != 1:
+            raise OnboardingError('verified_telegram_backup_required')
+        check = sqlite3.connect(backup.as_uri() + '?mode=ro', uri=True)
+        try:
+            if check.execute('PRAGMA quick_check').fetchone() != ('ok',):
+                raise OnboardingError('verified_telegram_backup_required')
+        finally:
+            check.close()
+        being_seed._write(transaction, {**binding, 'phase': 'backed-up'})
+        replace(old, new)
+        being_seed._write(transaction, {**binding, 'phase': 'published'})
+        command(['daemon-reload'])
+        command(['start', UNIT])
+        being_seed._write(transaction, {**binding, 'phase': 'active'})
+    except BaseException:
+        # Software rollback never restores the DB, WAL, thread map or offset.
+        current = onboarding_release.regular(unit, uid=os.geteuid(), limit=65536)
+        if current not in (old, new):
+            raise OnboardingError('existing_telegram_service_preserved')
+        if current == new:
+            command(['stop', UNIT])
+            replace(new, old)
+        command(['daemon-reload'])
+        command(['start', UNIT])
+        being_seed._write(transaction, {**binding, 'phase': 'rolled-back'})
+        raise
+    return dict(plan_digest=digest(plan), upgraded=True, database_restored=False)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('prepare', 'install', 'observe', 'probe', 'native-install', 'native-serve'))
+    parser.add_argument('action', choices=('prepare', 'install', 'observe', 'probe', 'native-install', 'native-serve', 'upgrade'))
     parser.add_argument('--code', type=Path, required=True)
+    parser.add_argument('--runtime-code', type=Path)
+    parser.add_argument('--runtime-digest')
     parser.add_argument('--plan', type=Path, required=True)
     args = parser.parse_args(argv)
     try:
@@ -189,10 +405,13 @@ def main(argv=None) -> int:
         if args.code != Path('/opt/daimon-onboarding') / plan['release_digest']:
             raise OnboardingError('qualified_guest_telegram_required')
         release = onboarding_release.verify(args.code, plan['release_digest'], uid=0)
-        binary = args.code / 'telegram/telecodex'
-        raw = onboarding_release.regular(binary, uid=0)
-        if hashlib.sha256(raw).hexdigest() != BINARY or binary.stat().st_mode & 0o111 != 0o111:
-            raise OnboardingError('qualified_telegram_binary_required')
+        from . import onboarding_code_successor
+        code = onboarding_code_successor.selection(args.runtime_code, args.runtime_digest,
+            args.code, plan['release_digest'], uid=0)
+        if args.runtime_digest is not None and code != Path('/opt/daimon-onboarding-telegram') / args.runtime_digest:
+            raise OnboardingError('qualified_telegram_successor_required')
+        artifact(code, uid=0)
+        binary = code / 'telegram/telecodex'
         home = Path('/home/agent')
         state = home / '.local/state/daimon-onboarding/telegram'
         codex_path = shutil.which('codex', path='/usr/local/bin:/usr/bin:/bin')
@@ -206,7 +425,7 @@ def main(argv=None) -> int:
             supplied = json.loads(onboarding_release.regular(incoming, uid=1000, limit=65536))
             if incoming.stat().st_mode & 0o077:
                 raise OnboardingError('private_telegram_connections_required')
-            value = prepare(home, args.code, codex, plan, release['profile'], supplied)
+            value = prepare(home, code, codex, plan, release['profile'], supplied)
         elif args.action == 'native-serve':
             if os.geteuid() != 1000:
                 raise OnboardingError('qualified_guest_telegram_required')
@@ -255,7 +474,18 @@ def main(argv=None) -> int:
                         or hashlib.sha256(token).hexdigest() != binding['token_sha256']):
                     raise OnboardingError('existing_telegram_binding_preserved')
                 unit = Path('/etc/systemd/system') / UNIT
-                unit_bytes = service(home, args.code, codex)
+                unit_bytes = service(home, code, codex)
+                previous_unit = service(home, args.code, codex)
+                current_unit = onboarding_release.regular(unit, uid=0) if unit.exists() else None
+                if args.action == 'upgrade':
+                    value = upgrade(home, args.code, code, codex, plan)
+                    print(json.dumps(value))
+                    return 0
+                if current_unit == previous_unit and code != args.code:
+                    value = dict(configured=True, listening=False, plan_digest=digest(plan),
+                                 upgrade_required=True, upgrade_waiting=not idle(state / 'telegram.sqlite3', uid=1000))
+                    print(json.dumps(value))
+                    return 0
                 if args.action == 'install':
                     publish(unit, unit_bytes)
                     for command in (['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', UNIT]):

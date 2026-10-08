@@ -199,3 +199,14 @@ def test_resumable_upload_keeps_http_auth_and_integrity_without_runtime_recovery
     assert 'tests/test_onboarding_existing.py' not in tests
     assert select(changed, tmp_path) == ('full', ['tests'])
     assert select(changed + ['clusterctl/onboarding_target.py'], ROOT) == ('full', ['tests'])
+
+
+def test_telegram_upgrade_covers_native_binding_idle_database_and_receiving_mounts(tmp_path):
+    from tools.ci_scope import TELEGRAM_FILES
+    changed = sorted(TELEGRAM_FILES)
+    profile, tests = select(changed, ROOT)
+    assert profile == 'portal'
+    assert {'tests/test_onboarding_telegram.py', 'tests/test_onboarding_code_successor.py',
+            'tests/test_onboarding_host.py', 'tests/test_onboarding_intake.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])

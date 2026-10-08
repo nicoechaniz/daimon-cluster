@@ -50,6 +50,94 @@ def test_runtime_successor_preserves_original_code_and_context_bytes(tmp_path):
     assert (output / 'clusterctl/onboarding_target.py').read_bytes() == b'Updated runtime.'
 
 
+def telegram_fixture(tmp_path, monkeypatch):
+    from clusterctl import onboarding_telegram as telegram
+    import hashlib
+    base, _, source, profile = fixture(tmp_path)
+    old, new = b'original fixture consumer', b'qualified fixture consumer'
+    monkeypatch.setattr(telegram, 'PREVIOUS_BINARY', hashlib.sha256(old).hexdigest())
+    monkeypatch.setattr(telegram, 'BINARY', hashlib.sha256(new).hexdigest())
+    (base / 'telegram/telecodex').write_bytes(old)
+    (base / 'telegram/telecodex').chmod(0o755)
+    previous = dict(commit=telegram.PREVIOUS_COMMIT, archive_sha256=telegram.PREVIOUS_ARCHIVE,
+                    binary_sha256=telegram.PREVIOUS_BINARY, rust='1.95.0', features='--no-default-features')
+    (base / 'telegram/artifact.json').write_text(json.dumps(previous))
+    (base / 'telegram/artifact.json').chmod(0o644)
+    (base / 'release.json').unlink()
+    fingerprint = onboarding_release.seal(base, profile)
+    candidate = tmp_path / 'qualified-telegram'
+    candidate.mkdir(mode=0o755)
+    (candidate / 'telecodex').write_bytes(new)
+    (candidate / 'telecodex').chmod(0o755)
+    (candidate / 'artifact.json').write_text(json.dumps(dict(commit=telegram.COMMIT,
+        archive_sha256=telegram.ARCHIVE, binary_sha256=telegram.BINARY,
+        rust_toolchain='1.95.0', features='--no-default-features')))
+    (candidate / 'artifact.json').chmod(0o644)
+    return base, fingerprint, source, profile, candidate
+
+
+def test_qualified_telegram_successor_changes_only_explicit_software(tmp_path, monkeypatch):
+    from clusterctl import onboarding_telegram as telegram
+    base, original, source, _, candidate = telegram_fixture(tmp_path, monkeypatch)
+    output = tmp_path / 'telegram-successor'
+    result = build(base, original, source, ('onboarding_target.py',), output, telegram=candidate)
+    verify(output, result['runtime_digest'], base, original, uid=os.geteuid())
+    assert telegram.artifact(output, uid=os.geteuid())['commit'] == telegram.COMMIT
+    assert telegram.artifact(base, uid=os.geteuid())['commit'] == telegram.PREVIOUS_COMMIT
+    for name in ('inheritance.md', 'hmk/scripts/memoryctl.py', 'sdk/pinned.whl'):
+        assert (output / name).read_bytes() == (base / name).read_bytes()
+    marker = json.loads((output / 'runtime-successor.json').read_text())
+    assert marker['schema'] == 'cluster-onboarding-runtime-successor/v3'
+    assert 'previous_telegram_digest' in marker and 'sdk_digest' not in marker
+
+
+def test_telegram_successor_refuses_resealed_unqualified_binary_and_extra_assets(tmp_path, monkeypatch):
+    base, original, source, profile, candidate = telegram_fixture(tmp_path, monkeypatch)
+    output = tmp_path / 'telegram-successor'
+    build(base, original, source, ('onboarding_target.py',), output, telegram=candidate)
+    (output / 'release.json').unlink()
+    (output / 'telegram/telecodex').write_bytes(b'unqualified replacement')
+    replacement = onboarding_release.seal(output, profile)
+    with pytest.raises(OnboardingError, match='qualified_telegram_binary_required'):
+        verify(output, replacement, base, original, uid=os.geteuid())
+    (output / 'release.json').unlink()
+    (output / 'telegram/telecodex').write_bytes((candidate / 'telecodex').read_bytes())
+    (output / 'sdk/pinned.whl').write_bytes(b'unqualified SDK replacement')
+    replacement = onboarding_release.seal(output, profile)
+    with pytest.raises(OnboardingError, match='original_onboarding_context_preserved'):
+        verify(output, replacement, base, original, uid=os.geteuid())
+
+
+def test_telegram_selection_does_not_select_a_new_matrix_runtime(tmp_path, monkeypatch):
+    from pathlib import Path
+    from clusterctl.onboarding_host import HostBackend, HostConfig
+    from tests.test_onboarding import plan
+    base, original, source, _, candidate = telegram_fixture(tmp_path, monkeypatch)
+    output = tmp_path / 'telegram-successor'
+    result = build(base, original, source, ('onboarding_target.py',), output, telegram=candidate)
+    value = dict(schema='cluster-onboarding-host/v1', native_image='3'*64, browser_image='4'*64,
+        release_digest=original, pool='daimon-cluster', profile='daimon-agent', concurrency=1,
+        code=str(base), telegram_code=str(output), telegram_digest=result['runtime_digest'])
+    for key in ('jobs', 'grants', 'inputs', 'views', 'progress'):
+        directory = tmp_path / key
+        directory.mkdir(mode=0o700)
+        value[key] = str(directory)
+    config = tmp_path / 'host.json'
+    being_seed._write(config, value)
+    loaded = HostConfig.load(config)
+    backend = HostBackend(loaded)
+    body_plan = {**plan(), 'release_digest': original}
+    guest, args, mounts = backend._telegram_paths(body_plan, Path('/original'))
+    assert guest.parent.name == 'daimon-onboarding-telegram' and guest.name == result['runtime_digest']
+    assert args[-1] == result['runtime_digest'] and next(iter(mounts.values()))['readonly'] == 'true'
+    assert backend._runtime_selection(body_plan) == (None, None)
+    assert backend._runtime_paths(body_plan, Path('/original')) == (Path('/original'), [], {})
+    for missing in ('telegram_code', 'telegram_digest'):
+        being_seed._write(config, {k: v for k, v in value.items() if k != missing})
+        with pytest.raises(OnboardingError):
+            HostConfig.load(config)
+
+
 @pytest.mark.parametrize('asset', ['inheritance.md', 'hmk/scripts/memoryctl.py',
     'sdk/pinned.whl', 'telegram/telecodex'])
 def test_even_resealed_successor_cannot_change_approved_context_or_dependencies(tmp_path, asset):

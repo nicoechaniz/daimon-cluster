@@ -25,6 +25,14 @@ UPLOAD_TESTS = ('tests/test_being_seed.py', 'tests/test_onboarding_transfer.py',
     'tests/test_auth.py', 'tests/test_human_approvals.py',
     'tests/test_onboarding_release.py',
     'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
+TELEGRAM_FILES = {'clusterctl/onboarding.py', 'clusterctl/onboarding_telegram.py',
+    'clusterctl/onboarding_code_successor.py', 'clusterctl/onboarding_host.py',
+    'tests/test_onboarding_code_successor.py', 'tests/test_onboarding_telegram.py'}
+TELEGRAM_TESTS = ('tests/test_onboarding_telegram.py', 'tests/test_onboarding_code_successor.py',
+    'tests/test_onboarding.py', 'tests/test_onboarding_host.py', 'tests/test_onboarding_intake.py',
+    'tests/test_onboarding_guest.py', 'tests/test_onboarding_release.py',
+    'tests/test_onboarding_consent.py', 'tests/test_onboarding_host_ownership.py',
+    'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 ONBOARDING_FILES = {'clusterctl/being_seed.py', 'clusterctl/onboarding.py',
     'clusterd/seed_handlers.py', 'clusterd/seed_ui.py', 'scripts/being-seed',
     'tools/build_onboarding_code.py', 'tools/build_onboarding_sdk.py',
@@ -133,6 +141,12 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'clusterctl/onboarding_telegram.py', 'tests/test_onboarding_telegram.py'}
+            and set(changed) <= TELEGRAM_FILES | CI_FILES
+            and all((root / path).is_file() for path in TELEGRAM_TESTS)):
+        # Qualified bridge software and SQLite/idle succession do not replace
+        # a Matrix SDK, authority, body or container recovery implementation.
+        return 'portal', list(TELEGRAM_TESTS)
     if (set(changed) & {'clusterctl/being_seed.py', 'tests/test_being_seed.py'}
             and set(changed) <= UPLOAD_FILES | CI_FILES
             and all((root / path).is_file() for path in UPLOAD_TESTS)):

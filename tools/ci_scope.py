@@ -172,12 +172,25 @@ ENROLLMENT_TESTS = tuple(sorted(set(PORTAL_TESTS) | {
     'tests/test_onboarding_credential.py::test_response_cannot_change_history_or_credential_and_expired_request_cannot_get_fresh_root_signature',
 }))
 
+INPUT_CACHE_FILES = {'clusterctl/onboarding_input.py', 'clusterctl/onboarding_host.py',
+    'clusterctl/onboarding_worker.py', 'tests/test_onboarding_input.py',
+    'docs/design/onboarding-jobs.md'}
+INPUT_CACHE_TESTS = ('tests/test_onboarding_input.py', 'tests/test_onboarding_host.py',
+    'tests/test_onboarding_host_ownership.py', 'tests/test_onboarding_guest.py',
+    'tests/test_onboarding_release.py', 'tests/test_onboarding_progress.py',
+    'tests/test_onboarding_worker_install.py', 'tests/test_onboarding_intake.py',
+    'tests/test_onboarding.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
+
 
 def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
     if not changed:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if ('clusterctl/onboarding_input.py' in changed
+            and set(changed) <= INPUT_CACHE_FILES | CI_FILES
+            and all((root / path).is_file() for path in INPUT_CACHE_TESTS)):
+        return 'portal', list(INPUT_CACHE_TESTS)
     if (set(changed) & {'clusterctl/browser.py', 'clusterctl/onboarding_browser.py'}
             and set(changed) <= BROWSER_FILES | CI_FILES
             and all((root / path).is_file() for path in BROWSER_TESTS)):

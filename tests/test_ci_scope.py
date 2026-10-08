@@ -6,6 +6,15 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_input_cache_scope_keeps_drift_owner_context_and_worker_recovery():
+    from tools.ci_scope import INPUT_CACHE_FILES, INPUT_CACHE_TESTS
+    changed = sorted(INPUT_CACHE_FILES)
+    assert select(changed, ROOT) == ('portal', list(INPUT_CACHE_TESTS))
+    profile, tests = select(changed + ['clusterctl/onboarding_custody.py'], ROOT)
+    assert profile == 'onboarding' and 'tests/test_onboarding_custody.py' in tests
+    assert select(changed + ['requirements.txt'], ROOT) == ('full', ['tests'])
+
+
 def test_receiving_browser_keeps_context_retry_sdk_and_owner_acceptance(tmp_path):
     from tools.ci_scope import BROWSER_FILES
     changed = sorted(BROWSER_FILES)

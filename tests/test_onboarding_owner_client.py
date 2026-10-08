@@ -1,0 +1,235 @@
+"""A real native daemon qualifies publication, retries and foreign-body refusal."""
+
+import json
+import os
+import select
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from daimon_matrix.neutral_binding import OwnerClientPlan, render_owner_client
+from daimon_matrix import operator_rebirth
+from clusterctl.onboarding import Observation
+from clusterctl.onboarding_owner_client import OwnerClient, PROGRAM
+from tests.test_onboarding_target import receiving
+
+
+@pytest.fixture
+def native(tmp_path):
+    # Native AF_UNIX endpoints must fit the kernel path budget.
+    with tempfile.TemporaryDirectory(prefix="dm-") as short:
+        ceremony, plan, target = receiving(Path(short))
+        target.activate(ceremony.authorize_target(plan, target.prepare()))
+        target.apply_credential(
+            ceremony.authorize_credential(plan, target.credential_request())
+        )
+        (target.home / "Projects").mkdir(mode=0o700)
+        (target.home / "Projects/being").mkdir(mode=0o700)
+        runtime = target.package / "runtime"
+        keys = (runtime / "custody.json").read_bytes()
+        bundle = (runtime / "runtime.json").read_bytes()
+        client_key = (runtime / "client.key").read_bytes()
+        origin = target.document_bundle()["local_origin"]
+        relative = target.package.relative_to(target.home).as_posix()
+        script = render_owner_client(
+            OwnerClientPlan(
+                venv_python=sys.executable,
+                state_relative=relative,
+                client_label="eko.codex@daimon-cluster",
+                prog="eko-codex",
+            )
+        )
+        payload = dict(
+            home=str(target.home),
+            state_relative=relative,
+            prog="eko-codex",
+            script=script.decode(),
+            instructions="# Existing signed test body\n",
+            plan_digest="a" * 64,
+            origin=origin,
+            being_ref=operator_rebirth.authority_from_runtime_bundle(
+                target.document_bundle()
+            ).state.being_ref,
+            install=True,
+        )
+        invocation = (
+            "import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
+            "from clusterctl.onboarding_target import Target;"
+            "raise SystemExit(Target(Path(sys.argv[2]),json.loads(sys.argv[3]),"
+            "json.loads(sys.argv[4])).serve(receive_only=True,ready_descriptor=int(sys.argv[5])))"
+        )
+        repository = str(Path(__file__).resolve().parents[1])
+        reader, writer = os.pipe()
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-B",
+                "-I",
+                "-c",
+                invocation,
+                repository,
+                str(target.home),
+                json.dumps(plan),
+                json.dumps(target.genesis),
+                str(writer),
+            ],
+            pass_fds=(writer,),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        os.close(writer)
+        try:
+            assert select.select([reader], [], [], 10)[0]
+            assert os.read(reader, 16) == b"READY\n"
+            yield target, payload
+            assert (runtime / "custody.json").read_bytes() == keys
+            assert (runtime / "runtime.json").read_bytes() == bundle
+            assert (runtime / "client.key").read_bytes() == client_key
+            assert not (target.package / "body.password").exists()
+        finally:
+            os.close(reader)
+            process.terminate()
+            process.wait(timeout=10)
+
+
+def invoke(payload):
+    return subprocess.run(
+        [sys.executable, "-B", "-I", "-c", PROGRAM, json.dumps(payload)],
+        capture_output=True,
+        timeout=50,
+        env={**os.environ, "HOME": payload["home"]},
+    )
+
+
+def test_native_owner_client_publication_and_reconciliation_keep_runtime_and_owner_writes(
+    native,
+):
+    target, payload = native
+    absent = invoke({**payload, "install": False})
+    assert absent.returncode == 0, absent.stderr
+    assert json.loads(absent.stdout) == {"installed": False}
+    result = invoke(payload)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["installed"] is True
+    receipt = target.package / "owner-client/installation.json"
+    before = receipt.read_bytes()
+    own = target.home / "own-memory"
+    own.write_bytes(b"Owner writes after publication")
+    assert invoke(payload).returncode == 0
+    assert invoke({**payload, "install": False}).returncode == 0
+    assert (
+        receipt.read_bytes() == before
+        and own.read_bytes() == b"Owner writes after publication"
+    )
+
+
+@pytest.mark.parametrize("mismatch", ["being_ref", "origin"])
+def test_foreign_signed_body_is_refused_before_publication(native, mismatch):
+    target, payload = native
+    changed = dict(payload)
+    if mismatch == "being_ref":
+        changed["being_ref"] = "another-being"
+    else:
+        changed["origin"] = {**payload["origin"], "embodiment_id": "another-body"}
+    assert invoke(changed).returncode != 0
+    assert not (target.package / "owner-client").exists()
+    assert not (target.home / "Projects/being/AGENTS.md").exists()
+
+
+@pytest.mark.parametrize("changed", ["instructions", "client", "receipt", "symlink"])
+def test_changed_receiving_files_are_preserved_and_never_reported_installed(
+    native, changed
+):
+    target, payload = native
+    assert invoke(payload).returncode == 0
+    path = {
+        "instructions": target.home / "Projects/being/AGENTS.md",
+        "client": target.package / "owner-client/eko-codex",
+        "receipt": target.package / "owner-client/installation.json",
+        "symlink": target.package / "owner-client/eko-codex",
+    }[changed]
+    if changed == "symlink":
+        path.unlink()
+        path.symlink_to(target.home / "outside")
+    else:
+        path.write_bytes(b"Preserve receiving edits")
+    assert invoke(payload).returncode != 0
+    assert invoke({**payload, "install": False}).returncode != 0
+    assert (
+        path.is_symlink()
+        if changed == "symlink"
+        else path.read_bytes() == b"Preserve receiving edits"
+    )
+
+
+def test_interrupted_partial_publication_reuses_exact_client(native):
+    target, payload = native
+    parent = target.package / "owner-client"
+    parent.mkdir(mode=0o700)
+    client = parent / "eko-codex"
+    client.write_text(payload["script"])
+    client.chmod(0o700)
+    before = client.stat().st_ino
+    assert invoke(payload).returncode == 0
+    assert client.stat().st_ino == before
+
+
+def test_host_adapter_verifies_installed_sdk_and_current_plan_before_dispatch(
+    monkeypatch,
+):
+    from tests.test_onboarding import plan
+
+    selected = plan()
+    client = OwnerClient(
+        SimpleNamespace(
+            authorize=lambda *args: True,
+            instance=lambda p: "dm-eko",
+            _target_call=lambda p, a: {"ready": False},
+        )
+    )
+    monkeypatch.setattr(
+        client, "_payload", lambda *args, **kw: {"python": sys.executable}
+    )
+    with pytest.raises(ValueError, match="verification_failed"):
+        client.execute(selected, {})
+
+
+def test_acceptance_installation_does_not_assert_human_or_delivery_acceptance(
+    tmp_path, monkeypatch
+):
+    from dataclasses import replace
+    from tests.test_onboarding_host import configured
+    from clusterctl.onboarding_host import HostBackend
+
+    config, plan, _, _ = configured(tmp_path)
+    host = HostBackend(replace(config, admission=tmp_path / "managed"))
+    managed = SimpleNamespace(
+        observe=lambda p: Observation("complete", {"verified": True}),
+        _expected=lambda p: {"own": "origin"},
+    )
+    monkeypatch.setattr(
+        "clusterctl.onboarding_managed.ManagedRuntime", lambda host: managed
+    )
+    calls = []
+    monkeypatch.setattr(
+        OwnerClient,
+        "observe",
+        lambda *args: Observation("absent", safe_to_execute=True),
+    )
+    monkeypatch.setattr(
+        OwnerClient, "execute", lambda self, p, origin: calls.append(origin)
+    )
+    assert host.observe(plan, "acceptance", "unused").safe_to_execute
+    host.execute(plan, "acceptance", "unused")
+    assert calls == [{"own": "origin"}]
+    monkeypatch.setattr(
+        OwnerClient,
+        "observe",
+        lambda *args: Observation("complete", {"verified": True}),
+    )
+    observed = host.observe(plan, "acceptance", "unused")
+    assert observed.state == "waiting" and not observed.facts

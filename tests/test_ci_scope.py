@@ -6,6 +6,19 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_owner_client_keeps_native_authority_and_context_without_unchanged_sdk_rebuild(tmp_path):
+    changed = ['clusterctl/onboarding_owner_client.py', 'clusterctl/onboarding_host.py',
+               'tests/test_onboarding_owner_client.py', 'tools/check_rc_types.py', 'tools/ci_scope.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'peer'
+    assert {'tests/test_onboarding_owner_client.py', 'tests/test_onboarding_target.py',
+            'tests/test_onboarding_runtime.py', 'tests/test_onboarding_sdk.py',
+            'tests/test_onboarding_welcome.py', 'tests/test_onboarding_host_ownership.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])
+    assert select(changed + ['clusterctl/onboarding_target.py'], ROOT)[0] == 'onboarding'
+
+
 def test_portable_exporter_pin_keeps_http_context_and_original_archives(tmp_path):
     changed = ['support/being-seed-tools/tools/export_being.py',
                'support/being-seed-tools/PROVENANCE.json', 'clusterctl/being_seed.py',

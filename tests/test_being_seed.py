@@ -272,7 +272,9 @@ def http_server(state):
             response = error
         with response:
             data = response.read()
-            return response.status, dict(response.headers), json.loads(data) if response.headers["Content-Type"] == "application/json" else data.decode()
+            media = response.headers["Content-Type"]
+            value = json.loads(data) if media == "application/json" else data if media == "application/zip" else data.decode()
+            return response.status, dict(response.headers), value
     try:
         yield server, request
     finally:
@@ -370,7 +372,7 @@ def test_same_entrypoint_machine_formats_are_public_metadata_only(tmp_path):
             "/v1/seeds/{seed}/onboarding/review", "/v1/seeds/{seed}/onboarding/action",
             "/v1/seeds/{seed}/onboarding/access", "/v1/seeds/{seed}/onboarding/checks", "/v1/onboarding/local-body",
             "/v1/onboarding/local-body/{seed}", "/v1/onboarding/local-body/tools/{tool}",
-            "/v1/onboarding/local-body/{seed}/diagnostic"}
+            "/v1/onboarding/local-body/{seed}/diagnostic", "/v1/onboarding/local-body/{seed}/enrollment"}
         assert request("/v1/seeds", extra={"Authorization": ""})[0] == 401
         assert request("/v1/seeds/private-fixture/selection", owner="sai")[0] == 404
 

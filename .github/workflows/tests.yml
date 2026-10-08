@@ -306,6 +306,9 @@ jobs:
           clusterctl/onboarding_holder_backup.py
           clusterctl/onboarding_sdk.py
           clusterctl/onboarding_target.py
+          clusterctl/onboarding_existing.py
+          clusterctl/onboarding_enrollment.py
+          clusterctl/onboarding_enrollment_root.py
           clusterctl/onboarding_code_successor.py
           clusterctl/onboarding_peer.py
           clusterctl/onboarding_peer_host.py
@@ -388,6 +391,7 @@ jobs:
           tests/test_onboarding_sdk.py
           tests/test_onboarding_target_authorization.py
           tests/test_onboarding_target.py
+          tests/test_onboarding_existing.py
           scripts/being-seed
           tests/test_admission.py
           tests/test_matrix_host_process.py

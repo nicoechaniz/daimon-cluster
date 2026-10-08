@@ -2076,6 +2076,8 @@ HANDLERS = {
     "local_body_requests": seed_handlers.local_body_requests,
     "local_body_tool": seed_handlers.local_body_tool,
     "local_body_report": seed_handlers.local_body_report,
+    "existing_enrollment": seed_handlers.existing_enrollment,
+    "existing_enrollment_reply": seed_handlers.existing_enrollment_reply,
     "local_body_diagnostic": seed_handlers.local_body_diagnostic,
     "health": health,
     "openapi_yaml": openapi_yaml,

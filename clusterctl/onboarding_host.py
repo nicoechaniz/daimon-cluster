@@ -53,6 +53,7 @@ class HostConfig:
     runtime_code: Path | None = None
     runtime_digest: str | None = None
     peer: Path | None = None
+    runtime_by_name: dict[str, tuple[Path, str]] | None = None
 
     @classmethod
     def load(cls, path: Path) -> HostConfig:
@@ -60,7 +61,7 @@ class HostConfig:
         consent_keys = {"consent_state", "consent_uid"}
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -96,6 +97,20 @@ class HostConfig:
             onboarding_code_successor.verify(runtime_code, runtime_digest, code,
                                              value['release_digest'], uid=path.stat().st_uid)
         consent_state, consent_uid = None, None
+        runtime_by_name = None
+        if "runtime_by_name" in value:
+            runtime_by_name = {}
+            if not isinstance(value["runtime_by_name"], dict) or not 1 <= len(value["runtime_by_name"]) <= being_seed.MAX_SEEDS:
+                raise OnboardingError("invalid_onboarding_host_configuration")
+            for name, selected in value["runtime_by_name"].items():
+                if (not isinstance(name, str) or not being_seed.NAME.fullmatch(name)
+                    or not isinstance(selected, dict) or set(selected) != {"runtime_code", "runtime_digest"}
+                    or not isinstance(selected["runtime_code"], str) or not Path(selected["runtime_code"]).is_absolute()
+                    or not sha(selected["runtime_digest"])):
+                    raise OnboardingError("invalid_onboarding_host_configuration")
+                selected_code = Path(selected["runtime_code"])
+                onboarding_code_successor.verify(selected_code, selected["runtime_digest"], code, value["release_digest"], uid=path.stat().st_uid)
+                runtime_by_name[name] = (selected_code, selected["runtime_digest"])
         if consent_keys & set(value):
             if (not consent_keys <= set(value) or not isinstance(value["consent_state"], str)
                     or not Path(value["consent_state"]).is_absolute()
@@ -117,6 +132,7 @@ class HostConfig:
             boundaries = set(directories.values()) | {progress, consent_state, code}
             if runtime_code is not None:
                 boundaries.add(runtime_code)
+            boundaries.update(row[0] for row in (runtime_by_name or {}).values())
             if (any(path == other or path.is_relative_to(other) or other.is_relative_to(path)
                     for path in (custody, custody_grants) for other in boundaries)
                     or custody == custody_grants or custody.is_relative_to(custody_grants)
@@ -176,7 +192,7 @@ class HostConfig:
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -335,12 +351,14 @@ class HostBackend:
             # conversation, steering/topics and continuity acceptance.
             return Observation('complete', dict(verified=True, telegram_ready=True))
         if stage == "matrix" and self.config.custody and self.config.custody_grants:
-            ceremony = FirstCustody(self.config.custody, self.config.custody_grants)
+            ceremony = self._ceremony(plan)
             decision = self._decision(plan)
-            if decision is None or decision["matrix_identity_mode"] != "first" or not ceremony.authorize(plan):
+            if decision is None or not ceremony.authorize(plan):
                 return Observation("waiting", reason="identity_authorization_required")
             observed = ceremony.observe(plan)
-            if observed is None or not observed["backup_restore_verified"]:
+            if observed is not None and observed.get("waiting"):
+                return Observation("waiting", reason="identity_authorization_required")
+            if observed is None or not observed.get("ready", observed.get("backup_restore_verified", False)):
                 return Observation("absent", safe_to_execute=True)
             if self.config.code and self.config.views and (self.config.code / "sdk/sdk.json").exists():
                 _, code, mounts = self._guest_paths(plan)
@@ -348,10 +366,10 @@ class HostBackend:
                 mounts["onboarding-matrix-public"] = self._matrix_mount(plan)
                 if not self._mounted(plan, mounts):
                     return Observation("absent", safe_to_execute=True)
-                if self._sdk_successor() and not self._target_call(plan, 'sdk-observe')['ready']:
+                if self._sdk_successor(plan) and not self._target_call(plan, 'sdk-observe')['ready']:
                     return Observation('absent', safe_to_execute=True)
                 target = self._matrix_command(plan, "observe")
-                if target["phase"] in {"absent", "prepared", "v7", "v8-published", "peer-published"}:
+                if target["phase"] in {"absent", "prepared", "v7", "credential-pending", "v8-published", "peer-published"}:
                     return Observation("absent", safe_to_execute=True)
                 if self.config.peer is not None:
                     from .onboarding_peer_host import PeerHost
@@ -420,12 +438,13 @@ class HostBackend:
             decision = self._decision(plan)
             if decision is None:
                 raise OnboardingError("identity_authorization_required")
-            ceremony = FirstCustody(self.config.custody, self.config.custody_grants)
+            ceremony = self._ceremony(plan)
             prior = ceremony.observe(plan)
-            if prior is None or not prior["backup_restore_verified"]:
+            if prior is None or not prior.get("ready", prior.get("backup_restore_verified", False)):
                 ceremony.prepare(plan, identity_mode=decision["matrix_identity_mode"])
             if self.config.code and self.config.views and (self.config.code / "sdk/sdk.json").exists():
-                self._matrix_execute(plan, ceremony)
+                if not self._matrix_execute(plan, ceremony):
+                    return
                 if self.config.peer is not None:
                     from .onboarding_peer_host import PeerHost
                     PeerHost(self).execute(plan)
@@ -613,20 +632,23 @@ class HostBackend:
         }
         return source, guest_code, mounts
 
+    def _runtime_selection(self, plan: dict) -> tuple[Path | None, str | None]:
+        selected = (self.config.runtime_by_name or {}).get(plan['name'])
+        return selected if selected is not None else (self.config.runtime_code, self.config.runtime_digest)
+
     def _runtime_paths(self, plan: dict, base: Path) -> tuple[Path, list[str], dict]:
-        """Context keeps its original code; only Matrix uses an explicit successor."""
-        if self.config.runtime_code is None and self.config.runtime_digest is None:
+        """Context stays frozen; each body may retain its qualified generation."""
+        runtime_code, runtime_digest = self._runtime_selection(plan)
+        if runtime_code is None and runtime_digest is None:
             return base, [], {}
-        if (self.config.code is None or self.config.runtime_code is None
-                or self.config.runtime_digest is None):
+        if self.config.code is None or runtime_code is None or runtime_digest is None:
             raise OnboardingError('qualified_onboarding_runtime_required')
-        onboarding_code_successor.verify(self.config.runtime_code, self.config.runtime_digest,
+        onboarding_code_successor.verify(runtime_code, runtime_digest,
             self.config.code, plan['release_digest'], uid=os.geteuid())
-        code = Path('/opt/daimon-onboarding-runtime') / self.config.runtime_digest
-        mount = dict(type='disk', source=str(self.config.runtime_code), path=str(code),
-                     readonly='true', shift='true')
-        return code, ['--runtime-code', str(code), '--runtime-digest', self.config.runtime_digest], {
-            'runtime-' + self.config.runtime_digest[:55]: mount}
+        code = Path('/opt/daimon-onboarding-runtime') / runtime_digest
+        mount = dict(type='disk', source=str(runtime_code), path=str(code), readonly='true', shift='true')
+        return code, ['--runtime-code', str(code), '--runtime-digest', runtime_digest], {
+            'runtime-' + runtime_digest[:55]: mount}
 
     def _mounted(self, plan: dict, mounts: dict) -> bool:
         instances, _ = self._inventory()
@@ -685,6 +707,17 @@ class HostBackend:
                         *[key + "=" + value for key, value in device.items() if key != "type"]])
         self._guest_command(plan, "execute", stage, guest_code)
 
+    def _ceremony(self, plan: dict):
+        decision = self._decision(plan)
+        if decision is None:
+            raise OnboardingError("identity_authorization_required")
+        if decision is not None and decision["matrix_identity_mode"] == "existing":
+            from .onboarding_enrollment import ExistingEnrollment
+            return ExistingEnrollment(self)
+        if self.config.custody is None or self.config.custody_grants is None:
+            raise OnboardingError("identity_authorization_required")
+        return FirstCustody(self.config.custody, self.config.custody_grants)
+
     def _matrix_mount(self, plan: dict) -> dict:
         if self.config.views is None:
             raise OnboardingError("receiving_code_configuration_required")
@@ -695,7 +728,7 @@ class HostBackend:
                      peer_packet: dict | None = None, peer_being_ref: str | None = None) -> dict:
         if self.config.custody is None or self.config.custody_grants is None:
             raise OnboardingError("identity_authorization_required")
-        if not FirstCustody(self.config.custody, self.config.custody_grants).authorize(plan):
+        if not self._ceremony(plan).authorize(plan):
             raise OnboardingError("identity_authorization_required")
         _, guest_code, _ = self._guest_paths(plan)
         runtime_code, runtime_args, _ = self._runtime_paths(plan, guest_code)
@@ -732,11 +765,11 @@ class HostBackend:
     def _matrix_command(self, plan: dict, action: str) -> dict:
         value = self._target_call(plan, action)
         if (not isinstance(value, dict) or set(value) != {"phase", "request", "receipt"}
-                or value["phase"] not in {"absent", "prepared", "v7", "v8-published", "v8", "peer-published"}):
+                or value["phase"] not in {"absent", "prepared", "v7", "credential-pending", "v8-published", "v8", "peer-published"}):
             raise OnboardingError("invalid_onboarding_observation")
         return value
 
-    def _matrix_execute(self, plan: dict, ceremony: FirstCustody) -> None:
+    def _matrix_execute(self, plan: dict, ceremony) -> bool:
         if self._environment(plan).state != "complete" or self.config.views is None:
             raise OnboardingError("qualified_guest_environment_required")
         code = Path("/opt/daimon-onboarding") / plan["release_digest"]
@@ -757,7 +790,7 @@ class HostBackend:
         if current is None:
             self._dispatch(plan, ["config", "device", "add", self.instance(plan), "onboarding-matrix-public", "disk",
                                   *[key + "=" + value for key, value in mount.items() if key != "type"]])
-        if self._sdk_successor():
+        if self._sdk_successor(plan):
             # Dependency installation has its own resumable effect. It reads no
             # receiving custody and retains the previous content-addressed SDK.
             self._target_call(plan, 'sdk-prepare')
@@ -765,19 +798,25 @@ class HostBackend:
         # publication is immutable; never reenter credential writer operations
         # merely because a later service/registry acknowledgement was lost.
         if self._matrix_command(plan, 'observe')['phase'] in {'v8', 'peer-published'}:
-            return
+            return True
         target = self._matrix_command(plan, "prepare")
         activation = ceremony.authorize_target(plan, target["request"])
+        if activation is None:
+            return False
         onboarding_mounts.prepare_matrix_public(self.config.views, plan, {"activation.json": activation})
         self._matrix_command(plan, "activate")
         proposed = self._matrix_command(plan, "credential-prepare")
         response = ceremony.authorize_credential(plan, proposed["request"])
+        if response is None:
+            return False
         onboarding_mounts.prepare_matrix_public(self.config.views, plan, {"credential-response.json": response})
         self._matrix_command(plan, "credential-apply")
+        return True
 
-    def _sdk_successor(self) -> bool:
-        return (self.config.runtime_code is not None and json.loads(onboarding_release.regular(
-            self.config.runtime_code / onboarding_code_successor.MARKER, uid=os.geteuid()))['schema']
+    def _sdk_successor(self, plan: dict) -> bool:
+        runtime_code, _ = self._runtime_selection(plan)
+        return (runtime_code is not None and json.loads(onboarding_release.regular(
+            runtime_code / onboarding_code_successor.MARKER, uid=os.geteuid()))['schema']
             == onboarding_code_successor.SDK_SCHEMA)
 
     def _dispatch(self, plan: dict, argv: list[str]) -> str:

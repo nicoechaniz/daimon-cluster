@@ -129,8 +129,7 @@ class PeerHost:
         identity = being_seed._read(path) if path.exists() else self.backend._target_call(plan, 'peer-identity')
         tool = onboarding_peer.native(Path(__file__).resolve().parents[1])
         authority = tool.verify_identity(identity)
-        from .onboarding_custody import FirstCustody
-        expected = FirstCustody(self.backend.config.custody, self.backend.config.custody_grants).admission_coordinates(plan)
+        expected = self.backend._ceremony(plan).admission_coordinates(plan)
         if authority.state.being_ref != expected['being_ref'] or any(
                 identity['document']['origin'].get(key) != expected[key]
                 for key in ('body_ref', 'embodiment_id', 'incarnation_id')):

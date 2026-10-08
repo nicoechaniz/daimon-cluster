@@ -100,6 +100,7 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
             _dispatch=dispatch, _target_call=target_call,
             _guest_paths=lambda _plan: (None, Path('/opt/qualified-code'), {}),
             _runtime_paths=lambda _plan, code: (code, [], {}))
+        backend._ceremony = lambda _plan: ceremony
         managed = ManagedRuntime(backend)
         # Receive-only is a disposable qualification mode, never a live fallback.
         assert managed.observe({**plan, 'name': 'eko'}).state == 'waiting'

@@ -619,3 +619,50 @@ Native peer enrollment selects each local application's schema from that Body's
 persisted receipt mode. An existing V2 Source and V1 receiving peer keep their
 independent stores and signed history. Finish/retry continues the original
 encrypted proposal; it neither downgrades Source nor requests a new identity.
+
+### Existing-being receiving enrollment
+
+An approved `existing` identity selects native distributed normal enrollment,
+preserving the actual Root and every prior manifest member. First genesis and
+its custody grant cannot be used for an existing being. The receiving body
+generates its own encrypted custody and native signing/encryption/transport
+keys; the host never imports a source runtime, Root store, unlock file or
+capability token.
+
+The same owner-scoped portal exposes
+`/v1/onboarding/local-body/{name}/enrollment`. Before receiving preparation,
+the local daimon submits its independently verified public signed identity and
+explicit native peer routes for all active existing members. The trusted local
+request fixes the expected Root. The worker repeats signature, plan, membership
+and route verification before freezing that public base under its exact plan.
+
+The worker publishes a native enrollment intent and the Body-signed target
+request, then waits. The downloadable `existing_root_signer.zip` runs as a
+finite local holder process with the qualified Matrix SDK. Its public reply
+contains signed shares only. Native keyless aggregation verifies the policy
+threshold, request, frozen base and expiry before publishing target activation.
+An expired unanswered challenge is renewed without replacing the target's keys;
+old challenges and submissions remain preserved. Credential succession follows
+through the same handoff, using the target's native Body acceptance and the
+existing Root holder's signature. Managed admission derives its exact binding
+from those independently verified public artifacts.
+
+The signer accepts the existing isolated native Root holder (`--holder`) or
+the historical native offline Root+Recovery store (`--root-custody`). The latter
+must match the exact current control head and Root policy, and cannot contain
+runtime Body or capability slots. Neither layout is rewritten or transported.
+The maintained receiving V2 credential adapter currently supports Root threshold
+one; unsupported thresholds are refused before receiving preparation.
+
+Intake evidence never grants host execution. Recorded owner consent, the host
+resource grant, native signature verification and canonical admission remain
+separate. Lost acknowledgements reconcile persisted requests, activation,
+custody, V2 credentials and receiving writes. A ready receiving runtime does not
+prove a source-body cutover, peer delivery or the full hosted acceptance journey.
+
+The owner may pin an already hosted body to its qualified generation with
+`runtime_by_name`, whose entries contain both `runtime_code` and `runtime_digest`.
+Each selection is verified against the same immutable context artifact. A newer
+default can support incoming existing beings while the hosted body's actual
+unit, mount, SDK generation and receiving writes remain in place. Partial,
+foreign or unqualified selections are refused; HTTP cannot change this config.

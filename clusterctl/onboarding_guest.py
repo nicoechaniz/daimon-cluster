@@ -50,6 +50,157 @@ def new_bytes(path: Path, raw: bytes, *, executable: bool = False) -> None:
         os.fsync(stream.fileno())
 
 
+def reconcile_context_copy(home, incoming, plan):
+    """Recover only a strict input prefix before context activation.
+
+    Self-contained for host dispatch against an immutable receiving generation.
+    The interrupted bytes remain in a durable journal; replacements are copied
+    from the bound read-only input and published only after complete verification.
+    """
+    import fcntl
+    import hashlib
+    import json
+    import os
+    import re
+    import stat
+    import uuid
+    from pathlib import Path, PurePosixPath
+
+    def refuse():
+        raise ValueError('existing_receiving_file_preserved')
+
+    def owned(path, directory=False):
+        if any(p.is_symlink() for p in (path, *path.parents)):
+            refuse()
+        info = path.stat()
+        if (info.st_uid != os.geteuid() or info.st_mode & 0o077
+                or (not stat.S_ISDIR(info.st_mode) if directory else
+                    not stat.S_ISREG(info.st_mode) or info.st_nlink != 1)):
+            refuse()
+        return info
+
+    def mkdir(path):
+        if path.exists():
+            owned(path, True)
+            return
+        mkdir(path.parent)
+        path.mkdir(mode=0o700)
+
+    def sync(path):
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def fingerprint(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+    def checksum(path):
+        owned(path)
+        h = hashlib.sha256()
+        with path.open('rb') as stream:
+            while chunk := stream.read(1024 * 1024):
+                h.update(chunk)
+        return h.hexdigest()
+
+    home, incoming = Path(home), Path(incoming)
+    owned(home, True)
+    if (not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', plan.get('name', ''))
+            or not incoming.is_relative_to(home)):
+        refuse()
+    state = home / '.local/state/daimon-onboarding' / plan['name']
+    if (state / 'context.json').exists() or (state / 'memory.json').exists():
+        return {'recovered': 0}
+    manifest_file = incoming / 'manifest.json'
+    if owned(manifest_file).st_size > 16 * 1024**2:
+        refuse()
+    manifest = json.loads(manifest_file.read_bytes())
+    if manifest.get('schema') != 'cluster-onboarding-input/v1' or fingerprint(manifest) != plan['seed_digest']:
+        refuse()
+    received = home / '.agents/memory' / plan['name'] / 'received'
+    if not received.exists():
+        return {'recovered': 0}
+    owned(received, True)
+    root = state / 'copy-recovery'
+    mkdir(root)
+    lock = os.open(root / 'lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    recovered = 0
+    try:
+        owned(root / 'lock')
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for row in manifest['files']:
+            relative = PurePosixPath(row['path'])
+            if relative.is_absolute() or any(p in ('', '.', '..') for p in row['path'].split('/')) or '\\' in row['path']:
+                refuse()
+            target, source = received / row['path'], incoming / 'received' / row['path']
+            journal = root / fingerprint(row)
+            # The usual full copy remains owned by the pinned installer. A
+            # journal also resumes a lost acknowledgement after quarantine.
+            if not journal.exists() and (not target.exists() or owned(target).st_size == row['size']):
+                continue
+            mkdir(journal)
+            partial = journal / 'interrupted'
+            intent = {'schema': 'cluster-context-copy-recovery/v1', 'plan_digest': fingerprint(plan), 'file': row}
+            record = journal / 'intent.json'
+            if record.exists():
+                owned(record)
+                if json.loads(record.read_bytes()) != intent:
+                    refuse()
+            else:
+                if not target.exists():
+                    refuse()
+                fd = os.open(record, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(json.dumps(intent, sort_keys=True).encode())
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                sync(journal)
+            probe = partial if partial.exists() else target
+            before = owned(probe)
+            if not 0 <= before.st_size < row['size'] or owned(source).st_size != row['size']:
+                refuse()
+            with probe.open('rb') as a, source.open('rb') as b:
+                while chunk := a.read(1024 * 1024):
+                    if b.read(len(chunk)) != chunk:
+                        refuse()
+            after = owned(probe)
+            if (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                    after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                refuse()
+            if partial.exists():
+                if target.exists():
+                    if owned(target).st_size != row['size'] or checksum(target) != row['sha256']:
+                        refuse()
+                    continue
+            else:
+                if checksum(source) != row['sha256']:
+                    refuse()
+                os.rename(target, partial)
+                sync(target.parent)
+                sync(journal)
+            temporary = journal / ('copy-' + uuid.uuid4().hex)
+            h = hashlib.sha256()
+            size = 0
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'wb') as output, source.open('rb') as stream:
+                while chunk := stream.read(1024 * 1024):
+                    h.update(chunk)
+                    size += len(chunk)
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+            if (size, h.hexdigest()) != (row['size'], row['sha256']) or target.exists():
+                refuse()
+            os.rename(temporary, target)
+            sync(target.parent)
+            sync(journal)
+            recovered += 1
+        return {'recovered': recovered}
+    finally:
+        os.close(lock)
+
+
 class Receiver:
     def __init__(self, home: Path, incoming: Path, code: Path, plan: dict, *, code_uid: int = 0):
         self.plan = validate_plan(plan)
@@ -103,6 +254,7 @@ class Receiver:
             os.close(descriptor)
 
     def _copy_input(self) -> None:
+        reconcile_context_copy(self.home, self.incoming, self.plan)
         mkdir_chain(self.home, self.received)
         for directory in sorted(path for path in (self.incoming / "received").rglob("*") if path.is_dir()):
             mkdir_chain(self.home, self.received / directory.relative_to(self.incoming / "received"))

@@ -86,6 +86,71 @@ def receiving(tmp_path, packet, script=NATIVE):
     return receiver
 
 
+@pytest.mark.parametrize('lost_ack', [None, 'quarantine', 'publication'])
+def test_torn_input_copy_recovers_without_losing_interrupted_bytes(tmp_path, packet, monkeypatch, lost_ack):
+    receiver = receiving(tmp_path, packet)
+    receiver._copy_input()
+    target = receiver.received / 'source.archive'
+    original = target.read_bytes()
+    partial = original[:len(original) // 2]
+    target.write_bytes(partial)
+    original_rename = os.rename
+    disconnected = False
+
+    def rename(source, destination):
+        nonlocal disconnected
+        result = original_rename(source, destination)
+        boundary = 'quarantine' if Path(destination).name == 'interrupted' else 'publication'
+        if not disconnected and lost_ack == boundary:
+            disconnected = True
+            raise RuntimeError('fixture lost acknowledgement')
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'rename', rename)
+        if lost_ack:
+            with pytest.raises(RuntimeError, match='lost acknowledgement'):
+                onboarding_guest.reconcile_context_copy(receiver.home, receiver.incoming, receiver.plan)
+        else:
+            onboarding_guest.reconcile_context_copy(receiver.home, receiver.incoming, receiver.plan)
+    receiver.install_context()
+    assert receiver.observe_context().state == 'complete'
+    assert target.read_bytes() == original
+    assert [p.read_bytes() for p in (receiver.state / 'copy-recovery').glob('*/interrupted')] == [partial]
+    receiver.verify_memory()
+    # Context activation ends copy recovery; real subsequent memory writes stay.
+    with closing(sqlite3.connect(receiver.received / 'memory/store-001/library.db')) as database:
+        database.execute("INSERT INTO old_query_history VALUES(2,'New receiving history')")
+        database.commit()
+    onboarding_guest.reconcile_context_copy(receiver.home, receiver.incoming, receiver.plan)
+    with closing(receiver._database('store-001')) as database:
+        assert database.execute('SELECT COUNT(*) FROM old_query_history').fetchone()[0] == 2
+
+
+@pytest.mark.parametrize('foreign', ['different-prefix', 'longer', 'symlink', 'owner', 'wrong-plan'])
+def test_copy_recovery_preserves_files_without_exact_prefix_and_owner_binding(tmp_path, packet, monkeypatch, foreign):
+    receiver = receiving(tmp_path, packet)
+    receiver._copy_input()
+    target = receiver.received / 'source.archive'
+    original = target.read_bytes()
+    target.write_bytes(b'X' + original[1:len(original) // 2] if foreign == 'different-prefix'
+                       else original + b'extra' if foreign == 'longer' else original[:len(original) // 2])
+    value = dict(receiver.plan)
+    if foreign == 'symlink':
+        elsewhere = receiver.home / 'unrelated-original'
+        target.rename(elsewhere)
+        target.symlink_to(elsewhere)
+    elif foreign == 'owner':
+        monkeypatch.setattr(os, 'geteuid', lambda: os.getuid() + 1)
+    elif foreign == 'wrong-plan':
+        value['seed_digest'] = 'f' * 64
+    before = target.read_bytes()
+    with pytest.raises(ValueError, match='existing_receiving_file_preserved'):
+        onboarding_guest.reconcile_context_copy(receiver.home, receiver.incoming, value)
+    assert target.read_bytes() == before
+    assert not list((receiver.state / 'copy-recovery').glob('*/interrupted'))
+
+
 def test_installs_own_soul_selected_inheritance_and_native_manual_memory_without_touching_auth_history(tmp_path, packet):
     receiver = receiving(tmp_path, packet)
     codex = receiver.home / '.codex'

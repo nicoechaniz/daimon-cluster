@@ -1,6 +1,7 @@
 """Typed substrate commands preserve foreign bodies and reconcile partial creation."""
 import copy
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +9,21 @@ from clusterctl import being_seed
 from clusterctl.onboarding import JobStore, OnboardingError, digest
 from clusterctl.onboarding_host import HostBackend, HostConfig
 from tests.test_onboarding import plan
+
+
+def test_only_typed_context_install_has_the_large_archive_deadline(monkeypatch):
+    from clusterctl import onboarding_host
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(kwargs['timeout'])
+        return SimpleNamespace(returncode=0, stdout='{}')
+
+    monkeypatch.setattr(onboarding_host.subprocess, 'run', run)
+    HostBackend._run(['exec', 'dm-fixture', '--', 'python3', 'execute', 'context', '--home', '/home/agent'])
+    HostBackend._run(['exec', 'dm-fixture', '--', 'python3', 'execute', 'memory', '--home', '/home/agent'])
+    HostBackend._run(['list', '--format=json'])
+    assert calls == [7200, 1800, 1800]
 
 
 class IncusFixture:

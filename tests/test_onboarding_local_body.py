@@ -29,6 +29,88 @@ def report(task, identity=None):
         matrix_state='signed-identity' if identity is not None else 'not-found', matrix_identity=identity)
 
 
+def test_host_guidance_is_owner_scoped_request_bound_and_read_only(tmp_path):
+    state, progress = tmp_path / 'state', tmp_path / 'progress'
+    progress.mkdir(mode=0o750)
+    task = request('oliva', 'ani')
+    local.Requests(progress, worker_uid=os.geteuid()).publish(task)
+    guidance = dict(schema='cluster-onboarding-local-guidance/v1', name='oliva', owner='ani',
+        request_id=task['request_id'], updated_ms=task['updated_ms'],
+        steps=['Use the existing private VPN; preserve the signed source runtime.'])
+    publisher = local.Guidance(progress, worker_uid=os.geteuid())
+    publisher.publish(guidance)
+    with http_server(state) as (server, http):
+        server.deps = dataclasses.replace(server.deps, seed_only=True,
+            onboarding_progress=str(progress), onboarding_worker_uid=os.geteuid())
+        path = '/v1/onboarding/local-body/oliva'
+        assert http(path, owner='ani')[2]['host_guidance'] == guidance
+        assert http('/v1/onboarding/local-body', owner='ani')[2]['items'][0]['host_guidance'] == guidance
+        assert http(path, owner='sai')[0] == 404
+        assert http('/v1/onboarding/local-body', owner='sai')[2]['items'] == []
+        # This remains a report endpoint, never a participant guidance writer.
+        assert http(path, 'POST', guidance, owner='ani')[0] == 400
+        assert publisher.read('oliva', owner='ani') == guidance
+        local.Requests(progress, worker_uid=os.geteuid()).publish({**task, 'request_id': str(uuid.uuid4())})
+        assert http(path, owner='ani')[2]['host_guidance'] is None
+        (progress / ('oliva' + publisher.suffix)).chmod(0o666)
+        assert http(path, owner='ani')[0] == 409
+        code, headers, source = http('/v1/onboarding/local-body/tools/expose_native_peer.py', owner='ani')
+        assert code == 200 and headers['X-Content-SHA256'] == hashlib.sha256(source.encode()).hexdigest()
+
+
+def test_foreground_native_carrier_preserves_wire_and_refuses_other_requests(monkeypatch):
+    import http.client
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from tools import expose_native_peer as carrier
+
+    observed = []
+    class Native(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            observed.append((self.path, self.headers['Content-Type'],
+                self.rfile.read(int(self.headers['Content-Length']))))
+            self.send_response(200)
+            self.send_header('Content-Type', carrier.CONTENT_TYPE)
+            self.send_header('Content-Length', '7')
+            self.end_headers()
+            self.wfile.write(b'receipt')
+
+    with ThreadingHTTPServer(('127.0.0.1', 0), Native) as native:
+        monkeypatch.setattr(carrier, 'NATIVE_PORT', native.server_port)
+        with ThreadingHTTPServer(('127.0.0.1', 0), carrier.Carrier) as proxy:
+            proxy.allowed_host = '127.0.0.1'
+            threads = [threading.Thread(target=s.serve_forever) for s in (native, proxy)]
+            for thread in threads:
+                thread.start()
+            def send(path='/dm-peer/v1', kind=carrier.CONTENT_TYPE):
+                connection = http.client.HTTPConnection('127.0.0.1', proxy.server_port, timeout=5)
+                try:
+                    connection.request('POST', path, b'opaque native fixture', {'Content-Type': kind})
+                    response = connection.getresponse()
+                    return response.status, response.read(), response.getheader('Content-Type')
+                finally:
+                    connection.close()
+            try:
+                assert send() == (200, b'receipt', carrier.CONTENT_TYPE)
+                assert send('/dm-messaging/v1/message')[0] == 403
+                assert send(kind='application/json')[0] == 403
+                proxy.allowed_host = '10.6.6.6'
+                assert send()[0] == 403
+                assert observed == [('/dm-peer/v1', carrier.CONTENT_TYPE, b'opaque native fixture')]
+            finally:
+                for server in (native, proxy):
+                    server.shutdown()
+                for thread in threads:
+                    thread.join()
+    assert carrier.addresses('10.6.6.7', '10.6.6.6') == ('10.6.6.7', '10.6.6.6')
+    for address in ('0.0.0.0', '127.0.0.1', '8.8.8.8', '224.0.0.1', '169.254.1.1', '10.6.6.6'):
+        with pytest.raises(ValueError):
+            carrier.addresses(address, '10.6.6.6')
+
+
 def test_private_requests_before_intake_reuse_supplied_inputs_and_preserve_reports(tmp_path):
     state, progress = tmp_path / 'state', tmp_path / 'progress'
     progress.mkdir(mode=0o750)

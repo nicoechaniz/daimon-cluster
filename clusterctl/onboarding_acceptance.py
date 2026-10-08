@@ -664,7 +664,8 @@ def cli_resume_probe(home, plan, thread, model, reasoning, runner=None,
             ' row=c.execute("SELECT rollout_path FROM threads WHERE id=? AND archived=0",(sys.argv[2],)).fetchone()\n'
             'print(json.dumps({"idle":idle,"rollout":row[0] if row else None}))')
         result = run([sys.executable, '-B', '-I', '-c', code, str(home), thread],
-            user=owner, group=owner, capture_output=True, text=True, timeout=30, check=True)
+            user=owner, group=owner, extra_groups=[], umask=0o077,
+            capture_output=True, text=True, timeout=30, check=True)
         value = json.loads(result.stdout)
         if set(value) != {'idle', 'rollout'} or type(value['idle']) is not bool:
             raise ValueError('invalid_cli_resume_probe')
@@ -748,7 +749,7 @@ def cli_resume_probe(home, plan, thread, model, reasoning, runner=None,
                             'Reply with exactly: ' + intent['nonce']).encode(),
                         env={'HOME': str(home), 'CODEX_HOME': str(home / '.codex'),
                              'PATH': '/usr/local/bin:/usr/bin:/bin', 'LANG': 'C.UTF-8'},
-                        cwd=home / 'Projects/being', user=owner, group=owner,
+                        cwd=home / 'Projects/being', user=owner, group=owner, extra_groups=[], umask=0o077,
                         stdout=output, stderr=errors, timeout=240, check=False)
                     output.flush()
                     os.fsync(output.fileno())

@@ -314,7 +314,7 @@ def _build_parser() -> argparse.ArgumentParser:
     seeds = sub.add_parser("seed", help="receive private portable context or prepare a new being")
     seeds.add_argument("--owner", default="clusterctl-cli", help="owner of the private intake")
     commands = seeds.add_subparsers(dest="seed_command", required=True)
-    for command in ("create", "upload", "discover", "prepare", "connections", "status", "list", "review", "consent", "ssh"):
+    for command in ("create", "upload", "discover", "prepare", "connections", "status", "list", "review", "consent", "ssh", "checks", "witness", "recipient"):
         p = commands.add_parser(command)
         p.add_argument("--json", action="store_true")
         if command not in {"create", "list"}:
@@ -333,9 +333,14 @@ def _build_parser() -> argparse.ArgumentParser:
             p.add_argument("--worker-uid", default=0, type=int)
         if command == "consent":
             p.add_argument("--file", required=True, type=Path)
-        if command == "ssh":
+        if command in {"ssh", "checks", "witness"}:
             p.add_argument("--progress", required=True, type=Path)
             p.add_argument("--worker-uid", default=0, type=int)
+        if command == "recipient":
+            p.add_argument("--progress", type=Path)
+            p.add_argument("--worker-uid", default=0, type=int)
+        if command == "witness":
+            p.add_argument("--file", required=True, type=Path)
     return parser
 
 
@@ -444,6 +449,15 @@ def run(argv=None, adapter=None) -> int:
                     seed_result = being_seed.prepare(base, args.name, selection, **options)
                 elif args.seed_command == "connections":
                     seed_result = being_seed.connections(base, args.name, json.loads(args.file.read_bytes()), **options)
+                elif args.seed_command == "recipient":
+                    from . import onboarding_transfer
+                    from .onboarding_local_body import Requests as LocalBodyRequests
+                    expected = None
+                    if args.progress:
+                        expected = LocalBodyRequests(args.progress, worker_uid=args.worker_uid).read(
+                            args.name, **options)['expected_being_ref']
+                    seed_result = onboarding_transfer.request(base, args.name,
+                        expected_being_ref=expected, **options)
                 elif args.seed_command == "discover":
                     seed_result = being_seed.discovery(base, args.name, **options)
                 elif args.seed_command == "status":
@@ -455,6 +469,12 @@ def run(argv=None, adapter=None) -> int:
                         seed_result = Access(args.progress, worker_uid=args.worker_uid).read(args.name, **options)
                     except FileNotFoundError:
                         seed_result = {"ssh": None}
+                elif args.seed_command in {"checks", "witness"}:
+                    from .onboarding_acceptance import Requests, read as read_checks, submit as submit_witness
+                    being_seed.status(base, args.name, **options)
+                    request = Requests(args.progress, worker_uid=args.worker_uid).read(args.name, **options)
+                    seed_result = (submit_witness(Path(base), request, json.loads(args.file.read_bytes()))
+                        if args.seed_command == "witness" else read_checks(Path(base), request))
                 elif args.seed_command in {"review", "consent"}:
                     from .onboarding_consent import Reviews, read, submit
                     reviews = Reviews(args.reviews, worker_uid=args.worker_uid)

@@ -210,6 +210,40 @@ def seed_onboarding_consent(deps, ctx, seed, **params):
     return seed_onboarding_review(deps, ctx, seed, _submit=True, **params)
 
 
+def seed_hosted_checks(deps, ctx, seed, _body=None, _submit=False, **params):
+    from . import handlers
+    from clusterctl.onboarding_acceptance import Requests, read, submit
+
+    try:
+        state = Path(handlers._state_dir(deps))
+        being_seed.status(state, seed, owner=_owner(ctx))
+        if not deps.onboarding_progress:
+            return handlers.Response(200, {"request": None})
+        request = Requests(
+            deps.onboarding_progress, worker_uid=deps.onboarding_worker_uid
+        ).read(seed, owner=_owner(ctx))
+        value = submit(state, request, _body) if _submit else read(state, request)
+        return handlers.Response(200, {"request": value})
+    except FileNotFoundError:
+        return (
+            handlers.Response(200, {"request": None})
+            if not _submit
+            else handlers.Response(409, {"error": "hosted_checks_not_ready"})
+        )
+    except being_seed.SeedError as error:
+        return handlers.Response(error.status, {"error": str(error)})
+    except OnboardingError as error:
+        if str(error) == "onboarding_job_not_found":
+            return handlers.Response(404, {"error": "seed_not_found"})
+        return handlers.Response(409, {"error": "hosted_checks_require_attention"})
+    except (OSError, ValueError, KeyError, TypeError):
+        return handlers.Response(409, {"error": "hosted_checks_require_attention"})
+
+
+def seed_hosted_witness(deps, ctx, **params):
+    return seed_hosted_checks(deps, ctx, _submit=True, **params)
+
+
 def create_seed(deps, ctx, _body=None, **params):
     return _call(deps, ctx, being_seed.create, _body, key=ctx.idempotency_key)
 
@@ -290,6 +324,31 @@ def upload_seed(deps, ctx, seed, _stream, _length, _sha256, _transfer_encoding=N
     except (ValueError, TypeError):
         return handlers.Response(411, {"error": "content_length_upload_required"})
     return _call(deps, ctx, being_seed.upload, seed, stream=_stream, length=length, sha256=_sha256)
+
+
+def seed_transfer(deps, ctx, seed, _body=None, _submit=False, **params):
+    from . import handlers
+    from clusterctl import onboarding_transfer
+    from clusterctl.onboarding_local_body import Requests
+
+    if _submit and _body != {}:
+        return handlers.Response(400, {'error': 'empty_transfer_request_required'})
+    expected = None
+    if _submit and deps.onboarding_progress:
+        try:
+            expected = Requests(deps.onboarding_progress,
+                worker_uid=deps.onboarding_worker_uid).read(seed, owner=_owner(ctx))['expected_being_ref']
+        except FileNotFoundError:
+            pass
+        except (OnboardingError, OSError, ValueError):
+            return handlers.Response(409, {'error': 'transfer_identity_request_requires_attention'})
+    if _submit:
+        return _call(deps, ctx, onboarding_transfer.request, seed, expected_being_ref=expected)
+    return _call(deps, ctx, onboarding_transfer.read, seed)
+
+
+def seed_transfer_request(deps, ctx, **params):
+    return seed_transfer(deps, ctx, _submit=True, **params)
 
 
 def discover_seed(deps, ctx, seed, **params):

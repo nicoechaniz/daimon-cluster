@@ -1,9 +1,10 @@
 {
   "repository": "https://github.com/AlterMundi/daimon-matrix",
-  "commit": "f561908b3e26abf6e38e9547f67d40e454998887",
+  "commit": "3a4ab6cdc5cb29712e44eabc063b1a53e8528db2",
   "files": {
-    "export_being.py": "f30470077b10c8dc651549d52f92d5a7cb148ad825668c2974310ae98d50b90c",
-    "receive_being.py": "fa8fb24b5959f62e38254d8362afcb79dfbd803a5f7561e604b3cae3c98ab3ce",
-    "install_codex_identity.py": "cb98a8a5e1c04777b78b19ea9755116998d371ed541d14a4cf7eb34b47f5b8b0"
+    "export_being.py": "9cf5761d2031eda3549f6097ce4747c0a21b402836426b2c2e4187687d857aa4",
+    "receive_being.py": "29241c7e2254796cab7cf42eac47099f4ff44504afef4e562bc36591d9222bcc",
+    "install_codex_identity.py": "cb98a8a5e1c04777b78b19ea9755116998d371ed541d14a4cf7eb34b47f5b8b0",
+    "protected_being.py": "53fc6db90a70556b38b3fa377655754e5785f9bf26fd0c090bfa43ba6e053fe9"
   }
 }

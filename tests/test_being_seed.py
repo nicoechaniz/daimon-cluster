@@ -44,7 +44,7 @@ def test_portable_exporter_pin_accepts_reference_and_reports_remaining_history_b
     guide = agent_guide()
     assert guide['preservation_tools_commit'] == seeds.TOOL_COMMIT
     assert seeds.TOOL_COMMIT[:7] in guide['portable_tools']
-    assert guide['exporter_status']['credential_bearing_history'] == 'protected-full-transfer-required'
+    assert guide['exporter_status']['credential_bearing_history'] == 'recipient-bound-protected-transfer'
     assert 'redacted native API' in agent_markdown()
 
 
@@ -364,11 +364,11 @@ def test_same_entrypoint_machine_formats_are_public_metadata_only(tmp_path):
         assert guide["api"]["servers"] == [{"url": "/", "description": "This HTTPS origin"}]
         assert set(guide["api"]["paths"]) == {
             "/v1/onboarding", "/v1/seed-access", "/v1/seeds", "/v1/seeds/{seed}/archive",
-            "/v1/seeds/{seed}/selection", "/v1/seeds/{seed}/prepare", "/v1/seeds/{seed}/connections", "/v1/seeds/{seed}/onboarding",
+            "/v1/seeds/{seed}/transfer", "/v1/seeds/{seed}/selection", "/v1/seeds/{seed}/prepare", "/v1/seeds/{seed}/connections", "/v1/seeds/{seed}/onboarding",
             "/v1/seed-access-requests", "/v1/seed-access-requests/{request_id}",
             "/v1/seed-access-requests/{request_id}/claim", "/v1/seed-session",
             "/v1/seeds/{seed}/onboarding/review", "/v1/seeds/{seed}/onboarding/action",
-            "/v1/seeds/{seed}/onboarding/access", "/v1/onboarding/local-body",
+            "/v1/seeds/{seed}/onboarding/access", "/v1/seeds/{seed}/onboarding/checks", "/v1/onboarding/local-body",
             "/v1/onboarding/local-body/{seed}", "/v1/onboarding/local-body/tools/{tool}",
             "/v1/onboarding/local-body/{seed}/diagnostic"}
         assert request("/v1/seeds", extra={"Authorization": ""})[0] == 401

@@ -299,9 +299,8 @@ class HostBackend:
             client = OwnerClient(self).observe(plan, managed._expected(plan))
             if client.state != 'complete':
                 return client
-            # An authenticated owner command is a prerequisite, not human
-            # conversation, Telegram continuity or Matrix delivery acceptance.
-            return Observation('waiting', reason='human_contact_required')
+            from .onboarding_acceptance import HostedChecks
+            return HostedChecks(self).observe(plan)
         if stage in {"context", "matrix"} and not self._consented(plan, stage=stage):
             return Observation("waiting", reason="identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:

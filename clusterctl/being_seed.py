@@ -20,11 +20,12 @@ import uuid
 from pathlib import Path
 from typing import BinaryIO
 
-TOOL_COMMIT = "f561908b3e26abf6e38e9547f67d40e454998887"
+TOOL_COMMIT = "3a4ab6cdc5cb29712e44eabc063b1a53e8528db2"
 TOOL_HASHES = {
-    "export_being.py": "f30470077b10c8dc651549d52f92d5a7cb148ad825668c2974310ae98d50b90c",
-    "receive_being.py": "fa8fb24b5959f62e38254d8362afcb79dfbd803a5f7561e604b3cae3c98ab3ce",
+    "export_being.py": "9cf5761d2031eda3549f6097ce4747c0a21b402836426b2c2e4187687d857aa4",
+    "receive_being.py": "29241c7e2254796cab7cf42eac47099f4ff44504afef4e562bc36591d9222bcc",
     "install_codex_identity.py": "cb98a8a5e1c04777b78b19ea9755116998d371ed541d14a4cf7eb34b47f5b8b0",
+    "protected_being.py": "53fc6db90a70556b38b3fa377655754e5785f9bf26fd0c090bfa43ba6e053fe9"
 }
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,30}\Z")
 LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}\Z")
@@ -125,12 +126,17 @@ def _fingerprint(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def tool(name: str, arguments: list[str], *, timeout: int = 600) -> dict:
+def verified_tools() -> Path:
     root = Path(__file__).resolve().parents[1] / "support/being-seed-tools"
     for filename, expected in TOOL_HASHES.items():
         raw = _path(root / "tools" / filename).read_bytes()
         if hashlib.sha256(raw).hexdigest() != expected:
             raise SeedError("pinned_seed_tool_mismatch", 503)
+    return root
+
+
+def tool(name: str, arguments: list[str], *, timeout: int = 600) -> dict:
+    root = verified_tools()
     launcher = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
                 f"from tools.{name} import main; raise SystemExit(main())")
     try:
@@ -211,6 +217,13 @@ def _retryable_upload(directory: Path, record: dict) -> bool:
         return False
     partials = 0
     for path in directory.iterdir():
+        if path.name == "transfer" or re.fullmatch(r"\.transfer-[0-9a-f]{32}", path.name):
+            from .onboarding_transfer import _packet_at
+            try:
+                _packet_at(path, record)
+            except (OSError, ValueError):
+                return False
+            continue
         if path.name in {"record.json", "connections.json", "lock"}:
             continue
         if not re.fullmatch(r"upload-[0-9a-f]{32}\.partial", path.name):
@@ -262,6 +275,13 @@ def upload(state_dir: str | Path, name: str, *, owner: str,
                 os.fsync(destination.fileno())
             if digest.hexdigest() != sha256:
                 raise SeedError("seed_archive_hash_mismatch")
+            from .onboarding_transfer import MAGIC
+            with path.open("rb") as incoming:
+                protected = incoming.read(len(MAGIC)) == MAGIC
+            if protected:
+                from .onboarding_transfer import _packet
+                _, _, recipient_digest = _packet(directory, record)
+                record["transfer_recipient_sha256"] = recipient_digest
             os.link(path, directory / "source.archive")
             record.update(phase="uploaded", archive_sha256=sha256, archive_size=length)
         except (OSError, SeedError):
@@ -280,9 +300,11 @@ def discovery(state_dir: str | Path, name: str, *, owner: str) -> dict:
             raise SeedError("seed_discovery_requires_uploaded_archive", 409)
         selection_path = directory / "discovery.json"
         if not selection_path.exists():
+            from .onboarding_transfer import arguments
+            protected_args = arguments(directory, record)
             tool("receive_being", ["discover", "--archive", str(directory / "source.archive"),
                                   "--sha256", record["archive_sha256"],
-                                  "--output", str(selection_path)])
+                                  "--output", str(selection_path), *protected_args])
         return _read(selection_path)
 
 
@@ -323,10 +345,12 @@ def prepare(state_dir: str | Path, name: str, selection: dict | None, *, owner: 
                 selection = _read(directory / "discovery.json")
             assert isinstance(selection, dict)
             _write(directory / "selection.json", selection)
+            from .onboarding_transfer import arguments
+            protected_args = arguments(directory, record)
             tool("receive_being", ["prepare", "--archive", str(directory / "source.archive"),
                                   "--sha256", record["archive_sha256"],
                                   "--selection", str(directory / "selection.json"),
-                                  "--output", str(directory / "received")])
+                                  "--output", str(directory / "received"), *protected_args])
             report = _read(directory / "received/preparation.json")
             if report.get("schema") != "dm.being-receiving-preparation/v1" or not report.get("ready_for_context_install"):
                 raise SeedError("seed_preparation_marker_missing")
@@ -389,6 +413,7 @@ def project(record: dict, *, retryable_upload: bool = False) -> dict:
         "telegram": "data supplied; not accepted" if {"telegram_bot_token", "telegram_chat_id"} <= supplied else "bot data required",
         "pending": ["context installation", "native memory acceptance", "signed embodiment enrollment",
                     "dedicated SSH", "fresh provider login", "Telegram acceptance"],
+        "protected_history": bool(record.get("transfer_recipient_sha256")),
         "active": False,
     }
 

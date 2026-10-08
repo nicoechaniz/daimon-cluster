@@ -575,6 +575,82 @@ class SSHLogins(Progress):
         return value
 
 
+def telegram_listener_snapshot(home, owner, runner=None):
+    """Observe the running listener's own current native lease, without writes."""
+    import json
+    import os
+    import subprocess
+    import sys
+    import time
+    import uuid
+    from pathlib import Path
+
+    run = runner or subprocess.run
+    command = ['systemctl', 'show', 'daimon-onboarding-telegram.service',
+        '--property=MainPID', '--property=ActiveState', '--property=ExecMainStartTimestampMonotonic']
+
+    def status():
+        result = run(command, capture_output=True, text=True, timeout=30, check=True)
+        return dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+
+    before = status()
+    try:
+        pid = int(before['MainPID'])
+        start = int(before['ExecMainStartTimestampMonotonic']) / 1000000
+        if before['ActiveState'] != 'active' or pid <= 0 or not 0 < start <= time.monotonic():
+            return {'ready': False}
+        os.kill(pid, 0)
+        if Path('/proc', str(pid)).stat().st_uid != owner:
+            return {'ready': False}
+    except (KeyError, ValueError, OSError):
+        return {'ready': False}
+    started_at = time.time() - (time.monotonic() - start)
+    program = ('import sqlite3,json,sys;from pathlib import Path;from contextlib import closing;'
+        'from datetime import datetime;\n'
+        'with closing(sqlite3.connect(Path(sys.argv[1]).as_uri()+"?mode=ro",uri=True)) as c:\n'
+        ' r=c.execute("SELECT instance_id,heartbeat_at,acquired_at FROM app_instance_lock WHERE key=\'main\'").fetchone()\n'
+        'print(json.dumps({"instance":r[0],"heartbeat":datetime.fromisoformat(r[1]).timestamp(),'
+        '"acquired":datetime.fromisoformat(r[2]).timestamp()} if r else None))')
+    database = Path(home) / '.local/state/daimon-onboarding/telegram/telegram.sqlite3'
+    result = run([sys.executable, '-B', '-I', '-c', program, str(database)],
+        user=owner, group=owner, extra_groups=[] if os.geteuid() == 0 else None, umask=0o077,
+        env={'HOME': str(home), 'PATH': os.defpath, 'LANG': 'C.UTF-8'},
+        capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 0:
+        return {'ready': False}
+    try:
+        lease = json.loads(result.stdout)
+        if (not isinstance(lease, dict) or set(lease) != {'instance', 'heartbeat', 'acquired'}
+                or str(uuid.UUID(lease['instance'])) != lease['instance']
+                or any(type(lease[k]) not in (int, float) for k in ('heartbeat', 'acquired'))):
+            return {'ready': False}
+        now = time.time()
+        # The selected native listener heartbeats every 30 seconds. The lease
+        # must have been acquired by this process, not its stopped predecessor.
+        if not started_at - .1 <= lease['acquired'] <= lease['heartbeat'] <= now + 5 or now - lease['heartbeat'] > 45:
+            return {'ready': False}
+        if status() != before:
+            return {'ready': False}
+        os.kill(pid, 0)
+    except (TypeError, ValueError, OSError):
+        return {'ready': False}
+    return {'ready': True}
+
+
+def wait_telegram_listener(home, owner, runner=None, sleeper=None, elapsed=None, timeout=180):
+    """A finite startup wait; do not restart a live or cooling-down listener."""
+    import time
+    sleep = sleeper or time.sleep
+    clock = elapsed or time.monotonic
+    deadline = clock() + timeout
+    while True:
+        if telegram_listener_snapshot(home, owner, runner)['ready']:
+            return True
+        if clock() >= deadline:
+            return False
+        sleep(min(2, max(0, deadline - clock())))
+
+
 def cli_admission_guard(home, owner):
     """Hold the receiving user's SQLite writer lock until admission stops."""
     import json
@@ -844,6 +920,8 @@ def cli_resume_probe(home, plan, thread, model, reasoning, runner=None,
                 system('start', names[1:])
                 system('start', names[:1])
                 system('is-active', names)
+                if not wait_telegram_listener(home, owner, runner):
+                    raise ValueError('telegram_listener_not_ready')
     finally:
         os.close(fd)
 
@@ -995,7 +1073,9 @@ class HostedChecks:
         from .onboarding_release import verify
         settings = verify(profile, plan['release_digest'], uid=os.geteuid())['profile']
         thread = request['native']['sessions'][0]['codex_thread_id']
-        program = ('import json,sys;\n' + inspect.getsource(cli_admission_guard) + '\n' + inspect.getsource(cli_resume_probe)
+        program = ('import json,sys;\n' + inspect.getsource(telegram_listener_snapshot)
+            + '\n' + inspect.getsource(wait_telegram_listener)
+            + '\n' + inspect.getsource(cli_admission_guard) + '\n' + inspect.getsource(cli_resume_probe)
             + '\np=json.loads(sys.argv[1]);print(json.dumps(cli_resume_probe("/home/agent",'
             + 'p["plan"],p["thread"],p["model"],p["reasoning"])))')
         payload = {'plan': plan, 'thread': thread, 'model': settings['model'], 'reasoning': settings['reasoning']}

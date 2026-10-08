@@ -172,7 +172,7 @@ class PeerHost:
         observed = self.backend._matrix_command(plan, 'observe')
         if (observed['phase'] != 'v8' or observed['receipt'].get('peer_being_ref') != self.settings['source_being_ref']):
             raise OnboardingError('native_onboarding_peer_incomplete')
-        root = '/home/agent/.local/state/daimon-onboarding/' + plan['name'] + '/peer'
+        root = '/home/agent/.local/state/daimon-onboarding/' + plan['name'] + '/matrix/peer'
         return root + '/application', root + '/visibility/installation.json'
 
     def execute(self, plan: dict) -> None:

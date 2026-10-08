@@ -26,13 +26,13 @@ def test_each_receiving_body_selects_its_verified_peer_application(monkeypatch):
         def application(plan):
             if plan['name'] == 'waiting':
                 return None
-            root = '/home/agent/.local/state/daimon-onboarding/' + plan['name'] + '/peer'
+            root = '/home/agent/.local/state/daimon-onboarding/' + plan['name'] + '/matrix/peer'
             return root + '/application', root + '/visibility/installation.json'
         return SimpleNamespace(application=application)
     monkeypatch.setattr('clusterctl.onboarding_peer_host.PeerHost', host)
     for name in ('eko', 'oliva'):
         app, visibility = managed._selection({'name': name})
-        assert '/' + name + '/peer/' in app and '/' + name + '/peer/' in visibility
+        assert '/' + name + '/matrix/peer/' in app and '/' + name + '/matrix/peer/' in visibility
         assert managed._ready({'name': name})
     assert managed._selection({'name': 'waiting'}) == (None, None)
     assert not managed._ready({'name': 'waiting'})

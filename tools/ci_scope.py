@@ -104,6 +104,7 @@ PEER_TESTS = ('tests/test_onboarding_peer_host.py', 'tests/test_onboarding_sourc
     'tests/test_onboarding_managed.py', 'tests/test_onboarding_host_ownership.py',
     'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 PEER_TOOL_FILES = {'clusterctl/onboarding_peer.py', 'clusterctl/onboarding_peer_native.py',
+    'clusterctl/onboarding_source.py',
     'support/matrix-onboarding/PROVENANCE.json', 'tools/export_local_matrix_identity.py',
     'tests/test_onboarding_source.py', 'docs/design/onboarding-jobs.md'}
 PEER_TOOL_TESTS = (*PEER_TESTS, 'tests/test_onboarding_peer.py',

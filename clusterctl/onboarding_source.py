@@ -37,6 +37,7 @@ class Source:
         self.outputs = private_directory(Path(settings['outputs']), create=True)
         self.visibility = Path(settings['native_visibility'])
         self.code = code or Path(__file__).resolve().parents[1]
+        self.code_uid = code_uid
         self.tool = onboarding_peer.native(self.code, uid=code_uid)
 
     def _reader(self):
@@ -150,11 +151,33 @@ class Source:
         launcher = ('import sys;sys.path.insert(0,sys.argv.pop(1));'
                     'from clusterctl.onboarding_source import main;raise SystemExit(main())')
         argv = [str(python), '-B', '-I', '-c', launcher, str(self.code), '--config', str(config)]
-        encoded = ' '.join(json.dumps(arg.replace('%', '%%').replace('$', '$$')) for arg in argv)
-        candidate = b'\n'.join(('ExecStart=' + encoded).encode() if line.startswith(b'ExecStart=') else line
-                               for line in raw.split(b'\n'))
-        if regular(unit, uid=os.geteuid()) not in (raw, candidate):
-            raise OnboardingError('existing_onboarding_source_service_preserved')
+        def selection(arguments):
+            encoded = ' '.join(json.dumps(arg.replace('%', '%%').replace('$', '$$')) for arg in arguments)
+            return b'\n'.join(('ExecStart=' + encoded).encode() if line.startswith(b'ExecStart=') else line
+                              for line in raw.split(b'\n'))
+        candidate = selection(argv)
+        current = regular(unit, uid=os.geteuid())
+        if current not in (raw, candidate):
+            import shlex
+            try:
+                previous = shlex.split(next(line[len('ExecStart='):] for line in current.decode().splitlines()
+                                           if line.startswith('ExecStart=')))
+                if len(previous) != len(argv) or previous[:5] != argv[:5] or previous[6:] != argv[6:]:
+                    raise ValueError
+                previous_code = Path(previous[5])
+                if not previous_code.is_absolute() or selection(previous) != current:
+                    raise ValueError
+                regular(previous_code / 'clusterctl/onboarding_source.py', uid=self.code_uid)
+                import ast
+                adapter = ast.parse(regular(previous_code / 'clusterctl/onboarding_peer.py', uid=self.code_uid))
+                declared = next(ast.literal_eval(statement.value) for statement in adapter.body
+                    if isinstance(statement, ast.Assign) and any(isinstance(target, ast.Name)
+                        and target.id == 'TOOL_SHA256' for target in statement.targets))
+                tool = regular(previous_code / 'clusterctl/onboarding_peer_native.py', uid=self.code_uid)
+                if declared != hashlib.sha256(tool).hexdigest():
+                    raise ValueError
+            except (ValueError, StopIteration, UnicodeError, OSError, OnboardingError):
+                raise OnboardingError('existing_onboarding_source_service_preserved') from None
         # Validate both retained controllers and the new signed app BEFORE
         # selecting its service. Publication order remains safe after lost ACK.
         if fingerprint not in settings['applications']:

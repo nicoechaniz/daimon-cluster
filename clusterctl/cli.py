@@ -476,8 +476,9 @@ def run(argv=None, adapter=None) -> int:
                     from .onboarding_acceptance import Requests, read as read_checks, submit as submit_witness
                     being_seed.status(base, args.name, **options)
                     request = Requests(args.progress, worker_uid=args.worker_uid).read(args.name, **options)
-                    seed_result = (submit_witness(Path(base), request, json.loads(args.file.read_bytes()))
-                        if args.seed_command == "witness" else read_checks(Path(base), request))
+                    if args.seed_command == "witness":
+                        submit_witness(Path(base), request, json.loads(args.file.read_bytes()))
+                    seed_result = read_checks(Path(base), request, progress=args.progress, worker_uid=args.worker_uid)
                 elif args.seed_command in {"review", "consent"}:
                     from .onboarding_consent import Reviews, read, submit
                     reviews = Reviews(args.reviews, worker_uid=args.worker_uid)

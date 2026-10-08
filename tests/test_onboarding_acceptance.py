@@ -38,6 +38,83 @@ def test_ssh_login_requires_real_unit_owner_key_and_current_job_time():
             'verified': False, 'authenticated_at_ms': None}
 
 
+def native_delivery(send_id):
+    return dict(ok=True, error=None, result=dict(send_id=send_id, phase='message',
+        transport_status='recipient-intake', ambiguous=False, retryable=False,
+        stages=[dict(phase=phase, transport_status='recipient-intake', attempt_id=str(uuid.uuid4()))
+                for phase in ('evidence', 'message')]))
+
+
+def test_matrix_delivery_requires_both_actual_intake_stages_and_exact_send():
+    send_id = str(uuid.uuid4())
+    response = native_delivery(send_id)
+    proof = checks.matrix_delivery_result(response, send_id)
+    assert proof == dict(verified=True, agent_read=False, native_receipt_sha256=digest(response))
+    for invalid in (None, [], {'ok': False}, {**response, 'error': {'code': 'failed'}},
+                    {**response, 'result': {**response['result'], 'ambiguous': True}},
+                    {**response, 'result': {**response['result'], 'retryable': True}},
+                    {**response, 'result': {**response['result'], 'send_id': str(uuid.uuid4())}},
+                    {**response, 'result': {**response['result'], 'stages': response['result']['stages'][1:]}},
+                    {**response, 'result': {**response['result'], 'stages': [response['result']['stages'][1]] * 2}},
+                    {**response, 'result': {**response['result'], 'transport_status': 'accepted'}},
+                    {**response, 'result': {**response['result'], 'stages': [None, None]}}):
+        assert checks.matrix_delivery_result(invalid, send_id) == {'verified': False}
+
+
+def test_matrix_adapter_adopts_existing_intent_recovers_lost_ack_and_isolates_owner(tmp_path, monkeypatch):
+    value = plan()
+    progress = tmp_path / 'progress'
+    progress.mkdir(mode=0o750)
+    payload = dict(being_ref='dm:being:v1:' + 'A' * 43, python='qualified-native-python')
+    source = 'dm:being:v1:' + 'B' * 43
+    calls = []
+    completed = False
+    lost_ack = True
+
+    def dispatch(plan, argv):
+        nonlocal completed
+        compile(argv[-2], '<captured-native-delivery-probe>', 'exec')
+        parameters = json.loads(argv[-1])
+        calls.append(parameters)
+        assert parameters['parameters'] == existing
+        assert parameters['recipient'] == source and parameters['payload'] == payload
+        if parameters['send']:
+            completed = True
+            if lost_ack:
+                raise OSError('lost native send acknowledgement')
+        return json.dumps(checks.matrix_delivery_result(native_delivery(existing['send_id']), existing['send_id'])
+                          if completed else {'verified': False})
+
+    backend = SimpleNamespace(config=SimpleNamespace(progress=progress), instance=lambda plan:'dm-eko', _dispatch=dispatch)
+    adapter = checks.HostedChecks(backend)
+    monkeypatch.setattr(adapter, '_matrix_context', lambda plan:(payload, source))
+    existing = dict(channel_id='peer-out', send_id=str(uuid.uuid4()), thread_id=str(uuid.uuid4()),
+        text='Original human-requested technical transport verification; preserve exact text.')
+    intent, _ = adapter.prepare_matrix_intent(value, existing)
+    assert adapter.prepare_matrix_intent(value)[0] == intent
+    with pytest.raises(OnboardingError, match='existing_hosted_checks_preserved'):
+        adapter.prepare_matrix_intent(value, {**existing, 'text': 'Changed retry refused'})
+    assert adapter.matrix_delivery_observe(value).state == 'absent'
+    with pytest.raises(OSError, match='lost native send acknowledgement'):
+        adapter.verify_matrix_delivery(value)
+    assert not (progress / 'eko.matrix-delivery.json').exists()
+    assert adapter.matrix_delivery_observe(value).state == 'complete'
+    adapter.verify_matrix_delivery(value)
+    assert sum(c['send'] for c in calls) == 1
+    proof = checks.MatrixDeliveries(progress, worker_uid=os.geteuid()).read('eko', owner='sai')
+    assert proof['intent'] == intent and proof['probe']['agent_read'] is False
+    with pytest.raises(OnboardingError, match='onboarding_job_not_found'):
+        checks.MatrixDeliveries(progress, worker_uid=os.geteuid()).read('eko', owner='ani')
+    monkeypatch.setattr(adapter, '_matrix_context', lambda plan:(payload, 'dm:being:v1:' + 'C' * 43))
+    with pytest.raises(OnboardingError, match='existing_hosted_checks_preserved'):
+        adapter.matrix_delivery_observe(value)
+    monkeypatch.setattr(adapter, '_matrix_context', lambda plan:(payload, source))
+    (progress / 'eko.matrix-intent.json').unlink()
+    with pytest.raises(OnboardingError, match='existing_hosted_checks_preserved'):
+        adapter.matrix_delivery_observe(value)
+    assert sum(c['send'] for c in calls) == 1
+
+
 def test_ssh_login_adapter_binds_native_evidence_and_keeps_owner_isolation(tmp_path):
     value = plan()
     store, fixture = setup(tmp_path, value)
@@ -510,6 +587,46 @@ def witness(task, result="passed", stamp=None):
         checked_at_ms=stamp or int(time.time() * 1000),
         checks={key: result for key in checks._checks(task)},
     )
+
+
+@pytest.mark.parametrize('browser', [False, True])
+def test_acceptance_requires_every_native_proof_and_complete_actual_owner_witness(browser):
+    task = request(browser)
+    task['technical'] = dict.fromkeys(checks.TECHNICAL, True)
+    report = witness(task)
+    assert checks.acceptance_facts(task, None) is None
+    from clusterctl.onboarding import JobStore
+    assert JobStore.accepted(plan(browser=browser), checks.acceptance_facts(task, report))
+    for key in checks.TECHNICAL:
+        assert checks.acceptance_facts({**task, 'technical': {**task['technical'], key: False}}, report) is None
+    for key in report['checks']:
+        assert checks.acceptance_facts(task, {**report, 'checks': {**report['checks'], key: 'missing'}}) is None
+
+
+def test_portal_projects_acceptance_only_after_worker_commits_and_latest_witness_passes(tmp_path):
+    state, progress = tmp_path / 'state', tmp_path / 'progress'
+    state.mkdir(mode=0o700)
+    progress.mkdir(mode=0o750)
+    being_seed.create(state, dict(name='eko', label='Eko', mode='import'), owner='sai', key=KEY)
+    task = request()
+    task['technical'] = dict.fromkeys(checks.TECHNICAL, True)
+    checks.Requests(progress, worker_uid=os.geteuid()).publish(task)
+    endpoint = '/v1/seeds/eko/onboarding/checks'
+    store, fixture = setup(tmp_path, plan(browser=False))
+    with http_server(state) as (server, http):
+        server.deps = dataclasses.replace(server.deps, seed_only=True,
+            onboarding_progress=str(progress), onboarding_worker_uid=os.geteuid())
+        first = witness(task)
+        assert http(endpoint, 'POST', first, owner='sai')[2]['request']['hosted_acceptance'] is False
+        pending = advance(store, fixture, count=7)
+        checks.Progress(progress, worker_uid=os.geteuid()).publish(pending)
+        assert http(endpoint, owner='sai')[2]['request']['hosted_acceptance'] is False
+        completed = store.tick('eko', fixture)
+        assert completed['active'] is True
+        checks.Progress(progress, worker_uid=os.geteuid()).publish(completed)
+        assert http(endpoint, owner='sai')[2]['request']['hosted_acceptance'] is True
+        later = witness(task, result='failed', stamp=first['checked_at_ms']+1)
+        assert http(endpoint, 'POST', later, owner='sai')[2]['request']['hosted_acceptance'] is False
 
 
 def test_cli_resume_adapter_requires_selected_thread_and_owner_bound_proof(tmp_path, monkeypatch):

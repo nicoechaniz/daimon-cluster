@@ -7,6 +7,8 @@ provider/Telegram acceptance claim.
 import json
 import os
 import sqlite3
+from pathlib import Path
+from types import SimpleNamespace
 from contextlib import closing
 from dataclasses import replace
 
@@ -17,6 +19,7 @@ from clusterctl.onboarding import JobStore, OnboardingError, digest
 from clusterctl.onboarding_guest import Receiver, mkdir_chain
 from clusterctl.onboarding_host import HostBackend
 from clusterctl.onboarding_worker import Worker
+from clusterctl.onboarding_acceptance import HostedChecks
 from tests.test_being_seed import KEY
 from tests.test_onboarding import FixtureBackend
 from tests.test_onboarding_guest import NATIVE, artifact
@@ -63,6 +66,7 @@ def new_seed(tmp_path, primary='store-001'):
 @pytest.mark.parametrize('primary', ['store-001', None])
 def test_new_seed_creates_own_native_pool_and_preserves_frozen_empty_history_on_retry(tmp_path, monkeypatch, primary):
     config, plan, receiver = new_seed(tmp_path, primary)
+    assert HostedChecks(SimpleNamespace(config=config))._memory_stores(plan) == ['store-001']
     before = onboarding_input.inventory(receiver.incoming / 'received', uid=os.geteuid())
     assert receiver.preparation['selection']['memory'] == []
     assert receiver.primary == 'store-001'
@@ -155,3 +159,27 @@ def test_disposable_new_seed_restarts_same_worker_and_completes_all_engine_stage
     assert not (receiver.home / '.codex/auth.json').exists()
     assert (receiver.received / 'context/SOUL.md').read_text() == 'Own new identity; no previous memories.'
     assert json.loads((config.inputs / plan['name'] / 'manifest.json').read_text())['seed_mode'] == 'new'
+
+
+def test_new_seed_mounts_qualified_receiving_modules_and_keeps_original_context(tmp_path):
+    from clusterctl.onboarding_code_successor import build
+    from tools.build_onboarding_code import MODULES
+    config, plan, _ = new_seed(tmp_path)
+    successor = tmp_path / 'successor'
+    result = build(config.code, plan['release_digest'], Path(__file__).resolve().parents[1] / 'clusterctl',
+        MODULES, successor)
+    views = tmp_path / 'views'
+    views.mkdir(mode=0o700)
+    config = replace(config, views=views, runtime_code=successor, runtime_digest=result['runtime_digest'])
+    backend = HostBackend(config)
+    _, original, mounts = backend._guest_paths(plan)
+    maintained = Path('/opt/daimon-onboarding-runtime') / result['runtime_digest']
+    assert any(value['path'] == str(maintained) and value['readonly'] == 'true' for value in mounts.values())
+    commands = []
+    backend._dispatch = lambda plan, argv:commands.append(argv) or '{}'
+    backend._guest_command(plan, 'execute', 'context', original)
+    argv = commands[0]
+    assert argv[argv.index('-c')+2] == str(maintained)
+    assert argv[argv.index('--code')+1] == str(original)
+    assert onboarding_release.verify(successor,result['runtime_digest'],uid=os.geteuid())['profile'] == \
+        onboarding_release.verify(config.code,plan['release_digest'],uid=os.geteuid())['profile']

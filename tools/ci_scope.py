@@ -45,6 +45,14 @@ ACCOUNT_TESTS = ('tests/test_onboarding_accounts.py', 'tests/test_onboarding_sha
     'tests/test_onboarding_provider.py', 'tests/test_onboarding_ingress.py',
     'tests/test_onboarding_consent.py', 'tests/test_onboarding_actions.py',
     'tests/test_onboarding_host_ownership.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
+WELCOME_FILES = {'clusterctl/onboarding_welcome.py', 'clusterctl/onboarding_host.py',
+                 'tests/test_onboarding_welcome.py', 'tools/check_rc_types.py'}
+WELCOME_TESTS = ('tests/test_onboarding_welcome.py', 'tests/test_onboarding.py',
+    'tests/test_onboarding_host.py', 'tests/test_onboarding_telegram.py',
+    'tests/test_onboarding_consent.py', 'tests/test_onboarding_approvals.py',
+    'tests/test_onboarding_intake.py', 'tests/test_onboarding_host_ownership.py',
+    'tests/test_onboarding_guest.py', 'tests/test_onboarding_code_successor.py',
+    'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 PEER_FILES = {'clusterctl/onboarding_peer_host.py', 'tests/test_onboarding_peer_host.py',
               'tests/test_onboarding_managed.py'}
 PEER_TESTS = ('tests/test_onboarding_peer_host.py', 'tests/test_onboarding_source.py',
@@ -62,6 +70,10 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'clusterctl/onboarding_welcome.py', 'tests/test_onboarding_welcome.py'}
+            and set(changed) <= WELCOME_FILES | CI_FILES
+            and all((root / path).is_file() for path in WELCOME_TESTS)):
+        return 'welcome', list(WELCOME_TESTS)
     if set(changed) <= ACCOUNT_FILES | CI_FILES and all((root / path).is_file() for path in ACCOUNT_TESTS):
         return 'account', list(ACCOUNT_TESTS)
     if set(changed) <= PEER_FILES | CI_FILES and all((root / path).is_file() for path in PEER_TESTS):

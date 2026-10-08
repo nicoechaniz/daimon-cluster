@@ -157,3 +157,15 @@ def test_account_mount_permissions_keep_shared_login_and_owner_isolation(tmp_pat
     assert select(changed, tmp_path) == ('full', ['tests'])
     assert select(changed + ['clusterctl/onboarding_provider.py'], ROOT)[0] == 'onboarding'
     assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])
+
+
+def test_intake_only_changes_keep_stream_crypto_and_owner_boundaries(tmp_path):
+    changed = ['clusterctl/being_seed.py', 'clusterd/seed_ui.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'portal'
+    assert {'tests/test_onboarding_transfer.py', 'tests/test_being_seed.py',
+            'tests/test_onboarding_intake.py', 'tests/test_onboarding_input.py',
+            'tests/test_onboarding_release.py', 'tests/test_auth.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])
+    assert select(changed + ['clusterctl/matrix_host.py'], ROOT) == ('full', ['tests'])

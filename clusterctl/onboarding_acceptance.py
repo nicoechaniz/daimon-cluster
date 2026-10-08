@@ -575,6 +575,305 @@ class SSHLogins(Progress):
         return value
 
 
+def cli_admission_guard(home, owner):
+    """Hold the receiving user's SQLite writer lock until admission stops."""
+    import json
+    import os
+    import select
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    database = Path(home) / '.local/state/daimon-onboarding/telegram/telegram.sqlite3'
+    program = ('import sqlite3,json,sys;'
+        'c=sqlite3.connect(sys.argv[1],timeout=20);c.execute("BEGIN IMMEDIATE");'
+        'idle=c.execute("SELECT COUNT(*) FROM sessions WHERE busy!=0").fetchone()[0]==0 '
+        'and c.execute("SELECT COUNT(*) FROM turns WHERE status=\'running\'").fetchone()[0]==0;'
+        'print(json.dumps({"idle":idle}),flush=True);sys.stdin.buffer.read(1);c.rollback();c.close()')
+    process = subprocess.Popen([sys.executable, '-B', '-I', '-c', program, str(database)],
+        user=owner, group=owner, extra_groups=[] if os.geteuid() == 0 else None, umask=0o077,
+        env={'HOME': str(home), 'PATH': os.defpath, 'LANG': 'C.UTF-8'},
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        if not select.select([process.stdout], [], [], 30)[0]:
+            raise ValueError('cli_admission_lock_unavailable')
+        value = json.loads(process.stdout.readline())
+        if set(value) != {'idle'} or type(value['idle']) is not bool:
+            raise ValueError('cli_admission_lock_unavailable')
+        yield value['idle']
+    finally:
+        if process.stdin is not None:
+            process.stdin.close()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+def cli_resume_probe(home, plan, thread, model, reasoning, runner=None,
+                     journal_root=None, unit_root=None, codex_path=None):
+    """One bounded CLI resume; keep history, offsets and uncertain output.
+
+    Runs as guest root. Only the dedicated Telegram/native services pause,
+    after idle checks. Native inference runs as the receiving user. An uncertain
+    inference is never repeated; recovery consumes its original private stream.
+    """
+    import fcntl
+    import hashlib
+    import json
+    import os
+    import re
+    import shutil
+    import stat
+    import subprocess
+    import sys
+    import uuid
+    from pathlib import Path
+    from contextlib import contextmanager
+
+    run = runner or subprocess.run
+    coordinator = os.geteuid()
+    if runner is None and coordinator != 0:
+        raise PermissionError('guest_root_required')
+    owner = 1000 if runner is None else coordinator
+    home = Path(home)
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', plan.get('name', '')) or str(uuid.UUID(thread)) != thread:
+        raise ValueError('invalid_cli_resume_probe')
+    fingerprint = hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    root = Path(journal_root) if journal_root else Path('/var/lib/daimon-onboarding-checks') / plan['name'] / 'cli-resume' / thread
+    units = Path(unit_root or '/etc/systemd/system')
+    names = ['daimon-onboarding-telegram.service', 'daimon-onboarding-codex.service']
+
+    def owned(path, uid, private=True):
+        if any(p.is_symlink() for p in (path, *path.parents)):
+            raise ValueError('private_cli_resume_probe_required')
+        info = path.stat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != uid or info.st_nlink != 1
+                or info.st_mode & (0o077 if private else 0o022)):
+            raise ValueError('private_cli_resume_probe_required')
+        return info
+
+    def hash_file(path, length=None):
+        h = hashlib.sha256()
+        with path.open('rb') as stream:
+            left = length
+            while left is None or left > 0:
+                chunk = stream.read(1024 * 1024 if left is None else min(left, 1024 * 1024))
+                if not chunk:
+                    break
+                h.update(chunk)
+                if left is not None:
+                    left -= len(chunk)
+        if left not in (None, 0):
+            raise ValueError('original_cli_history_changed')
+        return h.hexdigest()
+
+    def publish(path, value):
+        temporary = path.with_name('.' + path.name + '.' + uuid.uuid4().hex)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'wb') as output:
+            output.write(json.dumps(value, sort_keys=True).encode())
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def read(path):
+        if owned(path, coordinator).st_size > 65536:
+            raise ValueError('invalid_cli_resume_probe')
+        return json.loads(path.read_bytes())
+
+    def system(action, selected):
+        return run(['systemctl', action, *selected], capture_output=True, text=True, timeout=40, check=True)
+
+    def metadata():
+        # SQLite read marks stay owned by the receiving user, including SHM.
+        code = ('import sqlite3,json,sys;from pathlib import Path;from contextlib import closing;'
+            'h=Path(sys.argv[1]);\n'
+            'with closing(sqlite3.connect((h/".local/state/daimon-onboarding/telegram/telegram.sqlite3").as_uri()+"?mode=ro",uri=True)) as c:\n'
+            ' idle=c.execute("SELECT COUNT(*) FROM sessions WHERE busy!=0").fetchone()[0]==0 and c.execute("SELECT COUNT(*) FROM turns WHERE status=\'running\'").fetchone()[0]==0\n'
+            'with closing(sqlite3.connect((h/".codex/state_5.sqlite").as_uri()+"?mode=ro",uri=True)) as c:\n'
+            ' row=c.execute("SELECT rollout_path FROM threads WHERE id=? AND archived=0",(sys.argv[2],)).fetchone()\n'
+            'print(json.dumps({"idle":idle,"rollout":row[0] if row else None}))')
+        result = run([sys.executable, '-B', '-I', '-c', code, str(home), thread],
+            user=owner, group=owner, extra_groups=[], umask=0o077,
+            env={'HOME': str(home), 'PATH': os.defpath, 'LANG': 'C.UTF-8'},
+            capture_output=True, text=True, timeout=30, check=True)
+        value = json.loads(result.stdout)
+        if set(value) != {'idle', 'rollout'} or type(value['idle']) is not bool:
+            raise ValueError('invalid_cli_resume_probe')
+        return value
+
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if root.is_symlink() or root.stat().st_uid != coordinator or root.stat().st_mode & 0o077:
+        raise ValueError('private_cli_resume_probe_required')
+    fd = os.open(root / 'lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        owned(root / 'lock', coordinator)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        executable = Path(codex_path or shutil.which('codex')).resolve(strict=True)
+        owned(executable, coordinator, False)
+        unit_hashes = {name: hash_file(units / name) for name in names if owned(units / name, coordinator, False)}
+        binding = {'plan_digest': fingerprint, 'thread_id': thread, 'model': model, 'reasoning': reasoning,
+                   'cli_sha256': hash_file(executable), 'units': unit_hashes}
+        intent_path = root / 'intent.json'
+        intent = read(intent_path) if intent_path.exists() else None
+        if intent is not None and intent['binding'] != binding:
+            raise ValueError('existing_cli_resume_probe_preserved')
+        # Do not restore/restart underneath a CLI left alive by a lost caller.
+        for process in Path('/proc').iterdir():
+            if not process.name.isdecimal():
+                continue
+            try:
+                argv = (process / 'cmdline').read_bytes().split(b'\0')
+                if thread.encode() in argv and b'resume' in argv:
+                    return {'verified': False, 'waiting': True}
+            except OSError:
+                pass
+        stopped = False
+        try:
+            if (root / 'proof.json').exists():
+                proof = read(root / 'proof.json')
+                if proof['plan_digest'] != fingerprint or proof['thread_id'] != thread or proof['cli_sha256'] != binding['cli_sha256']:
+                    raise ValueError('existing_cli_resume_probe_preserved')
+                history = Path(intent['history'])
+                owned(history, owner)
+                if hash_file(history, intent['history_size']) != intent['history_sha256']:
+                    raise ValueError('original_cli_history_changed')
+                return proof
+            if intent is None:
+                if not metadata()['idle']:
+                    return {'verified': False, 'waiting': True}
+                system('is-active', names)
+                # Native Telegram marks busy before provider dispatch. Hold its
+                # writer lock while stopping admission so no new turn can start
+                # between the idle observation and service shutdown.
+                if runner is None:
+                    admission = contextmanager(cli_admission_guard)(home, owner)
+                else:
+                    @contextmanager
+                    def fixture_admission():
+                        yield metadata()['idle']
+                    admission = fixture_admission()
+                with admission as idle:
+                    if not idle:
+                        return {'verified': False, 'waiting': True}
+                    stopped = True
+                    system('stop', names[:1])
+                information = metadata()
+                if not information['idle']:
+                    return {'verified': False, 'waiting': True}
+                system('stop', names[1:])
+                history = Path(information['rollout'])
+                if not history.is_relative_to(home / '.codex'):
+                    raise ValueError('owned_cli_thread_required')
+                info = owned(history, owner)
+                old_hash = hash_file(history)
+                original = root / ('original-history-' + uuid.uuid4().hex + '.jsonl')
+                with history.open('rb') as source, original.open('xb') as output:
+                    os.chmod(original, 0o600)
+                    shutil.copyfileobj(source, output)
+                    output.flush()
+                    os.fsync(output.fileno())
+                if hash_file(original) != old_hash:
+                    raise ValueError('original_cli_history_changed')
+                intent = {'binding': binding, 'history': str(history), 'history_size': info.st_size,
+                    'history_sha256': old_hash, 'nonce': 'CLI_RESUME_OK_' + uuid.uuid4().hex}
+                publish(intent_path, intent)
+                # Intent is durable before dispatch. No retry creates inference.
+                output_path = root / 'native-output.jsonl'
+                output_fd = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                error_fd = os.open(root / 'native-errors.log', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(output_fd, 'wb') as output, os.fdopen(error_fd, 'wb') as errors:
+                    run([str(executable), '-c', 'cli_auth_credentials_store="file"',
+                        '-c', 'approval_policy="never"', '-c', 'sandbox_mode="read-only"',
+                        '-c', 'model_reasoning_effort=' + json.dumps(reasoning), 'exec', 'resume',
+                        '--ephemeral', '--json', '--skip-git-repo-check', '--model', model, thread, '-'],
+                        input=('Technical CLI continuity verification, requested by Nicolas and operated by Source. '
+                            'Do not use tools, read memory or Matrix, change files or reveal conversation content. '
+                            'Reply with exactly: ' + intent['nonce']).encode(),
+                        env={'HOME': str(home), 'CODEX_HOME': str(home / '.codex'),
+                             'PATH': '/usr/local/bin:/usr/bin:/bin', 'LANG': 'C.UTF-8'},
+                        cwd=home / 'Projects/being', user=owner, group=owner, extra_groups=[], umask=0o077,
+                        stdout=output, stderr=errors, timeout=240, check=False)
+                    output.flush()
+                    os.fsync(output.fileno())
+                    errors.flush()
+                    os.fsync(errors.fileno())
+            history = Path(intent['history'])
+            owned(history, owner)
+            if hash_file(history, intent['history_size']) != intent['history_sha256']:
+                raise ValueError('original_cli_history_changed')
+            output_path = root / 'native-output.jsonl'
+            if not output_path.exists() or owned(output_path, coordinator).st_size > 16 * 1024**2:
+                return {'verified': False, 'uncertain': True}
+            try:
+                events = [json.loads(line) for line in output_path.read_bytes().splitlines() if line.strip()]
+            except ValueError:
+                return {'verified': False, 'uncertain': True}
+            if (not any(e.get('type') == 'thread.started' and e.get('thread_id') == thread for e in events)
+                    or not any(e.get('type') == 'turn.completed' for e in events)
+                    or any(e.get('type') in {'error', 'turn.failed'} for e in events)
+                    or any(e.get('type', '').startswith('item.') and e.get('item', {}).get('type')
+                           not in {'agent_message', 'reasoning'} for e in events)
+                    or not any(e.get('type') == 'item.completed' and e.get('item', {}).get('type') == 'agent_message'
+                           and e['item'].get('text', '').strip() == intent['nonce'] for e in events)):
+                return {'verified': False, 'uncertain': True}
+            proof = {'schema': 'cluster-native-cli-resume/v1', 'plan_digest': fingerprint, 'thread_id': thread,
+                'verified': True, 'original_history_sha256': intent['history_sha256'],
+                'cli_sha256': binding['cli_sha256'], 'provider_stream_sha256': hash_file(output_path)}
+            owned(executable, coordinator, False)
+            if hash_file(executable) != binding['cli_sha256']:
+                raise ValueError('existing_cli_resume_probe_preserved')
+            publish(root / 'proof.json', proof)
+            return proof
+        finally:
+            if stopped or intent is not None:
+                for name in unit_hashes:
+                    owned(units / name, coordinator, False)
+                if any(hash_file(units / name) != expected for name, expected in unit_hashes.items()):
+                    raise ValueError('foreign_cli_service_state_preserved')
+                # Software/services only. Never restore history, SQLite or offsets.
+                system('start', names[1:])
+                system('start', names[:1])
+                system('is-active', names)
+    finally:
+        os.close(fd)
+
+
+class CLIResumes(Progress):
+    suffix = '.cli-resume.json'
+
+    @staticmethod
+    def validate(value):
+        if (not isinstance(value, dict) or set(value) != {'schema', 'name', 'owner', 'plan_digest', 'probe'}
+                or value['schema'] != 'cluster-hosted-cli-resume/v1'
+                or any(not isinstance(value[k], str) or not being_seed.NAME.fullmatch(value[k]) for k in ('name', 'owner'))
+                or not isinstance(value['plan_digest'], str) or not re.fullmatch('[0-9a-f]{64}', value['plan_digest'])):
+            raise OnboardingError('invalid_cli_resume_evidence')
+        probe = value['probe']
+        if (not isinstance(probe, dict) or set(probe) != {'schema', 'plan_digest', 'thread_id', 'verified',
+                'original_history_sha256', 'cli_sha256', 'provider_stream_sha256'}
+                or probe['schema'] != 'cluster-native-cli-resume/v1' or probe['plan_digest'] != value['plan_digest']
+                or probe['verified'] is not True
+                or any(not isinstance(probe[k], str) or not re.fullmatch('[0-9a-f]{64}', probe[k])
+                       for k in ('original_history_sha256', 'cli_sha256', 'provider_stream_sha256'))):
+            raise OnboardingError('invalid_cli_resume_evidence')
+        try:
+            if str(uuid.UUID(probe['thread_id'])) != probe['thread_id']:
+                raise ValueError
+        except (TypeError, ValueError, AttributeError):
+            raise OnboardingError('invalid_cli_resume_evidence') from None
+        return value
+
+
 class HostedChecks:
     def __init__(self, backend):
         self.backend = backend
@@ -667,6 +966,50 @@ class HostedChecks:
             logins.publish(dict(schema='cluster-hosted-ssh-login/v1', name=plan['name'], owner=plan['owner'],
                 plan_digest=digest(plan), key_digest=key_digest, **result))
         return result['verified']
+
+    def cli_resume_observe(self, plan):
+        try:
+            receipt = CLIResumes(self.backend.config.progress, worker_uid=os.geteuid()).read(plan['name'], owner=plan['owner'])
+        except FileNotFoundError:
+            try:
+                request = Requests(self.backend.config.progress, worker_uid=os.geteuid()).read(plan['name'], owner=plan['owner'])
+            except FileNotFoundError:
+                return Observation('waiting', reason='human_contact_required')
+            if request['plan_digest'] != digest(plan):
+                raise OnboardingError('existing_hosted_checks_preserved')
+            return (Observation('absent', safe_to_execute=True) if request['native']['sessions']
+                    else Observation('waiting', reason='human_contact_required'))
+        if receipt['plan_digest'] != digest(plan):
+            raise OnboardingError('existing_hosted_checks_preserved')
+        return Observation('complete', {'verified': True})
+
+    def verify_cli_resume(self, plan):
+        if self.cli_resume_observe(plan).state != 'absent':
+            return
+        config = self.backend.config
+        job = JobStore(config.jobs)._load(plan['name'])
+        if job['plan'] != plan or any(job['steps'][stage]['state'] != 'complete' for stage in ('access', 'memory', 'telegram')):
+            raise OnboardingError('receiving_context_required')
+        request = Requests(config.progress, worker_uid=os.geteuid()).read(plan['name'], owner=plan['owner'])
+        profile = self.backend.config.code
+        from .onboarding_release import verify
+        settings = verify(profile, plan['release_digest'], uid=os.geteuid())['profile']
+        thread = request['native']['sessions'][0]['codex_thread_id']
+        program = ('import json,sys;\n' + inspect.getsource(cli_admission_guard) + '\n' + inspect.getsource(cli_resume_probe)
+            + '\np=json.loads(sys.argv[1]);print(json.dumps(cli_resume_probe("/home/agent",'
+            + 'p["plan"],p["thread"],p["model"],p["reasoning"])))')
+        payload = {'plan': plan, 'thread': thread, 'model': settings['model'], 'reasoning': settings['reasoning']}
+        result = json.loads(self.backend._dispatch(plan, ['exec', self.backend.instance(plan), '--',
+            'python3', '-B', '-I', '-c', program, json.dumps(payload)]))
+        if result.get('waiting') is True and result.get('verified') is False:
+            return
+        if result.get('uncertain') is True and result.get('verified') is False:
+            raise OnboardingError('uncertain_external_effect')
+        if result.get('thread_id') != thread:
+            raise OnboardingError('invalid_cli_resume_evidence')
+        CLIResumes(config.progress, worker_uid=os.geteuid()).publish(dict(
+            schema='cluster-hosted-cli-resume/v1', name=plan['name'], owner=plan['owner'],
+            plan_digest=digest(plan), probe=result))
 
     def observe(self, plan: dict) -> Observation:
         config = self.backend.config
@@ -763,6 +1106,12 @@ class HostedChecks:
             memory_proof = None
         if memory_proof is not None:
             technical['memory_write_verified'] = self.memory_write_observe(plan).state == 'complete'
+        try:
+            cli_proof = CLIResumes(config.progress, worker_uid=os.geteuid()).read(plan['name'], owner=plan['owner'])
+        except FileNotFoundError:
+            cli_proof = None
+        if cli_proof is not None:
+            technical['cli_resume_verified'] = self.cli_resume_observe(plan).state == 'complete'
         if previous and previous["technical"]["restart_verified"]:
             # Historical continuation evidence survives later normal restarts.
             technical["restart_verified"] = True
@@ -783,8 +1132,8 @@ class HostedChecks:
         witness = worker_report(
             config.consent_state, value, intake_uid=config.consent_uid
         )
-        # Remaining CLI and native Matrix delivery
-        # adapters must still provide observations. All-passed witnesses cannot
+        # Native Matrix delivery still requires its own observed witness.
+        # All-passed witnesses cannot
         # promote this collection to a complete hosted acceptance.
         reason = (
             "human_contact_required"

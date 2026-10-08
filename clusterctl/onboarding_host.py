@@ -350,7 +350,9 @@ class HostBackend:
             memory_write = checks.memory_write_observe(plan)
             if memory_write.state != 'complete':
                 return memory_write
-            return checks.observe(plan)
+            current_checks = checks.observe(plan)
+            cli_resume = checks.cli_resume_observe(plan)
+            return cli_resume if cli_resume.state == 'absent' else current_checks
         if stage in {"context", "matrix"} and not self._consented(plan, stage=stage):
             return Observation("waiting", reason="identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
@@ -442,6 +444,7 @@ class HostBackend:
             from .onboarding_acceptance import HostedChecks
             if self.config.progress is not None and self.config.inputs is not None:
                 HostedChecks(self).verify_memory_write(plan)
+                HostedChecks(self).verify_cli_resume(plan)
             return
         if stage in {"context", "matrix"} and not self._consented(plan, stage=stage):
             raise OnboardingError("identity_authorization_required")

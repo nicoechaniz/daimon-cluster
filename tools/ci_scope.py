@@ -68,6 +68,12 @@ PORTAL_TESTS = ('tests/test_onboarding_local_body.py', 'tests/test_being_seed.py
     'tests/test_clusterd.py', 'tests/test_auth.py', 'tests/test_human_approvals.py',
     'tests/test_onboarding_consent.py', 'tests/test_onboarding_actions.py',
     'tests/test_onboarding_ingress.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
+IDENTITY_EXPORT_FILES = {'tools/export_local_matrix_identity.py', 'clusterctl/onboarding_local_body.py',
+    'clusterd/seed_handlers.py', 'clusterd/seed_ui.py', 'tests/test_onboarding_local_body.py',
+    'tests/test_onboarding_existing.py'}
+IDENTITY_EXPORT_TESTS = tuple(sorted(set(PORTAL_TESTS) | {
+    'tests/test_onboarding_existing.py', 'tests/test_onboarding_peer.py',
+    'tests/test_onboarding_target.py'}))
 CONTINUATION_FILES = PORTAL_FILES | UPLOAD_FILES | {
     'tools/continue_seed_onboarding.py', 'tests/test_onboarding_continuation.py',
     'tests/test_onboarding_existing.py'}
@@ -163,6 +169,13 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'tools/export_local_matrix_identity.py', 'clusterctl/onboarding_local_body.py'}
+            and set(changed) <= IDENTITY_EXPORT_FILES | CI_FILES
+            and all((root / path).is_file() for path in IDENTITY_EXPORT_TESTS)):
+        # Public export and report reuse keep real signed application/native
+        # binding, writer locks, enrollment custody and HTTP owner contracts.
+        # No SDK, physical recovery, body execution or authority code changes.
+        return 'portal', list(IDENTITY_EXPORT_TESTS)
     if (set(changed) & {'clusterctl/onboarding_input.py', 'tests/test_onboarding_new.py'}
             and set(changed) <= NEW_SEED_FILES | CI_FILES
             and all((root / path).is_file() for path in NEW_SEED_TESTS)):

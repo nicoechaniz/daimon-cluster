@@ -40,6 +40,11 @@ PORTAL_TESTS = ('tests/test_onboarding_local_body.py', 'tests/test_being_seed.py
     'tests/test_clusterd.py', 'tests/test_auth.py', 'tests/test_human_approvals.py',
     'tests/test_onboarding_consent.py', 'tests/test_onboarding_actions.py',
     'tests/test_onboarding_ingress.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
+EXPORT_FILES = {'clusterctl/being_seed.py', 'clusterd/seed_ui.py',
+    'support/being-seed-tools/PROVENANCE.json', 'support/being-seed-tools/tools/export_being.py',
+    'tests/test_being_seed.py'}
+EXPORT_TESTS = (*PORTAL_TESTS, 'tests/test_onboarding_input.py',
+                'tests/test_onboarding_release.py', 'tests/test_onboarding_guest.py')
 ACCOUNT_FILES = {'clusterctl/onboarding_accounts.py', 'tests/test_onboarding_accounts.py'}
 ACCOUNT_TESTS = ('tests/test_onboarding_accounts.py', 'tests/test_onboarding_shared_login.py',
     'tests/test_onboarding_provider.py', 'tests/test_onboarding_ingress.py',
@@ -70,6 +75,10 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if ('support/being-seed-tools/tools/export_being.py' in changed
+            and set(changed) <= EXPORT_FILES | CI_FILES
+            and all((root / path).is_file() for path in EXPORT_TESTS)):
+        return 'portal', list(EXPORT_TESTS)
     if (set(changed) & {'clusterctl/onboarding_welcome.py', 'tests/test_onboarding_welcome.py'}
             and set(changed) <= WELCOME_FILES | CI_FILES
             and all((root / path).is_file() for path in WELCOME_TESTS)):

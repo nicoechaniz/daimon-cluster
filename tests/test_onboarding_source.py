@@ -83,6 +83,8 @@ def test_signed_source_retains_native_client_and_peer_under_one_lock(journey, tm
     custody = (source.root / 'custody.json').read_bytes()
     ready = source.finish(fingerprint, response)
     assert source.finish(fingerprint, response) == ready
+    packet = source.tool.read_public(source.directory(fingerprint) / 'offer.json')
+    assert source.offer(fingerprint, journey[2][1], journey[4]['plan']['endpoints']) == packet
     assert (source.root / 'custody.json').read_bytes() == custody
     assert_original(source, original)
     assert source._load(signed=True).service.communication.receipts_v2 is semantic_receipts
@@ -95,8 +97,40 @@ def test_signed_source_retains_native_client_and_peer_under_one_lock(journey, tm
     unit.chmod(0o600)
     unit_digest = hashlib.sha256(original_unit).hexdigest()
     import sys
+    from pathlib import Path
+    import shutil
+    # The actual host entry point includes Source, unlike receiving-only code.
+    checkout = Path(__file__).resolve().parents[1]
+    source.code = tmp_path / 'qualified-host-previous'
+    (source.code / 'clusterctl').mkdir(parents=True)
+    for filename in ('onboarding_peer.py', 'onboarding_peer_native.py', 'onboarding_source.py'):
+        captured = source.code / 'clusterctl' / filename
+        shutil.copyfile(checkout / 'clusterctl' / filename, captured)
+        captured.chmod(0o644)
+    old_tool = source.code / 'clusterctl/onboarding_peer_native.py'
+    old_tool.write_bytes(old_tool.read_bytes() + b'\n# Retained previous host generation.\n')
+    old_adapter = source.code / 'clusterctl/onboarding_peer.py'
+    old_adapter.write_text(old_adapter.read_text().replace(onboarding_peer.TOOL_SHA256,
+        hashlib.sha256(old_tool.read_bytes()).hexdigest()))
     source.register(config, unit, unit_digest, target.code / sys.executable, fingerprint)
     source.register(config, unit, unit_digest, target.code / sys.executable, fingerprint)
+    successor = tmp_path / 'qualified-host-successor'
+    (successor / 'clusterctl').mkdir(parents=True)
+    for filename in ('onboarding_peer.py', 'onboarding_peer_native.py', 'onboarding_source.py'):
+        shutil.copyfile(checkout / 'clusterctl' / filename, successor / 'clusterctl' / filename)
+        (successor / 'clusterctl' / filename).chmod(0o644)
+    source.code = successor
+    source.register(config, unit, unit_digest, target.code / sys.executable, fingerprint)
+    source.register(config, unit, unit_digest, target.code / sys.executable, fingerprint)
+    selected_unit = unit.read_bytes()
+    assert str(successor).encode() in selected_unit
+    foreign = selected_unit.replace(b'WorkingDirectory=existing', b'WorkingDirectory=foreign')
+    unit.write_bytes(foreign)
+    from clusterctl.onboarding import OnboardingError
+    with pytest.raises(OnboardingError, match='existing_onboarding_source_service_preserved'):
+        source.register(config, unit, unit_digest, target.code / sys.executable, fingerprint)
+    assert unit.read_bytes() == foreign
+    unit.write_bytes(selected_unit)
     assert source.settings['applications'] == [fingerprint]
     assert (source.outputs / ('native-unit-' + unit_digest)).read_bytes() == original_unit
     assert b'LoadCredential=matrix-password:existing\n' in unit.read_bytes()

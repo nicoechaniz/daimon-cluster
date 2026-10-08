@@ -6,6 +6,21 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_context_copy_keeps_receiving_crash_retry_sdk_and_job_owner_contracts(tmp_path):
+    from tools.ci_scope import CONTEXT_COPY_FILES
+    changed = sorted(CONTEXT_COPY_FILES)
+    profile, tests = select(changed, ROOT)
+    assert profile == 'portal'
+    assert {'tests/test_onboarding_guest.py', 'tests/test_onboarding_input.py',
+        'tests/test_onboarding_sdk.py', 'tests/test_onboarding_worker_install.py',
+        'tests/test_onboarding_host_ownership.py', 'tests/test_onboarding_consent.py',
+        'tests/test_auth.py', 'tests/test_clusterd.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for shared in ('requirements-weave.txt', 'clusterctl/production_fences.py'):
+        assert select(changed + [shared], ROOT) == ('full', ['tests'])
+    assert select(changed + ['clusterctl/onboarding_custody.py'], ROOT)[0] == 'onboarding'
+
+
 def test_participant_continuation_keeps_native_signing_receiving_and_owner_boundaries(tmp_path):
     from tools.ci_scope import CONTINUATION_FILES
     changed = sorted(CONTINUATION_FILES)

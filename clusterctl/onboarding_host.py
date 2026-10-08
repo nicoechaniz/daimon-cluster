@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import inspect
 import os
 import re
 import subprocess
@@ -238,9 +239,15 @@ class HostBackend:
     @staticmethod
     def _run(argv: list[str]) -> str:
         # No shell, no source-supplied program, and never leak captured stderr.
+        # Preserving tens of thousands of source files includes durable fsyncs.
+        # Give only the typed context installation a larger finite window;
+        # inventory, memory and other control commands retain their old bound.
+        context_install = argv[0] == 'exec' and any(
+            argv[i:i + 4] == ['execute', 'context', '--home', '/home/agent']
+            for i in range(len(argv) - 3))
         try:
             result = subprocess.run(["incus", *argv], capture_output=True, text=True,
-                                    timeout=1800, check=False)
+                                    timeout=7200 if context_install else 1800, check=False)
         except (OSError, subprocess.TimeoutExpired):
             raise OnboardingError("onboarding_host_operation_failed") from None
         if result.returncode:
@@ -784,6 +791,16 @@ class HostBackend:
                     device = mounts[name]
                     self._dispatch(plan, ["config", "device", "add", self.instance(plan), name, "disk",
                         *[key + "=" + value for key, value in device.items() if key != "type"]])
+            # Reconcile torn copies without replacing the frozen receiving SDK
+            # or context, and never touch an already activated receiving body.
+            from .onboarding_guest import reconcile_context_copy
+            program = ('import json,sys;\n' + inspect.getsource(reconcile_context_copy)
+                + '\nprint(json.dumps(reconcile_context_copy("/home/agent",'
+                + '"/home/agent/.onboarding-input",json.loads(sys.argv[1]))))')
+            result = json.loads(self._dispatch(plan, ['exec', self.instance(plan), '--user', '1000',
+                '--group', '1000', '--', 'python3', '-B', '-I', '-c', program, json.dumps(plan)]))
+            if set(result) != {'recovered'} or type(result['recovered']) is not int or result['recovered'] < 0:
+                raise OnboardingError('invalid_onboarding_observation')
         self._guest_command(plan, "execute", stage, guest_code)
 
     def _ceremony(self, plan: dict):

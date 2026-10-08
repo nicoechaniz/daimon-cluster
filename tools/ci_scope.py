@@ -15,6 +15,14 @@ from pathlib import Path
 
 CI_FILES = {'.github/workflows/tests.yml', 'README.md', 'tools/ci_scope.py',
             'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'}
+CONTEXT_COPY_FILES = {'clusterctl/onboarding_guest.py', 'clusterctl/onboarding_host.py',
+                      'tests/test_onboarding_guest.py', 'tests/test_onboarding_host.py'}
+CONTEXT_COPY_TESTS = ('tests/test_onboarding_guest.py', 'tests/test_onboarding_host.py',
+    'tests/test_onboarding_input.py', 'tests/test_onboarding_release.py', 'tests/test_onboarding_sdk.py',
+    'tests/test_onboarding.py', 'tests/test_onboarding_worker_install.py', 'tests/test_onboarding_progress.py',
+    'tests/test_onboarding_host_ownership.py', 'tests/test_onboarding_consent.py',
+    'tests/test_onboarding_intake.py', 'tests/test_auth.py', 'tests/test_clusterd.py',
+    'tests/test_production_fences.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 UPLOAD_FILES = {'clusterctl/being_seed.py', 'clusterd/seed_handlers.py',
     'clusterd/seed_ui.py', 'clusterd/routes.py', 'clusterd/server.py',
     'clusterd/handlers.py', 'clusterd/openapi.py', 'tests/test_being_seed.py',
@@ -148,6 +156,13 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if ('clusterctl/onboarding_guest.py' in changed
+            and set(changed) <= CONTEXT_COPY_FILES | CI_FILES
+            and all((root / path).is_file() for path in CONTEXT_COPY_TESTS)):
+        # File-copy recovery retains the full receiving, immutable SDK,
+        # owner/job isolation and API contracts. Physical container recovery,
+        # custody and dependency changes still require their wider profiles.
+        return 'portal', list(CONTEXT_COPY_TESTS)
     if (set(changed) & {'tools/continue_seed_onboarding.py', 'tests/test_onboarding_continuation.py'}
             and set(changed) <= CONTINUATION_FILES | CI_FILES
             and all((root / path).is_file() for path in CONTINUATION_TESTS)):

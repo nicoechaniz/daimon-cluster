@@ -337,7 +337,13 @@ class HostBackend:
             if client.state != 'complete':
                 return client
             from .onboarding_acceptance import HostedChecks
-            return HostedChecks(self).observe(plan)
+            checks = HostedChecks(self)
+            if self.config.progress is None or self.config.inputs is None:
+                return checks.observe(plan)
+            memory_write = checks.memory_write_observe(plan)
+            if memory_write.state != 'complete':
+                return memory_write
+            return checks.observe(plan)
         if stage in {"context", "matrix"} and not self._consented(plan, stage=stage):
             return Observation("waiting", reason="identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
@@ -426,6 +432,9 @@ class HostBackend:
             if managed.observe(plan).state != 'complete':
                 managed.execute(plan)
             OwnerClient(self).execute(plan, managed._expected(plan))
+            from .onboarding_acceptance import HostedChecks
+            if self.config.progress is not None and self.config.inputs is not None:
+                HostedChecks(self).verify_memory_write(plan)
             return
         if stage in {"context", "matrix"} and not self._consented(plan, stage=stage):
             raise OnboardingError("identity_authorization_required")

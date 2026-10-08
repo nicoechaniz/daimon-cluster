@@ -1147,6 +1147,42 @@ class HostedChecks:
         MatrixDeliveries(self.backend.config.progress, worker_uid=os.geteuid()).publish(receipt)
         return True
 
+    def adopt_matrix_delivery(self, plan, path):
+        """Import a worker-owned historical native receipt, never owner input.
+
+        A completed delivery is historical evidence. Reinspection can require a
+        renewed transport carrier; importing an already authenticated Root
+        record preserves the observed effect without another transmission.
+        """
+        intent, payload = self.prepare_matrix_intent(plan)
+        path = Path(path)
+        record = json.loads(regular(path, uid=os.geteuid(), limit=65536))
+        if (path.stat().st_mode & 0o037
+                or not isinstance(record, dict)
+                or set(record) != {'schema', 'plan_digest', 'commit', 'send_id', 'thread_id', 'delivered', 'agent_read', 'response'}
+                or record['schema'] != 'cluster-owner-requested-message-verification-result/v1'
+                or record['plan_digest'] != digest(plan) or record['delivered'] is not True or record['agent_read'] is not False
+                or not isinstance(record['commit'], str) or not re.fullmatch('[0-9a-f]{40}', record['commit'])
+                or any(record[key] != intent['parameters'][key] for key in ('send_id', 'thread_id'))):
+            raise OnboardingError('invalid_matrix_delivery_evidence')
+        response = record['response']
+        if (not isinstance(response, dict) or response.get('schema') != 'dm.local.response/v1'
+                or not isinstance(response.get('server'), dict)
+                or any(response['server'].get(key) != value for key, value in payload['origin'].items())):
+            raise OnboardingError('invalid_matrix_delivery_evidence')
+        probe = matrix_delivery_result(response, intent['parameters']['send_id'])
+        receipt = MatrixDeliveries.validate(dict(schema='cluster-hosted-matrix-delivery/v1',
+            name=plan['name'], owner=plan['owner'], plan_digest=digest(plan), intent=intent, probe=probe))
+        try:
+            previous = MatrixDeliveries(self.backend.config.progress, worker_uid=os.geteuid()).read(plan['name'], owner=plan['owner'])
+        except FileNotFoundError:
+            previous = None
+        if previous is not None:
+            if previous != receipt:
+                raise OnboardingError('existing_hosted_checks_preserved')
+        else:
+            MatrixDeliveries(self.backend.config.progress, worker_uid=os.geteuid()).publish(receipt)
+
     def matrix_delivery_observe(self, plan):
         proofs = MatrixDeliveries(self.backend.config.progress, worker_uid=os.geteuid())
         try:

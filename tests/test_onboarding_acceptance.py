@@ -155,6 +155,41 @@ def test_ssh_login_adapter_binds_native_evidence_and_keeps_owner_isolation(tmp_p
         adapter.ssh_login_observe({**value, 'browser': not value['browser']}, job)
 
 
+def test_matrix_import_requires_private_worker_record_exact_plan_send_and_body(tmp_path, monkeypatch):
+    value = plan()
+    progress = tmp_path / 'progress'
+    progress.mkdir(mode=0o750)
+    origin = dict(body_ref='codex:fixture:eko', embodiment_id=str(uuid.uuid4()), incarnation_id=str(uuid.uuid4()))
+    payload = dict(being_ref='dm:being:v1:' + 'A' * 43, origin=origin)
+    adapter = checks.HostedChecks(SimpleNamespace(config=SimpleNamespace(progress=progress)))
+    monkeypatch.setattr(adapter, '_matrix_context', lambda plan:(payload, 'dm:being:v1:' + 'B' * 43))
+    parameters = dict(channel_id='peer-out', send_id=str(uuid.uuid4()), thread_id=str(uuid.uuid4()), text='Approved existing test')
+    intent, _ = adapter.prepare_matrix_intent(value, parameters)
+    record = dict(schema='cluster-owner-requested-message-verification-result/v1', plan_digest=digest(value),
+        commit='a' * 40, send_id=parameters['send_id'], thread_id=parameters['thread_id'], delivered=True, agent_read=False,
+        response={**native_delivery(parameters['send_id']), 'schema': 'dm.local.response/v1', 'server': origin})
+    path = tmp_path / 'historical-native-receipt.json'
+    def write(content, mode=0o600):
+        path.write_text(json.dumps(content))
+        path.chmod(mode)
+    for invalid in ({**record, 'plan_digest': 'b' * 64}, {**record, 'send_id': str(uuid.uuid4())},
+                    {**record, 'thread_id': str(uuid.uuid4())}, {**record, 'agent_read': True},
+                    {**record, 'response': {**record['response'], 'server': {**origin, 'body_ref': 'other'}}},
+                    {**record, 'response': {**record['response'], 'ok': False}}):
+        write(invalid)
+        with pytest.raises(OnboardingError, match='invalid_matrix_delivery_evidence'):
+            adapter.adopt_matrix_delivery(value, path)
+        assert not (progress / 'eko.matrix-delivery.json').exists()
+    write(record, 0o644)
+    with pytest.raises(OnboardingError, match='invalid_matrix_delivery_evidence'):
+        adapter.adopt_matrix_delivery(value, path)
+    write(record)
+    adapter.adopt_matrix_delivery(value, path)
+    adapter.adopt_matrix_delivery(value, path)
+    assert checks.MatrixDeliveries(progress, worker_uid=os.geteuid()).read('eko', owner='sai')['intent'] == intent
+    assert adapter.matrix_delivery_observe(value).state == 'complete'
+
+
 def test_empty_native_ssh_journal_is_missing_proof_and_command_errors_are_not_accepted(tmp_path, monkeypatch, capsys):
     value = plan()
     store, fixture = setup(tmp_path, value)

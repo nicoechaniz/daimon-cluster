@@ -36,9 +36,9 @@ def local_body_tool(deps, ctx, tool, **params):
         return handlers.Response(409, {'error': 'local_body_tool_requires_attention'})
 
 
-def local_body_requests(deps, ctx, seed=None, _body=None, _submit=False, **params):
+def local_body_requests(deps, ctx, seed=None, _body=None, _submit=False, _diagnostic=False, **params):
     from . import handlers
-    from clusterctl.onboarding_local_body import Requests, read, submit
+    from clusterctl.onboarding_local_body import Requests, read, submit, submit_diagnostic
 
     try:
         if not deps.onboarding_progress:
@@ -47,7 +47,8 @@ def local_body_requests(deps, ctx, seed=None, _body=None, _submit=False, **param
         state = Path(handlers._state_dir(deps))
         if seed is not None:
             request = requests.read(seed, owner=_owner(ctx))
-            value = submit(state, request, _body) if _submit else read(state, request)
+            value = (submit_diagnostic(state, request, _body) if _diagnostic else
+                     submit(state, request, _body) if _submit else read(state, request))
             return handlers.Response(200, value)
         requests._directory()
         items = []
@@ -75,6 +76,10 @@ def local_body_requests(deps, ctx, seed=None, _body=None, _submit=False, **param
 
 def local_body_report(deps, ctx, **params):
     return local_body_requests(deps, ctx, _submit=True, **params)
+
+
+def local_body_diagnostic(deps, ctx, **params):
+    return local_body_requests(deps, ctx, _diagnostic=True, **params)
 
 
 def _owner(ctx):

@@ -16,6 +16,9 @@ from .onboarding_progress import Progress
 
 SCHEMA = 'cluster-onboarding-local-body-request/v1'
 REPORT = 'cluster-onboarding-local-body-report/v1'
+DIAGNOSTIC = 'cluster-onboarding-local-body-diagnostic/v1'
+DIAGNOSTIC_LIMIT = 60000
+_CREDENTIAL = re.compile(r'-----BEGIN (?:[A-Z0-9 ]*PRIVATE KEY|PGP PRIVATE KEY)|\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|[0-9]{6,15}:[A-Za-z0-9_-]{30,})\b')
 CHECKS = {
     'identity_context': 'Verify Codex loads your own SOUL and being identity, preserving the original history.',
     'memory': 'Retrieve one older and one recent own memory through the configured local HMK binding.',
@@ -95,6 +98,8 @@ def read(state: Path, request: dict) -> dict:
             raise
         received = dict(context_prepared=False, archive_received=False, ssh_key_received=False, telegram_data_received=False)
     return {**request, 'checks': CHECKS, 'report': summary, 'received': received,
+        'diagnostic': diagnostic_summary(state, request),
+        'diagnostic_path': '/v1/onboarding/local-body/' + request['name'] + '/diagnostic',
         'instructions': [
             'Continue your existing local Codex installation and this workspace; do not reinstall or re-export received context.',
             'Keep the already selected shared account and recorded human approvals.',
@@ -102,6 +107,7 @@ def read(state: Path, request: dict) -> dict:
             'Use its existing authority. A Hermes identity proves that being, but does not prove a local Codex embodiment exists.',
             'Respect the local daemon writer lock. Keep custody, private keys, passwords, paths, bot tokens and provider credentials local.',
             'If no identity can be found, report not-found; do not create another Root to satisfy this check.',
+            'If an exporter or local check is blocked, send its nonsecret reproducible JSON report through diagnostic_path. Do not repeat an archive already received. Preserve originals and credential-bearing history while the host resolves the blocker.',
             'Submit results through the response_path. A missing check is useful evidence, not a request for Nicolas to relay technical details.',
         ], 'response_path': '/v1/onboarding/local-body/' + request['name'],
         'export_tools': {'exporter': '/v1/onboarding/local-body/tools/export_local_matrix_identity.py',
@@ -151,6 +157,59 @@ def submit(state: Path, request: dict, value: object, *, code: Path | None = Non
             # current participant report or hiding subsequent local checks.
             return read(state, request)
         being_seed._write(root / 'latest.json', {'report_digest': fingerprint})
+    return read(state, request)
+
+
+def diagnostic_summary(state: Path, request: dict) -> dict | None:
+    root = _directory(state, request) / 'diagnostics'
+    try:
+        pointer = being_seed._read(root / 'latest.json')
+        fingerprint = pointer['diagnostic_digest']
+        if not isinstance(fingerprint, str) or not re.fullmatch(r'[0-9a-f]{64}', fingerprint):
+            raise OnboardingError('invalid_local_body_diagnostic')
+        value = being_seed._read(root / (fingerprint + '.json'))
+        if digest(value) != fingerprint:
+            raise OnboardingError('invalid_local_body_diagnostic')
+        if value['request_id'] != request['request_id']:
+            return None
+        return dict(diagnostic_digest=fingerprint, reported_at_ms=value['reported_at_ms'],
+                    component=value['component'], received=True, resolution='host-review-pending',
+                    evidence_scope='untrusted participant diagnostic; no execution or hosted acceptance')
+    except FileNotFoundError:
+        return None
+
+
+def submit_diagnostic(state: Path, request: dict, value: object) -> dict:
+    request = validate(request)
+    if (not isinstance(value, dict) or set(value) != {'schema', 'request_id', 'reported_at_ms',
+            'component', 'no_credentials', 'report'} or value['schema'] != DIAGNOSTIC
+            or value['request_id'] != request['request_id']
+            or type(value['reported_at_ms']) is not int or value['reported_at_ms'] < request['updated_ms']
+            or not isinstance(value['component'], str)
+            or value['component'] not in {'context-exporter', 'local-codex', 'matrix-identity'}
+            or value['no_credentials'] is not True or not isinstance(value['report'], dict)
+            or not value['report']):
+        raise being_seed.SeedError('invalid_local_body_diagnostic')
+    raw = json.dumps(value)
+    if len(raw.encode()) > DIAGNOSTIC_LIMIT:
+        raise being_seed.SeedError('local_body_diagnostic_too_large')
+    if _CREDENTIAL.search(raw):
+        raise being_seed.SeedError('diagnostic_requires_nonsecret_report')
+    root = _directory(state, request, create=True) / 'diagnostics'
+    private_directory(root, create=True)
+    with being_seed._locked(root):
+        fingerprint = digest(value)
+        destination = root / (fingerprint + '.json')
+        if destination.exists():
+            if being_seed._read(destination) != value:
+                raise being_seed.SeedError('existing_local_body_diagnostic_preserved', 409)
+        else:
+            if len(list(root.glob('*.json'))) >= 33:
+                raise being_seed.SeedError('local_body_diagnostic_limit', 409)
+            being_seed._write(destination, value)
+        previous = diagnostic_summary(state, request)
+        if previous is None or value['reported_at_ms'] >= previous['reported_at_ms']:
+            being_seed._write(root / 'latest.json', {'diagnostic_digest': fingerprint})
     return read(state, request)
 
 

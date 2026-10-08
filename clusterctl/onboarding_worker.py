@@ -86,10 +86,12 @@ def main(argv: list[str] | None = None) -> int:
         from .onboarding_host import HostBackend, HostConfig
 
         config = HostConfig.load(args.config)
+        from .onboarding_input import VerificationCache
+        inputs = VerificationCache()
         from .onboarding_progress import Progress
 
         progress = Progress(config.progress, worker_uid=os.geteuid()) if config.progress else None
-        worker = Worker(JobStore(config.jobs), lambda: HostBackend(config), concurrency=config.concurrency,
+        worker = Worker(JobStore(config.jobs), lambda: HostBackend(config, input_cache=inputs), concurrency=config.concurrency,
                         publish=progress.publish if progress else None, plans=config.approved_plans)
         if args.once:
             print(json.dumps(worker.once()))

@@ -199,6 +199,26 @@ from canonical physical admission and full hosted acceptance.
 
 ## Execution and recovery
 
+Use existing authorization and valid evidence. A retry observes and resumes the
+same operation; it does not ask the pair to repeat approval, export, upload or
+signing when the bound input was already received. Recheck the changed input or
+failed operation, rather than restarting the entire procedure. Scope tests to
+the affected behavior and the receiving infrastructure.
+
+The worker reuses full frozen-input verification across steps and ticks while
+every file and directory retains its inode, ownership, permissions, size and
+nanosecond modification/change timestamps. It scans metadata on each use;
+changed, added or removed entries invalidate the process-local cache and run
+full byte verification again. Authorization, code selection and native identity
+checks still run at their actual operation boundaries. Restarting the worker
+discards this cache. Large preserved archives are not rehashed merely because
+the next native action needs the same read-only mount coordinates.
+
+Telegram readiness means that native Codex and the dedicated bot are usable.
+Invite the human to converse as soon as this is observed; do not make that wait
+for the later continuity, SSH, topic or browser acceptance checks. Report those
+checks separately and reuse their valid receipts rather than replaying effects.
+
 A plan binds owner, environment name, receiving input digest, qualified release,
 account profile and browser selection. The seed digest covers a frozen input
 manifest and every prepared file, including preserved originals, selected

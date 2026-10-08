@@ -11,6 +11,7 @@ import os
 import stat
 import tempfile
 import uuid
+from copy import deepcopy
 from pathlib import Path, PurePosixPath
 
 from . import being_seed
@@ -20,6 +21,51 @@ SCHEMA = "cluster-onboarding-input/v1"
 MAX_BYTES = 15 * 1024**3
 MAX_FILES = 50000
 MAX_MANIFEST = 16 * 1024**2
+
+
+class VerificationCache:
+    """Reuse byte verification only while every input inode remains unchanged.
+
+    The cache is process-local and contains no authority or credential. Every
+    lookup inventories metadata, including directories and the manifest, so
+    edits, replacements, links, permission changes and added files invalidate
+    the entry. Existing full verification remains the source of truth.
+    """
+    def __init__(self):
+        self.entries = {}
+
+    @staticmethod
+    def snapshot(root: Path) -> tuple:
+        being_seed._path(root)
+        rows = []
+        def add(path):
+            info = path.lstat()
+            rows.append((path.relative_to(root).as_posix(), info.st_dev, info.st_ino,
+                         info.st_mode, info.st_uid, info.st_gid, info.st_nlink,
+                         info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+        def failed(error):
+            raise error
+        add(root)
+        for directory, names, files in os.walk(root, followlinks=False, onerror=failed):
+            for name in names + files:
+                add(Path(directory) / name)
+        return tuple(sorted(rows))
+
+    def verify(self, root: Path, expected: str, *, uid: int | None = None) -> dict:
+        uid = os.geteuid() if uid is None else uid
+        root = root.absolute()
+        key = (root, expected, uid)
+        before = self.snapshot(root)
+        entry = self.entries.get(key)
+        if entry is not None and entry[0] == before:
+            return deepcopy(entry[1])
+        self.entries.pop(key, None)
+        manifest = verify(root, expected, uid=uid)
+        after = self.snapshot(root)
+        if before != after:
+            raise OnboardingError('onboarding_input_changed')
+        self.entries[key] = (after, deepcopy(manifest))
+        return manifest
 
 
 def relative(value: object) -> str:

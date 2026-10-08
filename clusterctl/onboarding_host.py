@@ -237,9 +237,10 @@ class HostConfig:
 
 
 class HostBackend:
-    def __init__(self, config: HostConfig, *, run: Callable | None = None):
+    def __init__(self, config: HostConfig, *, run: Callable | None = None, input_cache=None):
         self.config = config
         self.run = run or self._run
+        self.input_cache = input_cache if input_cache is not None else onboarding_input.VerificationCache()
 
     @staticmethod
     def _run(argv: list[str]) -> str:
@@ -745,7 +746,7 @@ class HostBackend:
             raise OnboardingError("receiving_code_configuration_required")
         onboarding_release.verify(self.config.code, plan["release_digest"], uid=os.geteuid())
         source = self.config.inputs / plan["name"]
-        manifest = onboarding_input.verify(source, plan["seed_digest"])
+        manifest = self.input_cache.verify(source, plan["seed_digest"])
         view = self.config.views / digest(plan) / "input"
         guest_code = Path("/opt/daimon-onboarding") / plan["release_digest"]
         mounts = {
@@ -793,7 +794,7 @@ class HostBackend:
         if self.config.inputs is None:
             raise OnboardingError('receiving_code_configuration_required')
         source = self.config.inputs / plan['name']
-        manifest = onboarding_input.verify(source, plan['seed_digest'])
+        manifest = self.input_cache.verify(source, plan['seed_digest'])
         import_code = guest_code
         if manifest.get('seed_mode') == 'new':
             import_code, _, _ = self._runtime_paths(plan, guest_code)

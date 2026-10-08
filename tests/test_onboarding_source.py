@@ -52,13 +52,15 @@ def signed_visibility(target, directory):
     return path
 
 
-def prepare(journey, tmp_path):
+def prepare(journey, tmp_path, *, semantic_receipts=False):
     tool, sources, public, _, payload = journey
     target = sources[0][1]
     visibility = signed_visibility(target, tmp_path / 'native-visibility')
     source = Source(dict(schema='cluster-onboarding-source/v1', runtime_root=str(target.package / 'runtime'),
         password_file=str(target.root / 'body.unlock'), native_visibility=str(visibility),
         outputs=str(target.home / 'source-output'), applications=[]), code=target.code, code_uid=target.code_uid)
+    if semantic_receipts:
+        source._load(signed=True).service.communication.upgrade_receipts_v2()
     original = tool.read_public(visibility)
     fingerprint = digest(target.plan)
     packet = source.offer(fingerprint, public[1], payload['plan']['endpoints'])
@@ -74,14 +76,16 @@ def assert_original(source, original):
     source._load(signed=True).egress.validate_registered_catalogs()
 
 
-def test_signed_source_retains_native_client_and_peer_under_one_lock(journey, tmp_path):
+@pytest.mark.parametrize('semantic_receipts', [False, True])
+def test_signed_source_retains_native_client_and_peer_under_one_lock(journey, tmp_path, semantic_receipts):
     from daimon_matrix.client import ClientConfig, LocalClient
-    source, target, fingerprint, response, original = prepare(journey, tmp_path)
+    source, target, fingerprint, response, original = prepare(journey, tmp_path, semantic_receipts=semantic_receipts)
     custody = (source.root / 'custody.json').read_bytes()
     ready = source.finish(fingerprint, response)
     assert source.finish(fingerprint, response) == ready
     assert (source.root / 'custody.json').read_bytes() == custody
     assert_original(source, original)
+    assert source._load(signed=True).service.communication.receipts_v2 is semantic_receipts
     from clusterctl import being_seed
     config = source.outputs / 'config.json'
     being_seed._write(config, source.settings)

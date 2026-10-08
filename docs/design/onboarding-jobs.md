@@ -614,3 +614,8 @@ observation and installs a missing SDK generation through an authorized,
 resumable `sdk-prepare` effect. Each generation has its own content-addressed
 venv. The previous environment, seed, plan, identity custody and receiving
 writes remain intact. SDK observation neither loads a Body nor reads an inbox.
+
+Native peer enrollment selects each local application's schema from that Body's
+persisted receipt mode. An existing V2 Source and V1 receiving peer keep their
+independent stores and signed history. Finish/retry continues the original
+encrypted proposal; it neither downgrades Source nor requests a new identity.

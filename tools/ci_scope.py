@@ -44,6 +44,11 @@ PEER_FILES = {'clusterctl/onboarding_peer_host.py', 'tests/test_onboarding_peer_
 PEER_TESTS = ('tests/test_onboarding_peer_host.py', 'tests/test_onboarding_source.py',
     'tests/test_onboarding_managed.py', 'tests/test_onboarding_host_ownership.py',
     'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
+PEER_TOOL_FILES = {'clusterctl/onboarding_peer.py', 'clusterctl/onboarding_peer_native.py',
+    'support/matrix-onboarding/PROVENANCE.json', 'tools/export_local_matrix_identity.py',
+    'tests/test_onboarding_source.py', 'docs/design/onboarding-jobs.md'}
+PEER_TOOL_TESTS = (*PEER_TESTS, 'tests/test_onboarding_peer.py',
+    'tests/test_onboarding_local_body.py', 'tests/test_onboarding_code_successor.py')
 
 
 def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
@@ -56,6 +61,12 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         # admission/selection and owner separation. Guest assets, snapshots,
         # authority storage and dependency changes retain broader coverage.
         return 'peer', list(PEER_TESTS)
+    if (set(changed) <= PEER_TOOL_FILES | PEER_FILES | CI_FILES
+            and all((root / path).is_file() for path in PEER_TOOL_TESTS)):
+        # A maintained tool successor keeps the SDK and all context assets.
+        # Qualify custody/acceptance, original native services, installed tool
+        # integrity and local identity export; dependency changes stay full.
+        return 'peer', list(PEER_TOOL_TESTS)
     if (set(changed) & {'clusterctl/onboarding_local_body.py', 'tools/export_local_matrix_identity.py',
                        'tests/test_onboarding_local_body.py'}
             and set(changed) <= PORTAL_FILES | CI_FILES

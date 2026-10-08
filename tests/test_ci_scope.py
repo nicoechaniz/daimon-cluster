@@ -60,3 +60,17 @@ def test_peer_host_keeps_signed_services_and_owner_separation_without_snapshot_r
             'tests/test_onboarding_managed.py', 'tests/test_onboarding_host_ownership.py'} <= set(tests)
     assert select(changed + ['clusterctl/onboarding_target.py'], ROOT)[0] == 'onboarding'
     assert select(changed + ['clusterctl/admission.py'], ROOT)[0] == 'full'
+
+
+def test_native_peer_tool_keeps_crypto_export_and_context_checks_without_sdk_recovery_repeat(tmp_path):
+    changed = ['clusterctl/onboarding_peer.py', 'clusterctl/onboarding_peer_native.py',
+        'tools/export_local_matrix_identity.py', 'support/matrix-onboarding/PROVENANCE.json',
+        'tests/test_onboarding_source.py', 'docs/design/onboarding-jobs.md']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'peer'
+    assert {'tests/test_onboarding_source.py', 'tests/test_onboarding_managed.py',
+            'tests/test_onboarding_peer_host.py', 'tests/test_onboarding_peer.py',
+            'tests/test_onboarding_local_body.py', 'tests/test_onboarding_code_successor.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])
+    assert select(changed + ['clusterctl/onboarding_target.py'], ROOT) == ('full', ['tests'])

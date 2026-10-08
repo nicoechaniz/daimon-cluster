@@ -24,6 +24,30 @@ from clusterd.server import make_server
 KEY = "11111111-1111-4111-8111-111111111111"
 
 
+def test_portable_exporter_pin_accepts_reference_and_reports_remaining_history_boundary(tmp_path):
+    from pathlib import Path
+    from clusterd.seed_ui import agent_guide, agent_markdown
+    root = Path(__file__).resolve().parents[1]
+    provenance = json.loads((root / 'support/being-seed-tools/PROVENANCE.json').read_bytes())
+    assert provenance['commit'] == seeds.TOOL_COMMIT
+    assert provenance['files'] == seeds.TOOL_HASHES
+    source = tmp_path / 'source'
+    source.mkdir()
+    content = b'api_key = provider_configuration.resolve_active_provider_key\n'
+    (source / 'provider.py').write_bytes(content)
+    plan, archive, restored = tmp_path / 'plan.json', tmp_path / 'reference.tgz', tmp_path / 'restored'
+    seeds.tool('export_being', ['discover', '--being', 'Fixture', '--context-root', str(source), '--output', str(plan)])
+    result = seeds.tool('export_being', ['export', '--plan', str(plan), '--output', str(archive), '--writers-stopped'])
+    seeds.tool('export_being', ['unpack', '--archive', str(archive), '--sha256', result['sha256'], '--destination', str(restored)])
+    assert (restored / 'payload/context-001/provider.py').read_bytes() == content
+    assert (source / 'provider.py').read_bytes() == content
+    guide = agent_guide()
+    assert guide['preservation_tools_commit'] == seeds.TOOL_COMMIT
+    assert seeds.TOOL_COMMIT[:7] in guide['portable_tools']
+    assert guide['exporter_status']['credential_bearing_history'] == 'protected-full-transfer-required'
+    assert 'redacted native API' in agent_markdown()
+
+
 @pytest.mark.parametrize("first", ["handlers", "seed_handlers"])
 def test_http_handler_import_orders(first):
     # A fresh process catches partial module initialization hidden by pytest's

@@ -6,6 +6,19 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_portable_exporter_pin_keeps_http_context_and_original_archives(tmp_path):
+    changed = ['support/being-seed-tools/tools/export_being.py',
+               'support/being-seed-tools/PROVENANCE.json', 'clusterctl/being_seed.py',
+               'clusterd/seed_ui.py', 'tests/test_being_seed.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'portal'
+    assert {'tests/test_being_seed.py', 'tests/test_onboarding_input.py',
+            'tests/test_onboarding_release.py', 'tests/test_onboarding_guest.py',
+            'tests/test_auth.py', 'tests/test_onboarding_consent.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select(changed + ['support/being-seed-tools/tools/receive_being.py'], ROOT) == ('full', ['tests'])
+
+
 def test_welcome_keeps_owner_retry_and_telegram_contracts_without_dependency_rehearsals(tmp_path):
     changed = ['clusterctl/onboarding_welcome.py', 'clusterctl/onboarding_host.py',
                'tests/test_onboarding_welcome.py', 'tools/check_rc_types.py']

@@ -59,3 +59,33 @@ def test_missing_root_profile_is_recoverable_waiting(tmp_path, monkeypatch):
     account = manager(tmp_path, monkeypatch, {})
     (account.config.accounts / 'shared.json').unlink()
     assert account.observe(plan()).reason == 'account_authorization_required'
+
+
+@pytest.mark.parametrize('existing_private_directory', [False, True])
+def test_account_profile_reaches_receiving_agent_under_private_worker_umask(tmp_path, monkeypatch, existing_private_directory):
+    import os
+    import stat
+    from pathlib import Path
+    value = dict(authorized=True, account_id='selected-fixture', action=None)
+    account = manager(tmp_path, monkeypatch, value)
+    selected = plan()
+    parent = account.config.views / digest(selected)
+    parent.mkdir(mode=0o700)
+    source = Path(account.mount(selected)['source'])
+    if existing_private_directory:
+        source.mkdir(mode=0o700)
+    calls = []
+    monkeypatch.setattr(account, 'command', lambda p, action: calls.append(action) or value)
+    before = os.umask(0o077)
+    try:
+        account.execute(selected)
+        profile = (source / 'profile.json').read_bytes()
+        account.execute(selected)
+    finally:
+        os.umask(before)
+    assert stat.S_IMODE(source.stat().st_mode) == 0o755
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE((source / 'profile.json').stat().st_mode) == 0o644
+    assert (source / 'profile.json').read_bytes() == profile
+    assert calls == ['observe', 'probe', 'observe', 'probe']
+    assert not (source / 'auth.json').exists()

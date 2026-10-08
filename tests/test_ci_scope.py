@@ -74,3 +74,15 @@ def test_native_peer_tool_keeps_crypto_export_and_context_checks_without_sdk_rec
     assert select(changed, tmp_path) == ('full', ['tests'])
     assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])
     assert select(changed + ['clusterctl/onboarding_target.py'], ROOT) == ('full', ['tests'])
+
+
+def test_account_mount_permissions_keep_shared_login_and_owner_isolation(tmp_path):
+    changed = ['clusterctl/onboarding_accounts.py', 'tests/test_onboarding_accounts.py', 'tools/ci_scope.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'account'
+    assert {'tests/test_onboarding_shared_login.py', 'tests/test_onboarding_provider.py',
+            'tests/test_onboarding_consent.py', 'tests/test_onboarding_ingress.py',
+            'tests/test_onboarding_host_ownership.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select(changed + ['clusterctl/onboarding_provider.py'], ROOT)[0] == 'onboarding'
+    assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])

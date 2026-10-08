@@ -233,6 +233,11 @@ class ManagedAccount:
         source = Path(mount['source'])
         being_seed._path(source)
         source.mkdir(mode=0o755, exist_ok=True)
+        if not source.is_dir() or source.stat().st_uid != os.geteuid():
+            raise OnboardingError('owned_onboarding_account_profile_required')
+        # The worker uses umask 0077. This nonsecret, read-only mount must still
+        # be traversable by the receiving agent, including after a prior retry.
+        source.chmod(0o755)
         publish(source / 'profile.json', json.dumps(profile, sort_keys=True).encode(), mode=0o644)
         if not self.host._mounted(plan, {'onboarding-account-public': mount}):
             self.host._dispatch(plan, ['config', 'device', 'add', self.host.instance(plan),

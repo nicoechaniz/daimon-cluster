@@ -20,7 +20,8 @@ PEER_SHA256 = 'ff7360960aa32c8abb97ed578253d5dc83af8b0a193c7288df99663dd3f75633'
 
 
 def export(runtime_root: Path, password_file: Path, output: Path, *,
-           visibility_installation: Path | None = None, peer_file: Path | None = None) -> None:
+           visibility_installation: Path | None = None, messaging_application: Path | None = None,
+           peer_file: Path | None = None) -> None:
     from daimon_matrix.daemon import _state_root, _visibility_factory, acquire_lock
     from daimon_matrix.messaging_config import protected_read
     from daimon_matrix.native_egress import closed_visibility
@@ -40,6 +41,8 @@ def export(runtime_root: Path, password_file: Path, output: Path, *,
     exec(compile(raw, str(asset), 'exec'), tool.__dict__)
     root = _state_root(runtime_root)
     _state_root(output.parent)
+    if messaging_application is not None and visibility_installation is None:
+        raise ValueError('existing_owner_visibility_required')
     password = protected_read(password_file)
     lock = acquire_lock(root)
     try:
@@ -48,10 +51,21 @@ def export(runtime_root: Path, password_file: Path, output: Path, *,
         bundle = json.loads(protected_read(root / 'runtime.json'))
         if bundle.get('schema') != 'dm.runtime.bundle/v8':
             raise ValueError('existing_v8_identity_required')
-        options = ({'egress_factory': _visibility_factory(visibility_installation, clock=clock)}
-                   if visibility_installation is not None else
-                   {'egress': closed_visibility(clock=clock, catalog_mode='validate')})
+        if messaging_application is not None:
+            # Native catalogs and the owner application's catalogs have separate
+            # keys. Preserve the native view and bind only the selected app to
+            # its signed visibility. Neither view starts a listener or sends.
+            options = dict(egress=closed_visibility(clock=clock, catalog_mode='validate'))
+        else:
+            options = ({'egress_factory': _visibility_factory(visibility_installation, clock=clock)}
+                       if visibility_installation is not None else
+                       {'egress': closed_visibility(clock=clock, catalog_mode='validate')})
         runtime = load_runtime(root, 'runtime.json', lambda: bytearray(password), clock=clock, **options)
+        if messaging_application is not None:
+            from daimon_matrix.chat_host import application_view
+            # Validate the selected owner view. Its restricted surface excludes
+            # native peer custody; this public binding belongs to the body itself.
+            application_view(runtime, messaging_application, visibility_installation)
         public = tool.public_identity(runtime, bundle)
         tool.verify_identity(public)
         descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -70,11 +84,14 @@ def main() -> int:
     parser.add_argument('--password-file', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--visibility-installation', type=Path)
+    parser.add_argument('--messaging-application', type=Path,
+                        help='Existing signed owner application directory; requires its visibility installation.')
     args = parser.parse_args()
     os.umask(0o077)
     try:
         export(args.runtime_root, args.password_file, args.output,
-               visibility_installation=args.visibility_installation)
+               visibility_installation=args.visibility_installation,
+               messaging_application=args.messaging_application)
     except BlockingIOError:
         print(json.dumps({'error': 'local_daemon_writer_lock_owned',
             'action': 'Use the existing owner-controlled service procedure; no competing runtime load.'}))

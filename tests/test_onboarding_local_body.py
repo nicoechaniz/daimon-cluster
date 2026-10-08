@@ -15,6 +15,8 @@ from tests.test_being_seed import KEY, http_server
 from tests.test_onboarding_target import receiving
 from tools.export_local_matrix_identity import export
 
+pytest_plugins = ['tests.test_onboarding_peer']
+
 
 def request(name='eko', owner='sai', expected=None):
     return dict(schema=local.SCHEMA, name=name, owner=owner, request_id=str(uuid.uuid4()),
@@ -134,6 +136,46 @@ def test_real_existing_identity_export_and_signature_verification_no_new_custody
             onboarding_progress=str(progress), onboarding_worker_uid=os.geteuid())
         assert http('/v1/onboarding/local-body/eko', 'POST', report(task, identity), owner='sai')[0] == 200
     assert before == {name: (root / name).read_bytes() for name in before}
+
+
+def test_export_reuses_signed_owner_application_and_refuses_other_visibility(journey, tmp_path):
+    from daimon_matrix.native_egress import NativeEgressError
+    from daimon_matrix.messaging_config import MessagingConfigError
+
+    _, sources, public, packet, _ = journey
+    target = sources[1][1]
+    onboarding_peer.accept(target, packet, expected_being=public[0]['document']['authority']['manifest']['being_ref'])
+    root = target.package / 'runtime'
+    app = onboarding_peer.root(target) / 'application'
+    visibility = onboarding_peer.root(target) / 'visibility/installation.json'
+    password = target.root / 'body.unlock'
+    asset = Path(__file__).resolve().parents[1] / 'clusterctl/onboarding_peer_native.py'
+    before = {path: path.read_bytes() for path in (root / 'runtime.json', root / 'custody.json',
+        visibility, app / 'application.json', app / 'binding.json', app / 'publication.json')}
+    # Reproduce the reported mismatch: the bare daemon binds its runtime bundle,
+    # while this actual owner-signed installation binds the messaging app.
+    with pytest.raises(NativeEgressError, match='egress_installation_invalid'):
+        export(root, password, tmp_path / 'bare.json', visibility_installation=visibility, peer_file=asset)
+    output = tmp_path / 'owner-public.json'
+    lock = acquire_lock(root)
+    try:
+        with pytest.raises(BlockingIOError):
+            export(root, password, output, visibility_installation=visibility,
+                   messaging_application=app, peer_file=asset)
+    finally:
+        os.close(lock)
+    export(root, password, output, visibility_installation=visibility, messaging_application=app, peer_file=asset)
+    identity = json.loads(output.read_bytes())
+    authority = onboarding_peer.native(target.code, uid=target.code_uid).verify_identity(identity)
+    assert authority.manifest.being_ref == public[1]['document']['authority']['manifest']['being_ref']
+    assert output.stat().st_mode & 0o077 == 0
+    assert before == {path: path.read_bytes() for path in before}
+    with pytest.raises(ValueError, match='existing_owner_visibility_required'):
+        export(root, password, tmp_path / 'missing.json', messaging_application=app, peer_file=asset)
+    with pytest.raises(MessagingConfigError):
+        export(root, password, tmp_path / 'other.json', visibility_installation=visibility,
+               messaging_application=tmp_path / 'missing-app', peer_file=asset)
+    assert not any((tmp_path / name).exists() for name in ('bare.json', 'missing.json', 'other.json'))
 
 
 def test_blocker_diagnostics_before_archive_are_private_preserved_and_do_not_replace_identity_checks(tmp_path):

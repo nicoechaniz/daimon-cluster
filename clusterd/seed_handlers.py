@@ -112,7 +112,7 @@ def local_body_report(deps, ctx, **params):
 def existing_enrollment(deps, ctx, seed, _body=None, _submit=False, **params):
     from . import handlers
     from clusterctl import onboarding_enrollment as enrollment
-    from clusterctl.onboarding_local_body import Requests
+    from clusterctl.onboarding_local_body import Requests, worker_identity
     try:
         if not deps.onboarding_progress:
             return handlers.Response(404, {"error": "local_body_request_not_found"})
@@ -136,13 +136,17 @@ def existing_enrollment(deps, ctx, seed, _body=None, _submit=False, **params):
             return handlers.Response(200, enrollment.submit(state, task, handoff, _body))
         source_path = state / "existing-enrollment" / seed / "source.json"
         source = being_seed._read(source_path) if source_path.exists() else None
+        identity = worker_identity(state, task, intake_uid=os.geteuid()) if source is None and not hosted_ready else None
         return handlers.Response(200, dict(request_id=task["request_id"], expected_being_ref=task["expected_being_ref"],
             source_received=source is not None, handoff=handoff, hosted_identity_ready=hosted_ready,
+            source_identity=identity,
             response_path="/v1/onboarding/local-body/" + seed + "/enrollment",
             signer_tools="/v1/onboarding/local-body/tools/existing_root_signer.zip",
             instructions=[
                 "Reuse the current being and local Root holder. Do not create genesis or send custody files.",
-                "Submit cluster-onboarding-existing-source/v1 with request_id, the exported signed public identity and explicit native peer routes for every active existing body.",
+                "Reuse source_identity when present: it is the public signed identity already verified from your report. No second export is needed.",
+                "Submit cluster-onboarding-existing-source/v1 with request_id, that signed public identity and explicit /dm-peer/v1 routes for every active existing body. Owner messaging /dm-messaging routes are a different protocol; do not substitute them or guess a route.",
+                "A missing local Codex Matrix body does not prevent enrollment of this hosted Codex body from your existing Hermes being.",
                 "When a handoff appears, save its exact public JSON privately. The maintained signer emits the reply for this request digest only.",
                 "Run the signer in a separate process with the qualified Matrix SDK; pass the existing holder password by file descriptor. Keep keys and passwords local.",
                 "Use --holder for a native isolated Root holder, or --root-custody for the existing offline Root+Recovery store. Never supply a runtime Body/capability store. Root threshold one is currently supported.",

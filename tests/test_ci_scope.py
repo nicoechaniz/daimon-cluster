@@ -6,6 +6,19 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_public_identity_export_and_reuse_keep_native_and_private_owner_contracts(tmp_path):
+    from tools.ci_scope import IDENTITY_EXPORT_FILES
+    changed = sorted(IDENTITY_EXPORT_FILES)
+    profile, tests = select(changed, ROOT)
+    assert profile == 'portal'
+    assert {'tests/test_onboarding_local_body.py', 'tests/test_onboarding_existing.py',
+        'tests/test_onboarding_peer.py', 'tests/test_onboarding_target.py',
+        'tests/test_auth.py', 'tests/test_clusterd.py', 'tests/test_human_approvals.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])
+    assert select(changed + ['clusterctl/onboarding_enrollment_root.py'], ROOT)[0] != 'portal'
+
+
 def test_context_copy_keeps_receiving_crash_retry_sdk_and_job_owner_contracts(tmp_path):
     from tools.ci_scope import CONTEXT_COPY_FILES
     changed = sorted(CONTEXT_COPY_FILES)

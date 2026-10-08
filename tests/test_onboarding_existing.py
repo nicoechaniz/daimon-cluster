@@ -488,7 +488,9 @@ def test_existing_enrollment_api_reuses_access_and_rejects_other_owner_and_forge
         identity=target.genesis["identity"],
         routes=target.genesis["routes"],
     )
-    with http_server(tmp_path / "api-state") as (server, http):
+    api_state = tmp_path / 'api-state'
+    api_state.mkdir(mode=0o700)
+    with http_server(api_state) as (server, http):
         server.deps = dataclasses.replace(
             server.deps,
             seed_only=True,
@@ -499,6 +501,11 @@ def test_existing_enrollment_api_reuses_access_and_rejects_other_owner_and_forge
         code, headers, status = http(endpoint)
         assert code == 200 and headers["Cache-Control"] == "no-store"
         assert status["handoff"] is None and not status["source_received"]
+        assert status['source_identity'] is None
+        from tests.test_onboarding_local_body import report
+        local_endpoint = '/v1/onboarding/local-body/' + target.plan['name']
+        assert http(local_endpoint, 'POST', report(task, source['identity']))[0] == 200
+        assert http(endpoint)[2]['source_identity'] == source['identity']
         assert http(endpoint, owner="sai")[0] == 404
         assert http(endpoint, owner="reader")[0] == 403
         assert http(endpoint, extra={"Authorization": ""})[0] == 401
@@ -513,6 +520,7 @@ def test_existing_enrollment_api_reuses_access_and_rejects_other_owner_and_forge
         }
         assert http(endpoint, "POST", source)[0] == 200
         assert http(endpoint)[2]["source_received"]
+        assert http(endpoint)[2]['source_identity'] is None
         assert (
             http(
                 endpoint,

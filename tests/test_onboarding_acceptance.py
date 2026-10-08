@@ -1,6 +1,8 @@
 """Witnesses stay private; native metadata proves only observed acceptance."""
 
 import dataclasses
+import base64
+import hashlib
 import json
 import os
 import sqlite3
@@ -16,6 +18,62 @@ from clusterctl.cli import run
 from clusterctl.onboarding import OnboardingError, digest
 from tests.test_being_seed import KEY, http_server
 from tests.test_onboarding import advance, plan, setup
+
+
+def test_ssh_login_requires_real_unit_owner_key_and_current_job_time():
+    fingerprint = 'SHA256:' + 'A' * 43
+    entry = {'_SYSTEMD_UNIT': 'daimon-onboarding-ssh.service', '_UID': '0', '_COMM': 'sshd',
+        'MESSAGE': 'Accepted publickey for agent from 192.0.2.5 port 2000 ssh2: ED25519 ' + fingerprint,
+        '__REALTIME_TIMESTAMP': '1500000'}
+    assert checks.ssh_login_snapshot([entry], fingerprint, 1000, 2000) == {
+        'verified': True, 'authenticated_at_ms': 1500}
+    for invalid in ({'_SYSTEMD_UNIT': 'ssh.service'}, {'_UID': '1000'}, {'_COMM': 'logger'},
+                    {'__REALTIME_TIMESTAMP': '999000'}, {'__REALTIME_TIMESTAMP': '302001000'},
+                    {'MESSAGE': entry['MESSAGE'].replace('agent from', 'root from')},
+                    {'MESSAGE': entry['MESSAGE'].replace(fingerprint, 'SHA256:' + 'B' * 43)},
+                    {'MESSAGE': ['invalid journal value']}):
+        assert checks.ssh_login_snapshot([{**entry, **invalid}], fingerprint, 1000, 2000) == {
+            'verified': False, 'authenticated_at_ms': None}
+
+
+def test_ssh_login_adapter_binds_native_evidence_and_keeps_owner_isolation(tmp_path):
+    value = plan()
+    store, fixture = setup(tmp_path, value)
+    advance(store, fixture, count=7)
+    job = store._load('eko')
+    progress = tmp_path / 'progress'
+    progress.mkdir(mode=0o750)
+    key = 'ssh-ed25519 ' + base64.b64encode(b'fixture public owner key bytes32!!').decode()
+    calls = []
+    result = {'verified': False, 'authenticated_at_ms': None}
+    installed = True
+
+    def dispatch(plan, argv):
+        calls.append(argv)
+        assert argv[:4] == ['exec', 'dm-eko', '--', 'python3']
+        compile(argv[-2], '<captured-ssh-journal-probe>', 'exec')
+        parameters = json.loads(argv[-1])
+        assert parameters['since_ms'] == job['created_ms']
+        return json.dumps(result)
+
+    backend = SimpleNamespace(config=SimpleNamespace(progress=progress), _ssh_key=lambda plan:key,
+        _ssh_command=lambda *args:{'installed': installed}, instance=lambda plan:'dm-eko', _dispatch=dispatch)
+    adapter = checks.HostedChecks(backend)
+    assert adapter.ssh_login_observe(value, job) is False
+    assert not (progress / 'eko.ssh-login.json').exists()
+    result = {'verified': True, 'authenticated_at_ms': job['created_ms']}
+    assert adapter.ssh_login_observe(value, job) is True
+    receipt = checks.SSHLogins(progress, worker_uid=os.geteuid()).read('eko', owner='sai')
+    assert receipt['key_digest'] == hashlib.sha256((key + '\n').encode()).hexdigest()
+    assert set(receipt) == {'schema', 'name', 'owner', 'plan_digest', 'key_digest', 'verified', 'authenticated_at_ms'}
+    assert adapter.ssh_login_observe(value, job) is True and len(calls) == 2
+    installed = False
+    assert adapter.ssh_login_observe(value, job) is False
+    installed = True
+    with pytest.raises(OnboardingError, match='onboarding_job_not_found'):
+        checks.SSHLogins(progress, worker_uid=os.geteuid()).read('eko', owner='ani')
+    with pytest.raises(OnboardingError, match='existing_hosted_checks_preserved'):
+        adapter.ssh_login_observe({**value, 'browser': not value['browser']}, job)
 
 
 def memory_fixture(tmp_path):

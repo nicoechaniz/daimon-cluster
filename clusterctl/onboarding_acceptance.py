@@ -8,6 +8,8 @@ stay visible until they supply their own observed evidence.
 from __future__ import annotations
 
 import inspect
+import base64
+import hashlib
 import json
 import os
 import re
@@ -533,6 +535,46 @@ class MemoryWrites(Progress):
         return value
 
 
+def ssh_login_snapshot(entries, fingerprint, since_ms, now_ms):
+    """Only trusted sshd authentication for the configured owner's key counts."""
+    import re
+
+    authenticated = None
+    pattern = r'Accepted publickey for agent from \S+ port [0-9]+ ssh2: [A-Za-z0-9-]+ (SHA256:[A-Za-z0-9+/]{43})'
+    if (not isinstance(fingerprint, str) or not re.fullmatch(r'SHA256:[A-Za-z0-9+/]{43}', fingerprint)
+            or type(since_ms) is not int or type(now_ms) is not int or since_ms > now_ms):
+        raise ValueError('invalid_ssh_login_evidence')
+    for entry in entries:
+        if (not isinstance(entry, dict) or entry.get('_SYSTEMD_UNIT') != 'daimon-onboarding-ssh.service'
+                or entry.get('_UID') != '0' or entry.get('_COMM') not in ('sshd', 'sshd-session')):
+            continue
+        message = entry.get('MESSAGE')
+        match = re.fullmatch(pattern, message) if isinstance(message, str) else None
+        stamp = entry.get('__REALTIME_TIMESTAMP', '')
+        if not match or match[1] != fingerprint or not isinstance(stamp, str) or not stamp.isdecimal():
+            continue
+        when = int(stamp) // 1000
+        if since_ms <= when <= now_ms + 300000:
+            authenticated = max(authenticated or when, when)
+    return {'verified': authenticated is not None, 'authenticated_at_ms': authenticated}
+
+
+class SSHLogins(Progress):
+    suffix = '.ssh-login.json'
+
+    @staticmethod
+    def validate(value):
+        if (not isinstance(value, dict)
+                or set(value) != {'schema', 'name', 'owner', 'plan_digest', 'key_digest', 'verified', 'authenticated_at_ms'}
+                or value['schema'] != 'cluster-hosted-ssh-login/v1'
+                or any(not isinstance(value[k], str) or not being_seed.NAME.fullmatch(value[k]) for k in ('name', 'owner'))
+                or any(not isinstance(value[k], str) or not re.fullmatch('[0-9a-f]{64}', value[k]) for k in ('plan_digest', 'key_digest'))
+                or value['verified'] is not True or type(value['authenticated_at_ms']) is not int
+                or value['authenticated_at_ms'] < 0):
+            raise OnboardingError('invalid_ssh_login_evidence')
+        return value
+
+
 class HostedChecks:
     def __init__(self, backend):
         self.backend = backend
@@ -578,6 +620,52 @@ class HostedChecks:
         MemoryWrites(config.progress, worker_uid=os.geteuid()).publish(dict(
             schema='cluster-hosted-memory-write/v1', name=plan['name'], owner=plan['owner'],
             plan_digest=digest(plan), stores=stores))
+
+    def ssh_login_observe(self, plan, job):
+        config = self.backend.config
+        key = self.backend._ssh_key(plan)
+        if key is None or job['steps']['access']['state'] != 'complete':
+            return False
+        from .onboarding_ssh import public_key
+        canonical = public_key(key)
+        fingerprint = 'SHA256:' + base64.b64encode(hashlib.sha256(
+            base64.b64decode(canonical.split()[1], validate=True)).digest()).decode().rstrip('=')
+        key_digest = hashlib.sha256(canonical).hexdigest()
+        if not self.backend._ssh_command(plan, 'observe', key)['installed']:
+            return False
+        logins = SSHLogins(config.progress, worker_uid=os.geteuid())
+        try:
+            receipt = logins.read(plan['name'], owner=plan['owner'])
+        except FileNotFoundError:
+            receipt = None
+        if receipt is not None:
+            if (receipt['plan_digest'] != digest(plan) or receipt['key_digest'] != key_digest
+                    or receipt['authenticated_at_ms'] < job['created_ms']):
+                raise OnboardingError('existing_hosted_checks_preserved')
+            return True
+        # Journal fields are collected as guest root from the dedicated unit.
+        # Never return IP addresses, messages, key comments or unrelated logs.
+        program = ('import json,subprocess,sys;\n' + inspect.getsource(ssh_login_snapshot)
+            + '\np=json.loads(sys.argv[1]);r=subprocess.run(["journalctl",'
+            + '"--unit=daimon-onboarding-ssh.service","--output=json","--no-pager",'
+            + '"--grep=^Accepted publickey for agent ",'
+            + '"--lines=512","--since=@"+str(p["since_ms"]//1000)],'
+            + 'capture_output=True,text=True,timeout=30,check=True);'
+            + 'print(json.dumps(ssh_login_snapshot([json.loads(line) for line in r.stdout.splitlines()],'
+            + 'p["fingerprint"],p["since_ms"],p["now_ms"])))')
+        parameters = {'fingerprint': fingerprint, 'since_ms': job['created_ms'], 'now_ms': int(time.time() * 1000)}
+        result = json.loads(self.backend._dispatch(plan, ['exec', self.backend.instance(plan), '--',
+            'python3', '-B', '-I', '-c', program, json.dumps(parameters)]))
+        if (not isinstance(result, dict) or set(result) != {'verified', 'authenticated_at_ms'}
+                or type(result['verified']) is not bool
+                or (result['verified'] and (type(result['authenticated_at_ms']) is not int
+                    or not parameters['since_ms'] <= result['authenticated_at_ms'] <= parameters['now_ms'] + 300000))
+                or (not result['verified'] and result['authenticated_at_ms'] is not None)):
+            raise OnboardingError('invalid_ssh_login_evidence')
+        if result['verified']:
+            logins.publish(dict(schema='cluster-hosted-ssh-login/v1', name=plan['name'], owner=plan['owner'],
+                plan_digest=digest(plan), key_digest=key_digest, **result))
+        return result['verified']
 
     def observe(self, plan: dict) -> Observation:
         config = self.backend.config
@@ -666,6 +754,8 @@ class HostedChecks:
             steering_verified=bool(native["steered_turns"]),
             restart_verified=restarted,
         )
+        if hasattr(self.backend, '_ssh_key'):
+            technical['ssh_verified'] = self.ssh_login_observe(plan, job)
         try:
             memory_proof = MemoryWrites(config.progress, worker_uid=os.geteuid()).read(plan['name'], owner=plan['owner'])
         except FileNotFoundError:
@@ -692,7 +782,7 @@ class HostedChecks:
         witness = worker_report(
             config.consent_state, value, intake_uid=config.consent_uid
         )
-        # Remaining SSH/CLI, reversible memory write and native Matrix delivery
+        # Remaining CLI and native Matrix delivery
         # adapters must still provide observations. All-passed witnesses cannot
         # promote this collection to a complete hosted acceptance.
         reason = (

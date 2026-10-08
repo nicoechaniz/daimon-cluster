@@ -129,3 +129,52 @@ def test_real_existing_identity_export_and_signature_verification_no_new_custody
             onboarding_progress=str(progress), onboarding_worker_uid=os.geteuid())
         assert http('/v1/onboarding/local-body/eko', 'POST', report(task, identity), owner='sai')[0] == 200
     assert before == {name: (root / name).read_bytes() for name in before}
+
+
+def test_blocker_diagnostics_before_archive_are_private_preserved_and_do_not_replace_identity_checks(tmp_path):
+    state, progress = tmp_path / 'state', tmp_path / 'progress'
+    progress.mkdir(mode=0o750)
+    task = request()
+    publisher = local.Requests(progress, worker_uid=os.geteuid())
+    publisher.publish(task)
+    publisher.publish(request('oliva', 'ani'))
+    with http_server(state) as (server, http):
+        server.deps = dataclasses.replace(server.deps, seed_only=True,
+            onboarding_progress=str(progress), onboarding_worker_uid=os.geteuid())
+        endpoint = '/v1/onboarding/local-body/eko'
+        data = dict(schema=local.DIAGNOSTIC, request_id=task['request_id'],
+            reported_at_ms=task['updated_ms'], component='context-exporter', no_credentials=True,
+            report={'error': 'embedded_credential_requires_separate_handoff',
+                    'harmless_cases': ['code without credentials', 'empty JPEG'], 'originals_intact': True})
+        assert http(endpoint + '/diagnostic', 'POST', data, owner='ani')[0] == 404
+        assert http(endpoint + '/diagnostic', 'POST', data, owner='reader')[0] == 403
+        assert http(endpoint + '/diagnostic', 'POST', data, extra={'Authorization': ''})[0] == 401
+        code, headers, first = http(endpoint + '/diagnostic', 'POST', data, owner='sai')
+        assert code == 200 and headers['Cache-Control'] == 'no-store'
+        assert first['report'] is None and not first['received']['archive_received']
+        assert first['diagnostic']['received'] and first['diagnostic']['resolution'] == 'host-review-pending'
+        assert 'report' not in first['diagnostic']
+        assert http(endpoint + '/diagnostic', 'POST', data, owner='sai')[2] == first
+        checks = report(task)
+        assert http(endpoint, 'POST', checks, owner='sai')[0] == 200
+        later = {**data, 'reported_at_ms': data['reported_at_ms'] + 1,
+                 'report': {'reproduction': 'additional harmless evidence'}}
+        assert http(endpoint + '/diagnostic', 'POST', later, owner='sai')[0] == 200
+        value = http(endpoint + '/diagnostic', 'POST', data, owner='sai')[2]
+        assert value['diagnostic']['reported_at_ms'] == later['reported_at_ms']
+        assert value['report']['checks'] == checks['checks']
+        saved = state / 'local-body-reports/eko/diagnostics'
+        assert saved.stat().st_mode & 0o077 == 0
+        evidence = [path for path in saved.glob('*.json') if path.name != 'latest.json']
+        assert len(evidence) == 2 and all(path.stat().st_mode & 0o077 == 0 for path in evidence)
+        assert any(json.loads(path.read_bytes()) == data for path in evidence)
+        for bad in ({**data, 'no_credentials': False}, {**data, 'request_id': str(uuid.uuid4())},
+                    {**data, 'reported_at_ms': True}, {**data, 'report': {'large': 'x' * 60000}},
+                    {**data, 'report': {'token': 'ghp_' + 'a' * 40}}):
+            assert http(endpoint + '/diagnostic', 'POST', bad, owner='sai')[0] == 400
+        assert len([path for path in saved.glob('*.json') if path.name != 'latest.json']) == 2
+        assert not (state / 'being-seeds').exists()
+        assert 'local-body-send-diagnostic' in http('/v1/onboarding')[2]
+        assert 'local_body_diagnostic' in http('/v1/onboarding?format=json')[2]['requests']
+        publisher.publish({**task, 'request_id': str(uuid.uuid4())})
+        assert http(endpoint, owner='sai')[2]['diagnostic'] is None

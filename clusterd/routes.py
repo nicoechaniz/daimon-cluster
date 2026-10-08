@@ -97,6 +97,8 @@ ROUTES: list[Route] = [
           "local_body_tool", "seed:write", "maintained native public identity tools", required_scope="seed:write"),
     Route("GET", "/v1/onboarding/local-body/{seed}", "localBodyRequest", "Read one local Codex check and received inputs",
           "local_body_requests", "seed:write", "owner-scoped local body request", required_scope="seed:write"),
+    Route("POST", "/v1/onboarding/local-body/{seed}/diagnostic", "localBodyDiagnostic", "Preserve an owner-private nonsecret reproducible blocker report",
+          "local_body_diagnostic", "seed:write", "participant diagnostic; never executable instructions", mutation=True, required_scope="seed:write"),
     Route("POST", "/v1/onboarding/local-body/{seed}", "localBodyReport", "Submit local checks and an existing public signed Matrix identity",
           "local_body_report", "seed:write", "preserved local body report", mutation=True, required_scope="seed:write"),
     Route(

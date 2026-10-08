@@ -16,11 +16,37 @@ from . import auth
 from .seed_ui import HTML, SCRIPT, agent_guide, agent_markdown, representation
 
 
+SIGNER_MODULES = ("__init__", "being_seed", "onboarding", "onboarding_input", "onboarding_release",
+    "onboarding_code_successor", "onboarding_sdk", "onboarding_target", "onboarding_credential",
+    "onboarding_peer", "onboarding_peer_native", "onboarding_existing", "onboarding_enrollment",
+    "onboarding_local_body", "onboarding_progress", "onboarding_custody", "onboarding_enrollment_root")
+
 def local_body_tool(deps, ctx, tool, **params):
     from . import handlers
     from clusterctl import onboarding_peer, onboarding_release
 
     root = Path(__file__).resolve().parents[1]
+    if tool == "existing_root_signer.zip":
+        import io
+        import zipfile
+        try:
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for name in SIGNER_MODULES:
+                    path = root / "clusterctl" / (name + ".py")
+                    raw = onboarding_release.regular(path, uid=root.stat().st_uid, limit=200000)
+                    if name == "onboarding_peer_native" and hashlib.sha256(raw).hexdigest() != onboarding_peer.TOOL_SHA256:
+                        raise ValueError
+                    info = zipfile.ZipInfo("clusterctl/" + name + ".py", (2026, 10, 8, 0, 0, 0))
+                    info.external_attr = 0o100644 << 16
+                    archive.writestr(info, raw, compress_type=zipfile.ZIP_DEFLATED)
+                archive.writestr("README.txt", "Extract into a private directory. Use the qualified Matrix SDK pinned by onboarding_sdk.py; keep your original local body environment unchanged.\nRun: python -B -m clusterctl.onboarding_enrollment_root --handoff PRIVATE_JSON --holder EXISTING_LOCAL_HOLDER --password-fd OPEN_FD --output PRIVATE_REPLY_JSON\nFor a native historical offline Root+Recovery store, replace --holder with --root-custody EXISTING_LOCAL_ROOT_STORE. Runtime Body/capability stores are refused. The maintained V2 credential adapter currently supports Root threshold one.\nThis is a finite owner-invoked signer. Only the public reply goes back through the existing portal. The signer reads no Matrix inbox, starts no daemon and exports no custody.\n")
+            raw = output.getvalue()
+            return handlers.Response(200, raw, content_type="application/zip",
+                headers={"X-Content-SHA256": hashlib.sha256(raw).hexdigest(),
+                         "Content-Disposition": 'attachment; filename="existing_root_signer.zip"'})
+        except (OSError, ValueError, OnboardingError):
+            return handlers.Response(409, {"error": "local_body_tool_requires_attention"})
     paths = {'export_local_matrix_identity.py': root / 'tools/export_local_matrix_identity.py',
              'onboarding_peer_native.py': root / 'clusterctl/onboarding_peer_native.py'}
     if tool not in paths:
@@ -76,6 +102,62 @@ def local_body_requests(deps, ctx, seed=None, _body=None, _submit=False, _diagno
 
 def local_body_report(deps, ctx, **params):
     return local_body_requests(deps, ctx, _submit=True, **params)
+
+
+def existing_enrollment(deps, ctx, seed, _body=None, _submit=False, **params):
+    from . import handlers
+    from clusterctl import onboarding_enrollment as enrollment
+    from clusterctl.onboarding_local_body import Requests
+    try:
+        if not deps.onboarding_progress:
+            return handlers.Response(404, {"error": "local_body_request_not_found"})
+        progress = Path(deps.onboarding_progress)
+        task = Requests(progress, worker_uid=deps.onboarding_worker_uid).read(seed, owner=_owner(ctx))
+        if task["expected_being_ref"] is None:
+            return handlers.Response(409, {"error": "existing_being_identity_required"})
+        state = Path(handlers._state_dir(deps))
+        try:
+            hosted = Progress(progress, worker_uid=deps.onboarding_worker_uid).read(seed, owner=_owner(ctx))
+            hosted_ready = "matrix" in hosted["completed_steps"]
+        except FileNotFoundError:
+            hosted_ready = False
+        if _submit and hosted_ready:
+            return handlers.Response(409, {"error": "existing_hosted_identity_preserved"})
+        try:
+            handoff = enrollment.Handoffs(progress, worker_uid=deps.onboarding_worker_uid).read(seed, owner=_owner(ctx))
+        except FileNotFoundError:
+            handoff = None
+        if _submit:
+            return handlers.Response(200, enrollment.submit(state, task, handoff, _body))
+        source_path = state / "existing-enrollment" / seed / "source.json"
+        source = being_seed._read(source_path) if source_path.exists() else None
+        return handlers.Response(200, dict(request_id=task["request_id"], expected_being_ref=task["expected_being_ref"],
+            source_received=source is not None, handoff=handoff, hosted_identity_ready=hosted_ready,
+            response_path="/v1/onboarding/local-body/" + seed + "/enrollment",
+            signer_tools="/v1/onboarding/local-body/tools/existing_root_signer.zip",
+            instructions=[
+                "Reuse the current being and local Root holder. Do not create genesis or send custody files.",
+                "Submit cluster-onboarding-existing-source/v1 with request_id, the exported signed public identity and explicit native peer routes for every active existing body.",
+                "When a handoff appears, save its exact public JSON privately. The maintained signer emits the reply for this request digest only.",
+                "Run the signer in a separate process with the qualified Matrix SDK; pass the existing holder password by file descriptor. Keep keys and passwords local.",
+                "Use --holder for a native isolated Root holder, or --root-custody for the existing offline Root+Recovery store. Never supply a runtime Body/capability store. Root threshold one is currently supported.",
+                "Submit the public reply to response_path; the worker verifies it independently and publishes the next credential handoff automatically.",
+                "A received reply is evidence pending host verification. It does not prove admission, source-body cutover, delivery or hosted acceptance.",
+            ]))
+    except FileNotFoundError:
+        return handlers.Response(404, {"error": "local_body_request_not_found"})
+    except being_seed.SeedError as error:
+        return handlers.Response(error.status, {"error": str(error)})
+    except OnboardingError as error:
+        if str(error) == "onboarding_job_not_found":
+            return handlers.Response(404, {"error": "local_body_request_not_found"})
+        return handlers.Response(409, {"error": "existing_enrollment_requires_attention"})
+    except (OSError, ValueError, KeyError, TypeError):
+        return handlers.Response(409, {"error": "existing_enrollment_requires_attention"})
+
+
+def existing_enrollment_reply(deps, ctx, **params):
+    return existing_enrollment(deps, ctx, _submit=True, **params)
 
 
 def local_body_diagnostic(deps, ctx, **params):

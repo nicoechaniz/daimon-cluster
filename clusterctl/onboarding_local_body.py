@@ -100,6 +100,7 @@ def read(state: Path, request: dict) -> dict:
     return {**request, 'checks': CHECKS, 'report': summary, 'received': received,
         'diagnostic': diagnostic_summary(state, request),
         'diagnostic_path': '/v1/onboarding/local-body/' + request['name'] + '/diagnostic',
+        'enrollment_path': '/v1/onboarding/local-body/' + request['name'] + '/enrollment',
         'instructions': [
             'Continue your existing local Codex installation and this workspace; do not reinstall or re-export received context.',
             'Keep the already selected shared account and recorded human approvals.',

@@ -6,6 +6,24 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_existing_root_enrollment_keeps_native_authority_custody_and_admission(tmp_path):
+    from tools.ci_scope import ENROLLMENT_FILES
+    changed = sorted(ENROLLMENT_FILES)
+    profile, tests = select(changed, ROOT)
+    assert profile == 'onboarding'
+    assert {'tests/test_onboarding_existing.py',
+        'tests/test_onboarding_managed.py',
+        'tests/test_admission.py', 'tests/test_production_fences.py',
+        'tests/test_onboarding_peer_host.py', 'tests/test_onboarding_local_body.py',
+        'tests/test_auth.py', 'tests/test_clusterd.py'} <= set(tests)
+    assert any('test_receiving_credential_upgrade' in path for path in tests)
+    assert any('test_existing_identity_and_wrong_or_missing_grant' in path for path in tests)
+    assert any('test_response_cannot_change_history' in path for path in tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for shared in ('requirements-weave.txt', 'clusterctl/matrix_host.py', 'clusterctl/onboarding_custody.py'):
+        assert select(changed + [shared], ROOT) == ('full', ['tests'])
+
+
 def test_hosted_witness_keeps_native_prerequisite_job_retry_and_owner_http_scope(tmp_path):
     changed = ['clusterctl/onboarding_acceptance.py', 'clusterctl/onboarding_host.py',
         'clusterctl/onboarding.py', 'clusterctl/cli.py', 'clusterd/routes.py',

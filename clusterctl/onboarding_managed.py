@@ -8,7 +8,6 @@ from .admission import AdmissionEndpoint
 from .onboarding_registry import OwnerRegistry
 from .fences import Ed25519Signer
 from .onboarding import Observation, OnboardingError, digest, private_directory
-from .onboarding_custody import FirstCustody
 from .onboarding_service import UNIT
 from .production_fences import ed25519_fingerprint
 
@@ -56,8 +55,7 @@ class ManagedRuntime:
         return self.settings.get('messaging_application'), self.settings['visibility_installation']
 
     def _expected(self, plan: dict) -> dict:
-        config = self.backend.config
-        return FirstCustody(config.custody, config.custody_grants).admission_coordinates(plan)
+        return self.backend._ceremony(plan).admission_coordinates(plan)
 
     def _proxy(self) -> dict:
         return dict(type='proxy', bind='instance', listen='tcp:127.0.0.1:' + str(self.settings['guest_port']),

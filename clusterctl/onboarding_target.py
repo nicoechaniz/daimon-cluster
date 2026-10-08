@@ -1,7 +1,8 @@
-"""Receiving-side native target custody and first runtime preparation.
+"""Receiving-side native target custody and runtime preparation.
 
-Root custody stays on the host. Only genesis, a body-signed public request and
-Root authorization cross this boundary. Preparation never means admission.
+Root custody stays with its authorized holder. Only signed public authority,
+a body-signed request and Root authorization cross this boundary. Preparation
+never means admission. Existing beings use native same-Root enrollment.
 """
 from __future__ import annotations
 
@@ -46,6 +47,10 @@ class Target:
         self.home = private_directory(home)
         self.plan = validate_plan(plan)
         self.genesis = genesis
+        self.existing = genesis.get("schema") == "cluster-onboarding-existing-base/v1"
+        if self.existing:
+            from .onboarding_existing import validate_base
+            validate_base(genesis, self.plan)
         self.root = home / ".local/state/daimon-onboarding" / plan["name"] / "matrix"
         self.preparation = self.root / "preparation"
         self.package = self.root / "package"
@@ -67,6 +72,25 @@ class Target:
         return dict(schema="cluster-onboarding-target/v1", plan_digest=digest(self.plan),
                     genesis_digest=digest(self.genesis))
 
+    def _base(self):
+        from daimon_matrix import operator_first_embodiment as first, operator_rebirth
+        if self.existing:
+            from .onboarding_existing import public_base_bundle
+            return operator_rebirth.authority_from_runtime_bundle(public_base_bundle(self.genesis, self.plan))
+        return first._initial_base(self.genesis)
+
+    def _profile(self) -> dict:
+        if self.existing:
+            from .onboarding_existing import target_profile
+            return target_profile(self.genesis, self.plan)
+        return profile(self.plan)
+
+    def _activation_authority(self, request: dict, activation: dict):
+        from daimon_matrix import operator_first_embodiment as first, operator_rebirth
+        if self.existing:
+            return operator_rebirth.validate_activation(activation, self._base(), request=request)[1]
+        return first.validate_activation(self.genesis, request, activation)[1]
+
     @contextmanager
     def _runtime_writer(self) -> Iterator[None]:
         from daimon_matrix import daemon
@@ -77,13 +101,14 @@ class Target:
             os.close(descriptor)
 
     def _validate(self) -> tuple[dict, dict]:
-        from daimon_matrix import operator_first_embodiment as first, operator_rebirth
+        from daimon_matrix import operator_rebirth
         if document(self.root / "plan.json") != self._binding():
             raise OnboardingError("onboarding_target_binding_conflict")
         prepared, request = document(self.preparation / "preparation.json"), document(self.preparation / "request.json")
         verified, _, _ = operator_rebirth._validated_preparation(self.preparation, prepared, request,
-            first._initial_base(self.genesis), self._reader, observed_at_ms=prepared["created_at_ms"], expected_targets=set())
-        if verified["profile"] != profile(self.plan):
+            self._base(), self._reader, observed_at_ms=prepared["created_at_ms"],
+            expected_targets=None if self.existing else set())
+        if verified["profile"] != self._profile():
             raise OnboardingError("onboarding_target_binding_conflict")
         return verified, request
 
@@ -103,25 +128,94 @@ class Target:
                 keystore._atomic_write(record, canonical.canonical_bytes(self._binding()))
             if document(record) != self._binding():
                 raise OnboardingError("onboarding_target_binding_conflict")
+            if self.existing:
+                self._recover_request_renewal()
             password = self.root / "body.unlock"
             if not password.exists():
                 if self.preparation.exists() or self.package.exists():
                     raise OnboardingError("existing_onboarding_target_preserved")
                 keystore._atomic_write(password, os.urandom(32).hex().encode())
             if not self.preparation.exists():
-                first.prepare_target(self.preparation, self.genesis, profile(self.plan), self._reader,
-                                     created_at_ms=time.time_ns() // 1_000_000)
-            return self._validate()[1]
+                now = time.time_ns() // 1_000_000
+                if self.existing:
+                    from daimon_matrix import operator_rebirth
+                    operator_rebirth.create_target_preparation(self.preparation, self._base(), self._profile(),
+                        self._reader, created_at_ms=now, expires_at_ms=now + 24 * 3600000)
+                else:
+                    first.prepare_target(self.preparation, self.genesis, profile(self.plan), self._reader,
+                                         created_at_ms=now)
+            prepared, request = self._validate()
+            now = time.time_ns() // 1_000_000
+            if self.existing and not self.package.exists() and now >= request["body"]["expires_at_ms"]:
+                self._renew_request(prepared, request, now)
+                return self._validate()[1]
+            return request
+
+    def _recover_request_renewal(self) -> None:
+        """Publish both native public documents after a lost acknowledgement."""
+        from daimon_matrix import canonical, keystore
+        transaction = self.root / "request-renewal.json"
+        if not transaction.exists():
+            return
+        value = document(transaction)
+        if set(value) != {"previous", "preparation", "request"}:
+            raise OnboardingError("existing_onboarding_target_preserved")
+        prior = document(self.root / "expired-requests" / (value["previous"] + ".json"))
+        for name, field in (("preparation.json", "preparation"), ("request.json", "request")):
+            current = document(self.preparation / name)
+            if current not in (prior[field], value[field]):
+                raise OnboardingError("existing_onboarding_target_preserved")
+        from daimon_matrix import operator_rebirth
+        operator_rebirth._validated_preparation(
+            self.preparation, value["preparation"], value["request"], self._base(), self._reader,
+            observed_at_ms=value["preparation"]["created_at_ms"],
+        )
+        for name, field in (("preparation.json", "preparation"), ("request.json", "request")):
+            keystore._atomic_write(self.preparation / name, canonical.canonical_bytes(value[field]))
+        transaction.unlink()
+
+    def _renew_request(self, prepared: dict, request: dict, now: int) -> None:
+        """Re-sign the native request with the same Body and transport keys."""
+        from daimon_matrix import canonical, keystore, operator_rebirth
+        _, keys, transport = operator_rebirth._validated_preparation(
+            self.preparation, prepared, request, self._base(), self._reader,
+            observed_at_ms=prepared["created_at_ms"],
+        )
+        slots = prepared["slots"]
+        successor = operator_rebirth.create_enrollment_request(
+            self._base(), signing_seed=keys[slots["signing"]],
+            encryption_private=keys[slots["encryption"]],
+            transport_seed=transport[slots["transport"]], **prepared["origin"],
+            created_at_ms=prepared["created_at_ms"], expires_at_ms=now + 24 * 3600000,
+            nonce=os.urandom(32),
+        )
+        updated = {**prepared, "request_id": successor["request_id"],
+                   "expires_at_ms": successor["body"]["expires_at_ms"]}
+        operator_rebirth._validated_preparation(
+            self.preparation, updated, successor, self._base(), self._reader, observed_at_ms=now,
+        )
+        previous = {"preparation": prepared, "request": request}
+        history = private_directory(self.root / "expired-requests", create=True)
+        keystore._atomic_write(history / (digest(previous) + ".json"), canonical.canonical_bytes(previous))
+        keystore._atomic_write(self.root / "request-renewal.json", canonical.canonical_bytes(
+            {"previous": digest(previous), "preparation": updated, "request": successor}))
+        self._recover_request_renewal()
 
     def activate(self, activation: dict) -> dict:
         from daimon_matrix import operator_first_embodiment as first
         private_directory(self.root)
         with being_seed._locked(self.root):
             prepared, request = self._validate()
-            first.validate_activation(self.genesis, request, activation)
+            self._activation_authority(request, activation)
             if not self.package.exists():
-                first.activate_runtime(self.package, self.genesis, self.preparation,
-                                       prepared, request, activation, self._reader)
+                if self.existing:
+                    from daimon_matrix import operator_rebirth
+                    from .onboarding_existing import public_base_bundle
+                    operator_rebirth.activate_target_runtime(self.package, self.preparation,
+                        prepared, request, activation, public_base_bundle(self.genesis, self.plan), self._reader)
+                else:
+                    first.activate_runtime(self.package, self.genesis, self.preparation,
+                                           prepared, request, activation, self._reader)
             elif document(self.package / "activation.json") != activation:
                 raise OnboardingError("existing_onboarding_target_preserved")
             return self.observe()
@@ -129,19 +223,23 @@ class Target:
     def observe(self) -> dict:
         if not self.root.exists() or not self.preparation.exists():
             return dict(phase="absent", request=None, receipt=None)
+        if self.existing and (self.root / "request-renewal.json").exists():
+            with being_seed._locked(self.root):
+                self._recover_request_renewal()
         _, request = self._validate()
         if not self.package.exists():
             return dict(phase="prepared", request=request, receipt=None)
-        from daimon_matrix import canonical, identity, keystore, operator_first_embodiment as first
+        from daimon_matrix import canonical, identity, keystore
         activation = document(self.package / "activation.json")
-        _, authority = first.validate_activation(self.genesis, request, activation)
+        authority = self._activation_authority(request, activation)
         receipt = document(self.package / "receipt.json")
         bundle = document(self.package / "runtime/runtime.json")
         original = document(self.credential / "original.json") if (self.credential / "original.json").exists() else bundle
         if (receipt["origin"] != request["body"]["origin"] or bundle["local_origin"] != receipt["origin"]
                 or original["manifest"] != authority.manifest.value
                 or receipt["runtime_sha256"] != hashlib.sha256(canonical.canonical_bytes(original)).hexdigest()
-                or receipt["root_seeds_in_target"] is not False):
+                or (receipt.get("empty_writable_state") is not True if self.existing
+                    else receipt.get("root_seeds_in_target") is not False)):
             raise OnboardingError("onboarding_target_runtime_conflict")
         store = keystore.EncryptedKeystore(self.package / "runtime/custody.json").open(
             self._reader, minimum_counter=1, required_control_head=authority.state.head)
@@ -165,7 +263,7 @@ class Target:
                 peer_receipt, peer_complete = augmented(self, expected, bundle)
                 return dict(phase='v8' if peer_complete else 'peer-published', request=request, receipt=peer_receipt)
             return dict(phase="v8" if complete.exists() else "v8-published", request=request, receipt=current_receipt)
-        return dict(phase="v7", request=request, receipt=receipt)
+        return dict(phase="credential-pending" if self.existing else "v7", request=request, receipt=receipt)
 
     def credential_request(self) -> dict:
         """Persist one Body-accepted native proposal before contacting Root."""
@@ -174,7 +272,7 @@ class Target:
         private_directory(self.root)
         with being_seed._locked(self.root), self._runtime_writer():
             observed = self.observe()
-            if observed["phase"] not in {"v7", "v8-published", "v8"}:
+            if observed["phase"] not in {"v7", "credential-pending", "v8-published", "v8"}:
                 raise OnboardingError("prepared_onboarding_target_required")
             private_directory(self.credential, create=True)
             original_path = self.credential / "original.json"

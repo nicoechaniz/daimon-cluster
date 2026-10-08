@@ -39,8 +39,6 @@ def test_host_retry_reuses_signed_response_and_retains_native_source(journey, tm
     path = tmp_path / 'peer-host.json'
     being_seed._write(path, settings)
     expected = dict(being_ref=target.document_bundle()['manifest']['being_ref'], **target.document_bundle()['local_origin'])
-    monkeypatch.setattr('clusterctl.onboarding_custody.FirstCustody',
-        lambda *a: SimpleNamespace(admission_coordinates=lambda p: expected))
     actual_native = onboarding_peer.native
     monkeypatch.setattr(onboarding_peer, 'native', lambda code, uid=0: actual_native(code, uid=os.geteuid()))
     # Exercise the typed host publication boundary with the actual encrypted
@@ -53,7 +51,7 @@ def test_host_retry_reuses_signed_response_and_retains_native_source(journey, tm
     monkeypatch.setattr('clusterctl.onboarding_mounts.GUEST_GID', os.getegid())
     typed = object.__new__(HostBackend)
     typed.config = SimpleNamespace(peer=path, custody=tmp_path / 'custody', custody_grants=tmp_path / 'grants', views=views)
-    monkeypatch.setattr('clusterctl.onboarding_host.FirstCustody', lambda *a: SimpleNamespace(authorize=lambda p: True))
+    typed._ceremony = lambda p: SimpleNamespace(authorize=lambda p: True)
     typed._guest_paths = lambda p: (None, target.code, {})
     typed._runtime_paths = lambda p, code: (code, [], {})
     commands = []
@@ -76,6 +74,7 @@ def test_host_retry_reuses_signed_response_and_retains_native_source(journey, tm
     backend = SimpleNamespace(config=SimpleNamespace(peer=path, custody=None, custody_grants=None,
         consent_state=None, progress=None), _target_call=target_call,
         _matrix_command=lambda p, a: target.observe(), authorize=lambda p, d: True)
+    backend._ceremony = lambda p: SimpleNamespace(admission_coordinates=lambda p: expected)
     host = PeerHost(backend)
     monkeypatch.setattr(host, '_proxies', lambda p, **k: True)
     monkeypatch.setattr(host, '_ports', lambda p: tuple(int(x.rsplit(':', 1)[1]) for x in journey[4]['plan']['endpoints']))

@@ -92,12 +92,45 @@ TRANSFER_TESTS = tuple(sorted(set(HOSTED_CHECK_TESTS) | set(EXPORT_TESTS) | {
     'tests/test_onboarding_transfer.py', 'tests/test_onboarding_intake.py',
     'tests/test_onboarding_code_successor.py'}))
 
+ENROLLMENT_FILES = PORTAL_FILES | OWNER_CLIENT_FILES | PEER_FILES | {
+    'clusterctl/onboarding_existing.py', 'clusterctl/onboarding_enrollment.py',
+    'clusterctl/onboarding_enrollment_root.py', 'clusterctl/onboarding_target.py',
+    'clusterctl/onboarding_managed.py', 'tools/build_onboarding_code.py',
+    'tests/test_onboarding_existing.py', 'tests/test_onboarding_managed.py',
+    'tests/test_onboarding_code_successor.py',
+    'docs/design/onboarding-jobs.md'}
+ENROLLMENT_TESTS = tuple(sorted(set(PORTAL_TESTS) | {
+    'tests/test_onboarding_existing.py', 'tests/test_onboarding_admission.py',
+    'tests/test_onboarding_release.py', 'tests/test_onboarding_input.py',
+    'tests/test_onboarding_progress.py', 'tests/test_onboarding.py',
+    'tests/test_onboarding_host.py', 'tests/test_onboarding_host_ownership.py',
+    'tests/test_onboarding_intake.py', 'tests/test_onboarding_approvals.py',
+    'tests/test_onboarding_code_successor.py', 'tests/test_onboarding_sdk.py',
+    'tests/test_onboarding_managed.py', 'tests/test_onboarding_peer_host.py',
+    'tests/test_admission.py', 'tests/test_production_fences.py',
+    'tests/test_embodiments.py',
+    'tests/test_onboarding_target.py::test_receiving_target_runtime_retries_keep_keys_origin_and_receiving_writes',
+    'tests/test_onboarding_target.py::test_receiving_credential_upgrade_keeps_origin_memory_and_runtime_reload',
+    'tests/test_onboarding_target.py::test_native_credential_publication_recovers_each_lost_ack_without_new_identity',
+    'tests/test_onboarding_target.py::test_credential_publication_refuses_running_writer_and_preserves_changed_runtime',
+    'tests/test_onboarding_custody.py::test_existing_identity_and_wrong_or_missing_grant_create_no_keys',
+    'tests/test_onboarding_credential.py::test_response_cannot_change_history_or_credential_and_expired_request_cannot_get_fresh_root_signature',
+}))
+
 
 def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
     if not changed:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'clusterctl/onboarding_enrollment.py', 'tests/test_onboarding_existing.py'}
+            and set(changed) <= ENROLLMENT_FILES | CI_FILES
+            and all((root / path.split("::", 1)[0]).is_file() for path in ENROLLMENT_TESTS)):
+        # Native existing-Root enrollment retains both custody ceremonies,
+        # receiving crash recovery, exact SDK/context, owner HTTP isolation,
+        # admission/fencing and signed Source coordination. Dependency pins,
+        # authority primitives and physical recovery changes remain full.
+        return 'onboarding', list(ENROLLMENT_TESTS)
     if (set(changed) & {'clusterctl/onboarding_transfer.py', 'tests/test_onboarding_transfer.py'}
             and set(changed) <= TRANSFER_FILES | CI_FILES
             and all((root / path).is_file() for path in TRANSFER_TESTS)):

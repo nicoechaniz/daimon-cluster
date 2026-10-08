@@ -93,6 +93,8 @@ class ClusterdHandler(BaseHTTPRequestHandler):
                  resp: handlers.Response) -> None:
         if resp.content_type == "application/json":
             body = json.dumps(resp.body, indent=2).encode("utf-8")
+        elif isinstance(resp.body, bytes):
+            body = resp.body
         else:
             body = str(resp.body).encode("utf-8")
         self.send_response(resp.status)

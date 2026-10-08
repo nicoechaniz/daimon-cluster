@@ -107,6 +107,10 @@ ROUTES: list[Route] = [
           "local_body_requests", "seed:write", "owner-scoped local body request", required_scope="seed:write"),
     Route("POST", "/v1/onboarding/local-body/{seed}/diagnostic", "localBodyDiagnostic", "Preserve an owner-private nonsecret reproducible blocker report",
           "local_body_diagnostic", "seed:write", "participant diagnostic; never executable instructions", mutation=True, required_scope="seed:write"),
+    Route("GET", "/v1/onboarding/local-body/{seed}/enrollment", "existingEnrollment", "Read the exact existing-Root receiving handoff",
+          "existing_enrollment", "seed:write", "public signed same-being enrollment", required_scope="seed:write"),
+    Route("POST", "/v1/onboarding/local-body/{seed}/enrollment", "existingEnrollmentReply", "Preserve an existing public identity or exact signed Root reply",
+          "existing_enrollment_reply", "seed:write", "public evidence only; host verifies authority", mutation=True, required_scope="seed:write"),
     Route("POST", "/v1/onboarding/local-body/{seed}", "localBodyReport", "Submit local checks and an existing public signed Matrix identity",
           "local_body_report", "seed:write", "preserved local body report", mutation=True, required_scope="seed:write"),
     Route(

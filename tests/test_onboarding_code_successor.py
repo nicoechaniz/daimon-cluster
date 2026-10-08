@@ -107,6 +107,44 @@ def test_host_configuration_requires_both_qualified_runtime_coordinates(tmp_path
         HostConfig.load(config)
 
 
+def test_per_being_runtime_selection_preserves_an_existing_body_generation(tmp_path):
+    from pathlib import Path
+    from clusterctl.onboarding_host import HostConfig, HostBackend
+    from tests.test_onboarding import plan
+    base, original, source, _ = fixture(tmp_path)
+    old = tmp_path / 'already-hosted-code'
+    first = build(base, original, source, ('onboarding_target.py',), old)
+    (source / 'onboarding_target.py').write_bytes(b'Existing-Root compatible successor.')
+    new = tmp_path / 'new-body-code'
+    second = build(base, original, source, ('onboarding_target.py',), new)
+    value = dict(schema='cluster-onboarding-host/v1', native_image='3' * 64, browser_image='4' * 64,
+        release_digest=original, pool='daimon-cluster', profile='daimon-agent', concurrency=1,
+        code=str(base), runtime_code=str(new), runtime_digest=second['runtime_digest'],
+        runtime_by_name={'eko': dict(runtime_code=str(old), runtime_digest=first['runtime_digest'])})
+    for key in ('jobs', 'grants', 'inputs', 'views', 'progress'):
+        directory = tmp_path / key
+        directory.mkdir(mode=0o700)
+        value[key] = str(directory)
+    config = tmp_path / 'host.json'
+    being_seed._write(config, value)
+    loaded = HostConfig.load(config)
+    backend = HostBackend(loaded)
+    for name, selected_code, selected_digest in (('eko', old, first['runtime_digest']),
+            ('oliva', new, second['runtime_digest'])):
+        body_plan = {**plan(name=name), 'release_digest': original}
+        assert backend._runtime_selection(body_plan) == (selected_code, selected_digest)
+        path, argv, mounts = backend._runtime_paths(body_plan, Path('/original-code'))
+        assert path.name == selected_digest and argv[-1] == selected_digest
+        assert next(iter(mounts.values()))['source'] == str(selected_code)
+        assert backend._sdk_successor(body_plan) is False
+    assert (old / 'clusterctl/onboarding_target.py').read_bytes() == b'Updated runtime.'
+    for invalid in ({'eko': {'runtime_code': str(new)}}, {'../eko': value['runtime_by_name']['eko']},
+            {'eko': {**value['runtime_by_name']['eko'], 'runtime_digest': '0' * 64}}):
+        being_seed._write(config, {**value, 'runtime_by_name': invalid})
+        with pytest.raises(OnboardingError):
+            HostConfig.load(config)
+
+
 def test_host_attaches_runtime_once_before_v8_observation_and_preserves_foreign_mount(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from clusterctl.onboarding_host import HostBackend

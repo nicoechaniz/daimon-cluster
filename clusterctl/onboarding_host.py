@@ -57,6 +57,7 @@ class HostConfig:
     runtime_by_name: dict[str, tuple[Path, str]] | None = None
     telegram_code: Path | None = None
     telegram_digest: str | None = None
+    browser_artifact: dict[str, str] | None = None
 
     @classmethod
     def load(cls, path: Path) -> HostConfig:
@@ -65,7 +66,7 @@ class HostConfig:
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
         telegram_keys = {"telegram_code", "telegram_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -207,10 +208,14 @@ class HostConfig:
                 raise OnboardingError('invalid_onboarding_host_configuration')
             peer = Path(value['peer'])
             being_seed._read(peer)
+        browser_artifact = None
+        if 'browser_artifact' in value:
+            from .onboarding_browser import artifact as browser_artifact_record
+            browser_artifact = browser_artifact_record(value['browser_artifact'], value['browser_image'])
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -326,6 +331,11 @@ class HostBackend:
             return Observation("waiting", reason="host_authorization_required")
         if stage == "environment":
             return self._environment(plan)
+        if stage not in {'context', 'environment'} and plan['browser'] and self.config.browser_artifact is not None:
+            from .onboarding_browser import Browser
+            state = Browser(self).observe(plan)
+            if state.state != 'complete':
+                return state
         if stage == 'welcome' and self.config.code and self.config.consent_state:
             from .onboarding_welcome import Welcome
             return Welcome(self).observe(plan)
@@ -362,7 +372,13 @@ class HostBackend:
         if stage in {"context", "matrix"} and not self._consented(plan, stage=stage):
             return Observation("waiting", reason="identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
-            return self._guest_observe(plan, stage)
+            current = self._guest_observe(plan, stage)
+            if stage == 'context' and current.state == 'complete' and plan['browser'] and self.config.browser_artifact is not None:
+                from .onboarding_browser import Browser
+                selected = Browser(self).observe(plan)
+                return (Observation('complete', {**current.facts, **selected.facts})
+                    if selected.state == 'complete' else selected)
+            return current
         if stage == 'access' and self.config.code and self.config.consent_state:
             key = self._ssh_key(plan)
             if key is None:
@@ -433,6 +449,12 @@ class HostBackend:
     def execute(self, plan: dict, stage: str, operation_id: str) -> None:
         if not self.authorize(plan, digest(plan)):
             raise OnboardingError("host_authorization_required")
+        if stage not in {'context', 'environment'} and plan['browser'] and self.config.browser_artifact is not None:
+            from .onboarding_browser import Browser
+            selected = Browser(self)
+            if selected.observe(plan).state != 'complete':
+                selected.execute(plan)
+                return
         if stage == 'welcome' and self.config.code and self.config.consent_state:
             from .onboarding_welcome import Welcome
             Welcome(self).execute(plan)
@@ -458,6 +480,9 @@ class HostBackend:
             raise OnboardingError("identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
             self._guest_execute(plan, stage)
+            if stage == 'context' and plan['browser'] and self.config.browser_artifact is not None:
+                from .onboarding_browser import Browser
+                Browser(self).execute(plan)
             return
         if stage == 'access' and self.config.code and self.config.consent_state:
             key = self._ssh_key(plan)

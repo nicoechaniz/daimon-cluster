@@ -6,6 +6,22 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_receiving_browser_keeps_context_retry_sdk_and_owner_acceptance(tmp_path):
+    from tools.ci_scope import BROWSER_FILES
+    changed = sorted(BROWSER_FILES)
+    profile, tests = select(changed, ROOT)
+    assert profile == 'portal'
+    assert {'tests/test_onboarding_browser.py', 'tests/test_being_seed.py',
+        'tests/test_onboarding_guest.py', 'tests/test_onboarding_host.py',
+        'tests/test_onboarding_acceptance.py', 'tests/test_onboarding_sdk.py',
+        'tests/test_onboarding.py', 'tests/test_onboarding_host_ownership.py',
+        'tests/test_auth.py', 'tests/test_clusterd.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for shared in ('requirements-weave.txt', 'clusterctl/production_fences.py',
+                   'clusterctl/onboarding_custody.py'):
+        assert select(changed + [shared], ROOT) == ('full', ['tests'])
+
+
 def test_public_identity_export_and_reuse_keep_native_and_private_owner_contracts(tmp_path):
     from tools.ci_scope import IDENTITY_EXPORT_FILES
     changed = sorted(IDENTITY_EXPORT_FILES)

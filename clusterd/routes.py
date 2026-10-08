@@ -72,6 +72,8 @@ ROUTES: list[Route] = [
           required_scope="seed:write", idempotency_required=True),
     Route("POST", "/v1/seed-access", "createSeedAccess", "Operator issues a short-lived owner-scoped access token once",
           "seed_access", "seed:write", "clusterd --token-create", mutation=True, required_scope="seed:write"),
+    Route("GET", "/v1/seeds/{seed}/archive", "seedUploadProgress", "Read the verified owner-private upload offset and prefix SHA-256",
+          "seed_upload_progress", "seed:write", "clusterctl seed status", required_scope="seed:write"),
     Route("POST", "/v1/seeds/{seed}/archive", "uploadSeed", "Stream a bounded private archive with SHA-256",
           "upload_seed", "seed:write", "clusterctl seed upload", mutation=True,
           required_scope="seed:write", body_format="archive"),

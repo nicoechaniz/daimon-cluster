@@ -83,7 +83,7 @@ function mode(value){field('mode').value=value;const isNew=value==='new';field('
 async function api(path,method='GET',body=null,headers={}){
  if(location.hostname!=='localhost'&&location.hostname!=='127.0.0.1'&&location.protocol!=='https:')throw Error('Use your host’s HTTPS address.');
  if(field('token').value.trim())headers.Authorization='Bearer '+field('token').value.trim();const options={method,headers,credentials:'same-origin'};
- if(body!==null){if(body instanceof File){options.body=body;headers['Content-Type']='application/octet-stream'}else{headers['Content-Type']='application/json';options.body=JSON.stringify(body)}}
+ if(body!==null){if(body instanceof Blob){options.body=body;headers['Content-Type']='application/octet-stream'}else{headers['Content-Type']='application/json';options.body=JSON.stringify(body)}}
  const response=await fetch(path,options);let data;try{data=await response.json()}catch{throw Error('The host did not return a valid response. Please try again.')}
  if(!response.ok)throw Error(errorCopy[data.error]||String(data.error||'The operation needs host attention.').replaceAll('_',' '));return data;
 }
@@ -141,7 +141,7 @@ field('request-access').disabled=true;connectWorkspace().catch(()=>{}).finally((
 field('create').onclick=()=>action(async()=>{if(!connected)throw Error('Connect your workspace first.');const name=field('name').value.trim(),label=field('label').value.trim();if(!name||!label)throw Error('Choose a daimon name and environment ID.');if(!requestKeys.has(name))requestKeys.set(name,crypto.randomUUID());const spec={name,label,mode:field('mode').value,browser:field('browser').checked};if(spec.mode==='new')spec.soul=field('soul').value;showRecord(await api('/v1/seeds','POST',spec,{'Idempotency-Key':requestKeys.get(name)}));await refresh();step(2);},'Preparing your intake…','Home prepared for intake. Continue with preservation.');
 field('archive').onchange=fileSelected;const drop=field('drop-zone');drop.ondragover=event=>{event.preventDefault();drop.classList.add('dragging')};drop.ondragleave=()=>drop.classList.remove('dragging');drop.ondrop=event=>{event.preventDefault();drop.classList.remove('dragging');if(event.dataTransfer.files.length!==1){message('Choose one verified package.','error');return}field('archive').files=event.dataTransfer.files;fileSelected()};
 field('transfer-recipient').onclick=()=>action(async()=>{requireHome();const value=await api('/v1/seeds/'+selectedName()+'/transfer','POST',{});const blob=new Blob([JSON.stringify(value.recipient,null,2)+'\n'],{type:'application/json'});const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=selectedName()+'-recipient.json';link.click();URL.revokeObjectURL(url);field('transfer-status').textContent='Recipient checksum: '+value.recipient_sha256;},'Preparing the private transfer destination…','Public recipient downloaded. Your local agent can use the protected transfer instructions in the agent guide.');
-field('upload').onclick=()=>action(async()=>{requireHome();const file=field('archive').files[0];if(!file)throw Error('Choose the continuity package.');if(file.size>2*1024*1024*1024)throw Error('This package exceeds 2 GiB.');if(!/^[a-f0-9]{64}$/.test(field('sha256').value.trim()))throw Error('Enter the 64-character SHA-256 from your exporter.');showRecord(await api('/v1/seeds/'+selectedName()+'/archive','POST',file,{'X-Archive-SHA256':field('sha256').value.trim()}));reviewSelection(await api('/v1/seeds/'+selectedName()+'/selection'));},'Delivering and verifying the preserved package…','Package verified. Review the identity and memories to carry.');
+field('upload').onclick=()=>action(async()=>{requireHome();const file=field('archive').files[0];if(!file)throw Error('Choose the continuity package.');if(file.size>2*1024*1024*1024)throw Error('This package exceeds 2 GiB.');if(!/^[a-f0-9]{64}$/.test(field('sha256').value.trim()))throw Error('Enter the 64-character SHA-256 from your exporter.');const path='/v1/seeds/'+selectedName()+'/archive',hash=field('sha256').value.trim(),progress=await api(path);if(progress.sha256&&progress.sha256!==hash||progress.size!==null&&progress.size!==file.size)throw Error('Choose the same original archive and checksum to resume.');if(progress.complete){await refresh()}else{const offset=progress.offset;message('Continuing from '+(offset/1024/1024).toFixed(1)+' MiB. The complete archive checksum will be verified.','working');showRecord(await api(path,'POST',file.slice(offset),{'X-Archive-SHA256':hash,'X-Archive-Offset':String(offset),'X-Archive-Size':String(file.size),'X-Archive-Prefix-SHA256':progress.prefix_sha256}));}reviewSelection(await api('/v1/seeds/'+selectedName()+'/selection'));},'Delivering and verifying the preserved package…','Package verified. Review the identity and memories to carry.');
 field('review').onclick=()=>action(async()=>{requireHome();reviewSelection(await api('/v1/seeds/'+selectedName()+'/selection'));},'Reading the preserved package…','Review the selection before preparing continuity.');field('soul-choice').onchange=syncSelection;field('coverage').onchange=syncSelection;
 field('prepare').onclick=()=>action(async()=>{requireHome();const selection=currentRecord.mode==='new'?null:receivingSelection();if(selection&&!selection.soul)throw Error('Select the identity SOUL to carry.');showRecord(await api('/v1/seeds/'+selectedName()+'/prepare','POST',{selection}));await refresh();step(3);},'Preserving originals and preparing separate working context…','Continuity preserved. The receiving body still needs activation.');
 field('connections').onclick=()=>action(async()=>{requireHome();const data={};if(field('bot-token').value)data.telegram_bot_token=field('bot-token').value.trim();for(const [id,key] of [['chat-id','telegram_chat_id'],['topic-id','telegram_topic_id']]){if(field(id).value){const value=Number(field(id).value);if(!Number.isSafeInteger(value)||value===0)throw Error('Use a valid numeric Telegram ID.');data[key]=value}}if(field('ssh-key').value)data.ssh_public_key=field('ssh-key').value.trim();if(!Object.keys(data).length)throw Error('Enter the connection details to deliver.');showRecord(await api('/v1/seeds/'+selectedName()+'/connections','POST',data));field('bot-token').value='';await refresh();},'Saving private connection details…','Connection details received. Host verification and activation are pending.');
@@ -255,6 +255,14 @@ def agent_guide() -> dict:
                                 "browser": "optional boolean", "soul": "required initial SOUL only for new"}},
             "upload": {"method": "POST", "path": "/v1/seeds/{name}/archive", "body": "raw ZIP/TGZ or recipient-bound .dm-protected bytes",
                        "required_headers": {"Content-Length": "archive byte size", "X-Archive-SHA256": "64 lowercase hex characters"},
+                       "resume": {"progress": "GET the same archive path before a retry",
+                                  "response_fields": ["complete", "offset", "size", "sha256", "prefix_sha256"],
+                                  "headers": {"X-Archive-Offset": "returned offset", "X-Archive-Size": "complete archive size",
+                                              "X-Archive-Prefix-SHA256": "SHA-256 of local bytes [0:offset], matching the returned prefix checksum"},
+                                  "body": "only local bytes [offset:size]; Content-Length is size minus offset",
+                                  "conflict": "409 while an upload is active or if the offset changed; reread progress, never send the whole file with a nonzero offset",
+                                  "legacy_partials": "the longest preserved partial of the same archive is reused, including earlier interrupted attempts",
+                                  "client": "/v1/onboarding/local-body/tools/resume_seed_upload.py"},
                        "recommended_total_timeout_seconds": 14400},
             "selection": {"method": "GET", "path": "/v1/seeds/{name}/selection", "result": "private verified candidates"},
             "prepare": {"method": "POST", "path": "/v1/seeds/{name}/prepare", "body": {"selection": "reviewed selection object; null for new"}},
@@ -266,7 +274,7 @@ def agent_guide() -> dict:
         "retry_rules": ["Reuse the same creation UUID and exact specification.",
                         "If uploaded, discover the existing archive instead of uploading again.",
                         "An exact preparation retry preserves later receiving memory writes.",
-                        "If upload_retryable is true, resend the same archive/checksum with a four-hour total timeout; earlier partial bytes stay preserved.",
+                        "If upload_retryable is true, GET the archive path, verify the local prefix checksum and resume only remaining bytes with the three resume headers and a four-hour total timeout.",
                         "Published archives and preparation attempts are never overwritten."],
         "api": api,
     }
@@ -459,9 +467,36 @@ Reuse the creation UUID with the same specification. If an archive is already
 uploaded, discover that preserved archive instead of uploading again. Exact
 preparation retries return the preserved result and retain later receiving
 writes. If a request times out, read progress first. When `upload_retryable` is
-true, resend the same archive and checksum using the existing access and a
-four-hour total client timeout. Earlier partial bytes and connection data stay
-preserved. Other attention-required states still need host review.
+true, **resume instead of restarting from zero**:
+
+Use the standard-library client at
+`/v1/onboarding/local-body/tools/resume_seed_upload.py` to do these steps safely:
+`python resume_seed_upload.py --url https://YOUR_HOST --seed YOUR_SEED --archive ORIGINAL_ARCHIVE --sha256 ORIGINAL_SHA256 --token-file EXISTING_PRIVATE_TOKEN_FILE --ipv4`.
+It reads access from a private file or `--token-fd FD`, never a command-line
+credential. Its default total timeout is four hours; rerunning this command
+continues the longest matching partial. No installation or re-export is needed.
+
+1. `GET /v1/seeds/{name}/archive` using your existing access. A `409` means
+   another upload is active: let it finish or stop your own client and wait for
+   its request to close. Do not start a second whole-file upload.
+2. Check `size` and `sha256` against your original archive. Hash local bytes
+   `[0:offset]` and compare with `prefix_sha256`. Earlier attempts are preserved;
+   the server selects the longest valid partial, including pre-upgrade uploads.
+3. `POST` the **remaining bytes only**, `[offset:size]`, to the same path.
+   Send `Content-Length: size-offset`, `X-Archive-SHA256: FULL_ARCHIVE_SHA256`,
+   `X-Archive-Offset: offset`, `X-Archive-Size: size`, and
+   `X-Archive-Prefix-SHA256: VERIFIED_PREFIX_SHA256`. Seek the local file before
+   streaming; ordinary curl retries or `--continue-at` alone are insufficient
+   for this POST protocol. Keep a four-hour total client timeout. Prefer IPv4
+   when comparing a stalled IPv6 route; this is a diagnostic, not a diagnosis.
+4. On another interruption, GET progress again and continue from its new offset.
+   If offset equals size, send an empty POST with the same resume headers to
+   finalize the preserved bytes. The full original SHA-256 is checked before
+   publishing the archive. If `complete` is true, proceed to selection.
+
+Never re-export, change the archive or replace access merely to resume. Prefix
+disagreement must be investigated before appending. Published archives and
+connection data are preserved. Other attention-required states need host review.
 
 ## Structured requests
 

@@ -187,3 +187,15 @@ def test_intake_only_changes_keep_stream_crypto_and_owner_boundaries(tmp_path):
     assert select(changed, tmp_path) == ('full', ['tests'])
     assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])
     assert select(changed + ['clusterctl/matrix_host.py'], ROOT) == ('full', ['tests'])
+
+
+def test_resumable_upload_keeps_http_auth_and_integrity_without_runtime_recovery(tmp_path):
+    from tools.ci_scope import UPLOAD_FILES
+    changed = sorted(UPLOAD_FILES)
+    profile, tests = select(changed, ROOT)
+    assert profile == 'portal'
+    assert {'tests/test_being_seed.py', 'tests/test_clusterd.py', 'tests/test_auth.py',
+            'tests/test_onboarding_transfer.py', 'tests/test_onboarding_intake.py'} <= set(tests)
+    assert 'tests/test_onboarding_existing.py' not in tests
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select(changed + ['clusterctl/onboarding_target.py'], ROOT) == ('full', ['tests'])

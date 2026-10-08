@@ -47,7 +47,8 @@ def local_body_tool(deps, ctx, tool, **params):
                          "Content-Disposition": 'attachment; filename="existing_root_signer.zip"'})
         except (OSError, ValueError, OnboardingError):
             return handlers.Response(409, {"error": "local_body_tool_requires_attention"})
-    paths = {'export_local_matrix_identity.py': root / 'tools/export_local_matrix_identity.py',
+    paths = {'resume_seed_upload.py': root / 'tools/resume_seed_upload.py',
+             'export_local_matrix_identity.py': root / 'tools/export_local_matrix_identity.py',
              'onboarding_peer_native.py': root / 'clusterctl/onboarding_peer_native.py'}
     if tool not in paths:
         return handlers.Response(404, {'error': 'local_body_tool_not_found'})
@@ -396,7 +397,12 @@ def seed_session_logout(deps, ctx, **params):
                             "dm_seed_access=; Path=/v1; Secure; HttpOnly; SameSite=Strict; Max-Age=0"})
 
 
-def upload_seed(deps, ctx, seed, _stream, _length, _sha256, _transfer_encoding=None, **params):
+def seed_upload_progress(deps, ctx, seed, **params):
+    return _call(deps, ctx, being_seed.upload_progress, seed)
+
+
+def upload_seed(deps, ctx, seed, _stream, _length, _sha256, _transfer_encoding=None,
+                _offset=None, _total=None, _prefix=None, **params):
     from . import handlers
 
     if _transfer_encoding:
@@ -405,6 +411,13 @@ def upload_seed(deps, ctx, seed, _stream, _length, _sha256, _transfer_encoding=N
         length = int(_length)
     except (ValueError, TypeError):
         return handlers.Response(411, {"error": "content_length_upload_required"})
+    if _offset is not None or _total is not None or _prefix is not None:
+        try:
+            offset, total = int(_offset), int(_total)
+        except (TypeError, ValueError):
+            return handlers.Response(400, {"error": "seed_upload_resume_headers_required"})
+        return _call(deps, ctx, being_seed.upload, seed, stream=_stream, length=length,
+                     sha256=_sha256, offset=offset, total=total, prefix_sha256=_prefix)
     return _call(deps, ctx, being_seed.upload, seed, stream=_stream, length=length, sha256=_sha256)
 
 

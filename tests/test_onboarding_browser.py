@@ -85,11 +85,17 @@ def test_native_receiving_adapter_installs_without_launch_and_verifies_preserved
     source, home, pin = assets(tmp_path)
     calls = []
     def dispatch(plan, argv):
-        assert argv[2:6] == ['--user', '1000', '--group', '1000']
+        assert argv[2:6] == ['--user', '0', '--group', '0']
         calls.append(argv)
         position = argv.index('-c')
         program = argv[position + 1].replace("Path('/home/agent')", 'Path(' + repr(str(home)) + ')')
         program = program.replace('/opt/browser-code', str(source))
+        assert program.index('module._regular') < program.index('os.setgroups')
+        assert program.index('os.setuid') < program.index('home=Path')
+        # The fixture transport cannot change its caller's UID. Production
+        # drops root groups/GID/UID before touching any receiving home state.
+        program = program.replace('os.setgroups([])', 'pass').replace('os.setgid(1000)', 'pass').replace('os.setuid(1000)', 'pass')
+        program = program.replace('assert os.geteuid()==1000 and os.getegid()==1000', 'assert True')
         # Only transport paths/system package discovery are fixtures. The actual
         # maintained module, Linux publication and private filesystem execute.
         module = argv[position + 2]

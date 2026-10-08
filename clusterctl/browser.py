@@ -64,6 +64,25 @@ def prepare(daemon: Path, daemon_sha256: str, extension: Path, extension_sha256:
     digest, files = extension_digest(extension.absolute())
     if actual != daemon_sha256 or digest != extension_sha256:
         raise ValueError("browser_code_hash_mismatch")
+    return prepare_captured(raw, actual, digest, files, home, apply=apply, launcher=launcher)
+
+
+def prepare_captured(raw: bytes, daemon_sha256: str, extension_sha256: str,
+                     files: list[tuple[str, bytes]], home: Path, *, apply: bool,
+                     launcher: bytes | None = None) -> dict:
+    """Publish already captured code after the host drops receiving privilege."""
+    actual = hashlib.sha256(raw).hexdigest()
+    inventory = [[name, hashlib.sha256(data).hexdigest()] for name, data in files]
+    digest = hashlib.sha256(json.dumps(inventory, separators=(",", ":")).encode()).hexdigest()
+    if actual != daemon_sha256 or digest != extension_sha256:
+        raise ValueError('browser_code_hash_mismatch')
+    if (not raw or len(raw) > 128 * 1024**2 or len(files) > 10000
+            or sum(len(data) for _, data in files) > 128 * 1024**2
+            or len({name for name, _ in files}) != len(files)
+            or 'manifest.json' not in {name for name, _ in files}
+            or any(not name or Path(name).is_absolute() or '..' in Path(name).parts
+                   or str(Path(name)) != name for name, _ in files)):
+        raise ValueError('bounded_browser_code_required')
     for program in ("chromium", "Xvfb", "xvfb-run", "xauth"):
         if shutil.which(program) is None:
             raise ValueError("browser_system_packages_required")

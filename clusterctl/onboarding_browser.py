@@ -29,14 +29,21 @@ class Browser:
         if self.backend._environment(plan).state != 'complete':
             raise OnboardingError('browser_environment_not_ready')
         # Only maintained host code is executed. Seed/archive code is never input.
-        program = '''import json,sys,types
+        program = '''import json,os,sys,types
 from pathlib import Path
 code=sys.argv[1]
 module=types.ModuleType('qualified_browser')
 exec(compile(code,'qualified_browser.py','exec'),module.__dict__)
-home=Path('/home/agent')
 source=Path('/opt/browser-code')
-expected=module.prepare(source/'daemon',sys.argv[2],source/'extension',sys.argv[3],home,
+raw=module._regular(source/'daemon')
+extension_sha,files=module.extension_digest(source/'extension')
+assert extension_sha==sys.argv[3],'browser_code_hash_mismatch'
+os.setgroups([])
+os.setgid(1000)
+os.setuid(1000)
+assert os.geteuid()==1000 and os.getegid()==1000,'receiving_browser_user_required'
+home=Path('/home/agent')
+expected=module.prepare_captured(raw,sys.argv[2],sys.argv[3],files,home,
  apply=sys.argv[4]=='install',launcher=code.encode())
 if sys.argv[4]=='observe':
  root=home/'.kimi-webbridge'
@@ -53,7 +60,7 @@ else: result={'installed':True,'launcher_sha256':expected['launcher_sha256']}
 print(json.dumps(result))
 '''
         value = json.loads(self.backend._dispatch(plan, ['exec', self.backend.instance(plan),
-            '--user', '1000', '--group', '1000', '--', 'python3', '-B', '-I', '-c', program,
+            '--user', '0', '--group', '0', '--', 'python3', '-B', '-I', '-c', program,
             self.code, self.artifact['daemon_sha256'], self.artifact['extension_sha256'],
             'install' if install else 'observe']))
         expected = ({'installed': True, 'launcher_sha256': self.code_digest} if install else

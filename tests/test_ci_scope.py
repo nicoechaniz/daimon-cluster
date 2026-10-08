@@ -68,6 +68,20 @@ def test_hosted_witness_keeps_native_prerequisite_job_retry_and_owner_http_scope
     assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])
 
 
+def test_new_seed_keeps_native_memory_context_custody_job_and_http_boundaries(tmp_path):
+    from tools.ci_scope import NEW_SEED_FILES
+    changed = sorted(NEW_SEED_FILES)
+    profile, tests = select(changed, ROOT)
+    assert profile == 'portal'
+    assert {'tests/test_onboarding_new.py', 'tests/test_onboarding_guest.py',
+        'tests/test_onboarding_sdk.py', 'tests/test_onboarding_code_successor.py',
+        'tests/test_onboarding_custody.py', 'tests/test_onboarding_intake.py',
+        'tests/test_onboarding_acceptance.py', 'tests/test_auth.py', 'tests/test_clusterd.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])
+    assert select(changed + ['clusterctl/onboarding_custody.py'], ROOT)[0] != 'portal'
+
+
 def test_protected_transfer_keeps_auth_actual_crypto_receiving_and_host_retry_scope(tmp_path):
     from tools.ci_scope import TRANSFER_FILES
     changed = sorted(TRANSFER_FILES)

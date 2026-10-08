@@ -114,6 +114,13 @@ HOSTED_CHECK_TESTS = (*PORTAL_TESTS, 'tests/test_onboarding_acceptance.py',
     'tests/test_onboarding.py', 'tests/test_onboarding_host.py',
     'tests/test_onboarding_owner_client.py', 'tests/test_onboarding_worker_install.py',
     'tests/test_onboarding_progress.py', 'tests/test_onboarding_host_ownership.py')
+NEW_SEED_FILES = CONTEXT_COPY_FILES | {'clusterctl/onboarding_input.py',
+    'clusterctl/onboarding_intake.py', 'clusterctl/onboarding_acceptance.py',
+    'tests/test_onboarding_new.py', 'tests/test_onboarding_input.py',
+    'tests/test_onboarding_intake.py', 'tests/test_onboarding_acceptance.py'}
+NEW_SEED_TESTS = tuple(sorted(set(CONTEXT_COPY_TESTS) | set(HOSTED_CHECK_TESTS) | {
+    'tests/test_onboarding_new.py', 'tests/test_onboarding_code_successor.py',
+    'tests/test_onboarding_custody.py', 'tests/test_onboarding_approvals.py'}))
 
 TRANSFER_FILES = HOSTED_CHECK_FILES | EXPORT_FILES | {
     'clusterctl/onboarding_transfer.py', 'clusterctl/onboarding_input.py', 'clusterctl/onboarding_release.py',
@@ -156,6 +163,13 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'clusterctl/onboarding_input.py', 'tests/test_onboarding_new.py'}
+            and set(changed) <= NEW_SEED_FILES | CI_FILES
+            and all((root / path).is_file() for path in NEW_SEED_TESTS)):
+        # Fresh empty memory and maintained context execution retain owner
+        # isolation, original SDK/context pins, native custody and all job/API
+        # acceptance contracts. No changed dependency or physical recovery.
+        return 'portal', list(NEW_SEED_TESTS)
     if ('clusterctl/onboarding_guest.py' in changed
             and set(changed) <= CONTEXT_COPY_FILES | CI_FILES
             and all((root / path).is_file() for path in CONTEXT_COPY_TESTS)):

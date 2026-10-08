@@ -124,8 +124,20 @@ def verify_received_archive(received: Path, copied: Path, report: dict, source_u
                                        '--sha256', proof['plaintext_sha256']])
 
 
-def capture(received: Path, destination: Path, *, source_uid: int, resume: bool = False) -> dict:
+def new_memory_store(manifest: dict, selected: list, primary: str | None) -> str | None:
+    """Only an explicitly new, empty seed authorizes a fresh writable pool."""
+    if manifest.get('seed_mode') != 'new':
+        return None
+    if selected:
+        raise OnboardingError('new_seed_must_have_empty_history')
+    return primary or 'store-001'
+
+
+def capture(received: Path, destination: Path, *, source_uid: int, resume: bool = False,
+            seed_mode: str | None = None) -> dict:
     """Freeze immutable prepared bytes; optional recovery never replaces files."""
+    if seed_mode not in {None, 'new'}:
+        raise OnboardingError('invalid_onboarding_input')
     before = inventory(received, uid=source_uid)
     report_raw = (received / "preparation.json").read_bytes()
     report = json.loads(report_raw)
@@ -133,6 +145,9 @@ def capture(received: Path, destination: Path, *, source_uid: int, resume: bool 
             or report.get("ready_for_context_install") is not True):
         raise OnboardingError("prepared_onboarding_input_required")
     value = dict(schema=SCHEMA, files=before, archive_sha256=report["archive_sha256"])
+    if seed_mode == 'new':
+        new_memory_store({'seed_mode': seed_mode}, report['selection']['memory'], None)
+        value['seed_mode'] = seed_mode
     raw = json.dumps(value, sort_keys=True).encode()
     if len(raw) > MAX_MANIFEST:
         raise OnboardingError("onboarding_input_too_large")
@@ -204,7 +219,8 @@ def verify(root: Path, expected: str, *, uid: int | None = None) -> dict:
                 or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > MAX_MANIFEST):
             raise OnboardingError("private_onboarding_input_required")
         manifest = json.load(stream)
-    if (set(manifest) != {"schema", "files", "archive_sha256"} or manifest.get("schema") != SCHEMA
+    if (set(manifest) - {'seed_mode'} != {"schema", "files", "archive_sha256"}
+            or 'seed_mode' in manifest and manifest['seed_mode'] != 'new' or manifest.get("schema") != SCHEMA
             or digest(manifest) != expected or not isinstance(manifest["files"], list)
             or inventory(root / "received", uid=uid) != manifest["files"]):
         raise OnboardingError("onboarding_input_digest_mismatch")

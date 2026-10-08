@@ -129,7 +129,8 @@ class Intake:
                 onboarding_input.verify(destination, fingerprint)
             else:
                 fingerprint = onboarding_input.capture(directory / 'received', destination,
-                    source_uid=config.consent_uid, resume=True)['seed_digest']
+                    source_uid=config.consent_uid, resume=True,
+                    seed_mode='new' if record.get('mode') == 'new' else None)['seed_digest']
             plan = validate_plan(dict(schema=PLAN_SCHEMA, name=name, **entry,
                 seed_digest=fingerprint, release_digest=config.release_digest))
             from .onboarding_custody import CustodyPolicy

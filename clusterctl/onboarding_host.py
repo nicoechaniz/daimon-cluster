@@ -720,13 +720,16 @@ class HostBackend:
             raise OnboardingError("receiving_code_configuration_required")
         onboarding_release.verify(self.config.code, plan["release_digest"], uid=os.geteuid())
         source = self.config.inputs / plan["name"]
-        onboarding_input.verify(source, plan["seed_digest"])
+        manifest = onboarding_input.verify(source, plan["seed_digest"])
         view = self.config.views / digest(plan) / "input"
         guest_code = Path("/opt/daimon-onboarding") / plan["release_digest"]
         mounts = {
             "onboarding-code": dict(type="disk", source=str(self.config.code), path=str(guest_code), readonly="true", shift="true"),
             "onboarding-input": dict(type="disk", source=str(view), path="/home/agent/.onboarding-input", readonly="true", shift="true"),
         }
+        if manifest.get('seed_mode') == 'new':
+            _, _, runtime_mounts = self._runtime_paths(plan, guest_code)
+            mounts.update(runtime_mounts)
         return source, guest_code, mounts
 
     def _runtime_selection(self, plan: dict) -> tuple[Path | None, str | None]:
@@ -762,8 +765,15 @@ class HostBackend:
         launcher = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
                     "from clusterctl.onboarding_guest import main; raise SystemExit(main())")
         incoming = "/home/agent/.onboarding-input"
+        if self.config.inputs is None:
+            raise OnboardingError('receiving_code_configuration_required')
+        source = self.config.inputs / plan['name']
+        manifest = onboarding_input.verify(source, plan['seed_digest'])
+        import_code = guest_code
+        if manifest.get('seed_mode') == 'new':
+            import_code, _, _ = self._runtime_paths(plan, guest_code)
         return self._dispatch(plan, ["exec", self.instance(plan), "--user", "1000", "--group", "1000",
-            "--env", "HOME=/home/agent", "--", "python3", "-B", "-I", "-c", launcher, str(guest_code),
+            "--env", "HOME=/home/agent", "--", "python3", "-B", "-I", "-c", launcher, str(import_code),
             action, stage, "--home", "/home/agent", "--input", incoming,
             "--code", str(guest_code), "--plan", incoming + "/plan.json"])
 
@@ -790,7 +800,7 @@ class HostBackend:
             instances, _ = self._inventory()
             row = next(row for row in instances if row.get("name") == self.instance(plan))
             # Code first: its typed bootstrap owns just the new empty home.
-            for name in ("onboarding-code", "onboarding-input"):
+            for name in ('onboarding-code', *[key for key in mounts if key.startswith('runtime-')], 'onboarding-input'):
                 if name == "onboarding-input":
                     launcher = ("import sys; sys.path.insert(0, sys.argv[1]); "
                                 "from clusterctl.onboarding_mounts import bootstrap_home; bootstrap_home()")

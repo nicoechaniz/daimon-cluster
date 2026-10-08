@@ -1,5 +1,7 @@
 """Prepared intake progresses through exact owner consent without manual grants."""
 import os
+import json
+import shutil
 from dataclasses import replace
 
 import pytest
@@ -48,6 +50,27 @@ def test_worker_discovers_prepared_seed_and_resumes_same_plan_after_portal_conse
     # No custody or body creation follows from an intake/consent publication.
     assert config.custody is None and config.custody_grants is None
     assert not any(path.name.startswith('dm-') for path in tmp_path.iterdir())
+
+
+def test_service_consumes_queued_owner_selection_without_a_codex_turn(tmp_path, packet):
+    config = configured(tmp_path, packet)
+    directory = config.consent_state / 'being-seeds/fixture'
+    report = json.loads((directory / 'received/preparation.json').read_bytes())
+    # Reset only this disposable fixture to its uploaded checkpoint. No body
+    # or frozen receiving input has been created yet.
+    shutil.rmtree(directory / 'received')
+    record = being_seed._read(directory / 'record.json')
+    being_seed._write(directory / 'record.json', {**record, 'phase': 'uploaded'})
+    before = (directory / 'source.archive').read_bytes()
+    being_seed.queue_prepare(config.consent_state, 'fixture', report['selection'], owner='ani')
+    assert not (config.grants / 'fixture.json').exists()
+    plans = config.approved_plans()
+    assert len(plans) == 1
+    assert being_seed.status(config.consent_state, 'fixture', owner='ani')['phase'] == 'prepared'
+    assert (directory / 'source.archive').read_bytes() == before
+    frozen = (config.inputs / 'fixture/manifest.json').read_bytes()
+    assert config.approved_plans() == plans
+    assert (config.inputs / 'fixture/manifest.json').read_bytes() == frozen
 
 
 def test_wrong_owner_and_policy_revocation_cannot_issue_or_reuse_resource_grant(tmp_path, packet):

@@ -97,7 +97,20 @@ def read(state: Path, request: dict) -> dict:
         if exc.status != 404:
             raise
         received = dict(context_prepared=False, archive_received=False, ssh_key_received=False, telegram_data_received=False)
+    pending = []
+    if not received['archive_received']:
+        pending.append('archive')
+    if not received['context_prepared']:
+        pending.append('receiving_selection_and_preparation')
+    if not received['telegram_data_received']:
+        pending.append('telegram_bot_and_destination')
+    if not received['ssh_key_received']:
+        pending.append('ssh_public_key')
+    source = state / 'existing-enrollment' / request['name'] / 'source.json'
+    if request['expected_being_ref'] is not None and not source.exists():
+        pending.append('signed_existing_matrix_source')
     return {**request, 'checks': CHECKS, 'report': summary, 'received': received,
+        'pending_inputs': pending,
         'diagnostic': diagnostic_summary(state, request),
         'diagnostic_path': '/v1/onboarding/local-body/' + request['name'] + '/diagnostic',
         'enrollment_path': '/v1/onboarding/local-body/' + request['name'] + '/enrollment',

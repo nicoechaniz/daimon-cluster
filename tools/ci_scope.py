@@ -18,7 +18,9 @@ CI_FILES = {'.github/workflows/tests.yml', 'README.md', 'tools/ci_scope.py',
 UPLOAD_FILES = {'clusterctl/being_seed.py', 'clusterd/seed_handlers.py',
     'clusterd/seed_ui.py', 'clusterd/routes.py', 'clusterd/server.py',
     'clusterd/handlers.py', 'clusterd/openapi.py', 'tests/test_being_seed.py',
-    'tools/resume_seed_upload.py'}
+    'tools/resume_seed_upload.py', 'clusterctl/cli.py', 'clusterctl/onboarding_intake.py',
+    'clusterctl/onboarding_local_body.py', 'tests/test_onboarding_intake.py',
+    'tests/test_onboarding_local_body.py'}
 UPLOAD_TESTS = ('tests/test_being_seed.py', 'tests/test_onboarding_transfer.py',
     'tests/test_onboarding_input.py', 'tests/test_onboarding_intake.py',
     'tests/test_onboarding_local_body.py', 'tests/test_clusterd.py',

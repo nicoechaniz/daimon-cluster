@@ -137,6 +137,100 @@ def test_new_seed_goes_through_same_export_and_receive(tmp_path):
         seeds.create(tmp_path, {**spec, "name": "another"}, owner="family", key=KEY)
 
 
+def test_large_receiving_index_queues_native_preparation_and_preserves_later_memory(tmp_path, packet):
+    state = tmp_path / "state"
+    selection = imported(state, packet)
+    # A preserved package may index hundreds of historical skills. Discovery
+    # notes are intentionally ignored by native selection verification.
+    selection['discovery']['soul_candidates'] += ['payload/project-%03d/templates/SOUL.md' % i
+                                                for i in range(2500)]
+    assert len(json.dumps(selection).encode()) > seeds.MAX_RECORD
+    directory = state / 'being-seeds/fixture'
+    seeds._write(directory / 'discovery.json', selection, limit=seeds.MAX_SELECTION)
+    assert seeds.discovery(state, 'fixture', owner='ani') == selection
+    with http_server(state) as (_, http):
+        code, _, result = http('/v1/seeds/fixture/prepare', 'POST',
+            {'selection': selection, 'defer': True})
+        assert code == 200
+        assert http('/v1/seeds/fixture/prepare', 'POST',
+            {'selection': selection, 'defer': True}, owner='sai')[0] == 404
+        # The larger body allowance applies only to receiving selections.
+        assert http('/v1/seeds/fixture/connections', 'POST',
+            {'unused': 'x' * seeds.MAX_RECORD})[0] == 413
+    assert result['preparation_queued'] and result['phase'] == 'uploaded'
+    assert not (directory / 'received').exists()
+    assert seeds.queue_prepare(state, 'fixture', selection, owner='ani') == result
+    with pytest.raises(seeds.SeedError, match='preserves_existing_attempt'):
+        seeds.queue_prepare(state, 'fixture', {**selection, 'memory': []}, owner='ani')
+    prepared = seeds.process_preparation(state, 'fixture', owner='ani')
+    assert prepared['phase'] == 'prepared' and not prepared['preparation_queued']
+    assert (directory / 'received/preparation.json').stat().st_size > seeds.MAX_RECORD
+    working = directory / 'received/memory/store-001/library.db'
+    with closing(sqlite3.connect(working)) as db:
+        db.execute("INSERT INTO chapters VALUES (2,'New receiving memory')")
+        db.commit()
+    assert seeds.process_preparation(state, 'fixture', owner='ani') == prepared
+    with closing(sqlite3.connect(working)) as db:
+        assert db.execute('SELECT COUNT(*) FROM chapters').fetchone()[0] == 2
+    with pytest.raises(seeds.SeedError, match='seed_not_found'):
+        seeds.process_preparation(state, 'fixture', owner='sai')
+    # Large records remain refused outside the explicit receiving documents.
+    with pytest.raises(seeds.SeedError, match='private_seed_record_required'):
+        seeds._read(directory / 'discovery.json')
+
+
+def test_queued_preparation_refuses_changed_archive_and_does_not_infer_soul(tmp_path, packet):
+    state = tmp_path / 'state'
+    selection = imported(state, packet)
+    with pytest.raises(seeds.SeedError, match='explicit_receiving_selection_required'):
+        seeds.queue_prepare(state, 'fixture', {**selection, 'soul': None}, owner='ani')
+    seeds.queue_prepare(state, 'fixture', selection, owner='ani')
+    path = state / 'being-seeds/fixture/preparation-request.json'
+    value = seeds._read(path)
+    seeds._write(path, {**value, 'archive_sha256': '0' * 64})
+    with pytest.raises(seeds.SeedError, match='invalid_seed_preparation_request'):
+        seeds.process_preparation(state, 'fixture', owner='ani')
+    assert not (path.parent / 'received').exists()
+
+
+def test_queued_preparation_reconciles_marker_after_metadata_crash(tmp_path, packet, monkeypatch):
+    state = tmp_path / 'state'
+    selection = imported(state, packet)
+    seeds.queue_prepare(state, 'fixture', selection, owner='ani')
+    original_write = seeds._write
+    def crash(path, value, **options):
+        if path.name == 'record.json' and value.get('phase') == 'prepared':
+            raise OSError('fixture final metadata interruption')
+        return original_write(path, value, **options)
+    with monkeypatch.context() as change:
+        change.setattr(seeds, '_write', crash)
+        with pytest.raises(seeds.SeedError, match='requires_attention'):
+            seeds.process_preparation(state, 'fixture', owner='ani')
+    directory = state / 'being-seeds/fixture'
+    working = directory / 'received/memory/store-001/library.db'
+    with closing(sqlite3.connect(working)) as db:
+        db.execute("INSERT INTO chapters VALUES (2,'Receiving write after marker')")
+        db.commit()
+    with monkeypatch.context() as change:
+        change.setattr(seeds, 'tool', lambda *_a, **_k: pytest.fail('completed native tool was repeated'))
+        result = seeds.process_preparation(state, 'fixture', owner='ani')
+    assert result['phase'] == 'prepared'
+    with closing(sqlite3.connect(working)) as db:
+        assert db.execute('SELECT COUNT(*) FROM chapters').fetchone()[0] == 2
+
+
+def test_new_seed_queued_preparation_keeps_generated_archive_on_retry(tmp_path):
+    seeds.create(tmp_path, {'name': 'new-friend', 'label': 'New Friend', 'mode': 'new',
+        'soul': 'I am a new companion for this family.'}, owner='family', key=KEY)
+    seeds.queue_prepare(tmp_path, 'new-friend', None, owner='family')
+    result = seeds.process_preparation(tmp_path, 'new-friend', owner='family')
+    archive = tmp_path / 'being-seeds/new-friend/source.archive'
+    before = archive.read_bytes()
+    assert result['phase'] == 'prepared' and result['memory_coverage'] == 'empty-new'
+    assert seeds.process_preparation(tmp_path, 'new-friend', owner='family') == result
+    assert archive.read_bytes() == before
+
+
 def test_private_connections_are_not_in_read_model(tmp_path):
     seeds.create(tmp_path, {"name": "one", "label": "One", "mode": "import"}, owner="ani", key=KEY)
     token = "123456789:" + "a" * 40

@@ -31,6 +31,8 @@ NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,30}\Z")
 LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}\Z")
 MAX_UPLOAD = 2 * 1024**3
 MAX_RECORD = 65536
+MAX_SELECTION = 2 * 1024**2
+MAX_PREPARATION = 16 * 1024**2
 MAX_SEEDS = 200
 MAX_OWNER_SEEDS = 8
 SCHEMA = "cluster-being-seed/v1"
@@ -50,13 +52,13 @@ def _path(path: Path) -> Path:
     return path
 
 
-def _read(path: Path) -> dict:
+def _read(path: Path, *, limit: int = MAX_RECORD) -> dict:
     _path(path)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                or info.st_mode & 0o077 or info.st_size > MAX_RECORD):
+                or info.st_mode & 0o077 or info.st_size > limit):
             raise SeedError("private_seed_record_required")
         value = json.load(stream)
     if not isinstance(value, dict):
@@ -64,10 +66,10 @@ def _read(path: Path) -> dict:
     return value
 
 
-def _write(path: Path, value: dict) -> None:
+def _write(path: Path, value: dict, *, limit: int = MAX_RECORD) -> None:
     _path(path)
     raw = json.dumps(value, sort_keys=True).encode()
-    if len(raw) > MAX_RECORD:
+    if len(raw) > limit:
         raise SeedError("seed_record_too_large")
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex)
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -383,7 +385,62 @@ def discovery(state_dir: str | Path, name: str, *, owner: str) -> dict:
             tool("receive_being", ["discover", "--archive", str(directory / "source.archive"),
                                   "--sha256", record["archive_sha256"],
                                   "--output", str(selection_path), *protected_args])
-        return _read(selection_path)
+        return _read(selection_path, limit=MAX_SELECTION)
+
+
+def queue_prepare(state_dir: str | Path, name: str, selection: dict | None, *, owner: str) -> dict:
+    """Persist the owner's exact selection for the existing service worker.
+
+    This records no consent, credentials or inferred identity. Publication is
+    bounded and fast; the private archive is processed outside the HTTP request.
+    """
+    directory, record = _record(state_dir, name, owner)
+    if record["mode"] == "import":
+        required = {"schema", "being_label", "memory_coverage", "soul", "memory", "skills"}
+        if (not isinstance(selection, dict) or not required <= set(selection)
+                or set(selection) - required - {"discovery"}
+                or selection["schema"] != "dm.being-receiving-selection/v1"
+                or selection["being_label"] != record["label"]
+                or selection["memory_coverage"] not in {"owner-selected", "complete-authorized"}
+                or not isinstance(selection["soul"], str) or not selection["soul"]
+                or any(not isinstance(selection[key], list) for key in ("memory", "skills"))):
+            raise SeedError("explicit_receiving_selection_required")
+    elif selection is not None:
+        raise SeedError("new_seed_has_no_historical_selection")
+    fingerprint = _fingerprint({"selection": selection})
+    with _locked(directory):
+        _, record = _record(state_dir, name, owner)
+        if record["phase"] == "prepared" and record.get("preparation_fingerprint") == fingerprint:
+            return project(record)
+        if record["phase"] != "uploaded":
+            raise SeedError("seed_preparation_preserves_existing_attempt", 409)
+        request = dict(schema="cluster-being-seed-preparation-request/v1", owner=owner,
+            archive_sha256=record.get("archive_sha256"), selection=selection)
+        path = directory / "preparation-request.json"
+        if path.exists():
+            if _read(path, limit=MAX_SELECTION) != request:
+                raise SeedError("seed_preparation_preserves_existing_attempt", 409)
+        else:
+            _write(path, request, limit=MAX_SELECTION)
+        record["preparation_queued"] = True
+        _write(directory / "record.json", record)
+        return project(record)
+
+
+def process_preparation(state_dir: str | Path, name: str, *, owner: str) -> dict | None:
+    """Run only a durable owner request; retries preserve installed context."""
+    directory, record = _record(state_dir, name, owner)
+    try:
+        request = _read(directory / "preparation-request.json", limit=MAX_SELECTION)
+    except FileNotFoundError:
+        return None
+    if (set(request) != {"schema", "owner", "archive_sha256", "selection"}
+            or request["schema"] != "cluster-being-seed-preparation-request/v1"
+            or request["owner"] != owner
+            or request["archive_sha256"] != record.get("archive_sha256")
+                and not (record["mode"] == "new" and request["archive_sha256"] is None)):
+        raise SeedError("invalid_seed_preparation_request")
+    return prepare(state_dir, name, request["selection"], owner=owner)
 
 
 def prepare(state_dir: str | Path, name: str, selection: dict | None, *, owner: str) -> dict:
@@ -393,6 +450,17 @@ def prepare(state_dir: str | Path, name: str, selection: dict | None, *, owner: 
         fingerprint = _fingerprint({"selection": selection})
         if record["phase"] == "prepared" and record.get("preparation_fingerprint") == fingerprint:
             return project(record)
+        if (record["phase"] in {"preparing", "attention-required"}
+                and record.get("preparation_fingerprint") == fingerprint
+                and (directory / "received/preparation.json").exists()):
+            # The native tool durably publishes its final marker before the
+            # intake record. Reconcile that crash window without running the
+            # tool again or replacing subsequent receiving writes.
+            report = _read(directory / "received/preparation.json", limit=MAX_PREPARATION)
+            if (report.get("archive_sha256") != record.get("archive_sha256")
+                    or record["mode"] == "import" and report.get("selection") != selection):
+                raise SeedError("seed_preparation_preserves_existing_attempt", 409)
+            return _complete_preparation(directory, record, report)
         if record["phase"] != "uploaded":
             raise SeedError("seed_preparation_preserves_existing_attempt", 409)
         if record["mode"] == "import" and not isinstance(selection, dict):
@@ -420,30 +488,34 @@ def prepare(state_dir: str | Path, name: str, selection: dict | None, *, owner: 
                 tool("receive_being", ["discover", "--archive", str(directory / "source.archive"),
                                       "--sha256", record["archive_sha256"],
                                       "--output", str(directory / "discovery.json")])
-                selection = _read(directory / "discovery.json")
+                selection = _read(directory / "discovery.json", limit=MAX_SELECTION)
             assert isinstance(selection, dict)
-            _write(directory / "selection.json", selection)
+            _write(directory / "selection.json", selection, limit=MAX_SELECTION)
             from .onboarding_transfer import arguments
             protected_args = arguments(directory, record)
             tool("receive_being", ["prepare", "--archive", str(directory / "source.archive"),
                                   "--sha256", record["archive_sha256"],
                                   "--selection", str(directory / "selection.json"),
                                   "--output", str(directory / "received"), *protected_args])
-            report = _read(directory / "received/preparation.json")
-            if report.get("schema") != "dm.being-receiving-preparation/v1" or not report.get("ready_for_context_install"):
-                raise SeedError("seed_preparation_marker_missing")
-            counts = [row["sqlite"]["table_counts"].get("chapters") for row in report["memory"]]
-            record.update(phase="prepared", prepared_ms=int(time.time() * 1000),
-                          memory_coverage="empty-new" if record["mode"] == "new" else report["memory_coverage"],
-                          memory_stores=len(counts),
-                          memory_chapters=sum(counts) if all(type(c) is int for c in counts) else None,
-                          skills=len(report["selection"]["skills"]))
+            report = _read(directory / "received/preparation.json", limit=MAX_PREPARATION)
+            return _complete_preparation(directory, record, report)
         except (SeedError, OSError, ValueError, KeyError, TypeError):
             record["phase"] = "attention-required"
             _write(directory / "record.json", record)
             raise SeedError("seed_preparation_requires_attention", 409) from None
-        _write(directory / "record.json", record)
-        return project(record)
+
+
+def _complete_preparation(directory: Path, record: dict, report: dict) -> dict:
+    if report.get("schema") != "dm.being-receiving-preparation/v1" or not report.get("ready_for_context_install"):
+        raise SeedError("seed_preparation_marker_missing")
+    counts = [row["sqlite"]["table_counts"].get("chapters") for row in report["memory"]]
+    record.update(phase="prepared", prepared_ms=int(time.time() * 1000),
+        memory_coverage="empty-new" if record["mode"] == "new" else report["memory_coverage"],
+        memory_stores=len(counts),
+        memory_chapters=sum(counts) if all(type(c) is int for c in counts) else None,
+        skills=len(report["selection"]["skills"]))
+    _write(directory / "record.json", record)
+    return project(record)
 
 
 def connections(state_dir: str | Path, name: str, value: dict, *, owner: str) -> dict:
@@ -492,6 +564,7 @@ def project(record: dict, *, retryable_upload: bool = False) -> dict:
         "pending": ["context installation", "native memory acceptance", "signed embodiment enrollment",
                     "dedicated SSH", "fresh provider login", "Telegram acceptance"],
         "protected_history": bool(record.get("transfer_recipient_sha256")),
+        "preparation_queued": record.get("preparation_queued") is True and record["phase"] != "prepared",
         "active": False,
     }
 

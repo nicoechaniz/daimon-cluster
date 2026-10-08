@@ -453,8 +453,11 @@ def discover_seed(deps, ctx, seed, **params):
 def prepare_seed(deps, ctx, seed, _body=None, **params):
     from . import handlers
 
-    if not isinstance(_body, dict) or set(_body) != {"selection"}:
+    if (not isinstance(_body, dict) or set(_body) not in ({"selection"}, {"selection", "defer"})
+            or "defer" in _body and type(_body["defer"]) is not bool):
         return handlers.Response(400, {"error": "explicit_receiving_selection_required"})
+    if _body.get("defer") is True:
+        return _call(deps, ctx, being_seed.queue_prepare, seed, _body["selection"])
     return _call(deps, ctx, being_seed.prepare, seed, _body["selection"])
 
 

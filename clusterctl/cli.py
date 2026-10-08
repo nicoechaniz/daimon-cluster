@@ -328,6 +328,8 @@ def _build_parser() -> argparse.ArgumentParser:
         if command in {"prepare", "connections"}:
             p.add_argument("--selection" if command == "prepare" else "--file", type=Path,
                            required=command == "connections")
+        if command == "prepare":
+            p.add_argument("--defer", action="store_true", help="save the selection for the service worker")
         if command in {"review", "consent"}:
             p.add_argument("--reviews", required=True, type=Path)
             p.add_argument("--worker-uid", default=0, type=int)
@@ -446,7 +448,8 @@ def run(argv=None, adapter=None) -> int:
                                                    sha256=args.sha256, **options)
                 elif args.seed_command == "prepare":
                     selection = json.loads(args.selection.read_bytes()) if args.selection else None
-                    seed_result = being_seed.prepare(base, args.name, selection, **options)
+                    prepare = being_seed.queue_prepare if args.defer else being_seed.prepare
+                    seed_result = prepare(base, args.name, selection, **options)
                 elif args.seed_command == "connections":
                     seed_result = being_seed.connections(base, args.name, json.loads(args.file.read_bytes()), **options)
                 elif args.seed_command == "recipient":

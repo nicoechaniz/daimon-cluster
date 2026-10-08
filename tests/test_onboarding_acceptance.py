@@ -103,6 +103,119 @@ def test_empty_native_ssh_journal_is_missing_proof_and_command_errors_are_not_ac
     assert not (progress / 'eko.ssh-login.json').exists()
 
 
+def cli_fixture(tmp_path):
+    home = tmp_path / 'home'
+    history = home / '.codex/sessions/selected.jsonl'
+    history.parent.mkdir(parents=True)
+    history.write_bytes(b'original selected conversation\n')
+    history.chmod(0o600)
+    executable = tmp_path / 'codex'
+    executable.write_bytes(b'qualified native test executable\n')
+    executable.chmod(0o755)
+    units = tmp_path / 'units'
+    units.mkdir()
+    states = {name: True for name in ('daimon-onboarding-telegram.service', 'daimon-onboarding-codex.service')}
+    for name in states:
+        (units / name).write_bytes(b'qualified dedicated unit\n')
+        (units / name).chmod(0o644)
+    thread = str(uuid.uuid4())
+    options = {'idle': [True, True], 'output': 'complete', 'lost_ack': False, 'changed_history': False, 'changed_unit': False}
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        if argv[0] == 'systemctl':
+            action = argv[1]
+            for name in argv[2:]:
+                assert name in states
+                if action in {'start', 'stop'}:
+                    states[name] = action == 'start'
+                else:
+                    assert action == 'is-active' and states[name]
+            return SimpleNamespace(returncode=0, stdout='active\n')
+        if argv[0] == sys.executable:
+            compile(argv[4], '<captured-owner-metadata>', 'exec')
+            return SimpleNamespace(returncode=0, stdout=json.dumps({'idle': options['idle'].pop(0), 'rollout': str(history)}))
+        assert argv[0] == str(executable)
+        assert argv[-2:] == [thread, '-'] and '--ephemeral' in argv and 'resume' in argv
+        assert not any(states.values()) and kwargs['timeout'] == 240
+        token = kwargs['input'].decode().rsplit(': ', 1)[1]
+        events = [{'type': 'thread.started', 'thread_id': thread if options['output'] != 'other-thread' else str(uuid.uuid4())},
+            {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': token}}, {'type': 'turn.completed'}]
+        kwargs['stdout'].write(b'{"partial":' if options['output'] == 'partial'
+                                else b'\n'.join(json.dumps(e).encode() for e in events))
+        if options['changed_history']:
+            history.write_bytes(b'different original history')
+        if options['changed_unit']:
+            (units / next(iter(states))).write_bytes(b'unrelated successor unit')
+        if options['lost_ack']:
+            raise OSError('fixture lost acknowledgement after completed inference')
+        return SimpleNamespace(returncode=0)
+
+    def probe():
+        return checks.cli_resume_probe(home, plan(), thread, 'gpt-6.1', 'medium', runner,
+            journal_root=tmp_path / 'journal', unit_root=units, codex_path=executable)
+    return probe, history, states, options, calls
+
+
+def test_cli_resume_keeps_original_history_restores_services_and_recovers_completed_lost_ack(tmp_path):
+    probe, history, states, options, calls = cli_fixture(tmp_path)
+    original = history.read_bytes()
+    options['lost_ack'] = True
+    with pytest.raises(OSError, match='lost acknowledgement'):
+        probe()
+    assert all(states.values()) and history.read_bytes() == original
+    proof = probe()
+    assert proof['verified'] is True
+    assert proof['original_history_sha256'] == hashlib.sha256(original).hexdigest()
+    assert len([call for call in calls if call[0] != 'systemctl' and call[0] != sys.executable]) == 1
+    history.write_bytes(original + b'new receiving work\n')
+    # Recover a crash after proof publication but before listener restoration.
+    for name in states:
+        states[name] = False
+    assert probe() == proof and all(states.values())
+    assert history.read_bytes() == original + b'new receiving work\n'
+    assert [p.read_bytes() for p in (tmp_path / 'journal').glob('original-history-*')] == [original]
+
+
+@pytest.mark.parametrize('race', [False, True])
+def test_cli_resume_waits_for_idle_and_restores_admission_after_a_turn_race(tmp_path, race):
+    probe, history, states, options, calls = cli_fixture(tmp_path)
+    options['idle'] = [True, False] if race else [False]
+    assert probe() == {'verified': False, 'waiting': True}
+    assert all(states.values()) and history.read_bytes() == b'original selected conversation\n'
+    assert not (tmp_path / 'journal/intent.json').exists()
+    assert not any(call[0] == str(tmp_path / 'codex') for call in calls)
+
+
+@pytest.mark.parametrize('stream', ['partial', 'other-thread'])
+def test_uncertain_or_wrong_thread_cli_output_never_repeats_inference(tmp_path, stream):
+    probe, history, states, options, calls = cli_fixture(tmp_path)
+    options['output'] = stream
+    assert probe() == {'verified': False, 'uncertain': True}
+    assert probe() == {'verified': False, 'uncertain': True}
+    assert all(states.values())
+    assert len([call for call in calls if call[0] == str(tmp_path / 'codex')]) == 1
+    assert not (tmp_path / 'journal/proof.json').exists()
+
+
+def test_cli_resume_detects_history_loss_and_preserves_foreign_service_successor(tmp_path):
+    probe, history, states, options, calls = cli_fixture(tmp_path)
+    options['changed_history'] = True
+    with pytest.raises(ValueError, match='original_cli_history_changed'):
+        probe()
+    assert all(states.values())
+    assert [p.read_bytes() for p in (tmp_path / 'journal').glob('original-history-*')] == [b'original selected conversation\n']
+    assert not (tmp_path / 'journal/proof.json').exists()
+    # A different plan/executable/service binding cannot adopt old progress.
+    unit = tmp_path / 'units/daimon-onboarding-telegram.service'
+    unit.write_bytes(b'unrelated successor unit')
+    before = list(calls)
+    with pytest.raises(ValueError, match='existing_cli_resume_probe_preserved'):
+        probe()
+    assert calls == before and unit.read_bytes() == b'unrelated successor unit'
+
+
 def memory_fixture(tmp_path):
     home = tmp_path / 'home'
     state = home / '.local/state/daimon-onboarding/eko'
@@ -288,6 +401,52 @@ def witness(task, result="passed", stamp=None):
         checked_at_ms=stamp or int(time.time() * 1000),
         checks={key: result for key in checks._checks(task)},
     )
+
+
+def test_cli_resume_adapter_requires_selected_thread_and_owner_bound_proof(tmp_path, monkeypatch):
+    from clusterctl import onboarding_release
+
+    value = plan(browser=False)
+    store, fixture = setup(tmp_path, value)
+    advance(store, fixture, count=7)
+    progress = tmp_path / 'progress'
+    progress.mkdir(mode=0o750)
+    task = request()
+    calls = []
+    result = {'schema': 'cluster-native-cli-resume/v1', 'plan_digest': digest(value),
+        'thread_id': str(uuid.uuid4()), 'verified': True,
+        'original_history_sha256': '3' * 64, 'cli_sha256': '4' * 64,
+        'provider_stream_sha256': '5' * 64}
+
+    def dispatch(plan, argv):
+        calls.append(argv)
+        assert argv[:4] == ['exec', 'dm-eko', '--', 'python3']
+        compile(argv[-2], '<captured-native-cli-probe>', 'exec')
+        parameters = json.loads(argv[-1])
+        assert parameters == {'plan': value, 'thread': task['native']['sessions'][0]['codex_thread_id'],
+            'model': 'existing-qualified-model', 'reasoning': 'high'}
+        return json.dumps(result)
+
+    monkeypatch.setattr(onboarding_release, 'verify', lambda *args, **kwargs: {
+        'profile': {'model': 'existing-qualified-model', 'reasoning': 'high'}})
+    backend = SimpleNamespace(config=SimpleNamespace(progress=progress, jobs=store.root, code=tmp_path / 'code'),
+        instance=lambda plan:'dm-eko', _dispatch=dispatch)
+    adapter = checks.HostedChecks(backend)
+    assert adapter.cli_resume_observe(value).state == 'waiting'
+    checks.Requests(progress, worker_uid=os.geteuid()).publish(task)
+    assert adapter.cli_resume_observe(value).state == 'absent'
+    with pytest.raises(OnboardingError, match='invalid_cli_resume_evidence'):
+        adapter.verify_cli_resume(value)
+    assert not (progress / 'eko.cli-resume.json').exists()
+    result['thread_id'] = task['native']['sessions'][0]['codex_thread_id']
+    adapter.verify_cli_resume(value)
+    assert adapter.cli_resume_observe(value).state == 'complete'
+    adapter.verify_cli_resume(value)
+    assert len(calls) == 2
+    with pytest.raises(OnboardingError, match='onboarding_job_not_found'):
+        checks.CLIResumes(progress, worker_uid=os.geteuid()).read('eko', owner='ani')
+    with pytest.raises(OnboardingError, match='existing_hosted_checks_preserved'):
+        adapter.cli_resume_observe({**value, 'browser': True})
 
 
 def test_owner_scoped_http_cli_reports_preserve_retries_without_activation(

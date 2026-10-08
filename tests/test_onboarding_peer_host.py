@@ -119,8 +119,8 @@ def test_host_retry_reuses_signed_response_and_retains_native_source(journey, tm
             host.execute(plan)
         assert state and source._load(signed=True).egress is not None
         host.execute(plan)
-        assert host.application(plan) == (str('/home/agent/.local/state/daimon-onboarding/' + plan['name'] + '/peer/application'),
-            '/home/agent/.local/state/daimon-onboarding/' + plan['name'] + '/peer/visibility/installation.json')
+        assert host.application(plan) == (str('/home/agent/.local/state/daimon-onboarding/' + plan['name'] + '/matrix/peer/application'),
+            '/home/agent/.local/state/daimon-onboarding/' + plan['name'] + '/matrix/peer/visibility/installation.json')
         before = json.loads((root / fingerprint / 'response.json').read_bytes())
         host.execute(plan)
         assert accepted == ['peer-accept']
@@ -193,3 +193,33 @@ def test_owner_service_resolves_runuser_in_the_closed_execution_environment(monk
     result = subprocess.run([command[0], '--version'], env={'PATH': os.defpath}, capture_output=True, check=False)
     assert result.returncode == 0
     assert command[-3:] == ['--user', 'stop', 'daimon-matrix-native.service']
+
+
+def test_selected_application_matches_native_receiving_target_layout(tmp_path, monkeypatch):
+    from pathlib import Path
+    from clusterctl.onboarding_target import Target
+    from tests.test_onboarding import plan as make_plan
+    plan = make_plan()
+    home = tmp_path / 'receiving-home'
+    home.mkdir(mode=0o700)
+    target = Target(home, plan, {})
+    native_peer = onboarding_peer.root(target)
+    (native_peer / 'application').mkdir(mode=0o700, parents=True)
+    (native_peer / 'application/publication.json').write_text('{}')
+    host = object.__new__(PeerHost)
+    host.settings = {'source_being_ref': 'verified-source'}
+    host.state = tmp_path / 'host'
+    host.state.mkdir(mode=0o700)
+    marker = host.state / digest(plan)
+    marker.mkdir(mode=0o700)
+    being_seed._write(marker / 'complete.json', dict(schema='cluster-onboarding-peer-complete/v1',
+        plan_digest=digest(plan), source_being_ref='verified-source'))
+    host.backend = SimpleNamespace(_matrix_command=lambda p, a: dict(phase='v8',
+        receipt={'peer_being_ref': 'verified-source'}))
+    monkeypatch.setattr(host, '_identity', lambda p: {})
+    monkeypatch.setattr(host, '_proxies', lambda p: True)
+    monkeypatch.setattr(host, '_source', lambda action, args: dict(running=True, applications=[digest(plan)]))
+    application, visibility = host.application(plan)
+    selected_relative = Path(application).relative_to('/home/agent')
+    assert (home / selected_relative / 'publication.json').is_file()
+    assert Path(visibility).relative_to('/home/agent') == native_peer.relative_to(home) / 'visibility/installation.json'

@@ -40,7 +40,8 @@ PORTAL_TESTS = ('tests/test_onboarding_local_body.py', 'tests/test_being_seed.py
     'tests/test_clusterd.py', 'tests/test_auth.py', 'tests/test_human_approvals.py',
     'tests/test_onboarding_consent.py', 'tests/test_onboarding_actions.py',
     'tests/test_onboarding_ingress.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
-PEER_FILES = {'clusterctl/onboarding_peer_host.py', 'tests/test_onboarding_peer_host.py'}
+PEER_FILES = {'clusterctl/onboarding_peer_host.py', 'tests/test_onboarding_peer_host.py',
+              'tests/test_onboarding_managed.py'}
 PEER_TESTS = ('tests/test_onboarding_peer_host.py', 'tests/test_onboarding_source.py',
     'tests/test_onboarding_managed.py', 'tests/test_onboarding_host_ownership.py',
     'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')

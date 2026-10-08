@@ -69,10 +69,11 @@ PEER_TOOL_FILES = {'clusterctl/onboarding_peer.py', 'clusterctl/onboarding_peer_
 PEER_TOOL_TESTS = (*PEER_TESTS, 'tests/test_onboarding_peer.py',
     'tests/test_onboarding_local_body.py', 'tests/test_onboarding_code_successor.py')
 OWNER_CLIENT_FILES = {'clusterctl/onboarding_owner_client.py', 'clusterctl/onboarding_host.py',
-                      'tests/test_onboarding_owner_client.py', 'tools/check_rc_types.py'}
+                      'tests/test_onboarding_owner_client.py', 'tools/check_rc_types.py',
+                      'support/matrix-agent-chat/install_agent_chat.py', 'support/matrix-agent-chat/PROVENANCE.json'}
 OWNER_CLIENT_TESTS = (*WELCOME_TESTS, *PEER_TESTS, 'tests/test_onboarding_owner_client.py',
                       'tests/test_onboarding_target.py', 'tests/test_onboarding_runtime.py',
-                      'tests/test_onboarding_sdk.py')
+                      'tests/test_onboarding_sdk.py', 'tests/test_onboarding_peer.py')
 
 
 def select(changed: list[str], root: Path) -> tuple[str, list[str]]:

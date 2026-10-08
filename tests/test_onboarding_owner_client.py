@@ -17,6 +17,8 @@ from clusterctl.onboarding import Observation
 from clusterctl.onboarding_owner_client import OwnerClient, PROGRAM
 from tests.test_onboarding_target import receiving
 
+pytest_plugins = ["tests.test_onboarding_peer"]
+
 
 @pytest.fixture
 def native(tmp_path):
@@ -103,6 +105,183 @@ def invoke(payload):
         timeout=50,
         env={**os.environ, "HOME": payload["home"]},
     )
+
+
+def test_existing_owner_client_gains_native_peer_attachment_without_new_identity(
+    journey, tmp_path
+):
+    from hashlib import sha256
+    from clusterctl import onboarding_peer
+    from clusterctl.admission import (
+        AdmissionAuthority,
+        AdmissionEndpoint,
+        AdmissionTCPServer,
+        serve_in_thread,
+    )
+    from clusterctl.onboarding_admission import ReceivingHolder, enrollment
+    from clusterctl.onboarding_runtime import AdmittedDaemon
+    from tests.test_admission import _key
+
+    _, sources, public, packet, _ = journey
+    ceremony, target = sources[1]
+    sender = public[0]["document"]["authority"]["manifest"]["being_ref"]
+    onboarding_peer.accept(target, packet, expected_being=sender)
+    holder = ReceivingHolder(target)
+    registrar = _key(tmp_path / "host/registrar.pem", "registrar")
+    signer = _key(tmp_path / "host/authority.pem", "authority")
+    authority = AdmissionAuthority(
+        tmp_path / "authority",
+        signer=signer,
+        holder_registrars={registrar.key_id: registrar.public_key},
+    )
+    server = AdmissionTCPServer(("127.0.0.1", 0), authority)
+    thread = serve_in_thread(server)
+    endpoint = AdmissionEndpoint.network("127.0.0.1", server.server_address[1])
+    client = holder.client(
+        endpoint, authority_key_id=signer.key_id, authority_public_key=signer.public_key
+    )
+    client.enroll(
+        enrollment(
+            target.plan,
+            holder.request(),
+            ceremony.admission_coordinates(target.plan),
+            registrar,
+        )
+    )
+    root = target.package / "runtime"
+    application = onboarding_peer.root(target) / "application"
+    attachment = onboarding_peer.root(target) / "owner-client"
+    original = {
+        name: (root / name).read_bytes()
+        for name in ("runtime.json", "custody.json", "client.json", "client.key")
+    }
+    (target.home / "Projects").mkdir(mode=0o700)
+    (target.home / "Projects/being").mkdir(mode=0o700)
+    relative = target.package.relative_to(target.home).as_posix()
+    origin = target.document_bundle()["local_origin"]
+    payload = dict(
+        home=str(target.home),
+        state_relative=relative,
+        prog="eko-codex",
+        script=render_owner_client(
+            OwnerClientPlan(
+                venv_python=sys.executable,
+                state_relative=relative,
+                client_label="eko.codex@daimon-cluster",
+                prog="eko-codex",
+            )
+        ).decode(),
+        instructions="# Previous managed binding\n",
+        plan_digest="a" * 64,
+        origin=origin,
+        being_ref=operator_rebirth.authority_from_runtime_bundle(
+            target.document_bundle()
+        ).state.being_ref,
+        install=True,
+    )
+    installer = (
+        Path(__file__).resolve().parents[1]
+        / "support/matrix-agent-chat/install_agent_chat.py"
+    ).read_bytes()
+    provenance = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "support/matrix-agent-chat/PROVENANCE.json"
+        ).read_bytes()
+    )
+    assert sha256(installer).hexdigest() == provenance["sha256"]
+    successor = {
+        **payload,
+        "legacy_instructions": payload["instructions"],
+        "instructions": "# Previous managed binding\n\n# Native messaging attachment\n",
+        "chat": dict(
+            application=str(application),
+            attachment=str(attachment),
+            socket=str(root / "peer.sock"),
+            installer=installer.decode(),
+            installer_sha256=provenance["sha256"],
+        ),
+    }
+    admitted = AdmittedDaemon(target, client)
+    try:
+        admitted.start(
+            visibility_installation=onboarding_peer.root(target)
+            / "visibility/installation.json",
+            messaging_application=application,
+        )
+        assert invoke(payload).returncode == 0
+        old_receipt = (target.package / "owner-client/installation.json").read_bytes()
+        assert json.loads(invoke({**successor, "install": False}).stdout) == {
+            "installed": False
+        }
+        foreign = {
+            **successor,
+            "chat": {
+                **successor["chat"],
+                "application": str(sources[0][1].package / "runtime"),
+            },
+        }
+        assert invoke(foreign).returncode != 0
+        assert not attachment.exists()
+        assert (target.home / "Projects/being/AGENTS.md").read_text() == payload[
+            "instructions"
+        ]
+        result = invoke(successor)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["installed"] is True
+        assert (target.home / "Projects/being/AGENTS.md").read_text() == successor[
+            "instructions"
+        ]
+        assert (
+            target.package
+            / "owner-client"
+            / ("previous-" + sha256(payload["instructions"].encode()).hexdigest())
+        ).read_text() == payload["instructions"]
+        assert (
+            target.package
+            / "owner-client"
+            / ("previous-" + sha256(old_receipt).hexdigest())
+        ).read_bytes() == old_receipt
+        connection = json.loads((attachment / "connection.json").read_bytes())
+        channels = subprocess.run(
+            [*connection["command"], "channels"], capture_output=True, timeout=10
+        )
+        assert channels.returncode == 0, channels.stderr
+        assert json.loads(channels.stdout)["outgoing_channels"] == ["peer-out"]
+        saved = (attachment / "installation.json").read_bytes()
+        # Crash after publishing instructions but before either final receipt:
+        # observation must permit an exact repair, not wedge the worker.
+        (attachment / "installation.json").unlink()
+        (target.package / "owner-client/installation.json").write_bytes(old_receipt)
+        assert json.loads(invoke({**successor, "install": False}).stdout) == {
+            "installed": False
+        }
+        assert invoke(successor).returncode == 0
+        assert (
+            json.loads(invoke({**successor, "install": False}).stdout)["installed"]
+            is True
+        )
+        assert (attachment / "installation.json").read_bytes() == saved
+        for name, raw in original.items():
+            assert (root / name).read_bytes() == raw
+        edited = target.home / "Projects/being/AGENTS.md"
+        edited.write_text("Preserve receiving changes")
+        assert invoke(successor).returncode != 0
+        assert edited.read_text() == "Preserve receiving changes"
+        edited.write_text(successor["instructions"])
+        (attachment / "connection.json").write_text(
+            "Preserve receiving connection edits"
+        )
+        assert invoke(successor).returncode != 0
+        assert invoke({**successor, "install": False}).returncode != 0
+        assert (
+            attachment / "connection.json"
+        ).read_text() == "Preserve receiving connection edits"
+    finally:
+        admitted.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_native_owner_client_publication_and_reconciliation_keep_runtime_and_owner_writes(

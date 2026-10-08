@@ -61,6 +61,7 @@ APPROVAL_TESTS = ('tests/test_onboarding_approvals.py', 'tests/test_onboarding_c
     'tests/test_onboarding_intake.py', 'tests/test_onboarding_host.py',
     'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 PORTAL_FILES = {'clusterctl/onboarding_local_body.py', 'tools/export_local_matrix_identity.py',
+    'tools/expose_native_peer.py',
     'clusterd/seed_handlers.py', 'clusterd/seed_ui.py', 'clusterd/handlers.py',
     'clusterd/routes.py', 'clusterd/server.py', 'tests/test_being_seed.py',
     'tests/test_onboarding_local_body.py', 'tools/check_rc_types.py'}

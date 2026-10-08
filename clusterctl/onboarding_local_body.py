@@ -51,6 +51,39 @@ class Requests(Progress):
     validate = staticmethod(validate)
 
 
+class Guidance(Progress):
+    """Host-owned participant steps, separate from reports and authority."""
+    suffix = '.local-body-guidance.json'
+
+    @staticmethod
+    def validate(value: object) -> dict:
+        if (not isinstance(value, dict) or set(value) != {
+                'schema', 'name', 'owner', 'request_id', 'updated_ms', 'steps'}
+                or value['schema'] != 'cluster-onboarding-local-guidance/v1'
+                or any(not isinstance(value[k], str) or not being_seed.NAME.fullmatch(value[k])
+                       for k in ('name', 'owner'))
+                or not isinstance(value['request_id'], str)
+                or type(value['updated_ms']) is not int or value['updated_ms'] < 0
+                or not isinstance(value['steps'], list) or not 1 <= len(value['steps']) <= 12
+                or any(not isinstance(step, str) or not 1 <= len(step) <= 4000
+                       for step in value['steps'])):
+            raise OnboardingError('invalid_local_body_guidance')
+        try:
+            if str(uuid.UUID(value['request_id'])) != value['request_id']:
+                raise ValueError
+        except ValueError as exc:
+            raise OnboardingError('invalid_local_body_guidance') from exc
+        return value
+
+
+def guidance(progress: Path, request: dict, *, worker_uid: int) -> dict | None:
+    try:
+        value = Guidance(progress, worker_uid=worker_uid).read(request['name'], owner=request['owner'])
+        return value if value['request_id'] == request['request_id'] else None
+    except FileNotFoundError:
+        return None
+
+
 def _directory(state: Path, request: dict, *, create: bool = False) -> Path:
     parent = state / 'local-body-reports'
     if create:

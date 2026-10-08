@@ -52,6 +52,7 @@ def local_body_tool(deps, ctx, tool, **params):
         except (OSError, ValueError, OnboardingError):
             return handlers.Response(409, {"error": "local_body_tool_requires_attention"})
     paths = {'resume_seed_upload.py': root / 'tools/resume_seed_upload.py',
+             'expose_native_peer.py': root / 'tools/expose_native_peer.py',
              'export_local_matrix_identity.py': root / 'tools/export_local_matrix_identity.py',
              'onboarding_peer_native.py': root / 'clusterctl/onboarding_peer_native.py'}
     if tool not in paths:
@@ -69,7 +70,7 @@ def local_body_tool(deps, ctx, tool, **params):
 
 def local_body_requests(deps, ctx, seed=None, _body=None, _submit=False, _diagnostic=False, **params):
     from . import handlers
-    from clusterctl.onboarding_local_body import Requests, read, submit, submit_diagnostic
+    from clusterctl.onboarding_local_body import Requests, guidance, read, submit, submit_diagnostic
 
     try:
         if not deps.onboarding_progress:
@@ -80,6 +81,8 @@ def local_body_requests(deps, ctx, seed=None, _body=None, _submit=False, _diagno
             request = requests.read(seed, owner=_owner(ctx))
             value = (submit_diagnostic(state, request, _body) if _diagnostic else
                      submit(state, request, _body) if _submit else read(state, request))
+            value['host_guidance'] = guidance(Path(deps.onboarding_progress), request,
+                worker_uid=deps.onboarding_worker_uid)
             return handlers.Response(200, value)
         requests._directory()
         items = []
@@ -91,7 +94,8 @@ def local_body_requests(deps, ctx, seed=None, _body=None, _submit=False, _diagno
                 if str(exc) == 'onboarding_job_not_found':
                     continue
                 raise
-            items.append(read(state, request))
+            items.append({**read(state, request), 'host_guidance': guidance(
+                Path(deps.onboarding_progress), request, worker_uid=deps.onboarding_worker_uid)})
         return handlers.Response(200, {'items': items})
     except FileNotFoundError:
         return handlers.Response(404, {'error': 'local_body_request_not_found'})

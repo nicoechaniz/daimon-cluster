@@ -357,6 +357,72 @@ def test_interrupted_partial_publication_reuses_exact_client(native):
     assert client.stat().st_ino == before
 
 
+def test_slow_authenticated_native_daemon_is_not_treated_as_departed(native):
+    import socket
+    import threading
+    import time
+
+    target, payload = native
+    socket_path = target.package / "runtime/matrix.sock"
+    actual_path = socket_path.with_name("slow.sock")
+    socket_path.rename(actual_path)
+    listener = socket.socket(socket.AF_UNIX)
+    listener.bind(str(socket_path))
+    socket_path.chmod(0o600)
+    listener.listen()
+    listener.settimeout(1)
+    stop = threading.Event()
+    errors = []
+
+    def receive(connection, size):
+        data = b""
+        while len(data) < size:
+            chunk = connection.recv(size - len(data))
+            if not chunk:
+                raise ValueError("unfinished authenticated frame")
+            data += chunk
+        return data
+
+    def forward():
+        delayed = False
+        while not stop.is_set():
+            try:
+                connection, _ = listener.accept()
+            except TimeoutError:
+                continue
+            try:
+                with connection, socket.socket(socket.AF_UNIX) as server:
+                    server.connect(str(actual_path))
+                    header = receive(connection, 4)
+                    server.sendall(
+                        header + receive(connection, int.from_bytes(header, "big"))
+                    )
+                    header = receive(server, 4)
+                    response = header + receive(server, int.from_bytes(header, "big"))
+                    if not delayed:
+                        # Reproduce the actual receiving failure: a genuine signed
+                        # response exists but arrives beyond the old five seconds.
+                        time.sleep(6)
+                        delayed = True
+                    connection.sendall(response)
+            except Exception as error:
+                errors.append(type(error).__name__)
+
+    thread = threading.Thread(target=forward)
+    thread.start()
+    try:
+        result = invoke(payload)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["installed"] is True
+        assert not errors
+    finally:
+        stop.set()
+        thread.join(timeout=10)
+        listener.close()
+        socket_path.unlink()
+        actual_path.rename(socket_path)
+
+
 def test_host_adapter_verifies_installed_sdk_and_current_plan_before_dispatch(
     monkeypatch,
 ):

@@ -54,7 +54,7 @@ CHECKS = {
     "restart_continuity": "After the host continuity test, continue both existing topics and confirm they retain their conversations.",
     "cli_resume": "Through dedicated SSH, use codex resume with an existing hosted thread shown here; confirm its prior conversation continues.",
 }
-BROWSER = "In the hosted browser, verify the supported browser session works."
+BROWSER = "From the hosted CLI, run python3 /home/agent/.kimi-webbridge/bin/cluster-browser.py run, then verify your browser through the installed Kimi controls. Keep its own profile and existing conversations."
 
 
 def memory_write_probe(home, plan, store, native_runner=None):
@@ -485,6 +485,8 @@ def read(state: Path, request: dict, *, progress=None, worker_uid=0) -> dict:
         "hosted_acceptance": bool(progress is not None and acceptance_facts(request, witness) is not None
             and accepted_progress(progress, request, worker_uid)),
         "response_path": "/v1/seeds/" + request["name"] + "/onboarding/checks",
+        "browser_command": (['python3', '/home/agent/.kimi-webbridge/bin/cluster-browser.py', 'run']
+            if request['browser'] else None),
         "evidence_scope": "Native metadata is independently collected. Owner results are witnesses; a report does not activate the body.",
         "instructions": [
             "Use this existing hosted body, dedicated SSH and Telegram bot; do not re-export, reinstall or resubmit account or bot data.",

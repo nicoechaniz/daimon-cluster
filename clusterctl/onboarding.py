@@ -32,7 +32,7 @@ FACTS = frozenset({
     "identity_verified", "context_verified", "ssh_ready", "ssh_verified", "provider_verified", "browser_verified",
     "telegram_ready", "telegram_verified", "welcome_delivered", "human_contact_verified",
     "steering_verified", "topics_verified", "restart_verified", "cli_resume_verified",
-    "matrix_delivery_verified",
+    "matrix_delivery_verified", "browser_code_verified",
 })
 ACCEPTANCE = frozenset({
     "identity_verified", "ssh_verified", "provider_verified", "telegram_verified",

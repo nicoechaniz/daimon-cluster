@@ -6,6 +6,7 @@ agent identity or credentials are copied. Launch is a human-requested process.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import signal
 import socket
 import stat
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -56,12 +58,31 @@ def extension_digest(root: Path) -> tuple[str, list[tuple[str, bytes]]]:
 
 
 def prepare(daemon: Path, daemon_sha256: str, extension: Path, extension_sha256: str,
-            home: Path, *, apply: bool) -> dict:
+            home: Path, *, apply: bool, launcher: bytes | None = None) -> dict:
     raw = _regular(daemon.absolute())
     actual = hashlib.sha256(raw).hexdigest()
     digest, files = extension_digest(extension.absolute())
     if actual != daemon_sha256 or digest != extension_sha256:
         raise ValueError("browser_code_hash_mismatch")
+    return prepare_captured(raw, actual, digest, files, home, apply=apply, launcher=launcher)
+
+
+def prepare_captured(raw: bytes, daemon_sha256: str, extension_sha256: str,
+                     files: list[tuple[str, bytes]], home: Path, *, apply: bool,
+                     launcher: bytes | None = None) -> dict:
+    """Publish already captured code after the host drops receiving privilege."""
+    actual = hashlib.sha256(raw).hexdigest()
+    inventory = [[name, hashlib.sha256(data).hexdigest()] for name, data in files]
+    digest = hashlib.sha256(json.dumps(inventory, separators=(",", ":")).encode()).hexdigest()
+    if actual != daemon_sha256 or digest != extension_sha256:
+        raise ValueError('browser_code_hash_mismatch')
+    if (not raw or len(raw) > 128 * 1024**2 or len(files) > 10000
+            or sum(len(data) for _, data in files) > 128 * 1024**2
+            or len({name for name, _ in files}) != len(files)
+            or 'manifest.json' not in {name for name, _ in files}
+            or any(not name or Path(name).is_absolute() or '..' in Path(name).parts
+                   or str(Path(name)) != name for name, _ in files)):
+        raise ValueError('bounded_browser_code_required')
     for program in ("chromium", "Xvfb", "xvfb-run", "xauth"):
         if shutil.which(program) is None:
             raise ValueError("browser_system_packages_required")
@@ -72,6 +93,10 @@ def prepare(daemon: Path, daemon_sha256: str, extension: Path, extension_sha256:
         raise ValueError("browser_home_must_belong_to_invoking_user")
     result = {"schema": "cluster-browser-code/v1", "daemon_sha256": actual,
               "extension_sha256": digest, "fresh_profile": True, "applied": apply}
+    if launcher is not None:
+        if not isinstance(launcher, bytes) or not 0 < len(launcher) <= 128 * 1024:
+            raise ValueError('bounded_browser_launcher_required')
+        result['launcher_sha256'] = hashlib.sha256(launcher).hexdigest()
     if not apply:
         return result
     marker = root / "cluster-code.json"
@@ -81,24 +106,52 @@ def prepare(daemon: Path, daemon_sha256: str, extension: Path, extension_sha256:
                 raise ValueError("installed_browser_code_changed")
             if extension_digest(root / "extension")[0] != digest:
                 raise ValueError("installed_browser_code_changed")
+            if launcher is not None and _regular(root / 'bin/cluster-browser.py') != launcher:
+                raise ValueError('installed_browser_code_changed')
             return result
         raise ValueError("existing_browser_state_preserved")
-    root.mkdir(mode=0o700)
-    (root / "bin").mkdir(mode=0o700)
-    for path, contents, mode in [(root / "bin/kimi-webbridge", raw, 0o700),
-                                  *[(root / "extension" / name, data, 0o600) for name, data in files]]:
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(contents)
-            stream.flush()
-            os.fsync(stream.fileno())
-    fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as stream:
-        json.dump(result, stream)
-        stream.flush()
-        os.fsync(stream.fileno())
+    # Publish complete code atomically. An interrupted copy must not leave an
+    # unusable live profile, and a concurrent owner's directory stays intact.
+    with tempfile.TemporaryDirectory(prefix='.kimi-webbridge-preparing-', dir=home) as staging:
+        candidate = Path(staging) / 'code'
+        candidate.mkdir(mode=0o700)
+        rows = [('bin/kimi-webbridge', raw, 0o700)]
+        if launcher is not None:
+            rows.append(('bin/cluster-browser.py', launcher, 0o600))
+        rows += [('extension/' + name, data, 0o600) for name, data in files]
+        rows.append(('cluster-code.json', json.dumps(result).encode(), 0o600))
+        for name, contents, mode in rows:
+            path = candidate / name
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(contents)
+                stream.flush()
+                os.fsync(stream.fileno())
+        directories = [candidate, *[path for path in candidate.rglob('*') if path.is_dir()]]
+        for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        publish_directory(candidate, root)
+    fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     return result
+
+
+def publish_directory(source: Path, destination: Path) -> None:
+    """Linux atomic publication without replacing even an empty owner directory."""
+    function = ctypes.CDLL(None, use_errno=True).renameat2
+    function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    function.restype = ctypes.c_int
+    if function(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, 'browser_code_publication_failed')
 
 
 def status() -> dict:
@@ -117,8 +170,11 @@ def run(home: Path) -> int:
         raise ValueError("browser_requires_dedicated_unprivileged_user")
     root = home.absolute() / ".kimi-webbridge"
     marker = json.loads(_regular(root / "cluster-code.json"))
+    launcher = (_regular(root / 'bin/cluster-browser.py') if 'launcher_sha256' in marker else None)
+    if launcher is not None and hashlib.sha256(launcher).hexdigest() != marker['launcher_sha256']:
+        raise ValueError('installed_browser_code_changed')
     prepare(root / "bin/kimi-webbridge", marker["daemon_sha256"], root / "extension",
-            marker["extension_sha256"], home, apply=True)
+            marker["extension_sha256"], home, apply=True, launcher=launcher)
     with socket.socket() as probe:
         if probe.connect_ex(("127.0.0.1", 10086)) == 0:
             raise ValueError("existing_webbridge_process_preserved")

@@ -127,6 +127,13 @@ NEW_SEED_FILES = CONTEXT_COPY_FILES | {'clusterctl/onboarding_input.py',
 NEW_SEED_TESTS = tuple(sorted(set(CONTEXT_COPY_TESTS) | set(HOSTED_CHECK_TESTS) | {
     'tests/test_onboarding_new.py', 'tests/test_onboarding_code_successor.py',
     'tests/test_onboarding_custody.py', 'tests/test_onboarding_approvals.py'}))
+BROWSER_FILES = {'clusterctl/browser.py', 'clusterctl/onboarding_browser.py',
+    'clusterctl/onboarding_host.py', 'clusterctl/onboarding.py',
+    'clusterctl/onboarding_acceptance.py', 'tests/test_onboarding_browser.py',
+    'tests/test_onboarding_host.py', 'tests/test_onboarding_acceptance.py',
+    'tests/test_being_seed.py'}
+BROWSER_TESTS = tuple(sorted(set(CONTEXT_COPY_TESTS) | set(HOSTED_CHECK_TESTS) | {
+    'tests/test_onboarding_browser.py', 'tests/test_being_seed.py'}))
 
 TRANSFER_FILES = HOSTED_CHECK_FILES | EXPORT_FILES | {
     'clusterctl/onboarding_transfer.py', 'clusterctl/onboarding_input.py', 'clusterctl/onboarding_release.py',
@@ -169,6 +176,12 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'clusterctl/browser.py', 'clusterctl/onboarding_browser.py'}
+            and set(changed) <= BROWSER_FILES | CI_FILES
+            and all((root / path).is_file() for path in BROWSER_TESTS)):
+        # Code-only browser installation retains context/SDK, job retries and
+        # owner/API acceptance. No custody, dependency or recovery changes.
+        return 'portal', list(BROWSER_TESTS)
     if (set(changed) & {'tools/export_local_matrix_identity.py', 'clusterctl/onboarding_local_body.py'}
             and set(changed) <= IDENTITY_EXPORT_FILES | CI_FILES
             and all((root / path).is_file() for path in IDENTITY_EXPORT_TESTS)):

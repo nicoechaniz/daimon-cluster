@@ -219,6 +219,7 @@ def test_owner_handoff_completes_native_v2_and_admission_without_host_root_keys(
     tmp_path,
     sealed_signer,
     custody_kind,
+    monkeypatch,
 ):
     from types import SimpleNamespace
     from clusterctl import onboarding_enrollment as exchange
@@ -315,6 +316,12 @@ keystore.EncryptedKeystore.create(destination.with_name('mixed-body.json'),
     views = host_fixture / "views"
     views.mkdir(mode=0o700)
     backend = HostBackend(replace(config, views=views), run=incus)
+    # This receiving actor runs as the test owner, not an Incus UID-1000
+    # account. Qualify real publication for that actor on every CI runner;
+    # actual root/guest ownership stays covered by the privileged host tests.
+    from clusterctl import onboarding_mounts
+    monkeypatch.setattr(onboarding_mounts, "GUEST_UID", os.geteuid())
+    monkeypatch.setattr(onboarding_mounts, "GUEST_GID", os.getegid())
     being_seed._write(
         config.grants / (target.plan["name"] + ".json"),
         dict(

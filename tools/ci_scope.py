@@ -40,6 +40,11 @@ PORTAL_TESTS = ('tests/test_onboarding_local_body.py', 'tests/test_being_seed.py
     'tests/test_clusterd.py', 'tests/test_auth.py', 'tests/test_human_approvals.py',
     'tests/test_onboarding_consent.py', 'tests/test_onboarding_actions.py',
     'tests/test_onboarding_ingress.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
+ACCOUNT_FILES = {'clusterctl/onboarding_accounts.py', 'tests/test_onboarding_accounts.py'}
+ACCOUNT_TESTS = ('tests/test_onboarding_accounts.py', 'tests/test_onboarding_shared_login.py',
+    'tests/test_onboarding_provider.py', 'tests/test_onboarding_ingress.py',
+    'tests/test_onboarding_consent.py', 'tests/test_onboarding_actions.py',
+    'tests/test_onboarding_host_ownership.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 PEER_FILES = {'clusterctl/onboarding_peer_host.py', 'tests/test_onboarding_peer_host.py',
               'tests/test_onboarding_managed.py'}
 PEER_TESTS = ('tests/test_onboarding_peer_host.py', 'tests/test_onboarding_source.py',
@@ -57,6 +62,8 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if set(changed) <= ACCOUNT_FILES | CI_FILES and all((root / path).is_file() for path in ACCOUNT_TESTS):
+        return 'account', list(ACCOUNT_TESTS)
     if set(changed) <= PEER_FILES | CI_FILES and all((root / path).is_file() for path in PEER_TESTS):
         # Host-only peer coordination retains signed Source, receiving
         # admission/selection and owner separation. Guest assets, snapshots,

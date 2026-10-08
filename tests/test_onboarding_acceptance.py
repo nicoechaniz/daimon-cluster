@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 from contextlib import closing
 import time
 import uuid
@@ -74,6 +76,31 @@ def test_ssh_login_adapter_binds_native_evidence_and_keeps_owner_isolation(tmp_p
         checks.SSHLogins(progress, worker_uid=os.geteuid()).read('eko', owner='ani')
     with pytest.raises(OnboardingError, match='existing_hosted_checks_preserved'):
         adapter.ssh_login_observe({**value, 'browser': not value['browser']}, job)
+
+
+def test_empty_native_ssh_journal_is_missing_proof_and_command_errors_are_not_accepted(tmp_path, monkeypatch, capsys):
+    value = plan()
+    store, fixture = setup(tmp_path, value)
+    advance(store, fixture, count=7)
+    job = store._load('eko')
+    progress = tmp_path / 'progress'
+    progress.mkdir(mode=0o750)
+    key = 'ssh-ed25519 ' + base64.b64encode(b'fixture public owner key bytes32!!').decode()
+    journal_result = SimpleNamespace(returncode=1, stdout='', stderr='')
+    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs:journal_result)
+
+    def dispatch(plan, argv):
+        monkeypatch.setattr(sys, 'argv', ['native-probe', argv[-1]])
+        exec(compile(argv[-2], '<captured-native-ssh-probe>', 'exec'), {})
+        return capsys.readouterr().out
+
+    backend = SimpleNamespace(config=SimpleNamespace(progress=progress), _ssh_key=lambda plan:key,
+        _ssh_command=lambda *args:{'installed': True}, instance=lambda plan:'dm-eko', _dispatch=dispatch)
+    assert checks.HostedChecks(backend).ssh_login_observe(value, job) is False
+    journal_result = SimpleNamespace(returncode=1, stdout='', stderr='fixture journal error')
+    with pytest.raises(AssertionError):
+        checks.HostedChecks(backend).ssh_login_observe(value, job)
+    assert not (progress / 'eko.ssh-login.json').exists()
 
 
 def memory_fixture(tmp_path):

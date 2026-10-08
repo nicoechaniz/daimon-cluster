@@ -650,7 +650,8 @@ class HostedChecks:
             + '"--unit=daimon-onboarding-ssh.service","--output=json","--no-pager",'
             + '"--grep=^Accepted publickey for agent ",'
             + '"--lines=512","--since=@"+str(p["since_ms"]//1000)],'
-            + 'capture_output=True,text=True,timeout=30,check=True);'
+            + 'capture_output=True,text=True,timeout=30,check=False);'
+            + 'assert r.returncode==0 or (r.returncode==1 and not r.stdout and not r.stderr);'
             + 'print(json.dumps(ssh_login_snapshot([json.loads(line) for line in r.stdout.splitlines()],'
             + 'p["fingerprint"],p["since_ms"],p["now_ms"])))')
         parameters = {'fingerprint': fingerprint, 'since_ms': job['created_ms'], 'now_ms': int(time.time() * 1000)}

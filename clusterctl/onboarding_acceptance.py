@@ -1215,6 +1215,12 @@ class HostedChecks:
         report = json.loads(regular(config.inputs / plan['name'] / 'received/preparation.json',
             uid=os.geteuid(), limit=being_seed.MAX_PREPARATION))
         stores = [row['name'] for row in report['selection']['memory']]
+        if not stores:
+            from . import onboarding_input, onboarding_release
+            manifest = onboarding_input.verify(config.inputs / plan['name'], plan['seed_digest'])
+            if manifest.get('seed_mode') == 'new':
+                profile = onboarding_release.verify(config.code, plan['release_digest'], uid=os.geteuid())['profile']
+                stores = [onboarding_input.new_memory_store(manifest, stores, profile['primary_store'])]
         if len(set(stores)) != len(stores) or any(not being_seed.NAME.fullmatch(s) for s in stores):
             raise OnboardingError('prepared_onboarding_input_required')
         return stores

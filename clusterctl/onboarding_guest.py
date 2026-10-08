@@ -229,7 +229,10 @@ class Receiver:
                 raise OnboardingError("invalid_receiving_memory")
         if len({row["name"] for row in self.memory}) != len(self.memory):
             raise OnboardingError("invalid_receiving_memory")
-        self.primary = self.profile["primary_store"]
+        self.fresh_store = onboarding_input.new_memory_store(self.manifest, self.memory, self.profile['primary_store'])
+        if self.fresh_store is not None:
+            self.memory = [dict(name=self.fresh_store, database='library.db')]
+        self.primary = self.fresh_store or self.profile["primary_store"]
         if self.primary is not None and self.primary not in {row["name"] for row in self.memory}:
             raise OnboardingError("selected_receiving_memory_missing")
 
@@ -299,7 +302,8 @@ os.execv({sys.executable!r}, [{sys.executable!r}, "-B", str(script), *sys.argv[2
         if observed.state != "absent":
             raise OnboardingError("existing_receiving_file_preserved")
         if (self.code / "sdk").exists():
-            onboarding_sdk.install(self.home, self.code, self.plan["release_digest"], code_uid=self.code_uid)
+            onboarding_sdk.install(self.home, self.code, self.plan["release_digest"], code_uid=self.code_uid,
+                matrix_commit=self._sdk_commit())
         self._copy_input()
         mkdir_chain(self.home, self.state)
         mkdir_chain(self.home, self.home / "Projects/being")
@@ -318,6 +322,8 @@ os.execv({sys.executable!r}, [{sys.executable!r}, "-B", str(script), *sys.argv[2
                        f"{shlex.quote(str(self.state / ('hmk-' + self.primary + '.py')))} \"$@\"\n").encode()
             new_bytes(self.home / ".local/bin/hmk", wrapper, executable=True)
         new_bytes(self.state / "MEMORY-ACCESS.md", "".join(access).encode())
+        if self.fresh_store is not None:
+            self._initialize_fresh_memory()
         # Preserve the original personal SOUL. Selected lineage is a separate
         # attributed context surface, not a replacement of autobiography.
         new_bytes(self.state / "INHERITANCE.md", (self.code / "inheritance.md").read_bytes())
@@ -349,7 +355,7 @@ os.execv({sys.executable!r}, [{sys.executable!r}, "-B", str(script), *sys.argv[2
         if marker is None:
             return Observation("absent", safe_to_execute=True)
         if (self.code / "sdk").exists():
-            onboarding_sdk.observe(self.home, self.code, code_uid=self.code_uid)
+            onboarding_sdk.observe(self.home, self.code, code_uid=self.code_uid, matrix_commit=self._sdk_commit())
         if (checksum(self.home / ".codex/AGENTS.md") != marker["agents_sha256"]
                 or checksum(self.home / ".codex/config.toml") != marker["config_sha256"]):
             return Observation("conflict", reason="observed_state_conflict")
@@ -358,6 +364,32 @@ os.execv({sys.executable!r}, [{sys.executable!r}, "-B", str(script), *sys.argv[2
             if row["path"].startswith("skills/") and checksum(self.home / ".agents" / row["path"]) != row["sha256"]:
                 return Observation("conflict", reason="observed_state_conflict")
         return Observation("complete", {"verified": True, "context_verified": True, "skills": marker["skills"]})
+
+    def _sdk_commit(self) -> str:
+        # The immutable original context pins its own dependency generation.
+        # Selecting maintained receiving modules never silently repins it.
+        return json.loads(onboarding_release.regular(self.code / 'sdk/sdk.json', uid=self.code_uid))['matrix_commit']
+
+    def _initialize_fresh_memory(self) -> None:
+        store = self.fresh_store
+        assert store is not None
+        pool = self.received / 'memory' / store
+        mkdir_chain(self.home, pool)
+        marker = self._marker('new-memory')
+        expected = dict(schema='cluster-receiving-new-memory/v1', plan_digest=digest(self.plan),
+            store=store, origin='empty-new', initializer_sha256=hashlib.sha256(onboarding_release.regular(
+                self.code / 'hmk/scripts/memoryctl.py', uid=self.code_uid)).hexdigest())
+        if marker is None:
+            if (pool / 'library.db').exists():
+                raise OnboardingError('existing_receiving_file_preserved')
+            self._publish('new-memory', **{k:v for k,v in expected.items() if k not in {'schema','plan_digest'}})
+        elif marker != expected:
+            raise OnboardingError('receiving_stage_conflict')
+        # Native init is idempotent. Its intent survives a lost acknowledgement;
+        # no exported history is initialized or replaced by this operation.
+        result = self._native(store, ['init'])
+        if result.get('ok') is not True or result.get('db_path') != str(pool / 'library.db'):
+            raise OnboardingError('native_hmk_wrong_binding_or_counts')
 
     def _database(self, store: str):
         path = self.received / "memory" / store / "library.db"
@@ -368,7 +400,7 @@ os.execv({sys.executable!r}, [{sys.executable!r}, "-B", str(script), *sys.argv[2
         # Native output contains private material and stays inside this process.
         try:
             result = subprocess.run([sys.executable, "-B", str(self.state / ("hmk-" + store + ".py")),
-                                     "memoryctl.py", *args], capture_output=True, timeout=120, check=False)
+                                     "memoryctl.py", *args], capture_output=True, timeout=120, check=False, umask=0o077)
             value = json.loads(result.stdout)
         except (OSError, ValueError, subprocess.TimeoutExpired):
             raise OnboardingError("native_hmk_verification_failed") from None

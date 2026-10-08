@@ -1,8 +1,8 @@
 """Owner witnesses and independent, read-only hosted acceptance evidence.
 
-This collection does not finish a job. Human reports remain witnesses; native
-metadata proves only the checks it actually observes. Missing technical adapters
-stay visible until they supply their own observed evidence.
+Human reports remain witnesses; native metadata proves only observed checks.
+Completion requires both the full owner witness and every native technical
+proof. Missing evidence stays visible and never activates a body.
 """
 
 from __future__ import annotations
@@ -447,7 +447,33 @@ def _report(request: dict, reader, root: Path) -> dict | None:
     return validate_report(request, value)
 
 
-def read(state: Path, request: dict) -> dict:
+def acceptance_facts(request, witness):
+    """Neither an owner report nor native readiness alone completes acceptance."""
+    from .onboarding import ACCEPTANCE
+    if witness is None:
+        return None
+    validate_report(request, witness)
+    if (any(value != 'passed' for value in witness['checks'].values())
+            or any(request['technical'].get(key) is not True for key in TECHNICAL)):
+        return None
+    facts = {'verified': True, **dict.fromkeys(ACCEPTANCE, True)}
+    if request['browser']:
+        facts['browser_verified'] = True
+    return facts
+
+
+def accepted_progress(progress, request, worker_uid):
+    """Only the Root worker's committed complete job projects activation."""
+    try:
+        value = Progress(progress, worker_uid=worker_uid).read(request['name'], owner=request['owner'])
+    except FileNotFoundError:
+        return False
+    if value['plan_digest'] != request['plan_digest']:
+        raise OnboardingError('existing_hosted_checks_preserved')
+    return value['active'] is True
+
+
+def read(state: Path, request: dict, *, progress=None, worker_uid=0) -> dict:
     request = validate(request)
     witness = _report(request, being_seed._read, _directory(state, request))
     # Historical baseline is worker evidence, not participant-facing content.
@@ -456,7 +482,8 @@ def read(state: Path, request: dict) -> dict:
     } | {
         "checks": _checks(request),
         "report": witness,
-        "hosted_acceptance": False,
+        "hosted_acceptance": bool(progress is not None and acceptance_facts(request, witness) is not None
+            and accepted_progress(progress, request, worker_uid)),
         "response_path": "/v1/seeds/" + request["name"] + "/onboarding/checks",
         "evidence_scope": "Native metadata is independently collected. Owner results are witnesses; a report does not activate the body.",
         "instructions": [
@@ -572,6 +599,118 @@ class SSHLogins(Progress):
                 or value['verified'] is not True or type(value['authenticated_at_ms']) is not int
                 or value['authenticated_at_ms'] < 0):
             raise OnboardingError('invalid_ssh_login_evidence')
+        return value
+
+
+def matrix_delivery_result(response, send_id):
+    """Native intake receipts prove transport, never a conscious agent read."""
+    import hashlib
+    import json
+    import uuid
+
+    if not isinstance(response, dict):
+        return {'verified': False}
+    value = response.get('result')
+    if (response.get('ok') is not True or response.get('error') is not None
+            or not isinstance(value, dict) or value.get('send_id') != send_id
+            or value.get('phase') != 'message' or value.get('transport_status') != 'recipient-intake'
+            or value.get('ambiguous') is not False or value.get('retryable') is not False
+            or not isinstance(value.get('stages'), list) or len(value['stages']) != 2):
+        return {'verified': False}
+    for stage, phase in zip(value['stages'], ('evidence', 'message'), strict=True):
+        if not isinstance(stage, dict) or stage.get('phase') != phase or stage.get('transport_status') != 'recipient-intake':
+            return {'verified': False}
+        try:
+            if str(uuid.UUID(stage['attempt_id'])) != stage['attempt_id']:
+                return {'verified': False}
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return {'verified': False}
+    return {'verified': True, 'agent_read': False,
+        'native_receipt_sha256': hashlib.sha256(json.dumps(response, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}
+
+
+def matrix_delivery_probe(payload, parameters, recipient, send=False):
+    """Use the receiving body's issued native helper; custody stays in daemon.
+
+    The finite technical test is attributed to its human-directed operator.
+    It does not load a runtime, read an inbox, or request an autonomous reply.
+    """
+    import asyncio
+    import json
+    from pathlib import Path
+    from daimon_matrix.agent_chat import bridge, load_binding, call
+    from daimon_matrix.client import ClientConfig
+    from daimon_matrix.messaging_config import protected_read
+
+    root = Path(payload['home']) / payload['state_relative']
+    chat = payload['chat']
+    attachment = Path(chat['attachment'])
+    binding = load_binding(attachment / 'binding.json')
+    assert binding == dict(schema='dm.agent-chat.binding/v1', socket=chat['socket'],
+        client_config=str(Path(chat['application']) / 'client.json'),
+        client_key=str(Path(chat['application']) / 'client.key'),
+        request_dir=str(attachment / 'requests'), incoming_channels=['peer-in'], outgoing_channels=['peer-out'])
+    native = ClientConfig.load(root / 'runtime/client.json', protected_read(root / 'runtime/client.key', size=32))
+    client = bridge(binding).client
+    assert client.config.expected_server == native.expected_server and client.config.runtime_id == native.runtime_id
+    assert all(native.expected_server[k] == v for k, v in payload['origin'].items())
+    application = json.loads(protected_read(Path(chat['application']) / 'application.json'))
+    assert application['outgoing']['recipient_being_ref'] == recipient
+    assert application['incoming']['recipient_being_ref'] == payload['being_ref']
+    assert parameters['channel_id'] == 'peer-out'
+    query = dict(channel_id='peer-out', send_id=parameters['send_id'])
+    observed = asyncio.run(call(binding, 'messaging_delivery', query, timeout=45))
+    result = matrix_delivery_result(observed, parameters['send_id'])
+    if not result['verified'] and send:
+        # Exact persisted arguments and native request journal own retry safety.
+        # A lost send ACK is reconciled by delivery on the next invocation.
+        asyncio.run(call(binding, 'messaging_send', parameters, timeout=45))
+        observed = asyncio.run(call(binding, 'messaging_delivery', query, timeout=45))
+        result = matrix_delivery_result(observed, parameters['send_id'])
+    return result
+
+
+class MatrixIntents(Progress):
+    suffix = '.matrix-intent.json'
+
+    @staticmethod
+    def validate(value):
+        fields = {'schema', 'name', 'owner', 'plan_digest', 'sender_being_ref', 'recipient_being_ref', 'parameters'}
+        if (not isinstance(value, dict) or set(value) != fields or value['schema'] != 'cluster-hosted-matrix-intent/v1'
+                or any(not isinstance(value[k], str) or not being_seed.NAME.fullmatch(value[k]) for k in ('name', 'owner'))
+                or not isinstance(value['plan_digest'], str) or not re.fullmatch('[0-9a-f]{64}', value['plan_digest'])
+                or any(not isinstance(value[k], str) or not re.fullmatch(r'dm:being:v1:[A-Za-z0-9_-]{43}', value[k])
+                       for k in ('sender_being_ref', 'recipient_being_ref'))):
+            raise OnboardingError('invalid_matrix_delivery_evidence')
+        params = value['parameters']
+        if (not isinstance(params, dict) or set(params) != {'channel_id', 'send_id', 'thread_id', 'text'}
+                or params['channel_id'] != 'peer-out' or not isinstance(params['text'], str) or not 1 <= len(params['text']) <= 4096):
+            raise OnboardingError('invalid_matrix_delivery_evidence')
+        for key in ('send_id', 'thread_id'):
+            try:
+                if str(uuid.UUID(params[key])) != params[key]:
+                    raise ValueError
+            except (ValueError, TypeError, AttributeError):
+                raise OnboardingError('invalid_matrix_delivery_evidence') from None
+        return value
+
+
+class MatrixDeliveries(Progress):
+    suffix = '.matrix-delivery.json'
+
+    @staticmethod
+    def validate(value):
+        if (not isinstance(value, dict) or set(value) != {'schema', 'name', 'owner', 'plan_digest', 'intent', 'probe'}
+                or value['schema'] != 'cluster-hosted-matrix-delivery/v1'):
+            raise OnboardingError('invalid_matrix_delivery_evidence')
+        intent = MatrixIntents.validate(value['intent'])
+        if any(value[k] != intent[k] for k in ('name', 'owner', 'plan_digest')):
+            raise OnboardingError('invalid_matrix_delivery_evidence')
+        probe = value['probe']
+        if (not isinstance(probe, dict) or set(probe) != {'verified', 'agent_read', 'native_receipt_sha256'}
+                or probe['verified'] is not True or probe['agent_read'] is not False
+                or not isinstance(probe['native_receipt_sha256'], str) or not re.fullmatch('[0-9a-f]{64}', probe['native_receipt_sha256'])):
+            raise OnboardingError('invalid_matrix_delivery_evidence')
         return value
 
 
@@ -956,6 +1095,119 @@ class HostedChecks:
     def __init__(self, backend):
         self.backend = backend
 
+    def _matrix_context(self, plan):
+        from .onboarding_managed import ManagedRuntime
+        from .onboarding_owner_client import OwnerClient
+        from .onboarding_peer_host import PeerHost
+        expected = ManagedRuntime(self.backend)._expected(plan)
+        payload = OwnerClient(self.backend)._payload(plan, expected, install=False)
+        if 'chat' not in payload or self.backend._target_call(plan, 'sdk-observe').get('ready') is not True:
+            raise OnboardingError('backend_unavailable')
+        return payload, PeerHost(self.backend).settings['source_being_ref']
+
+    def prepare_matrix_intent(self, plan, parameters=None):
+        """Freeze an approved technical send, or adopt its exact existing intent."""
+        payload, recipient = self._matrix_context(plan)
+        intents = MatrixIntents(self.backend.config.progress, worker_uid=os.geteuid())
+        try:
+            existing = intents.read(plan['name'], owner=plan['owner'])
+        except FileNotFoundError:
+            existing = None
+        if parameters is None and existing is not None:
+            parameters = existing['parameters']
+        if parameters is None:
+            parameters = dict(channel_id='peer-out',
+                send_id=str(uuid.uuid5(uuid.NAMESPACE_URL, 'cluster-hosted-matrix-intent/v1:send:' + digest(plan))),
+                thread_id=str(uuid.uuid5(uuid.NAMESPACE_URL, 'cluster-hosted-matrix-intent/v1:thread:' + digest(plan))),
+                text='Technical Matrix delivery verification requested by Nicolas, operated by Source on this hosted body. '
+                    'This checks native transport; no automatic agent reply is requested.')
+        value = MatrixIntents.validate(dict(schema='cluster-hosted-matrix-intent/v1', name=plan['name'],
+            owner=plan['owner'], plan_digest=digest(plan), sender_being_ref=payload['being_ref'],
+            recipient_being_ref=recipient, parameters=parameters))
+        if existing is not None:
+            if existing != value:
+                raise OnboardingError('existing_hosted_checks_preserved')
+        else:
+            intents.publish(value)
+        return value, payload
+
+    def _matrix_probe(self, plan, intent, payload, *, send=False):
+        program = ('import json,sys;\n' + inspect.getsource(matrix_delivery_result) + '\n'
+            + inspect.getsource(matrix_delivery_probe)
+            + '\np=json.loads(sys.argv[1]);print(json.dumps(matrix_delivery_probe(p["payload"],'
+            + 'p["parameters"],p["recipient"],p["send"])))')
+        request = dict(payload=payload, parameters=intent['parameters'], recipient=intent['recipient_being_ref'], send=send)
+        result = json.loads(self.backend._dispatch(plan, ['exec', self.backend.instance(plan),
+            '--user', '1000', '--group', '1000', '--env', 'HOME=/home/agent', '--',
+            payload['python'], '-B', '-I', '-c', program, json.dumps(request)]))
+        if result == {'verified': False}:
+            return False
+        receipt = MatrixDeliveries.validate(dict(schema='cluster-hosted-matrix-delivery/v1',
+            name=plan['name'], owner=plan['owner'], plan_digest=digest(plan), intent=intent, probe=result))
+        MatrixDeliveries(self.backend.config.progress, worker_uid=os.geteuid()).publish(receipt)
+        return True
+
+    def adopt_matrix_delivery(self, plan, path):
+        """Import a worker-owned historical native receipt, never owner input.
+
+        A completed delivery is historical evidence. Reinspection can require a
+        renewed transport carrier; importing an already authenticated Root
+        record preserves the observed effect without another transmission.
+        """
+        intent, payload = self.prepare_matrix_intent(plan)
+        path = Path(path)
+        record = json.loads(regular(path, uid=os.geteuid(), limit=65536))
+        if (path.stat().st_mode & 0o037
+                or not isinstance(record, dict)
+                or set(record) != {'schema', 'plan_digest', 'commit', 'send_id', 'thread_id', 'delivered', 'agent_read', 'response'}
+                or record['schema'] != 'cluster-owner-requested-message-verification-result/v1'
+                or record['plan_digest'] != digest(plan) or record['delivered'] is not True or record['agent_read'] is not False
+                or not isinstance(record['commit'], str) or not re.fullmatch('[0-9a-f]{40}', record['commit'])
+                or any(record[key] != intent['parameters'][key] for key in ('send_id', 'thread_id'))):
+            raise OnboardingError('invalid_matrix_delivery_evidence')
+        response = record['response']
+        if (not isinstance(response, dict) or response.get('schema') != 'dm.local.response/v1'
+                or not isinstance(response.get('server'), dict)
+                or any(response['server'].get(key) != value for key, value in payload['origin'].items())):
+            raise OnboardingError('invalid_matrix_delivery_evidence')
+        probe = matrix_delivery_result(response, intent['parameters']['send_id'])
+        receipt = MatrixDeliveries.validate(dict(schema='cluster-hosted-matrix-delivery/v1',
+            name=plan['name'], owner=plan['owner'], plan_digest=digest(plan), intent=intent, probe=probe))
+        try:
+            previous = MatrixDeliveries(self.backend.config.progress, worker_uid=os.geteuid()).read(plan['name'], owner=plan['owner'])
+        except FileNotFoundError:
+            previous = None
+        if previous is not None:
+            if previous != receipt:
+                raise OnboardingError('existing_hosted_checks_preserved')
+        else:
+            MatrixDeliveries(self.backend.config.progress, worker_uid=os.geteuid()).publish(receipt)
+
+    def matrix_delivery_observe(self, plan):
+        proofs = MatrixDeliveries(self.backend.config.progress, worker_uid=os.geteuid())
+        try:
+            proof = proofs.read(plan['name'], owner=plan['owner'])
+        except FileNotFoundError:
+            proof = None
+        try:
+            intent = MatrixIntents(self.backend.config.progress, worker_uid=os.geteuid()).read(plan['name'], owner=plan['owner'])
+        except FileNotFoundError:
+            if proof is not None:
+                raise OnboardingError('existing_hosted_checks_preserved')
+            return Observation('absent', safe_to_execute=True)
+        current, payload = self.prepare_matrix_intent(plan)
+        if current != intent or proof is not None and proof['intent'] != intent:
+            raise OnboardingError('existing_hosted_checks_preserved')
+        if proof is not None or self._matrix_probe(plan, intent, payload):
+            return Observation('complete', {'verified': True, 'matrix_delivery_verified': True})
+        return Observation('absent', safe_to_execute=True)
+
+    def verify_matrix_delivery(self, plan):
+        if self.matrix_delivery_observe(plan).state == 'complete':
+            return
+        intent, payload = self.prepare_matrix_intent(plan)
+        self._matrix_probe(plan, intent, payload, send=True)
+
     def _memory_stores(self, plan):
         config = self.backend.config
         if config.inputs is None:
@@ -1192,6 +1444,8 @@ class HostedChecks:
             cli_proof = None
         if cli_proof is not None:
             technical['cli_resume_verified'] = self.cli_resume_observe(plan).state == 'complete'
+        if getattr(config, 'peer', None) is not None:
+            technical['matrix_delivery_verified'] = self.matrix_delivery_observe(plan).state == 'complete'
         if previous and previous["technical"]["restart_verified"]:
             # Historical continuation evidence survives later normal restarts.
             technical["restart_verified"] = True
@@ -1212,9 +1466,9 @@ class HostedChecks:
         witness = worker_report(
             config.consent_state, value, intake_uid=config.consent_uid
         )
-        # Native Matrix delivery still requires its own observed witness.
-        # All-passed witnesses cannot
-        # promote this collection to a complete hosted acceptance.
+        facts = acceptance_facts(value, witness)
+        if facts is not None:
+            return Observation('complete', facts)
         reason = (
             "human_contact_required"
             if witness is None

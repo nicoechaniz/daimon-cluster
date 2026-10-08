@@ -309,7 +309,9 @@ def seed_hosted_checks(deps, ctx, seed, _body=None, _submit=False, **params):
         request = Requests(
             deps.onboarding_progress, worker_uid=deps.onboarding_worker_uid
         ).read(seed, owner=_owner(ctx))
-        value = submit(state, request, _body) if _submit else read(state, request)
+        if _submit:
+            submit(state, request, _body)
+        value = read(state, request, progress=deps.onboarding_progress, worker_uid=deps.onboarding_worker_uid)
         return handlers.Response(200, {"request": value})
     except FileNotFoundError:
         return (

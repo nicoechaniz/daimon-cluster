@@ -157,7 +157,8 @@ publication. No holder package or unlock enters that mount. The prepared V7
 phase remains waiting until V8 migration and canonical physical admission.
 
 The maintained SDK successor is
-`196ec7219f954cf4e514a1f61ae72eb3451d851e`. The previous `52945123` artifact
+`ca1570aae24cadd2b9fee42bee65be5a4c06e664`. The previous `196ec7219f954cf4e514a1f61ae72eb3451d851e`
+remains a supported predecessor for explicitly qualified SDK succession. The previous `52945123` artifact
 is retained as V7 evidence, not used as a V8 implementation. Installation must
 verify the exact VCS commit: reinstalling a different source with the same
 package version requires explicit replacement of the development dependency.
@@ -603,3 +604,13 @@ New local-body reports are independently signature-checked before acceptance.
 A different Root produces `existing_identity_conflict` and preserves both
 authorities for reconciliation. Local reports and a ready peer application do
 not establish hosted conversational acceptance.
+
+An explicitly selected `cluster-onboarding-runtime-successor/v2` artifact pins
+the immutable original release plus both predecessor and replacement SDK digests.
+Only maintained runtime modules and the qualified SDK wheelhouse may change;
+Source inheritance, skills, HMK tools, provider and Telegram artifacts retain
+their original bytes. The host observes dependency readiness before Matrix
+observation and installs a missing SDK generation through an authorized,
+resumable `sdk-prepare` effect. Each generation has its own content-addressed
+venv. The previous environment, seed, plan, identity custody and receiving
+writes remain intact. SDK observation neither loads a Body nor reads an inbox.

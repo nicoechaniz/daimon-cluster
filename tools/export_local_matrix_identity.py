@@ -16,7 +16,7 @@ import time
 import types
 from pathlib import Path
 
-PEER_SHA256 = 'fa57e4e31645fc61177c2be2ed9ee66e226a7e9bbb709dd6d9f0180c856b0c02'
+PEER_SHA256 = 'e5360670b1e7a17194472bfd1a84ae68e60b90d591bf4e91b06771eff1dd97b6'
 
 
 def export(runtime_root: Path, password_file: Path, output: Path, *,

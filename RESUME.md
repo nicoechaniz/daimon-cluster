@@ -5,13 +5,15 @@ Last reconciled: 2026-10-07.
 ## Onboarding SDK successor
 
 The onboarding candidate advances the executable Matrix pin to
-`196ec7219f954cf4e514a1f61ae72eb3451d851e`. The earlier `52945123` pin below
-remains historical qualification evidence: it provides distributed V7 birth,
-but has no V2 credential constructor or V8 runtime schema. The successor keeps
-the exact installed-commit guard, accepts only V7/V8 hosted bundles and applies
-the same secret-bearing snapshot exclusions to both. Current candidate checks
-and receiving qualifications are recorded in the owning onboarding PR; they
-do not establish live cohort enrollment, custody consent or a fleet cutover.
+`ca1570aae24cadd2b9fee42bee65be5a4c06e664`. The deployed onboarding services
+still use their qualified previous release while this successor is reviewed.
+The previous `196ec721` remains the immutable receiving context's SDK; explicit
+runtime successor V2 pins original and replacement SDK digests and installs
+another content-addressed dependency generation without replacing the old one.
+The earlier `52945123` evidence remains historical V7 qualification. The exact
+installed-commit guard, original seed/plan, custody and receiving writes remain
+preserved. Candidate checks and actual deployment belong to the owning PR;
+a prepared SDK or successful CI does not establish live cohort acceptance.
 
 This repository is not deployed from the candidate described here. No existing
 host, service, access path, real custody or production state is part of the

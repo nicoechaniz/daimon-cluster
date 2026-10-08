@@ -333,6 +333,8 @@ class HostBackend:
                 mounts["onboarding-matrix-public"] = self._matrix_mount(plan)
                 if not self._mounted(plan, mounts):
                     return Observation("absent", safe_to_execute=True)
+                if self._sdk_successor() and not self._target_call(plan, 'sdk-observe')['ready']:
+                    return Observation('absent', safe_to_execute=True)
                 target = self._matrix_command(plan, "observe")
                 if target["phase"] in {"absent", "prepared", "v7", "v8-published", "peer-published"}:
                     return Observation("absent", safe_to_execute=True)
@@ -713,6 +715,10 @@ class HostBackend:
         if current is None:
             self._dispatch(plan, ["config", "device", "add", self.instance(plan), "onboarding-matrix-public", "disk",
                                   *[key + "=" + value for key, value in mount.items() if key != "type"]])
+        if self._sdk_successor():
+            # Dependency installation has its own resumable effect. It reads no
+            # receiving custody and retains the previous content-addressed SDK.
+            self._target_call(plan, 'sdk-prepare')
         # Lifecycle recovery may already have a live daemon. Its verified V8
         # publication is immutable; never reenter credential writer operations
         # merely because a later service/registry acknowledgement was lost.
@@ -726,6 +732,11 @@ class HostBackend:
         response = ceremony.authorize_credential(plan, proposed["request"])
         onboarding_mounts.prepare_matrix_public(self.config.views, plan, {"credential-response.json": response})
         self._matrix_command(plan, "credential-apply")
+
+    def _sdk_successor(self) -> bool:
+        return (self.config.runtime_code is not None and json.loads(onboarding_release.regular(
+            self.config.runtime_code / onboarding_code_successor.MARKER, uid=os.geteuid()))['schema']
+            == onboarding_code_successor.SDK_SCHEMA)
 
     def _dispatch(self, plan: dict, argv: list[str]) -> str:
         # A revoked plan stops before the next concrete effect, including

@@ -19,7 +19,8 @@ from . import being_seed, onboarding_release
 from .onboarding import OnboardingError, digest, private_directory
 
 SCHEMA = "cluster-onboarding-sdk/v1"
-MATRIX_COMMIT = "196ec7219f954cf4e514a1f61ae72eb3451d851e"
+MATRIX_COMMIT = "ca1570aae24cadd2b9fee42bee65be5a4c06e664"
+PREVIOUS_MATRIX_COMMIT = "196ec7219f954cf4e514a1f61ae72eb3451d851e"
 
 
 def wheel(path: Path, *, uid: int) -> dict:
@@ -51,11 +52,12 @@ def requirement_lines(rows: list[dict]) -> bytes:
                    for row in rows).encode()
 
 
-def verify(code: Path, *, uid: int) -> dict:
+def verify(code: Path, *, uid: int, matrix_commit: str = MATRIX_COMMIT) -> dict:
     root = code / "sdk"
     value = json.loads(onboarding_release.regular(root / "sdk.json", uid=uid))
     if (not isinstance(value, dict) or set(value) != {"schema", "matrix_commit", "wheels"}
-            or value["schema"] != SCHEMA or value["matrix_commit"] != MATRIX_COMMIT
+            or matrix_commit not in {MATRIX_COMMIT, PREVIOUS_MATRIX_COMMIT}
+            or value["schema"] != SCHEMA or value["matrix_commit"] != matrix_commit
             or not isinstance(value["wheels"], list) or not 1 <= len(value["wheels"]) <= 100):
         raise OnboardingError("invalid_onboarding_sdk")
     found = [wheel(path, uid=uid) for path in sorted((root / "wheels").iterdir())]
@@ -102,21 +104,23 @@ def installed(venv: Path, code: Path, value: dict, *, code_uid: int) -> None:
     _run([str(venv / "bin/python"), "-I", "-m", "pip", "check"])
 
 
-def observe(home: Path, code: Path, *, code_uid: int = 0) -> Path:
-    value = verify(code, uid=code_uid)
+def observe(home: Path, code: Path, *, code_uid: int = 0,
+            matrix_commit: str = MATRIX_COMMIT) -> Path:
+    value = verify(code, uid=code_uid, matrix_commit=matrix_commit)
     root = home / ".local/share/daimon-matrix/sdk" / digest(value)
     private_directory(root)
     expected = dict(schema="cluster-onboarding-sdk-installation/v1", sdk_digest=digest(value),
-                    matrix_commit=MATRIX_COMMIT, wheel_count=len(value["wheels"]))
+                    matrix_commit=value['matrix_commit'], wheel_count=len(value["wheels"]))
     if being_seed._read(root / "installation.json") != expected:
         raise OnboardingError("installed_onboarding_sdk_changed")
     installed(root / "venv", code, value, code_uid=code_uid)
     return root / "venv"
 
 
-def install(home: Path, code: Path, release_digest: str, *, code_uid: int = 0) -> Path:
+def install(home: Path, code: Path, release_digest: str, *, code_uid: int = 0,
+            matrix_commit: str = MATRIX_COMMIT) -> Path:
     onboarding_release.verify(code, release_digest, uid=code_uid)
-    value = verify(code, uid=code_uid)
+    value = verify(code, uid=code_uid, matrix_commit=matrix_commit)
     private_directory(home)
     parent = home / ".local/share/daimon-matrix/sdk"
     current = home
@@ -129,7 +133,7 @@ def install(home: Path, code: Path, release_digest: str, *, code_uid: int = 0) -
     venv = root / "venv"
     with being_seed._locked(root):
         expected = dict(schema="cluster-onboarding-sdk-installation/v1", sdk_digest=digest(value),
-                        matrix_commit=MATRIX_COMMIT, wheel_count=len(value["wheels"]))
+                        matrix_commit=value['matrix_commit'], wheel_count=len(value["wheels"]))
         if receipt.exists():
             if being_seed._read(receipt) != expected:
                 raise OnboardingError("installed_onboarding_sdk_changed")

@@ -33,6 +33,7 @@ MAX_UPLOAD = 2 * 1024**3
 MAX_RECORD = 65536
 MAX_SELECTION = 2 * 1024**2
 MAX_PREPARATION = 16 * 1024**2
+PREPARATION_TIMEOUT = 3600
 MAX_SEEDS = 200
 MAX_OWNER_SEEDS = 8
 SCHEMA = "cluster-being-seed/v1"
@@ -461,13 +462,27 @@ def prepare(state_dir: str | Path, name: str, selection: dict | None, *, owner: 
                     or record["mode"] == "import" and report.get("selection") != selection):
                 raise SeedError("seed_preparation_preserves_existing_attempt", 409)
             return _complete_preparation(directory, record, report)
-        if record["phase"] != "uploaded":
+        interrupted = (record["mode"] == "import"
+            and record["phase"] in {"preparing", "attention-required"}
+            and record.get("preparation_fingerprint") == fingerprint
+            and record.get("preparation_queued") is True)
+        if interrupted:
+            # No readiness marker was published: this context has never been
+            # installed. Preserve every partial byte before a bounded retry.
+            if int(record.get("preparation_attempts", 1)) >= 3:
+                raise SeedError("seed_preparation_retry_limit", 409)
+            partial = directory / "received"
+            if partial.exists():
+                _path(partial)
+                os.rename(partial, directory / ("uncompleted-receiving-" + uuid.uuid4().hex))
+        elif record["phase"] != "uploaded":
             raise SeedError("seed_preparation_preserves_existing_attempt", 409)
         if record["mode"] == "import" and not isinstance(selection, dict):
             raise SeedError("explicit_receiving_selection_required")
         if record["mode"] == "new" and selection is not None:
             raise SeedError("new_seed_has_no_historical_selection")
-        record.update(phase="preparing", preparation_fingerprint=fingerprint)
+        record.update(phase="preparing", preparation_fingerprint=fingerprint,
+            preparation_attempts=int(record.get("preparation_attempts", 1 if interrupted else 0)) + 1)
         _write(directory / "record.json", record)
         try:
             if record["mode"] == "new":
@@ -496,7 +511,8 @@ def prepare(state_dir: str | Path, name: str, selection: dict | None, *, owner: 
             tool("receive_being", ["prepare", "--archive", str(directory / "source.archive"),
                                   "--sha256", record["archive_sha256"],
                                   "--selection", str(directory / "selection.json"),
-                                  "--output", str(directory / "received"), *protected_args])
+                                  "--output", str(directory / "received"), *protected_args],
+                 timeout=PREPARATION_TIMEOUT)
             report = _read(directory / "received/preparation.json", limit=MAX_PREPARATION)
             return _complete_preparation(directory, record, report)
         except (SeedError, OSError, ValueError, KeyError, TypeError):

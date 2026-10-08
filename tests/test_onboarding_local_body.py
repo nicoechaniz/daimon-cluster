@@ -50,6 +50,11 @@ def test_private_requests_before_intake_reuse_supplied_inputs_and_preserve_repor
             telegram_chat_id=123, ssh_public_key='ssh-ed25519 ' + 'a' * 44), owner='sai')
         received = http(endpoint + '/eko', owner='sai')[2]['received']
         assert received['ssh_key_received'] and received['telegram_data_received']
+        record = state / 'being-seeds/eko/record.json'
+        being_seed._write(record, {**being_seed._read(record), 'preparation_queued': True})
+        waiting = http(endpoint + '/eko', owner='sai')[2]
+        assert 'receiving_selection_and_preparation' not in waiting['pending_inputs']
+        assert waiting['host_tasks'] == ['context_preparation']
         data = report(task)
         code, _, value = http(endpoint + '/eko', 'POST', data, owner='sai')
         assert code == 200 and value['report']['identity_verified'] is False

@@ -6,6 +6,20 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_participant_continuation_keeps_native_signing_receiving_and_owner_boundaries(tmp_path):
+    from tools.ci_scope import CONTINUATION_FILES
+    changed = sorted(CONTINUATION_FILES)
+    profile, tests = select(changed, ROOT)
+    assert profile == 'portal'
+    assert {'tests/test_onboarding_continuation.py', 'tests/test_onboarding_existing.py',
+        'tests/test_onboarding_intake.py', 'tests/test_being_seed.py',
+        'tests/test_auth.py', 'tests/test_clusterd.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for shared in ('requirements-weave.txt', 'clusterctl/onboarding_enrollment_root.py',
+                   'clusterctl/onboarding_custody.py'):
+        assert select(changed + [shared], ROOT) == ('full', ['tests'])
+
+
 def test_existing_root_enrollment_keeps_native_authority_custody_and_admission(tmp_path):
     from tools.ci_scope import ENROLLMENT_FILES
     changed = sorted(ENROLLMENT_FILES)

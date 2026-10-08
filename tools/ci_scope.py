@@ -60,6 +60,11 @@ PORTAL_TESTS = ('tests/test_onboarding_local_body.py', 'tests/test_being_seed.py
     'tests/test_clusterd.py', 'tests/test_auth.py', 'tests/test_human_approvals.py',
     'tests/test_onboarding_consent.py', 'tests/test_onboarding_actions.py',
     'tests/test_onboarding_ingress.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
+CONTINUATION_FILES = PORTAL_FILES | UPLOAD_FILES | {
+    'tools/continue_seed_onboarding.py', 'tests/test_onboarding_continuation.py',
+    'tests/test_onboarding_existing.py'}
+CONTINUATION_TESTS = tuple(sorted(set(PORTAL_TESTS) | set(UPLOAD_TESTS) | {
+    'tests/test_onboarding_continuation.py', 'tests/test_onboarding_existing.py'}))
 EXPORT_FILES = {'clusterctl/being_seed.py', 'clusterd/seed_ui.py',
     'support/being-seed-tools/PROVENANCE.json', 'support/being-seed-tools/tools/export_being.py',
     'tests/test_being_seed.py'}
@@ -143,6 +148,13 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'tools/continue_seed_onboarding.py', 'tests/test_onboarding_continuation.py'}
+            and set(changed) <= CONTINUATION_FILES | CI_FILES
+            and all((root / path).is_file() for path in CONTINUATION_TESTS)):
+        # The finite participant client keeps actual native two-phase signing,
+        # private owner HTTP isolation, archive receiving and worker retries.
+        # It changes no SDK, authority primitive or container recovery path.
+        return 'portal', list(CONTINUATION_TESTS)
     if (set(changed) & {'clusterctl/onboarding_telegram.py', 'tests/test_onboarding_telegram.py'}
             and set(changed) <= TELEGRAM_FILES | CI_FILES
             and all((root / path).is_file() for path in TELEGRAM_TESTS)):

@@ -91,7 +91,8 @@ class Intake:
                 or record.get('created_by') != entry['owner']):
             raise OnboardingError('onboarding_job_not_found')
         resume_marker = (record.get('phase') in {'preparing', 'attention-required'}
-            and (directory / 'received/preparation.json').exists())
+            and (record.get('preparation_queued') is True
+                or (directory / 'received/preparation.json').exists()))
         if ((record.get('phase') == 'uploaded' or resume_marker)
                 and (directory / 'preparation-request.json').exists()):
             # Root never decrypts or installs participant context as the intake
@@ -109,7 +110,7 @@ class Intake:
             try:
                 result = subprocess.run([sys.executable, '-B', '-I', '-c', launcher,
                     str(Path(__file__).resolve().parents[1]), str(config.consent_state),
-                    name, entry['owner']], capture_output=True, timeout=660, **permissions)
+                    name, entry['owner']], capture_output=True, timeout=being_seed.PREPARATION_TIMEOUT + 60, **permissions)
             except subprocess.TimeoutExpired:
                 raise OnboardingError('onboarding_host_operation_failed') from None
             if result.returncode:

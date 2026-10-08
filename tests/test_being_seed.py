@@ -219,6 +219,49 @@ def test_queued_preparation_reconciles_marker_after_metadata_crash(tmp_path, pac
         assert db.execute('SELECT COUNT(*) FROM chapters').fetchone()[0] == 2
 
 
+def test_queued_preparation_retries_unpublished_context_without_discarding_partial_bytes(tmp_path, packet, monkeypatch):
+    state = tmp_path / 'state'
+    selection = imported(state, packet)
+    seeds.queue_prepare(state, 'fixture', selection, owner='ani')
+    directory = state / 'being-seeds/fixture'
+    original = seeds.tool
+    def interrupted(name, arguments, **options):
+        if name == 'receive_being' and arguments[0] == 'prepare':
+            assert options['timeout'] == seeds.PREPARATION_TIMEOUT
+            partial = directory / 'received'
+            partial.mkdir(mode=0o700)
+            (partial / 'preserved-evidence').write_bytes(b'partial original bytes')
+            raise seeds.SeedError('seed_tool_incomplete', 409)
+        return original(name, arguments, **options)
+    with monkeypatch.context() as change:
+        change.setattr(seeds, 'tool', interrupted)
+        with pytest.raises(seeds.SeedError, match='requires_attention'):
+            seeds.process_preparation(state, 'fixture', owner='ani')
+    result = seeds.process_preparation(state, 'fixture', owner='ani')
+    assert result['phase'] == 'prepared'
+    assert [p.read_bytes() for p in directory.glob('uncompleted-receiving-*/preserved-evidence')] == [b'partial original bytes']
+    assert (directory / 'received/preparation.json').exists()
+    assert seeds._read(directory / 'record.json')['preparation_attempts'] == 2
+
+
+def test_interrupted_preparation_keeps_foreign_selection_and_caps_retries(tmp_path, packet, monkeypatch):
+    state = tmp_path / 'state'
+    selection = imported(state, packet)
+    seeds.queue_prepare(state, 'fixture', selection, owner='ani')
+    directory = state / 'being-seeds/fixture'
+    record = seeds._read(directory / 'record.json')
+    seeds._write(directory / 'record.json', {**record, 'phase': 'preparing',
+        'preparation_fingerprint': seeds._fingerprint({'selection': selection}), 'preparation_attempts': 3})
+    (directory / 'received').mkdir(mode=0o700)
+    evidence = directory / 'received/keep'
+    evidence.write_bytes(b'unchanged')
+    with pytest.raises(seeds.SeedError, match='preserves_existing_attempt'):
+        seeds.prepare(state, 'fixture', {**selection, 'skills': []}, owner='ani')
+    with pytest.raises(seeds.SeedError, match='retry_limit'):
+        seeds.process_preparation(state, 'fixture', owner='ani')
+    assert evidence.read_bytes() == b'unchanged'
+
+
 def test_new_seed_queued_preparation_keeps_generated_archive_on_retry(tmp_path):
     seeds.create(tmp_path, {'name': 'new-friend', 'label': 'New Friend', 'mode': 'new',
         'soul': 'I am a new companion for this family.'}, owner='family', key=KEY)

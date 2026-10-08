@@ -118,6 +118,12 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         # A host-only owner command retains native socket authentication,
         # admission, immutable SDK/context and first-welcome boundaries.
         return 'peer', sorted(set(OWNER_CLIENT_TESTS))
+    if ('clusterctl/being_seed.py' in changed
+            and set(changed) <= {'clusterctl/being_seed.py', 'clusterd/seed_ui.py', 'tests/test_being_seed.py'} | CI_FILES
+            and all((root / path).is_file() for path in TRANSFER_TESTS)):
+        # Intake/UI-only changes keep archive crypto, HTTP owners, context and
+        # worker retry coverage without rebuilding unchanged recovery hosts.
+        return 'portal', list(TRANSFER_TESTS)
     if ('support/being-seed-tools/tools/export_being.py' in changed
             and set(changed) <= EXPORT_FILES | CI_FILES
             and all((root / path).is_file() for path in EXPORT_TESTS)):

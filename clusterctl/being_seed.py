@@ -29,7 +29,7 @@ TOOL_HASHES = {
 }
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,30}\Z")
 LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}\Z")
-MAX_UPLOAD = 512 * 1024**2
+MAX_UPLOAD = 2 * 1024**3
 MAX_RECORD = 65536
 MAX_SEEDS = 200
 MAX_OWNER_SEEDS = 8

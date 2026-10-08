@@ -126,6 +126,71 @@ def test_native_cli_admission_lock_prevents_turn_start_and_releases_without_row_
         connection.commit()
 
 
+def test_native_listener_requires_its_own_fresh_lease_and_preserves_sqlite(tmp_path):
+    from datetime import datetime, timezone
+
+    database = tmp_path / '.local/state/daimon-onboarding/telegram/telegram.sqlite3'
+    database.parent.mkdir(parents=True)
+    instance = str(uuid.uuid4())
+    now = time.time()
+    values = [instance, now, now - 100]
+    restart = False
+    status_calls = []
+
+    def store():
+        with closing(sqlite3.connect(database)) as db:
+            db.execute('DELETE FROM app_instance_lock')
+            db.execute('INSERT INTO app_instance_lock VALUES(?,?,?,?)',
+                ('main', values[0], *(datetime.fromtimestamp(x, timezone.utc).isoformat() for x in values[1:])))
+            db.commit()
+
+    with closing(sqlite3.connect(database)) as db:
+        db.execute('CREATE TABLE app_instance_lock(key TEXT,instance_id TEXT,heartbeat_at TEXT,acquired_at TEXT)')
+        db.commit()
+    store()
+
+    # Keep systemd's process start value fixed across the two status reads.
+    start = int((time.monotonic() - 5) * 1000000)
+    def fixed_runner(argv, **kwargs):
+        if argv[0] == 'systemctl':
+            assert argv[2] == 'daimon-onboarding-telegram.service'
+            status_calls.append(argv)
+            return SimpleNamespace(stdout=f'ActiveState=active\nMainPID={os.getpid()}\n'
+                f'ExecMainStartTimestampMonotonic={start + (1000000 if restart and len(status_calls)>1 else 0)}\n')
+        assert 'app_instance_lock' in argv[4] and kwargs['user'] == os.geteuid()
+        return subprocess.run(argv, **kwargs)
+
+    assert checks.telegram_listener_snapshot(tmp_path, os.geteuid(), fixed_runner) == {'ready': False}
+    values[2] = now - 1
+    store()
+    before = database.read_bytes()
+    status_calls.clear()
+    assert checks.telegram_listener_snapshot(tmp_path, os.geteuid(), fixed_runner) == {'ready': True}
+    assert database.read_bytes() == before
+    restart = True
+    status_calls.clear()
+    assert checks.telegram_listener_snapshot(tmp_path, os.geteuid(), fixed_runner) == {'ready': False}
+    restart = False
+    values[1:] = [now - 60, now - 61]
+    store()
+    assert checks.telegram_listener_snapshot(tmp_path, os.geteuid(), fixed_runner) == {'ready': False}
+
+
+def test_listener_startup_wait_preserves_live_service_and_has_a_finite_bound(monkeypatch):
+    current = [0]
+    snapshots = [{'ready': False}, {'ready': False}, {'ready': True}]
+    monkeypatch.setattr(checks, 'telegram_listener_snapshot', lambda *args: snapshots.pop(0))
+    def sleep(seconds):
+        current[0] += seconds
+    assert checks.wait_telegram_listener('fixture-home', 1000, sleeper=sleep,
+        elapsed=lambda:current[0], timeout=10) is True
+    assert current[0] == 4
+    monkeypatch.setattr(checks, 'telegram_listener_snapshot', lambda *args: {'ready': False})
+    assert checks.wait_telegram_listener('fixture-home', 1000, sleeper=sleep,
+        elapsed=lambda:current[0], timeout=3) is False
+    assert current[0] == 7
+
+
 def cli_fixture(tmp_path):
     home = tmp_path / 'home'
     history = home / '.codex/sessions/selected.jsonl'
@@ -144,11 +209,16 @@ def cli_fixture(tmp_path):
     thread = str(uuid.uuid4())
     options = {'idle': [True, True, True], 'output': 'complete', 'lost_ack': False, 'changed_history': False, 'changed_unit': False}
     calls = []
+    started = int((time.monotonic() - 5) * 1000000)
 
     def runner(argv, **kwargs):
         calls.append(argv)
         if argv[0] == 'systemctl':
             action = argv[1]
+            if action == 'show':
+                assert argv[2] == 'daimon-onboarding-telegram.service'
+                return SimpleNamespace(stdout=f'ActiveState=active\nMainPID={os.getpid()}\n'
+                    f'ExecMainStartTimestampMonotonic={started}\n')
             for name in argv[2:]:
                 assert name in states
                 if action in {'start', 'stop'}:
@@ -158,6 +228,9 @@ def cli_fixture(tmp_path):
             return SimpleNamespace(returncode=0, stdout='active\n')
         if argv[0] == sys.executable:
             compile(argv[4], '<captured-owner-metadata>', 'exec')
+            if 'app_instance_lock' in argv[4]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({'instance': str(uuid.uuid4()),
+                    'heartbeat': time.time(), 'acquired': time.time()-1}))
             return SimpleNamespace(returncode=0, stdout=json.dumps({'idle': options['idle'].pop(0), 'rollout': str(history)}))
         assert argv[0] == str(executable)
         assert argv[-2:] == [thread, '-'] and '--ephemeral' in argv and 'resume' in argv
@@ -199,6 +272,19 @@ def test_cli_resume_keeps_original_history_restores_services_and_recovers_comple
     assert probe() == proof and all(states.values())
     assert history.read_bytes() == original + b'new receiving work\n'
     assert [p.read_bytes() for p in (tmp_path / 'journal').glob('original-history-*')] == [original]
+
+
+def test_cli_resume_keeps_completed_provider_proof_while_listener_readiness_is_pending(tmp_path, monkeypatch):
+    probe, history, states, options, calls = cli_fixture(tmp_path)
+    wait = checks.wait_telegram_listener
+    monkeypatch.setattr(checks, 'wait_telegram_listener', lambda *args:False)
+    with pytest.raises(ValueError, match='telegram_listener_not_ready'):
+        probe()
+    assert all(states.values()) and (tmp_path / 'journal/proof.json').exists()
+    assert history.read_bytes() == b'original selected conversation\n'
+    monkeypatch.setattr(checks, 'wait_telegram_listener', wait)
+    assert probe()['verified'] is True
+    assert len([call for call in calls if call[0] == str(tmp_path / 'codex')]) == 1
 
 
 @pytest.mark.parametrize('race', [False, True])

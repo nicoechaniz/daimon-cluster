@@ -129,8 +129,10 @@ def read(state: Path, request: dict) -> dict:
         'instructions': [
             'Continue your existing local Codex installation and this workspace; do not reinstall or re-export received context.',
             'Keep the already selected shared account and recorded human approvals.',
-            'If a signed Matrix identity exists, export only its public signed identity with the provided existing-body exporter, which calls maintained native chat-link public_identity.',
+            'Reuse the public signed identity already verified in your local report; the enrollment endpoint returns it as source_identity. Do not repeat its export. Only missing identities need the existing-body public exporter.',
+            'For an owner messaging application, pass its existing directory as --messaging-application together with its --visibility-installation. The signed owner installation binds the application, not the bare runtime.',
             'Use its existing authority. A Hermes identity proves that being, but does not prove a local Codex embodiment exists.',
+            'An existing Hermes being can receive a hosted Codex body without first enrolling another local Codex body. Preserve local checks separately from hosted acceptance.',
             'Respect the local daemon writer lock. Keep Matrix custody, private keys, passwords and provider credentials local. Send only the hosted body dedicated bot token through the authenticated private connections endpoint, never in a diagnostic, public source packet or command argument.',
             'If no identity can be found, report not-found; do not create another Root to satisfy this check.',
             'If an exporter or local check is blocked, send its nonsecret reproducible JSON report through diagnostic_path. Do not repeat an archive already received. Preserve originals and credential-bearing history while the host resolves the blocker.',
@@ -139,10 +141,10 @@ def read(state: Path, request: dict) -> dict:
         'export_tools': {'exporter': '/v1/onboarding/local-body/tools/export_local_matrix_identity.py',
             'native_peer': '/v1/onboarding/local-body/tools/onboarding_peer_native.py',
             'native_peer_sha256': onboarding_peer.TOOL_SHA256,
-            'usage': 'Use the existing body Matrix Python. exporter --runtime-root LOCAL_ROOT --password-file LOCAL_PASSWORD --output PRIVATE_PUBLIC_JSON [--visibility-installation EXISTING_INSTALLATION]. Keep local paths and custody local; restore an owner-controlled daemon after any finite offline export.'}}
+            'usage': 'Use the qualified Matrix Python for the existing body. exporter --runtime-root LOCAL_ROOT --password-file LOCAL_PASSWORD --output PRIVATE_PUBLIC_JSON [--visibility-installation EXISTING_INSTALLATION [--messaging-application EXISTING_APPLICATION]]. Keep local paths and custody local; restore an owner-controlled daemon after any finite offline export.'}}
 
 
-def submit(state: Path, request: dict, value: object, *, code: Path | None = None, code_uid: int = 0) -> dict:
+def submit(state: Path, request: dict, value: object, *, code: Path | None = None, code_uid: int | None = None) -> dict:
     request = validate(request)
     if (not isinstance(value, dict) or set(value) != {'schema', 'request_id', 'checked_at_ms',
             'checks', 'matrix_state', 'matrix_identity'} or value['schema'] != REPORT
@@ -157,7 +159,8 @@ def submit(state: Path, request: dict, value: object, *, code: Path | None = Non
     if len(json.dumps(value).encode()) > being_seed.MAX_RECORD:
         raise being_seed.SeedError('local_body_report_too_large')
     if value['matrix_identity'] is not None:
-        tool = onboarding_peer.native(code or Path(__file__).resolve().parents[1], uid=code_uid)
+        tool = onboarding_peer.native(code or Path(__file__).resolve().parents[1],
+            uid=Path(__file__).stat().st_uid if code_uid is None else code_uid)
         try:
             authority = tool.verify_identity(value['matrix_identity'])
             expected = request['expected_being_ref']
@@ -272,7 +275,8 @@ def worker_identity(state: Path, request: dict, *, intake_uid: int) -> dict | No
         raise OnboardingError('invalid_local_body_report')
     identity = report.get('matrix_identity')
     if identity is not None:
-        authority = onboarding_peer.native(Path(__file__).resolve().parents[1]).verify_identity(identity)
+        authority = onboarding_peer.native(Path(__file__).resolve().parents[1],
+            uid=Path(__file__).stat().st_uid).verify_identity(identity)
         if request['expected_being_ref'] is not None and authority.state.being_ref != request['expected_being_ref']:
             raise OnboardingError('existing_local_body_identity_preserved')
     return identity

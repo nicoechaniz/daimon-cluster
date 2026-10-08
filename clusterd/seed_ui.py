@@ -255,7 +255,7 @@ def agent_guide() -> dict:
                                 "browser": "optional boolean", "soul": "required initial SOUL only for new"}},
             "upload": {"method": "POST", "path": "/v1/seeds/{name}/archive", "body": "raw ZIP/TGZ or recipient-bound .dm-protected bytes",
                        "required_headers": {"Content-Length": "archive byte size", "X-Archive-SHA256": "64 lowercase hex characters"},
-                       "recommended_total_timeout_seconds": 1800},
+                       "recommended_total_timeout_seconds": 14400},
             "selection": {"method": "GET", "path": "/v1/seeds/{name}/selection", "result": "private verified candidates"},
             "prepare": {"method": "POST", "path": "/v1/seeds/{name}/prepare", "body": {"selection": "reviewed selection object; null for new"}},
             "connections": {"method": "POST", "path": "/v1/seeds/{name}/connections",
@@ -266,7 +266,7 @@ def agent_guide() -> dict:
         "retry_rules": ["Reuse the same creation UUID and exact specification.",
                         "If uploaded, discover the existing archive instead of uploading again.",
                         "An exact preparation retry preserves later receiving memory writes.",
-                        "If upload_retryable is true, resend the same archive/checksum with a 30-minute total timeout; earlier partial bytes stay preserved.",
+                        "If upload_retryable is true, resend the same archive/checksum with a four-hour total timeout; earlier partial bytes stay preserved.",
                         "Published archives and preparation attempts are never overwritten."],
         "api": api,
     }
@@ -405,7 +405,7 @@ Never restart a source bot or upload an archive merely to adopt this update.
 3. `POST /v1/seeds/eko/archive`: raw archive bytes, its exact `Content-Length`,
    `Content-Type: application/octet-stream` and `X-Archive-SHA256`.
    The limit is 2 GiB compressed and 5 GiB expanded; chunked upload is refused.
-   Allow a 30-minute total client timeout for large packages.
+   Allow a four-hour total client timeout for large packages.
 4. `GET /v1/seeds/eko/selection`. Review the returned identity SOUL, memory stores
    and historical skills against the human-authorized source selection. Preserve
    the returned schema and being label. Set `memory_coverage` to `owner-selected`
@@ -460,7 +460,7 @@ uploaded, discover that preserved archive instead of uploading again. Exact
 preparation retries return the preserved result and retain later receiving
 writes. If a request times out, read progress first. When `upload_retryable` is
 true, resend the same archive and checksum using the existing access and a
-30-minute total client timeout. Earlier partial bytes and connection data stay
+four-hour total client timeout. Earlier partial bytes and connection data stay
 preserved. Other attention-required states still need host review.
 
 ## Structured requests

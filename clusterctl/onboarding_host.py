@@ -289,6 +289,19 @@ class HostBackend:
         if stage == 'welcome' and self.config.code and self.config.consent_state:
             from .onboarding_welcome import Welcome
             return Welcome(self).observe(plan)
+        if stage == 'acceptance' and self.config.admission is not None:
+            from .onboarding_managed import ManagedRuntime
+            from .onboarding_owner_client import OwnerClient
+            managed = ManagedRuntime(self)
+            current = managed.observe(plan)
+            if current.state != 'complete':
+                return current
+            client = OwnerClient(self).observe(plan, managed._expected(plan))
+            if client.state != 'complete':
+                return client
+            # An authenticated owner command is a prerequisite, not human
+            # conversation, Telegram continuity or Matrix delivery acceptance.
+            return Observation('waiting', reason='human_contact_required')
         if stage in {"context", "matrix"} and not self._consented(plan, stage=stage):
             return Observation("waiting", reason="identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
@@ -362,6 +375,14 @@ class HostBackend:
         if stage == 'welcome' and self.config.code and self.config.consent_state:
             from .onboarding_welcome import Welcome
             Welcome(self).execute(plan)
+            return
+        if stage == 'acceptance' and self.config.admission is not None:
+            from .onboarding_managed import ManagedRuntime
+            from .onboarding_owner_client import OwnerClient
+            managed = ManagedRuntime(self)
+            if managed.observe(plan).state != 'complete':
+                managed.execute(plan)
+            OwnerClient(self).execute(plan, managed._expected(plan))
             return
         if stage in {"context", "matrix"} and not self._consented(plan, stage=stage):
             raise OnboardingError("identity_authorization_required")

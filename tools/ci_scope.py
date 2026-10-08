@@ -68,6 +68,11 @@ PEER_TOOL_FILES = {'clusterctl/onboarding_peer.py', 'clusterctl/onboarding_peer_
     'tests/test_onboarding_source.py', 'docs/design/onboarding-jobs.md'}
 PEER_TOOL_TESTS = (*PEER_TESTS, 'tests/test_onboarding_peer.py',
     'tests/test_onboarding_local_body.py', 'tests/test_onboarding_code_successor.py')
+OWNER_CLIENT_FILES = {'clusterctl/onboarding_owner_client.py', 'clusterctl/onboarding_host.py',
+                      'tests/test_onboarding_owner_client.py', 'tools/check_rc_types.py'}
+OWNER_CLIENT_TESTS = (*WELCOME_TESTS, *PEER_TESTS, 'tests/test_onboarding_owner_client.py',
+                      'tests/test_onboarding_target.py', 'tests/test_onboarding_runtime.py',
+                      'tests/test_onboarding_sdk.py')
 
 
 def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
@@ -75,6 +80,12 @@ def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'clusterctl/onboarding_owner_client.py', 'tests/test_onboarding_owner_client.py'}
+            and set(changed) <= OWNER_CLIENT_FILES | CI_FILES
+            and all((root / path).is_file() for path in OWNER_CLIENT_TESTS)):
+        # A host-only owner command retains native socket authentication,
+        # admission, immutable SDK/context and first-welcome boundaries.
+        return 'peer', sorted(set(OWNER_CLIENT_TESTS))
     if ('support/being-seed-tools/tools/export_being.py' in changed
             and set(changed) <= EXPORT_FILES | CI_FILES
             and all((root / path).is_file() for path in EXPORT_TESTS)):

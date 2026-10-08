@@ -6,6 +6,19 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_welcome_keeps_owner_retry_and_telegram_contracts_without_dependency_rehearsals(tmp_path):
+    changed = ['clusterctl/onboarding_welcome.py', 'clusterctl/onboarding_host.py',
+               'tests/test_onboarding_welcome.py', 'tools/check_rc_types.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'welcome'
+    assert {'tests/test_onboarding.py', 'tests/test_onboarding_telegram.py',
+            'tests/test_onboarding_consent.py', 'tests/test_onboarding_host_ownership.py',
+            'tests/test_onboarding_guest.py', 'tests/test_onboarding_code_successor.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select(changed + ['clusterctl/onboarding_provider.py'], ROOT)[0] == 'onboarding'
+    assert select(changed + ['requirements-weave.txt'], ROOT) == ('full', ['tests'])
+
+
 def test_onboarding_keeps_all_journey_tests_and_existing_authority_contracts():
     profile, tests = select(['clusterctl/onboarding_accounts.py',
                             'tests/test_onboarding_shared_login.py'], ROOT)

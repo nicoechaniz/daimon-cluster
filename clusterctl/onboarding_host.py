@@ -286,6 +286,9 @@ class HostBackend:
             return Observation("waiting", reason="host_authorization_required")
         if stage == "environment":
             return self._environment(plan)
+        if stage == 'welcome' and self.config.code and self.config.consent_state:
+            from .onboarding_welcome import Welcome
+            return Welcome(self).observe(plan)
         if stage in {"context", "matrix"} and not self._consented(plan, stage=stage):
             return Observation("waiting", reason="identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
@@ -356,6 +359,10 @@ class HostBackend:
     def execute(self, plan: dict, stage: str, operation_id: str) -> None:
         if not self.authorize(plan, digest(plan)):
             raise OnboardingError("host_authorization_required")
+        if stage == 'welcome' and self.config.code and self.config.consent_state:
+            from .onboarding_welcome import Welcome
+            Welcome(self).execute(plan)
+            return
         if stage in {"context", "matrix"} and not self._consented(plan, stage=stage):
             raise OnboardingError("identity_authorization_required")
         if stage in {"context", "memory"} and self.config.code and self.config.inputs and self.config.views:
@@ -534,6 +541,21 @@ class HostBackend:
                 or not isinstance(value.get('enabled_skills'), list)
                 or not set(expected) <= set(value['enabled_skills'])):
             raise OnboardingError('native_telegram_probe_failed')
+
+    def _telegram_binding(self, plan: dict) -> dict:
+        """Observe the installed owner binding without returning private IDs."""
+        program = ('import json,hashlib,os,stat;from pathlib import Path;'
+                   'p=Path("/home/agent/.local/state/daimon-onboarding/telegram/binding.json");'
+                   's=p.lstat();assert stat.S_ISREG(s.st_mode) and s.st_uid==1000 and not s.st_mode&0o077;'
+                   'v=json.loads(p.read_bytes());'
+                   'd=hashlib.sha256(json.dumps({"human":v["human_id"]},sort_keys=True,separators=(",",":")).encode()).hexdigest();'
+                   'print(json.dumps(dict(plan_digest=v["plan_digest"],bot_id=v["bot_id"],'
+                   'destination_digest=d,token_sha256=v["token_sha256"])))')
+        value = json.loads(self._dispatch(plan, ['exec', self.instance(plan), '--',
+                           'python3', '-B', '-I', '-c', program]))
+        if not isinstance(value, dict):
+            raise OnboardingError('invalid_onboarding_observation')
+        return value
 
     def _decision(self, plan: dict) -> dict | None:
         if self.config.consent_uid is None or self.config.progress is None or self.config.code is None:

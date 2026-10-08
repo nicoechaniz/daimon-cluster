@@ -327,6 +327,8 @@ jobs:
           clusterctl/onboarding_telegram.py
           tests/test_onboarding_telegram.py
           clusterctl/onboarding_accounts.py
+          clusterctl/onboarding_welcome.py
+          tests/test_onboarding_welcome.py
           clusterctl/onboarding_actions.py
           tests/test_onboarding_provider.py
           tests/test_onboarding_actions.py

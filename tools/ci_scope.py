@@ -201,11 +201,23 @@ SDK_TESTS = tuple(sorted(set(ONBOARDING_CONTRACTS) | {
     'tests/test_onboarding_credential.py'}))
 
 
+RECEIVING_RUNTIME_FILES = {'clusterctl/onboarding_peer.py', 'clusterctl/onboarding_runtime.py',
+    'tests/test_onboarding_peer.py', 'tests/test_onboarding_runtime.py'}
+
+
 def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
     if not changed:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'clusterctl/onboarding_peer.py', 'clusterctl/onboarding_runtime.py'}
+            and set(changed) <= RECEIVING_RUNTIME_FILES | CI_FILES
+            and all((root / path).is_file() for path in SDK_TESTS)):
+        # This receiving adapter change keeps the complete existing native SDK,
+        # admission, custody, current-authority and code-successor qualification.
+        # It changes no archive/export, Incus mounts or physical recovery code.
+        # Those changes, dependencies and authority primitives keep broader CI.
+        return 'peer', list(SDK_TESTS)
     if ({'requirements-weave.txt', 'clusterctl/onboarding_sdk.py',
          'clusterctl/matrix_host.py'} <= set(changed)
             and set(changed) <= SDK_FILES | CI_FILES

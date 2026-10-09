@@ -244,7 +244,7 @@ class OwnerClient:
             )
             raw = onboarding_release.regular(installer, uid=0)
             expected_sha = (
-                "033aa63716b292c333e237fd055ba0743a539823917889fcf19ee9be99243465"
+                "96e04442a343c59fd5036e6092ac1200f2afda52f33e86f72e438d616225446f"
             )
             if hashlib.sha256(raw).hexdigest() != expected_sha:
                 raise OnboardingError("qualified_native_peer_tool_required")

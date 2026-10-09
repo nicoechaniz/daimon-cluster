@@ -15,7 +15,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MATRIX_COMMIT = "ca1570aae24cadd2b9fee42bee65be5a4c06e664"
+MATRIX_COMMIT = "bcc11e9f3d62b779a88f46196478f09798ce5ab1"
 pytestmark = pytest.mark.skipif(
     os.environ.get("DAIMON_RUN_DOCKER_RECOVERY_TESTS") != "1"
     or not os.environ.get("DAIMON_MATRIX_SOURCE"),

@@ -25,9 +25,12 @@ from .onboarding_service import publish
 PREVIOUS_COMMIT = '5af79bdf0716dadf92ae982bfbeafdf2eb21f6a9'
 PREVIOUS_ARCHIVE = '6ab8a38ec08274eeb036c40632ffbeb6dc8b5d14d385d7d5de4a8428a3fcd9b5'
 PREVIOUS_BINARY = 'e29bff3da0682e4c8f37ae75c9a724f5c0f3be6238063f14d86eb1123fd2e620'
-COMMIT = 'ee5f8837ab51da99034fcd4285b0c7916c96651f'
-ARCHIVE = 'f586c9ace3fd91aaded87859e1d37c5a8dd71749777c8264a2cdcf0f76ece06b'
-BINARY = 'deb7aa777e75f7b8865f8a2060f7cd0d138aa5ce1fe1da0feee470530bbdafcc'
+RETAINED_COMMIT = 'ee5f8837ab51da99034fcd4285b0c7916c96651f'
+RETAINED_ARCHIVE = 'f586c9ace3fd91aaded87859e1d37c5a8dd71749777c8264a2cdcf0f76ece06b'
+RETAINED_BINARY = 'deb7aa777e75f7b8865f8a2060f7cd0d138aa5ce1fe1da0feee470530bbdafcc'
+COMMIT = 'abd85a90eaf204e45bf479daae24d645cdf18762'
+ARCHIVE = '27450b3c7256d203287d6918d3822f85b9844a0d9a0659be7cb03318253e5296'
+BINARY = '1330014e7b34806b400d1046ef24c26ea5a588970f47142e58a39bb0c06127b5'
 SCHEMA = 'cluster-onboarding-telegram/v1'
 UNIT = 'daimon-onboarding-telegram.service'
 NATIVE_UNIT = 'daimon-onboarding-codex.service'
@@ -47,7 +50,8 @@ def artifact_directory(directory: Path, *, uid: int) -> dict:
         value['rust_toolchain'] = value.pop('rust')
     common = dict(rust_toolchain='1.95.0', features='--no-default-features')
     qualified = [dict(commit=c, archive_sha256=a, binary_sha256=b, **common) for c, a, b in (
-        (PREVIOUS_COMMIT, PREVIOUS_ARCHIVE, PREVIOUS_BINARY), (COMMIT, ARCHIVE, BINARY))]
+        (PREVIOUS_COMMIT, PREVIOUS_ARCHIVE, PREVIOUS_BINARY),
+        (RETAINED_COMMIT, RETAINED_ARCHIVE, RETAINED_BINARY), (COMMIT, ARCHIVE, BINARY))]
     binary = directory / 'telecodex'
     if (value not in qualified or binary.stat().st_mode & 0o111 != 0o111
             or hashlib.sha256(onboarding_release.regular(binary, uid=uid)).hexdigest() != value['binary_sha256']):

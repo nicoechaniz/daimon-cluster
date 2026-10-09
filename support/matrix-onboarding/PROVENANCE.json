@@ -1,6 +1,6 @@
 {
   "commit": "63968130294c4db6eac51a94800a837f2c10bad5",
-  "installed_sdk_commit": "71dddc9a581b6da52e7d31992fa09b8529af0f4e",
+  "installed_sdk_commit": "7f7c772f14ffbbdf601321c8e4da2cff009e6d17",
   "path": "tools/chat_link.py",
   "purpose": "Exact maintained native peer ceremony; captured unchanged, never a fork.",
   "repository": "https://github.com/AlterMundi/daimon-matrix",

@@ -6,6 +6,23 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_receiving_presentation_and_readiness_keep_native_admission_without_archive_jobs(tmp_path):
+    from tools.ci_scope import RECEIVING_RUNTIME_FILES, SDK_TESTS
+    changed = sorted(RECEIVING_RUNTIME_FILES | {'tools/ci_scope.py', 'tests/test_ci_scope.py',
+        '.github/workflows/tests.yml'})
+    assert select(changed, ROOT) == ('peer', list(SDK_TESTS))
+    assert {'tests/test_onboarding_peer.py', 'tests/test_onboarding_runtime.py',
+        'tests/test_onboarding_target.py', 'tests/test_onboarding_custody.py',
+        'tests/test_onboarding_admission.py', 'tests/test_admission.py',
+        'tests/test_onboarding_source.py', 'tests/test_onboarding_code_successor.py',
+        'tests/test_onboarding_sdk.py', 'tests/test_production_fences.py'} <= set(SDK_TESTS)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for path in ('requirements-weave.txt', 'clusterctl/production_fences.py',
+                 'tools/export_local_matrix_identity.py', 'clusterctl/onboarding_mounts.py',
+                 'clusterctl/onboarding_custody.py', 'unknown.py'):
+        assert select([*changed, path], ROOT)[0] != 'peer'
+
+
 def test_exact_sdk_successor_keeps_native_authority_and_receiving_generations(tmp_path):
     from tools.ci_scope import SDK_FILES, SDK_TESTS
     changed = sorted(SDK_FILES)

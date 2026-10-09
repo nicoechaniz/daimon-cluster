@@ -208,15 +208,33 @@ def augmented(target, original: dict, bundle: dict) -> tuple[dict, bool]:
         tool.verify_document(identities[1], document, installed['binding'])
         disclosure = tool.disclosures(plan)[1]
         beings = [authority.state.being_ref for authority in authorities]
-        acceptance = dict(schema='dm.messaging.visibility-acceptance-set/v1',
-            disclosure_sha256=digest(disclosure), bindings=[payload['visibility_bindings'][beings.index(being)][1]
-                for being in sorted(beings)])
+        # The preserved ceremony pins audience and scope, while every participant
+        # may sign a maintained presentation successor for that same disclosure.
+        # Requiring its original bytes would prevent an admitted body restarting
+        # after the SDK's two-party presentation update.
+        from daimon_matrix.telegram_mirror import REPRESENTATIONS
+        current = document['disclosure']
+        expected_disclosure = copy.deepcopy(disclosure)
+        expected_disclosure['destination']['representation'] = current['destination']['representation']
+        expected_disclosure['issued_at_ms'] = current['issued_at_ms']
+        acceptance = document['acceptance_set']
+        bindings = acceptance['bindings']
         if (document['runtime_id'] != original['runtime_id'] or document['application_sha256'] != digest(app)
-                or document['disclosure'] != disclosure or document['acceptance_set'] != acceptance
+                or current != expected_disclosure
+                or current['destination']['representation'] not in REPRESENTATIONS
+                or type(current['issued_at_ms']) is not int
+                or not disclosure['issued_at_ms'] <= current['issued_at_ms'] <= tool.now()
+                or not isinstance(bindings, list) or len(bindings) != len(beings)
+                or acceptance != dict(schema='dm.messaging.visibility-acceptance-set/v1',
+                    disclosure_sha256=digest(current), bindings=bindings)
                 or document['telegram_qualification'] != payload['telegram_qualification']
-                or any(document['policy'][key] != value for key, value in plan['destination'].items())
+                or any(document['policy'][key] != current['destination'][key] for key in plan['destination'])
                 or document['policy']['acceptance_digest'] != digest(acceptance)):
             raise OnboardingError('native_onboarding_peer_plan_conflict')
+        for being, binding in zip(sorted(beings), bindings, strict=True):
+            if binding['body']['being_ref'] != being:
+                raise OnboardingError('native_onboarding_peer_plan_conflict')
+            tool.verify_document(identities[beings.index(being)], current, binding)
         for actor in (0, 1):
             tool.verify_document(identities[actor], disclosure, payload['visibility_bindings'][actor][1])
         secrets = document['secrets']

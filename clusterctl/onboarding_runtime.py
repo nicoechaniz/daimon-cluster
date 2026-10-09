@@ -23,6 +23,9 @@ from .onboarding_admission import ReceivingHolder
 from .owner_process import ProcessPresence
 
 MAX_FRAME = 4096
+# Real receiving histories can take longer than five seconds to authenticate.
+# Readiness still requires the actual native READY pipe under current admission.
+READY_TIMEOUT_S = 60
 
 
 def serve(target, profile: dict, *, receive_only=False, visibility_installation=None, messaging_application=None, ready_descriptor=None):
@@ -149,6 +152,10 @@ class AdmittedDaemon:
                     "sys.argv[8]=='true',Path(sys.argv[9]) if sys.argv[9] else None,"
                     "Path(sys.argv[10]) if sys.argv[10] else None,int(sys.argv[11])))")
         def spawn():
+            environment = {'PATH':os.defpath, 'LANG':'C.UTF-8', 'HOME':str(self.target.home),
+                'LD_LIBRARY_PATH':str(Path(sys.base_prefix)/'lib')}
+            if 'DM_TRIBU_REFERENCE_DIRECTORY' in os.environ:
+                environment['DM_TRIBU_REFERENCE_DIRECTORY'] = os.environ['DM_TRIBU_REFERENCE_DIRECTORY']
             self.process = subprocess.Popen([sys.executable, '-B', '-I', '-c', launcher,
                 str(Path(__file__).resolve().parents[1]), str(self.target.home), json.dumps(self.target.plan),
                 json.dumps(self.target.genesis), str(child.fileno()), str(ready_write), str(os.getpid()),
@@ -156,8 +163,7 @@ class AdmittedDaemon:
                 str(messaging_application) if messaging_application else '', str(self.target.code_uid)],
                 pass_fds=(child.fileno(), ready_write), stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                env={'PATH':os.defpath, 'LANG':'C.UTF-8', 'HOME':str(self.target.home),
-                     'LD_LIBRARY_PATH':str(Path(sys.base_prefix)/'lib')})
+                env=environment)
             pid = self.process.pid
             try:
                 self.presence = ProcessPresence(dict(uid=os.geteuid(), pid=pid,
@@ -180,7 +186,7 @@ class AdmittedDaemon:
             self.thread.start()
             with selectors.DefaultSelector() as selector:
                 selector.register(ready_read, selectors.EVENT_READ)
-                if not selector.select(5) or os.read(ready_read, 16) != b'READY\n':
+                if not selector.select(READY_TIMEOUT_S) or os.read(ready_read, 16) != b'READY\n':
                     raise OnboardingError('onboarding_runtime_not_ready')
             if self.supervisor.verify_current(minimum_remaining_s=1) is None:
                 raise OnboardingError('onboarding_admission_not_current')

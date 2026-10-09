@@ -109,6 +109,70 @@ def test_peer_cannot_substitute_identity_or_unsigned_plan(journey):
         target.observe()
 
 
+def test_receiving_observes_two_party_presentation_successor_without_reenrollment(journey):
+    import copy
+    import json
+    from daimon_matrix.canonical import canonical_bytes
+    from daimon_matrix.keystore import _atomic_write
+    from daimon_matrix.messaging_config import create_binding
+    from daimon_matrix.operator_messaging import visibility_presentation
+
+    _, sources, public, packet, _ = journey
+    target = sources[1][1]
+    sender = public[0]['document']['authority']['manifest']['being_ref']
+    onboarding_peer.accept(target, packet, expected_being=sender)
+    previous_observation = target.observe()
+    root = target.package / 'runtime'
+    custody = (root / 'custody.json').read_bytes()
+    bundle = (root / 'runtime.json').read_bytes()
+    credential = files(target.credential)
+    directory = onboarding_peer.root(target)
+    application = files(directory / 'application')
+    visibility = directory / 'visibility/installation.json'
+    original = visibility.read_bytes()
+    owner = onboarding_peer.loaded(target)
+    peer = onboarding_peer.loaded(sources[0][1])
+    proposal = visibility_presentation(owner, directory / 'application', visibility,
+        command='visibility-propose', representation='compact-text/v1')
+    proposal['bindings'].append(create_binding(peer, proposal['disclosure']))
+    visibility_presentation(owner, directory / 'application', visibility,
+        command='visibility-apply', proposal=proposal)
+    selected = visibility.read_bytes()
+    assert target.observe() == previous_observation
+    assert selected != original
+    assert (root / 'custody.json').read_bytes() == custody
+    assert (root / 'runtime.json').read_bytes() == bundle
+    assert files(target.credential) == credential
+    assert files(directory / 'application') == application
+
+    def publish(value):
+        value['policy']['acceptance_digest'] = digest(value['acceptance_set'])
+        _atomic_write(visibility, canonical_bytes(dict(document=value, binding=create_binding(owner, value))))
+
+    document = json.loads(selected)['document']
+    missing = copy.deepcopy(document)
+    missing['acceptance_set']['bindings'].pop()
+    publish(missing)
+    with pytest.raises(OnboardingError, match='native_onboarding_peer_plan_conflict'):
+        target.observe()
+    # Even signatures by both participants cannot widen the original audience.
+    widened = copy.deepcopy(document)
+    widened['disclosure']['destination']['chat_id'] -= 1
+    widened['policy']['chat_id'] -= 1
+    widened['acceptance_set']['disclosure_sha256'] = digest(widened['disclosure'])
+    widened['acceptance_set']['bindings'] = sorted(
+        [create_binding(actor, widened['disclosure']) for actor in (owner, peer)],
+        key=lambda binding: binding['body']['being_ref'])
+    publish(widened)
+    with pytest.raises(OnboardingError, match='native_onboarding_peer_plan_conflict'):
+        target.observe()
+    _atomic_write(visibility, selected)
+    assert target.observe() == previous_observation
+    # The preserved original remains a valid rollback selection.
+    _atomic_write(visibility, original)
+    assert target.observe() == previous_observation
+
+
 def test_lost_ack_after_bundle_publication_resumes_native_signed_proposal(journey, monkeypatch):
     tool, sources, public, packet, _ = journey
     target = sources[1][1]
@@ -162,12 +226,27 @@ def test_service_carries_application_selection_and_refuses_receive_only(tmp_path
         command(code, receive_only=True, messaging_application=app)
 
 
-def test_actual_admitted_body_keeps_native_and_peer_capabilities_through_restart(journey, tmp_path):
+def test_actual_admitted_body_keeps_native_and_peer_capabilities_through_restart(journey, tmp_path, monkeypatch):
     from daimon_matrix.client import ClientConfig, ClientError, LocalClient
     from clusterctl.admission import AdmissionAuthority, AdmissionEndpoint, AdmissionTCPServer, serve_in_thread
     from clusterctl.onboarding_admission import ReceivingHolder, enrollment
     from clusterctl.onboarding_runtime import AdmittedDaemon
     from tests.test_admission import _key
+    import subprocess
+
+    references = tmp_path / 'reply-references'
+    references.mkdir(mode=0o700)
+    monkeypatch.setenv('DM_TRIBU_REFERENCE_DIRECTORY', str(references))
+    real_popen = subprocess.Popen
+    slow_first_child = [True]
+    def delayed_child(argv, *args, **kwargs):
+        if slow_first_child and any('child_main' in item for item in argv):
+            slow_first_child.pop()
+            argv = list(argv)
+            index = argv.index('-c') + 1
+            argv[index] = 'import time;time.sleep(5.2);' + argv[index]
+        return real_popen(argv, *args, **kwargs)
+    monkeypatch.setattr(subprocess, 'Popen', delayed_child)
 
     _, sources, public, packet, _ = journey
     ceremony, target = sources[1]
@@ -197,6 +276,8 @@ def test_actual_admitted_body_keeps_native_and_peer_capabilities_through_restart
             admitted = AdmittedDaemon(target, client())
             try:
                 presence = admitted.start(visibility_installation=visibility, messaging_application=application)
+                environment = Path(f"/proc/{presence['process']['pid']}/environ").read_bytes().split(b'\0')
+                assert ('DM_TRIBU_REFERENCE_DIRECTORY=' + str(references)).encode() in environment
                 assert presence['origin'] == target.observe()['receipt']['origin']
                 native = LocalClient(root / 'matrix.sock', owner)
                 assert native.scope_me()[1]['result']['body']['state'] == 'running'

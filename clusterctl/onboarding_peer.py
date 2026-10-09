@@ -21,7 +21,7 @@ from .onboarding import OnboardingError, digest, private_directory
 
 TOOL_SHA256 = '35368bbadac08b45a804d58078ab9ce69f6cdcf5538bd41b1fa85de8fca39e54'
 TOOL_MODULE = 'onboarding_peer_native.py'
-TOOL_COMMIT = 'bcc11e9f3d62b779a88f46196478f09798ce5ab1'
+TOOL_COMMIT = 'e88fa82ead6f7c863c2fcbe5eb017bea9558b170'
 
 
 def native(code: Path, *, uid: int = 0):

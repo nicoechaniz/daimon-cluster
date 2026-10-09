@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/AlterMundi/daimon-matrix",
-  "commit": "bcc11e9f3d62b779a88f46196478f09798ce5ab1",
+  "commit": "e88fa82ead6f7c863c2fcbe5eb017bea9558b170",
   "path": "tools/install_agent_chat.py",
   "sha256": "96e04442a343c59fd5036e6092ac1200f2afda52f33e86f72e438d616225446f",
   "purpose": "Unchanged native messaging attachment installer; no identity or daemon creation."

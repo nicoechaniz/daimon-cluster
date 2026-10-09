@@ -6,6 +6,23 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_exact_sdk_successor_keeps_native_authority_and_receiving_generations(tmp_path):
+    from tools.ci_scope import SDK_FILES, SDK_TESTS
+    changed = sorted(SDK_FILES)
+    assert select(changed, ROOT) == ('sdk', list(SDK_TESTS))
+    assert {'tests/test_onboarding_sdk.py', 'tests/test_onboarding_code_successor.py',
+        'tests/test_onboarding_source.py', 'tests/test_onboarding_target.py',
+        'tests/test_onboarding_peer.py', 'tests/test_onboarding_custody.py',
+        'tests/test_onboarding_credential.py', 'tests/test_admission.py',
+        'tests/test_production_fences.py', 'tests/test_matrix_host.py',
+        'tests/test_clusterd.py'} <= set(SDK_TESTS)
+    assert 'tests/test_offline_qualifier.py' not in SDK_TESTS
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for boundary in ('constraints.txt', 'clusterctl/production_fences.py',
+                     'clusterctl/onboarding_target.py', 'requirements.txt'):
+        assert select(changed + [boundary], ROOT) == ('full', ['tests'])
+
+
 def test_input_cache_scope_keeps_drift_owner_context_and_worker_recovery():
     from tools.ci_scope import INPUT_CACHE_FILES, INPUT_CACHE_TESTS
     changed = sorted(INPUT_CACHE_FILES)

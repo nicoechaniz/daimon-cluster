@@ -19,9 +19,9 @@ from pathlib import Path
 from . import onboarding_release
 from .onboarding import OnboardingError, digest, private_directory
 
-TOOL_SHA256 = 'e6cca43b974c934ee6c86fdf43ff9dc0cac4b6bd6ef466386c8fc6cfb087ac4b'
+TOOL_SHA256 = '35368bbadac08b45a804d58078ab9ce69f6cdcf5538bd41b1fa85de8fca39e54'
 TOOL_MODULE = 'onboarding_peer_native.py'
-TOOL_COMMIT = '92671c4728ab8068b222aecff0f0c157fe94d32e'
+TOOL_COMMIT = 'e88fa82ead6f7c863c2fcbe5eb017bea9558b170'
 
 
 def native(code: Path, *, uid: int = 0):

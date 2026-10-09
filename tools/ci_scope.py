@@ -181,12 +181,40 @@ INPUT_CACHE_TESTS = ('tests/test_onboarding_input.py', 'tests/test_onboarding_ho
     'tests/test_onboarding_worker_install.py', 'tests/test_onboarding_intake.py',
     'tests/test_onboarding.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 
+SDK_FILES = {'requirements-weave.txt', 'clusterctl/onboarding_sdk.py',
+    'clusterctl/matrix_host.py', 'clusterctl/onboarding_peer.py',
+    'clusterctl/onboarding_peer_native.py', 'clusterctl/onboarding_owner_client.py',
+    'support/matrix-onboarding/PROVENANCE.json',
+    'support/matrix-agent-chat/install_agent_chat.py',
+    'support/matrix-agent-chat/PROVENANCE.json', 'tests/test_clusterd.py',
+    'tests/integration/test_recovery_rebirth_containers.py',
+    'docs/runbooks/tribu-sdk-successor.md'}
+SDK_TESTS = tuple(sorted(set(ONBOARDING_CONTRACTS) | {
+    'tests/test_onboarding_sdk.py', 'tests/test_onboarding_code_successor.py',
+    'tests/test_onboarding_peer.py', 'tests/test_onboarding_source.py',
+    'tests/test_onboarding_peer_host.py', 'tests/test_onboarding_managed.py',
+    'tests/test_onboarding_owner_client.py', 'tests/test_onboarding_target.py',
+    'tests/test_onboarding_runtime.py', 'tests/test_onboarding_service.py',
+    'tests/test_onboarding_host.py', 'tests/test_onboarding_guest.py',
+    'tests/test_onboarding_release.py', 'tests/test_onboarding_input.py',
+    'tests/test_onboarding_admission.py', 'tests/test_onboarding_custody.py',
+    'tests/test_onboarding_credential.py'}))
+
 
 def select(changed: list[str], root: Path) -> tuple[str, list[str]]:
     if not changed:
         return 'full', ['tests']
     if set(changed) <= CI_FILES:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if ({'requirements-weave.txt', 'clusterctl/onboarding_sdk.py',
+         'clusterctl/matrix_host.py'} <= set(changed)
+            and set(changed) <= SDK_FILES | CI_FILES
+            and all((root / path).is_file() for path in SDK_TESTS)):
+        # One exact Matrix successor, not a general dependency upgrade. Cover
+        # installed-byte integrity, native services, custody/authority, host
+        # contracts and retained receiving context. Physical recovery and the
+        # unrelated offline-release sandbox retain their own full profile.
+        return 'sdk', list(SDK_TESTS)
     if ('clusterctl/onboarding_input.py' in changed
             and set(changed) <= INPUT_CACHE_FILES | CI_FILES
             and all((root / path).is_file() for path in INPUT_CACHE_TESTS)):

@@ -19,7 +19,7 @@ from . import being_seed, onboarding_release
 from .onboarding import OnboardingError, digest, private_directory
 
 SCHEMA = "cluster-onboarding-sdk/v1"
-MATRIX_COMMIT = "7f7c772f14ffbbdf601321c8e4da2cff009e6d17"
+MATRIX_COMMIT = "5e863bc69fc40e15713bde2dc1e5bf17e47b9cb2"
 PREVIOUS_MATRIX_COMMIT = "196ec7219f954cf4e514a1f61ae72eb3451d851e"
 
 

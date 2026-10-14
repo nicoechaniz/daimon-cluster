@@ -231,6 +231,8 @@ class Application:
                     token=private_text(home["owner_token_file"]),
                 )
         self.locks = {ref: threading.RLock() for ref in self.homes}
+        from .root import HomeRoot
+        self.roots = HomeRoot(self)
         self.passkeys = None
         if passkey_rp_id:
             from .passkeys import Passkeys
@@ -311,6 +313,13 @@ class Application:
             if operation == 'style-recipe':
                 return self.designs.recipe_native(owner,payload)
             return self.designs.save_native(home, owner, payload)
+        if operation == 'home-root-status':
+            if payload:
+                raise ValueError('invalid_home_root_request')
+            return self.roots.read(home)
+        if operation == 'home-root-select':
+            with self.locks[home]:
+                return self.roots.select(home,owner,payload)
         if operation == "validate-audience":
             validate_audience(
                 payload,
@@ -495,7 +504,7 @@ def render(home, works, subject, vpn, *, signed_out=False, passkeys=False, key_r
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(home["name"])} · Home</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script>{script}</head><body><main><nav><span>DAIMON MATRIX</span>{auth}</nav>{notice}<p id="passkey-status" role="status" aria-live="polite"></p><header><svg viewBox="0 0 88 48" aria-hidden="true"><ellipse cx="44" cy="24" rx="41" ry="17"/><ellipse cx="44" cy="24" rx="22" ry="22"/><circle cx="44" cy="24" r="4"/></svg><small>{esc(scope)}</small><h1>{esc(home["name"])}</h1><p>A shared starting place for ideas, experiments and things we make.</p><a href="{esc(home["vpn_url"], quote=True)}">Dedicated VPN space ↗</a></header><section class="works">{cards or "<p>Room for what comes next. Selected work will appear here as it is shared.</p>"}</section><nav class="ring" aria-label="Tribe web-ring">{rings}</nav><footer>Only work selected for your current access is shown. This page does not indicate current daimon activity.</footer></main></body></html>'''.encode()
 
 
-def preview(app, home, reference, version, subject, vpn, *, origin, parent_token, display_mode="details"):
+def preview(app, home, reference, version, subject, vpn, *, origin, parent_token, display_mode="details", entrypoint=None, root_routes=None):
     if display_mode not in ("details", "work"):
         raise ValueError("invalid_display_mode")
     selected = app.selected(home, reference, version, subject, vpn)
@@ -518,8 +527,11 @@ def preview(app, home, reference, version, subject, vpn, *, origin, parent_token
         parent_token=parent_token,
     )
     prefix = content_origin + "/r/" + child + "/"
-    source = prefix + quote(selected["entrypoint"])
-    mime = mimetypes.guess_type(selected["entrypoint"])[0] or "application/octet-stream"
+    entrypoint = entrypoint or selected['entrypoint']
+    if entrypoint not in selected['files']:
+        raise ValueError('preview_entrypoint_denied')
+    source = prefix + quote(entrypoint)
+    mime = mimetypes.guess_type(entrypoint)[0] or "application/octet-stream"
     if mime.startswith("image/") and mime != "image/svg+xml":
         display = (
             '<img class="media" src="'
@@ -553,6 +565,10 @@ def preview(app, home, reference, version, subject, vpn, *, origin, parent_token
             media_files = [name for name in selected["files"] if re.fullmatch(r"media/[a-f0-9]{64}\.[a-z0-9]{1,8}", name)]
             download_root = "/works/" + reference + "/" + selected["version_ref"] + "/"
             display = display.replace('<iframe ', '<iframe data-download-root="' + esc(download_root, quote=True) + '" data-download-files="' + esc(json.dumps(media_files), quote=True) + '" ', 1)
+        if root_routes is not None:
+            auth, script = auth_controls(subject,vpn,bool(app.passkeys),'/',bool(app.sso))
+            display = display.replace('<iframe ', '<iframe data-root-routes="'+esc(json.dumps(root_routes),quote=True)+'" ',1)
+            return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected['title'])}</title><link rel="stylesheet" href="/home.css"><link rel="stylesheet" href="/home-root.css">{script}<script src="/work-view.js" defer></script><script src="/home-root.js" defer></script></head><body class="work-view home-root"><nav class="root-toolbar" aria-label="Home access"><a href="/home">Home catalog</a>{auth}<p id="passkey-status" role="status" aria-live="polite"></p></nav><aside id="root-external" hidden><a target="_blank" rel="noopener noreferrer">Open selected link ↗</a><button type="button">Close</button></aside>{display}</body></html>'''.encode()
         return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected["title"])} · {esc(app.homes[home]["name"])}</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script><script src="/work-view.js" defer></script></head><body class="work-view">{display}</body></html>'''.encode()
     versions = ['<li><a href="/view/' + reference + '">Current version</a></li>']
     for previous in reversed(current.get("versions", [])):
@@ -706,7 +722,13 @@ def handler(app, *, owner=False):
                     return self.content(content_origins[self.headers["Host"]])
                 home, origin, subject, vpn, cookies, parent_token = self.context()
                 path = urlsplit(self.path).path
-                if path == "/":
+                root_entry=app.roots.entry(home,path,subject,vpn)
+                if root_entry:
+                    root,entrypoint=root_entry
+                    self.respond(200,preview(app,home,root['resource'],root['version'],subject,vpn,
+                        origin=origin,parent_token=parent_token,display_mode='work',entrypoint=entrypoint,root_routes=root['routes']),
+                        'text/html; charset=utf-8')
+                elif path in ('/', '/home'):
                     self.respond(
                         200,
                         render(
@@ -727,8 +749,10 @@ def handler(app, *, owner=False):
                         ),
                         "text/html; charset=utf-8",
                     )
-                elif path in ("/home-style.js", "/artifact-style.js", "/home-miniapp-login.js"):
+                elif path in ("/home-style.js", "/artifact-style.js", "/home-miniapp-login.js", "/home-root.js"):
                     self.respond(200, (Path(__file__).parent / "assets" / path[1:]).read_bytes(), "text/javascript; charset=utf-8")
+                elif path == '/home-root.css':
+                    self.respond(200,(Path(__file__).parent/'assets/home-root.css').read_bytes(),'text/css; charset=utf-8')
                 elif path == "/style.json":
                     if not app.styles:
                         self.respond(200, {"contract":"homemaker.resolved/v1","mode":"default","style_ref":"default","style_revision":None,"appearance":None})

@@ -1,0 +1,50 @@
+.work-view.home-root {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+}
+.home-root .root-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 16px;
+  max-width: none;
+  margin: 0;
+  font-size: 16px;
+  border-bottom: 1px solid currentColor;
+}
+.home-root .root-toolbar a,
+.home-root .root-toolbar button,
+.home-root #root-external a,
+.home-root #root-external button {
+  min-height: 44px;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+}
+.home-root .root-toolbar form {
+  margin: 0;
+}
+.home-root .root-toolbar p {
+  font-size: 14px;
+  margin: 0;
+}
+.work-view.home-root > .preview {
+  flex: 1;
+  min-height: 0;
+  height: 0;
+  width: 100%;
+  border: 0;
+}
+.home-root #root-external:not([hidden]) {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  font-size: 16px;
+}

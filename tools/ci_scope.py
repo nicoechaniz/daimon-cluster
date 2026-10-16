@@ -19,7 +19,7 @@ CI_FILES = {'.github/workflows/tests.yml', 'README.md', 'tools/ci_scope.py', 'to
 # Closed documentation pages with no generated/runtime consumer. Unknown docs stay full.
 RUNBOOK_DOCS = {'docs/runbooks/tribu-sdk-successor.md', 'docs/design/shared-home-styles.md',
     'README.md', 'RESUME.md', 'docs/PLAN.md', 'docs/design/matrix-convergence.md',
-    'docs/design/onboarding-jobs.md', 'docs/design/provisioning-flow.md',
+    'docs/design/onboarding-jobs.md', 'docs/design/provisioning-flow.md', 'docs/design/admission-continuation.md',
     'docs/design/tribe-agent-profile-and-volumes.md', 'docs/runbooks/host-restart-drill.md',
     'docs/runbooks/image-update-rolling-refresh.md', 'docs/runbooks/m1-incus-foundation.md',
     'docs/runbooks/release-candidate-freeze.md'}
@@ -433,6 +433,34 @@ RECEIVING_SUPPORT_HASHES = {
 }
 
 
+ADMISSION_SESSION_HASHES = {
+    'clusterctl/onboarding_group_session.py': (
+        None,
+        'f7f1f8cf751519353d736dbe7eed51f583e55d1d47bb6d74deda8bc42a7db4e5'),
+    'clusterctl/onboarding_group_admission.py': (
+        '5c170305bcb180b87d508daf9f495d9ed5b2e58a0594d020beb1e594469f8365',
+        '69caac1428de643a939346d07ebf412dd5531d02c9846dd0d18a97e4a69252fb'),
+    'clusterctl/onboarding_source.py': (
+        '4b932918af2ed6b3d70437f2a124baa14ee58502d0e9fd8ed0f8e508f99328d1',
+        'ce4205dde4f27075c045001e271432033cec87c52104bbb4c069de02fe3b3576'),
+    'clusterctl/onboarding_target.py': (
+        '906ecf1a71e307798bcc983f21901ef5955949cc38ef22a62f3320aad353fcf8',
+        '37788e468b89edb197adba1d55ae51d0065c94c90e3368ca1ca904795a33016c'),
+    'clusterctl/onboarding_host.py': (
+        'f98114c97e8c5164623cc57895adb8cb7814269dd2a1f8ee7be6ea69d6b03b38',
+        '5bd8401f19d11b784f4b893df1f3c326fb3afb425286f9cea57745cba7ac3f30'),
+    'clusterctl/onboarding_receiving_update.py': (
+        '61394fc4b4b756571b04946f3c8a087d994c23bd9436834fb08285a961f98ada',
+        'f42a0c069d412a3ee0747a308dba2f0e047cd4848341500008015709433a7f17'),
+    'tools/build_onboarding_code.py': (
+        'a5e32fcc064e8254ea49433ec991d81b67ddfffab34c5d85ab741c24a57db999',
+        'b96435ac875ae248e622ae79bd228b9b2767283f7cc9c63e7d4a935a0a98853b'),
+    'tools/check_rc_types.py': (
+        '5f6657b8f3da3e0e1b5cd7a593ff61cdb45d8b553faf4f4159691424c6bdc508',
+        'ee15068551964a6ecbe37150a14514b48e6f498456fe71cd23210b4ca60d8f71'),
+}
+
+
 ADMISSION_SOCIAL_HASHES = {
     'clusterctl/onboarding_group_coordinator.py': (
         '4f3bf747fb5bd8dc83a99677217192bf5cce6903b2ea72ee35789befa4b5cdd4',
@@ -472,7 +500,17 @@ def receiving_support_only(root: Path, base: str, names: set[str], *, hashes: di
                       hashlib.sha256((root/name).read_bytes()).hexdigest())
         except OSError:
             return False
-        if before.returncode or actual != hashes[name]:
+        if hashes[name][0] is None:
+            # A reviewed added module requires actual absence in a valid Git
+            # tree, not merely a failed git-show or an unknown base revision.
+            absent = subprocess.run(['git', 'ls-tree', '--name-only', base, '--', name],
+                cwd=root, capture_output=True, check=False)
+            if absent.returncode or absent.stdout:
+                return False
+            actual = (None, actual[1])
+        elif before.returncode:
+            return False
+        if actual != hashes[name]:
             return False
     return True
 
@@ -528,6 +566,17 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         return 'docs', []
     if set(changed) <= CI_FILES | RUNBOOK_DOCS:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    session_tests = ['tests/test_onboarding_group_session.py', 'tests/test_onboarding_host.py',
+        'tests/test_onboarding_host_ownership.py', 'tests/test_receiving_cohort_control.py',
+        'tests/test_onboarding_group_coordinator.py', 'tests/test_onboarding_group_finisher.py',
+        'tests/test_onboarding_release.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    session_files = set(ADMISSION_SESSION_HASHES) | set(session_tests) | {
+        'tests/test_onboarding_group_admission.py'}
+    session_source = set(changed) & ADMISSION_SESSION_HASHES.keys()
+    if (session_source and set(changed) <= session_files | CI_FILES | RUNBOOK_DOCS
+            and all((root/path).is_file() for path in session_tests)
+            and receiving_support_only(root, base, session_source, hashes=ADMISSION_SESSION_HASHES)):
+        return 'admission', session_tests
     social_files = set(ADMISSION_SOCIAL_HASHES) | {
         'tools/qualify_candidate_admission.py', 'tests/test_onboarding_group_admission.py',
         'tests/test_receiving_cohort_control.py', 'tests/test_onboarding_group_coordinator.py',

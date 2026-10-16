@@ -43,6 +43,7 @@ class Source:
         self.code_digest = code_digest
         self.qualified_startup = qualified_startup
         self._tool = None
+        self._writer_state = threading.local()
 
     @property
     def tool(self):
@@ -76,10 +77,17 @@ class Source:
     @contextmanager
     def writer(self):
         from daimon_matrix.daemon import acquire_lock
+        # A finite relationship conversation owns this same writer continuously.
+        # Its fresh quiescence query must not acquire a second conflicting lock.
+        if getattr(self._writer_state, 'held', False):
+            yield
+            return
         descriptor = acquire_lock(self.root)
+        self._writer_state.held = True
         try:
             yield
         finally:
+            self._writer_state.held = False
             os.close(descriptor)
 
     def directory(self, plan_digest: str) -> Path:
@@ -454,7 +462,8 @@ class Source:
         from .onboarding_receiving_update import prepare_source_admission
         return prepare_source_admission(self, journal_path, request, config=config, deadline_ns=deadline_ns)
 
-    def receiving_lifecycle_action(self, journal_path: Path, operation_id: str, action: str, *, deadline_ns: int) -> dict:
+    def receiving_lifecycle_action(self, journal_path: Path, operation_id: str, action: str, *, deadline_ns: int,
+                                   social_operation_id: str | None = None) -> dict:
         """Execute only the protected operation through the existing user unit."""
         from .operation_journal import OperationJournal
         from .onboarding_service import MatrixUserService
@@ -465,6 +474,10 @@ class Source:
         row = None if journal is None else journal.get(operation_id)
         if row is None or row['operation'] != 'receiving-update':
             raise OnboardingError('receiving_source_lifecycle_unobserved')
+        if social_operation_id is not None and (action != 'quiescence'
+                or row['intended_transition'].get('source_bootstrap', {}).get('admission_link', {})
+                    .get('snapshot_request', {}).get('operation_id') != social_operation_id):
+            raise OnboardingError('receiving_source_lifecycle_conflict')
         frozen = row['expected_precondition'].get('source_bootstrap', {})
         if frozen.get('settings_sha256') != digest(self.settings) or not isinstance(frozen.get('unit'), str):
             raise OnboardingError('receiving_source_lifecycle_conflict')
@@ -517,6 +530,7 @@ def main(argv=None) -> int:
     parser.add_argument('--lifecycle-action', choices=('quiesce', 'preserve', 'derive', 'start', 'quiescence'))
     parser.add_argument('--operation-journal', type=Path)
     parser.add_argument('--group-request', type=Path)
+    parser.add_argument('--group-session', action='store_true')
     args = parser.parse_args(argv)
     probe_scope = ExitStack()
     try:
@@ -533,7 +547,8 @@ def main(argv=None) -> int:
             raise OnboardingError('receiving_native_tooling_recipe_required')
         receiving = args.owner_status or args.qualified_identity or controlling or lifecycle or grouping or preparing
         if (sum((args.observe, args.owner_status, args.qualified_identity, controlling, lifecycle, grouping, preparing)) > 1
-                or (lifecycle or preparing) != (args.operation_journal is not None)
+                or (lifecycle or preparing or args.group_session) != (args.operation_journal is not None)
+                or args.group_session and (not grouping or args.group_request != Path('-'))
                 or args.lifecycle_action is not None and not lifecycle
                 or (lifecycle or preparing) and (args.ready_fd is not None or args.require_loaded)
                 or args.qualified_identity != (args.identity_expires_at_ms is not None)
@@ -549,6 +564,9 @@ def main(argv=None) -> int:
                 raise OnboardingError('onboarding_observation_deadline_expired')
         if args.observation_deadline_ns is not None and not 0 < args.observation_deadline_ns - time.monotonic_ns() <= 60_000_000_000:
             raise OnboardingError('onboarding_observation_deadline_expired')
+        if args.group_session:
+            from .onboarding_group_session import hard_deadline
+            probe_scope.enter_context(hard_deadline(args.observation_deadline_ns))
         if (controlling and (args.observe or args.require_loaded or args.ready_fd is not None)
                 or (args.prepare_control is not None or args.prepare_apply_control is not None) != (args.control_command is not None)):
             raise OnboardingError('invalid_receiving_control_request')
@@ -591,6 +609,14 @@ def main(argv=None) -> int:
             print(json.dumps(result))
             return 0
         if grouping:
+            if args.group_session:
+                from .onboarding_group_session import serve
+                serve(source, deadline_ns=args.observation_deadline_ns,
+                    reader=sys.stdin.fileno(), writer=sys.stdout.fileno(),
+                    quiescence=lambda operation, social: source.receiving_lifecycle_action(
+                        args.operation_journal, operation, 'quiescence',
+                        deadline_ns=args.observation_deadline_ns, social_operation_id=social)['result'])
+                return 0
             from .onboarding_group_admission import request_packet
             if args.group_request == Path('-'):
                 raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1)

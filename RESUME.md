@@ -8,28 +8,33 @@ Current selections below supersede the explicitly historical qualification.
 
 Latest synthetic continuation: the finite admission window is CLOSED and its
 fixed authorization expired. The same protected operation retains preparation,
-sender revocation and both old services' quiescence/preservation. Only the exact
-invitation request is retained, without a result; membership acceptance,
-publication, managed first load and communication/rollback remain unobserved.
-No invitation-loss fault was triggered. Reconcile the native RPC before a linked
-fresh continuation; never edit the original horizon or recreate identities.
-The original entrant native service is preserved. The never-created entrant
-Matrix unit is verified absent, not a failed stop. Production is unchanged.
+both sender revocations and both old services' quiescence/preservation. The
+original entrant native service remains preserved; its never-created Matrix unit
+is verified absent. Owner reconciliation through the actual UID1000 native
+writer confirmed the retained root invitation command was never dispatched:
+no owner request and no exact invitation/entrant acceptance events. No native
+request was sent by that inspection. Membership, publication, managed first load
+and communication/rollback acceptance remain unobserved. Preserve original
+horizons, identities, requests and child associations.
 
-Published `bcbdf1a` uses fresh Root service proof for bound known-stopped writers
-rather than waiting on their stopped socket. The next social delta removes only
-redundant preparation/barriers and scopes immutable lifecycle metadata under the
-operation lock; each actual write still requires fresh stopped proof. Bounded
-Astra source review approved it.55 affected unit and67 CI checks, typing/scoped
-lint pass. The explicit VCS SDKb53 test consumer passed11 native admission and12
-native authority cases, while unchanged SDK0dc subprocesses produced initial
-identities. CI preserves that split and avoids duplicate execution. See the
-runbook's candidate-test section; default/production SDK pins remain unchanged.
-The remaining architectural work is a bounded owner-runtime invocation and an
-explicit recovery authorization linked to all remaining frozen effects, as
-identified by the completed Astra review. Existing prepared code is not evidence
-of integrated admission or real deployment. Later dated records below are history.
+Published `7366c9f` removes redundant social preparation while retaining fresh
+barriers before every write. Its genuine VCS SDKb53 test consumers passed11 native
+admission and12 authority cases with the unchanged default identity producer.
+The finite owner conversation now reuses one loaded runtime/writer per invocation,
+retains exact native journals and carries the unchanged absolute deadline into
+the guest. A CLI-only kernel bound covers blocked loading/dispatch; interrupted
+effects remain uncertain. Source fresh quiescence uses that same writer. Verified
+older owner inventories retain their one-shot route. Bounded Astra SOURCE GO
+closed the lifetime/deadline findings.152 host/coordinator/finisher/process checks
+and119 updated process/cohort checks,2 affected real native cases,69 CI cases,
+88-file typing and scoped lint pass; overlaps are not additional tests.
 
+This source is not installed admission or production acceptance. The remaining
+[linked recovery authorization](docs/design/admission-continuation.md) must cover
+all remaining social, lifecycle/initial-start, activation and communication
+bounds, including any separately approved compatible helper. Do not mutate frozen
+owner settings to activate the new CLI or silently renew only the invitation.
+Follow the retained checkpoint; no new real interruption is authorized.
 
 The three VPS bodies actually select Matrix SDK
 `80542cee1d56e3d46bbda21f4174e3df75cf5585` and receiving code

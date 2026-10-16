@@ -1056,7 +1056,35 @@ class HostBackend:
         return dict(type="disk", source=str(self.config.views / digest(plan) / "matrix-public"),
                     path="/home/agent/.onboarding-matrix", readonly="true", shift="true")
 
-    def _target_call(self, plan: dict, action: str, *, profile: dict | None = None,
+    def _target_call(self, plan: dict, action: str, **arguments) -> dict:
+        command, deadline_ns, input_data = self._target_invocation(plan, action, **arguments)
+        dispatch: dict = {} if input_data is None else {'input_data': input_data}
+        if deadline_ns is not None:
+            remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
+            if remaining <= 0:
+                raise OnboardingError('receiving_host_deadline_expired')
+            dispatch.update(timeout_seconds=remaining, deadline_ns=deadline_ns)
+        result = self._dispatch(plan, command, **dispatch)
+        value = json.loads(result)
+        if not isinstance(value, dict):
+            raise OnboardingError('invalid_onboarding_observation')
+        if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
+            raise OnboardingError('receiving_host_deadline_expired')
+        return value
+
+    def _target_relationship_session(self, plan: dict, packet: dict, *, candidate,
+                                     timeout_seconds: float, deadline_ns: int):
+        from .onboarding_group_session import OwnerConversation
+        command, deadline, _payload = self._target_invocation(plan, 'group-session',
+            candidate=candidate, group_request=packet, observation_timeout_seconds=timeout_seconds,
+            owner_deadline_ns=deadline_ns)
+        def authorized():
+            if not self.authorize(plan, digest(plan)):
+                raise OnboardingError('host_authorization_required')
+        return OwnerConversation(['incus', *command], packet, deadline_ns=deadline,
+            validate=authorized, env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'})
+
+    def _target_invocation(self, plan: dict, action: str, *, profile: dict | None = None,
                      peer_packet: dict | None = None, peer_being_ref: str | None = None,
                      candidate: tuple[Path, str] | None = None,
                      observation_timeout_seconds: float | None = None,
@@ -1069,7 +1097,8 @@ class HostBackend:
                      control_file: Path | None = None, control_command: Path | None = None,
                      control_value: dict | None = None, identity_expires_at_ms: int | None = None,
                      native_tooling: dict | None = None, group_request: dict | None = None,
-                     authorization_expires_at_ms: int | None = None) -> dict:
+                     authorization_expires_at_ms: int | None = None,
+                     owner_deadline_ns: int | None = None) -> tuple[list[str], int | None, str | None]:
         """Invoke the qualified receiving owner within its finite host budget.
 
         Candidate calls require the already verified public read-only mount.
@@ -1077,6 +1106,10 @@ class HostBackend:
         A host timeout is uncertain observation, never proof of guest exit.
         """
         deadline_ns = None
+        if owner_deadline_ns is not None and (action != 'group-session'
+                or type(owner_deadline_ns) is not int
+                or not 0 < owner_deadline_ns-time.monotonic_ns() <= 60_000_000_000):
+            raise OnboardingError('receiving_host_deadline_required')
         admitting = action in {'admission-prepare', 'admission-check', 'admission-enroll'}
         if ((authorization_expires_at_ms is not None and (not admitting
                     or type(authorization_expires_at_ms) is not int or not 0 < authorization_expires_at_ms < 2**53))
@@ -1089,7 +1122,7 @@ class HostBackend:
                 or (bootstrap_initial or bootstrap_initial_service) and action != 'receiving-bootstrap-freeze'):
             raise OnboardingError('invalid_receiving_bootstrap_request')
         controlling = action in {'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply'}
-        if (action in {'group-relationship', 'group-publication'}) != (group_request is not None):
+        if (action in {'group-relationship', 'group-publication', 'group-session'}) != (group_request is not None):
             raise OnboardingError('onboarding_group_relationship_command_required')
         if group_request is not None:
             from .onboarding_group_admission import request_packet
@@ -1123,11 +1156,13 @@ class HostBackend:
         elif control_file is not None or control_command is not None or control_value is not None:
             raise OnboardingError('invalid_receiving_control_request')
         if observation_timeout_seconds is not None:
-            if (action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'admission-prepare', 'admission-check', 'admission-enroll'}
+            if (action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
                     or not math.isfinite(observation_timeout_seconds)
                     or not 0 < observation_timeout_seconds <= 60):
                 raise OnboardingError('receiving_host_deadline_required')
             deadline_ns = time.monotonic_ns() + int(observation_timeout_seconds * 1_000_000_000)
+            if owner_deadline_ns is not None:
+                deadline_ns = min(deadline_ns, owner_deadline_ns)
             if authorization_expires_at_ms is not None:
                 deadline_ns = min(deadline_ns, time.monotonic_ns() +
                     (authorization_expires_at_ms - time.time_ns() // 1_000_000) * 1_000_000)
@@ -1148,7 +1183,7 @@ class HostBackend:
         if candidate is not None:
             if (action not in {'sdk-observe', 'sdk-prepare', 'observe', 'running', 'admitted-running',
                     'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'receiving-bootstrap-freeze',
-                    'receiving-bootstrap-stage', 'receiving-bootstrap-publish', 'receiving-identity', 'group-relationship', 'group-publication',
+                    'receiving-bootstrap-stage', 'receiving-bootstrap-publish', 'receiving-identity', 'group-relationship', 'group-publication', 'group-session',
                     'admission-prepare', 'admission-check', 'admission-enroll'}
                     or profile is not None and action not in {'admission-check', 'admission-enroll'}
                     or peer_packet is not None or peer_being_ref is not None
@@ -1218,7 +1253,7 @@ class HostBackend:
             arguments += ['--bootstrap-initial-service']
         prepared_venv = None
         if candidate is not None and (bootstrapping or action in {'running', 'admitted-running', 'receiving-identity',
-                'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication',
+                'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session',
                 'admission-prepare', 'admission-check', 'admission-enroll'}):
             # _runtime_paths verified the entire public candidate and its SDK.
             # Enter the already prepared owner generation directly; Target still
@@ -1232,6 +1267,8 @@ class HostBackend:
             if remaining <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
             arguments += ['--bootstrap-timeout-seconds' if bootstrapping else '--observation-timeout-seconds', str(remaining)]
+            if action == 'group-session':
+                arguments += ['--observation-deadline-ns', str(deadline_ns)]
         if prepared_venv is None:
             owner_command = code_command(Path('/usr/bin/python3'), runtime_code,
                 'clusterctl.onboarding_target', arguments)
@@ -1241,15 +1278,7 @@ class HostBackend:
                 runtime_code, 'clusterctl.onboarding_target', arguments)
         command = ["exec", self.instance(plan), "--user", "1000", "--group", "1000",
             "--env", "HOME=/home/agent", "--", *owner_command]
-        dispatch: dict = {} if input_data is None else {'input_data': input_data}
-        result = (self._dispatch(plan, command, **dispatch) if deadline_ns is None
-            else self._dispatch(plan, command, timeout_seconds=remaining, deadline_ns=deadline_ns, **dispatch))
-        value = json.loads(result)
-        if not isinstance(value, dict):
-            raise OnboardingError('invalid_onboarding_observation')
-        if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
-            raise OnboardingError('receiving_host_deadline_expired')
-        return value
+        return command, deadline_ns, input_data
 
     def _guest_service_call(self, plan: dict, action: str, *, candidate: tuple[Path, str],
                             timeout_seconds: float, request: dict | None = None,

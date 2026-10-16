@@ -38,6 +38,44 @@ def invitation(source, peer_bundle):
     return dict(operation_id=str(uuid.uuid4()), step='invite', method='tribe.invite', params=dict(payload=payload))
 
 
+def test_finite_owner_sessions_keep_native_writer_and_exact_requests(group_source, tmp_path, monkeypatch):
+    from daimon_matrix.daemon import acquire_lock
+    from clusterctl import onboarding_group_admission as social
+    from clusterctl.onboarding_group_session import RelationshipSession
+    source, first, _peer, peer_bundle, _old = group_source
+    target = Target(tmp_path/'candidate/guest', first.plan,
+        document(tmp_path/'candidate/custody'/digest(first.plan)/'genesis.json'))
+    selected = invitation(source, peer_bundle)
+    packet = dict(command=selected, offline=True, authority_closure=closure(peer_bundle))
+    loads, original_load = [], social.load_owner_runtime
+    def load(root, *args, **options):
+        loads.append(root)
+        return original_load(root, *args, **options)
+    monkeypatch.setattr(social, 'load_owner_runtime', load)
+    deadline = time.monotonic_ns()+60_000_000_000
+    with RelationshipSession(source, packet, deadline_ns=deadline) as session:
+        invited = session.call(packet)
+        assert invited['status'] == 'recorded' and session.call(packet) == invited
+        with source.writer():
+            with pytest.raises(BlockingIOError):
+                acquire_lock(source.root)
+        with pytest.raises(BlockingIOError):
+            acquire_lock(source.root)
+        with pytest.raises(OnboardingError, match='request_conflict'):
+            session.call({**packet, 'command': {**selected, 'operation_id': str(uuid.uuid4())}})
+        with pytest.raises(OnboardingError, match='request_conflict'):
+            session.call({**packet, 'authority_closure': {}})
+    os.close(acquire_lock(source.root))
+    event = invited['result']['event']
+    peer_packet = dict(command=dict(operation_id=selected['operation_id'], step='ingest',
+        method='relationship.event.ingest', params=dict(event=event)), offline=True,
+        authority_closure=closure(first.document_bundle()))
+    with RelationshipSession(target, peer_packet, deadline_ns=deadline, target=True) as session:
+        received = session.call(peer_packet)
+        assert received['status'] == 'recorded' and session.call(peer_packet) == received
+    assert loads == [source.root, target.package/'runtime']
+
+
 def test_protected_social_phase_resumes_partial_native_distribution(group_source, tmp_path, monkeypatch):
     """Real native Roots/RPC/journal; physical quiescence is an explicit seam."""
     from types import SimpleNamespace

@@ -213,6 +213,9 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
                 return copy.deepcopy(result)
         for owner in cohort.owners.values():
             scope.enter_context(cohort._owner_deadline(owner, deadline_ns))
+            session = getattr(owner, 'group_relationship_scope', None)
+            if callable(session):
+                scope.enter_context(session())
         contexts = admission_owner_contexts(row, recipe)
 
         def barrier():

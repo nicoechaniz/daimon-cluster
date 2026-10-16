@@ -657,6 +657,27 @@ def test_group_request_uses_prepared_owner_stdin_without_requiring_running_group
     assert len(calls) == 1
 
 
+def test_finite_group_owner_reuses_qualified_command_and_rechecks_host_grant(tmp_path, monkeypatch):
+    import uuid
+    backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    packet = dict(command=dict(operation_id=str(uuid.uuid4()), step='observe',
+        method='relationship.snapshot', params={'tribe_ref': 'tribe', 'at_ms': None}),
+        offline=True, authority_closure={})
+    import time
+    deadline = time.monotonic_ns()+4_000_000_000
+    owner = backend._target_relationship_session(value, packet, candidate=candidate,
+        timeout_seconds=5, deadline_ns=deadline)
+    assert calls == []  # Preparing a bounded conversation starts no process.
+    assert owner.argv[:7] == ['incus', 'exec', 'dm-eko', '--user', '1000', '--group', '1000']
+    assert owner.argv[owner.argv.index('--observation-deadline-ns')+1] == str(owner.deadline_ns)
+    assert owner.deadline_ns == deadline
+    assert 'group-session' in owner.argv and '--group-request' in owner.argv
+    owner.validate()
+    monkeypatch.setattr(backend, 'authorize', lambda *_: False)
+    with pytest.raises(OnboardingError, match='host_authorization_required'):
+        owner.validate()
+
+
 def test_incus_stdin_is_bounded_and_never_routed_through_a_shell(monkeypatch):
     from clusterctl import onboarding_host
     calls = []

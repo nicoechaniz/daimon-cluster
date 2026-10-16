@@ -771,7 +771,7 @@ class Target:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("sdk-observe", "sdk-prepare", "prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept", "group-relationship", "group-publication", "receiving-control-prepare", "receiving-control-apply", "receiving-control-prepare-apply", "receiving-identity", "receiving-bootstrap-freeze", "receiving-bootstrap-stage", "receiving-bootstrap-publish"))
+    parser.add_argument("action", choices=("sdk-observe", "sdk-prepare", "prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept", "group-relationship", "group-publication", "group-session", "receiving-control-prepare", "receiving-control-apply", "receiving-control-prepare-apply", "receiving-identity", "receiving-bootstrap-freeze", "receiving-bootstrap-stage", "receiving-bootstrap-publish"))
     parser.add_argument("--diagnostics", action="store_true", help="write bounded nonsecret refusal detail to stderr")
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
@@ -818,7 +818,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_initial_context = initial_context(json.loads(args.initial_context_json))
         controlling = args.action in {'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply'}
         identity_query = args.action == 'receiving-identity'
-        grouping = args.action in {'group-relationship', 'group-publication'}
+        grouping = args.action in {'group-relationship', 'group-publication', 'group-session'}
         if grouping != (args.group_request is not None) or grouping and args.ready_fd is not None:
             raise OnboardingError('onboarding_group_relationship_command_required')
         if args.native_tooling_json is not None and (not identity_query
@@ -847,7 +847,7 @@ def main(argv: list[str] | None = None) -> int:
                     or not 0 < args.authorization_expires_at_ms < 2**53)
                 or admitting and ((timeout is None) != (args.authorization_expires_at_ms is None))):
             raise OnboardingError('invalid_receiving_observation_timeout')
-        if timeout is not None and (args.action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'admission-prepare', 'admission-check', 'admission-enroll'}
+        if timeout is not None and (args.action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
                 or not math.isfinite(timeout) or not 0 < timeout <= 60):
             raise OnboardingError('invalid_receiving_observation_timeout')
         if bootstrapping:
@@ -864,6 +864,9 @@ def main(argv: list[str] | None = None) -> int:
                     or args.observation_deadline_ns > observation_deadline_ns):
                 raise OnboardingError('onboarding_observation_deadline_expired')
             observation_deadline_ns = args.observation_deadline_ns
+        if args.action == 'group-session':
+            from .onboarding_group_session import hard_deadline
+            probe_scope.enter_context(hard_deadline(observation_deadline_ns))
         probe_scope.enter_context(onboarding_sdk.probe_budget(observation_deadline_ns))
         if (identity_query or grouping) and timeout is None:
             raise OnboardingError('invalid_receiving_identity_request')
@@ -996,6 +999,13 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result))
             return 0
         if grouping:
+            if args.action == 'group-session':
+                from .onboarding_group_session import serve as serve_relationships
+                if args.group_request != Path('-'):
+                    raise OnboardingError('onboarding_group_relationship_command_required')
+                serve_relationships(target, deadline_ns=observation_deadline_ns, target=True,
+                    reader=sys.stdin.fileno(), writer=sys.stdout.fileno())
+                return 0
             from .onboarding_group_admission import request_packet
             if args.group_request == Path('-'):
                 raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1)

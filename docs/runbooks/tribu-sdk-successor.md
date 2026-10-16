@@ -1552,3 +1552,33 @@ Cleanup must observe `LoadState=not-found`, inactive state and PID0 as absence,
 then close its owned authority/API/native endpoints. Preserve the original native
 service and the terminal receipt; a missing never-created unit is not a failed
 service stop. A dated ready flag is not current health after the runner exits.
+
+### Reuse a finite native owner during social admission
+
+Qualified owner artifacts whose captured inventory includes
+`clusterctl/onboarding_group_session.py` support a sequential stdin/stdout
+conversation. Older pinned artifacts retain their existing one-shot CLI; never
+try a new flag against them or silently select a different owner generation.
+The host verifies the selected public manifest digest before selecting this route.
+
+The lazy scope opens only after the first fresh stopped barrier. One owner UID
+loads one closed authority/context and holds its original native writer through
+the invocation. Every command remains durably retained before dispatch and uses
+the existing authenticated native request/result journal. Operation, context and
+authority closure cannot change. Every actual write and final completion still
+require fresh service/process/exit evidence; Source observes it through the same
+writer-owning process. No old stopped snapshot substitutes for those checks.
+
+The original absolute deadline is propagated unchanged to the guest and clamps
+all preparation and frames. A CLI-only kernel alarm, armed before qualification,
+terminates the owner even if loading or native execution blocks. It releases the
+native writer; an interrupted effect remains uncertain, never absent. The
+protocol also bounds frame size and command count. Normal close acknowledges
+writer release and joins the local invocation. Failed close retains an explicit
+unobserved-exit error; killing local Incus alone is not guest-exit proof. These
+technical invocations start no models and install no persistent listener.
+
+This optimization grants no expired authority. Follow
+[the admission continuation design](../design/admission-continuation.md) for the
+remaining recovery contract; an expired original operation must not be renewed
+in place or replaced with fresh identities.

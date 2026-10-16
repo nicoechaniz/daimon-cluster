@@ -885,3 +885,37 @@ def test_social_admission_delta_requires_exact_source_and_explicit_sdk_profile(m
     assert ci_scope.select(changed + ['clusterctl/onboarding_custody.py'], ROOT, base='a'*40)[0] != 'admission'
     monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda *a, **k: False)
     assert ci_scope.select(changed, ROOT, base='a'*40)[0] != 'admission'
+
+
+def test_owner_session_delta_selects_only_reviewed_contracts(monkeypatch):
+    from tools import ci_scope
+    changed = sorted(ci_scope.ADMISSION_SESSION_HASHES) + [
+        'tests/test_onboarding_group_session.py', 'tests/test_onboarding_host.py',
+        'tests/test_onboarding_group_admission.py', 'docs/design/admission-continuation.md']
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda root, base, names, hashes=None:
+        base == 'a'*40 and names == set(ci_scope.ADMISSION_SESSION_HASHES)
+        and hashes == ci_scope.ADMISSION_SESSION_HASHES)
+    profile, selected = ci_scope.select(changed, ROOT, base='a'*40)
+    assert profile == 'admission'
+    assert 'tests/test_onboarding_group_session.py' in selected and 'tests/test_onboarding_host.py' in selected
+    assert ci_scope.select(changed, ROOT)[0] != 'admission'
+    assert ci_scope.select(changed+['clusterctl/onboarding_custody.py'], ROOT, base='a'*40)[0] != 'admission'
+
+
+def test_reviewed_added_module_requires_real_absence_in_valid_git_tree(tmp_path):
+    import hashlib
+    import subprocess
+    from tools import ci_scope
+    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+    subprocess.run(['git', '-C', str(tmp_path), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+        'commit', '--allow-empty', '-qm', 'baseline'], check=True)
+    base = subprocess.check_output(['git', '-C', str(tmp_path), 'rev-parse', 'HEAD'], text=True).strip()
+    (tmp_path/'new.py').write_bytes(b'new reviewed module\n')
+    hashes = {'new.py': (None, hashlib.sha256((tmp_path/'new.py').read_bytes()).hexdigest())}
+    assert ci_scope.receiving_support_only(tmp_path, base, {'new.py'}, hashes=hashes)
+    assert not ci_scope.receiving_support_only(tmp_path, 'f'*40, {'new.py'}, hashes=hashes)
+    subprocess.run(['git', '-C', str(tmp_path), 'add', 'new.py'], check=True)
+    subprocess.run(['git', '-C', str(tmp_path), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+        'commit', '-qm', 'already present'], check=True)
+    existing = subprocess.check_output(['git', '-C', str(tmp_path), 'rev-parse', 'HEAD'], text=True).strip()
+    assert not ci_scope.receiving_support_only(tmp_path, existing, {'new.py'}, hashes=hashes)

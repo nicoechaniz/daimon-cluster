@@ -26,6 +26,7 @@ from pathlib import Path
 
 from . import being_seed, onboarding_release, onboarding_sdk
 from .onboarding import JobStore, OnboardingError, digest, private_directory
+from .onboarding_group_session import OwnerConversation
 from .owner_process import ConnectedProcessObserver
 
 
@@ -366,6 +367,8 @@ class GuestGroupClient:
         self.root, self.socket = root, root / 'tribe.sock'
         self.timeout_seconds = timeout_seconds
         self.deadline_ns: int | None = None
+        self._relationship_stack: ExitStack | None = None
+        self._relationship_process: OwnerConversation | None = None
 
     def _call(self, action: str, **arguments) -> dict:
         timeout = self.timeout_seconds
@@ -419,10 +422,25 @@ class GuestGroupClient:
     def group_relationship(self, command: dict, *, authority_closure: dict,
                            expected_context_sha256: str | None = None,
                            membership_precondition: dict | None = None) -> dict:
-        return self._call('group-relationship', group_request=dict(command=command,
+        packet = dict(command=command,
             offline=True, authority_closure=authority_closure,
             **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
-            **({'membership_precondition': membership_precondition} if membership_precondition is not None else {})))
+            **({'membership_precondition': membership_precondition} if membership_precondition is not None else {}))
+        stack = getattr(self, '_relationship_stack', None)
+        if stack is None:
+            return self._call('group-relationship', group_request=packet)
+        if self._relationship_process is None:
+            if self.deadline_ns is None:
+                raise OnboardingError('receiving_host_deadline_required')
+            timeout = min(self.timeout_seconds, (self.deadline_ns-time.monotonic_ns())/1_000_000_000)
+            self._relationship_process = stack.enter_context(self.backend._target_relationship_session(
+                self.plan, packet, candidate=self.candidate, timeout_seconds=timeout,
+                deadline_ns=self.deadline_ns))
+        return self._relationship_process.call(packet)
+
+    def group_relationship_scope(self):
+        from .onboarding_group_session import supported_scope
+        return supported_scope(self, self.candidate[0], uid=os.geteuid(), code_digest=self.candidate[1])
 
     def group_publication(self, command: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None) -> dict:
@@ -515,6 +533,8 @@ class SourceGroupClient:
         self.timeout_seconds = timeout_seconds
         self.lifecycle_journal = lifecycle_journal
         self.deadline_ns: int | None = None
+        self._relationship_stack: ExitStack | None = None
+        self._relationship_process: OwnerConversation | None = None
 
     def _call(self, arguments: list[str], *, command: dict | None = None,
               module: str = 'clusterctl.onboarding_source', native_response: bool = False) -> dict:
@@ -611,10 +631,45 @@ class SourceGroupClient:
                            authority_closure: dict | None = None,
                            expected_context_sha256: str | None = None,
                            membership_precondition: dict | None = None) -> dict:
-        return self._call(['--group-request', '-'], command=dict(command=command,
+        packet = dict(command=command,
             offline=offline, authority_closure={} if authority_closure is None else authority_closure,
             **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
-            **({'membership_precondition': membership_precondition} if membership_precondition is not None else {})))
+            **({'membership_precondition': membership_precondition} if membership_precondition is not None else {}))
+        stack = getattr(self, '_relationship_stack', None)
+        if stack is None:
+            return self._call(['--group-request', '-'], command=packet)
+        if self._relationship_process is None:
+            self._relationship_process = stack.enter_context(self._relationship_conversation(packet))
+        return self._relationship_process.call(packet)
+
+    def group_relationship_scope(self):
+        from .onboarding_group_session import supported_scope
+        return supported_scope(self, self.code, uid=self.code_uid, code_digest=self.code_digest)
+
+    def _relationship_conversation(self, packet):
+        from .onboarding_group_session import OwnerConversation
+        deadline = min(self.deadline_ns or 2**63-1,
+            time.monotonic_ns() + int(self.timeout_seconds*1_000_000_000))
+        if self.lifecycle_journal is None:
+            raise OnboardingError('receiving_source_lifecycle_binding_required')
+        def identity():
+            info = self.config.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077
+                    or (info.st_uid, info.st_gid) != (self.owner_uid, self.owner_gid)):
+                raise OnboardingError('receiving_source_owner_binding_required')
+            return info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode
+        before = identity()
+        def unchanged():
+            if identity() != before:
+                raise OnboardingError('receiving_source_configuration_changed')
+        argv = onboarding_sdk.runtime_command(self.venv, self.imports, self.code, 'clusterctl.onboarding_source', [
+            '--config', str(self.config), '--expected-config-sha256', self.config_sha256,
+            '--code-owner', str(self.code_uid), '--code-digest', self.code_digest,
+            '--observation-deadline-ns', str(deadline), '--group-request', '-', '--group-session',
+            '--operation-journal', str(self.lifecycle_journal)])
+        return OwnerConversation(argv, packet, deadline_ns=deadline, validate=unchanged,
+            user=self.owner_uid, group=self.owner_gid, extra_groups=(),
+            env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'})
 
     def group_publication(self, command: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None) -> dict:
@@ -705,6 +760,9 @@ class SourceGroupClient:
         """Use the same qualified owner for the frozen Matrix-only lifecycle."""
         if self.lifecycle_journal is None or action not in {'quiesce', 'preserve', 'derive', 'start', 'quiescence'}:
             raise OnboardingError('receiving_source_lifecycle_binding_required')
+        session = getattr(self, '_relationship_process', None)
+        if action == 'quiescence' and session is not None:
+            return session.call(dict(quiescence=operation_id))
         value = self._call(['--receiving-lifecycle', operation_id,
             '--operation-journal', str(self.lifecycle_journal), '--lifecycle-action', action])
         if (set(value) != {'schema', 'source_config_sha256', 'operation_id', 'action', 'result'}

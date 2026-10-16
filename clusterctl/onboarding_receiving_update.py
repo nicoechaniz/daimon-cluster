@@ -3601,16 +3601,32 @@ class CohortController:
                     or old['gate'].get('request_sha256') != old.get('request_sha256')):
                 raise OnboardingError('receiving_sender_barrier_changed')
             with self._owner_deadline(owner, deadline):
-                try:
-                    current = owner.status()
-                except (OnboardingError, OSError):
-                    current = None
+                recipe = lifecycle = None
+                lifecycle_effects = {}
+                if name in (row['runtime_observation'] or {}).get('admission_lifecycles', {}):
+                    recipe, lifecycle = self._bound_admission_lifecycle(row, name)
+                    effects = lifecycle['runtime_observation'] or {}
+                    lifecycle_effects = (effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
+                        else effects.get('guest_bootstraps', {}).get(name, {}))
+                # A stopped predecessor has no daemon to answer. Query its
+                # current root service proof below instead of exhausting this
+                # barrier on a known-stopped socket. A retained exit alone is
+                # never sufficient; restarted or loaded writers still require
+                # the actual service/process/gate checks.
+                stopped = 'quiesced' in lifecycle_effects and 'controlled_loaded' not in lifecycle_effects
+                current = None
+                if not stopped:
+                    try:
+                        current = owner.status()
+                    except (OnboardingError, OSError):
+                        current = None
                 if current is not None and current['process'] == old['process'] and current['server'] == old['server']:
                     if current['gate'] != old['gate']:
                         raise OnboardingError('receiving_sender_barrier_changed')
                     proofs[name] = dict(state='revoked-original', process=current['process'])
                     continue
-                recipe, lifecycle = self._bound_admission_lifecycle(row, name)
+                if recipe is None or lifecycle is None:
+                    recipe, lifecycle = self._bound_admission_lifecycle(row, name)
                 exited = self._replacement_exit(sender, recipe, lifecycle)
                 if current is None:
                     begun = time.monotonic_ns()

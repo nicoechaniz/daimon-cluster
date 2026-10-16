@@ -589,7 +589,7 @@ def test_admission_barrier_rechecks_stopped_original_without_starting_or_replayi
     journal.advance(recipe['lifecycle_operation_id'], 'runtime-dispatching', runtime_observation=(
         {'source_bootstrap': effects} if profile == 'source' else {'guest_bootstraps': {'eko': effects}}))
     def unavailable():
-        raise OSError('synthetic original exited')
+        pytest.fail('known-stopped daemon would consume the fresh service-proof budget')
     owners['eko'].status = unavailable
     monkeypatch.setattr(owners['newcomer'], 'status', lambda: pytest.fail('unstarted member queried'))
     live = [False]

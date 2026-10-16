@@ -433,6 +433,11 @@ RECEIVING_SUPPORT_HASHES = {
 }
 
 
+ADMISSION_BARRIER_HASHES = {'clusterctl/onboarding_receiving_update.py': (
+    'c80657d8f9256b1dfb32689d084370e4c0dc3a7c419020a1843ff45c17245eff',
+    'ef49165b01dc6a46f9a0f6cb0e35b82a83007a370ee5f9bf8b3f10b7ed53bc45')}
+
+
 ADMISSION_PROGRESS_HASHES = {'clusterctl/onboarding_host.py': (
     '6bb8673868561f11fa80ce75899935cc65c4e224e75b8e0c20ea4e2b74958293',
     'f98114c97e8c5164623cc57895adb8cb7814269dd2a1f8ee7be6ea69d6b03b38')}
@@ -532,6 +537,14 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
             and all((root / path).is_file() for path in progress_tests)
             and receiving_support_only(root, base, set(ADMISSION_PROGRESS_HASHES), hashes=ADMISSION_PROGRESS_HASHES)):
         return 'ci', progress_tests
+    barrier_files = {'clusterctl/onboarding_receiving_update.py',
+                     'tests/test_receiving_cohort_control.py'}
+    barrier_tests = ['tests/test_receiving_cohort_control.py', *coordinator_tests]
+    if ('clusterctl/onboarding_receiving_update.py' in changed
+            and set(changed) <= barrier_files | coordinator_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / path).is_file() for path in barrier_tests)
+            and receiving_support_only(root, base, set(ADMISSION_BARRIER_HASHES), hashes=ADMISSION_BARRIER_HASHES)):
+        return 'ci', barrier_tests
     native_dropins = {'clusterctl/onboarding_service.py', 'clusterctl/onboarding_telegram.py',
                      'tests/test_onboarding_service.py', 'tests/test_onboarding_telegram.py'}
     native_tests = ['tests/test_onboarding_service.py', 'tests/test_onboarding_telegram.py',

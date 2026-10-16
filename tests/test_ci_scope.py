@@ -853,3 +853,19 @@ def test_portal_progress_host_delta_requires_exact_reviewed_hashes(monkeypatch):
     assert ci_scope.select(changed + ['clusterctl/onboarding_service.py'], ROOT, base='a'*40)[0] != 'ci'
     monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda *a, **k: False)
     assert ci_scope.select(changed, ROOT, base='a'*40)[0] != 'ci'
+
+
+def test_stopped_barrier_delta_keeps_only_exact_receiving_coverage(monkeypatch):
+    from tools import ci_scope
+    changed = ['clusterctl/onboarding_receiving_update.py', 'tests/test_receiving_cohort_control.py',
+               'docs/runbooks/tribu-sdk-successor.md', 'tools/ci_scope.py', 'tests/test_ci_scope.py']
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda root, base, names, hashes=None:
+        root == ROOT and base == 'a'*40 and names == {'clusterctl/onboarding_receiving_update.py'}
+        and hashes == ci_scope.ADMISSION_BARRIER_HASHES)
+    profile, tests = ci_scope.select(changed, ROOT, base='a'*40)
+    assert profile == 'ci' and 'tests/test_receiving_cohort_control.py' in tests
+    assert 'tests/test_onboarding_group_finisher.py' in tests
+    assert ci_scope.select(changed, ROOT)[0] != 'ci'
+    assert ci_scope.select(changed + ['clusterctl/onboarding_service.py'], ROOT, base='a'*40)[0] != 'ci'
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda *a, **k: False)
+    assert ci_scope.select(changed, ROOT, base='a'*40)[0] != 'ci'

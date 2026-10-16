@@ -1520,3 +1520,10 @@ observation is never permission to restart it after a later generic failure.
 The target's individual SDK, V8 and candidate-SDK checks also retain completed
 progress through the same callback/journal route. A deadline between these checks
 must not discard earlier successful preparation or enlarge the next invocation.
+
+After recorded predecessor quiescence, the revocation barrier queries fresh root
+service/process-exit evidence directly. It must not spend that evidence window
+waiting for the stopped daemon to answer. A retained exit is only a routing hint;
+the service must still be observed inactive with the exact original exit proof.
+Recorded loaded replacements use authenticated live process and gate checks;
+unbound originals keep their original live-status verification.

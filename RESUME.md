@@ -6,6 +6,31 @@ Current selections below supersede the explicitly historical qualification.
 
 ## Receiving frontier — 2026-10-16
 
+Latest synthetic continuation: the finite admission window is CLOSED and its
+fixed authorization expired. The same protected operation retains preparation,
+sender revocation and both old services' quiescence/preservation. Only the exact
+invitation request is retained, without a result; membership acceptance,
+publication, managed first load and communication/rollback remain unobserved.
+No invitation-loss fault was triggered. Reconcile the native RPC before a linked
+fresh continuation; never edit the original horizon or recreate identities.
+The original entrant native service is preserved. The never-created entrant
+Matrix unit is verified absent, not a failed stop. Production is unchanged.
+
+Published `bcbdf1a` uses fresh Root service proof for bound known-stopped writers
+rather than waiting on their stopped socket. The next social delta removes only
+redundant preparation/barriers and scopes immutable lifecycle metadata under the
+operation lock; each actual write still requires fresh stopped proof. Bounded
+Astra source review approved it.55 affected unit and67 CI checks, typing/scoped
+lint pass. The explicit VCS SDKb53 test consumer passed11 native admission and12
+native authority cases, while unchanged SDK0dc subprocesses produced initial
+identities. CI preserves that split and avoids duplicate execution. See the
+runbook's candidate-test section; default/production SDK pins remain unchanged.
+The remaining architectural work is a bounded owner-runtime invocation and an
+explicit recovery authorization linked to all remaining frozen effects, as
+identified by the completed Astra review. Existing prepared code is not evidence
+of integrated admission or real deployment. Later dated records below are history.
+
+
 The three VPS bodies actually select Matrix SDK
 `80542cee1d56e3d46bbda21f4174e3df75cf5585` and receiving code
 `d7d64a19f6eb939d3428c13d2a1bdddb1bd2ed4b62719306884a611a766312b3`.

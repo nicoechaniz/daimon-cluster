@@ -433,6 +433,19 @@ RECEIVING_SUPPORT_HASHES = {
 }
 
 
+ADMISSION_SOCIAL_HASHES = {
+    'clusterctl/onboarding_group_coordinator.py': (
+        '4f3bf747fb5bd8dc83a99677217192bf5cce6903b2ea72ee35789befa4b5cdd4',
+        '46d3d178394dc4bfd7c952055c7a778b394e103c7ff9be63b514895b1883e5cd'),
+    'clusterctl/onboarding_group_admission.py': (
+        '4e4f9e76535c5c48143a0ec63f7cdccddd1d7cc48cbebb55b8fb34aa98aa8145',
+        '5c170305bcb180b87d508daf9f495d9ed5b2e58a0594d020beb1e594469f8365'),
+    'clusterctl/onboarding_receiving_update.py': (
+        'ef49165b01dc6a46f9a0f6cb0e35b82a83007a370ee5f9bf8b3f10b7ed53bc45',
+        '61394fc4b4b756571b04946f3c8a087d994c23bd9436834fb08285a961f98ada'),
+}
+
+
 ADMISSION_BARRIER_HASHES = {'clusterctl/onboarding_receiving_update.py': (
     'c80657d8f9256b1dfb32689d084370e4c0dc3a7c419020a1843ff45c17245eff',
     'ef49165b01dc6a46f9a0f6cb0e35b82a83007a370ee5f9bf8b3f10b7ed53bc45')}
@@ -515,6 +528,20 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         return 'docs', []
     if set(changed) <= CI_FILES | RUNBOOK_DOCS:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    social_files = set(ADMISSION_SOCIAL_HASHES) | {
+        'tools/qualify_candidate_admission.py', 'tests/test_onboarding_group_admission.py',
+        'tests/test_receiving_cohort_control.py', 'tests/test_onboarding_group_coordinator.py',
+        'tests/test_onboarding_group_finisher.py'}
+    social_tests = ['tests/test_receiving_cohort_control.py', 'tests/test_onboarding_group_coordinator.py',
+                    'tests/test_onboarding_group_finisher.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    social_source = set(changed) & ADMISSION_SOCIAL_HASHES.keys()
+    if (set(changed) & (social_files - {'tests/test_receiving_cohort_control.py'})
+            and set(changed) <= social_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / path).is_file() for path in social_tests)
+            and (not social_source or receiving_support_only(root, base, social_source, hashes=ADMISSION_SOCIAL_HASHES))):
+        # The native social consumer needs its explicit future SDK; identity
+        # creation still uses the unchanged default producer in a separate process.
+        return 'admission', social_tests
     coordinator_files = {'clusterctl/onboarding_group_coordinator.py',
                          'tests/test_onboarding_group_coordinator.py',
                          'tests/test_onboarding_group_finisher.py'}

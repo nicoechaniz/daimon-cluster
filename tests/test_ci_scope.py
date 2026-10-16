@@ -869,3 +869,19 @@ def test_stopped_barrier_delta_keeps_only_exact_receiving_coverage(monkeypatch):
     assert ci_scope.select(changed + ['clusterctl/onboarding_service.py'], ROOT, base='a'*40)[0] != 'ci'
     monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda *a, **k: False)
     assert ci_scope.select(changed, ROOT, base='a'*40)[0] != 'ci'
+
+
+def test_social_admission_delta_requires_exact_source_and_explicit_sdk_profile(monkeypatch):
+    from tools import ci_scope
+    changed = sorted(ci_scope.ADMISSION_SOCIAL_HASHES) + [
+        'tests/test_onboarding_group_admission.py', 'tests/test_receiving_cohort_control.py',
+        'tools/qualify_candidate_admission.py', '.github/workflows/tests.yml']
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda root, base, names, hashes=None:
+        root == ROOT and base == 'a'*40 and names == set(ci_scope.ADMISSION_SOCIAL_HASHES)
+        and hashes == ci_scope.ADMISSION_SOCIAL_HASHES)
+    profile, tests = ci_scope.select(changed, ROOT, base='a'*40)
+    assert profile == 'admission' and 'tests/test_receiving_cohort_control.py' in tests
+    assert ci_scope.select(changed, ROOT)[0] != 'admission'
+    assert ci_scope.select(changed + ['clusterctl/onboarding_custody.py'], ROOT, base='a'*40)[0] != 'admission'
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda *a, **k: False)
+    assert ci_scope.select(changed, ROOT, base='a'*40)[0] != 'admission'

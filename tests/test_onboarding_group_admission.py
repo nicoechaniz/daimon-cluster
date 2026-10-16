@@ -129,7 +129,10 @@ def test_protected_social_phase_resumes_partial_native_distribution(group_source
         schema='cluster-receiving-admission-barrier/v1', current_senders={'founder': {'state': fault['barrier']}}))
     with pytest.raises(OnboardingError, match='quiescence_required'):
         cohort.admit_membership(deadline_ns=time.monotonic_ns()+30_000_000_000)
-    assert calls == [] and journal.get(row['operation_id'])['runtime_observation'] is None
+    assert calls == []
+    pending = journal.get(row['operation_id'])['runtime_observation']['membership_admission']['requests']
+    assert pending['founder']['membership-invite']['result'] is None
+    assert pending['founder']['membership-invite']['command']['params']['payload'] == recipe['invitation']
     fault.update(barrier='stopped', accept=True)
     with pytest.raises(OSError, match='lost membership acceptance response'):
         cohort.admit_membership(deadline_ns=time.monotonic_ns()+30_000_000_000)

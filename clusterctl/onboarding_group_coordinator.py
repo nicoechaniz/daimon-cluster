@@ -476,9 +476,9 @@ class GroupCoordinator:
             cohort.revoke_senders()
             for name in sorted(row['intended_transition']['admission_preparations']):
                 authorized()
-                recipe, _child = cohort._bound_admission_lifecycle(current(), name)
-                if 'loaded-'+name in phases():
+                if 'loaded-'+name in phases() or 'preserved-'+name in phases():
                     continue
+                recipe, _child = cohort._bound_admission_lifecycle(current(), name)
                 if 'preserved-'+name not in phases():
                     if recipe['profile'] == 'source':
                         owner = cohort.owners[name]

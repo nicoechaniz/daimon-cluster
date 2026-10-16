@@ -451,10 +451,42 @@ jobs:
           sudo env LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" "$onboarding_python" -m pytest -q \
             tests/test_onboarding_host_ownership.py -k 'root_worker or existing_authority' \
             -W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning
+      - name: Qualify selected native admission consumers with the explicit SDK candidate
+        if: needs.scope.outputs.profile == 'admission' || needs.scope.outputs.profile == 'full' || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_admission.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_authorities.py')
+        env:
+          TEST_PROFILE: ${{ needs.scope.outputs.profile }}
+          TEST_ARGUMENTS: ${{ needs.scope.outputs.pytest_args }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import shlex
+          import subprocess
+          import sys
+
+          from tools.qualify_candidate_admission import ADMISSION_MATRIX_COMMIT, TESTS
+
+          selected = shlex.split(os.environ['TEST_ARGUMENTS'])
+          if os.environ['TEST_PROFILE'] == 'full':
+              selected = sorted(TESTS)
+          elif os.environ['TEST_PROFILE'] == 'admission':
+              selected = ['tests/test_onboarding_group_admission.py']
+          else:
+              selected = [item for item in selected if item.split('::', 1)[0] in TESTS]
+          candidate = Path(os.environ['RUNNER_TEMP']) / 'admission-candidate-sdk'
+          subprocess.run([sys.executable, '-m', 'venv', '--system-site-packages', str(candidate)], check=True)
+          interpreter = candidate / 'bin/python'
+          subprocess.run([str(interpreter), '-m', 'pip', 'install', '--no-deps', '--ignore-installed',
+              'daimon-matrix @ git+https://github.com/AlterMundi/daimon-matrix.git@' + ADMISSION_MATRIX_COMMIT], check=True)
+          subprocess.run([str(interpreter), '-B', 'tools/qualify_candidate_admission.py',
+              '--sdk-commit', ADMISSION_MATRIX_COMMIT, '--identity-python', sys.executable, *selected], check=True)
+          PY
       - run: >-
           python -m pytest -q -x --tb=short
           ${{ needs.scope.outputs.pytest_args }}
           --deselect=tests/test_guest_owner_bootstrap.py
+          --deselect=tests/test_onboarding_group_admission.py
+          --deselect=tests/test_onboarding_group_authorities.py
           -W error::ResourceWarning
           -W error::pytest.PytestUnraisableExceptionWarning
           --durations=10

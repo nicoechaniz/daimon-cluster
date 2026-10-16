@@ -1527,3 +1527,28 @@ waiting for the stopped daemon to answer. A retained exit is only a routing hint
 the service must still be observed inactive with the exact original exit proof.
 Recorded loaded replacements use authenticated live process and gate checks;
 unbound originals keep their original live-status verification.
+
+### Qualify future admission without changing the default SDK
+
+Admission consumer tests need the explicitly selected future SDK; the default
+identity producer remains on its existing qualified VCS pin. Use the maintained
+`tools/qualify_candidate_admission.py` runner with the candidate interpreter,
+`--sdk-commit` and the absolute `--identity-python` for that default producer.
+The runner verifies real installed VCS provenance and declares that candidate only
+inside its test process. Initial custody generation, backups and credential
+responses use the original producer interpreter, including its unchanged strict
+SDK guard and isolated children. Production pins and receiving SDKs are untouched.
+
+Reuse one test environment per incompatible SDK. CI creates an isolated consumer
+venv that reuses its installed dependencies and installs only the selected Matrix
+VCS revision, with no dependency upgrade. It routes only selected admission or
+authority consumers there and excludes those same files from the ordinary test
+pass. Unrelated changes start no candidate environment. A wheel SDK without VCS
+metadata does not satisfy the legacy identity guard; do not invent that metadata.
+A parent-only module or constant overlay does not propagate to isolated children.
+
+A synthetic window may finish before the entrant Matrix unit is first created.
+Cleanup must observe `LoadState=not-found`, inactive state and PID0 as absence,
+then close its owned authority/API/native endpoints. Preserve the original native
+service and the terminal receipt; a missing never-created unit is not a failed
+service stop. A dated ready flag is not current health after the runner exits.

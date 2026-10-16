@@ -224,8 +224,9 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
                 raise OnboardingError('onboarding_group_membership_quiescence_required')
             return proof
 
-        # A revoked live sender is insufficient for an offline native writer.
-        barrier()
+        # Each actual offline write below checks fresh quiescence, and the
+        # completed social result checks it again. A duplicate check here can
+        # consume the entire worker budget before that first write is reached.
         receivers = admission['receivers']
         authorities = {ref: public_authority_history(item['authority'], item['history'])
                        for ref, item in recipe['authority_closure'].items()}

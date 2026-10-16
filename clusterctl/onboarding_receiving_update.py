@@ -3175,7 +3175,8 @@ class CohortController:
     def admit_membership(self, *, deadline_ns: int) -> dict:
         """Run the approved native social phase with all original bodies stopped."""
         from .onboarding_group_admission import admit_membership
-        return admit_membership(self, deadline_ns=deadline_ns)
+        with self.journal.mutation_lock(self.operation_id), self._observation_scope():
+            return admit_membership(self, deadline_ns=deadline_ns)
 
     def publish_admission_group(self, *, deadline_ns: int) -> dict:
         """Publish only the protected post-membership offline group phase."""

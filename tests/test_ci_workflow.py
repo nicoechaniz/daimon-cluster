@@ -156,3 +156,36 @@ def test_guest_owner_contract_uses_kernel_uid_mapping_and_is_not_run_twice() -> 
     assert 'sudo env LD_LIBRARY_PATH=' in step and 'tools/ci_guest_owner.py' in step
     assert '--uid="$(id -u)" --gid="$(id -g)"' in step
     assert workflow.count('--deselect=tests/test_guest_owner_bootstrap.py') == 1
+
+
+@pytest.mark.parametrize(('profile', 'selection', 'expected'), [
+    ('admission', 'tests/test_receiving_cohort_control.py', ['tests/test_onboarding_group_admission.py']),
+    ('full', 'tests', ['tests/test_onboarding_group_admission.py', 'tests/test_onboarding_group_authorities.py']),
+    ('peer', 'tests/test_onboarding_group_authorities.py::test_scope tests/test_ci_scope.py',
+        ['tests/test_onboarding_group_authorities.py::test_scope']),
+])
+def test_candidate_admission_ci_keeps_default_producer_and_only_selected_consumers(monkeypatch, tmp_path,
+        profile, selection, expected):
+    import subprocess
+    import sys
+    raw = (Path(__file__).parents[1]/'.github/workflows/tests.yml').read_text()
+    start = raw.index('      - name: Qualify selected native admission consumers')
+    marker = "          python - <<'PY'\n"
+    begin = raw.index(marker, start) + len(marker)
+    end = raw.index('          PY\n', begin)
+    source = '\n'.join(line.removeprefix('          ') for line in raw[begin:end].splitlines())
+    monkeypatch.setenv('TEST_PROFILE', profile)
+    monkeypatch.setenv('TEST_ARGUMENTS', selection)
+    monkeypatch.setenv('RUNNER_TEMP', str(tmp_path))
+    commands = []
+    monkeypatch.setattr(subprocess, 'run', lambda argv, **kw: commands.append((argv, kw)))
+    exec(compile(source, '<candidate-admission-ci>', 'exec'), {})
+    candidate = str(tmp_path/'admission-candidate-sdk/bin/python')
+    assert commands[0][0] == [sys.executable, '-m', 'venv', '--system-site-packages', str(tmp_path/'admission-candidate-sdk')]
+    assert commands[1][0][0] == candidate
+    assert '--no-deps' in commands[1][0]
+    command = commands[2][0]
+    assert command[0] == candidate
+    assert command[command.index('--identity-python') + 1] == sys.executable
+    assert command[command.index('--identity-python') + 2:] == expected
+    assert all(options == {'check': True} for _, options in commands)

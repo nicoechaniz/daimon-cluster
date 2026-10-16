@@ -1649,3 +1649,32 @@ def test_codex_configuration_without_catalog_cannot_be_receiving_adoption(tmp_pa
         controller.prepare_activation()
     assert all(owner.gate['readers'] == [] for owner in owners.values())
     assert 'native_tooling' not in journal.get(identifier)['runtime_observation']
+
+
+def test_membership_phase_reuses_lifecycle_metadata_but_refreshes_observations(tmp_path, monkeypatch):
+    from clusterctl import onboarding_group_admission as social
+    controller, owners, _journal, _parent, recipe, _source, _effects = admission_child_fixture(
+        tmp_path, profile='source', with_group=False, with_exit=False)
+    inspect = owners['eko'].lifecycle_operation
+    original_status = owners['eko'].status
+    reads, status_reads = [], []
+    def lifecycle(operation):
+        reads.append(operation)
+        return inspect(operation)
+    def status():
+        status_reads.append(True)
+        return original_status()
+    owners['eko'].lifecycle_operation = lifecycle
+    owners['eko'].status = status
+    def phase(cohort, *, deadline_ns):
+        assert cohort is controller and deadline_ns > time.monotonic_ns()
+        for _ in range(2):
+            cohort._lifecycle('eko', recipe, require_group=False)
+            cohort.owners['eko'].status()
+        return {'prepared_only': True}
+    monkeypatch.setattr(social, 'admit_membership', phase)
+    for _ in range(2):
+        assert controller.admit_membership(deadline_ns=time.monotonic_ns()+30_000_000_000) == {'prepared_only': True}
+        assert controller._lifecycle_projections is None
+    assert len(reads) == 2, 'each new invocation must fetch a fresh owner projection'
+    assert len(status_reads) == 4, 'current writer observations are never cached'

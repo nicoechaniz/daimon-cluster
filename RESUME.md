@@ -29,6 +29,16 @@ closed the lifetime/deadline findings.152 host/coordinator/finisher/process chec
 and119 updated process/cohort checks,2 affected real native cases,69 CI cases,
 88-file typing and scoped lint pass; overlaps are not additional tests.
 
+The reviewed finite helperc652/SDK3a was then qualified through actual installed
+owner CLIs: Source's two snapshot/exact-retry calls and two fresh quiescence
+queries used one process in10.074s; the old guest's snapshot/exact retry used one
+Incus owner process in38.574s. Both closed with exit0, zero membership authoring
+and zero models. Owner request/context journals retain these read-only social
+observations. A new public read-only helper mount on the UUID-pinned old synthetic
+guest supports qualification only. Frozen hostd814, receiverc2, SDK3a, identities,
+original lifecycle bindings and real selections remain unchanged. Root never
+opened/executed another body's private SDK. Do not rerun these unchanged probes.
+
 This source is not installed admission or production acceptance. The remaining
 [linked recovery authorization](docs/design/admission-continuation.md) must cover
 all remaining social, lifecycle/initial-start, activation and communication

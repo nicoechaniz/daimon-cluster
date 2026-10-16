@@ -54,8 +54,23 @@ def test_finite_owner_sessions_keep_native_writer_and_exact_requests(group_sourc
     monkeypatch.setattr(social, 'load_owner_runtime', load)
     deadline = time.monotonic_ns()+60_000_000_000
     with RelationshipSession(source, packet, deadline_ns=deadline) as session:
+        before_rpc = session.hosted.service.ledger.rpc_requests()
+        absent = session.call(packet, inspect_only=True)
+        assert absent['schema'] == 'cluster-group-invitation-inspection/v1'
+        assert absent['rpc_state'] == 'not-dispatched' and not absent['request_retained']
+        assert absent['request_sha256'] is absent['response_sha256'] is None
+        assert absent['invitations'] == absent['acceptances'] == [] and absent['requests_dispatched'] == 0
+        assert session.hosted.service.ledger.rpc_requests() == before_rpc
+        assert not (source.outputs/'group-admission'/selected['operation_id']/'invite.json').exists()
         invited = session.call(packet)
         assert invited['status'] == 'recorded' and session.call(packet) == invited
+        after_rpc = session.hosted.service.ledger.rpc_requests()
+        completed = session.call(packet, inspect_only=True)
+        assert completed['rpc_state'] == 'completed' and completed['request_retained']
+        assert completed['request_sha256'] == invited['request_sha256']
+        assert completed['response_sha256'] == invited['response_sha256']
+        assert len(completed['invitations']) == 1 and completed['acceptances'] == []
+        assert session.hosted.service.ledger.rpc_requests() == after_rpc
         with source.writer():
             with pytest.raises(BlockingIOError):
                 acquire_lock(source.root)
@@ -287,11 +302,29 @@ def test_owner_refuses_expired_unsubmitted_membership_without_refreshing_frame(g
     retained = being_seed._read(path)
     assert retained['request'] == frame and retained['retired_requests'] == [] and retained['response'] is None
     assert base.service.ledger.events() == events
+    with source.writer():
+        inspected = relationship_request(source.root, journal, value, offline=base,
+            membership_precondition=guard, inspect_only=True)
+    assert inspected['rpc_state'] == 'absent' and inspected['request_retained']
+    assert inspected['request_sha256'] == request_hash(frame) and inspected['requests_dispatched'] == 0
+    assert being_seed._read(path) == retained and base.service.ledger.events() == events
     # Pending is uncertain, including a possible committed local event; it is
     # never treated as permission to refresh or perform a new expired action.
     with source.writer():
         base.service.ledger.begin_rpc(client_id=frame['client_id'], request_id=frame['request_id'],
             request_hash=request_hash(frame), method=frame['method'])
+        inspected = relationship_request(source.root, journal, value, offline=base,
+            membership_precondition=guard, inspect_only=True)
+    assert inspected['rpc_state'] == 'pending' and inspected['response_sha256'] is None
+    backup = path.with_suffix('.preserved')
+    path.rename(backup)
+    try:
+        with source.writer():
+            untracked = relationship_request(source.root, journal, value, offline=base,
+                membership_precondition=guard, inspect_only=True)
+        assert untracked['rpc_state'] == 'untracked-pending' and not untracked['request_retained']
+    finally:
+        backup.rename(path)
     with pytest.raises(OnboardingError, match='native_uncertain'):
         source.group_relationship(value, offline=True, authority_closure=closure(peer_bundle), membership_precondition=guard)
     assert being_seed._read(path) == retained and base.service.ledger.events() == events
@@ -541,6 +574,13 @@ def test_lost_native_reply_retries_original_stale_frame_without_another_event(gr
     events = base.service.ledger.events()
     assert any(row['request_id'] == frame['request_id'] and row['state'] == 'completed'
                for row in base.service.ledger.rpc_requests())
+    with monkeypatch.context() as patch:
+        patch.setattr(HostedWeave, 'handle', lambda *a: pytest.fail('inspection dispatched a request'))
+        with source.writer():
+            inspection = relationship_request(source.root, journal, request, offline=base, inspect_only=True)
+    assert inspection['rpc_state'] == 'completed' and inspection['response_sha256'] is None
+    assert len(inspection['invitations']) == 1 and inspection['requests_dispatched'] == 0
+    assert being_seed._read(path)['response'] is None
     monkeypatch.setattr(HostedWeave, 'handle', original)
     late = replace(base, service=replace(base.service, clock=lambda: frame['issued_at_ms'] + 61_000))
     with source.writer():

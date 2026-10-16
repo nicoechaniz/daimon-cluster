@@ -919,3 +919,21 @@ def test_reviewed_added_module_requires_real_absence_in_valid_git_tree(tmp_path)
         'commit', '-qm', 'already present'], check=True)
     existing = subprocess.check_output(['git', '-C', str(tmp_path), 'rev-parse', 'HEAD'], text=True).strip()
     assert not ci_scope.receiving_support_only(tmp_path, existing, {'new.py'}, hashes=hashes)
+
+
+def test_recovery_planner_and_native_inspection_select_exact_affected_contracts(monkeypatch):
+    from tools import ci_scope
+    changed = sorted(ci_scope.ADMISSION_RECOVERY_HASHES) + [
+        'tests/test_onboarding_group_recovery.py', 'tests/test_onboarding_group_session.py',
+        'tests/test_onboarding_group_admission.py', 'docs/design/admission-continuation.md']
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda root, base, names, hashes=None:
+        base == 'a'*40 and names == set(ci_scope.ADMISSION_RECOVERY_HASHES)
+        and hashes == ci_scope.ADMISSION_RECOVERY_HASHES)
+    profile, selected = ci_scope.select(changed, ROOT, base='a'*40)
+    assert profile == 'admission'
+    assert 'tests/test_onboarding_group_recovery.py' in selected
+    assert 'tests/test_receiving_update_journal.py' in selected
+    assert ci_scope.select(changed, ROOT)[0] != 'admission'
+    assert ci_scope.select(changed+['clusterctl/onboarding_runtime.py'], ROOT, base='a'*40)[0] != 'admission'
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda *a, **k: False)
+    assert ci_scope.select(changed, ROOT, base='a'*40)[0] != 'admission'

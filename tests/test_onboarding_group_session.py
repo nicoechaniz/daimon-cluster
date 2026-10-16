@@ -21,7 +21,7 @@ class Owner:
     def __init__(self, owner, packet, **kw): self.packet=packet
     def __enter__(self): return self
     def __exit__(self,*args): Path(sys.argv[2]).write_text('released')
-    def call(self,packet): return dict(echo=packet)
+    def call(self,packet,**options): return dict(echo=packet,**options)
 session.RelationshipSession=Owner
 session.serve(None,deadline_ns=int(sys.argv[1]),reader=0,writer=1,
     quiescence=lambda child,social:dict(child=child,social=social))
@@ -44,6 +44,8 @@ def test_actual_process_reuses_one_owner_and_closes_after_writer_release(tmp_pat
         assert session.call({'quiescence': 'original-child'}) == {
             'child': 'original-child', 'social': 'original-operation'}
         assert session.call({'second': True}) == {'echo': {'second': True}}
+        assert session.call({'inspect': {'original-invite': True}}) == {
+            'echo': {'original-invite': True}, 'inspect_only': True}
         assert session.process is process
     assert marker.read_text() == 'released' and process.poll() == 0
 
@@ -169,6 +171,15 @@ def test_source_command_drops_privileges_without_inspecting_private_sdk(tmp_path
     assert child.options['user'] == owner.owner_uid and child.options['extra_groups'] == ()
     assert child.argv[child.argv.index('--observation-deadline-ns')+1] == str(child.deadline_ns)
     assert '--group-session' in child.argv and '--operation-journal' in child.argv
+
+
+def test_invitation_inspection_requires_explicit_owner_scope(monkeypatch):
+    from clusterctl.onboarding_receiving_update import SourceGroupClient, GuestGroupClient
+    for kind in (SourceGroupClient, GuestGroupClient):
+        owner = object.__new__(kind)
+        monkeypatch.setattr(owner, '_call', lambda *a, **k: pytest.fail('inspection used old one-shot CLI'))
+        with pytest.raises(OnboardingError, match='inspection_required'):
+            owner.group_relationship({'operation_id': 'same'}, authority_closure={}, inspect_only=True)
 
 
 @pytest.mark.parametrize('stage', ['loading', 'handling'])

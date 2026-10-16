@@ -201,7 +201,7 @@ class RelationshipSession:
             self.stack.close()
             raise
 
-    def call(self, packet):
+    def call(self, packet, *, inspect_only=False):
         from .onboarding_group_admission import check_retained_ledger, relationship_request, request_packet
         packet = request_packet(packet)
         if (not packet['offline'] or 'action' in packet['command']
@@ -210,7 +210,8 @@ class RelationshipSession:
             raise OnboardingError('onboarding_group_relationship_request_conflict')
         check_retained_ledger(self.root, self.journal, packet['command'])
         return relationship_request(self.root, self.journal, packet['command'], offline=self.hosted,
-            deadline_ns=self.deadline_ns, membership_precondition=packet.get('membership_precondition'))
+            deadline_ns=self.deadline_ns, membership_precondition=packet.get('membership_precondition'),
+            inspect_only=inspect_only)
 
     def __exit__(self, *_):
         self.stack.close()
@@ -233,6 +234,8 @@ def serve(owner, *, deadline_ns, reader, writer, target=False, quiescence=None):
             value = frame['packet']
             if isinstance(value, dict) and set(value) == {'quiescence'} and callable(quiescence):
                 result = quiescence(value['quiescence'], session.packet['command']['operation_id'])
+            elif isinstance(value, dict) and set(value) == {'inspect'}:
+                result = session.call(value['inspect'], inspect_only=True)
             else:
                 result = session.call(value)
             frames.write(dict(sequence=sequence, result=result))

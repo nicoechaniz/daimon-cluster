@@ -1293,7 +1293,8 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
 
 def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
                          offline=None, deadline_ns: int | None = None,
-                         membership_precondition: dict | None = None) -> dict:
+                         membership_precondition: dict | None = None,
+                         inspect_only: bool = False) -> dict:
     """Record or retry one native request; never return local capability material.
 
     A relationship snapshot is the native reducer's observation at its retained
@@ -1306,6 +1307,8 @@ def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
     from daimon_matrix.operator_capabilities import operator_capability_profile
 
     selected = command(value)
+    if type(inspect_only) is not bool or inspect_only and (offline is None or selected['method'] != 'tribe.invite'):
+        raise OnboardingError('onboarding_group_invitation_inspection_required')
     guard = None
     if membership_precondition is not None:
         if offline is None:
@@ -1313,6 +1316,15 @@ def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
         guard = validate_membership_precondition(membership_precondition, selected)
     private_directory(runtime_root)
     bundle = being_seed._read(runtime_root / 'runtime.json', limit=being_seed.MAX_SELECTION)
+    if inspect_only:
+        from daimon_matrix.relationships import validate_relationship_event_payload
+        try:
+            if set(selected['params']) != {'payload'}:
+                raise ValueError
+            validate_relationship_event_payload('matrix/tribe-invitation', selected['params']['payload'],
+                author_being_ref=bundle['manifest']['being_ref'], causal_parents=[])
+        except (KeyError, TypeError, ValueError):
+            raise OnboardingError('onboarding_group_invitation_inspection_required') from None
     role = 'observe' if selected['method'] == 'relationship.snapshot' else 'relationships'
     profile = operator_capability_profile(role)
     directory = runtime_root / profile['client_directory']
@@ -1377,28 +1389,103 @@ def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
         if clock() >= guard['not_after_ms']:
             raise OnboardingError('onboarding_group_membership_acceptance_expired')
 
+    def validate_retained(retained):
+        if (set(retained) != {'schema', 'command', 'identity', 'request', 'retired_requests', 'response'}
+                or retained['schema'] != 'cluster-group-relationship-operation/v1'
+                or retained['command'] != selected or retained['identity'] != identity
+                or not isinstance(retained['retired_requests'], list)):
+            raise OnboardingError('onboarding_group_relationship_request_conflict')
+        request_hash = authenticate(retained['request'])
+        for earlier in retained['retired_requests']:
+            authenticate(earlier)
+            if earlier['request_id'] != retained['request']['request_id']:
+                raise OnboardingError('onboarding_group_relationship_request_conflict')
+        return request_hash
+
+    def inspection(retained):
+        # The caller continuously owns the real native writer. Query the actual
+        # RPC journal and relationships without handle(), frame refresh or any
+        # request/result write; a missing cached response is never RPC absence.
+        check_deadline()
+        verify_loaded_stores()
+        expected_hash = None if retained is None else validate_retained(retained)
+        native_requests = offline.service.ledger.rpc_requests()
+        rows = [] if retained is None else [row for row in native_requests
+            if row['client_id'] == retained['request']['client_id']
+                and row['request_id'] == retained['request']['request_id']]
+        if (len(rows) > 1 or rows and (rows[0]['request_hash'] != expected_hash
+                or rows[0]['method'] != selected['method'] or rows[0]['state'] not in {'pending', 'completed'})):
+            raise OnboardingError('onboarding_group_relationship_request_conflict')
+        state = ('not-dispatched' if retained is None else 'absent') if not rows else rows[0]['state']
+        if retained is None and any(row['method'] == selected['method'] and row['state'] == 'pending'
+                for row in native_requests):
+            # A missing owner file cannot identify an untracked pending RPC.
+            # Preserve that uncertainty rather than certifying fresh authoring.
+            state = 'untracked-pending'
+        response_hash = None
+        if retained is not None and retained['response'] is not None:
+            if state != 'completed':
+                raise OnboardingError('onboarding_group_relationship_request_conflict')
+            response_hash = digest(verify_response(retained['response'], config.capability,
+                expected_request_id=retained['request']['request_id'], expected_request_hash=expected_hash,
+                expected_server=config.expected_server,
+                expected_runtime=dict(runtime_id=config.runtime_id, runtime_label=config.runtime_label)))
+        payload = selected['params']['payload']
+        invitations = [event for event in offline.service.relationships.store.events()
+            if event['kind'] == 'matrix/tribe-invitation' and event['payload'] == payload]
+        references = {(event['event_id'], event['content_hash']) for event in invitations}
+        acceptances = [event for event in offline.service.relationships.store.events()
+            if event['kind'] == 'matrix/tribe-membership-acceptance'
+            and (event['payload']['invitation_ref']['event_id'],
+                 event['payload']['invitation_ref']['event_hash']) in references]
+        now = clock()
+        with offline.service.relationships.store.authorization_view(at_ms=now,
+                card_verifier=offline.service.relationships.card_verifier, busy_timeout_ms=0) as view:
+            tribe = view.tribes.get(payload['tribe_ref'])
+            member = None if tribe is None else tribe['memberships'].get(payload['invitee_being_ref'])
+            membership = dict(tribe_state=None if tribe is None else tribe['state'],
+                active_members=[] if tribe is None else sorted(ref for ref, row in tribe['memberships'].items()
+                    if row['state'] == 'active'), entrant_state=None if member is None else member['state'])
+        if retained is None and invitations:
+            state = 'untracked-event'
+        verify_loaded_stores()
+        check_deadline()
+        return dict(schema='cluster-group-invitation-inspection/v1', operation_id=selected['operation_id'],
+            command_sha256=digest(selected), ledger_sha256=digest(identity['ledger']),
+            request_retained=retained is not None, rpc_state=state,
+            request_sha256=expected_hash, response_sha256=response_hash,
+            invitations=[dict(event_id=e['event_id'], event_hash=e['content_hash']) for e in invitations],
+            acceptances=[dict(event_id=e['event_id'], event_hash=e['content_hash']) for e in acceptances],
+            membership=membership, observed_at_ms=now, requests_dispatched=0,
+            receiving_readiness='unobserved')
+
     check_deadline()
+    if inspect_only:
+        # An absent journal is stable under the native writer. Do not create an
+        # operation, request, lock directory or cache just to report that absence.
+        try:
+            private_directory(journal)
+        except FileNotFoundError:
+            return inspection(None)
+        with being_seed._locked(journal):
+            try:
+                retained = being_seed._read(journal/selected['operation_id']/(selected['step']+'.json'),
+                    limit=being_seed.MAX_SELECTION)
+            except FileNotFoundError:
+                retained = None
+            return inspection(retained)
     private_directory(journal, create=True)
     with being_seed._locked(journal):
         operation = private_directory(journal / selected['operation_id'], create=True)
         path = operation / (selected['step'] + '.json')
         if path.exists():
             retained = being_seed._read(path, limit=being_seed.MAX_SELECTION)
-            if (set(retained) != {'schema', 'command', 'identity', 'request', 'retired_requests', 'response'}
-                    or retained['schema'] != 'cluster-group-relationship-operation/v1'
-                    or retained['command'] != selected or retained['identity'] != identity
-                    or not isinstance(retained['retired_requests'], list)):
-                raise OnboardingError('onboarding_group_relationship_request_conflict')
         else:
             retained = dict(schema='cluster-group-relationship-operation/v1', command=selected,
                 identity=identity, request=client.prepare(selected['method'], selected['params']),
                 retired_requests=[], response=None)
             being_seed._write(path, retained, limit=being_seed.MAX_SELECTION)
-        request_hash = authenticate(retained['request'])
-        for earlier in retained['retired_requests']:
-            authenticate(earlier)
-            if earlier['request_id'] != retained['request']['request_id']:
-                raise OnboardingError('onboarding_group_relationship_request_conflict')
+        request_hash = validate_retained(retained)
         for parent in (operation, journal, journal.parent):
             _sync(parent)
         request = retained['request']

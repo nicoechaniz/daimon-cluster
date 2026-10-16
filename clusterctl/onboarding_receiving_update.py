@@ -421,12 +421,15 @@ class GuestGroupClient:
 
     def group_relationship(self, command: dict, *, authority_closure: dict,
                            expected_context_sha256: str | None = None,
-                           membership_precondition: dict | None = None) -> dict:
+                           membership_precondition: dict | None = None,
+                           inspect_only: bool = False) -> dict:
         packet = dict(command=command,
             offline=True, authority_closure=authority_closure,
             **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
             **({'membership_precondition': membership_precondition} if membership_precondition is not None else {}))
         stack = getattr(self, '_relationship_stack', None)
+        if type(inspect_only) is not bool or inspect_only and stack is None:
+            raise OnboardingError('onboarding_group_invitation_inspection_required')
         if stack is None:
             return self._call('group-relationship', group_request=packet)
         if self._relationship_process is None:
@@ -436,7 +439,7 @@ class GuestGroupClient:
             self._relationship_process = stack.enter_context(self.backend._target_relationship_session(
                 self.plan, packet, candidate=self.candidate, timeout_seconds=timeout,
                 deadline_ns=self.deadline_ns))
-        return self._relationship_process.call(packet)
+        return self._relationship_process.call({'inspect': packet} if inspect_only else packet)
 
     def group_relationship_scope(self):
         from .onboarding_group_session import supported_scope
@@ -630,17 +633,20 @@ class SourceGroupClient:
     def group_relationship(self, command: dict, *, offline: bool = False,
                            authority_closure: dict | None = None,
                            expected_context_sha256: str | None = None,
-                           membership_precondition: dict | None = None) -> dict:
+                           membership_precondition: dict | None = None,
+                           inspect_only: bool = False) -> dict:
         packet = dict(command=command,
             offline=offline, authority_closure={} if authority_closure is None else authority_closure,
             **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
             **({'membership_precondition': membership_precondition} if membership_precondition is not None else {}))
         stack = getattr(self, '_relationship_stack', None)
+        if type(inspect_only) is not bool or inspect_only and stack is None:
+            raise OnboardingError('onboarding_group_invitation_inspection_required')
         if stack is None:
             return self._call(['--group-request', '-'], command=packet)
         if self._relationship_process is None:
             self._relationship_process = stack.enter_context(self._relationship_conversation(packet))
-        return self._relationship_process.call(packet)
+        return self._relationship_process.call({'inspect': packet} if inspect_only else packet)
 
     def group_relationship_scope(self):
         from .onboarding_group_session import supported_scope

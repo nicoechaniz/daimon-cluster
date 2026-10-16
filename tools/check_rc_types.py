@@ -62,6 +62,7 @@ FILES = (
     "clusterctl/onboarding_peer.py",
     "clusterctl/onboarding_group_admission.py",
     "clusterctl/onboarding_group_session.py",
+    "clusterctl/onboarding_group_recovery.py",
     "clusterctl/onboarding_group_coordinator.py",
     "clusterctl/onboarding_peer_host.py",
     "clusterctl/onboarding_source.py",

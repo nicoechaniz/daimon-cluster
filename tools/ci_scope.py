@@ -433,6 +433,27 @@ RECEIVING_SUPPORT_HASHES = {
 }
 
 
+ADMISSION_RECOVERY_HASHES = {
+    'clusterctl/onboarding_group_admission.py': (
+        '69caac1428de643a939346d07ebf412dd5531d02c9846dd0d18a97e4a69252fb',
+        '85eae49047b5615921ab7ca4a7e577f2622a2ebc3faef41bc0317be9bcff9d40'),
+    'clusterctl/onboarding_group_session.py': (
+        'f7f1f8cf751519353d736dbe7eed51f583e55d1d47bb6d74deda8bc42a7db4e5',
+        'e3f27c6db5f406dc123ed688783fb831d47b8581eb55302e5cb5290920d2616d'),
+    'clusterctl/onboarding_group_recovery.py': (
+        None, 'd7bf441a0245c29314217c0ca06dff7f19914f57d901fb8491c536e04a735ede'),
+    'clusterctl/onboarding_receiving_update.py': (
+        'f42a0c069d412a3ee0747a308dba2f0e047cd4848341500008015709433a7f17',
+        '8f5be18610309fad59c63cb684168d22cef9e3b2e57cc424aab7847c31b1f0cf'),
+    'tools/build_onboarding_code.py': (
+        'b96435ac875ae248e622ae79bd228b9b2767283f7cc9c63e7d4a935a0a98853b',
+        '59823fda3e12fee104e37df59b85c6881acae71bb86515bed09e6b2d64cd14bb'),
+    'tools/check_rc_types.py': (
+        'ee15068551964a6ecbe37150a14514b48e6f498456fe71cd23210b4ca60d8f71',
+        '6358073f70f35eb36c776481db64832045dd4158a471133fadb19070f4ea5b41'),
+}
+
+
 ADMISSION_SESSION_HASHES = {
     'clusterctl/onboarding_group_session.py': (
         None,
@@ -566,6 +587,17 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         return 'docs', []
     if set(changed) <= CI_FILES | RUNBOOK_DOCS:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    recovery_tests = ['tests/test_onboarding_group_recovery.py', 'tests/test_onboarding_group_session.py',
+        'tests/test_onboarding_release.py', 'tests/test_receiving_update_journal.py',
+        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    recovery_files = set(ADMISSION_RECOVERY_HASHES) | set(recovery_tests) | {'tests/test_onboarding_group_admission.py'}
+    recovery_source = set(changed) & ADMISSION_RECOVERY_HASHES.keys()
+    if (recovery_source and set(changed) <= recovery_files | CI_FILES | RUNBOOK_DOCS
+            and all((root/path).is_file() for path in recovery_tests)
+            and receiving_support_only(root, base, recovery_source, hashes=ADMISSION_RECOVERY_HASHES)):
+        # Native inspection uses the candidate consumer once; no runtime, key,
+        # lifecycle or model effect is introduced by the linked journal planner.
+        return 'admission', recovery_tests
     session_tests = ['tests/test_onboarding_group_session.py', 'tests/test_onboarding_host.py',
         'tests/test_onboarding_host_ownership.py', 'tests/test_receiving_cohort_control.py',
         'tests/test_onboarding_group_coordinator.py', 'tests/test_onboarding_group_finisher.py',

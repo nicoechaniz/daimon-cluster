@@ -39,6 +39,22 @@ guest supports qualification only. Frozen hostd814, receiverc2, SDK3a, identitie
 original lifecycle bindings and real selections remain unchanged. Root never
 opened/executed another body's private SDK. Do not rerun these unchanged probes.
 
+Native invitation inspection and the linked authorization planner are now
+implemented in source. Inspection under the actual writer distinguishes absent,
+pending and completed RPCs without dispatch, frame refresh or result-cache writes.
+The separate immutable approval binds the original parent/intent/frontier,
+children/preservation, reconciled outcomes, helper pins and fixed remaining bound;
+it does not change the original receiving vectors. Attachment retries survive
+lost metadata acknowledgment without renewing permission. The reviewed stale-
+parent defect is fixed: fresh effects reread the real parent under its mutation
+lock; virtual attachments and degraded/compensated parents cannot authorize them.
+17 journal recovery cases,12 finite protocol cases,3 affected native cases (the
+pending case rerun after its final guard), release/journal coverage,70 CI cases,
+89-file typing and scoped lint pass. No authorization was planned/attached in
+the retained fixture, and no owner helper was rebuilt or reinstalled. The full
+reviewed [execution integration map](docs/design/admission-continuation.md#reviewed-execution-integration-map)
+is retained there; configuration and actual effect consumers remain pending.
+
 This source is not installed admission or production acceptance. The remaining
 [linked recovery authorization](docs/design/admission-continuation.md) must cover
 all remaining social, lifecycle/initial-start, activation and communication

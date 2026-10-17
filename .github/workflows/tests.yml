@@ -494,7 +494,9 @@ jobs:
               selected = [item for item in selected if item.split('::', 1)[0] in TESTS]
           candidate = Path(os.environ['RUNNER_TEMP']) / 'admission-candidate-sdk'
           interpreter = candidate / 'bin/python'
-          subprocess.run([str(interpreter), '-B', 'tools/qualify_candidate_admission.py',
+          subprocess.run(['sudo', 'env', 'LD_LIBRARY_PATH=' + os.environ.get('LD_LIBRARY_PATH', ''),
+              str(interpreter), '-B', 'tools/ci_guest_owner.py',
+              '--uid', str(os.getuid()), '--gid', str(os.getgid()),
               '--sdk-commit', ADMISSION_MATRIX_COMMIT, '--identity-python', sys.executable, *selected], check=True)
           PY
       - run: >-

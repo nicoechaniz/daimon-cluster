@@ -189,7 +189,10 @@ def test_candidate_admission_ci_keeps_default_producer_and_only_selected_consume
     candidate = str(tmp_path/'admission-candidate-sdk/bin/python')
     assert len(commands) == 1
     command = commands[0][0]
-    assert command[0] == candidate
+    assert command[:2] == ['sudo', 'env']
+    assert candidate in command and 'tools/ci_guest_owner.py' in command
+    assert command[command.index('--uid') + 1] == str(__import__('os').getuid())
+    assert command[command.index('--gid') + 1] == str(__import__('os').getgid())
     assert command[command.index('--identity-python') + 1] == sys.executable
     assert command[command.index('--identity-python') + 2:] == expected
     assert all(options == {'check': True} for _, options in commands)
@@ -226,6 +229,12 @@ def test_kernel_owner_lane_forwards_candidate_without_replacing_identity_produce
     assert captured == [([sys.executable, '-B', 'tools/qualify_candidate_admission.py',
         '--sdk-commit', 'a'*40, '--identity-python', '/unchanged/base-python',
         'tests/test_guest_owner_bootstrap.py'], 1001, 1002)]
+    captured.clear()
+    selected = 'tests/test_onboarding_group_publication.py::test_cohort_publication_derives_native_acceptance_and_recovers_lost_results[recover]'
+    assert ci_guest_owner.main(['--uid', '1001', '--gid', '1002', '--sdk-commit', 'a'*40,
+        '--identity-python', '/unchanged/base-python', selected]) == 0
+    assert captured[0][0][-1] == selected
+    assert 'tests/test_guest_owner_bootstrap.py' not in captured[0][0]
     captured.clear()
     with pytest.raises(SystemExit):
         ci_guest_owner.main(['--uid', '1001', '--gid', '1002', '--sdk-commit', 'a'*40])

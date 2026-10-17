@@ -31,18 +31,29 @@ No new invitation, shadow parent or enlarged old horizon is a recovery route.
 Publication, managed first loads, activation, signed communication and compatible
 v2 rollback remain unobserved. Originalv1 is not a post-v2 rollback.
 
-Draft PR265 publishes source7bb5e19. CI38987343377 failed9 actual guest-owner
-cases because defaultSDK805 lacks their required history API. The published
-routing correction selects genuine candidateb53 once for consumer tests and
-retains the separate805 identity producer. Those9 actual-UID cases and75 workflow
-cases pass locally. Replacement CI38989175294 passed the actual UID owner lane;
-its other native contracts were last observed running, not accepted. Existing qualified
-source/review evidence remains valid. Source-only publication-budget correction
-reuses immutable lifecycle metadata within an invocation and removes one duplicate
-entry check; fresh per-dispatch and final quiescence checks remain mandatory.
-The4 affected coordination cases pass in1.80s and the genuine candidate linked
-publication/lost-result case passes in42.93s. Scoped Ruff and diff checks pass.
+Draft PR265 publishes sourceef1507c. CI38989940671 passed the actual guest
+owner lane but failed the native publication [recover] case because it invoked
+GuestOwnerBootstrap under the runner UID rather than required UID1000. This is
+a workflow routing defect; actual output is retained before diagnosis. The same
+existing kernel-owner helper now accepts exact selected native cases, retaining
+candidateb53 and separate805 identity producer. Its private temporary root also
+prevents owner/root pytest trees colliding after the root lane. The formerly
+failing case passes through that real UID1000 invocation in78.85s;75 affected
+workflow/selector cases and scoped lint pass. The correction changes no product
+runtime or installed helper. Do not rerun the old failed pipeline unchanged.
+
+The publication-budget correction's4 affected coordinator cases passed1.80s;
+genuine candidate linked publication/lost-result passed42.93s. Per-owner and final
+observations stay fresh. Valid source evidence is retained rather than repeated.
 Neither this source correction nor CI changes select a synthetic/live artifact.
+
+Actual owner metadata now confirms an unpublished initial preparation prefix with
+retained client/binding and capability genesis, while final application is absent.
+Matrix#368 owns native prefix recovery; do not replay prepare or assume no effects.
+The remaining-effects proposal has conditional Astra design GO only, requiring
+native recovery and protected execution provenance before any fresh continuation.
+See docs/design/admission-continuation.md. Real Matrix/I/O remains independent.
+
 
 ## Selected production and retained qualification evidence
 

@@ -1,18 +1,20 @@
 # Recover an expired shared admission without erasing its effects
 
-Status: execution consumers are connected in source, following the bounded
-Astra review for #227. Protected configuration selects one linked approval and a
-separate maintenance helper; social, publication, lifecycle/initial startup,
-activation and technical communication retain the original receiving vectors.
-No continuation is selected in the retained fixture, and this integration is not
-installed. Journal metadata alone is not receiving or runtime authorization.
+Status: the bounded Astra-reviewed execution is connected in source. The
+retained synthetic operation selected helpera728 through a linked approval and
+actually completed signed membership across all3 bodies, including recovery of
+one lost acceptance response. Publication is incomplete: its first entrant
+application command has no retained host result. The finite producer window is
+CLOSED and the linked fixed approval has expired. No real service was interrupted.
+Do not interpret the original absence-only planner below as permission to renew
+this now-joined frontier. Preserve the same parent, events and uncertain request;
+any remaining fresh effects require forward recovery from the accepted state.
 
-The retained synthetic journey exhausted its fixed authorization after both old
-senders were revoked and both old Matrix services were quiesced/preserved. Owner
-reconciliation under the actual native writer confirmed that its retained root
-invitation command was never dispatched: no private owner request, no exact
-invitation event and no entrant acceptance event. This finding is specific to
-that operation, not permission to assume every missing result had no effect.
+The original expired journey had revoked both old senders and preserved their
+Matrix services. Actual native-writer reconciliation then verified its original
+invitation had never been dispatched. That observation justified the particular
+linked attempt; it is historical and must never be reused as a fresh claim that
+the later accepted membership or pending publication had no effect.
 
 ## One linked authorization for the remaining effects
 
@@ -155,9 +157,93 @@ rechecks its fixed bound at the effect boundary; helper qualification cannot
 restart the absolute budget. Existing completed starts can reconcile lost replies
 without repeating StartUnit. No SDK wire/event schema changes are introduced.
 
-Source qualification does not complete the retained synthetic journey. Capture
-and qualify one compatible maintenance helper from the reviewed source, then
-approve/attach the linked continuation only when its existing endpoints and
-artifacts are ready. Keep the original receiver and frozen host helper intact.
-The same fixture still needs actual membership, publication, managed first load,
-all-required adoption, communication and v2-compatible rollback evidence.
+Source qualification does not complete the retained synthetic journey. The
+compatible helper was captured, owner-qualified and selected through the linked
+approval; its signed membership phase is now observed. The same fixture still
+needs publication reconciliation/completion, managed first loads, all-required
+adoption, signed communication and v2-compatible rollback. Its expired approval
+must not be enlarged or replaced through the narrow pre-membership planner.
+The receiving generation, original host helper, identities and native requests
+remain frozen; accepted membership requires forward recovery.
+
+## Proposed extension: remaining effects after accepted membership
+
+Design proposal only; not implemented or authorized by the v1 planner. The
+retained actual entrant has an application intent with no owner result and no
+current application directory. An expired exact reconciliation returned a bounded
+unclassified refusal; this is not proof that every intermediate SDK effect was
+absent. Preserve that intent and its original effect horizon.
+
+Use a separate, immutable remaining-effects approval on the SAME receiving
+parent. Do not replace the attached social grant or derive another invitation.
+Bind its predecessor, original intent/vectors, exact accepted membership result,
+original publication commands/results and lifecycle preservation/child evidence
+at planning time. CAS-attach it once at that observed frontier. Later legitimate
+progress remains resumable; changed native membership or a foreign publication
+must be detected again by the actual writer before dependent effects.
+
+The new approval has a fixed horizon and an explicit allowlist limited to
+publication, old-selection/start, initial-start, activation and the original
+technical communication. It cannot authorize membership or a second acceptance.
+Keep social recipe/provenance and all existing owner intent bytes unchanged.
+The coordinator resolves social history separately from the currently authorized
+remaining-effect horizon. The effective execution bound must reach ALL remaining
+consumers, not only publication; retain final CAS/StartUnit/link checks and the
+actual parent/active-attachment checks even before the horizon expires.
+
+A pending owner intent must not be overwritten with another horizon. Where a
+fresh remaining effect is authorized, carry a distinct supplemental execution
+context, bound to the old exact intent/context and selected maintenance helper.
+Retain its public approval provenance separately from the old owner request.
+It cannot itself manufacture Matrix authority: current native membership,
+capabilities, actual writer, publication preimages/CAS and receiving compatibility
+remain independently checked. Without a valid active supplemental approval,
+expiry still permits proven historical results only. Pending or partially applied
+native effects must reconcile exactly before dependent work; a current absent
+application alone must never become a blanket absence assumption.
+
+Completed/compensated/wrong-parent approvals and a changed original intent cannot
+execute. Do not create a shadow parent, reactivate terminal grants, mutate the
+old grant, reset owner journals or compensate signed membership. Do not add an
+alternative installation/recovery path or widen this to arbitrary frontiers.
+Use the existing protected journal/config route and explicitly qualified helper.
+
+Qualification should extend the existing linked three-body scenario and affected
+recovery/publication/final-boundary regressions only. It must demonstrate one
+accepted membership, the same pending publication identity and original technical
+speech through remaining startup/receiving/communication and v2-compatible
+rollback, including loss of a result and expiry without fresh permission.
+Real rollout and I/O remain independent of this synthetic extension and still
+require their existing scoped maintenance authorization.
+
+## Bounded follow-up review and actual native prerequisite — 2026-10-17
+
+The reused Astra review gives conditional design GO for the narrow remaining-
+effects proposal. Existing controller renewal and published-app recover cannot
+finish this unpublished prefix. A targeted actual-owner observation confirms
+one retained initial stage with application/binding/client metadata, no publication
+metadata, and one matching-hash capability genesis/current/floor set. The runtime
+bundle still matches its original context and the original ledger inode remains.
+No fresh effect or custody disclosure occurred. Matrix#368 owns native recovery;
+source changes are not installed and old approval expiry still applies.
+
+Before any remaining-effects execution, the SDK must authenticate the explicitly
+associated stage and reconcile that client's durable prefix, preserving stores
+and WALs. An absent application must never trigger a second preparation. Existing
+recover accepts published applications only; missing private preparation cannot
+be reconstructed. Future prepare must retain private recovery material once its
+first durable capability effect begins.
+
+The remaining-effects planner must be limited to accepted membership/incomplete
+publication with no first-start intent, loaded replacement, activation plan or
+technical-message attempt. Keep the original social attachment/resolver intact.
+Use a separate active execution resolver and include attachment/tooling, selection
+and steady handoff explicitly in its remaining scope. Current-parent checks must
+hold through dispatch; final bounds still apply to CAS/start/link/handoff.
+
+Guest supplemental approval requires a journal-derived protected public projection
+through the existing verified read-only input route, bound to exact owner intent,
+context and selected supporting helper. An approval hash supplied in stdin or an
+old copied active observation is insufficient. Retain that context separately;
+never replace the old effect_not_after_ms or owner intent bytes. Older helpers
+must refuse before effects. This is a proposal constraint, not deployed support.

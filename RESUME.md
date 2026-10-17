@@ -59,12 +59,23 @@ publication/lost acknowledgment. Affected owner/controller/Root and CI contracts
 additional evidence. CI selects these actual contracts and executes candidate
 native coverage once, retaining the separate default identity producer.
 
-This integration is not installed or actual admission acceptance. No linked
-approval was planned/attached in the retained fixture, no new helper installed,
-and no expired effect executed. Capture/qualify one updated public maintenance
-helper against receiverc2/SDK3a, preserving frozen hostd814 and owner settings;
-then resume the SAME operation through its remaining native effects and a
-v2-compatible rollback. See [the execution design](docs/design/admission-continuation.md).
+The separately named helpera728 is prepared/Root-published against the original
+receiverc2/SDK3a and unchanged base. Its changed inspector actually ran through
+the synthetic Source UID1000 owner CLI/writer in15.999s: the original invite was
+not-dispatched, no native request was sent, and the process exited cleanly with
+zero models. Both UUID-pinned synthetic guests gained only the exact additional
+read-only helper mount; existing devices, frozen hostd814 and child settings stay
+unchanged. PR265 publishes this branch as draft. The source now integrates current
+main, preserving its production SDK805 pin and owner-control/launcher fixes; the
+captured synthetic helper and receiver pins are frozen independently.
+
+The SAME retained operation is being resumed under one explicit linked approval
+and finite isolated producer window. Its new invitation was retained successfully;
+partial native distribution resumes exact pending requests rather than restarting.
+This is not complete admission or production acceptance. Actual first managed
+load, communication and v2-compatible rollback remain unobserved. Use the retained
+checkpoint and live process receipts for the current window/frontier; no dated
+paragraph is live health. See [the execution design](docs/design/admission-continuation.md).
 Production selections and the unanswered real maintenance boundary remain
 unchanged. No new real interruption is authorized.
 

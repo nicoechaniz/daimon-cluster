@@ -66,9 +66,9 @@ Actual owner metadata now confirms an unpublished initial preparation prefix wit
 retained client/binding and capability genesis, while final application is absent.
 Matrix#368/PR369 owns native prefix recovery. Exact03b132f is reviewed and
 pushed on the existing SDK branch, including explicit bounded SQLite recovery,
-empty raw-evidence retries and exact maintained visibility successors. Branch API
-and Git confirm03b132f; the PR still reports6bfb59a and has no extension CI at the
-latest observation. Installed/actual-owner recovery acceptance is not complete.
+empty raw-evidence retries and exact maintained visibility successors. PR369 now reports03b132f; exact CI38996250663 is live in the installed
+readable native egress lane. ClusterCI38996252639 on c80975a is live in selected
+native consumers after the actualUID lane passed. Installed/actual-owner recovery acceptance is not complete.
 Do not repush or launch duplicate CI solely for this metadata delay. Actual owner stage-relative observation additionally found
 a retained opaque-message rollback journal. An isolated raw-pair copy has integrity
 ok and only inbox_meta/items/requests (meta1,1;otherrows0); SQLite leaves its zero-
@@ -392,3 +392,15 @@ The following cannot be inferred from local tests or broad authorization:
 
 Resume from the first unfinished automated item above. Read `AGENTS.md` before
 any action and preserve every access/production exclusion there.
+
+## Local execution bridge — 2026-10-17
+
+Local c1c6bcc adds a separate execution resolver, parent+approval kernel-locked
+projection scope, and exact receiving read-only input reader. It reuses the existing
+public Matrix input publisher with immutable content-addressed execution documents.
+42 core/resolver cases,4 projection/kernel-lock cases,7 file/binding cases and2
+publisher cases PASS; owning mypy90 and scoped lint/diff PASS. The file test uses
+an explicit readonly-filesystem seam, not actual Incus mount evidence. No native
+CLI, captured helper or configuration consumes the bridge yet. Complete protected
+owner argument/sidecar plumbing and every remaining phase before coherent execution
+review and operational selection. No original store/request/grant or service changed.

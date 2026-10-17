@@ -435,7 +435,7 @@ def _remaining_frontier(journal, parent: dict) -> dict:
                         and item['membership_ref'] == result['acceptance']['event_id']
                         for item in snapshot['members'])):
                 raise ValueError
-        retained_requests = {}
+        retained_requests: dict[str, dict[str, dict[str, str | None]]] = {}
         for name, requests in publication['requests'].items():
             steps = parent['intended_transition']['admission_publications']['owners'][name]['steps']
             if not requests or not set(requests) <= set(steps):
@@ -492,7 +492,8 @@ def remaining_plan(journal, request: dict, *, audit_identity: dict) -> dict:
             frontier = _remaining_frontier(journal, parent)
             admission = parent['intended_transition']['cohort_admission']
             helpers = request['maintenance']
-            if (time.time_ns()//1_000_000 < attached(journal, parent)['expires_at_ms']
+            prior = attached(journal, parent)
+            if (prior is None or time.time_ns()//1_000_000 < prior['expires_at_ms']
                     or not isinstance(helpers, dict) or set(helpers) != set(admission['receivers'])):
                 raise ValueError
             for name, helper in helpers.items():
@@ -531,6 +532,7 @@ def remaining_resolve(journal, parent: dict, selected: dict) -> dict:
             raise ValueError
         row = journal.get(selected['operation_id'])
         grant = row['intended_transition']
+        prior = attached(journal, parent)
         if (row['operation'] != 'admission-remaining-effects'
                 or row['state'] in {'degraded', 'compensated'}
                 or row['intent_hash'] != selected['intent_sha256'] or row['intent_hash'] != digest(row['intent'])
@@ -545,7 +547,7 @@ def remaining_resolve(journal, parent: dict, selected: dict) -> dict:
                 or parent['intent']['runtime_call']['precondition_digest'] != digest(parent['expected_precondition'])
                 or parent['intent']['runtime_call']['transition_digest'] != digest(parent['intended_transition'])
                 or grant['effects'] != REMAINING_EFFECTS
-                or grant['social_grant_sha256'] != digest(attached(journal, parent))
+                or prior is None or grant['social_grant_sha256'] != digest(prior)
                 or row['intent']['runtime_call'] != dict(parent_intent_sha256=parent['intent_hash'],
                     authorization_sha256=digest(grant), request_sha256=row['intent']['runtime_call']['request_sha256'])
                 or not _sha(row['intent']['runtime_call']['request_sha256'])

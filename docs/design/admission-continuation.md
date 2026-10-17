@@ -168,7 +168,10 @@ remain frozen; accepted membership requires forward recovery.
 
 ## Proposed extension: remaining effects after accepted membership
 
-Design proposal only; not implemented or authorized by the v1 planner. The
+The journal planner/attachment/resolver is implemented in
+`onboarding_group_recovery.remaining_*`; execution integration and protected owner
+projection are still pending. The existing v1 planner does not authorize this
+frontier, and no operational helper or configuration selects the new grant yet. The
 retained actual entrant has an application intent with no owner result and no
 current application directory. An expired exact reconciliation returned a bounded
 unclassified refusal; this is not proof that every intermediate SDK effect was
@@ -246,4 +249,24 @@ through the existing verified read-only input route, bound to exact owner intent
 context and selected supporting helper. An approval hash supplied in stdin or an
 old copied active observation is insufficient. Retain that context separately;
 never replace the old effect_not_after_ms or owner intent bytes. Older helpers
-must refuse before effects. This is a proposal constraint, not deployed support.
+must refuse before effects. This remains a constraint on pending execution
+integration, not a claim of deployed support.
+
+### Implemented journal boundary
+
+One immutable `admission-remaining-effects` row targets a separate approval slot
+on the original receiving parent. It binds the original vectors, social grant,
+complete membership result, pending publication requests, lifecycle preservation,
+selected maintenance helpers and fixed remaining horizon. It cannot authorize
+membership. The active attachment is distinct from the social attachment; the
+social resolver and original owner requests remain unchanged.
+
+Planning and attachment recognize only accepted membership with incomplete
+publication, before a first-start intent, loaded replacement, activation or speech.
+Attachment CAS-checks the approved frontier once. Exact retry can inspect the same
+approval after expiry, including recovery of a lost attachment acknowledgment;
+fresh effects require both current parent and attached approval to be active and
+within the fixed bound. An inactive approval cannot attach to a fresh parent.
+Later publication results can advance, while every originally retained command
+and completed result stays pinned. This is journal qualification only; native
+owner dispatch and integrated receiving acceptance remain unfinished.

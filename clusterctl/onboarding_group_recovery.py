@@ -18,6 +18,11 @@ SCHEMA = 'cluster-admission-continuation/v1'
 REQUEST_SCHEMA = 'cluster-admission-continuation-request/v1'
 REFERENCE_SCHEMA = 'cluster-admission-continuation-reference/v1'
 EFFECTS = ['membership', 'publication', 'old-selection-start', 'initial-start', 'activation', 'communication']
+REMAINING_SCHEMA = 'cluster-admission-remaining-effects/v1'
+REMAINING_REQUEST_SCHEMA = 'cluster-admission-remaining-effects-request/v1'
+REMAINING_REFERENCE_SCHEMA = 'cluster-admission-remaining-effects-reference/v1'
+REMAINING_EFFECTS = ['publication', 'old-selection-start', 'initial-start', 'tooling',
+                     'activation', 'steady-handoff', 'communication']
 
 
 def _sha(value: object) -> bool:
@@ -383,3 +388,238 @@ def validate_lifecycle(child: dict, candidate: dict, value: dict, *, preservatio
         return value['not_after_ms']
     except (KeyError, TypeError, ValueError, AttributeError):
         raise OnboardingError('onboarding_group_continuation_lifecycle_required') from None
+
+
+def _remaining_frontier(journal, parent: dict) -> dict:
+    """Pin accepted membership and incomplete publication, never renew social intent."""
+    try:
+        observed = parent['runtime_observation']
+        admission = parent['intended_transition']['cohort_admission']
+        social, state_key, _prefix, provenance = membership(journal, parent, admission)
+        prior = attached(journal, parent)
+        joined = observed[state_key]
+        result = joined['result']
+        publication = observed['group_publication']
+        phases = observed['portal_admission']
+        old = {item['name'] for item in parent['expected_precondition']['senders']}
+        if (parent['operation'] != 'receiving-update' or parent['state'] != 'runtime-dispatching'
+                or parent['intent_hash'] != digest(parent['intent'])
+                or parent['target'] != 'receiving:'+admission['tribe_ref']
+                or parent['intent']['runtime_call']['precondition_digest'] != digest(parent['expected_precondition'])
+                or parent['intent']['runtime_call']['transition_digest'] != digest(parent['intended_transition'])
+                or prior is None or joined['recipe_sha256'] != digest(social)
+                or joined['result_sha256'] != digest(result)
+                or result['schema'] != 'cluster-native-membership-admission/v1'
+                or result['operation_id'] != social['operation_id']
+                or result['receiving_readiness'] != 'unobserved'
+                or set(result['snapshots']) != set(admission['receivers'])
+                or any(joined.get(key) != value or publication.get(key) != value
+                       for key, value in provenance.items())
+                or publication['membership_sha256'] != digest(result)
+                or publication['recipe_sha256'] != digest(parent['intended_transition']['admission_publications'])
+                or publication.get('result') is not None
+                or not publication['requests'] or not set(publication['requests']) <= set(admission['receivers'])
+                or set(observed['admission_lifecycles']) != old
+                or set(observed['sender_revocations']) != old
+                or any(key in observed for key in ('initial_managed', 'admission_activation_plan',
+                    'cohort_activation', 'sender_initials', 'sender_selections', 'initial_steady',
+                    'admission_remaining_effects'))
+                or any(key.startswith(('loaded-', 'communication-', 'communication-intent-')) for key in phases)):
+            raise ValueError
+        expected_refs = {item['being_ref'] for item in admission['receivers'].values()}
+        for snapshot in result['snapshots'].values():
+            if (snapshot['tribe_ref'] != admission['tribe_ref']
+                    or {item['principal_id'] for item in snapshot['members'] if item['state'] == 'active'}
+                        != expected_refs
+                    or not any(item['principal_id'] == admission['entrant']['being_ref']
+                        and item['membership_ref'] == result['acceptance']['event_id']
+                        for item in snapshot['members'])):
+                raise ValueError
+        retained_requests = {}
+        for name, requests in publication['requests'].items():
+            steps = parent['intended_transition']['admission_publications']['owners'][name]['steps']
+            if not requests or not set(requests) <= set(steps):
+                raise ValueError
+            for key, entry in requests.items():
+                from .onboarding_group_admission import publication_command
+                command = publication_command(entry['command'])
+                if (set(entry) != {'command', 'result'} or command['operation_id'] != social['operation_id']
+                        or command['step'] != steps[key]
+                        or command['action'] != {'application': 'application', 'disclosure': 'visibility-disclosure',
+                            'acceptance': 'visibility-accept', 'visibility': 'visibility-publish',
+                            'selection': 'selection', 'snapshot': 'snapshot'}[key]):
+                    raise ValueError
+                retained_requests.setdefault(name, {})[key] = dict(command_sha256=digest(command),
+                    result_sha256=None if entry['result'] is None else digest(entry['result']))
+        for name, child in prior['children'].items():
+            if (observed['admission_lifecycles'][name] != child['child']
+                    or phases['preserved-'+name] != {'result_sha256': child['preservation_sha256']}
+                    or observed['sender_revocations'][name]['gate']['phase'] != 'revoke'
+                    or observed['sender_revocations'][name]['gate']['readers'] != []):
+                raise ValueError
+        return dict(social_grant_sha256=digest(prior), membership_state_key=state_key,
+            membership_sha256=digest(joined), publication_sha256=digest(publication),
+            publication_requests=retained_requests,
+            children=copy.deepcopy(prior['children']))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise OnboardingError('onboarding_group_remaining_frontier_required') from None
+
+
+def remaining_plan(journal, request: dict, *, audit_identity: dict) -> dict:
+    """Approve remaining effects separately; keep the social attachment immutable."""
+    from .operation_journal import JournalConflict
+    with journal.mutation_lock(request['parent_operation_id']):
+        parent = journal.get(request['parent_operation_id'])
+        key = 'admission-remaining:'+request['authorization_id']
+        previous = journal.latest_for_idempotency_key(key)
+        if previous is not None:
+            if previous['intent']['runtime_call']['request_sha256'] != digest(request):
+                raise JournalConflict('remaining effects approval has different exact request bytes')
+            remaining_resolve(journal, parent, remaining_reference(previous))
+            return previous
+        try:
+            if (set(request) != {'schema', 'authorization_id', 'parent_operation_id',
+                    'parent_intent_sha256', 'frontier_sha256', 'expires_at_ms', 'maintenance'}
+                    or request['schema'] != REMAINING_REQUEST_SCHEMA
+                    or str(uuid.UUID(request['authorization_id'])) != request['authorization_id']
+                    or request['parent_intent_sha256'] != parent['intent_hash']
+                    or request['frontier_sha256'] != digest(parent['runtime_observation'])
+                    or type(request['expires_at_ms']) is not int
+                    or not 0 < time.time_ns()//1_000_000 < request['expires_at_ms'] < 2**53):
+                raise ValueError
+            frontier = _remaining_frontier(journal, parent)
+            admission = parent['intended_transition']['cohort_admission']
+            helpers = request['maintenance']
+            if (time.time_ns()//1_000_000 < attached(journal, parent)['expires_at_ms']
+                    or not isinstance(helpers, dict) or set(helpers) != set(admission['receivers'])):
+                raise ValueError
+            for name, helper in helpers.items():
+                if (set(helper) != {'code', 'code_digest', 'code_uid'}
+                        or not isinstance(helper['code'], str) or not Path(helper['code']).is_absolute()
+                        or '..' in Path(helper['code']).parts or not _sha(helper['code_digest'])
+                        or type(helper['code_uid']) is not int
+                        or helper['code_uid'] != admission['receivers'][name]['candidate']['code_uid']):
+                    raise ValueError
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise OnboardingError('onboarding_group_remaining_authorization_required') from None
+        grant = dict(schema=REMAINING_SCHEMA, authorization_id=request['authorization_id'],
+            parent_operation_id=parent['operation_id'], parent_intent_sha256=parent['intent_hash'],
+            original_vectors_sha256=digest(dict(before=parent['expected_precondition'],
+                after=parent['intended_transition'])), manifest_digest=parent['intent']['runtime_call']['manifest_digest'],
+            frontier_sha256=request['frontier_sha256'], **frontier, effects=REMAINING_EFFECTS.copy(),
+            expires_at_ms=request['expires_at_ms'], maintenance=copy.deepcopy(helpers))
+        target = 'admission-remaining:'+parent['operation_id']
+        return journal.plan(operation='admission-remaining-effects', target=target, idempotency_key=key,
+            intent=dict(operation='admission-remaining-effects', target=target, runtime_call=dict(
+                parent_intent_sha256=parent['intent_hash'], authorization_sha256=digest(grant),
+                request_sha256=digest(request))), expected_precondition=dict(parent_operation_id=parent['operation_id'],
+                parent_intent_sha256=parent['intent_hash'], frontier_sha256=grant['frontier_sha256']),
+            intended_transition=grant, audit_identity=audit_identity)
+
+
+def remaining_reference(row: dict) -> dict:
+    return dict(schema=REMAINING_REFERENCE_SCHEMA, operation_id=row['operation_id'], intent_sha256=row['intent_hash'])
+
+
+def remaining_resolve(journal, parent: dict, selected: dict) -> dict:
+    """Historical provenance does not activate or extend remaining permission."""
+    try:
+        if (set(selected) != {'schema', 'operation_id', 'intent_sha256'}
+                or selected['schema'] != REMAINING_REFERENCE_SCHEMA):
+            raise ValueError
+        row = journal.get(selected['operation_id'])
+        grant = row['intended_transition']
+        if (row['operation'] != 'admission-remaining-effects'
+                or row['state'] in {'degraded', 'compensated'}
+                or row['intent_hash'] != selected['intent_sha256'] or row['intent_hash'] != digest(row['intent'])
+                or row['target'] != 'admission-remaining:'+parent['operation_id']
+                or grant['schema'] != REMAINING_SCHEMA
+                or grant['parent_operation_id'] != parent['operation_id']
+                or grant['parent_intent_sha256'] != parent['intent_hash']
+                or grant['original_vectors_sha256'] != digest(dict(before=parent['expected_precondition'],
+                    after=parent['intended_transition']))
+                or grant['manifest_digest'] != parent['intent']['runtime_call']['manifest_digest']
+                or parent['intent_hash'] != digest(parent['intent'])
+                or parent['intent']['runtime_call']['precondition_digest'] != digest(parent['expected_precondition'])
+                or parent['intent']['runtime_call']['transition_digest'] != digest(parent['intended_transition'])
+                or grant['effects'] != REMAINING_EFFECTS
+                or grant['social_grant_sha256'] != digest(attached(journal, parent))
+                or row['intent']['runtime_call'] != dict(parent_intent_sha256=parent['intent_hash'],
+                    authorization_sha256=digest(grant), request_sha256=row['intent']['runtime_call']['request_sha256'])
+                or not _sha(row['intent']['runtime_call']['request_sha256'])
+                or row['expected_precondition'] != dict(parent_operation_id=parent['operation_id'],
+                    parent_intent_sha256=parent['intent_hash'], frontier_sha256=grant['frontier_sha256'])
+                or digest(parent['runtime_observation'][grant['membership_state_key']]) != grant['membership_sha256']):
+            raise ValueError
+        for name, child in grant['children'].items():
+            if (parent['runtime_observation']['admission_lifecycles'][name] != child['child']
+                    or parent['runtime_observation']['portal_admission']['preserved-'+name]
+                        != {'result_sha256': child['preservation_sha256']}):
+                raise ValueError
+        publication = parent['runtime_observation']['group_publication']
+        for name, requests in grant['publication_requests'].items():
+            for key, evidence in requests.items():
+                entry = publication['requests'][name][key]
+                if (digest(entry['command']) != evidence['command_sha256']
+                        or evidence['result_sha256'] is not None
+                        and digest(entry['result']) != evidence['result_sha256']):
+                    raise ValueError
+        return copy.deepcopy(grant)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise OnboardingError('onboarding_group_remaining_reference_required') from None
+
+
+def remaining_attach(journal, parent_operation_id: str, selected: dict) -> dict:
+    """CAS one approved publication frontier, preserving every previous attachment."""
+    with journal.mutation_lock(parent_operation_id):
+        parent = journal.get(parent_operation_id)
+        grant = remaining_resolve(journal, parent, selected)
+        retained = dict(schema='cluster-admission-remaining-effects-attachment/v1', reference=selected,
+            authorization_sha256=digest(grant), frontier_sha256=grant['frontier_sha256'])
+        observed = copy.deepcopy(parent['runtime_observation'])
+        previous = observed.get('admission_remaining_effects')
+        if previous is None:
+            if journal.get(selected['operation_id'])['state'] != 'planned':
+                raise OnboardingError('onboarding_group_remaining_effect_not_authorized')
+            _remaining_frontier(journal, parent)
+            if (digest(observed) != grant['frontier_sha256']
+                    or time.time_ns()//1_000_000 >= grant['expires_at_ms']):
+                raise OnboardingError('onboarding_group_remaining_frontier_changed')
+            observed['admission_remaining_effects'] = retained
+            journal.advance(parent_operation_id, parent['state'], runtime_observation=observed,
+                expected_runtime_observation=parent['runtime_observation'])
+        elif previous != retained:
+            raise OnboardingError('onboarding_group_remaining_reference_required')
+        approved = journal.get(selected['operation_id'])
+        effect = {'attachment': dict(parent_operation_id=parent_operation_id, authorization_sha256=digest(grant))}
+        if approved['runtime_observation'] is None:
+            journal.advance(approved['operation_id'], 'runtime-dispatching', runtime_observation=effect,
+                expected_runtime_observation=None)
+        elif approved['runtime_observation'] != effect:
+            raise OnboardingError('onboarding_group_remaining_reference_required')
+        return grant
+
+
+def remaining_require_effect(journal, parent: dict, selected: dict, effect: str, *, now_ms: int) -> dict:
+    """Use the current protected parent and active grant through actual dispatch."""
+    with journal.mutation_lock(parent['operation_id']):
+        try:
+            current = journal.get(parent['operation_id'])
+            if (current['state'] != 'runtime-dispatching' or current['operation'] != 'receiving-update'
+                    or any(current[key] != parent[key] for key in
+                        ('intent', 'intent_hash', 'expected_precondition', 'intended_transition'))):
+                raise ValueError
+            grant = remaining_resolve(journal, current, selected)
+            retained = dict(schema='cluster-admission-remaining-effects-attachment/v1', reference=selected,
+                authorization_sha256=digest(grant), frontier_sha256=grant['frontier_sha256'])
+            approved = journal.get(selected['operation_id'])
+            if (current['runtime_observation'].get('admission_remaining_effects') != retained
+                    or approved['state'] != 'runtime-dispatching'
+                    or approved['runtime_observation'] != {'attachment': dict(parent_operation_id=current['operation_id'],
+                        authorization_sha256=digest(grant))}
+                    or effect not in grant['effects'] or type(now_ms) is not int
+                    or not 0 < now_ms < grant['expires_at_ms']):
+                raise ValueError
+            return grant
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise OnboardingError('onboarding_group_remaining_effect_not_authorized') from None

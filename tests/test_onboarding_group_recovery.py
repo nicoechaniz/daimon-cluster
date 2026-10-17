@@ -27,14 +27,17 @@ def fixture(tmp_path, monkeypatch):
             invitation_id=invitation_id(tribe=tribe, founder_epoch=0, invitee_being_ref=entrant, nonce=nonce),
             issued_at_ms=issued, expires_at_ms=expires)
     old = invite(now-90_000, now-1000, b64url(b'1'*32))
-    social = dict(operation_id=str(uuid.uuid4()), founder_owner='founder', invitation=old)
+    social = dict(operation_id=str(uuid.uuid4()), founder_owner='founder', entrant_owner='entrant', invitation=old)
     admission = dict(tribe_ref=tribe, activation={'expires_at_ms': now-1000}, receivers={
-        name: {'candidate': {'code_uid': os.geteuid()}} for name in ('founder', 'entrant')})
+        name: {'being_ref': ref, 'candidate': {'code_uid': os.geteuid()}}
+        for name, ref in (('founder', founder), ('entrant', entrant))}, entrant={'being_ref': entrant})
     journal = OperationJournal(tmp_path/'journal')
     row = plan_update(journal, manifest_digest='a'*64, target='receiving:'+tribe,
         expected_precondition=dict(senders=[{'name': 'founder', 'being_ref': founder}]),
         intended_transition=dict(cohort_admission=admission, portal_admission=dict(
-            schema='cluster-portal-group-admission/v2', social=social), admission_preparations={'founder': {}}),
+            schema='cluster-portal-group-admission/v2', social=social), admission_preparations={'founder': {}},
+            admission_publications={'owners': {name: {'steps': {'application': 'application'}}
+                for name in ('founder', 'entrant')}}),
         audit_identity={'actor': 'synthetic-test'})
     command = dict(operation_id=social['operation_id'], step='membership-invite', method='tribe.invite', params={'payload': old})
     observations = dict(portal_admission={'execution_intent': {}, 'preserved-founder': {'result_sha256': 'b'*64}},
@@ -216,3 +219,165 @@ def test_inactive_grant_cannot_execute_even_before_its_horizon(tmp_path, monkeyp
         recovery.require_execution(journal, current, selected, 'old-selection-start')
     with pytest.raises(OnboardingError, match='effect_not_authorized'):
         recovery.require_effect(journal, current, selected, 'old-selection-start', now_ms=now)
+
+
+def remaining_fixture(tmp_path, monkeypatch):
+    """Isolate protected journal semantics; native signed reducers are tested separately."""
+    from clusterctl import onboarding_group_admission
+    from daimon_matrix.messaging_config import APPLICATION_SCHEMA_V3
+    journal, parent, request, now = fixture(tmp_path, monkeypatch)
+    selected = recovery.reference(recovery.plan(journal, request, audit_identity={}))
+    social_grant = recovery.attach(journal, parent['operation_id'], selected)
+    # Only the signature-bearing recipe validator is a seam here. Keep the
+    # actual social resolver/attachment and original intent digests in use.
+    monkeypatch.setattr(onboarding_group_admission, 'membership_recipe',
+        lambda value, *_args, **_kwargs: copy.deepcopy(value))
+    current = journal.get(parent['operation_id'])
+    admission = current['intended_transition']['cohort_admission']
+    social, key, _prefix, provenance = recovery.membership(journal, current, admission)
+    acceptance = {'event_id': str(uuid.uuid4())}
+    members = [dict(principal_id=row['being_ref'], state='active',
+        membership_ref=acceptance['event_id']) for row in admission['receivers'].values()]
+    result = dict(schema='cluster-native-membership-admission/v1', operation_id=social['operation_id'],
+        invitation={}, acceptance=acceptance, receiving_readiness='unobserved',
+        snapshots={name:dict(tribe_ref=admission['tribe_ref'], members=members)
+            for name in admission['receivers']})
+    observed = copy.deepcopy(current['runtime_observation'])
+    observed[key] = dict(recipe_sha256=digest(social), result=result, result_sha256=digest(result),
+        requests={}, **provenance)
+    publication = dict(operation_id=social['operation_id'], step='application', action='application',
+        params=dict(expected_application_sha256=None, specification={'schema': APPLICATION_SCHEMA_V3},
+            additions=None, admitted_being_refs=[], secret_sources={}))
+    observed['group_publication'] = dict(membership_sha256=digest(result),
+        recipe_sha256=digest(current['intended_transition']['admission_publications']),
+        requests={'entrant': {'application': dict(command=publication, result=None)}}, **provenance)
+    current = journal.advance(parent['operation_id'], parent['state'], runtime_observation=observed,
+        expected_runtime_observation=current['runtime_observation'])
+    now = social_grant['expires_at_ms']+1
+    clock = [now]
+    monkeypatch.setattr(recovery, 'time', SimpleNamespace(time_ns=lambda: clock[0]*1_000_000))
+    supplemental = dict(schema=recovery.REMAINING_REQUEST_SCHEMA, authorization_id=str(uuid.uuid4()),
+        parent_operation_id=parent['operation_id'], parent_intent_sha256=parent['intent_hash'],
+        frontier_sha256=digest(observed), expires_at_ms=now+60_000, maintenance=request['maintenance'])
+    return journal, current, supplemental, clock
+
+
+def test_remaining_approval_preserves_social_history_and_original_pending_request(tmp_path, monkeypatch):
+    journal, parent, request, clock = remaining_fixture(tmp_path, monkeypatch)
+    original = copy.deepcopy(parent)
+    approved = recovery.remaining_plan(journal, request, audit_identity={})
+    selected = recovery.remaining_reference(approved)
+    assert journal.get(parent['operation_id']) == original
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.remaining_require_effect(journal, parent, selected, 'publication', now_ms=clock[0])
+    grant = recovery.remaining_attach(journal, parent['operation_id'], selected)
+    current = journal.get(parent['operation_id'])
+    for field in ('intent', 'intent_hash', 'expected_precondition', 'intended_transition'):
+        assert current[field] == original[field]
+    for field in original['runtime_observation']:
+        assert current['runtime_observation'][field] == original['runtime_observation'][field]
+    assert grant['social_grant_sha256'] == digest(recovery.attached(journal, current))
+    assert recovery.remaining_require_effect(journal, current, selected, 'publication', now_ms=clock[0]) == grant
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.remaining_require_effect(journal, current, selected, 'membership', now_ms=clock[0])
+    clock[0] = grant['expires_at_ms']
+    assert recovery.remaining_plan(journal, request, audit_identity={}) == journal.get(approved['operation_id'])
+    assert recovery.remaining_attach(journal, parent['operation_id'], selected) == grant
+    assert recovery.remaining_resolve(journal, current, selected) == grant
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.remaining_require_effect(journal, current, selected, 'publication', now_ms=clock[0])
+    with pytest.raises(JournalConflict, match='exact request'):
+        recovery.remaining_plan(journal, {**request, 'expires_at_ms': clock[0]+1}, audit_identity={})
+
+
+@pytest.mark.parametrize('fault', ['initial', 'loaded', 'activation', 'communication', 'membership', 'completed-publication'])
+def test_remaining_planner_refuses_later_or_incomplete_frontiers(tmp_path, monkeypatch, fault):
+    journal, parent, request, _clock = remaining_fixture(tmp_path, monkeypatch)
+    observed = copy.deepcopy(parent['runtime_observation'])
+    if fault in {'loaded', 'communication'}:
+        observed['portal_admission'][{'loaded': 'loaded-entrant', 'communication': 'communication-intent-send'}[fault]] = {}
+    elif fault in {'initial', 'activation'}:
+        observed[{'initial': 'initial_managed', 'activation': 'admission_activation_plan'}[fault]] = {}
+    elif fault == 'membership':
+        observed['membership_continuation']['result'] = None
+    else:
+        observed['group_publication']['result'] = {}
+    parent = journal.advance(parent['operation_id'], parent['state'], runtime_observation=observed,
+        expected_runtime_observation=parent['runtime_observation'])
+    request['frontier_sha256'] = digest(observed)
+    with pytest.raises(OnboardingError):
+        recovery.remaining_plan(journal, request, audit_identity={})
+    assert len(journal.list_all()) == 2
+
+
+def test_remaining_retry_accepts_results_but_never_changed_original_commands(tmp_path, monkeypatch):
+    journal, parent, request, clock = remaining_fixture(tmp_path, monkeypatch)
+    selected = recovery.remaining_reference(recovery.remaining_plan(journal, request, audit_identity={}))
+    grant = recovery.remaining_attach(journal, parent['operation_id'], selected)
+    current = journal.get(parent['operation_id'])
+    observed = copy.deepcopy(current['runtime_observation'])
+    observed['group_publication']['requests']['entrant']['application']['result'] = {'retained': 'result'}
+    current = journal.advance(parent['operation_id'], parent['state'], runtime_observation=observed,
+        expected_runtime_observation=current['runtime_observation'])
+    assert recovery.remaining_require_effect(journal, current, selected, 'tooling', now_ms=clock[0]) == grant
+    observed = copy.deepcopy(current['runtime_observation'])
+    observed['group_publication']['requests']['entrant']['application']['command']['step'] = 'replacement'
+    current = journal.advance(parent['operation_id'], parent['state'], runtime_observation=observed,
+        expected_runtime_observation=current['runtime_observation'])
+    with pytest.raises(OnboardingError, match='reference_required'):
+        recovery.remaining_resolve(journal, current, selected)
+
+
+@pytest.mark.parametrize('target', ['parent', 'approval'])
+def test_remaining_stale_snapshot_cannot_execute_after_live_journal_terminal_state(tmp_path, monkeypatch, target):
+    journal, parent, request, clock = remaining_fixture(tmp_path, monkeypatch)
+    selected = recovery.remaining_reference(recovery.remaining_plan(journal, request, audit_identity={}))
+    recovery.remaining_attach(journal, parent['operation_id'], selected)
+    stale = journal.get(parent['operation_id'])
+    journal.advance(parent['operation_id'] if target == 'parent' else selected['operation_id'], 'completed')
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.remaining_require_effect(journal, stale, selected, 'publication', now_ms=clock[0])
+
+
+def test_remaining_lost_attachment_ack_recovers_without_renewing_its_expired_bound(tmp_path, monkeypatch):
+    journal, parent, request, clock = remaining_fixture(tmp_path, monkeypatch)
+    approved = recovery.remaining_plan(journal, request, audit_identity={})
+    selected = recovery.remaining_reference(approved)
+    advance = journal.advance
+    def lost(operation_id, *args, **kwargs):
+        if operation_id == approved['operation_id']:
+            raise OSError('lost remaining attachment acknowledgment')
+        return advance(operation_id, *args, **kwargs)
+    monkeypatch.setattr(journal, 'advance', lost)
+    with pytest.raises(OSError, match='lost remaining'):
+        recovery.remaining_attach(journal, parent['operation_id'], selected)
+    current = journal.get(parent['operation_id'])
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.remaining_require_effect(journal, current, selected, 'publication', now_ms=clock[0])
+    clock[0] = request['expires_at_ms']+1
+    monkeypatch.setattr(journal, 'advance', advance)
+    grant = recovery.remaining_attach(journal, parent['operation_id'], selected)
+    assert grant['expires_at_ms'] == request['expires_at_ms']
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.remaining_require_effect(journal, current, selected, 'publication', now_ms=clock[0])
+
+
+def test_remaining_inactive_approval_cannot_attach_to_unchanged_parent(tmp_path, monkeypatch):
+    journal, parent, request, _clock = remaining_fixture(tmp_path, monkeypatch)
+    selected = recovery.remaining_reference(recovery.remaining_plan(journal, request, audit_identity={}))
+    journal.advance(selected['operation_id'], 'completed')
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.remaining_attach(journal, parent['operation_id'], selected)
+    assert journal.get(parent['operation_id']) == parent
+
+
+def test_remaining_attachment_cas_refuses_intervening_publication_progress(tmp_path, monkeypatch):
+    journal, parent, request, _clock = remaining_fixture(tmp_path, monkeypatch)
+    selected = recovery.remaining_reference(recovery.remaining_plan(journal, request, audit_identity={}))
+    observed = copy.deepcopy(parent['runtime_observation'])
+    observed['group_publication']['requests']['entrant']['application']['result'] = {'retained': 'result'}
+    parent = journal.advance(parent['operation_id'], parent['state'], runtime_observation=observed,
+        expected_runtime_observation=parent['runtime_observation'])
+    with pytest.raises(OnboardingError, match='frontier_changed'):
+        recovery.remaining_attach(journal, parent['operation_id'], selected)
+    assert journal.get(parent['operation_id']) == parent

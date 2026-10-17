@@ -31,7 +31,19 @@ No new invitation, shadow parent or enlarged old horizon is a recovery route.
 Publication, managed first loads, activation, signed communication and compatible
 v2 rollback remain unobserved. Originalv1 is not a post-v2 rollback.
 
-Draft PR265 source8fc7eea's CI38992257942 failed after28 guest-owner cases:
+Draft PR265 published sourcee3ae8e8 corrected the actual-UID test runner. Its
+CI38994308021 PASSED the actual-UID and selected native admission lanes, then
+FAILED the default-SDK suite after1540 passing cases at
+`test_portal_admission_baseline::test_baseline_preserves_original_loader_profile_and_refuses_later_selector`:
+the maintained v2 selector requires public_authority_history, absent from the
+unchanged default805 SDK. The baseline test was missing from the explicit
+candidate consumer set. The workflow correction routes that file through the
+existing b53 candidate lane and excludes it from default-SDK execution; it changes
+no product pin. The exact genuine kernelUID1000/b53/default805 case now PASSES
+24.36s, and78 workflow/scope cases PASS1.15s. Do not rerun the failed full pipeline
+unchanged or mistake its default-SDK mismatch for a deployed failure.
+
+Earlier source8fc7eea's CI38992257942 failed after28 guest-owner cases:
 the actual admitted child could not bind its private AF_UNIX socket. A focused
 isolated reproduction traced the original failure to daemon.py's socket.bind;
 the observer then terminated the already-failing child before its traceback
@@ -52,8 +64,12 @@ Neither this source correction nor CI changes select a synthetic/live artifact.
 
 Actual owner metadata now confirms an unpublished initial preparation prefix with
 retained client/binding and capability genesis, while final application is absent.
-Matrix#368/PR369 owns native prefix recovery; source6bfb59a is reviewed/published,
-not installed acceptance. Actual owner stage-relative observation additionally found
+Matrix#368/PR369 owns native prefix recovery. Exact03b132f is reviewed and
+pushed on the existing SDK branch, including explicit bounded SQLite recovery,
+empty raw-evidence retries and exact maintained visibility successors. Branch API
+and Git confirm03b132f; the PR still reports6bfb59a and has no extension CI at the
+latest observation. Installed/actual-owner recovery acceptance is not complete.
+Do not repush or launch duplicate CI solely for this metadata delay. Actual owner stage-relative observation additionally found
 a retained opaque-message rollback journal. An isolated raw-pair copy has integrity
 ok and only inbox_meta/items/requests (meta1,1;otherrows0); SQLite leaves its zero-
 header journal present. The original pair is unchanged. Explicit trusted recovery
@@ -62,6 +78,17 @@ ignore/delete the journal, rerun prepare or mistake this for absence of effects.
 The remaining-effects proposal has conditional Astra design GO only, requiring
 native recovery and protected execution provenance before any fresh continuation.
 See docs/design/admission-continuation.md. Real Matrix/I/O remains independent.
+
+Local Cluster9cbb376 implements only the separate remaining-effects journal
+planner/attachment/resolver. It binds the original parent, vectors/social grant,
+complete accepted membership, original publication commands/results, preservation,
+helpers and fixed bound, and cannot authorize membership.29 baseline/core cases
+PASS2.80s, plus3 focused lost-ACK/inactive-approval/frontierCAS cases PASS0.54s;
+scoped lint/diff PASS. Existing Astra is reviewing that exact material contract.
+Execution consumer wiring and protected owner projection remain PENDING. No
+operational configuration/helper selects it and no actual grant was minted.
+Publish this coherent change after the bounded review, together with the verified
+candidate-lane CI correction; do not run another full suite between small edits.
 
 
 ## Selected production and retained qualification evidence

@@ -166,7 +166,9 @@ def test_guest_owner_contract_uses_kernel_uid_mapping_and_is_not_run_twice() -> 
     ('admission', 'tests/test_onboarding_group_publication.py::test_scope tests/test_onboarding_group_admission.py',
         ['tests/test_onboarding_group_admission.py','tests/test_onboarding_group_publication.py::test_scope']),
     ('full', 'tests', ['tests/test_onboarding_group_admission.py', 'tests/test_onboarding_group_authorities.py',
-        'tests/test_onboarding_group_publication.py']),
+        'tests/test_onboarding_group_publication.py', 'tests/test_portal_admission_baseline.py']),
+    ('ci', 'tests/test_portal_admission_baseline.py::test_scope tests/test_ci_scope.py',
+        ['tests/test_portal_admission_baseline.py::test_scope']),
     ('peer', 'tests/test_onboarding_group_authorities.py::test_scope tests/test_ci_scope.py',
         ['tests/test_onboarding_group_authorities.py::test_scope']),
 ])
@@ -261,3 +263,11 @@ with tempfile.TemporaryDirectory(prefix='dm-owner-') as name:
  with socket.socket(socket.AF_UNIX) as listener:listener.bind(str(path))
 '''
     subprocess.run([sys.executable, '-I', '-c', program], env=environment, check=True)
+
+
+def test_candidate_consumers_are_excluded_once_from_default_sdk_lane():
+    from tools.qualify_candidate_admission import TESTS
+    workflow = (Path(__file__).parents[1]/'.github/workflows/tests.yml').read_text()
+    for case in TESTS:
+        assert workflow.count('--deselect='+case) == 1
+        assert "contains(needs.scope.outputs.pytest_args, '"+case+"')" in workflow

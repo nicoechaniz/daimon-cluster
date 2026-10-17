@@ -437,7 +437,7 @@ jobs:
       - run: >-
           python -m compileall -q clusterctl clusterd steward_tools tests tools
       - name: Prepare the explicit native admission SDK once
-        if: needs.scope.outputs.profile == 'admission' || needs.scope.outputs.profile == 'full' || contains(needs.scope.outputs.pytest_args, 'tests/test_guest_owner_bootstrap.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_admission.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_authorities.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_publication.py')
+        if: needs.scope.outputs.profile == 'admission' || needs.scope.outputs.profile == 'full' || contains(needs.scope.outputs.pytest_args, 'tests/test_guest_owner_bootstrap.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_admission.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_authorities.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_publication.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_portal_admission_baseline.py')
         run: |
           python - <<'PY'
           import os
@@ -470,7 +470,7 @@ jobs:
             tests/test_onboarding_host_ownership.py -k 'root_worker or existing_authority' \
             -W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning
       - name: Qualify selected native admission consumers with the explicit SDK candidate
-        if: needs.scope.outputs.profile == 'admission' || needs.scope.outputs.profile == 'full' || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_admission.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_authorities.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_publication.py')
+        if: needs.scope.outputs.profile == 'admission' || needs.scope.outputs.profile == 'full' || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_admission.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_authorities.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_publication.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_portal_admission_baseline.py')
         env:
           TEST_PROFILE: ${{ needs.scope.outputs.profile }}
           TEST_ARGUMENTS: ${{ needs.scope.outputs.pytest_args }}
@@ -506,6 +506,7 @@ jobs:
           --deselect=tests/test_onboarding_group_admission.py
           --deselect=tests/test_onboarding_group_authorities.py
           --deselect=tests/test_onboarding_group_publication.py
+          --deselect=tests/test_portal_admission_baseline.py
           -W error::ResourceWarning
           -W error::pytest.PytestUnraisableExceptionWarning
           --durations=10

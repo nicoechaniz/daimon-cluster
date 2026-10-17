@@ -57,14 +57,24 @@ def run(command: list[str], uid: int, gid: int) -> int:
     return os.waitstatus_to_exitcode(os.waitpid(child, 0)[1])
 
 
-def main() -> int:
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--uid', required=True, type=int)
     parser.add_argument('--gid', required=True, type=int)
-    args = parser.parse_args()
-    return run([sys.executable, '-B', '-m', 'pytest', '-q',
-        'tests/test_guest_owner_bootstrap.py', '-W', 'error::ResourceWarning',
-        '-W', 'error::pytest.PytestUnraisableExceptionWarning', '--durations=5'], args.uid, args.gid)
+    parser.add_argument('--sdk-commit')
+    parser.add_argument('--identity-python', type=Path)
+    args = parser.parse_args(argv)
+    if (args.sdk_commit is None) != (args.identity_python is None):
+        parser.error('candidate SDK and unchanged identity interpreter must be selected together')
+    if args.sdk_commit is None:
+        command = [sys.executable, '-B', '-m', 'pytest', '-q',
+            'tests/test_guest_owner_bootstrap.py', '-W', 'error::ResourceWarning',
+            '-W', 'error::pytest.PytestUnraisableExceptionWarning', '--durations=5']
+    else:
+        command = [sys.executable, '-B', 'tools/qualify_candidate_admission.py',
+            '--sdk-commit', args.sdk_commit, '--identity-python', str(args.identity_python),
+            'tests/test_guest_owner_bootstrap.py']
+    return run(command, args.uid, args.gid)
 
 
 if __name__ == '__main__':

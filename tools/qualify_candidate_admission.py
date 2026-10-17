@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ADMISSION_MATRIX_COMMIT = 'b53fa220d0917a5522773b7fb9711ab67e634b42'
 TESTS = {'tests/test_onboarding_group_admission.py', 'tests/test_onboarding_group_authorities.py',
          'tests/test_onboarding_group_publication.py'}
+OWNER_TEST = 'tests/test_guest_owner_bootstrap.py'
 IDENTITY_PROGRAM = '''import json,sys
 from pathlib import Path
 sys.path.insert(0,sys.argv[1])
@@ -34,7 +35,7 @@ def main(argv=None):
     parser.add_argument('tests', nargs='*', default=['tests/test_onboarding_group_admission.py'])
     args = parser.parse_args(argv)
     if (not re.fullmatch('[0-9a-f]{40}', args.sdk_commit) or not args.identity_python.is_absolute()
-            or any(item.split('::', 1)[0] not in TESTS for item in args.tests)):
+            or any(item.split('::', 1)[0] not in TESTS | {OWNER_TEST} for item in args.tests)):
         parser.error('an explicit SDK commit, absolute identity interpreter and supported tests are required')
     installed = json.loads(importlib.metadata.distribution('daimon-matrix').read_text('direct_url.json') or 'null')
     if not isinstance(installed, dict) or installed.get('vcs_info', {}).get('commit_id') != args.sdk_commit:
@@ -54,7 +55,8 @@ def main(argv=None):
                 raise RuntimeError('candidate_test_default_identity_producer_failed')
         FirstCustody._run = staticmethod(identity)
         import pytest
-        return pytest.main(['-q', '-x', '--tb=short', *args.tests])
+        return pytest.main(['-q', '-x', '--tb=short', *args.tests,
+            '-W', 'error::ResourceWarning', '-W', 'error::pytest.PytestUnraisableExceptionWarning'])
     finally:
         matrix_host.MATRIX_CONTRACT_COMMIT = original_pin
         FirstCustody._run = staticmethod(original_run)

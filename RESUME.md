@@ -79,6 +79,26 @@ paragraph is live health. See [the execution design](docs/design/admission-conti
 Production selections and the unanswered real maintenance boundary remain
 unchanged. No new real interruption is authorized.
 
+CI38987343377 exposed a real qualification-routing defect:9 guest-owner UID
+cases require the public authority-history API absent from defaultSDK805. The
+workflow now prepares the explicit candidate once before the existing kernel
+UID1000 lane and reuses it for the other selected native cases. The unchanged
+SDK805 interpreter still produces identities; VCS provenance and strict resource
+warnings remain enforced. The guest file runs once, not in ordinary pytest or
+the other candidate test list. All9 formerly failing cases pass in119.87s with
+actual UID1000 and genuine b53 consumer/805 producer;75 CI workflow/selector cases
+and scoped lint/diff pass. The retained local dev0dc interpreter was incompatible
+with the merged default805 pin, so a genuine805 test producer was installed in
+its own reusable test environment; no production SDK/runtime or captured helper
+was changed. A source-pin override workaround was removed before publication.
+Remote whole-branch qualification remains pending; do not relabel source checks
+as live receiving acceptance.
+
+Fresh Source I/O inspection confirms the original listener39374f7/configbe38 and
+staged00382/configaa24, original session20/thread and submitted uncertain input.
+No service, native turn or journal changed. Real activation still requires the
+existing scoped maintenance authorization; the pending question is unanswered.
+
 The three VPS bodies actually select Matrix SDK
 `80542cee1d56e3d46bbda21f4174e3df75cf5585` and receiving code
 `d7d64a19f6eb939d3428c13d2a1bdddb1bd2ed4b62719306884a611a766312b3`.

@@ -155,6 +155,9 @@ def test_guest_owner_contract_uses_kernel_uid_mapping_and_is_not_run_twice() -> 
     assert "needs.scope.outputs.profile == 'full'" in step
     assert 'sudo env LD_LIBRARY_PATH=' in step and 'tools/ci_guest_owner.py' in step
     assert '--uid="$(id -u)" --gid="$(id -g)"' in step
+    assert '"$RUNNER_TEMP/admission-candidate-sdk/bin/python"' in step
+    assert '--sdk-commit="$admission_commit" --identity-python="$onboarding_python"' in step
+    assert workflow.index('Prepare the explicit native admission SDK once') < workflow.index('Test the guest owner under its actual UID contract')
     assert workflow.count('--deselect=tests/test_guest_owner_bootstrap.py') == 1
 
 
@@ -184,11 +187,46 @@ def test_candidate_admission_ci_keeps_default_producer_and_only_selected_consume
     monkeypatch.setattr(subprocess, 'run', lambda argv, **kw: commands.append((argv, kw)))
     exec(compile(source, '<candidate-admission-ci>', 'exec'), {})
     candidate = str(tmp_path/'admission-candidate-sdk/bin/python')
-    assert commands[0][0] == [sys.executable, '-m', 'venv', '--system-site-packages', str(tmp_path/'admission-candidate-sdk')]
-    assert commands[1][0][0] == candidate
-    assert '--no-deps' in commands[1][0]
-    command = commands[2][0]
+    assert len(commands) == 1
+    command = commands[0][0]
     assert command[0] == candidate
     assert command[command.index('--identity-python') + 1] == sys.executable
     assert command[command.index('--identity-python') + 2:] == expected
     assert all(options == {'check': True} for _, options in commands)
+
+
+def test_native_candidate_preparation_is_shared_with_kernel_owner_lane(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+    raw = (Path(__file__).parents[1]/'.github/workflows/tests.yml').read_text()
+    start = raw.index('      - name: Prepare the explicit native admission SDK once')
+    marker = "          python - <<'PY'\n"
+    begin = raw.index(marker, start) + len(marker)
+    end = raw.index('          PY\n', begin)
+    source = '\n'.join(line.removeprefix('          ') for line in raw[begin:end].splitlines())
+    assert 'tests/test_guest_owner_bootstrap.py' in raw[start:begin]
+    monkeypatch.setenv('RUNNER_TEMP', str(tmp_path))
+    commands = []
+    monkeypatch.setattr(subprocess, 'run', lambda argv, **kw: commands.append((argv, kw)))
+    exec(compile(source, '<candidate-sdk-preparation>', 'exec'), {})
+    assert len(commands) == 2
+    assert commands[0][0] == [sys.executable, '-m', 'venv', '--system-site-packages', str(tmp_path/'admission-candidate-sdk')]
+    assert commands[1][0][0] == str(tmp_path/'admission-candidate-sdk/bin/python')
+    assert '--no-deps' in commands[1][0] and '--ignore-installed' in commands[1][0]
+    assert all(options == {'check': True} for _, options in commands)
+
+
+def test_kernel_owner_lane_forwards_candidate_without_replacing_identity_producer(monkeypatch):
+    import sys
+    from tools import ci_guest_owner
+    captured = []
+    monkeypatch.setattr(ci_guest_owner, 'run', lambda command, uid, gid: captured.append((command, uid, gid)) or 0)
+    assert ci_guest_owner.main(['--uid', '1001', '--gid', '1002', '--sdk-commit', 'a'*40,
+        '--identity-python', '/unchanged/base-python']) == 0
+    assert captured == [([sys.executable, '-B', 'tools/qualify_candidate_admission.py',
+        '--sdk-commit', 'a'*40, '--identity-python', '/unchanged/base-python',
+        'tests/test_guest_owner_bootstrap.py'], 1001, 1002)]
+    captured.clear()
+    with pytest.raises(SystemExit):
+        ci_guest_owner.main(['--uid', '1001', '--gid', '1002', '--sdk-commit', 'a'*40])
+    assert captured == []

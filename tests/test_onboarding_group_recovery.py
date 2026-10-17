@@ -382,3 +382,22 @@ def test_remaining_attachment_cas_refuses_intervening_publication_progress(tmp_p
     with pytest.raises(OnboardingError, match='frontier_changed'):
         recovery.remaining_attach(journal, parent['operation_id'], selected)
     assert journal.get(parent['operation_id']) == parent
+
+
+@pytest.mark.parametrize('key', ['membership_sha256', 'recipe_sha256', 'continuation_sha256', 'original_recipe_sha256'])
+@pytest.mark.parametrize('remove', [False, True])
+def test_remaining_execution_refuses_publication_identity_drift(tmp_path, monkeypatch, key, remove):
+    journal, parent, request, clock = remaining_fixture(tmp_path, monkeypatch)
+    selected = recovery.remaining_reference(recovery.remaining_plan(journal, request, audit_identity={}))
+    recovery.remaining_attach(journal, parent['operation_id'], selected)
+    current = journal.get(parent['operation_id'])
+    observed = copy.deepcopy(current['runtime_observation'])
+    publication = observed['group_publication']
+    if remove:
+        publication.pop(key)
+    else:
+        publication[key] = 'f'*64
+    current = journal.advance(parent['operation_id'], parent['state'], runtime_observation=observed,
+        expected_runtime_observation=current['runtime_observation'])
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.remaining_require_effect(journal, current, selected, 'tooling', now_ms=clock[0])

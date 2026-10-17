@@ -459,6 +459,8 @@ def _remaining_frontier(journal, parent: dict) -> dict:
                 raise ValueError
         return dict(social_grant_sha256=digest(prior), membership_state_key=state_key,
             membership_sha256=digest(joined), publication_sha256=digest(publication),
+            publication_identity=dict(recipe_sha256=publication['recipe_sha256'],
+                membership_sha256=publication['membership_sha256'], **provenance),
             publication_requests=retained_requests,
             children=copy.deepcopy(prior['children']))
     except (KeyError, TypeError, ValueError, AttributeError):
@@ -557,6 +559,8 @@ def remaining_resolve(journal, parent: dict, selected: dict) -> dict:
                         != {'result_sha256': child['preservation_sha256']}):
                 raise ValueError
         publication = parent['runtime_observation']['group_publication']
+        if any(publication.get(key) != value for key, value in grant['publication_identity'].items()):
+            raise ValueError
         for name, requests in grant['publication_requests'].items():
             for key, evidence in requests.items():
                 entry = publication['requests'][name][key]

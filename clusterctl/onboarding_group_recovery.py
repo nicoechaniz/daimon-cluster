@@ -7,9 +7,12 @@ the original parent lock, validate current owners and record its provenance.
 from __future__ import annotations
 
 import copy
+import os
 import re
+import stat
 import time
 import uuid
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from .onboarding import OnboardingError, digest
@@ -330,12 +333,12 @@ def membership(journal, parent: dict, admission: dict) -> tuple[dict, str, str, 
 
 def effect_deadline(journal, parent: dict, effect: str, deadline_ns: int) -> int:
     """Propagate the fixed linked bound to the actual owner, never renew a budget."""
-    grant = attached(journal, parent)
+    grant = execution(journal, parent, effect=effect, historical=True)
     if grant is None or time.time_ns()//1_000_000 >= grant['expires_at_ms']:
         # An expired invocation can only reconcile exact committed owner effects.
         # The fixed effect bound is carried separately to those actual consumers.
         return deadline_ns
-    attached(journal,parent,effect=effect)
+    execution(journal,parent,effect=effect)
     return min(deadline_ns,time.monotonic_ns()+(
         grant['expires_at_ms']-time.time_ns()//1_000_000)*1_000_000)
 
@@ -343,7 +346,7 @@ def effect_deadline(journal, parent: dict, effect: str, deadline_ns: int) -> int
 def bounds(journal, parent: dict) -> dict:
     """Derive the remaining bound explicitly; original activation stays frozen."""
     result = copy.deepcopy(parent['intended_transition']['cohort_admission']['activation'])
-    grant = attached(journal, parent)
+    grant = execution(journal, parent, historical=True)
     if grant is not None:
         result['expires_at_ms'] = grant['expires_at_ms']
     return result
@@ -351,7 +354,7 @@ def bounds(journal, parent: dict) -> dict:
 
 def lifecycle(journal, parent: dict, name: str, *, fresh: bool = True) -> dict | None:
     """Project only the approved remaining start to the existing owner CLI."""
-    grant = attached(journal, parent, **({'effect':'old-selection-start'} if fresh else {}))
+    grant = execution(journal, parent, effect='old-selection-start', historical=not fresh)
     if grant is None:
         return None
     try:
@@ -629,3 +632,140 @@ def remaining_require_effect(journal, parent: dict, selected: dict, effect: str,
             return grant
         except (KeyError, TypeError, ValueError, AttributeError):
             raise OnboardingError('onboarding_group_remaining_effect_not_authorized') from None
+
+
+def execution(journal, parent: dict, *, effect: str | None = None, historical: bool = False) -> dict | None:
+    """Resolve execution separately from the immutable social recipe/history.
+
+    A remaining-effects attachment takes precedence for its own effects only;
+    it cannot extend membership or fall back to an expired social approval.
+    Fresh callers retain the parent mutation lock through their actual dispatch.
+    Historical readers gain no permission by resolving a longer horizon.
+    """
+    with journal.mutation_lock(parent['operation_id']):
+        current = journal.get(parent['operation_id'])
+        if current is None or any(current[key] != parent[key] for key in
+                ('intent', 'intent_hash', 'expected_precondition', 'intended_transition')):
+            raise OnboardingError('onboarding_group_remaining_reference_required')
+        attachment = (current['runtime_observation'] or {}).get('admission_remaining_effects')
+        if attachment is None or effect == 'membership':
+            return attached(journal, current, **({'effect': effect} if not historical and effect is not None else {}))
+        grant = remaining_resolve(journal, current, attachment['reference'])
+        expected = dict(schema='cluster-admission-remaining-effects-attachment/v1',
+            reference=attachment['reference'], authorization_sha256=digest(grant),
+            frontier_sha256=grant['frontier_sha256'])
+        if attachment != expected or effect is not None and effect not in grant['effects']:
+            raise OnboardingError('onboarding_group_remaining_reference_required')
+        if historical:
+            return grant
+        if effect is None:
+            raise OnboardingError('onboarding_group_remaining_effect_not_authorized')
+        return remaining_require_effect(journal, current, attachment['reference'], effect,
+            now_ms=time.time_ns()//1_000_000)
+
+
+@contextmanager
+def execution_scope(journal, parent: dict, effect: str):
+    """Keep both current operation and approval stable through owner dispatch.
+
+    Lock order is parent then approval, matching attachment. The receiving owner
+    must still enforce the fixed horizon at each original effect boundary.
+    Resolving a copied projection outside this scope is never permission.
+    """
+    with journal.mutation_lock(parent['operation_id']):
+        current = journal.get(parent['operation_id'])
+        execution(journal, parent, effect=effect, historical=True)
+        observed = current['runtime_observation'] or {}
+        attachment = observed.get('admission_remaining_effects') if effect != 'membership' else None
+        attachment = attachment or observed.get('admission_continuation')
+        lock = (journal.mutation_lock(attachment['reference']['operation_id'])
+            if attachment is not None else nullcontext())
+        with lock:
+            yield execution(journal, parent, effect=effect)
+
+
+@contextmanager
+def remaining_projection(journal, parent: dict, effect: str, *, owner_name: str,
+                         command: dict, expected_context_sha256: str):
+    """Render public owner-binding evidence under actual execution ownership.
+
+    Consumers publish this through their verified read-only owner-input route,
+    then dispatch and observe the finite owner while this scope remains open.
+    This document is not an independent grant or a cached active-state token.
+    """
+    from .onboarding_group_admission import admission_owner_contexts
+    with execution_scope(journal, parent, effect) as grant:
+        try:
+            current = journal.get(parent['operation_id'])
+            admission = current['intended_transition']['cohort_admission']
+            social, _key, _prefix, _provenance = membership(journal, current, admission)
+            contexts = admission_owner_contexts(current, social)
+            if (grant is None or grant['schema'] != REMAINING_SCHEMA
+                    or owner_name not in admission['receivers']
+                    or expected_context_sha256 != contexts[owner_name]):
+                raise ValueError
+            attachment = current['runtime_observation']['admission_remaining_effects']
+            helper = grant['maintenance'][owner_name]
+            value = dict(schema='cluster-admission-execution-context/v1',
+                reference=attachment['reference'], authorization_sha256=digest(grant),
+                parent_operation_id=current['operation_id'], parent_intent_sha256=current['intent_hash'],
+                original_vectors_sha256=grant['original_vectors_sha256'],
+                social_operation_id=social['operation_id'], social_grant_sha256=grant['social_grant_sha256'],
+                membership_sha256=grant['membership_sha256'], publication_identity_sha256=digest(grant['publication_identity']),
+                effect=effect, owner_name=owner_name, owner_context_sha256=expected_context_sha256,
+                command_sha256=digest(command), helper_code_digest=helper['code_digest'],
+                helper_code_uid=helper['code_uid'], not_after_ms=grant['expires_at_ms'])
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise OnboardingError('onboarding_group_remaining_owner_context_required') from None
+        yield value
+
+
+def read_remaining_projection(path: Path, *, input_root: Path, expected_sha256: str,
+                              effect: str, owner_name: str, command: dict,
+                              expected_context_sha256: str, helper_code_digest: str,
+                              helper_code_uid: int, now_ms: int) -> dict:
+    """Bind a finite owner invocation to its verified read-only host input.
+
+    The host must retain execution_scope through the invocation; this file is
+    binding evidence, not a replacement for current protected journal authority.
+    Receiving CLIs supply their fixed input root and independently qualified
+    helper identity, never paths or helper pins supplied in the request body.
+    """
+    import json
+    from .onboarding_release import regular
+    try:
+        if (not _sha(expected_sha256) or not path.is_absolute() or '..' in path.parts
+                or path.parent != input_root or path.name != 'execution-'+expected_sha256+'.json'
+                or not os.statvfs(input_root).f_flag & os.ST_RDONLY):
+            raise ValueError
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077:
+            raise ValueError
+        value = json.loads(regular(path, uid=os.geteuid(), limit=65536))
+        fields = {'schema', 'reference', 'authorization_sha256', 'parent_operation_id',
+            'parent_intent_sha256', 'original_vectors_sha256', 'social_operation_id',
+            'social_grant_sha256', 'membership_sha256', 'publication_identity_sha256',
+            'effect', 'owner_name', 'owner_context_sha256', 'command_sha256',
+            'helper_code_digest', 'helper_code_uid', 'not_after_ms'}
+        if (not isinstance(value, dict) or set(value) != fields
+                or value['schema'] != 'cluster-admission-execution-context/v1'
+                or digest(value) != expected_sha256 or effect not in REMAINING_EFFECTS
+                or value['effect'] != effect or value['owner_name'] != owner_name
+                or value['owner_context_sha256'] != expected_context_sha256
+                or value['command_sha256'] != digest(command)
+                or value['helper_code_digest'] != helper_code_digest
+                or type(value['helper_code_uid']) is not int or value['helper_code_uid'] != helper_code_uid
+                or type(value['not_after_ms']) is not int or not 0 < value['not_after_ms'] < 2**53
+                or type(now_ms) is not int or not 0 < now_ms < value['not_after_ms']
+                or any(not _sha(value[field]) for field in fields if field.endswith('_sha256')
+                    or field == 'helper_code_digest')
+                or set(value['reference']) != {'schema', 'operation_id', 'intent_sha256'}
+                or value['reference']['schema'] != REMAINING_REFERENCE_SCHEMA
+                or not _sha(value['reference']['intent_sha256'])
+                or str(uuid.UUID(value['social_operation_id'])) != value['social_operation_id']
+                or any('operation:'+str(uuid.UUID(identifier.removeprefix('operation:'))) != identifier
+                    for identifier in (value['parent_operation_id'], value['reference']['operation_id']))):
+            raise ValueError
+        return value
+    except (OSError, KeyError, TypeError, ValueError, AttributeError):
+        raise OnboardingError('onboarding_group_remaining_owner_input_required') from None

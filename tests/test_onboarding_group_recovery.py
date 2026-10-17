@@ -27,7 +27,8 @@ def fixture(tmp_path, monkeypatch):
             invitation_id=invitation_id(tribe=tribe, founder_epoch=0, invitee_being_ref=entrant, nonce=nonce),
             issued_at_ms=issued, expires_at_ms=expires)
     old = invite(now-90_000, now-1000, b64url(b'1'*32))
-    social = dict(operation_id=str(uuid.uuid4()), founder_owner='founder', entrant_owner='entrant', invitation=old)
+    social = dict(operation_id=str(uuid.uuid4()), founder_owner='founder', entrant_owner='entrant', invitation=old,
+        owner_contexts={name:'a'*64 for name in ('founder', 'entrant')})
     admission = dict(tribe_ref=tribe, activation={'expires_at_ms': now-1000}, receivers={
         name: {'being_ref': ref, 'candidate': {'code_uid': os.geteuid()}}
         for name, ref in (('founder', founder), ('entrant', entrant))}, entrant={'being_ref': entrant})
@@ -401,3 +402,111 @@ def test_remaining_execution_refuses_publication_identity_drift(tmp_path, monkey
         expected_runtime_observation=current['runtime_observation'])
     with pytest.raises(OnboardingError, match='effect_not_authorized'):
         recovery.remaining_require_effect(journal, current, selected, 'tooling', now_ms=clock[0])
+
+
+def test_execution_resolver_selects_remaining_bound_without_changing_social_history(tmp_path, monkeypatch):
+    journal, parent, request, clock = remaining_fixture(tmp_path, monkeypatch)
+    social = recovery.attached(journal, parent)
+    approved = recovery.remaining_plan(journal, request, audit_identity={})
+    grant = recovery.remaining_attach(journal, parent['operation_id'], recovery.remaining_reference(approved))
+    current = journal.get(parent['operation_id'])
+    assert recovery.attached(journal, current) == social
+    assert recovery.execution(journal, current, effect='publication') == grant
+    assert recovery.execution(journal, current, effect='steady-handoff') == grant
+    assert recovery.bounds(journal, current)['expires_at_ms'] == request['expires_at_ms']
+    assert recovery.membership(journal, current, current['intended_transition']['cohort_admission'])[1] == 'membership_continuation'
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.execution(journal, current, effect='membership')
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.execution(journal, current)
+    clock[0] = request['expires_at_ms']
+    assert recovery.execution(journal, current, historical=True) == grant
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.execution(journal, current, effect='publication')
+    journal.advance(approved['operation_id'], 'completed')
+    assert recovery.execution(journal, current, historical=True) == grant
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.execution(journal, current, effect='activation')
+
+
+def test_remaining_projection_keeps_parent_and_approval_kernel_locks_through_dispatch(tmp_path, monkeypatch):
+    import fcntl
+    import hashlib
+    journal, parent, request, clock = remaining_fixture(tmp_path, monkeypatch)
+    selected = recovery.remaining_reference(recovery.remaining_plan(journal, request, audit_identity={}))
+    grant = recovery.remaining_attach(journal, parent['operation_id'], selected)
+    parent = journal.get(parent['operation_id'])
+    command = parent['runtime_observation']['group_publication']['requests']['entrant']['application']['command']
+    paths = [journal.path.parent/('.operation-'+hashlib.sha256(identifier.encode()).hexdigest()+'.lock')
+        for identifier in (parent['operation_id'], selected['operation_id'])]
+    with recovery.remaining_projection(journal, parent, 'publication', owner_name='entrant',
+            command=command, expected_context_sha256='a'*64) as projection:
+        assert projection['authorization_sha256'] == digest(grant)
+        assert projection['command_sha256'] == digest(command)
+        assert projection['not_after_ms'] == grant['expires_at_ms']
+        assert 'active' not in projection and 'maintenance' not in projection
+        for path in paths:
+            with path.open('rb') as stream:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    for path in paths:
+        with path.open('rb') as stream:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    journal.advance(selected['operation_id'], 'completed')
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        with recovery.remaining_projection(journal, parent, 'publication', owner_name='entrant',
+                command=command, expected_context_sha256='a'*64):
+            pytest.fail('inactive approval yielded a fresh owner projection')
+
+
+@pytest.mark.parametrize('owner,context', [('foreign','a'*64), ('entrant','f'*64)])
+def test_remaining_projection_refuses_foreign_owner_or_context(tmp_path, monkeypatch, owner, context):
+    journal, parent, request, _clock = remaining_fixture(tmp_path, monkeypatch)
+    selected = recovery.remaining_reference(recovery.remaining_plan(journal, request, audit_identity={}))
+    recovery.remaining_attach(journal, parent['operation_id'], selected)
+    parent = journal.get(parent['operation_id'])
+    with pytest.raises(OnboardingError, match='owner_context_required'):
+        with recovery.remaining_projection(journal, parent, 'publication', owner_name=owner,
+                command={}, expected_context_sha256=context):
+            pytest.fail('foreign owner/context yielded a projection')
+
+
+@pytest.mark.parametrize('fault', [None, 'writable-input', 'changed-body', 'foreign-owner',
+    'foreign-command', 'expired', 'membership'])
+def test_owner_projection_requires_exact_readonly_input_and_native_binding(tmp_path, monkeypatch, fault):
+    from clusterctl import being_seed, onboarding_mounts
+    journal, parent, request, clock = remaining_fixture(tmp_path, monkeypatch)
+    selected = recovery.remaining_reference(recovery.remaining_plan(journal, request, audit_identity={}))
+    recovery.remaining_attach(journal, parent['operation_id'], selected)
+    parent = journal.get(parent['operation_id'])
+    command = parent['runtime_observation']['group_publication']['requests']['entrant']['application']['command']
+    views = tmp_path/'views'
+    views.mkdir(mode=0o700)
+    # This test qualifies file/binding semantics only, not a real Incus mount.
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_UID', os.geteuid())
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_GID', os.getegid())
+    with recovery.remaining_projection(journal, parent, 'publication', owner_name='entrant',
+            command=command, expected_context_sha256='a'*64) as context:
+        pin = digest(context)
+        name = 'execution-'+pin+'.json'
+        root = onboarding_mounts.prepare_matrix_public(views, {'one': 'receiver'}, {name: context})
+        arguments = dict(input_root=root, expected_sha256=pin, effect='publication', owner_name='entrant',
+            command=command, expected_context_sha256='a'*64, helper_code_digest='e'*64,
+            helper_code_uid=os.geteuid(), now_ms=clock[0])
+        monkeypatch.setattr(os, 'statvfs', lambda _path: SimpleNamespace(
+            f_flag=0 if fault == 'writable-input' else os.ST_RDONLY))
+        if fault == 'changed-body':
+            being_seed._write(root/name, {**context, 'owner_name': 'foreign'})
+        if fault == 'foreign-owner':
+            arguments['owner_name'] = 'foreign'
+        if fault == 'foreign-command':
+            arguments['command'] = {**command, 'step': 'different'}
+        if fault == 'expired':
+            arguments['now_ms'] = context['not_after_ms']
+        if fault == 'membership':
+            arguments['effect'] = 'membership'
+        if fault is None:
+            assert recovery.read_remaining_projection(root/name, **arguments) == context
+        else:
+            with pytest.raises(OnboardingError, match='owner_input_required'):
+                recovery.read_remaining_projection(root/name, **arguments)

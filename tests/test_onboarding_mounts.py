@@ -23,6 +23,31 @@ def fixture_guest_ids(monkeypatch):
     monkeypatch.setattr(onboarding_mounts, 'GUEST_GID', os.getegid())
 
 
+def test_execution_projection_reuses_immutable_public_matrix_input_route(tmp_path):
+    views = tmp_path/'views'
+    views.mkdir(mode=0o700)
+    plan = {'receiver': 'one-approved-body'}
+    context = dict(schema='cluster-admission-execution-context/v1', command_sha256='a'*64)
+    name = 'execution-'+digest(context)+'.json'
+    root = onboarding_mounts.prepare_matrix_public(views, plan, {name: context})
+    original = (root/name).read_bytes()
+    inode = (root/name).stat().st_ino
+    assert onboarding_mounts.prepare_matrix_public(views, plan, {name: context}) == root
+    # Existing authority documents and separately correlated dispatch contexts
+    # coexist on the same already verified read-only mount.
+    onboarding_mounts.prepare_matrix_public(views, plan, {'genesis.json': {'retained': True}})
+    later = {**context, 'command_sha256': 'b'*64}
+    onboarding_mounts.prepare_matrix_public(views, plan, {'execution-'+digest(later)+'.json': later})
+    assert (root/name).read_bytes() == original and (root/name).stat().st_ino == inode
+    assert (root/name).stat().st_mode & 0o077 == 0
+    with pytest.raises(OnboardingError, match='invalid_onboarding_public_matrix_documents'):
+        onboarding_mounts.prepare_matrix_public(views, plan, {name: later})
+    with pytest.raises(OnboardingError, match='invalid_onboarding_public_matrix_documents'):
+        onboarding_mounts.prepare_matrix_public(views, plan, {'execution-'+digest({})+'.json': {}})
+    with pytest.raises(OnboardingError, match='invalid_onboarding_public_matrix_documents'):
+        onboarding_mounts.prepare_matrix_public(views, plan, {'../execution-'+digest(context)+'.json': context})
+
+
 def test_view_retry_preserves_all_input_and_refuses_changed_existing_bytes(tmp_path, packet):
     receiver = guest_fixtures.receiving(tmp_path, packet)
     views = tmp_path / 'views'

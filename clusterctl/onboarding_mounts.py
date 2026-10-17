@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import uuid
 from pathlib import Path
@@ -15,6 +16,7 @@ from .onboarding import OnboardingError, digest, private_directory
 GUEST_UID = 1000
 GUEST_GID = 1000
 GUEST_HOME = Path('/home/agent')
+_EXECUTION_NAME = re.compile(r'execution-[0-9a-f]{64}\.json')
 
 
 def prepare_connections(views: Path, plan: dict, value: dict) -> Path:
@@ -65,7 +67,11 @@ def prepare_matrix_public(views: Path, plan: dict, documents: dict[str, dict]) -
     from daimon_matrix import canonical, keystore
     from .matrix_host import _publish_directory_noreplace
     allowed = {'genesis.json', 'activation.json', 'credential-response.json', 'admission.json', 'peer-offer.json'}
-    if not documents or not set(documents) <= allowed:
+    if (not documents or any(name not in allowed and (
+            _EXECUTION_NAME.fullmatch(name) is None
+            or name != 'execution-'+digest(value)+'.json'
+            or value.get('schema') != 'cluster-admission-execution-context/v1')
+            for name, value in documents.items())):
         raise OnboardingError('invalid_onboarding_public_matrix_documents')
     private_directory(views)
     parent = views / digest(plan)
@@ -75,7 +81,8 @@ def prepare_matrix_public(views: Path, plan: dict, documents: dict[str, dict]) -
     target.mkdir(mode=0o755, exist_ok=True)
     info = target.stat()
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in {os.geteuid(), GUEST_UID}
-            or info.st_mode & 0o022 or any(item.name not in allowed for item in target.iterdir())):
+            or info.st_mode & 0o022 or any(item.name not in allowed and _EXECUTION_NAME.fullmatch(item.name) is None
+                for item in target.iterdir())):
         raise OnboardingError('existing_onboarding_public_matrix_preserved')
     # Keep the publisher's directory ownership. Native atomic writes require
     # it; only individual public documents are owned by the receiving UID.

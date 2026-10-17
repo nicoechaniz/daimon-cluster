@@ -232,10 +232,11 @@ source changes are not installed and old approval expiry still applies.
 
 Before any remaining-effects execution, the SDK must authenticate the explicitly
 associated stage and reconcile that client's durable prefix, preserving stores
-and WALs. An absent application must never trigger a second preparation. Existing
-recover accepts published applications only; missing private preparation cannot
-be reconstructed. Future prepare must retain private recovery material once its
-first durable capability effect begins.
+and WALs. An absent application must never trigger a second preparation. The older
+installed recover path accepts published applications only; source Matrix03b132f
+now implements explicit initial-prefix/store recovery and awaits exact installed
+qualification. Missing private preparation cannot be reconstructed. That source
+also makes prepare retain its private material once durable capability effects begin.
 
 The remaining-effects planner must be limited to accepted membership/incomplete
 publication with no first-start intent, loaded replacement, activation plan or
@@ -270,3 +271,27 @@ within the fixed bound. An inactive approval cannot attach to a fresh parent.
 Later publication results can advance, while every originally retained command
 and completed result stays pinned. This is journal qualification only; native
 owner dispatch and integrated receiving acceptance remain unfinished.
+
+### Execution binding under development
+
+The execution resolver is separate from social-history resolution. Remaining
+publication/start/activation bounds can select the new approval without changing
+the old membership recipe or extending membership permission. `execution_scope`
+owns both the parent and approval kernel locks through the finite owner dispatch;
+the owner must still enforce the fixed wall horizon at its actual effect boundary.
+
+`remaining_projection` renders only public binding evidence inside that scope:
+original parent/vectors, social/membership/publication identity, exact owner and
+context, command hash, qualified helper digest and remaining horizon. The existing
+read-only public Matrix input route accepts immutable content-addressed
+`execution-<sha256>.json` documents. The receiving reader requires that exact
+read-only input root/file, helper identity, owner/context, command and unexpired
+bound; request-body hashes alone are insufficient. The file is not an independent
+grant or a cached active-state token. The host must retain the actual journal
+scope through dispatch, including when an old file is reused for an exact retry.
+
+Resolver, kernel-lock and file/binding semantics are qualified in source. The
+file test has an explicit read-only-filesystem seam; it does not prove an actual
+Incus mount or native CLI adoption. CLI plumbing, protected supplemental owner
+records, all remaining phase consumers and the original integrated journey are
+still pending. No configuration or captured helper selects these new primitives.

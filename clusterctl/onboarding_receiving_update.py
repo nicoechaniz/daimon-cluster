@@ -3302,7 +3302,8 @@ class CohortController:
     def publish_admission_group(self, *, deadline_ns: int) -> dict:
         """Publish only the protected post-membership offline group phase."""
         from .onboarding_group_admission import publish_admission_group
-        return publish_admission_group(self, deadline_ns=deadline_ns)
+        with self.journal.mutation_lock(self.operation_id), self._observation_scope():
+            return publish_admission_group(self, deadline_ns=deadline_ns)
 
     def _activation(self, row: dict) -> tuple[dict, dict]:
         """Resolve fixed activation or the admission's retained late derivation."""

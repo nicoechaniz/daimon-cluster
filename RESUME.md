@@ -4,100 +4,47 @@ Architecture/profile navigation is
 [Matrix current architecture](https://github.com/AlterMundi/daimon-matrix/blob/main/docs/current-architecture.md).
 Current selections below supersede the explicitly historical qualification.
 
-## Receiving frontier — 2026-10-16
+## Current receiving frontier — 2026-10-17
 
-Latest synthetic continuation: the finite admission window is CLOSED and its
-fixed authorization expired. The same protected operation retains preparation,
-both sender revocations and both old services' quiescence/preservation. The
-original entrant native service remains preserved; its never-created Matrix unit
-is verified absent. Owner reconciliation through the actual UID1000 native
-writer confirmed the retained root invitation command was never dispatched:
-no owner request and no exact invitation/entrant acceptance events. No native
-request was sent by that inspection. Membership, publication, managed first load
-and communication/rollback acceptance remain unobserved. Preserve original
-horizons, identities, requests and child associations.
+The native Matrix milestone6 goal remains ACTIVE and incomplete. Prioritize
+actual three-VPS receiving/Matrix#363 and Source I/O; future admission is
+independent work while scoped real maintenance permission remains unanswered.
+Do not make synthetic admission a prerequisite for I/O or repeat qualified work.
 
-Published `7366c9f` removes redundant social preparation while retaining fresh
-barriers before every write. Its genuine VCS SDKb53 test consumers passed11 native
-admission and12 authority cases with the unchanged default identity producer.
-The finite owner conversation now reuses one loaded runtime/writer per invocation,
-retains exact native journals and carries the unchanged absolute deadline into
-the guest. A CLI-only kernel bound covers blocked loading/dispatch; interrupted
-effects remain uncertain. Source fresh quiescence uses that same writer. Verified
-older owner inventories retain their one-shot route. Bounded Astra SOURCE GO
-closed the lifetime/deadline findings.152 host/coordinator/finisher/process checks
-and119 updated process/cohort checks,2 affected real native cases,69 CI cases,
-88-file typing and scoped lint pass; overlaps are not additional tests.
+Production remains SDK80542cee / receiving coded7d64a19 / worker2144. Combined
+candidate0bb7946 (SDK3d556633 / codee680e3cd) is prepared on all3, not selected.
+Existing all3 signed group and exact-direct receipts remain valid; two concurrent
+reply legs remain unconfirmed in Matrix#363. The candidate retains safe route
+diagnostics; it is not a proven repair of that incident. Source I/O still selects
+listener39374f7/configbe38; qualified Telecodex100 binary00382/configaa24 is staged.
+Reconcile its original retained completion without replay before asking for a
+genuine human acceptance test. No new restart/global Stop is authorized.
 
-The reviewed finite helperc652/SDK3a was then qualified through actual installed
-owner CLIs: Source's two snapshot/exact-retry calls and two fresh quiescence
-queries used one process in10.074s; the old guest's snapshot/exact retry used one
-Incus owner process in38.574s. Both closed with exit0, zero membership authoring
-and zero models. Owner request/context journals retain these read-only social
-observations. A new public read-only helper mount on the UUID-pinned old synthetic
-guest supports qualification only. Frozen hostd814, receiverc2, SDK3a, identities,
-original lifecycle bindings and real selections remain unchanged. Root never
-opened/executed another body's private SDK. Do not rerun these unchanged probes.
+Synthetic future admission: the SAME protected parent retains actual signed
+membership on all3 bodies and the original acceptance-response-loss recovery.
+The first entrant application command remains unresolved at the host; do not
+infer absence or repeat authoring from a missing reply. The finite producer
+window is CLOSED, with clean cleanup, zero models and production effects. The
+fixed linked authorization has expired. Preserve accepted events, original
+requests, receiverc2/SDK3a, hostd814 and separately published owner helpera728.
+No new invitation, shadow parent or enlarged old horizon is a recovery route.
+Publication, managed first loads, activation, signed communication and compatible
+v2 rollback remain unobserved. Originalv1 is not a post-v2 rollback.
 
-Linked admission recovery now connects the protected configuration and all
-remaining effect consumers in source. Maintenance dispatch is separate from the
-frozen receiver; the new social attempt retains the original recipe and requests.
-Native invitation absence is reinspected inside the actual authoring writer,
-including after a process exits between inspection and dispatch. Acceptance and
-publication lost acknowledgments recover only proven historical outcomes after
-expiry. Source/guest replacement, entrant initial startup, activation and original
-technical communication share the linked fixed bound and provenance. Root CAS,
-StartUnit and the initial file link recheck the bound at the actual effect.
-An inactive approval cannot execute even with a future horizon; completed-parent
-inspection remains historical.
+Draft PR265 publishes source7bb5e19. CI38987343377 failed9 actual guest-owner
+cases because defaultSDK805 lacks their required history API. The published
+routing correction selects genuine candidateb53 once for consumer tests and
+retains the separate805 identity producer. Those9 actual-UID cases and75 workflow
+cases pass locally. Replacement CI38989175294 passed the actual UID owner lane;
+its other native contracts were last observed running, not accepted. Existing qualified
+source/review evidence remains valid. Source-only publication-budget correction
+reuses immutable lifecycle metadata within an invocation and removes one duplicate
+entry check; fresh per-dispatch and final quiescence checks remain mandatory.
+The4 affected coordination cases pass in1.80s and the genuine candidate linked
+publication/lost-result case passes in42.93s. Scoped Ruff and diff checks pass.
+Neither this source correction nor CI changes select a synthetic/live artifact.
 
-Bounded Astra review closed the writer-reinspection, final-consumer deadline and
-historical-reconciliation findings. Candidate native tests cover the linked join,
-late original effects, inspection crash, expired acceptance recovery and linked
-publication/lost acknowledgment. Affected owner/controller/Root and CI contracts,
-89-file typing and scoped lint were qualified; overlapping test runs are not
-additional evidence. CI selects these actual contracts and executes candidate
-native coverage once, retaining the separate default identity producer.
-
-The separately named helpera728 is prepared/Root-published against the original
-receiverc2/SDK3a and unchanged base. Its changed inspector actually ran through
-the synthetic Source UID1000 owner CLI/writer in15.999s: the original invite was
-not-dispatched, no native request was sent, and the process exited cleanly with
-zero models. Both UUID-pinned synthetic guests gained only the exact additional
-read-only helper mount; existing devices, frozen hostd814 and child settings stay
-unchanged. PR265 publishes this branch as draft. The source now integrates current
-main, preserving its production SDK805 pin and owner-control/launcher fixes; the
-captured synthetic helper and receiver pins are frozen independently.
-
-The SAME retained operation is being resumed under one explicit linked approval
-and finite isolated producer window. Its new invitation was retained successfully;
-partial native distribution resumes exact pending requests rather than restarting.
-This is not complete admission or production acceptance. Actual first managed
-load, communication and v2-compatible rollback remain unobserved. Use the retained
-checkpoint and live process receipts for the current window/frontier; no dated
-paragraph is live health. See [the execution design](docs/design/admission-continuation.md).
-Production selections and the unanswered real maintenance boundary remain
-unchanged. No new real interruption is authorized.
-
-CI38987343377 exposed a real qualification-routing defect:9 guest-owner UID
-cases require the public authority-history API absent from defaultSDK805. The
-workflow now prepares the explicit candidate once before the existing kernel
-UID1000 lane and reuses it for the other selected native cases. The unchanged
-SDK805 interpreter still produces identities; VCS provenance and strict resource
-warnings remain enforced. The guest file runs once, not in ordinary pytest or
-the other candidate test list. All9 formerly failing cases pass in119.87s with
-actual UID1000 and genuine b53 consumer/805 producer;75 CI workflow/selector cases
-and scoped lint/diff pass. The retained local dev0dc interpreter was incompatible
-with the merged default805 pin, so a genuine805 test producer was installed in
-its own reusable test environment; no production SDK/runtime or captured helper
-was changed. A source-pin override workaround was removed before publication.
-Remote whole-branch qualification remains pending; do not relabel source checks
-as live receiving acceptance.
-
-Fresh Source I/O inspection confirms the original listener39374f7/configbe38 and
-staged00382/configaa24, original session20/thread and submitted uncertain input.
-No service, native turn or journal changed. Real activation still requires the
-existing scoped maintenance authorization; the pending question is unanswered.
+## Selected production and retained qualification evidence
 
 The three VPS bodies actually select Matrix SDK
 `80542cee1d56e3d46bbda21f4174e3df75cf5585` and receiving code
@@ -115,6 +62,8 @@ legs unconfirmed and their readable copies absent: Matrix#363 remains open.
 Other Root bodies are explicitly unroutable, not qualified by these VPS results.
 Full milestone acceptance is unfinished. The SDK0dc/codefb compatible predecessor
 is preserved; accepted authority, history and uncertain inputs must not be reset.
+
+## Historical qualification notes — superseded by the current frontier
 
 The human resumed the native milestone goal; it is active. Future Cluster227
 source and its retained synthetic admission fixture remain separate from the

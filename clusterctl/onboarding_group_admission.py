@@ -586,8 +586,8 @@ def publish_admission_group(cohort, *, deadline_ns: int) -> dict:
                     or any(item.get('state') != 'stopped' for item in proof['current_senders'].values())):
                 raise OnboardingError('onboarding_group_membership_quiescence_required')
 
-        barrier()
-
+        # Each owner dispatch and final completion below observes current
+        # quiescence. A second entry check spends the same finite effect budget.
         applications: dict[str, str] = {}
         installations: dict[str, str] = {}
 

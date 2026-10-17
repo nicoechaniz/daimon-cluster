@@ -79,16 +79,17 @@ The remaining-effects proposal has conditional Astra design GO only, requiring
 native recovery and protected execution provenance before any fresh continuation.
 See docs/design/admission-continuation.md. Real Matrix/I/O remains independent.
 
-Local Cluster9cbb376 implements only the separate remaining-effects journal
+Cluster source24cff58 implements only the separate remaining-effects journal
 planner/attachment/resolver. It binds the original parent, vectors/social grant,
 complete accepted membership, original publication commands/results, preservation,
 helpers and fixed bound, and cannot authorize membership.29 baseline/core cases
 PASS2.80s, plus3 focused lost-ACK/inactive-approval/frontierCAS cases PASS0.54s;
-scoped lint/diff PASS. Existing Astra is reviewing that exact material contract.
-Execution consumer wiring and protected owner projection remain PENDING. No
+scoped lint/diff PASS. The existing Astra reviewer gave bounded SOURCE GO for exact24cff58 after
+pinning publication identity separately from growing results;9 drift/progress
+cases PASS0.78s. Owning mypy90 PASS. Execution consumer wiring and protected owner projection remain PENDING. No
 operational configuration/helper selects it and no actual grant was minted.
-Publish this coherent change after the bounded review, together with the verified
-candidate-lane CI correction; do not run another full suite between small edits.
+The journal core and verified candidate-lane CI correction are ready for one
+coherent source publication. Do not repeat a full suite between small edits.
 
 
 ## Selected production and retained qualification evidence

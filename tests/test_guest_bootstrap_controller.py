@@ -89,6 +89,12 @@ def fixture(tmp_path, monkeypatch):
                     self.active = False
                     self.stops += 1
                 return self.lose('quiesce', {'exits': {'process': True, 'admission_parent': True}})
+            if action == 'bootstrap-quiescence':
+                if self.active:
+                    raise OnboardingError('receiving_guest_service_quiescence_required')
+                return dict(schema='cluster-guest-service-quiescence-observation/v1',
+                    request_sha256=digest(options['request']),
+                    exit_sha256=digest({'exits': {'process': True, 'admission_parent': True}}))
             if action == 'bootstrap-select':
                 assert not self.active
                 self.done.add('select')
@@ -150,6 +156,77 @@ def test_full_dual_route_effects_and_exact_retry_never_repeat_stop_or_keys(fixtu
     # Later cohort projection does not erase historical bootstrap/load proof.
     backend.gate = dict(controlled=True, process_id=333, phase='selected', readers=['synthetic-reader'])
     assert controller.execute() == result
+
+
+def test_quiesce_retains_the_same_lifecycle_without_publishing_or_starting(fixture):
+    controller, backend, calls, _ = fixture
+    result = controller.quiesce()
+    assert result == {'exits': {'process': True, 'admission_parent': True}}
+    assert not backend.active and backend.stops == 1
+    assert backend.starts == backend.stages == backend.publications == 0
+    assert calls[-1] == 'bootstrap-quiesce'
+    assert controller.quiesce() == result
+    assert backend.stops == 1 and calls[-1] == 'bootstrap-quiesce'
+    effects = controller._row()[0]['runtime_observation']['guest_bootstraps']['eko']
+    assert set(effects) == {'candidate_validated', 'quiesced'}
+    assert controller.execute()['receiving_readiness'] == 'unobserved'
+    assert backend.stops == backend.starts == backend.stages == backend.publications == 1
+
+
+def test_quiescence_query_works_inside_existing_managed_job_locks(fixture):
+    from contextlib import ExitStack
+    controller, backend, calls, _ = fixture
+    controller.quiesce()
+    before = controller._row()[0]
+    frozen = before['expected_precondition']['guest_bootstraps']['eko']
+    store = JobStore(backend.config.jobs)
+    store.submit(frozen['plan'], FixtureBackend())
+    with ExitStack() as locks:
+        locks.enter_context(being_seed._locked(backend.config.jobs))
+        for name in store.names():
+            locks.enter_context(being_seed._locked(store.directory(name)))
+        observed = controller.observe_quiescence()
+    assert observed['exit_sha256'] == digest(before['runtime_observation']['guest_bootstraps']['eko']['quiesced'])
+    assert controller._row()[0] == before
+    assert backend.stops == 1 and backend.starts == backend.stages == backend.publications == 0
+    assert calls[-1] == 'bootstrap-quiescence'
+
+
+def test_quiesce_lost_reply_resumes_the_same_root_operation(fixture):
+    controller, backend, _, _ = fixture
+    backend.fail = 'quiesce'
+    with pytest.raises(OSError, match='lost quiesce'):
+        controller.quiesce()
+    assert backend.stops == 1 and not backend.active
+    assert controller.quiesce()['exits'] == {'process': True, 'admission_parent': True}
+    assert backend.stops == 1 and backend.starts == backend.stages == backend.publications == 0
+
+
+@pytest.mark.parametrize('lost_start_reply', [False, True])
+def test_quiesce_cannot_stop_a_started_replacement(fixture, lost_start_reply):
+    controller, backend, calls, _ = fixture
+    if lost_start_reply:
+        backend.fail = 'start'
+        with pytest.raises(OSError, match='lost start'):
+            controller.execute()
+    else:
+        controller.execute()
+    before = list(calls)
+    with pytest.raises(OnboardingError, match='already_started|replacement unit'):
+        controller.quiesce()
+    assert backend.active and backend.stops == backend.starts == 1
+    if not lost_start_reply:
+        assert calls == before
+
+
+def test_quiesce_rechecks_current_root_instead_of_trusting_retained_exit(fixture):
+    controller, backend, _, _ = fixture
+    controller.quiesce()
+    backend.active = True
+    backend.starts = 1
+    with pytest.raises(OnboardingError, match='replacement unit'):
+        controller.quiesce()
+    assert backend.active and backend.stops == 1
 
 
 @pytest.mark.parametrize('outside_horizon', [False, True])
@@ -269,7 +346,8 @@ def test_changed_host_configuration_and_replacement_job_owner_prevent_effects(fi
     assert not calls
 
 
-def test_journal_and_jobs_are_owned_during_both_typed_routes(fixture):
+@pytest.mark.parametrize('action', ['execute', 'quiesce'])
+def test_journal_and_jobs_are_owned_during_both_typed_routes(fixture, action):
     controller, backend, _, _ = fixture
     competitor = OperationJournal(controller.journal.path.parent)
     root = backend._guest_service_call
@@ -281,7 +359,11 @@ def test_journal_and_jobs_are_owned_during_both_typed_routes(fixture):
                 pytest.fail('jobs parent is not owned')
         return root(*args, **kwargs)
     backend._guest_service_call = checked
-    assert controller.execute()['receiving_readiness'] == 'unobserved'
+    result = getattr(controller, action)()
+    if action == 'execute':
+        assert result['receiving_readiness'] == 'unobserved'
+    else:
+        assert result['exits'] == {'process': True, 'admission_parent': True}
 
 
 def test_preparation_reuses_maintained_command_and_refuses_sdk_mismatch_before_root(fixture, monkeypatch):
@@ -441,6 +523,19 @@ def test_fresh_observer_pid_nonce_may_change_without_changing_guest_interpreter(
 
 @pytest.mark.parametrize('lost_phase', [None, 'stage', 'start'])
 def test_controlled_guest_software_adoption_preserves_authority_and_recovers_lost_reply(fixture, lost_phase):
+    controller, backend, calls, _ = controlled_guest_fixture(fixture)
+    backend.fail = lost_phase
+    if lost_phase is not None:
+        with pytest.raises(OSError):
+            controller.execute()
+    result = controller.execute()
+    assert controller.execute() == result
+    assert backend.stages == backend.starts == backend.stops == 1 and backend.publications == 0
+    effects = controller.journal.get(controller.operation_id)['runtime_observation']['guest_bootstraps']['eko']
+    assert 'owner_preserved' in effects and not {'owner_ready', 'owner_published'} & effects.keys()
+
+
+def controlled_guest_fixture(fixture):
     controller, backend, calls, _ = fixture
     original = controller.journal.get(controller.operation_id)
     before = copy.deepcopy(original['expected_precondition'])
@@ -471,12 +566,270 @@ def test_controlled_guest_software_adoption_preserves_authority_and_recovers_los
             result['runtime_status']['loaded_runtime']['runtime_bundle_sha256'] = owner['runtime_sha256']
         return result
     backend._target_call = controlled
-    backend.fail = lost_phase
-    if lost_phase is not None:
-        with pytest.raises(OSError):
-            controller.execute()
-    result = controller.execute()
-    assert controller.execute() == result
-    assert backend.stages == backend.starts == backend.stops == 1 and backend.publications == 0
-    effects = controller.journal.get(row['operation_id'])['runtime_observation']['guest_bootstraps']['eko']
-    assert 'owner_preserved' in effects and not {'owner_ready', 'owner_published'} & effects.keys()
+    return controller, backend, calls, owner
+
+
+def admission_guest_fixture(fixture):
+    controller, backend, calls, owner = controlled_guest_fixture(fixture)
+    row = controller._row()[0]
+    owner['store_bindings'] = {'ledger': {'synthetic': 'original physical store'}}
+    before = copy.deepcopy(row['expected_precondition'])
+    before['guest_bootstraps']['eko']['owner'] = copy.deepcopy(owner)
+    candidate = copy.deepcopy(row['intended_transition']['guest_bootstraps']['eko'])
+    request = dict(operation_id=str(uuid.uuid4()), step='lifecycle-snapshot', action='snapshot', params=dict(
+        application_step='application', visibility_step='visibility', selection_step='selection',
+        owner_context_sha256='1' * 64, expected_stores=owner['store_bindings'],
+        expected_preservation=owner['preservation']))
+    candidate['admission_link'] = dict(schema='cluster-admission-lifecycle-link/v1',
+        cohort_operation_id='operation:cohort', cohort_intent_sha256='2' * 64,
+        tribe_ref=owner['group']['selected']['tribe_ref'], owner=dict(being_ref=owner['being_ref'],
+            embodiment_id=owner['origin']['embodiment_id']), snapshot_request=request)
+    linked = plan_update(controller.journal, manifest_digest='a' * 64, target='guest:admission-fixture',
+        expected_precondition=before, intended_transition={'guest_bootstraps': {'eko': candidate}},
+        audit_identity={'actor': 'fixture'})
+    controller = GuestBootstrapController(controller.journal, linked['operation_id'], backend, 'eko')
+    current = [copy.deepcopy(owner['group'])]
+    snapshots = []
+    previous = backend._target_call
+    def target(plan, action, **options):
+        if action == 'group-publication':
+            assert not backend.active
+            assert options['group_request'] == dict(command=request, offline=True, authority_closure={})
+            assert backend.stages == 1 and backend.publications == 0
+            snapshots.append(True)
+            return dict(schema='cluster-group-publication-result/v1',
+                **{key: request[key] for key in ('operation_id', 'step', 'action')},
+                status='recorded', receiving_readiness='unobserved', owner_context_sha256='1' * 64,
+                group=copy.deepcopy(current[0]), stores=owner['store_bindings'], publications={})
+        result = previous(plan, action, **options)
+        if action == 'admitted-running':
+            result['group'] = copy.deepcopy(current[0]['selected'])
+            result['group_runtime_status']['loaded_application'] = dict(
+                application_sha256=current[0]['application_sha256'], publication_sha256=current[0]['publication_sha256'],
+                visibility={'installation_sha256': current[0]['installation_sha256']})
+            result['runtime_status']['loaded_runtime']['stores'] = copy.deepcopy(owner['store_bindings'])
+        return result
+    backend._target_call = target
+    return controller, backend, calls, current, snapshots
+
+
+@pytest.mark.parametrize('fault',[None,'late-ack','parent','preservation','expired','capability-expiry'])
+def test_linked_guest_start_keeps_original_owner_request_and_root_deadline(fixture,monkeypatch,fault):
+    from types import SimpleNamespace
+    controller,backend,_,_,_ = admission_guest_fixture(fixture)
+    controller.preserve()
+    controller.retain_admission_group(authority_closure={})
+    original,frozen,candidate=controller._row()
+    now=candidate['expires_at_ms']+1
+    monkeypatch.setattr(updates,'time',SimpleNamespace(time_ns=lambda:now*1_000_000,
+        monotonic_ns=time.monotonic_ns,sleep=time.sleep))
+    with pytest.raises(OnboardingError,match='authorization_expired'):
+        controller.execute(authority_closure={})
+    assert backend.starts==0
+    effects=controller._row()[0]['runtime_observation']['guest_bootstraps']['eko']
+    link=candidate['admission_link']
+    proof=dict(schema='cluster-admission-lifecycle-continuation/v1',continuation_sha256='e'*64,
+        cohort_operation_id=link['cohort_operation_id'],cohort_intent_sha256=link['cohort_intent_sha256'],
+        lifecycle_operation_id=controller.operation_id,link_sha256=digest(link),
+        preservation_sha256=digest(effects['owner_preserved']),not_after_ms=now+2000)
+    root=backend._guest_service_call
+    def checked(plan,action,**options):
+        if action in {'bootstrap-select','bootstrap-start'}:
+            assert 0<options['timeout_seconds']<=30
+            assert options['owner_deadline_ns']>time.monotonic_ns()
+            assert options['effect_not_after_ms']==proof['not_after_ms']
+            assert options['request']==controller._service_request(frozen,candidate)
+        return root(plan,action,**options)
+    backend._guest_service_call=checked
+    if fault and fault!='late-ack':
+        if fault in {'parent','preservation'}:
+            proof['cohort_intent_sha256' if fault=='parent' else 'preservation_sha256']='f'*64
+        else:
+            proof['not_after_ms']=now if fault=='expired' else frozen['owner']['preservation']['not_after_ms']+1
+        with pytest.raises(OnboardingError):
+            controller.execute(authority_closure={},continuation=proof)
+        assert backend.starts==0
+    else:
+        if fault=='late-ack':
+            backend.fail='start'
+            with pytest.raises(OSError,match='lost'):
+                controller.execute(authority_closure={},continuation=proof)
+            now=proof['not_after_ms']+1
+        loaded=controller.execute(authority_closure={},continuation=proof)
+        assert loaded['receiving_readiness']=='unobserved' and backend.starts==1
+        current=controller._row()[0]
+        assert current['runtime_observation']['guest_bootstraps']['eko']['start_continuation']==proof
+        assert all(current[key]==original[key] for key in ('intent','intent_hash','expected_precondition','intended_transition'))
+
+
+def test_guest_admission_preparation_recovers_same_child_after_lost_plan_and_expiry(fixture, monkeypatch):
+    """Real journal/config/link validation; guest owner/SDK/manager are seams."""
+    from types import SimpleNamespace
+    controller, backend, calls, config = fixture
+    controller, backend, calls, _current, _snapshots = admission_guest_fixture(fixture)
+    row, frozen, selected = controller._row()
+    candidate = Path(selected['runtime_code']), selected['runtime_digest']
+    manifest = dict(provenance={'matrix_revision': selected['prepared']['matrix_revision']},
+        artifacts={'matrix_sdk': selected['prepared']['matrix_wheel_sha256']},
+        required_receivers=[{'artifacts': {'receiving_code': candidate[1]}}])
+    monkeypatch.setattr(updates, '_manifest', lambda *a, **k: manifest)
+    monkeypatch.setattr(updates.onboarding_sdk, 'verify', lambda *a, **k: {})
+    identifier = str(uuid.uuid4())
+    request = dict(schema='cluster-guest-admission-preparation/v1', operation_id=identifier,
+        cohort_operation_id='operation:approved-parent', cohort_intent_sha256='2'*64,
+        tribe_ref=frozen['owner']['group']['selected']['tribe_ref'],
+        owner=dict(being_ref=frozen['owner']['being_ref'], embodiment_id=frozen['owner']['origin']['embodiment_id']),
+        predecessor=copy.deepcopy(dict(process=frozen['owner']['predecessor']['process'], server=frozen['owner']['origin'])),
+        root=str(Path(frozen['owner']['group']['selected']['socket']).parent),
+        manifest_path=selected['manifest_path'], manifest_uid=selected['manifest_uid'], manifest_digest='a'*64,
+        expires_at_ms=selected['expires_at_ms'], authority_closure={}, owner_context_sha256='1'*64,
+        steps=dict(application='application', visibility='visibility', selection='selection', snapshot='snapshot'))
+    preparations = []
+    def target(_plan, action, **options):
+        preparations.append(action)
+        assert action != 'sdk-prepare', 'admission preparation must not install'
+        if action == 'group-publication':
+            assert 0 < options['observation_timeout_seconds'] <= 10
+            assert options['group_request']['command']['action'] == 'context-preview'
+            return dict(schema='cluster-group-owner-context-preview/v1', operation_id=identifier,
+                owner_context_sha256='1'*64, runtime_bundle_sha256=frozen['owner']['runtime_sha256'])
+        if action == 'sdk-observe':
+            assert 0 < options['observation_timeout_seconds'] <= 10
+            return dict(ready=True, matrix_commit=selected['prepared']['matrix_revision'])
+        assert action == 'receiving-bootstrap-freeze'
+        assert 0 < options['bootstrap_timeout_seconds'] <= 10
+        return copy.deepcopy(frozen['owner'])
+    backend._target_call = target
+    backend._guest_service_call = lambda _plan, action, **options: (
+        copy.deepcopy(frozen['root']) if action == 'bootstrap-inspect' else pytest.fail('preparation performed '+action))
+    backend._receiving_base = lambda _plan: Path('/opt/daimon-onboarding')/frozen['plan']['release_digest']
+    backend._runtime_paths = lambda *_args, **_options: (Path('/opt/daimon-onboarding-runtime')/candidate[1], [], {})
+    journal = OperationJournal(config.parent/'admission-child')
+    from clusterctl import onboarding_code_successor
+    plan_update = onboarding_code_successor.plan_update
+    def lost(*args, **options):
+        plan_update(*args, **options)
+        raise OSError('synthetic lost child plan response')
+    monkeypatch.setattr(onboarding_code_successor, 'plan_update', lost)
+    def prepare(value=request, code=candidate):
+        return updates.prepare_guest_admission(backend, frozen['plan'], journal, value, config=config,
+            candidate=code, deadline_ns=time.monotonic_ns()+10_000_000_000)
+    with pytest.raises(OSError, match='lost child plan response'):
+        prepare()
+    target_key = 'guest-admission:'+frozen['plan']['name']+':'+identifier
+    child = journal.latest_for_target(target_key)
+    assert child['state'] == 'planned' and child['runtime_observation'] is None
+    assert child['intended_transition']['guest_bootstraps'][frozen['plan']['name']]['admission_link']['cohort_intent_sha256'] == request['cohort_intent_sha256']
+    previous = list(preparations)
+    frozen['owner']['predecessor']['process']['pid'] = 999  # Later process cannot become this child's predecessor.
+    monkeypatch.setattr(updates, 'time', SimpleNamespace(time_ns=lambda: (request['expires_at_ms']+1)*1_000_000,
+        monotonic_ns=time.monotonic_ns))
+    first = prepare()
+    assert prepare() == first and first['operation_id'] == child['operation_id']
+    assert first['receiving_readiness'] == 'unobserved' and preparations == previous
+    with pytest.raises(JournalConflict, match='preparation changed'):
+        prepare({**request, 'manifest_digest': '0'*64})
+    assert journal.latest_for_target(target_key)['operation_id'] == child['operation_id']
+    assert preparations == previous and backend.stops == backend.starts == backend.stages == backend.publications == 0
+
+
+def test_guest_admission_preserves_then_derives_and_loads_without_rewriting_the_predecessor(fixture):
+    controller, backend, _, current, snapshots = admission_guest_fixture(fixture)
+    original = controller._row()[0]
+    with pytest.raises(OnboardingError, match='group_unobserved'):
+        controller.execute(authority_closure={})
+    with pytest.raises(OnboardingError, match='preservation_required'):
+        controller.retain_admission_group(authority_closure={})
+    assert backend.stops == 0
+    preserved = controller.preserve()
+    assert controller.preserve() == preserved
+    assert backend.stops == backend.stages == 1 and backend.starts == backend.publications == 0
+    current[0].update(application_sha256='a' * 64, publication_sha256='b' * 64, installation_sha256='c' * 64)
+    derived = controller.retain_admission_group(authority_closure={})
+    assert controller.retain_admission_group(authority_closure={}) == derived
+    assert controller._row()[0]['intent'] == original['intent']
+    assert controller._row()[0]['intended_transition'] == original['intended_transition']
+    with pytest.raises(OnboardingError, match='owner_context_required'):
+        controller.execute()
+    result = controller.execute(authority_closure={})
+    assert controller.execute() == result and result['receiving_readiness'] == 'unobserved'
+    assert len(snapshots) == 3 and backend.stops == backend.stages == backend.starts == 1
+    assert backend.publications == 0
+    for operation in (controller.preserve, lambda: controller.retain_admission_group(authority_closure={})):
+        with pytest.raises(OnboardingError, match='already_started'):
+            operation()
+    assert backend.starts == backend.stops == 1
+
+
+def test_guest_admission_cannot_start_a_later_group_or_replace_its_retained_derivation(fixture):
+    controller, backend, _, current, _ = admission_guest_fixture(fixture)
+    controller.preserve()
+    derived = controller.retain_admission_group(authority_closure={})
+    current[0]['application_sha256'] = 'f' * 64
+    with pytest.raises(JournalConflict, match='guest effect changed'):
+        controller.execute(authority_closure={})
+    assert controller._row()[0]['runtime_observation']['guest_bootstraps']['eko']['admission_group'] == derived
+    assert backend.starts == 0
+
+
+def test_legacy_guest_without_a_prepared_controller_cannot_use_preserve_phase(fixture):
+    controller, backend, calls, _ = fixture
+    with pytest.raises(OnboardingError, match='prepared_controller_required'):
+        controller.preserve()
+    assert not calls and backend.stops == backend.stages == 0
+
+
+def test_wrong_admission_tribe_refuses_before_guest_quiescence(fixture):
+    controller, backend, calls, _, _ = admission_guest_fixture(fixture)
+    original = controller._row()[0]
+    after = copy.deepcopy(original['intended_transition'])
+    after['guest_bootstraps']['eko']['admission_link']['tribe_ref'] = 'tribe:other'
+    row = plan_update(controller.journal, manifest_digest='a' * 64, target='guest:wrong-admission-tribe',
+        expected_precondition=original['expected_precondition'], intended_transition=after,
+        audit_identity={'actor': 'fixture'})
+    with pytest.raises(OnboardingError, match='admission_tribe_changed'):
+        GuestBootstrapController(controller.journal, row['operation_id'], backend, 'eko').preserve()
+    assert not calls and backend.active and backend.stops == 0
+
+
+@pytest.mark.parametrize('boundary',['preflight','bootstrap-validate','admitted-running'])
+def test_guest_lifecycle_keeps_one_deadline_across_preflight_and_both_routes(fixture,monkeypatch,boundary):
+    from types import SimpleNamespace
+    controller,backend,calls,_path = fixture
+    clock = [time.monotonic_ns()]
+    deadline = clock[0]+1_000_000_000
+    local_time = SimpleNamespace(monotonic_ns=lambda:clock[0],time_ns=time.time_ns)
+    monkeypatch.setattr(updates,'time',local_time)
+    monkeypatch.setattr(updates.onboarding_sdk,'time',local_time)
+    preflight = updates.preflight
+    root,owner = backend._guest_service_call,backend._target_call
+    def checked(*args,**options):
+        result = preflight(*args,**options)
+        if boundary == 'preflight':
+            clock[0] = deadline
+        return result
+    def root_call(plan,action,**options):
+        assert 0 < options['timeout_seconds'] <= 1
+        result = root(plan,action,**options)
+        if action == boundary:
+            clock[0] = deadline
+        return result
+    def owner_call(plan,action,**options):
+        result = owner(plan,action,**options)
+        if action == boundary:
+            clock[0] = deadline
+        return result
+    monkeypatch.setattr(updates,'preflight',checked)
+    monkeypatch.setattr(backend,'_guest_service_call',root_call)
+    monkeypatch.setattr(backend,'_target_call',owner_call)
+    with pytest.raises(OnboardingError,match='owner_deadline_expired'):
+        controller.execute(timeout_seconds=30,deadline_ns=deadline)
+    if boundary == 'preflight':
+        assert calls == []
+    elif boundary == 'bootstrap-validate':
+        assert calls == ['bootstrap-validate']
+        assert 'candidate_validated' in controller.journal.get(controller.operation_id)['runtime_observation']['guest_bootstraps']['eko']
+    else:
+        assert calls[-1] == 'admitted-running'
+        assert backend.starts == 1
+        assert 'controlled_loaded' not in controller.journal.get(controller.operation_id)['runtime_observation']['guest_bootstraps']['eko']

@@ -6,9 +6,30 @@ The original readable-presentation increment is retained under
 [Matrix #287](https://github.com/AlterMundi/daimon-matrix/issues/287).
 Matrix owns signed messaging and presentation; Cluster selects the exact
 executable SDK and receiving helpers on the existing bodies.
-The current source candidate pins Matrix `0dc0b555939b16a1150a220a366a6911a5ae9c28`.
-The three-body production selection remains its separately recorded predecessor
-until receiving adoption succeeds.
+Use [RESUME.md](../../RESUME.md) for the actual selected receiving generation.
+The2026-10-16 three-VPS rollout loaded SDK80542cee/receiving coded7d64a19 and
+completed cohort6365754a. SDK0dc preparation records below retain their original
+qualification; they are not an outstanding original rollout or current selection.
+The ordinary checkout/default development dependency does not select production.
+Future admission source and its isolated fixture remain separately qualified;
+current concurrent delivery acceptance is still incomplete under Matrix#363.
+
+For a separate qualified SDK candidate, run `.venv/bin/python -m tools.build_onboarding_sdk
+--matrix-commit <exact-40-hex-revision>` archives that explicit source and seals
+its actual wheel hashes. The existing `seal(..., matrix_commit=...)` API can also
+reuse an already qualified wheel/dependency set. A nondefault revision still
+requires the existing explicit revision **and** Matrix-wheel hash when verified
+for receiving; its label alone cannot relax the default install guard. Freeze
+that selection in the protected qualified successor/receiving recipe. This does
+not change the host's default VCS dependency, snapshot-contract pin, base SDK or
+already prepared rollout, and does not qualify an installed body by itself.
+
+For tests that spawn isolated Python (`-I`/`-S`), a parent `PYTHONPATH` source
+overlay does not select the child's SDK. Reuse a matching installed test interpreter
+when that child contract needs qualification. Do not repeat a broad native journey
+with a mixed reader or infer a product cause from its readiness timeout. For a
+captured-installer-only fix, qualify the affected installer and exact capture;
+unchanged unrelated daemon journeys are not a new prerequisite.
 
 ## Execute from the next missing effect
 
@@ -641,3 +662,965 @@ After accepted membership/governance changes, recovery finishes forward through
 compatible group artifacts. Old terminated memberships/grants and archived pair
 defaults are not an operational rollback. Historical messages remain readable;
 exact expired retries return their retained outcome without new transmission.
+
+### Admission before/after cohort and retained activation plan
+
+An existing Tribe's admission keeps one `receiving-update` operation and native
+control identity. Its target is `receiving:<tribe_ref>`; per-entrant targets cannot
+bypass the same-Tribe conflict. `expected_precondition.senders` contains only the
+actual original senders. The explicit `cohort_admission` transition freezes the
+complete after-receiver identities/owner locators, exact added being/bodies,
+qualified public candidate locations, prepared SDKs, profiles/tooling, original
+receiver selections and finite activation bounds. Existing equal-set updates
+continue using their unchanged `cohort_activation` transition.
+
+The admission's old-sender revocation does not query an unstarted added receiver.
+After actual publication/start effects, `retain_admission_activation` can retain
+the constrained concrete plan once in `runtime_observation.admission_activation_plan`.
+It does not rewrite intent, extend the horizon or replace prior selections, and
+it remains separate from qualified `runtime_observation.cohort_activation` evidence.
+The manifest must cover exactly the approved after-set; candidate/profile/tooling
+and original pre-selection pins cannot drift during derivation.
+
+This record alone cannot enable senders. Native loaded adoption must still prove
+the same Tribe, and an added receiver cannot borrow another operation's replacement
+history as its own first managed start. The first-load producer and cohort
+consumer below require the actual protected initial records, current native
+adoption and all-required revocations. The closed full caller below now joins
+those source components; installed admission acceptance remains unqualified.
+
+`GuestBootstrapController.quiesce()` exposes the existing guest stop/exit phase
+without running owner publication, unit selection or replacement startup. It
+uses the same operation, candidate validation and operation -> jobs ownership
+as `execute()`. An exact retry asks the root owner to recheck current quiescence;
+a retained exit alone is insufficient. A replacement already started by this
+operation cannot be stopped through this method. `execute()` can continue the
+same operation afterwards. This is the publication seam, not completed group
+admission by itself. The full opt-in caller below joins the approved before/after
+group binding and admission-aware barrier. Live use retains scoped interruption
+consent and its still-pending installed admission qualification.
+
+### Controller preparation before initial group admission
+
+`ManagedRuntime.prepare_admission(plan)` prepares the existing native admission
+holder/profile independently of application selection and service launch. The
+admission caller uses it under the same job/operation ownership as the remaining
+transaction, before freezing the group-owner context. It reuses the maintained
+proxy, signed proposal history, confirmed profile and exact lost-enrollment
+reconciliation; it does not create another messaging channel or registration.
+A confirmed native profile is not a running body or a cohort adoption receipt.
+Ordinary `ManagedRuntime.execute` calls this same preparation before its existing
+service path, preserving its application/visibility readiness requirement.
+
+Before freezing a new body's group-owner context, prepare its real optional
+receiving controller through the existing qualified guest-owner bootstrap route.
+`receiving-bootstrap-freeze --bootstrap-initial` observes a verified V8 body
+under its actual native writer and requires that no group is selected. It does
+not query a nonexistent running predecessor. Keep that result in the same
+admission operation; do not freeze the later owner context against the preceding
+runtime bundle and then change its capability binding.
+
+`cluster-guest-owner-initial/v1` uses the existing stage/publish actions with
+`predecessor=null` and `group_sha256=digest({"group": null})`. The complete
+plan/genesis/candidate/runtime pins, native staging receipts, preservation or
+renewal checks and exact retry remain required. It never records fictional
+process exits. Cleanup, staged recovery and publication retain their actual
+native writer exclusion; recovery does not recursively acquire a held lock.
+A running writer or a newly selected group refuses initial preparation.
+Supported Target group relationship/publication routes take the same target-root
+lock before their native writer, so they cannot interleave this absence check,
+capability publication or the subsequent owner-context freeze.
+
+This prepares a capability using native custody; it does not select a group,
+start a service, load an application, enable a sender or prove receiving
+readiness. All requests still use the qualified public candidate, existing
+owner UID/CLI and one finite budget. The initial flag is valid only for freeze;
+the explicit request schema carries the distinction through stage and publish.
+
+After publishing the group, the same `receiving-bootstrap-freeze` route accepts
+`--bootstrap-initial-service` to capture the first service's owner context.
+This is mutually exclusive with `--bootstrap-initial` and valid only for freeze.
+Under the same target-root/native writer exclusion, it requires a verified V8
+body, a selected signed group and an already prepared active receiving controller.
+It captures the exact native runtime, group/publication hashes and preserved
+controller without querying a running predecessor or issuing/renewing authority.
+The qualified host route retains the guest owner, prepared SDK and finite budget.
+
+This snapshot has no process predecessor and does not authorize a start or enable
+delivery. The first-load producer below retains/revalidates that exact context;
+the cohort consumes that genuine record. After-only activation still refuses
+without the original before-set barrier and complete all-required proof.
+
+### First guest service publication and start
+
+The existing root `GuestServiceBootstrap` accepts an explicit
+`cluster-guest-service-initial/v1` request with the same operation ID, plan digest
+and approved argv, and `predecessor=null`. It uses the existing named Matrix unit,
+selection lock, immutable operation records and root CLI. It never manufactures
+a predecessor process or exit receipt; `quiesce` rejects this variant.
+
+`validate` retains actual absent/inactive manager state. `select` publishes the
+maintained unit and enables it without starting. Immediately after reload, before
+the first StartUnit, the controller must inspect the effective exact unit,
+execution identity and supported drop-ins, require inactive/dead with no PID or
+invocation, and durably retain that launch configuration. A missing effective
+view after reload cannot authorize execution. Every first-start observation
+compares the unit and exact drop-in vector with that retained configuration.
+
+After a lost start reply, resume observation through the same operation; never
+dispatch another start from an ambiguous retained intent. Retain the first
+observed invocation before observing its actual parent process and cgroup.
+A dead or replaced invocation remains uncertain or changed, rather than being
+silently restarted. A completed retry requires the same actual service snapshot
+and pinned parent. Ordinary rendering and legacy installation remain unchanged.
+
+This is the physical first-service primitive. Manager/process test seams do not
+qualify an actual systemd deployment, native child/application load, receiving
+controller, default-disabled sender gate or cohort adoption. Distinct-cohort
+integration still belongs to #227. These future-admission
+changes are independent of the frozen current-member rollout candidate.
+
+### Initial managed load in the admission operation
+
+`ManagedRuntime.execute_initial(plan, cohort)` operates outside `JobStore.tick`,
+using operation -> jobs parent -> all jobs ownership. It verifies the stored plan,
+host authorization, frozen after-only receiver/candidate and reader assessment,
+prepared native profile/proxy, and the original sender-revocation barrier before
+retaining its first intent. `runtime_observation.initial_managed[name]` retains
+the immutable owner/group/profile/unit/request binding, physical effects and
+`controlled_loaded` proof. No replacement history or fictional exit is used.
+
+Initial root validation reports current `dispatch_state` separately from its
+immutable preparation. `not-dispatched` requires current exact owner context and
+fixed authorization before a possible start, with the native root deadline capped
+by that horizon. The immutable root request also carries `not_after_ms`: the
+guest checks that absolute bound before fresh unit publication/enable and in the
+actual pre-start callback, including after launch-intent durability. Transport or
+guest code verification cannot reset that permission by starting a new relative
+timer. `intent-retained` and `started-recorded` only reconcile the same
+first invocation; expiration cannot authorize redispatch or prevent historical
+observation. A changed/dead invocation refuses rather than becoming another start.
+The finite invocation budget is not an extension of the frozen authority horizon.
+
+The unit's initial context pins the native owner, prepared profile and fixed
+expiry. The parent checks profile/expiry before admission; the native child checks the same owner
+snapshot under its actual writer lock before runtime load/listeners, reusing the
+offline freeze validator without reacquiring that lock, and checks expiry again
+immediately before loading. The independent root
+manager/parent/cgroup and authenticated same-connection native load must agree on
+the same code/SDK/runtime/application and initially disabled sender gate. Actual
+registry adoption follows loaded proof; retry reobserves that process.
+
+This producer does not enable a sender or establish full cohort receiving or
+communication. Its isolated orchestration tests use real journal/job/reader/root
+records with explicitly fake manager/native RPC/registry seams. Real native
+admission and ordinary child/controller tests provide narrower separate evidence.
+The cohort consumes all five retained producer stages for an after-only receiver,
+then qualifies its real current load. It retains the added sender's original
+revoke request before dispatch and requires matching revocation evidence for
+every after-set owner before any positive selection. A lost initial revoke can
+be recovered and its reservation released with empty readership even before the
+complete activation vector exists. Replacement markers cannot substitute for
+first-load proof; old members retain their separate lifecycle/revocation records.
+
+### Initial guard to ordinary restart policy
+
+After complete cohort selection, `ManagedRuntime.complete_initial(plan, cohort)`
+uses the same operation -> jobs ownership and fresh all-required selection proof.
+It freezes an exact `cluster-guest-service-steady/v1` request in
+`runtime_observation.initial_steady[name]`, separate from the original five-stage
+first-load record. The request binds that initial operation/request, child/parent,
+qualified cohort selection and a fixed not-after no later than the original
+authorization and the fresh observation window. It does not activate a missing
+cohort or claim message delivery.
+
+The existing host/root service route adds `bootstrap-steady`. Root derives the
+ordinary command by removing only the validated initial-context pair from its
+retained original argv. It retains the exact intent, reuses `select_entrypoint`
+CAS and reloads the manager; no stop, start or enable is issued. Before and after,
+the first active invocation, parent, child association/cgroup, drop-ins and unit
+bytes must match. The original unit preimage and all first-load evidence survive.
+The same-process and fixed-expiry check runs again after private candidate
+durability, immediately before the active unit CAS.
+
+If guarded bytes are still selected, current cohort proof and the original finite
+handoff horizon are required. Exact steady bytes with the matching retained root
+intent are an already committed effect: a lost reply/reload can be reconciled
+after that horizon without renewing permission or starting another process.
+Physical selection is journaled before post-handoff native/cohort proof; a later
+expiry or reassessment cannot erase it or return to the first-start path.
+Every post-selection failure retains the existing reassessment obligation and
+uses only the remaining caller budget for repair. An exhausted budget leaves
+that obligation pending instead of launching further native control calls.
+`execute_initial` detects the retained handoff before old root validation/start
+and reobserves the same execution. A dead/replaced invocation is refused.
+
+Later cohorts that change the selected application use the maintained
+`GuestBootstrapController` replacement path with the actual current service and
+process as predecessor. They must not borrow the earlier initial-load proof;
+no separate initial-proof reuse framework is required. The portal orchestration
+derives that current lifecycle; installed new-member acceptance remains pending. Do not leave completed onboarding dependent on a startup-only guard.
+
+### Public authority histories for future group admission
+
+The source reader also accepts `cluster-onboarding-group-selection/v2`. It adds
+`authority_history` to the existing owner-signed selection, retaining its exact
+application digest, Tribe, paths and socket. This is a public per-being history
+map: its keys must be exactly the foreign Roots in the signed application. The
+current body's own Root/history remains in its native bundle. Each value uses
+Matrix's bounded public history format, ending at that application's exact
+current Root; the existing SDK validator checks every signed succession.
+
+The same public selection reader is used for observation, Source loading and
+guest startup. It validates the closure before opening private custody. Existing
+native known-being histories are compared and retained, not replaced with a
+current snapshot or truncated supplied chain. Missing/extra Roots, forged or
+oversized histories, and mismatched application pins are refused. V1 remains
+readable with its original current-snapshot behavior; a V2 selection requires
+the SDK public-history reader from Matrix #358 and fails explicitly without it.
+
+The reader does not publish a selection, authorize a member, import a foreign
+ledger or copy past conversation plaintext. It changes no production selection.
+
+`onboarding_peer.publish_group_selection` is the owner-local publication step.
+Call it under the actual runtime writer with senders fenced, after the exact
+application is published. It derives fixed application/visibility/socket pins,
+checks the complete public history against current and already-known native
+authorities, and signs V2 through the current local body. Pin the previous
+selection's digest (or `None` for an absent first selection) and retain one
+operation UUID. The previous signed selector, exact intended successor and
+operation directory are made durable before replacing `selection.json`.
+An exact lost-reply retry completes missing durability and returns the same
+selection without another replacement; a different later selection or application
+refuses instead of being overwritten. Invalid history is rejected before retention.
+The old selector may pin the preceding application during this offline transaction.
+Do not start a service until application, accepted visibility and selector agree.
+`selected` here explicitly leaves receiving readiness unobserved.
+
+### Retained native owner relationship requests
+
+`SourceGroupClient.group_relationship` uses the qualified Source CLI and its
+existing privilege drop. `GuestGroupClient.group_relationship` uses the qualified
+candidate and the existing Target UID1000 route, without requiring an admitted
+group process. Commands and approved public Root closures travel through bounded
+stdin; private client capabilities, authenticated frames and responses remain on
+their owner. The closed command identifies one operation UUID and named step.
+Only `tribe.invite`, `tribe.membership.accept` and `relationship.event.ingest` are
+supported on both owner profiles. Actual signed social authority determines who
+may invite; the hosting role never makes Source the founder. Every body signs
+only its own native events.
+
+Online Source requests use the native base socket's independently keyed
+`relationships` operator role. Offline Source/Target operations first acquire the
+actual runtime writer, validate the existing body/plan and approved public Root
+history closure, then use the same `HostedWeave.handle` authentication and native
+RPC journal. They start no temporary daemon, group listener, model or transport.
+Supplied history self-consistency never substitutes for the protected owner's
+approval; current/native accepted histories cannot be silently replaced.
+
+Before the first offline request of an admission operation, supply its complete
+approved foreign Root/history closure, including every existing selected group
+authority. The owner retains this closure, the original bundle/ledger identity,
+fixed local paths and predecessor selector digest in that operation's private
+`owner/context.json`, and fsyncs it before loading or dispatch. Subsequent steps
+and exact retries must supply the same closure. Provision optional capabilities
+before freezing this bundle; a changed bundle or ledger requires explicit
+reassessment, not replacement of the retained context.
+
+Before stopping an existing owner, use the closed `context-preview` action
+through its qualified group-publication route with empty `params`, the same
+operation UUID and complete approved closure. Source and Target construct the
+same prospective context without a native writer, custody access, journal
+creation, event or service action. The result exposes only operation/context,
+bundle and predecessor-selector digests, with receiving readiness unobserved.
+Concurrent bundle/ledger/selector drift or an exhausted observation budget
+refuses the preview; this does not freeze a live process or qualify its identity.
+
+Freeze `owner_context_sha256` into the approved lifecycle snapshot link. Supply
+the optional `expected_context_sha256` on subsequent offline owner packets. Under
+the actual writer, both profiles compare that exact prospective or already
+retained context before custody access or dispatch. A changed preparation
+refuses; an exact retry after partial publication retains its original selector
+preimage. Old packets retain their supported behavior. This preparation removes
+the circular dependency between pre-stop lifecycle planning and offline context
+creation; it does not itself create the Source child lifecycle or complete the
+portal's signed invitation/acceptance caller.
+
+`SourceGroupClient.prepare_admission_lifecycle(recipe)` now creates or recovers
+the Source's local child through the same qualified owner CLI and journal. The
+closed `cluster-source-admission-preparation/v1` recipe pins the social operation
+UUID, parent operation/intent digest, being/body and original process, approved
+Matrix unit, existing SDK home, release manifest, fixed expiry, complete public
+closure/context digest and four publication/snapshot step names. Configuration,
+executable code and UID come from that qualified Source invocation, never an
+arbitrary command in the recipe. The existing native/manager freeze must match
+the original process and an already prepared `preserve` controller. Store
+identities and context pins are retained in the existing lifecycle link.
+
+Preparation observes the installed SDK and requires its existing closed imports
+and receipt under shared generation ownership. It cannot install or construct a
+missing environment. Nested SDK/reader probes share the owner's finite budget;
+the transient Source CLI has its own process group so timeout cleanup also ends
+its probes and joins the CLI. Ordinary SDK preparation retains its defaults.
+
+The owner journals a planned child and returns only public binding hashes/ID.
+The parent freezes the preparation recipe, then retains that returned child ID
+with `bind_admission_lifecycle` before any stop; embedding both generated child
+ID and parent intent hash into each other's immutable intent would be circular.
+A lost plan reply recovers the original target before fresh expiry/process reads.
+Changed requests, including another manifest for the same social operation,
+refuse instead of planning another child. This is historical preparation, not
+permission to stop, social membership or receiving acceptance. The full opt-in
+caller joins these components; the installed cohort journey remains pending.
+
+This retained context permits closed offline maintenance if application
+publication has advanced while the serving selector still names its predecessor.
+Source's normal loader and Target's public observation continue rejecting that
+inconsistent selection. Target maintenance separately verifies its actual
+receiving identity/custody before loading. A fresh operation cannot bypass an
+already inconsistent selector; retain the context before publication. Recovery
+neither selects that partial application nor enables delivery. It must still
+finish the approved app/visibility/selector transaction and receiving acceptance.
+
+The owner journal binds exact intent and receiving identity and persists the
+authenticated frame before dispatch. It verifies native authenticated results
+before retaining them. A lost reply retries the same frame; completed local
+results are reauthenticated. Native frames have a30-second first-use freshness
+window, so prepare them immediately before dispatch. Already-journaled frames
+remain exactly retryable beyond that window. Only an offline owner holding the
+actual writer may renew an expired frame after the existing native RPC inventory
+proves that request ID absent. Preserve the old frame and original ID/intent;
+record the replacement before dispatch. Pin the original ledger file identity
+in the owner operation and check it before offline loading. Verify the native
+loaded-store bindings before and after reading the RPC inventory; a missing or
+replaced store cannot become evidence of absence. A conflicting native row refuses. Online
+uncertainty never authorizes a refresh; recover it through this offline owner
+route after the ordinary scoped lifecycle barrier. No acceptance time is backdated.
+`recorded` means a native relationship event/result, not active membership,
+receiving readiness or completed admission; inspect the actual reducer afterwards.
+
+### Owner group publication routes
+
+`SourceGroupClient.group_publication` and `GuestGroupClient.group_publication`
+use the same qualified code, protected owner identity, finite deadline and
+bounded stdin routes as native relationship requests. Target names the closed
+action `group-publication`; Source discriminates its command inside the existing
+`--group-request` packet. Publication is always offline under the actual native
+writer and the already frozen complete Root/history context. A host never reads
+or round-trips the application's private client to construct a successor.
+
+Each command has exactly `operation_id`, `step`, `action` and `params`. Actions
+are limited to:
+
+- `application`: a genuine first group specification (V3 only), or additive
+  authorities/events/body registrations against an exact predecessor hash.
+  Existing clients, keys, stores and policy remain the SDK's responsibility.
+  On retry use the SDK-authenticated retained predecessor to reconstruct the
+  same additions. A lost first-prepare reply can reuse only the original initial
+  generation with no predecessor; a later native client renewal is a winner to
+  preserve and report, not proof of the original creation.
+- `visibility-disclosure`: derive the exact current signed-membership scope
+  from the owner's approved destination and retained issue time.
+- `visibility-accept`: validate a bounded batch of those proposals against the
+  owner's approved destination and sign only this being's bindings. Batch one
+  owner invocation, never one being's authority over all participants.
+- `visibility-publish`: use the SDK's fully accepted disclosure/bindings and
+  exact predecessor or approved first installation. Private credential-file
+  references and qualification remain local; no probe is started here.
+- `selection`: publish the same owner-signed group selector using its expected
+  predecessor and the operation's retained public histories.
+- `snapshot`: observe the current prospective group against this operation's
+  completed application, visibility-publication and selection steps. Supply only
+  those three closed step names and the expected retained owner-context digest;
+  a missing/different context refuses before custody access. The owner reuses
+  native group-membership and visibility signature/secret validation and its
+  profile-specific signed group reader. The result includes current group pins,
+  selector digest and command/result correlations. It records observation in
+  the existing owner journal; it changes no social authority, publication or
+  service. A cached result never bypasses fresh validation or adopts a later
+  winner. The coordinator must compare command digests with its approved
+  retained commands before deriving an after-group lifecycle selection.
+
+Native application/publication/visibility hashes use Matrix `config_digest`.
+The Cluster group selector and operation/context digests retain Cluster `digest`.
+These codecs differ for non-ASCII documents; compute each in its owning domain,
+and keep raw-file SHA256 separate. Bootstrap group semantic pins now use the
+native codec expected by loaded-runtime evidence. Existing selector schemas and
+their codec are unchanged. Historical frozen values remain evidence; never
+rewrite an old observation to hide a different digest.
+
+### Admission publication within existing-member lifecycle
+
+Freeze `admission_link` in the existing Source/guest lifecycle candidate before
+quiescence. The closed `cluster-admission-lifecycle-link/v1` associates the owning
+being/body with an already retained cohort operation/intent digest, Tribe and
+exact owner snapshot command/context. The snapshot pins `expected_preservation`
+and `expected_stores` from that authenticated predecessor. It cannot be added as
+a caller flag to an ordinary update. Lifecycle child operations refer to the
+already frozen cohort intent; do not create a circular hash of their own intent.
+
+Complete Source `publish()` preservation or guest `preserve()` before native
+relationship/application writes. `retain_admission_group()` then reobserves the
+actual qualified owner's snapshot and retains the derived after-group once in
+the existing lifecycle observations. Original predecessor/candidate and native
+owner requests stay intact. Guests take the approved public authority closure
+through the existing UID1000 request route; Source resolves its exact retained
+owner context locally. The coordinator must still correlate the publication
+command digests with its approved social intent/results.
+
+Snapshot guards verify immutable bundle/custody/client/key/counter bindings and
+the predecessor's physical store identities/schema read-only before runtime
+loading. Missing or replaced stores cannot be initialized by a failed snapshot.
+Legitimate new ledger rows do not require unchanged full database bytes. Old
+unguarded snapshot requests remain readable/retriable with their exact original
+result shape; they do not become admission preservation proof.
+
+Only this protected admission branch substitutes immutable/store preservation
+for the old full-inventory comparison. Ordinary software updates retain their
+original group/inventory checks. Source base visibility remains separately
+pinned; the after-group supplies only its group publication/visibility pins.
+Guest `execute(authority_closure=...)` refreshes the prospective snapshot before
+a first start; a lost-start retry observes the retained execution. Both profiles
+require actual qualified loaded group and original store bindings, with initial
+sender gates disabled. A snapshot alone never qualifies that process or cohort.
+`Source.receiving_lifecycle` now also projects the protected admission association
+and public effect hashes, without the private snapshot/preservation inputs. The
+cohort consumes this projection or the local guest journal and compares the
+original cohort intent, owner, Tribe, release, predecessor and derived group.
+A partial projection remains inspectable but cannot qualify receiving adoption;
+an ordinary software-update lifecycle cannot stand in for an admission. The
+projection preserves command/result hashes for the coordinator to compare against
+its approved publication commands; it does not itself approve those commands.
+Before dispatching an existing member's first lifecycle effect, the coordinator
+retains `bind_admission_lifecycle` in this same cohort operation. The association
+cannot first be attached after the original stop. The Source owner CLI now exposes
+only the closed preserve-mode admission phases through `--receiving-lifecycle`
+and `--lifecycle-action`; the unit, argv and candidate come from the original
+owner journal. It retains the caller's absolute deadline through qualification,
+manager/native calls and final unit-file CAS. Ordinary direct controller use
+without that option retains its previous contract.
+
+The admission barrier accepts a freshly observed exact revoked original, or its
+retained exit plus a fresh stopped named-unit observation, or a child-qualified
+replacement with its own retained exact revoke. An unavailable socket alone is
+never exit proof. Quiescence queries dispatch neither StopUnit nor StartUnit and
+cannot create a missing root operation or turn an initial request into a start.
+The guest query takes no host job/mutation locks, so the existing managed first
+start can call it while holding its own job scope. It passes only the remaining
+host budget into the root call and checks expiry after it; guest monotonic values
+are not compared with the host clock. No prior ACK is attributed to a replacement.
+
+Before irreversible admission, prepare the native harness separately from the
+later Telegram stage. The existing `native-install` and `probe` verbs require
+qualified code/environment but no bot-connections mount. Bot verbs retain that
+private requirement. Do not run the whole access or Telegram stage early:
+access can invoke a model probe and Telegram can start the human listener.
+Keep the existing JobStore stage order.
+
+The qualified owner-client `--native-preflight --native-endpoint PATH` accepts
+only this closed observation mode and an explicit finite observation budget.
+It shares the catalog reader's resolved-socket/selector/process pin and native
+initialize handshake, without a Matrix binding, tool reload, thread or turn.
+Source and guest clients reuse the existing owner-qualified dispatch routes.
+The result is `native-endpoint-only`, never catalog/adoption acceptance. The
+ordinary probe alone checks the default daemon; this prerequisite must inspect
+the exact endpoint from the approved Codex recipe before fencing old senders.
+After genuine application publication and first load, retain full native catalog
+acceptance through the existing tooling route before positive cohort selection.
+
+The optional protected host `group_admission` selection now connects the existing
+worker to the receiving operation before `JobStore.tick` takes its job lock.
+It is a fixed process setting: changing that pointer requires the worker's own
+explicit lifecycle. Ordinary jobs without it keep their existing backend path.
+The closed `cluster-onboarding-group-coordinator/v1` map contains `tribe_ref`,
+the existing operation `journal`, typed Source/guest `owners`, and per-plan
+`admissions` operation IDs. The immutable transition's `portal_admission` binds
+the exact plan, Matrix stage operation ID and selected owner-map digest. Neither
+intake labels nor a selected application can supply that approval.
+
+The caller uses operation -> jobs-parent -> jobs ownership and revalidates the
+stored plan, grant, consent, configuration and original authorization horizon.
+While ordinary V8/SDK/mount preparation is incomplete, it returns to the existing
+Matrix stage. It then prepares only the approved candidate mount/SDK, without
+selecting that runtime. Native software is attached before its observation.
+Source and guest endpoints are observed through their existing owner routes;
+only the newcomer's independent native service may be prepared. The read-only
+`native-observe` inspects the exact unit and manager state. A lost install reply
+is observed before retry; an already active unit receives no second start.
+
+The native-only CLI receives both the remaining duration and fixed authorization
+expiry. One guest-local budget begins before verification and is checked before
+unit publication, reload, enable/start and after each bounded wait. A host timeout
+does not prove guest cancellation. The coordinator also checks its original
+budget after retaining native readiness. That evidence is historical preparation,
+not receiving or current health; it is not repeatedly rebuilt on worker cadence.
+The later caller must revalidate the endpoint before admission effects.
+
+After native preparation, the same caller prepares the newcomer's existing
+physical holder and optional receiving controller. It compares actual native
+being/embodiment coordinates with the approved receiver before any proxy or
+enrollment effect, and retains the complete coordinates and physical settings
+digest. The approved candidate handles only the three existing admission verbs;
+it does not select that runtime. Registry reads, proxy dispatch, holder proofs,
+current/enroll exchanges and SDK reexec share the original finite budget and
+fixed authorization expiry. Default unbounded operator calls remain compatible.
+
+The caller retains the confirmed profile digest, then freezes an initial
+controller request with no group or predecessor. Stage and publish reuse the
+existing native owner transaction, one deterministic operation ID and its fixed
+request. Lost replies recover that exact transaction; completed preparation is
+retained without repeated RPCs on worker cadence. An expired authorization allows
+only final historical preservation/publication reconciliation with a new finite
+observation budget. Native validation refuses fresh publication after expiry;
+no enrollment, freeze, new non-preservation stage or refreshed authority is
+permitted on that path. The CLI budget starts before SDK verification and
+survives same-guest reexec.
+
+Matrix and acceptance stages remain pending until this exact receiving operation
+is complete, followed by the existing actual managed-presence/acceptance checks.
+A full v2 operation explicitly supplies `admission_communication` alongside its
+approved lifecycle and publication recipes. Only that closed opt-in can join the
+supported offline social/publication, lifecycle reload/initial load, cohort/steady
+selection and scoped communication acceptance. Old operations without it retain
+preparation-only behavior. Installed old-members/newcomer qualification is still
+pending. Preparation alone does not complete portal admission or qualify a
+deployment. This work is independent of the prepared current-member rollout.
+
+### Protected social and publication phases
+
+The protected v2 caller now supports `CohortController.admit_membership()` and
+`publish_admission_group()` as separate, resumable offline phases. The automatic
+Worker bindings without the complete technical communication scope remain
+preparation-only. The full opt-in uses the lifecycle finisher described below;
+never enable a partial stopping path or infer live interruption consent.
+
+`admission_publications` freezes one closed recipe for every approved receiver
+and one visibility signer per being. Static native schema, complete active Root
+roster tuples, destination, qualification and secret-reference requirements are
+validated before interruption. Actual invitation/acceptance events and the new
+member's membership reference come from the retained native social result.
+Applications and disclosures precede own-being visibility signatures, followed
+by owner visibility, selector and authenticated snapshots. An observed stopped
+barrier is required; recorded publication never means receiving readiness.
+
+Reserve every old child's private snapshot step against all six public step
+names. Its application/visibility/selection names must still match the retained
+child. The later owner-local derivation uses its original stronger snapshot with
+private preservation/store checks; a generic public snapshot cannot replace it.
+On partial retries, existing native publication/CAS checks preserve later winners.
+Dependent commands pin their retained application under the actual owner writer;
+selector publication additionally pins the retained/current visibility installation.
+A completed phase is historical evidence and never re-quiesces replacements.
+
+Genuine first group publication requires the newcomer's native communication
+schema to support receipts V2 and legs V3. The coordinator now retains a separate
+`communication-prepare` command after controller preparation and before preparing
+old-member lifecycles. It reuses the existing group-publication owner route and
+the maintained resumable native migration. Fresh schema changes respect the
+original approved plan, physical store, fixed expiry and remaining caller budget.
+Native healthy schema3/4 is already current; do not invent a v3-to-v4 transition.
+
+Read-only context preview supplies the initial native plan. The owner retains
+that exact plan under `communication-preparation/plan.json` and native migration
+evidence under its `migration` child. A retained no-op or verified native
+completion recovers historically even after later ledger work or application
+publication. Pending changes still require absence of a group/application and
+may not overwrite later history. Reserve the entrant's fixed
+`communication-prepare` step against all six public publication step names.
+
+The schema phase requires the approved post-controller owner-context digest.
+Capability publication exchanges the runtime tree and can change its bundle hash
+and ledger inode. Never silently replace a pre-controller social-context pin,
+rerun capability publication after schema changes, or restore a database to make
+a retry work. The initial owner request now carries an optional closed
+`group_context` binding the social operation, entrant owner name, authority
+closure and original approved context. Old requests remain unchanged. The owner
+durably retains the original preview under its native writer before staging.
+Retries with the original bundle selected recheck the actual context, including
+the physical ledger identity; identical bytes on another inode cannot reuse the
+cached preview.
+
+After native controller publication, the owner re-acquires its writer, verifies
+the selected inventory against the retained native result and derives the
+successor context. A separate `cluster-initial-owner-context-transition/v1`
+record binds both previews and the exact controller request/result hashes. It
+lives outside the exchanged runtime and leaves the native publication unchanged,
+so a lost reply can recover the same exchange. Preserve mode keeps the same
+context without publishing another capability. Conflicting previously frozen
+contexts are refused, never rewritten.
+
+The coordinator retains this transition before schema preparation. Social,
+schema and publication phases resolve only the matching entrant's derived pin;
+the immutable social recipe and old-member pins remain unchanged. A malformed
+transition refuses before dependent owner effects. The full finisher consumes
+this join only through its protected opt-in; installed admission acceptance is
+not established by the source component.
+
+After actual group publication and load, the entrant can prepare its messaging
+attachment through `OwnerClient.prepare_attachment` and the existing qualified
+owner CLI. It verifies the signed public application, full native origin and
+authenticated loaded status, then uses the captured Matrix installer with the
+original finite deadline. Messaging client metadata may live in a renewed
+generation; its existing key remains relative to the selected application.
+Authenticated public preimages are rechecked around installation and durable
+result publication. This prepares messaging only; it does not install personal
+guidance, reload the native catalog, start a model or qualify receiving readiness.
+
+The same retained request recovers a lost result without reverting a later exact
+tooling reconciliation to the generic command. Later owner acceptance derives
+its code/SDK, group and complete native origin from the completed admission,
+including when no legacy `peer` is configured. It requires that operation's exact
+tooling receipt and preserves the qualified connection/configuration instead of
+reinstalling the generic command. Changed configuration is refused before
+personal guidance is written. The full caller joins these supported actions;
+installed receiving acceptance remains a separate pending qualification.
+
+First-load registry coordinates contain body, embodiment and incarnation. Compare
+those fields against the authenticated native origin without discarding its
+principal. Retain the full origin in the original load intent and preservation
+proof; the loaded-process observer still requires that exact full origin.
+
+Technical communication uses the existing qualified owner CLI for both Source
+and guests, with public parameters on stdin and no host access to private client
+material. Fresh send/reply requires a fixed authoring expiry. The original
+absolute observation deadline survives SDK startup and durable request
+preparation; expiry is checked immediately before dispatch. The frozen native
+client is replaced with that deadline while retaining its configuration and
+factories. Inspection can use a later finite observation budget without
+authorizing another send or extending the original authoring horizon.
+
+The protected technical-speech contract selects the exact group author, entrant
+direct/reply author, direct destination, bounded text and signed group parent.
+Delivery evidence distinguishes author retention from each actual receiving
+body's signed receipt, full confirmed human echo and exact reply parent. Expired
+transport does not erase later authenticated intake proof. These components
+release no old preparation-only binding and grant no live interruption consent.
+The additive SDK evidence projection also needs its qualified future SDK pin;
+it does not replace the independent prepared2144 production candidate.
+
+### Full protected portal finisher
+
+`admission_communication` uses `cluster-admission-communication/v1` with exact
+`group`, `direct`, `reply` entries and one fixed `expires_at_ms` no later than
+activation expiry. Each entry selects its approved owner/being/body and bounded
+text; direct selects the approved founder destination and reply selects the
+group parent. This increment requires the already supported Codex tooling profile
+for all required owners. Other explicit profiles retain preparation support;
+they are not silently downgraded to obtain full admission acceptance.
+
+After fresh exact native endpoint checks, the same operation freezes its
+execution intent, revokes the before-set and uses each original Source/guest
+lifecycle to quiesce/preserve. Native social/group publication precedes derivation
+and load; the newcomer uses the supported first-load producer, including physical
+registry reconciliation. Parent markers resume a lost response without repeating
+quiescence/publication over a loaded writer. Child publication command/result
+hashes must match the parent's exact requests before late six-pin selection is
+retained. Required loaded owners must agree on the signed roster. Host CAS, if
+configured, follows all retained loads; retries then skip old child preparation.
+
+The existing cohort controller owns tooling adoption, replacement/initial fences,
+all-reader selection and repair. The existing steady helper removes the initial
+startup guard. A later invocation with missing technical speech reobserves the
+completed cohort before authoring; its one observation round can be reused only
+within the original invocation deadline, approved observation window and fixed
+reader horizon. The SDK owner route independently enforces every send deadline.
+
+Technical checks use deterministic group/direct/reply IDs and exact native request
+journals. A busy/incomplete native fanout resumes with that same request while its
+original scope permits; later expiry allows delivery inspection only. Require
+actual non-author signed intake for each required body and complete confirmed
+Tribu echo. Do not confuse author retention, a transport ACK or a partial page
+with that acceptance. Final late proof may close historical completion without
+new speech or fresh positive selection.
+
+Completion evidence and `completed` state are committed in one observation CAS.
+The historical closure binds social/publication, original lifecycle links, loads,
+late plan, tooling, native selections, steady handoff and exact communication
+proofs. Reading a completed operation validates that closure without native RPC
+or renewing authority. Managed presence and later owner acceptance resolve this
+same completed selection; actual loaded six pins, full origin and group must
+match. Never fall back to legacy peer/global settings or overwrite the qualified
+unit through the generic managed installer. A failed current runtime needs its
+own supported recovery, not another onboarding install.
+
+The Source/guest worker recovery and deadline fixtures are source qualification
+with explicit native/manager seams. The exact future SDK pin, installed cohort
+journey and receiving acceptance are still pending. Existing production2144 and
+its scoped interruption permission remain independent.
+
+Retain the exact command/context digest in the same private operation before
+dispatch; persist the resulting public hashes or signatures afterwards. Retry
+rechecks the real SDK publication/CAS for application/visibility changes even if
+a result is cached; schema completion remains historical. Preserve a
+later winner and leave an uncertain result unresolved. Do not mint another
+messaging client, duplicate governance or restore old publication bytes.
+Results report `receiving_readiness=unobserved`; these operations neither start
+the group listener nor enable delivery. The admission coordinator still owns
+the real old-sender barrier, full publication distribution and managed start.
+
+Cluster #227 owns installed qualification of the complete publication,
+distinct before/after cohort, first managed start and receiving acceptance join. The prepared2144 update is a separate immutable candidate;
+future-admission source does not replace it.
+
+Qualification must use the dependency route that owns the operation. The ordinary
+receiving test fixtures create custody through `matrix_host._matrix_api`, whose
+retained contract requires an exact VCS installation. Putting an offline wheel's
+site-packages ahead of that environment causes `daimon_matrix_commit_unverifiable`
+before the intended candidate owner entry runs. That is a fixture-route failure,
+not a serving or candidate admission defect. Do not manufacture `direct_url.json`,
+relax the retained guard or change production pins to make that fixture pass.
+Offline-wheel owner qualification uses the existing protected V4 selection and
+`onboarding_sdk.runtime_command` after genuine supported fixture preparation.
+Its actual native effects must be observed separately from pure reader/install
+success. Owner-publication fixtures also require owner-only destination roots
+under ancestors without group/world write permission, as the SDK enforces.
+
+The public-code builder verifies files as its own UID. For a synthetic build
+from a retained root-owned public base, verify that original as root-owned and
+copy its public release bytes into the builder-owned workspace; verify the same
+digest there. Do not change the original's ownership or weaken the owner check.
+Introducing `onboarding_transfer.py` into an older base also captures its pinned
+`protected_being.py` code helper if absent. The successor permits that one new
+support file when the seed module remains unchanged, preserves existing assets
+and rejects other additions. A missing helper is a package-closure defect, not a reason to
+rebuild an unchanged SDK or alter an independent production candidate.
+
+Replacing `being_seed.py` captures its complete pinned executable tool bundle and
+matching `PROVENANCE.json`. The installed module's literal `TOOL_COMMIT` and
+`TOOL_HASHES` select the known three- or four-tool set; verification parses those
+constants without importing the module and checks exact captured bytes. Current
+builder defaults cannot invalidate a coherent historical selection. All other
+assets, original context, HMK tools, skills, provider binary and the base itself
+remain unchanged. A module paired with an older exporter/receiver is an actual
+package defect: context installation calls its pinned verifier, and preparation
+can fail before identity installation even when that installer has not changed.
+Qualify the selected module's actual verifier as well as package entrypoint imports;
+do not weaken its pin check or repair this mismatch by replacing receiving identity.
+
+Retained runtime-only selections keep their original frozen-asset contract,
+including the formerly permitted absent transfer-helper addition. Reading one
+does not qualify its tools for fresh context installation. Complete bundle
+verification applies to actual tool/provenance transitions; new builds always
+validate their final captured bundle independently, even if its inventory would
+fit the historical reader contract. Maintenance must not become a retroactive
+seed migration or make an existing recovery selection unreadable.
+
+The opt-in installed child case is
+`tests/test_onboarding_runtime.py::test_qualified_offline_child_uses_selected_code_and_preserves_identity`.
+`CLUSTER_QUALIFIED_ADMISSION_ARTIFACT` selects its prepared synthetic artifact;
+the ordinary exact-VCS environment owns fixture custody preparation, while the
+actual child executes the selected offline interpreter/code/imports. It checks
+loaded code/wheel pins, signed current admission, native scope, preserved identity
+and custody, and cleanup. This is a receive-only child qualification, not the
+full publication/cohort/worker/delivery journey or a live deployment.
+Keep its short native home explicitly under `/tmp`: a process-wide `TMPDIR`
+pointing at the artifact disk otherwise lengthens the Unix socket beyond its
+limit. The large SDK stays on that disk; only small native/authority state needs
+the short local home. Retain synthetic child diagnostics on failure rather than
+changing production APIs, rebuilding dependencies or increasing readiness limits.
+Use the local temporary filesystem for small deadline-sensitive job/journal
+fixtures too. Moving all test temporaries to an artifact volume can consume the
+operation's real deadline in filesystem commits and obscure the behavior under
+test. Reuse the prepared large artifacts there without relocating every fixture.
+
+Admission communication intents retain the canonical native `tribe` channel and
+exact IDs. At the owner-tool boundary, use the protected tooling recipe's public
+`tribe_channel` alias for send, delivery inspection and both reply channel fields.
+The existing SDK validates that alias and normalizes it before request journaling.
+Do not send an unconfigured bare `tribe` to a multi-link attachment or change a
+retained native request to repair a public alias. Existing tooling acceptance
+still binds the alias to the expected group socket and identity.
+
+Capture the complete public `clusterctl` package for a combined Source/guest/
+coordinator generation through the existing successor builder's `modules`
+argument. Exclude the two separately captured native helper filenames. Do not
+derive a smaller package from Python import statements: owner CLI modules such
+as `onboarding_source` are also selected by module-name strings. A guest-only
+module selection does not qualify a combined host/Source artifact. Reuse the
+unchanged SDK wheelhouse and installed generation; this is code capture, not a
+new dependency installation.
+
+The opt-in `tests.integration.portal_admission_fixture` prepares the retained
+installed Worker fixture from an explicitly selected qualification host, combined
+artifact, authenticated Source observation and managed admission configuration.
+It creates a supported synthetic new seed, captures its actual input digest and
+submits only that plan in a separate approved inventory and queue. The ordinary
+Worker then owns environment, context, memory and Matrix preparation. Do not use
+`FixtureBackend` completion markers or placeholder seed digests here: real Matrix
+preparation requires the frozen input and receiving context. Validate managed
+admission before allocation; a group configuration without it is incomplete test
+setup, not a deployed product defect. Preparation is not group admission or
+communication acceptance. Preserve failed private state; never rewrite a submitted
+plan to repair its input digest. Cleanup targets only the recorded synthetic
+instance/profile/volume after matching its `user.dm.onboarding-plan`; keep custody,
+history and journals while qualification is unfinished. No administrative access,
+real account, bot, model turn or production instance is part of this fixture.
+
+For its existing synthetic guest, `prepare_existing_member` reuses the original
+exact host/custody grants and validated consent in the isolated coordinator.
+Private custody and inputs stay with their original owners. After importing that
+approval, run `Worker` with only the entrant plan; the approval is not permission
+to enqueue the old member or repeat its onboarding. This prepares owner controls,
+not group membership, first load or communication acceptance.
+
+The retained synthetic TCP authority can use
+`tests.integration.portal_admission_authority` under its existing key owner and
+a finite outer timeout. It reads the registrar high-water, preserves all active
+registrars and uses the existing atomic transition to add the portal registrar.
+Restart with that same recorded map; never replace the old registrar, copy its
+private key or reconstruct holder enrollments. SDK/import-tree construction is
+ordinary preparation; use its supported preparation window before freezing the
+short owner-observation deadline. A read timeout is not an installation failure.
+
+Native-only preparation/observation uses the selected receiving helper when no
+explicit Telegram successor is configured. Its probe still verifies and uses
+the original frozen Telecodex binary, and native service ownership retains the
+base binding. A runtime helper upgrade is not a bot/listener binary upgrade.
+Keep explicit Telegram successors on their existing independent selection path;
+do not set `telegram_code` to a runtime-only artifact to obtain a newer CLI verb.
+
+The opt-in `tests.integration.portal_admission_network` owns one private L2 bridge
+and one NIC per retained synthetic guest for actual cross-namespace HTTP. It
+checks the exact synthetic owners, bridge, inherited/local device and interface
+ownership before any effect. Its fixture-root lock serializes preparation and
+cleanup. The old synthetic guest predates the onboarding-plan instance marker;
+its original authenticated load binds its runtime directory, bundle and boot.
+Initial proof is bracketed by the same native Incus UUID, then exact instance,
+UUID and authorized plan pins are retained before effects. Subsequent preparation
+and cleanup use those physical pins so legitimate SDK changes do not strand the
+network. Missing pins or conflicting markers are refused, never silently repaired
+or backfilled. Desired firewall expressions are retained and synced before the atomic
+nft transaction; retries accept exact installed rules without requiring a
+post-effect receipt. Cleanup validates complete remaining expressions and deletes
+owned rules/table in one transaction. It never flushes or edits existing rules.
+Fresh guest ingress to host administrative ports and routing outside this bridge
+remain denied; established returns are limited to the fixture's HTTP addresses
+and ports. No NAT, DHCP, default route or pairwise proxy is added. This is fixture
+construction, not a production transport-reconfiguration API or live acceptance.
+The retained initial application used loopback across separate namespaces.
+`tests.integration.portal_admission_baseline` constructs only a corrected synthetic
+baseline: exact bridge addresses, native signed metadata generation, unchanged
+client/stores/keys and retained predecessor. It requires the offline owner writer,
+publication lock and exact original intent; retry preserves a later winner. Reissue
+the unchanged visibility disclosure. Addressing the baseline must keep its
+original v1 selector readable by the old loader; the fixture's signed CAS accepts
+only the retained original, prepared v2 packet or exact intended v1 packet and
+preserves later winners. Retain all intermediate metadata. The actual admission
+still uses the normal v2 publisher after old senders quiesce and qualified
+replacement loaders are selected. Capture fresh baseline load/context before
+admission. This test setup
+does not qualify production route updates or revive old pending transmissions.
+The offline closed owner loader retains its existing `catalog_mode='migrate'`:
+it has no installed visibility proof key and cannot authenticate those catalogs
+in validate mode. Do not explicitly adopt/re-authenticate their contents during
+this setup. Final `application_view` uses the real installation and validate
+mode; a closed-loader failure is not a production delivery diagnosis.
+Stop only the owned synthetic Matrix units before the finite fixture authority
+retires, so expiry does not cause pointless restart loops.
+
+The opt-in `tests.integration.portal_admission_echo` provides a durable synthetic
+Telegram API when qualification has no authorized public bot. Compose BOTH the
+retained baseline and candidate before starting their synthetic units. The
+fixture captures a startup hook and exact fake-token/method mapper in separately
+sealed code; SDK wheels, context and other helpers remain byte-for-byte unchanged.
+`qualified_startup` verifies origins and captured context before and after the
+hook. The mapper uses the original bounded isolated HTTP executor, permits only
+the fixed loopback API and refuses every other URL without public fallback.
+Expose that one external-service double inside synthetic guest namespaces with
+the fixture's existing Incus localhost-proxy pattern; Matrix still uses its real
+shared network and group. The finite server journals each accepted API call and
+assigns a new message ID even for identical text, so it cannot mask duplicate
+publications. Preserve its journal with the native receipts. These artifacts
+qualify native admission/communication against a synthetic external service;
+they do not qualify public Telegram, TLS or the uninstrumented launcher. Never
+select them in a real body or use a fake token with the ordinary baseline.
+
+When constructing the retained admission fixture, resolve route keys from the
+application root: selected generation metadata moves, transport keys do not.
+Preserve the existing visibility representation independently of bot/chat/topic
+qualification. Compose service arguments with the maintained command/entrypoint
+writers. Their JSON-quoted systemd arguments are not shell syntax: `shlex.split`
+does not decode embedded launcher newlines. A retained unit prepared by that
+writer can be decoded with JSON and checked by an exact writer round trip; compile
+its actual `-c` launcher before selecting an instrumented fixture unit. Keep
+static recipe validation separate from the protected receiving journal row:
+only fresh actual sender/load observations can freeze the operation and horizon.
+
+Native Codex observation accepts the same exact root-owned Incus default service
+drop-in as the Matrix guest observer. An active unit with that standard addition
+is not a foreign service. Modified/duplicate/unknown additions still refuse;
+the Matrix-specific reference-cache addition is not allowed on Codex. Read the
+existing unit and manager output before diagnosing a native preparation refusal.
+
+The portal retains completed target preparation and each owner-native prerequisite
+inside the same receiving operation. A finite worker budget may expire between
+owners; resume the next missing prerequisite instead of repeating SDK/V8 checks
+on every cadence. These retained snapshots prove preparation only. They neither
+extend the frozen authorization horizon nor replace final fresh required-receiver,
+loaded-runtime, tooling and activation qualification. A completed native service
+observation is never permission to restart it after a later generic failure.
+The target's individual SDK, V8 and candidate-SDK checks also retain completed
+progress through the same callback/journal route. A deadline between these checks
+must not discard earlier successful preparation or enlarge the next invocation.
+
+After recorded predecessor quiescence, the revocation barrier queries fresh root
+service/process-exit evidence directly. It must not spend that evidence window
+waiting for the stopped daemon to answer. A retained exit is only a routing hint;
+the service must still be observed inactive with the exact original exit proof.
+Recorded loaded replacements use authenticated live process and gate checks;
+unbound originals keep their original live-status verification.
+
+### Qualify future admission without changing the default SDK
+
+Admission consumer tests need the explicitly selected future SDK; the default
+identity producer remains on its existing qualified VCS pin. Use the maintained
+`tools/qualify_candidate_admission.py` runner with the candidate interpreter,
+`--sdk-commit` and the absolute `--identity-python` for that default producer.
+The runner verifies real installed VCS provenance and declares that candidate only
+inside its test process. Initial custody generation, backups and credential
+responses use the original producer interpreter, including its unchanged strict
+SDK guard and isolated children. Production pins and receiving SDKs are untouched.
+
+Reuse one test environment per incompatible SDK. CI creates an isolated consumer
+venv that reuses its installed dependencies and installs only the selected Matrix
+VCS revision, with no dependency upgrade. It routes only selected admission or
+authority consumers there and excludes those same files from the ordinary test
+pass. Unrelated changes start no candidate environment. A wheel SDK without VCS
+metadata does not satisfy the legacy identity guard; do not invent that metadata.
+A parent-only module or constant overlay does not propagate to isolated children.
+
+A synthetic window may finish before the entrant Matrix unit is first created.
+Cleanup must observe `LoadState=not-found`, inactive state and PID0 as absence,
+then close its owned authority/API/native endpoints. Preserve the original native
+service and the terminal receipt; a missing never-created unit is not a failed
+service stop. A dated ready flag is not current health after the runner exits.
+
+### Reuse a finite native owner during social admission
+
+Qualified owner artifacts whose captured inventory includes
+`clusterctl/onboarding_group_session.py` support a sequential stdin/stdout
+conversation. Older pinned artifacts retain their existing one-shot CLI; never
+try a new flag against them or silently select a different owner generation.
+The host verifies the selected public manifest digest before selecting this route.
+
+The lazy scope opens only after the first fresh stopped barrier. One owner UID
+loads one closed authority/context and holds its original native writer through
+the invocation. Every command remains durably retained before dispatch and uses
+the existing authenticated native request/result journal. Operation, context and
+authority closure cannot change. Every actual write and final completion still
+require fresh service/process/exit evidence; Source observes it through the same
+writer-owning process. No old stopped snapshot substitutes for those checks.
+
+The original absolute deadline is propagated unchanged to the guest and clamps
+all preparation and frames. A CLI-only kernel alarm, armed before qualification,
+terminates the owner even if loading or native execution blocks. It releases the
+native writer; an interrupted effect remains uncertain, never absent. The
+protocol also bounds frame size and command count. Normal close acknowledges
+writer release and joins the local invocation. Failed close retains an explicit
+unobserved-exit error; killing local Incus alone is not guest-exit proof. These
+technical invocations start no models and install no persistent listener.
+
+This optimization grants no expired authority. Follow
+[the admission continuation design](../design/admission-continuation.md) for the
+remaining recovery contract; an expired original operation must not be renewed
+in place or replaced with fresh identities.

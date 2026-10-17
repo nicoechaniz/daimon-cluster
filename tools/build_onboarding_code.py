@@ -19,12 +19,12 @@ from clusterctl.onboarding_input import relative
 HMK_COMMIT = "518f350889001b7f70ac3dd4f843a9e0c16d256c"
 ROOT = Path(__file__).resolve().parents[1]
 MODULES = ("__init__.py", "being_seed.py", "onboarding_transfer.py", "onboarding.py", "onboarding_input.py",
-           "onboarding_release.py", "onboarding_code_successor.py", "onboarding_owner_client.py", "onboarding_peer.py", "onboarding_guest.py", "onboarding_mounts.py", "onboarding_sdk.py",
+           "onboarding_release.py", "onboarding_code_successor.py", "onboarding_owner_client.py", "onboarding_peer.py", "onboarding_group_admission.py", "onboarding_group_session.py", "onboarding_group_recovery.py", "onboarding_guest.py", "onboarding_mounts.py", "onboarding_sdk.py",
            "onboarding_target.py", "onboarding_existing.py", "onboarding_credential.py", "owner_process.py", "onboarding_admission.py",
            "onboarding_runtime.py", "onboarding_views.py", "onboarding_service.py", "onboarding_ssh.py", "onboarding_provider.py", "onboarding_telegram.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
 
 
-def copy_code(source: Path, target: Path) -> None:
+def read_code(source: Path) -> bytes:
     # An ordinary checkout is mutable. Its captured bytes become authority
     # only after the resulting artifact digest is qualified and selected.
     being_seed._path(source)
@@ -39,6 +39,11 @@ def copy_code(source: Path, target: Path) -> None:
         if len(raw) > 32 * 1024**2 or (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
                 after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
             raise OnboardingError("build_code_changed")
+    return raw
+
+
+def copy_code(source: Path, target: Path) -> None:
+    raw = read_code(source)
     target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                          0o755 if source.stat().st_mode & 0o100 else 0o644)

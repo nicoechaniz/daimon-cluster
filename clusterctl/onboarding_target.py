@@ -135,6 +135,60 @@ class Target:
             raise OnboardingError("onboarding_target_binding_conflict")
         return verified, request
 
+    def group_relationship(self, value: dict, *, authority_closure: dict,
+                           expected_context_sha256: str | None = None,
+                           membership_precondition: dict | None = None,
+                           effect_not_after_ms: int | None = None,
+                           deadline_ns: int | None = None) -> dict:
+        """Accept/ingest through native authentication before first managed start."""
+        from .onboarding_group_admission import (
+            check_retained_ledger, command, load_owner_runtime, owner_authorities, relationship_request,
+        )
+        value = command(value)
+        with being_seed._locked(self.root), self._runtime_writer():
+            check_retained_ledger(self.package / 'runtime', self.root / 'group-admission', value)
+            root = self.package / 'runtime'
+            authorities = owner_authorities(root, self.root / 'tribe', self.root / 'group-admission',
+                value['operation_id'], authority_closure, expected_context_sha256=expected_context_sha256)
+            if self._observe_receiving()['phase'] != 'v8':
+                raise OnboardingError('current_onboarding_target_required')
+            hosted = load_owner_runtime(root, self._reader, authorities=authorities,
+                                        qualified_startup=self.qualified_startup)
+            return relationship_request(root, self.root / 'group-admission', value,
+                offline=hosted, deadline_ns=deadline_ns, membership_precondition=membership_precondition,
+                effect_not_after_ms=effect_not_after_ms)
+
+    def group_publication(self, value: dict, *, authority_closure: dict,
+                          expected_context_sha256: str | None = None,
+                          effect_not_after_ms: int | None = None,
+                          deadline_ns: int | None = None) -> dict:
+        from .onboarding_receiving_update import bootstrap_group
+        from .onboarding_group_admission import (
+            check_snapshot_context, load_owner_runtime, owner_authorities, preview_owner_context,
+            publication_command, publication_request,
+        )
+        value = publication_command(value)
+        root = self.package / 'runtime'
+        group = self.root / 'tribe'
+        journal = self.root / 'group-admission'
+        if value['action'] == 'context-preview':
+            result = preview_owner_context(root, group, value['operation_id'], authority_closure,
+                deadline_ns=deadline_ns)
+            if expected_context_sha256 is not None and result['owner_context_sha256'] != expected_context_sha256:
+                raise OnboardingError('onboarding_group_owner_context_conflict')
+            return result
+        with being_seed._locked(self.root), self._runtime_writer():
+            check_snapshot_context(journal, value)
+            authorities = owner_authorities(root, group, journal, value['operation_id'], authority_closure,
+                expected_context_sha256=expected_context_sha256)
+            if self._observe_receiving()['phase'] != 'v8':
+                raise OnboardingError('current_onboarding_target_required')
+            hosted = load_owner_runtime(root, self._reader, authorities=authorities,
+                                        qualified_startup=self.qualified_startup)
+            return publication_request(hosted, group, journal, value, deadline_ns=deadline_ns,
+                effect_not_after_ms=effect_not_after_ms,
+                snapshot=lambda: bootstrap_group(self, self.document_bundle()))
+
     def prepare(self) -> dict:
         from daimon_matrix import canonical, keystore, operator_first_embodiment as first
         current = self.home
@@ -244,6 +298,14 @@ class Target:
             return self.observe()
 
     def observe(self) -> dict:
+        return self._observe_receiving(include_group=True)
+
+    def _observe_receiving(self, *, include_group: bool = False) -> dict:
+        """Validate receiving identity/custody independently of group selection.
+
+        Only retained offline owner maintenance uses this narrow observation.
+        Public observe() still validates the selected group's publication pins.
+        """
         if not self.root.exists() or not self.preparation.exists():
             return dict(phase="absent", request=None, receipt=None)
         if self.existing and (self.root / "request-renewal.json").exists():
@@ -293,7 +355,7 @@ class Target:
                 result = dict(phase="v8" if complete.exists() else "v8-published", request=request, receipt=current_receipt)
             if controller is not None:
                 result['receiving_controller'] = {**controller, 'historical_receipt_sha256': digest(result['receipt'])}
-            if result['phase'] == 'v8':
+            if include_group and result['phase'] == 'v8':
                 from .onboarding_peer import observed_group
                 group = observed_group(self, bundle)
                 if group is not None:
@@ -713,7 +775,7 @@ class Target:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("sdk-observe", "sdk-prepare", "prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept", "receiving-control-prepare", "receiving-control-apply", "receiving-control-prepare-apply", "receiving-identity", "receiving-bootstrap-freeze", "receiving-bootstrap-stage", "receiving-bootstrap-publish"))
+    parser.add_argument("action", choices=("sdk-observe", "sdk-prepare", "prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept", "group-relationship", "group-publication", "group-session", "receiving-control-prepare", "receiving-control-apply", "receiving-control-prepare-apply", "receiving-identity", "receiving-bootstrap-freeze", "receiving-bootstrap-stage", "receiving-bootstrap-publish"))
     parser.add_argument("--diagnostics", action="store_true", help="write bounded nonsecret refusal detail to stderr")
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
@@ -736,6 +798,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--require-loaded', action='store_true')
     parser.add_argument('--observation-timeout-seconds', type=float)
     parser.add_argument('--observation-deadline-ns', type=int)
+    parser.add_argument('--authorization-expires-at-ms', type=int)
     parser.add_argument('--control-file', type=Path)
     parser.add_argument('--control-command', type=Path)
     parser.add_argument('--identity-expires-at-ms', type=int)
@@ -743,11 +806,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--bootstrap-request-json')
     parser.add_argument('--bootstrap-ready-sha256')
     parser.add_argument('--bootstrap-timeout-seconds', type=float)
+    parser.add_argument('--bootstrap-initial', action='store_true')
+    parser.add_argument('--bootstrap-initial-service', action='store_true')
+    parser.add_argument('--initial-context-json')
+    parser.add_argument('--group-request', type=Path)
     args = parser.parse_args(argv)
     stage = 'arguments'
+    probe_scope = ExitStack()
     try:
+        expected_initial_context = None
+        if args.initial_context_json is not None:
+            from .onboarding_service import initial_context
+            if args.action != 'admitted-serve' or len(args.initial_context_json.encode()) > 1024:
+                raise OnboardingError('receiving_initial_context_required')
+            expected_initial_context = initial_context(json.loads(args.initial_context_json))
         controlling = args.action in {'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply'}
         identity_query = args.action == 'receiving-identity'
+        grouping = args.action in {'group-relationship', 'group-publication', 'group-session'}
+        if grouping != (args.group_request is not None) or grouping and args.ready_fd is not None:
+            raise OnboardingError('onboarding_group_relationship_command_required')
         if args.native_tooling_json is not None and (not identity_query
                 or len(args.native_tooling_json.encode()) > 65536):
             raise OnboardingError('receiving_native_tooling_recipe_required')
@@ -761,23 +838,41 @@ def main(argv: list[str] | None = None) -> int:
                     or not 0 < args.bootstrap_timeout_seconds <= 60 or args.ready_fd is not None
                     or (args.action == 'receiving-bootstrap-freeze') != (args.bootstrap_request_json is None)
                     or (args.action == 'receiving-bootstrap-publish') != (args.bootstrap_ready_sha256 is not None)
+                    or args.bootstrap_initial and args.bootstrap_initial_service
+                    or (args.bootstrap_initial or args.bootstrap_initial_service) and args.action != 'receiving-bootstrap-freeze'
                     or args.bootstrap_request_json is not None and len(args.bootstrap_request_json.encode()) > 131072):
                 raise OnboardingError('invalid_receiving_bootstrap_request')
-        elif any(value is not None for value in (args.bootstrap_request_json,
+        elif args.bootstrap_initial or args.bootstrap_initial_service or any(value is not None for value in (args.bootstrap_request_json,
                 args.bootstrap_ready_sha256, args.bootstrap_timeout_seconds)):
             raise OnboardingError('invalid_receiving_bootstrap_request')
         timeout = args.observation_timeout_seconds
-        if timeout is not None and (args.action not in {'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply'}
+        admitting = args.action in {'admission-prepare', 'admission-check', 'admission-enroll'}
+        if (args.authorization_expires_at_ms is not None and (not admitting
+                    or not 0 < args.authorization_expires_at_ms < 2**53)
+                or admitting and ((timeout is None) != (args.authorization_expires_at_ms is None))):
+            raise OnboardingError('invalid_receiving_observation_timeout')
+        if timeout is not None and (args.action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
                 or not math.isfinite(timeout) or not 0 < timeout <= 60):
             raise OnboardingError('invalid_receiving_observation_timeout')
+        if bootstrapping:
+            timeout = args.bootstrap_timeout_seconds
         now_ns = time.monotonic_ns()
         observation_deadline_ns = None if timeout is None else now_ns + int(timeout * 1_000_000_000)
+        if args.authorization_expires_at_ms is not None:
+            observation_deadline_ns = min(observation_deadline_ns, now_ns +
+                (args.authorization_expires_at_ms - time.time_ns() // 1_000_000) * 1_000_000)
+            if observation_deadline_ns <= now_ns:
+                raise OnboardingError('onboarding_observation_deadline_expired')
         if args.observation_deadline_ns is not None:
             if (observation_deadline_ns is None or args.observation_deadline_ns <= now_ns
                     or args.observation_deadline_ns > observation_deadline_ns):
                 raise OnboardingError('onboarding_observation_deadline_expired')
             observation_deadline_ns = args.observation_deadline_ns
-        if identity_query and timeout is None:
+        if grouping:
+            from .onboarding_group_session import hard_deadline
+            probe_scope.enter_context(hard_deadline(observation_deadline_ns))
+        probe_scope.enter_context(onboarding_sdk.probe_budget(observation_deadline_ns))
+        if (identity_query or grouping) and timeout is None:
             raise OnboardingError('invalid_receiving_identity_request')
         if (args.require_loaded and args.action not in {'running', 'admitted-running'}
                 or controlling and (args.control_file is None
@@ -790,15 +885,20 @@ def main(argv: list[str] | None = None) -> int:
         runtime = onboarding_code_successor.selection(args.runtime_code, args.runtime_digest,
             args.code, plan['release_digest'], uid=0)
         sdk_parameters = onboarding_code_successor.sdk_parameters(runtime)
-        if (controlling or identity_query or bootstrapping or args.require_loaded) and not sdk_parameters:
+        if (controlling or identity_query or bootstrapping or grouping or args.require_loaded
+                or admitting and timeout is not None) and not sdk_parameters:
             raise OnboardingError('qualified_onboarding_target_observer_required')
         matrix_commit = sdk_parameters.get('matrix_commit', onboarding_sdk.MATRIX_COMMIT)
+        if observation_deadline_ns is not None and time.monotonic_ns() >= observation_deadline_ns:
+            raise OnboardingError('onboarding_observation_deadline_expired')
         if args.action == 'sdk-prepare':
             stage = 'sdk-preparation'
             venv = onboarding_sdk.install(args.home, runtime, args.runtime_digest or plan['release_digest'], **sdk_parameters)
             if sdk_parameters:
                 stage = 'sdk-imports'
                 onboarding_sdk.runtime_imports(venv, runtime, **sdk_parameters)
+            if observation_deadline_ns is not None and time.monotonic_ns() >= observation_deadline_ns:
+                raise OnboardingError('onboarding_observation_deadline_expired')
             print(json.dumps(dict(ready=True, matrix_commit=matrix_commit)))
             return 0
         if args.action == 'sdk-observe':
@@ -808,6 +908,8 @@ def main(argv: list[str] | None = None) -> int:
                 ready = True
             except FileNotFoundError:
                 ready = False
+            if observation_deadline_ns is not None and time.monotonic_ns() >= observation_deadline_ns:
+                raise OnboardingError('onboarding_observation_deadline_expired')
             print(json.dumps(dict(ready=ready, matrix_commit=matrix_commit)))
             return 0
         stage = 'sdk-observation'
@@ -855,12 +957,17 @@ def main(argv: list[str] | None = None) -> int:
         stage = 'owner-action'
         target = Target(args.home, plan, document(args.genesis), code=runtime,
             code_digest=args.runtime_digest or plan['release_digest'], qualified_startup=startup)
+        if observation_deadline_ns is not None and time.monotonic_ns() >= observation_deadline_ns:
+            raise OnboardingError('onboarding_observation_deadline_expired')
         if bootstrapping:
             from .onboarding_receiving_update import GuestOwnerBootstrap, freeze_guest_bootstrap
-            deadline_ns = time.monotonic_ns() + int(args.bootstrap_timeout_seconds * 1_000_000_000)
+            if observation_deadline_ns is None:
+                raise OnboardingError('invalid_receiving_bootstrap_request')
+            deadline_ns = observation_deadline_ns
             stage = args.action
             if args.action == 'receiving-bootstrap-freeze':
-                result = freeze_guest_bootstrap(target, deadline_ns=deadline_ns)
+                result = freeze_guest_bootstrap(target, deadline_ns=deadline_ns, initial=args.bootstrap_initial,
+                    initial_service=args.bootstrap_initial_service)
             else:
                 owner = GuestOwnerBootstrap(target, json.loads(args.bootstrap_request_json))
                 result = owner.execute(args.action.removeprefix('receiving-bootstrap-'),
@@ -895,6 +1002,35 @@ def main(argv: list[str] | None = None) -> int:
                     receiving=result)
             print(json.dumps(result))
             return 0
+        if grouping:
+            if args.action == 'group-session':
+                from .onboarding_group_session import serve as serve_relationships
+                if args.group_request != Path('-'):
+                    raise OnboardingError('onboarding_group_relationship_command_required')
+                serve_relationships(target, deadline_ns=observation_deadline_ns, target=True,
+                    reader=sys.stdin.fileno(), writer=sys.stdout.fileno())
+                return 0
+            from .onboarding_group_admission import request_packet
+            if args.group_request == Path('-'):
+                raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1)
+                if len(raw) > being_seed.MAX_SELECTION:
+                    raise OnboardingError('onboarding_group_relationship_command_required')
+                packet = json.loads(raw)
+            else:
+                packet = being_seed._read(args.group_request, limit=being_seed.MAX_SELECTION)
+            packet = request_packet(packet)
+            if (not packet['offline']
+                    or (args.action == 'group-publication') != ('action' in packet['command'])):
+                raise OnboardingError('onboarding_group_relationship_writer_required')
+            method = target.group_publication if args.action == 'group-publication' else target.group_relationship
+            print(json.dumps(method(packet['command'],
+                authority_closure=packet['authority_closure'], deadline_ns=observation_deadline_ns,
+                **({'expected_context_sha256': packet['expected_context_sha256']}
+                   if 'expected_context_sha256' in packet else {}),
+                **({'membership_precondition': packet['membership_precondition']}
+                   if 'membership_precondition' in packet else {}),
+                **({'effect_not_after_ms':packet['effect_not_after_ms']} if 'effect_not_after_ms' in packet else {}))))
+            return 0
         if args.action == 'peer-identity':
             from .onboarding_peer import identity
             print(json.dumps(identity(target)))
@@ -914,7 +1050,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise OnboardingError("onboarding_admission_profile_required")
             return serve(target, document(args.admission_profile), receive_only=args.receive_only,
                 visibility_installation=args.visibility_installation, messaging_application=args.messaging_application,
-                ready_descriptor=args.ready_fd)
+                ready_descriptor=args.ready_fd, expected_initial_context=expected_initial_context)
         if args.action == "serve":
             return target.serve(receive_only=args.receive_only, visibility_installation=args.visibility_installation,
                                 ready_descriptor=args.ready_fd)
@@ -929,12 +1065,14 @@ def main(argv: list[str] | None = None) -> int:
             if args.public_profile_json is None or len(args.public_profile_json) > 16384:
                 raise OnboardingError('onboarding_admission_profile_required')
             registered = ReceivingHolder(target).ensure_enrolled(json.loads(args.public_profile_json),
-                enroll=args.action == 'admission-enroll')
+                enroll=args.action == 'admission-enroll', deadline_ns=observation_deadline_ns)
+            if observation_deadline_ns is not None and time.monotonic_ns() >= observation_deadline_ns:
+                raise OnboardingError('onboarding_observation_deadline_expired')
             print(json.dumps(dict(registered=registered)))
             return 0
         if args.action == "admission-prepare":
             from .onboarding_admission import ReceivingHolder
-            print(json.dumps(ReceivingHolder(target).request()))
+            print(json.dumps(ReceivingHolder(target).request(deadline_ns=observation_deadline_ns)))
             return 0
         if args.action == "prepare":
             target.prepare()
@@ -947,6 +1085,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise OnboardingError("onboarding_target_activation_required")
             target.apply_credential(document(args.credential_response))
         result = target.observe()
+        if observation_deadline_ns is not None and time.monotonic_ns() >= observation_deadline_ns:
+            raise OnboardingError('onboarding_observation_deadline_expired')
         if args.action == "credential-prepare":
             result["request"] = target.credential_request()
         print(json.dumps(result))
@@ -956,6 +1096,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(refusal_diagnostic(error, stage=stage)), file=sys.stderr)
         print(json.dumps({"error": "native_onboarding_target_refused"}))
         return 1
+    finally:
+        probe_scope.close()
 
 
 if __name__ == "__main__":

@@ -4,7 +4,188 @@ Architecture/profile navigation is
 [Matrix current architecture](https://github.com/AlterMundi/daimon-matrix/blob/main/docs/current-architecture.md).
 Current selections below supersede the explicitly historical qualification.
 
-## Current milestone work
+## Current receiving frontier — 2026-10-17
+
+The native Matrix milestone6 goal remains ACTIVE and incomplete. Prioritize
+actual three-VPS receiving/Matrix#363 and Source I/O; future admission is
+independent work while scoped real maintenance permission remains unanswered.
+Do not make synthetic admission a prerequisite for I/O or repeat qualified work.
+
+Production remains SDK80542cee / receiving coded7d64a19 / worker2144. Combined
+candidate0bb7946 (SDK3d556633 / codee680e3cd) is prepared on all3, not selected.
+Existing all3 signed group and exact-direct receipts remain valid; two concurrent
+reply legs remain unconfirmed in Matrix#363. The candidate retains safe route
+diagnostics; it is not a proven repair of that incident. Source I/O still selects
+listener39374f7/configbe38; qualified Telecodex100 binary00382/configaa24 is staged.
+Reconcile its original retained completion without replay before asking for a
+genuine human acceptance test. No new restart/global Stop is authorized.
+
+Synthetic future admission: the SAME protected parent retains actual signed
+membership on all3 bodies and the original acceptance-response-loss recovery.
+The first entrant application command remains unresolved at the host; do not
+infer absence or repeat authoring from a missing reply. The finite producer
+window is CLOSED, with clean cleanup, zero models and production effects. The
+fixed linked authorization has expired. Preserve accepted events, original
+requests, receiverc2/SDK3a, hostd814 and separately published owner helpera728.
+No new invitation, shadow parent or enlarged old horizon is a recovery route.
+Publication, managed first loads, activation, signed communication and compatible
+v2 rollback remain unobserved. Originalv1 is not a post-v2 rollback.
+
+Draft PR265 published sourcee3ae8e8 corrected the actual-UID test runner. Its
+CI38994308021 PASSED the actual-UID and selected native admission lanes, then
+FAILED the default-SDK suite after1540 passing cases at
+`test_portal_admission_baseline::test_baseline_preserves_original_loader_profile_and_refuses_later_selector`:
+the maintained v2 selector requires public_authority_history, absent from the
+unchanged default805 SDK. The baseline test was missing from the explicit
+candidate consumer set. The workflow correction routes that file through the
+existing b53 candidate lane and excludes it from default-SDK execution; it changes
+no product pin. The exact genuine kernelUID1000/b53/default805 case now PASSES
+24.36s, and78 workflow/scope cases PASS1.15s. Do not rerun the failed full pipeline
+unchanged or mistake its default-SDK mismatch for a deployed failure.
+
+Earlier source8fc7eea's CI38992257942 failed after28 guest-owner cases:
+the actual admitted child could not bind its private AF_UNIX socket. A focused
+isolated reproduction traced the original failure to daemon.py's socket.bind;
+the observer then terminated the already-failing child before its traceback
+could reach stderr. The CI helper had expanded every tempfile-created native home
+by replacing TMPDIR to isolate pytest's owner. That workflow defect is corrected:
+keep ordinary native temp homes and isolate only pytest through its supported
+--basetemp option. Existing PYTEST_ADDOPTS quoting is preserved. The same exact
+kernelUID1000/candidateb53/default805 native case now passes in15.02s;76 affected
+workflow/scope cases pass1.23s, including a real native-size Unix socket regression.
+No product runtime, source SDK pin or installed artifact changed. Original source
+CI38989940671's runner UID failure and its78.85s corrected case remain valid evidence.
+Do not rerun a failed pipeline unchanged or treat a metadata lock as a live job.
+
+The publication-budget correction's4 affected coordinator cases passed1.80s;
+genuine candidate linked publication/lost-result passed42.93s. Per-owner and final
+observations stay fresh. Valid source evidence is retained rather than repeated.
+Neither this source correction nor CI changes select a synthetic/live artifact.
+
+Actual owner metadata now confirms an unpublished initial preparation prefix with
+retained client/binding and capability genesis, while final application is absent.
+Matrix#368/PR369 owns native prefix recovery. Exact03b132f is reviewed and
+pushed on the existing SDK branch, including explicit bounded SQLite recovery,
+empty raw-evidence retries and exact maintained visibility successors. Branch API
+and Git confirm03b132f; the PR still reports6bfb59a and has no extension CI at the
+latest observation. Installed/actual-owner recovery acceptance is not complete.
+Do not repush or launch duplicate CI solely for this metadata delay. Actual owner stage-relative observation additionally found
+a retained opaque-message rollback journal. An isolated raw-pair copy has integrity
+ok and only inbox_meta/items/requests (meta1,1;otherrows0); SQLite leaves its zero-
+header journal present. The original pair is unchanged. Explicit trusted recovery
+must recognize this constructor prefix and preserve the same client/inode; never
+ignore/delete the journal, rerun prepare or mistake this for absence of effects.
+The remaining-effects proposal has conditional Astra design GO only, requiring
+native recovery and protected execution provenance before any fresh continuation.
+See docs/design/admission-continuation.md. Real Matrix/I/O remains independent.
+
+Cluster source24cff58 implements only the separate remaining-effects journal
+planner/attachment/resolver. It binds the original parent, vectors/social grant,
+complete accepted membership, original publication commands/results, preservation,
+helpers and fixed bound, and cannot authorize membership.29 baseline/core cases
+PASS2.80s, plus3 focused lost-ACK/inactive-approval/frontierCAS cases PASS0.54s;
+scoped lint/diff PASS. The existing Astra reviewer gave bounded SOURCE GO for exact24cff58 after
+pinning publication identity separately from growing results;9 drift/progress
+cases PASS0.78s. Owning mypy90 PASS. Execution consumer wiring and protected owner projection remain PENDING. No
+operational configuration/helper selects it and no actual grant was minted.
+The journal core and verified candidate-lane CI correction are ready for one
+coherent source publication. Do not repeat a full suite between small edits.
+
+
+## Selected production and retained qualification evidence
+
+The three VPS bodies actually select Matrix SDK
+`80542cee1d56e3d46bbda21f4174e3df75cf5585` and receiving code
+`d7d64a19f6eb939d3428c13d2a1bdddb1bd2ed4b62719306884a611a766312b3`.
+Cluster PR261 merged as `c722616eaf4d571ae409888c9eff72a97414bec8` with scoped
+CI38895593186 passing. Preserve-mode Source/Eko/Oliva lifecycle receipts and
+cohort `6365754a-e62e-4e94-a6c1-6fc82f9d4531` confirm all-required tooling,
+receiving adoption and final sender selection. The qualified2144 onboarding
+worker was restored with original jobs retained. Existing native human sessions
+and Telegram listeners were not restarted. No global Stop was performed.
+
+One real group send has all three VPS signed delivery receipts; the Eko-to-Oliva
+body direct and its exact retry also passed. Concurrent group replies left two
+legs unconfirmed and their readable copies absent: Matrix#363 remains open.
+Other Root bodies are explicitly unroutable, not qualified by these VPS results.
+Full milestone acceptance is unfinished. The SDK0dc/codefb compatible predecessor
+is preserved; accepted authority, history and uncertain inputs must not be reset.
+
+## Historical qualification notes — superseded by the current frontier
+
+The human resumed the native milestone goal; it is active. Future Cluster227
+source and its retained synthetic admission fixture remain separate from the
+selected2144 worker. The ordinary checkout is not the deployed worker. The
+isolated227 network and corrected signed baseline metadata are now installed;
+both old synthetic owners pass actual native group loading at the approved bridge
+addresses, preserving clients, stores and old generations. The original v1 selector is preserved for the old baseline loaders; normal
+admission still selects v2 only with its coordinated replacement. Three native
+endpoints pass zero-model preflight. A finite qualification run restored the same
+two-registrar authority and isolated native/Matrix processes. Source and old guest
+have authenticated running observations; cross-namespace HTTP reached both real
+listeners from the host and entrant. GET501 establishes reachability, not signed
+semantic delivery. Use the retained fixture running-window/checkpoint for process
+handles and cleanup deadlines; never treat this dated paragraph as fresh health.
+Complete admission, signed communication and compatible rollback are unfinished.
+
+Cluster `250f5bc` captures the qualified Matrix PR366 installer correction for
+absent/empty Codex TOML, preserving strict credential reads. The resulting
+synthetic helper generation `f99b7c4` changes only the installer and its pin;
+SDK3a/b53 is reused. The retained guest's ORIGINAL preparation operation completed
+after native config repair, and Source's isolated native home gained its existing
+verified Matrix role. Bindings were preserved; no identity, enrollment, daemon
+or model was created. Catalog/receiving acceptance remains unobserved. The finite
+synthetic Matrix units were stopped before their test authority, then only their
+owned isolated native endpoints were retired; the entrant's pre-existing native
+service was retained. No real service was interrupted. Dated running observations
+above are retained evidence, not fresh readiness. Source
+I/O's merged Telecodex PR100 candidate is staged, not selected; the Matrix-only
+rollout permission does not authorize a Telegram restart. Follow the current
+[Matrix receiving frontier](https://github.com/AlterMundi/daimon-matrix/blob/main/CURRENT-STATE.md)
+and the retained local operation checkpoint for exact effects and remaining work.
+Cluster `061a29a` adds a fixture-only durable external Telegram API and separately
+sealed candidate/baseline code compositions. The original SDK/context remain
+unchanged and startup verifies integrity before and after the exact URL mapper.
+Actual installed Root/Source/entrant/old-guest startup and local API calls pass,
+including the old guest's original SDK and candidate; the coordinator's actual
+destination qualification and connected reply pass.12 fixture and59 CI-scope/
+workflow tests, bounded independent source review and scoped lint pass. Both API
+servers were closed after their probes. No Matrix service, authority, identity,
+production selector or model was started by these probes. This is external-service
+fixture readiness, not complete admission, public Telegram or TLS acceptance.
+Native owner reads authenticate both original publications without returning
+key values. The finite integrated synthetic window now has fresh baseline sender/
+load observations and a bound protected receiving operation, using the same three
+identities and entrant V8 job. Membership, publication and first managed load
+remain unfinished; read the retained checkpoint for live process and deadline
+receipts, not dated status paragraphs.
+
+Cluster `ee961fa` fixes a verified native observation defect: Codex observation
+rejected the exact standard root-owned Incus service drop-in, although the service
+was active and its unit matched. The existing Matrix validator is now shared;
+modified, duplicate, foreign and reference-cache native drop-ins still refuse.
+Affected native/service tests, CI-scope tests, typing and scoped lint passed;
+bounded independent review approved the source. Cluster `3f50765` / `f0ff788` then correct a reproduced finite-budget starvation:
+target SDK/V8 checks and individual native prerequisites now durably retain their
+completed preparation in the SAME protected operation. Final all-required
+freshness and fixed authorization expiry remain unchanged. Bounded independent
+source review, affected host/coordinator/finisher, journal/worker/CI checks and
+maintained typing pass. Captured helper `d814151b` changes only those four modules
+against the existing synthetic candidate. It is selected only by the isolated
+host/coordinator; all receiver candidate/SDK pins remain unchanged. Actual worker
+admission acceptance is still pending. Read the checkpoint for current cadence
+and native result, not this dated source paragraph. The v2-
+compatible fallback is Root-published, not a completed rollback receipt. The old
+v1 baseline must never be restored after v2 authority acceptance.
+
+Before another real operation that could interrupt communication, prepare its
+receiving/recovery boundary and obtain the scoped human authorization required
+by the goal. Every global Stop requires its own fresh explicit human request.
+
+The following dated work records preserve history and qualification; they do
+not override this receiving frontier or select an older production pin.
+
+## Historical milestone preparation — before the2026-10-16 rollout
 
 Matrix [milestone6 / #336](https://github.com/AlterMundi/daimon-matrix/issues/336)
 is active. Cluster [PR242](https://github.com/nicoechaniz/daimon-cluster/pull/242)
@@ -28,7 +209,7 @@ Full CI uses one Python3.13.5 job with a30-minute limit. Run38728293267 exhauste
 the former20-minute cap at75% of the fail-fast suite without reporting a test
 failure. This job budget does not change any receiving/native freshness deadline.
 
-## Current communication target — 2026-10-13
+## Historical communication target — 2026-10-13
 
 CompAII, Eko and Oliva now use one signed membership group, demonstrated with
 actual three-body semantic receipts and connected replies. Matrix PR #330 is

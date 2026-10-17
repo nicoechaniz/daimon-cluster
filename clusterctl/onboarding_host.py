@@ -1106,7 +1106,7 @@ class HostBackend:
         A host timeout is uncertain observation, never proof of guest exit.
         """
         deadline_ns = None
-        if owner_deadline_ns is not None and (action != 'group-session'
+        if owner_deadline_ns is not None and (action not in {'group-session','group-relationship','group-publication'}
                 or type(owner_deadline_ns) is not int
                 or not 0 < owner_deadline_ns-time.monotonic_ns() <= 60_000_000_000):
             raise OnboardingError('receiving_host_deadline_required')
@@ -1267,7 +1267,7 @@ class HostBackend:
             if remaining <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
             arguments += ['--bootstrap-timeout-seconds' if bootstrapping else '--observation-timeout-seconds', str(remaining)]
-            if action == 'group-session':
+            if action == 'group-session' or owner_deadline_ns is not None:
                 arguments += ['--observation-deadline-ns', str(deadline_ns)]
         if prepared_venv is None:
             owner_command = code_command(Path('/usr/bin/python3'), runtime_code,
@@ -1282,7 +1282,8 @@ class HostBackend:
 
     def _guest_service_call(self, plan: dict, action: str, *, candidate: tuple[Path, str],
                             timeout_seconds: float, request: dict | None = None,
-                            owner_observation: dict | None = None) -> dict:
+                            owner_observation: dict | None = None, owner_deadline_ns: int | None = None,
+                            effect_not_after_ms: int | None = None) -> dict:
         """Named-unit root effects execute public Cluster code, never owner SDK.
 
         The caller holds the host operation/job locks and records uncertainty.
@@ -1295,6 +1296,13 @@ class HostBackend:
                 or action != 'bootstrap-inspect' and owner_observation is not None):
             raise OnboardingError('receiving_guest_service_request_required')
         deadline_ns = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
+        if (owner_deadline_ns is not None and (type(owner_deadline_ns) is not int
+                    or not 0 < owner_deadline_ns-time.monotonic_ns() <= 60_000_000_000)
+                or effect_not_after_ms is not None and (action not in {'bootstrap-select','bootstrap-start'}
+                    or type(effect_not_after_ms) is not int or not 0 < effect_not_after_ms < 2**53)):
+            raise OnboardingError('receiving_host_deadline_required')
+        if owner_deadline_ns is not None:
+            deadline_ns=min(deadline_ns,owner_deadline_ns)
         if not self._ceremony(plan).authorize(plan):
             raise OnboardingError('identity_authorization_required')
         base = self._receiving_base(plan)
@@ -1315,6 +1323,10 @@ class HostBackend:
         if remaining <= 0:
             raise OnboardingError('receiving_host_deadline_expired')
         arguments += ['--timeout-seconds', str(remaining)]
+        if owner_deadline_ns is not None:
+            arguments += ['--observation-deadline-ns',str(deadline_ns)]
+        if effect_not_after_ms is not None:
+            arguments += ['--effect-not-after-ms',str(effect_not_after_ms)]
         from .onboarding_service import code_command
         command = ['exec', self.instance(plan), '--user', '0', '--group', '0', '--',
             *code_command(Path('/usr/bin/python3'), code, 'clusterctl.onboarding_service', arguments)]

@@ -1,12 +1,11 @@
 # Recover an expired shared admission without erasing its effects
 
-Status: execution integration pending, following the bounded Astra review for
-#227. The finite owner conversation and native invitation inspection are
-implemented. `onboarding_group_recovery` plans and attaches a closed immutable
-authorization through the existing journal, preserving original intent and
-requests. No continuation is selected in the fixture. The remaining owner,
-publication, initial-start, activation and communication consumers are not yet
-connected; journal metadata alone is not receiving or runtime authorization.
+Status: execution consumers are connected in source, following the bounded
+Astra review for #227. Protected configuration selects one linked approval and a
+separate maintenance helper; social, publication, lifecycle/initial startup,
+activation and technical communication retain the original receiving vectors.
+No continuation is selected in the retained fixture, and this integration is not
+installed. Journal metadata alone is not receiving or runtime authorization.
 
 The retained synthetic journey exhausted its fixed authorization after both old
 senders were revoked and both old Matrix services were quiesced/preserved. Owner
@@ -98,7 +97,7 @@ the actual journal parent under its mutation lock, never a supplied snapshot or
 reconstructed attachment. Consumers retain that lock through dispatch. It does
 not replace actual helper qualification, receiver/capability validity, native
 reconciliation, fresh quiescence or the per-effect checks listed above. Those
-consumers must be integrated before any operational continuation is attempted.
+consumers remain subject to installed qualification before an operational continuation.
 
 ## Reviewed execution integration map
 
@@ -108,7 +107,7 @@ frontier once, not after every legitimate observation. A maintenance helper is a
 separate dispatch selection: normal identity, tooling, unit argv and loaded-runtime
 qualification continue selecting the original receiver, not that helper.
 
-Connect the remaining maintained boundaries as one execution change:
+The connected maintained boundaries form one execution change:
 
 - Coordinator invocation and finish: clamp the original monotonic budget to the
   linked fixed wall horizon. Historical reconciliation grants no fresh effect.
@@ -138,3 +137,27 @@ owner conversation currently covers relationships only; it does not establish
 publication startup cost or provide publication lifetime qualification. No SDK
 event/wire schema change is required for this narrow frontier. A terminal parent
 is never reopened, and no virtual replacement row may stand in for its real intent.
+
+## Execution qualification and remaining installation
+
+Native tests use the genuine candidate SDK consumer and the unchanged default
+identity producer. The linked attempt preserves original requests and handles
+lost native acceptance/publication acknowledgments. A new invitation reinspects
+the original outcome within its actual writer invocation, including after an
+inspection-only crash. Historical recovery authenticates a completed native RPC
+without calling the native handler; absent/pending outcomes never grant a fresh
+effect. Publication recovery after expiry requires a retained proven result.
+
+Protected execution requires the real parent and attached approval to remain
+active, even before their fixed horizon expires. Completed-parent inspection
+stays historical. Every actual owner/root selection, start and initial file link
+rechecks its fixed bound at the effect boundary; helper qualification cannot
+restart the absolute budget. Existing completed starts can reconcile lost replies
+without repeating StartUnit. No SDK wire/event schema changes are introduced.
+
+Source qualification does not complete the retained synthetic journey. Capture
+and qualify one compatible maintenance helper from the reviewed source, then
+approve/attach the linked continuation only when its existing endpoints and
+artifacts are ready. Keep the original receiver and frozen host helper intact.
+The same fixture still needs actual membership, publication, managed first load,
+all-required adoption, communication and v2-compatible rollback evidence.

@@ -245,11 +245,11 @@ def attach(journal, parent_operation_id: str, selected: dict) -> dict:
         return grant
 
 
-def require_effect(journal, parent: dict, selected: dict, effect: str, *, now_ms: int) -> dict:
+def require_execution(journal, parent: dict, selected: dict, effect: str) -> dict:
     """Check the journal's current parent; a supplied snapshot is only an expectation.
 
     Consumers must hold the same reentrant parent mutation lock through dispatch.
-    An expired grant remains inspectable, but never authorizes a fresh effect.
+    Expiry permits historical reconciliation, but inactive grants cannot execute.
     """
     with journal.mutation_lock(parent['operation_id']):
         current = journal.get(parent['operation_id'])
@@ -270,9 +270,116 @@ def require_effect(journal, parent: dict, selected: dict, effect: str, *, now_ms
                     or (current['runtime_observation'] or {}).get('admission_continuation') != expected
                     or approved['state'] != 'runtime-dispatching'
                     or approved['runtime_observation'] != {'attachment': dict(parent_operation_id=current['operation_id'],
-                        authorization_sha256=digest(grant))}
-                    or type(now_ms) is not int or not 0 < now_ms < grant['expires_at_ms']):
+                        authorization_sha256=digest(grant))}):
                 raise ValueError
             return grant
         except (KeyError, TypeError, ValueError, AttributeError):
             raise OnboardingError('onboarding_group_continuation_effect_not_authorized') from None
+
+
+def require_effect(journal, parent: dict, selected: dict, effect: str, *, now_ms: int) -> dict:
+    """Require an active attachment and its fixed bound for a fresh effect."""
+    grant = require_execution(journal, parent, selected, effect)
+    if type(now_ms) is not int or not 0 < now_ms < grant['expires_at_ms']:
+        raise OnboardingError('onboarding_group_continuation_effect_not_authorized')
+    return grant
+
+
+def attached(journal, parent: dict, *, effect: str | None = None) -> dict | None:
+    """Resolve the real attached approval, preserving ordinary admission behavior.
+
+    Fresh effects require the caller to retain the parent lock through dispatch.
+    Historical readers omit effect and never acquire fresh permission.
+    """
+    current = journal.get(parent['operation_id'])
+    if current is None or any(current[key] != parent[key] for key in
+            ('intent', 'intent_hash', 'expected_precondition', 'intended_transition')):
+        raise OnboardingError('onboarding_group_continuation_reference_required')
+    attachment = (current['runtime_observation'] or {}).get('admission_continuation')
+    if attachment is None:
+        return None
+    grant = resolve(journal, current, attachment['reference'])
+    expected = dict(schema='cluster-admission-continuation-attachment/v1', reference=attachment['reference'],
+        authorization_sha256=digest(grant), frontier_sha256=grant['frontier_sha256'])
+    if attachment != expected:
+        raise OnboardingError('onboarding_group_continuation_reference_required')
+    return grant if effect is None else require_effect(journal, current, attachment['reference'], effect,
+        now_ms=time.time_ns()//1_000_000)
+
+
+def membership(journal, parent: dict, admission: dict) -> tuple[dict, str, str, dict]:
+    """Derive a correlated social attempt without rewriting the original recipe."""
+    from .onboarding_group_admission import membership_recipe
+    original = membership_recipe(parent['intended_transition']['portal_admission']['social'], admission,
+        parent['expected_precondition']['senders'])
+    grant = attached(journal, parent)
+    if grant is None:
+        return original, 'membership_admission', '', {}
+    social = copy.deepcopy(original)
+    social.update(invitation=grant['invitation'], acceptance_not_after_ms=grant['expires_at_ms'])
+    recipe = membership_recipe(social, admission, parent['expected_precondition']['senders'],
+        expires_at_ms=grant['expires_at_ms'])
+    provenance = dict(continuation_sha256=digest(grant), original_recipe_sha256=digest(original))
+    return recipe, 'membership_continuation', 'c-'+grant['authorization_id'].replace('-', '')+'-', provenance
+
+
+def effect_deadline(journal, parent: dict, effect: str, deadline_ns: int) -> int:
+    """Propagate the fixed linked bound to the actual owner, never renew a budget."""
+    grant = attached(journal, parent)
+    if grant is None or time.time_ns()//1_000_000 >= grant['expires_at_ms']:
+        # An expired invocation can only reconcile exact committed owner effects.
+        # The fixed effect bound is carried separately to those actual consumers.
+        return deadline_ns
+    attached(journal,parent,effect=effect)
+    return min(deadline_ns,time.monotonic_ns()+(
+        grant['expires_at_ms']-time.time_ns()//1_000_000)*1_000_000)
+
+
+def bounds(journal, parent: dict) -> dict:
+    """Derive the remaining bound explicitly; original activation stays frozen."""
+    result = copy.deepcopy(parent['intended_transition']['cohort_admission']['activation'])
+    grant = attached(journal, parent)
+    if grant is not None:
+        result['expires_at_ms'] = grant['expires_at_ms']
+    return result
+
+
+def lifecycle(journal, parent: dict, name: str, *, fresh: bool = True) -> dict | None:
+    """Project only the approved remaining start to the existing owner CLI."""
+    grant = attached(journal, parent, **({'effect':'old-selection-start'} if fresh else {}))
+    if grant is None:
+        return None
+    try:
+        child = grant['children'][name]
+        return dict(schema='cluster-admission-lifecycle-continuation/v1', continuation_sha256=digest(grant),
+            cohort_operation_id=parent['operation_id'], cohort_intent_sha256=parent['intent_hash'],
+            lifecycle_operation_id=child['child']['lifecycle_operation_id'], link_sha256=child['child']['link_sha256'],
+            preservation_sha256=child['preservation_sha256'], not_after_ms=grant['expires_at_ms'])
+    except (KeyError, TypeError):
+        raise OnboardingError('onboarding_group_continuation_lifecycle_required') from None
+
+
+def validate_lifecycle(child: dict, candidate: dict, value: dict, *, preservation_sha256: str) -> int:
+    """Owner-local association check, independent of private host journal access.
+
+    The protected owner CLI accepts this explicit operator request, just as its
+    existing initial/bootstrap requests. It does not accept a peer's authority.
+    Actual store, capability validity, stopped service and fresh bounds remain
+    the controller's checks at selection/start. Historical projection omits time.
+    """
+    try:
+        link = candidate['admission_link']
+        if (set(value) != {'schema','continuation_sha256','cohort_operation_id','cohort_intent_sha256',
+                'lifecycle_operation_id','link_sha256','preservation_sha256','not_after_ms'}
+                or value['schema'] != 'cluster-admission-lifecycle-continuation/v1'
+                or not _sha(value['continuation_sha256'])
+                or value['lifecycle_operation_id'] != child['operation_id']
+                or value['cohort_operation_id'] != link['cohort_operation_id']
+                or value['cohort_intent_sha256'] != link['cohort_intent_sha256']
+                or value['link_sha256'] != digest(link)
+                or value['preservation_sha256'] != preservation_sha256
+                or type(value['not_after_ms']) is not int or not 0 < value['not_after_ms'] < 2**53):
+            raise ValueError
+        return value['not_after_ms']
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise OnboardingError('onboarding_group_continuation_lifecycle_required') from None

@@ -310,6 +310,29 @@ def test_initial_managed_load_resumes_same_operation_without_second_start(tmp_pa
     assert manager.starts == 1
 
 
+def test_continuation_first_initial_request_uses_new_bound_and_retains_original_admission(tmp_path,initial,monkeypatch):
+    """Authorization resolution is a seam; actual initial root/journal path runs."""
+    from clusterctl import onboarding_group_recovery as recovery
+    managed,plan,cohort,manager,_,_,_,_=initial_managed_fixture(tmp_path,initial)
+    original=cohort._row()
+    approved=original['intended_transition']['cohort_admission']['receivers']['newcomer']
+    grant={'schema':recovery.SCHEMA,'expires_at_ms':original['intended_transition']['cohort_admission']['activation']['expires_at_ms']+5000,
+        'maintenance':{'newcomer':dict(code=approved['candidate']['code'],code_digest=approved['recipe']['prepared']['code_digest'])}}
+    def authorized(journal,parent,**options):
+        assert journal is cohort.journal and parent['operation_id']==cohort.operation_id
+        assert options.get('effect') in {None,'initial-start'}
+        return grant
+    monkeypatch.setattr(recovery,'attached',authorized)
+    managed.execute_initial(plan,cohort)
+    current=cohort._row()
+    intent=current['runtime_observation']['initial_managed']['newcomer']['intent']
+    assert intent['request']['not_after_ms']==grant['expires_at_ms']
+    assert intent['binding']['continuation_sha256']==digest(grant)
+    assert all(current[key]==original[key] for key in ('intent','intent_hash','expected_precondition','intended_transition'))
+    assert managed.execute_initial(plan,cohort)==current['runtime_observation']['initial_managed']['newcomer']['controlled_loaded']
+    assert manager.starts==1
+
+
 @pytest.mark.parametrize('drift', ['group', 'gate', 'process', 'profile', 'origin'])
 def test_initial_managed_load_refuses_changed_context_without_readiness(tmp_path, initial, drift):
     managed, plan, cohort, manager, observed, calls, adopted, fault = initial_managed_fixture(tmp_path, initial)

@@ -5,6 +5,7 @@ Actual signed capability/visibility/native-process qualification is separate.
 import copy
 import hashlib
 import os
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -791,6 +792,57 @@ def test_admission_requires_retained_after_group_then_starts_the_same_approved_b
     with pytest.raises(OnboardingError, match='preservation_required'):
         controller.retain_admission_group()
     assert manager.starts == 1
+
+
+@pytest.mark.parametrize('fault',[None,'late-ack','parent','link','preservation','expired','capability-expiry'])
+def test_linked_admission_start_rechecks_original_child_and_actual_preservation(fixture,monkeypatch,fault):
+    """Real start orchestration; owner/manager/qualified load are explicit seams."""
+    from types import SimpleNamespace
+    from clusterctl import onboarding_receiving_update as updates
+    controller,manager,_,_,_ = admission_start_fixture(fixture,monkeypatch)
+    controller.retain_admission_group()
+    original,frozen,candidate = controller._row()
+    now = candidate['expires_at_ms']+1
+    monkeypatch.setattr(updates,'time',SimpleNamespace(time_ns=lambda:now*1_000_000,
+        monotonic_ns=time.monotonic_ns,sleep=time.sleep))
+    with pytest.raises(OnboardingError,match='authorization_expired'):
+        controller.start()
+    assert manager.starts==0
+    link=candidate['admission_link']
+    proof=dict(schema='cluster-admission-lifecycle-continuation/v1',continuation_sha256='e'*64,
+        cohort_operation_id=link['cohort_operation_id'],cohort_intent_sha256=link['cohort_intent_sha256'],
+        lifecycle_operation_id=controller.operation_id,link_sha256=digest(link),
+        preservation_sha256=digest(dict(schema='cluster-source-bootstrap-preservation/v1',
+            operation_id=controller.operation_id,preserved=True,loaded_readiness='unobserved')),not_after_ms=now+60_000)
+    if fault and fault!='late-ack':
+        if fault in {'parent','link','preservation'}:
+            key={'parent':'cohort_intent_sha256','link':'link_sha256','preservation':'preservation_sha256'}[fault]
+            proof[key]='f'*64
+        elif fault=='expired':
+            proof['not_after_ms']=now
+        else:
+            proof['not_after_ms']=frozen['preservation']['not_after_ms']+1
+        with pytest.raises(OnboardingError):
+            controller.start(admission_continuation=proof)
+        assert manager.starts==0
+    else:
+        if fault=='late-ack':
+            record=controller._record
+            lost=[True]
+            def lose(key,value):
+                if key=='controlled_loaded' and lost[0]:
+                    lost[0]=False
+                    raise OSError('synthetic lost controlled load acknowledgment')
+                return record(key,value)
+            monkeypatch.setattr(controller,'_record',lose)
+            with pytest.raises(OSError,match='lost controlled load'):
+                controller.start(admission_continuation=proof)
+            now=proof['not_after_ms']+1
+        result=controller.start(admission_continuation=proof)
+        assert controller.start(admission_continuation=proof)==result and manager.starts==1
+        current=controller._row()[0]
+        assert current['runtime_observation']['source_bootstrap']['start_continuation']==proof
+        assert all(current[key]==original[key] for key in ('intent','intent_hash','expected_precondition','intended_transition'))
 
 
 @pytest.mark.parametrize('action', ['quiesce', 'publish', 'retain_admission_group', 'start'])

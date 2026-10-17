@@ -454,7 +454,7 @@ def test_native_first_publication_signatures_and_selector_recover_exact_lost_rep
     assert (group / 'application/publication.json').read_bytes() == winner
 
 
-@pytest.mark.parametrize('outcome', ['recover', 'later-winner', 'dispatch-winner', 'visibility-winner'])
+@pytest.mark.parametrize('outcome', ['recover', 'continuation','continuation-late-ack', 'later-winner', 'dispatch-winner', 'visibility-winner'])
 def test_cohort_publication_derives_native_acceptance_and_recovers_lost_results(group_source, tmp_path, monkeypatch, outcome):
     """Actual native publications and signed reducers; physical stop is a seam."""
     from clusterctl import onboarding_group_admission as social
@@ -523,6 +523,8 @@ def test_cohort_publication_derives_native_acceptance_and_recovers_lost_results(
         authority_closure={ref: value for ref, value in full_closure.items()
             if ref != bundles[name]['manifest']['being_ref']})['owner_context_sha256'] for name, owner in locals_.items()}
     invite = invitation(source, peer_bundle)['params']['payload']
+    if outcome.startswith('continuation'):
+        invite['expires_at_ms']=invite['issued_at_ms']+60_000
     declaration = application['relationship_events'][0]
     receivers = {name: dict(being_ref=bundles[name]['manifest']['being_ref'],
         embodiment_id=bundles[name]['local_origin']['embodiment_id'], root=str(root), socket=str(root/'tribe.sock'),
@@ -603,7 +605,26 @@ def test_cohort_publication_derives_native_acceptance_and_recovers_lost_results(
         deadline_ns = None
         def __init__(self, name):
             self.name, self.root, self.socket = name, roots[name], roots[name]/'tribe.sock'
-        def group_relationship(self, value, **options):
+        def group_relationship_scope(self):
+            from contextlib import contextmanager,ExitStack
+            @contextmanager
+            def scope():
+                if not outcome.startswith('continuation'):
+                    yield
+                    return
+                with ExitStack() as self.stack:
+                    self.session=None
+                    yield
+            return scope()
+        def group_relationship(self, value, *, inspect_only=False, **options):
+            if outcome.startswith('continuation'):
+                from clusterctl.onboarding_group_session import RelationshipSession
+                packet=dict(command=value,offline=True,authority_closure=options['authority_closure'],
+                    **{key:options[key] for key in ('expected_context_sha256','membership_precondition','effect_not_after_ms') if key in options})
+                if self.session is None:
+                    self.session=self.stack.enter_context(RelationshipSession(locals_[self.name],packet,
+                        deadline_ns=self.deadline_ns,target=self.name==entrant_name))
+                return self.session.call(packet,inspect_only=inspect_only)
             return locals_[self.name].group_relationship(value, **options)
         def group_publication(self, value, **options):
             assert self.deadline_ns > time.monotonic_ns()
@@ -680,6 +701,42 @@ def test_cohort_publication_derives_native_acceptance_and_recovers_lost_results(
     cohort = CohortController(journal, row['operation_id'], owners)
     monkeypatch.setattr(cohort, 'require_revocation_barrier', lambda: dict(
         schema='cluster-receiving-admission-barrier/v1', current_senders={'founder':dict(state=fault['barrier'])}))
+    if outcome.startswith('continuation'):
+        from types import SimpleNamespace
+        from daimon_matrix.relationships import invitation_id
+        from clusterctl import onboarding_group_recovery as recovery
+        from clusterctl.onboarding_group_session import RelationshipSession
+        now=invite['expires_at_ms']+1000
+        clock=SimpleNamespace(time_ns=lambda:now*1_000_000,monotonic_ns=time.monotonic_ns)
+        monkeypatch.setattr(social,'time',clock)
+        monkeypatch.setattr(recovery,'time',clock)
+        old_command=dict(operation_id=operation,step='membership-invite',method='tribe.invite',params={'payload':invite})
+        observation=copy.deepcopy(journal.get(row['operation_id'])['runtime_observation'])
+        observation['portal_admission'].update(execution_intent={},**{'preserved-founder':{'result_sha256':'c'*64}})
+        observation.update(admission_lifecycles={'founder':dict(lifecycle_operation_id='operation:'+str(uuid.uuid4()),link_sha256='d'*64)},
+            sender_revocations={'founder':{'gate':dict(phase='revoke',readers=[])}},
+            membership_admission=dict(recipe_sha256=digest(membership),requests={'founder':{
+                'membership-invite':dict(command=old_command,result=None)}}))
+        parent=journal.advance(row['operation_id'],'runtime-dispatching',runtime_observation=observation)
+        guard=dict(schema='cluster-membership-authoring-precondition/v1',
+            **{key:invite[key] for key in ('tribe_ref','founder_being_ref','founder_epoch','invitee_being_ref')},
+            membership_sequence=0,previous_membership_terminal_ref=None,active_members=[founder],
+            not_after_ms=membership['acceptance_not_after_ms'])
+        packet=dict(command=old_command,offline=True,authority_closure=closure(peer_bundle),
+            expected_context_sha256=pins['founder'],membership_precondition=guard)
+        with RelationshipSession(source,packet,deadline_ns=time.monotonic_ns()+60_000_000_000) as session:
+            inspection=session.call(packet,inspect_only=True)
+        replacement=copy.deepcopy(invite)
+        replacement.update(nonce=invitation(source,peer_bundle)['params']['payload']['nonce'],
+            issued_at_ms=now,expires_at_ms=now+60_000)
+        replacement['invitation_id']=invitation_id(tribe=invite['tribe_ref'],founder_epoch=0,
+            invitee_being_ref=entrant,nonce=replacement['nonce'])
+        approved=recovery.plan(journal,dict(schema=recovery.REQUEST_SCHEMA,authorization_id=str(uuid.uuid4()),
+            parent_operation_id=row['operation_id'],parent_intent_sha256=row['intent_hash'],frontier_sha256=digest(observation),
+            expires_at_ms=replacement['expires_at_ms'],invitation=replacement,inspection=inspection,
+            maintenance={name:dict(code=str(tmp_path/'approved-helper'),code_digest='e'*64,code_uid=0) for name in owners}),
+            audit_identity={'actor':'synthetic-host'})
+        grant=recovery.attach(journal,row['operation_id'],recovery.reference(approved))
     with pytest.raises(OnboardingError, match='membership_unobserved'):
         cohort.publish_admission_group(deadline_ns=time.monotonic_ns()+60_000_000_000)
     assert calls == []
@@ -699,6 +756,20 @@ def test_cohort_publication_derives_native_acceptance_and_recovers_lost_results(
     monkeypatch.setattr(operator_messaging, 'admit_group_application', admit)
     with pytest.raises(OSError, match='lost entrant visibility'):
         cohort.publish_admission_group(deadline_ns=time.monotonic_ns()+60_000_000_000)
+    if outcome=='continuation-late-ack':
+        now=grant['expires_at_ms']+1
+        effect=social._publication_effect
+        def historical(hosted,group_root,value,*args,**options):
+            assert value['action']=='snapshot','expired cached publication invoked a mutating SDK path'
+            return effect(hosted,group_root,value,*args,**options)
+        monkeypatch.setattr(social,'_publication_effect',historical)
+        with pytest.raises(OnboardingError,match='effect_not_authorized'):
+            cohort.publish_admission_group(deadline_ns=time.monotonic_ns()+60_000_000_000)
+        retained=journal.get(row['operation_id'])['runtime_observation']['group_publication']
+        assert retained['requests'][entrant_name]['visibility']['result']['status']=='recorded'
+        assert retained.get('result') is None
+        assert 'selection' not in retained['requests'][entrant_name]
+        return
     if outcome == 'later-winner':
         renew_application()
         paths = [group/'application/publication.json', group/'visibility/installation.json',
@@ -720,7 +791,12 @@ def test_cohort_publication_derives_native_acceptance_and_recovers_lost_results(
     result = cohort.publish_admission_group(deadline_ns=time.monotonic_ns()+60_000_000_000)
     assert result['receiving_readiness'] == 'unobserved' and set(result['snapshots']) == set(owners)
     assert result['membership_sha256'] == digest(joined)
-    assert journal.get(row['operation_id'])['state'] == 'planned'
+    assert journal.get(row['operation_id'])['state'] == ('runtime-dispatching' if outcome.startswith('continuation') else 'planned')
+    if outcome.startswith('continuation'):
+        current=journal.get(row['operation_id'])
+        assert current['runtime_observation']['membership_admission']==observation['membership_admission']
+        assert current['runtime_observation']['group_publication']['continuation_sha256']==digest(grant)
+        assert all(current[key]==parent[key] for key in ('intent','intent_hash','expected_precondition','intended_transition'))
     frozen = journal.get(row['operation_id'])['runtime_observation']['group_publication']['requests']
     assert frozen[entrant_name]['application']['command']['params']['specification']['tribe']['policy']['membership_ref'] == joined['acceptance']['event_id']
     assert (group/'application/client.json').read_bytes() == client

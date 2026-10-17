@@ -159,7 +159,9 @@ def test_source_command_drops_privileges_without_inspecting_private_sdk(tmp_path
     owner.venv = Path('/private-owner-sdk/venv')
     owner.imports = owner.venv.parent/'runtime-imports'
     owner.code, owner.code_uid, owner.code_digest = tmp_path/'code', 0, 'c'*64
+    owner.maintenance = tmp_path/'approved-helper', 'd'*64
     owner.config_sha256, owner.timeout_seconds, owner.deadline_ns = 'a'*64, 5, None
+    owner.deadline_ns = time.monotonic_ns()+45_000_000_000
     original = Path.lstat
     def no_sdk(path, *args, **kwargs):
         if str(path).startswith('/private-owner-sdk'):
@@ -170,7 +172,45 @@ def test_source_command_drops_privileges_without_inspecting_private_sdk(tmp_path
     assert child.argv[0] == str(owner.venv/'bin/python')
     assert child.options['user'] == owner.owner_uid and child.options['extra_groups'] == ()
     assert child.argv[child.argv.index('--observation-deadline-ns')+1] == str(child.deadline_ns)
+    assert child.deadline_ns == owner.deadline_ns  # no shorter one-shot horizon
+    assert child.argv[child.argv.index('--code-digest')+1] == 'd'*64
     assert '--group-session' in child.argv and '--operation-journal' in child.argv
+    calls = []
+    def run(argv, **options):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0,stdout='{"observed":true}')
+    monkeypatch.setattr('clusterctl.onboarding_receiving_update._run_owner',run)
+    assert owner._call(['--owner-status'])=={'observed':True}
+    assert calls[-1][calls[-1].index('--code-digest')+1]=='c'*64
+    assert owner._call(['--group-request','-'],command={},maintenance=True)=={'observed':True}
+    assert calls[-1][calls[-1].index('--code-digest')+1]=='d'*64
+    assert owner.code_digest=='c'*64 and owner.code==tmp_path/'code'
+
+
+def test_guest_maintenance_dispatch_keeps_normal_receiver_and_total_invocation_budget(monkeypatch):
+    from clusterctl.onboarding_receiving_update import GuestGroupClient
+    calls=[]
+    backend=SimpleNamespace(_target_call=lambda plan,action,**options:calls.append((action,options)) or {'observed':True})
+    owner=GuestGroupClient(backend,{'name':'synthetic'},(Path('/original-receiver'),'c'*64),root=Path('/runtime'))
+    owner.maintenance=Path('/approved-helper'),'d'*64
+    assert owner._call('admitted-running')=={'observed':True}
+    assert calls[-1][1]['candidate']==owner.candidate
+    assert owner.group_publication({},authority_closure={})=={'observed':True}
+    assert calls[-1][1]['candidate']==owner.maintenance
+    class Child:
+        def __enter__(self):return self
+        def __exit__(self,*_):pass
+        def call(self,packet):return {'observed':True}
+    def session(plan,packet,**options):
+        assert options['candidate']==owner.maintenance
+        assert 30 < options['timeout_seconds'] <= 45
+        assert options['deadline_ns']==owner.deadline_ns
+        return Child()
+    backend._target_relationship_session=session
+    owner.deadline_ns=time.monotonic_ns()+45_000_000_000
+    with client_scope(owner):
+        assert owner.group_relationship({},authority_closure={})=={'observed':True}
+    assert owner.candidate==(Path('/original-receiver'),'c'*64)
 
 
 def test_invitation_inspection_requires_explicit_owner_scope(monkeypatch):

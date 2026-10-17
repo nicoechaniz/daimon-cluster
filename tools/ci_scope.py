@@ -433,6 +433,42 @@ RECEIVING_SUPPORT_HASHES = {
 }
 
 
+ADMISSION_EXECUTION_HASHES = {
+    'clusterctl/onboarding_group_admission.py': (
+        '85eae49047b5615921ab7ca4a7e577f2622a2ebc3faef41bc0317be9bcff9d40',
+        '46747efdf8f0fdd8d6b6346505f4a62de52da826972616c88dea5599ef702dae'),
+    'clusterctl/onboarding_group_coordinator.py': (
+        '46d3d178394dc4bfd7c952055c7a778b394e103c7ff9be63b514895b1883e5cd',
+        'df9e268b84a017100b4755ae2140dfb472f68e3cff6b66b2541ebee08bf4a2e0'),
+    'clusterctl/onboarding_group_recovery.py': (
+        'd7bf441a0245c29314217c0ca06dff7f19914f57d901fb8491c536e04a735ede',
+        'd8d31d8b5cebe452b4e5d64ba523e4c2e8456f74d402d1bbfaeb6152a3ecd9b4'),
+    'clusterctl/onboarding_group_session.py': (
+        'e3f27c6db5f406dc123ed688783fb831d47b8581eb55302e5cb5290920d2616d',
+        'a59436e827825ea0ae05d88fdaffc535df7be237b165e02830dde61d530df574'),
+    'clusterctl/onboarding_host.py': (
+        '5bd8401f19d11b784f4b893df1f3c326fb3afb425286f9cea57745cba7ac3f30',
+        '9c80e2cb4c5876b5d31b076f4baf944e1b005f1b0ce1331f8deef6748adcfc74'),
+    'clusterctl/onboarding_service.py': (
+        'ffb6dbe5c2ac189e425721bda61934e991e852e30f05d492fcf2289752351a0b',
+        'c33adb00d772b00478a6782ed497d29180cd6b92bcc7bd9f925b4aeb8f2e744d'),
+    'clusterctl/onboarding_managed.py': (
+        '810f6fe3970cefbaa5663bc602365d800b94247d5c8779331b33bba982c8f445',
+        '7e698449b8aae0b3509454cc79677027f29e104198f827256a0585c29cf86460'),
+    'clusterctl/onboarding_source.py': (
+        'ce4205dde4f27075c045001e271432033cec87c52104bbb4c069de02fe3b3576',
+        '9b827c0bcac9326c0adecf100d314a44987eeea06f52dc260a57ac943bdab9dd'),
+    'clusterctl/onboarding_target.py': (
+        '37788e468b89edb197adba1d55ae51d0065c94c90e3368ca1ca904795a33016c',
+        '1702b22854fa53813e4447ff074f13a7655924821b83ecbadb907ecc88c0cf53'),
+    'clusterctl/onboarding_receiving_update.py': (
+        '8f5be18610309fad59c63cb684168d22cef9e3b2e57cc424aab7847c31b1f0cf',
+        '2933125eb5bb45e07c7ea09663a144a93bb7c74f85cd1d4d90598528774effe0'),
+    'tools/qualify_candidate_admission.py': (
+        'a6a1a179866b75ba5cd60a51f3f716d7a2977d45a98b5cb7857706696da7a61f',
+        '3ca13a6c089cfb988c9f2da2471f0cf152cfa8151e0f19e9af354ec456d90548'),
+}
+
 ADMISSION_RECOVERY_HASHES = {
     'clusterctl/onboarding_group_admission.py': (
         '69caac1428de643a939346d07ebf412dd5531d02c9846dd0d18a97e4a69252fb',
@@ -587,6 +623,25 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         return 'docs', []
     if set(changed) <= CI_FILES | RUNBOOK_DOCS:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    execution_tests = ['tests/test_onboarding_group_recovery.py', 'tests/test_onboarding_group_session.py',
+        'tests/test_onboarding_group_coordinator.py', 'tests/test_onboarding_group_finisher.py',
+        'tests/test_source_bootstrap.py', 'tests/test_guest_bootstrap_controller.py',
+        'tests/test_guest_service_bootstrap.py', 'tests/test_onboarding_managed.py',
+        'tests/test_onboarding_host.py', 'tests/test_receiving_cohort_control.py',
+        'tests/test_onboarding_release.py', 'tests/test_receiving_update_journal.py',
+        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    execution_files = set(ADMISSION_EXECUTION_HASHES) | set(execution_tests) | {
+        'tests/test_onboarding_group_admission.py', 'tests/test_onboarding_group_publication.py'}
+    execution_source = set(changed) & ADMISSION_EXECUTION_HASHES.keys()
+    if (execution_source and set(changed) <= execution_files | CI_FILES | RUNBOOK_DOCS
+            and all((root/path).is_file() for path in execution_tests)
+            and receiving_support_only(root, base, execution_source, hashes=ADMISSION_EXECUTION_HASHES)):
+        # Exact changed effect consumers, with the candidate SDK only where the
+        # real native governance/publication producer needs it. No model/physical
+        # recovery suite or second execution of those native cases is required.
+        publication = 'tests/test_onboarding_group_publication.py::test_cohort_publication_derives_native_acceptance_and_recovers_lost_results'
+        return 'admission', [*execution_tests,
+            *[publication+'['+outcome+']' for outcome in ('recover','continuation','continuation-late-ack')]]
     recovery_tests = ['tests/test_onboarding_group_recovery.py', 'tests/test_onboarding_group_session.py',
         'tests/test_onboarding_release.py', 'tests/test_receiving_update_journal.py',
         'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']

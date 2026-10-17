@@ -613,6 +613,55 @@ def admission_guest_fixture(fixture):
     return controller, backend, calls, current, snapshots
 
 
+@pytest.mark.parametrize('fault',[None,'late-ack','parent','preservation','expired','capability-expiry'])
+def test_linked_guest_start_keeps_original_owner_request_and_root_deadline(fixture,monkeypatch,fault):
+    from types import SimpleNamespace
+    controller,backend,_,_,_ = admission_guest_fixture(fixture)
+    controller.preserve()
+    controller.retain_admission_group(authority_closure={})
+    original,frozen,candidate=controller._row()
+    now=candidate['expires_at_ms']+1
+    monkeypatch.setattr(updates,'time',SimpleNamespace(time_ns=lambda:now*1_000_000,
+        monotonic_ns=time.monotonic_ns,sleep=time.sleep))
+    with pytest.raises(OnboardingError,match='authorization_expired'):
+        controller.execute(authority_closure={})
+    assert backend.starts==0
+    effects=controller._row()[0]['runtime_observation']['guest_bootstraps']['eko']
+    link=candidate['admission_link']
+    proof=dict(schema='cluster-admission-lifecycle-continuation/v1',continuation_sha256='e'*64,
+        cohort_operation_id=link['cohort_operation_id'],cohort_intent_sha256=link['cohort_intent_sha256'],
+        lifecycle_operation_id=controller.operation_id,link_sha256=digest(link),
+        preservation_sha256=digest(effects['owner_preserved']),not_after_ms=now+2000)
+    root=backend._guest_service_call
+    def checked(plan,action,**options):
+        if action in {'bootstrap-select','bootstrap-start'}:
+            assert 0<options['timeout_seconds']<=30
+            assert options['owner_deadline_ns']>time.monotonic_ns()
+            assert options['effect_not_after_ms']==proof['not_after_ms']
+            assert options['request']==controller._service_request(frozen,candidate)
+        return root(plan,action,**options)
+    backend._guest_service_call=checked
+    if fault and fault!='late-ack':
+        if fault in {'parent','preservation'}:
+            proof['cohort_intent_sha256' if fault=='parent' else 'preservation_sha256']='f'*64
+        else:
+            proof['not_after_ms']=now if fault=='expired' else frozen['owner']['preservation']['not_after_ms']+1
+        with pytest.raises(OnboardingError):
+            controller.execute(authority_closure={},continuation=proof)
+        assert backend.starts==0
+    else:
+        if fault=='late-ack':
+            backend.fail='start'
+            with pytest.raises(OSError,match='lost'):
+                controller.execute(authority_closure={},continuation=proof)
+            now=proof['not_after_ms']+1
+        loaded=controller.execute(authority_closure={},continuation=proof)
+        assert loaded['receiving_readiness']=='unobserved' and backend.starts==1
+        current=controller._row()[0]
+        assert current['runtime_observation']['guest_bootstraps']['eko']['start_continuation']==proof
+        assert all(current[key]==original[key] for key in ('intent','intent_hash','expected_precondition','intended_transition'))
+
+
 def test_guest_admission_preparation_recovers_same_child_after_lost_plan_and_expiry(fixture, monkeypatch):
     """Real journal/config/link validation; guest owner/SDK/manager are seams."""
     from types import SimpleNamespace

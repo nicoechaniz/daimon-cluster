@@ -160,7 +160,10 @@ def test_guest_owner_contract_uses_kernel_uid_mapping_and_is_not_run_twice() -> 
 
 @pytest.mark.parametrize(('profile', 'selection', 'expected'), [
     ('admission', 'tests/test_receiving_cohort_control.py', ['tests/test_onboarding_group_admission.py']),
-    ('full', 'tests', ['tests/test_onboarding_group_admission.py', 'tests/test_onboarding_group_authorities.py']),
+    ('admission', 'tests/test_onboarding_group_publication.py::test_scope tests/test_onboarding_group_admission.py',
+        ['tests/test_onboarding_group_admission.py','tests/test_onboarding_group_publication.py::test_scope']),
+    ('full', 'tests', ['tests/test_onboarding_group_admission.py', 'tests/test_onboarding_group_authorities.py',
+        'tests/test_onboarding_group_publication.py']),
     ('peer', 'tests/test_onboarding_group_authorities.py::test_scope tests/test_ci_scope.py',
         ['tests/test_onboarding_group_authorities.py::test_scope']),
 ])

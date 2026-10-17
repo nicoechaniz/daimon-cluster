@@ -147,7 +147,7 @@ def configuration(path: Path) -> dict:
     """Read only a host-owner-controlled, closed map; never intake or labels."""
     value = being_seed._read(path, limit=being_seed.MAX_SELECTION)
     try:
-        if (set(value) != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
+        if (set(value) - {'continuations'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
                 or value['schema'] != SCHEMA or not _path(value['journal'])
                 or not isinstance(value['tribe_ref'], str) or not value['tribe_ref']
                 or not isinstance(value['owners'], dict) or not 1 <= len(value['owners']) <= 256
@@ -177,6 +177,16 @@ def configuration(path: Path) -> dict:
         for key, operation in value['admissions'].items():
             if (not isinstance(key, str) or re.fullmatch('[0-9a-f]{64}', key) is None
                     or not isinstance(operation, str) or not 1 <= len(operation) <= 240):
+                raise ValueError
+        continuations = value.get('continuations', {})
+        if not isinstance(continuations, dict) or not set(continuations) <= set(value['admissions'].values()):
+            raise ValueError
+        for ref in continuations.values():
+            if (not isinstance(ref, dict) or set(ref) != {'schema', 'operation_id', 'intent_sha256'}
+                    or ref['schema'] != 'cluster-admission-continuation-reference/v1'
+                    or not isinstance(ref['operation_id'], str) or not 1 <= len(ref['operation_id']) <= 240
+                    or not isinstance(ref['intent_sha256'], str)
+                    or re.fullmatch('[0-9a-f]{64}', ref['intent_sha256']) is None):
                 raise ValueError
     except (KeyError, TypeError, ValueError, AttributeError):
         raise OnboardingError('onboarding_group_coordinator_configuration_required') from None
@@ -263,7 +273,19 @@ class GroupCoordinator:
                 or entrant.get('candidate', {}).get('code') != selected['candidate']['code']
                 or entrant.get('recipe', {}).get('prepared', {}).get('code_digest') != selected['candidate']['digest']):
             raise OnboardingError('onboarding_group_admission_binding_changed')
+        self._continuation(journal, row)
         return journal, row, admission
+
+    def _continuation(self, journal, row: dict) -> dict | None:
+        """Resolve explicit operator selection; attached permission cannot disappear."""
+        from . import onboarding_group_recovery as recovery
+        selected = self.settings.get('continuations', {}).get(row['operation_id'])
+        attachment = (row['runtime_observation'] or {}).get('admission_continuation')
+        if attachment is not None and (selected is None or attachment.get('reference') != selected):
+            raise OnboardingError('onboarding_group_continuation_reference_required')
+        if selected is None:
+            return None
+        return recovery.resolve(journal, row, selected)
 
     def observe(self, plan: dict) -> Observation:
         selected = self._binding(plan)
@@ -344,6 +366,7 @@ class GroupCoordinator:
     def _completion(self, row: dict, admission: dict) -> dict:
         """Revalidate historical closure without restarting or renewing effects."""
         try:
+            from . import onboarding_group_recovery as recovery
             observations = row['runtime_observation'] or {}
             phases = observations['portal_admission']
             scope = communication_recipe(row['intended_transition']['admission_communication'], row, admission)
@@ -353,12 +376,18 @@ class GroupCoordinator:
             entrant = caller['social']['entrant_owner']
             intent = dict(cohort_intent_sha256=digest(row['intent']), plan_digest=caller['plan_digest'],
                 owners_sha256=caller['owners_sha256'], communication_scope_sha256=digest(scope))
-            membership, publication = observations['membership_admission'], observations['group_publication']
+            journal = OperationJournal.existing(Path(self.settings['journal']))
+            if journal is None:
+                raise ValueError
+            social, social_key, _prefix, provenance = recovery.membership(journal, row, admission)
+            membership, publication = observations[social_key], observations['group_publication']
+            bounds = recovery.bounds(journal, row)
             activation = observations['admission_activation_plan']
             plan = activation['plan']
             selected = phases['activation_ready']
             steady = phases['steady_ready']
-            if (phases['execution_intent'] != intent or membership['recipe_sha256'] != digest(caller['social'])
+            if (phases['execution_intent'] != intent or membership['recipe_sha256'] != digest(social)
+                    or any(membership.get(key) != value or publication.get(key) != value for key,value in provenance.items())
                     or membership['result_sha256'] != digest(membership['result'])
                     or publication['result_sha256'] != digest(publication['result'])
                     or publication['membership_sha256'] != membership['result_sha256']
@@ -366,7 +395,8 @@ class GroupCoordinator:
                     or set(publication['result']['snapshots']) != names
                     or set(observations['admission_lifecycles']) != old
                     or activation['admission_sha256'] != digest(admission) or activation['plan_sha256'] != digest(plan)
-                    or any(plan[key] != value for key,value in admission['activation'].items())
+                    or any(plan[key] != value for key,value in bounds.items())
+                    or provenance and activation.get('continuation_sha256') != provenance['continuation_sha256']
                     or set(plan['receivers']) != names or set(observations['sender_selections']) != names
                     or set(observations['cohort_activation']['records']) != names
                     or selected['schema'] != 'cluster-receiving-cohort-selection/v1'
@@ -405,9 +435,10 @@ class GroupCoordinator:
                 raise ValueError
             # Hash the retained producer evidence too: a completed marker alone
             # must not release the target or select a runtime for a later stage.
-            keys = ('membership_admission', 'group_publication', 'admission_lifecycles', 'initial_managed',
+            keys: tuple[str, ...] = ('membership_admission', 'group_publication', 'admission_lifecycles', 'initial_managed',
                 'admission_activation_plan', 'native_tooling', 'cohort_activation', 'sender_revocations',
                 'sender_replacements', 'sender_initials', 'sender_selections', 'initial_steady')
+            keys += tuple(key for key in ('admission_continuation', 'membership_continuation') if key in observations)
             retained = {key:value for key,value in phases.items() if key != 'completed'}
             return dict(schema=COMPLETION_SCHEMA, operation_id=row['operation_id'],
                 plan_digest=caller['plan_digest'], manifest_digest=row['intent']['runtime_call']['manifest_digest'],
@@ -440,6 +471,7 @@ class GroupCoordinator:
         """
         from .onboarding_managed import ManagedRuntime
         from .onboarding_receiving_update import GuestBootstrapController
+        from . import onboarding_group_recovery as recovery
         scope = communication_recipe(row['intended_transition']['admission_communication'], row, admission)
         caller = row['intended_transition']['portal_admission']
         def current():
@@ -473,7 +505,9 @@ class GroupCoordinator:
             retain('execution_intent', dict(cohort_intent_sha256=digest(row['intent']),
                 plan_digest=caller['plan_digest'], owners_sha256=caller['owners_sha256'],
                 communication_scope_sha256=digest(scope)))
-            cohort.revoke_senders()
+            old={item['name'] for item in row['expected_precondition']['senders']}
+            if not old <= set((current()['runtime_observation'] or {}).get('sender_revocations',{})):
+                cohort.revoke_senders()
             for name in sorted(row['intended_transition']['admission_preparations']):
                 authorized()
                 if 'loaded-'+name in phases() or 'preserved-'+name in phases():
@@ -500,12 +534,14 @@ class GroupCoordinator:
                 recipe, _child = cohort._bound_admission_lifecycle(current(), name)
                 if 'loaded-'+name in phases():
                     continue
+                continuation = recovery.lifecycle(journal,current(),name,fresh=False)
                 if recipe['profile'] == 'source':
                     owner = cohort.owners[name]
                     if 'derived-'+name not in phases():
                         retain('derived-'+name, dict(result_sha256=digest(owner.lifecycle_action(
                             recipe['lifecycle_operation_id'], 'derive'))))
-                    loaded = owner.lifecycle_action(recipe['lifecycle_operation_id'], 'start')
+                    loaded = owner.lifecycle_action(recipe['lifecycle_operation_id'], 'start',
+                        **({'continuation':continuation} if continuation is not None else {}))
                 else:
                     controller = GuestBootstrapController(journal, recipe['lifecycle_operation_id'], self.backend, name)
                     closure = {ref:value for ref,value in caller['social']['authority_closure'].items()
@@ -513,7 +549,9 @@ class GroupCoordinator:
                     if 'derived-'+name not in phases():
                         retain('derived-'+name, dict(result_sha256=digest(controller.retain_admission_group(
                             authority_closure=closure, timeout_seconds=remaining(), deadline_ns=deadline_ns))))
-                    loaded = controller.execute(authority_closure=closure, timeout_seconds=remaining(), deadline_ns=deadline_ns)
+                    loaded = controller.execute(authority_closure=closure, timeout_seconds=remaining(), deadline_ns=deadline_ns,
+                        **({'continuation':continuation,'maintenance':cohort.owners[name].maintenance}
+                            if continuation is not None else {}))
                 retain('loaded-'+name, loaded)
             authorized()
             entrant = plan['name']
@@ -576,6 +614,7 @@ class GroupCoordinator:
     def _activation_plan(self, row: dict, admission: dict, cohort, *, deadline_ns: int) -> dict:
         """Derive late pins from actual loads and correlate owner publications."""
         from .onboarding_receiving_update import admission_lifecycle_projection
+        from . import onboarding_group_recovery as recovery
         observations = row['runtime_observation']
         snapshots = observations['group_publication']['result']['snapshots']
         plans, rosters = {}, set()
@@ -618,11 +657,14 @@ class GroupCoordinator:
             plans[name] = {**approved['recipe'], 'selection':selection, 'lifecycle_operation_id':lifecycle_id}
         if len(rosters) != 1 or time.monotonic_ns() >= deadline_ns:
             raise OnboardingError('receiving_cohort_roster_unready')
-        return {**admission['activation'], 'roster_sha256':rosters.pop(), 'receivers':plans}
+        return {**recovery.bounds(cohort.journal, row), 'roster_sha256':rosters.pop(), 'receivers':plans}
 
     def _communicate(self, plan: dict, journal, row: dict, admission: dict, owners: dict, scope: dict,
                      *, deadline_ns: int, before_authoring) -> bool:
         """One finite check per phase on worker cadence; exact IDs never renew."""
+        from . import onboarding_group_recovery as recovery
+        grant = recovery.attached(journal, row)
+        authoring_expires = scope['expires_at_ms'] if grant is None else grant['expires_at_ms']
         proofs = {}
         for step in ('group', 'direct', 'reply'):
             phases = (journal.get(row['operation_id'])['runtime_observation'] or {}).get('portal_admission', {})
@@ -638,6 +680,8 @@ class GroupCoordinator:
             tooling = admission['receivers'][intent['sender']['owner']]['recipe']['tooling']
             binding = Path(tooling['attachment'])/tooling.get('binding_filename','binding.json')
             def call(method: str, parameters: dict, **options) -> dict:
+                if method != 'messaging_delivery':
+                    recovery.attached(journal, row, effect='communication')
                 # The frozen intent identifies the native group. A configured
                 # multi-link attachment exposes that same group under its
                 # approved public alias; the SDK normalizes it before journaling.
@@ -653,11 +697,11 @@ class GroupCoordinator:
                 except (OnboardingError, OSError):
                     pass
             if response is None:
-                if time.time_ns() // 1_000_000 >= scope['expires_at_ms']:
+                if time.time_ns() // 1_000_000 >= authoring_expires:
                     return False
                 before_authoring()
                 response = call('messaging_reply' if step == 'reply' else 'messaging_send',
-                    intent['parameters'], authoring_expires_at_ms=scope['expires_at_ms'])
+                    intent['parameters'], authoring_expires_at_ms=authoring_expires)
                 dispatched = True
             required = {(item['being_ref'],item['embodiment_id']) for item in admission['receivers'].values()
                 if (item['being_ref'],item['embodiment_id']) != (intent['sender']['being_ref'],intent['sender']['embodiment_id'])}
@@ -675,12 +719,12 @@ class GroupCoordinator:
                 return proof if required <= inbound else None
             proof = qualify(response)
             if (proof is None and attempted and not dispatched
-                    and time.time_ns() // 1_000_000 < scope['expires_at_ms']):
+                    and time.time_ns() // 1_000_000 < authoring_expires):
                 # Inspection cannot resume a busy/interrupted native fanout.
                 # Replay the SAME durable request, never another message ID.
                 before_authoring()
                 response = call('messaging_reply' if step == 'reply' else 'messaging_send',
-                    intent['parameters'], authoring_expires_at_ms=scope['expires_at_ms'])
+                    intent['parameters'], authoring_expires_at_ms=authoring_expires)
                 proof = qualify(response)
             if proof is None:
                 return False
@@ -721,10 +765,18 @@ class GroupCoordinator:
                 _journal, row, admission = current_binding
                 if record['stage'] != 'matrix' or row['state'] == 'completed':
                     return None
+                continuation = self._continuation(journal, row)
+                if continuation is not None:
+                    from . import onboarding_group_recovery as recovery
+                    recovery.attach(journal, row['operation_id'], self.settings['continuations'][row['operation_id']])
+                    row = journal.get(row['operation_id'])
+                    recovery.require_execution(journal, row,
+                        self.settings['continuations'][row['operation_id']], 'membership')
                 retained = (row['runtime_observation'] or {}).get('portal_admission', {})
                 native_prepared = isinstance(retained.get('native_ready'), dict)
                 finishing = 'execution_intent' in retained
-                expired = time.time_ns() // 1_000_000 >= admission['activation']['expires_at_ms']
+                horizon = admission['activation']['expires_at_ms'] if continuation is None else continuation['expires_at_ms']
+                expired = time.time_ns() // 1_000_000 >= horizon
                 if expired:
                     request = retained.get('controller_intent')
                     if not finishing and (not native_prepared or 'physical_ready' not in retained
@@ -737,7 +789,7 @@ class GroupCoordinator:
                     # unchanged; native validation refuses any fresh effect.
                 else:
                     deadline = min(deadline, time.monotonic_ns() +
-                        (admission['activation']['expires_at_ms'] - time.time_ns() // 1_000_000) * 1_000_000)
+                        (horizon - time.time_ns() // 1_000_000) * 1_000_000)
                 candidate = (Path(self.settings['owners'][name]['candidate']['code']),
                     self.settings['owners'][name]['candidate']['digest'])
                 if not finishing and not native_prepared and 'target_ready' not in retained:
@@ -755,6 +807,10 @@ class GroupCoordinator:
                         plan_digest=digest(plan), code=str(candidate[0]), code_digest=candidate[1]))
                     remaining()
                 owners = self._owners(admission)
+                if continuation is not None:
+                    for owner_name, owner in owners.items():
+                        helper = continuation['maintenance'][owner_name]
+                        owner.maintenance = Path(helper['code']), helper['code_digest']
                 from .onboarding_receiving_update import CohortController
                 cohort = CohortController(journal, row['operation_id'], owners)
                 cohort._row()

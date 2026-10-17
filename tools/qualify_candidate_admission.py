@@ -16,7 +16,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ADMISSION_MATRIX_COMMIT = 'b53fa220d0917a5522773b7fb9711ab67e634b42'
-TESTS = {'tests/test_onboarding_group_admission.py', 'tests/test_onboarding_group_authorities.py'}
+TESTS = {'tests/test_onboarding_group_admission.py', 'tests/test_onboarding_group_authorities.py',
+         'tests/test_onboarding_group_publication.py'}
 IDENTITY_PROGRAM = '''import json,sys
 from pathlib import Path
 sys.path.insert(0,sys.argv[1])

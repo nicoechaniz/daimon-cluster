@@ -333,6 +333,84 @@ def test_initial_root_expiry_does_not_replay_or_hide_recorded_start(initial, mon
     assert manager.starts == manager.enables == 1
 
 
+@pytest.mark.parametrize('boundary',['selection','start'])
+def test_linked_root_bound_reaches_actual_cas_and_start_after_slow_work(fixture,monkeypatch,boundary):
+    """Actual file CAS and final manager callback, with an explicit fake manager."""
+    from types import SimpleNamespace
+    controller,manager,request=fixture[:3]
+    controller.execute('quiesce',request,deadline_ns=deadline())
+    original=manager.unit.read_bytes()
+    now=time.time_ns()//1_000_000
+    bound=now+1000
+    monkeypatch.setattr(onboarding_service,'time',SimpleNamespace(time_ns=lambda:now*1_000_000,
+        monotonic_ns=time.monotonic_ns,sleep=time.sleep))
+    if boundary=='selection':
+        publish=onboarding_service.publish
+        def slow(path,raw,**options):
+            nonlocal now
+            publish(path,raw,**options)
+            if path.name.startswith('.onboarding-selection-'):
+                now=bound
+        monkeypatch.setattr(onboarding_service,'publish',slow)
+        with pytest.raises(OnboardingError,match='authorization_expired'):
+            controller.execute('select',request,deadline_ns=deadline(),effect_not_after_ms=bound)
+        assert manager.unit.read_bytes()==original
+    else:
+        selected=controller.execute('select',request,deadline_ns=deadline(),effect_not_after_ms=bound)
+        start=manager.start
+        def slow(**options):
+            nonlocal now
+            now=bound
+            return start(**options)
+        monkeypatch.setattr(manager,'start',slow)
+        with pytest.raises(OnboardingError,match='authorization_expired'):
+            controller.execute('start',request,deadline_ns=deadline(),effect_not_after_ms=bound)
+        assert controller.execute('select',request,deadline_ns=deadline(),effect_not_after_ms=bound)==selected
+    assert manager.starts==0
+
+
+def test_initial_selection_rechecks_bound_at_actual_link_after_candidate_fsync(initial,monkeypatch):
+    from types import SimpleNamespace
+    controller,manager,request=initial
+    now=time.time_ns()//1_000_000
+    request={**request,'not_after_ms':now+1000}
+    controller.execute('validate',request,deadline_ns=deadline())
+    monkeypatch.setattr(onboarding_service,'time',SimpleNamespace(time_ns=lambda:now*1_000_000,
+        monotonic_ns=time.monotonic_ns,sleep=time.sleep))
+    fsync=os.fsync
+    def delayed(descriptor):
+        nonlocal now
+        fsync(descriptor)
+        path=Path(os.readlink('/proc/self/fd/'+str(descriptor)))
+        if path.parent==manager.unit.parent and path.name.startswith('.onboarding-service-'):
+            now=request['not_after_ms']
+    monkeypatch.setattr(onboarding_service.os,'fsync',delayed)
+    with pytest.raises(OnboardingError,match='authorization_expired'):
+        controller.execute('select',request,deadline_ns=deadline())
+    assert not manager.unit.exists() and manager.starts==manager.enables==0
+
+
+def test_root_public_qualification_does_not_restart_absolute_invocation_budget(monkeypatch,capsys):
+    import json
+    from types import SimpleNamespace
+    from tests.test_onboarding import plan
+    selected=plan()
+    now=time.monotonic_ns()
+    bound=now+1_000_000_000
+    monkeypatch.setattr(onboarding_service,'time',SimpleNamespace(monotonic_ns=lambda:now))
+    monkeypatch.setattr(onboarding_service.os,'geteuid',lambda:0)
+    monkeypatch.setattr(onboarding_service.onboarding_release,'regular',lambda *a,**k:json.dumps(selected).encode())
+    def slow(*a,**k):
+        nonlocal now
+        now=bound
+    monkeypatch.setattr(onboarding_service.onboarding_code_successor,'selection',slow)
+    monkeypatch.setattr(onboarding_service,'GuestServiceBootstrap',lambda *a:pytest.fail('expired public verification reached controller'))
+    result=onboarding_service.main(['--code','/opt/daimon-onboarding/'+selected['release_digest'],
+        '--plan','/home/agent/.onboarding-input/plan.json','--action','bootstrap-start',
+        '--bootstrap-request-json','{}','--observation-deadline-ns',str(bound)])
+    assert result==1 and json.loads(capsys.readouterr().out)['installed'] is False
+
+
 def test_initial_root_refuses_expired_first_selection_without_publishing(initial, monkeypatch):
     controller, manager, request = initial
     request = {**request, 'not_after_ms': time.time_ns() // 1_000_000 + 60000}

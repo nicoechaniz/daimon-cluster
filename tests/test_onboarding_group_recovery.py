@@ -17,7 +17,7 @@ def fixture(tmp_path, monkeypatch):
     from daimon_matrix.canonical import b64url
     from daimon_matrix.relationships import INVITATION_SCHEMA, invitation_id, tribe_ref
     now = time.time_ns()//1_000_000
-    monkeypatch.setattr(recovery, 'time', SimpleNamespace(time_ns=lambda: now*1_000_000))
+    monkeypatch.setattr(recovery, 'time', SimpleNamespace(time_ns=lambda: now*1_000_000,monotonic_ns=time.monotonic_ns))
     founder, entrant = ['dm:being:v1:'+b64url(bytes([index])*32) for index in (1, 2)]
     tribe = tribe_ref(dict(created_at_ms=now-100_000, founder_principal_id=founder,
         nonce=b64url(b'0'*32), policy_ref='dm:tribe-policy:v1:continuation-test'))
@@ -69,6 +69,11 @@ def test_linked_grant_cas_preserves_original_vectors_and_survives_exact_retry(tm
         recovery.require_effect(journal, parent, selected, 'membership', now_ms=now)
     grant = recovery.attach(journal, parent['operation_id'], selected)
     current = journal.get(parent['operation_id'])
+    assert recovery.attached(journal,current)==grant
+    assert recovery.bounds(journal,current)=={**original['intended_transition']['cohort_admission']['activation'],
+        'expires_at_ms':grant['expires_at_ms']}
+    deadline=time.monotonic_ns()+1_000_000_000
+    assert recovery.effect_deadline(journal,current,'membership',deadline)==deadline
     for field in ('intent', 'intent_hash', 'expected_precondition', 'intended_transition'):
         assert current[field] == original[field]
     assert current['runtime_observation']['membership_admission'] == original['runtime_observation']['membership_admission']
@@ -86,6 +91,22 @@ def test_linked_grant_cas_preserves_original_vectors_and_survives_exact_retry(tm
             'membership', now_ms=grant['expires_at_ms'])
     with pytest.raises(JournalConflict, match='exact request'):
         recovery.plan(journal, {**request, 'expires_at_ms': request['expires_at_ms']+1}, audit_identity={})
+
+
+def test_protected_coordinator_selection_reads_same_grant_and_cannot_drop_attachment(tmp_path,monkeypatch):
+    from clusterctl.onboarding_group_coordinator import GroupCoordinator
+    journal,parent,request,_=fixture(tmp_path,monkeypatch)
+    approved=recovery.plan(journal,request,audit_identity={})
+    coordinator=object.__new__(GroupCoordinator)
+    coordinator.settings={'continuations':{parent['operation_id']:recovery.reference(approved)}}
+    grant=coordinator._continuation(journal,parent)
+    assert grant==approved['intended_transition'] and recovery.attached(journal,parent) is None
+    recovery.attach(journal,parent['operation_id'],recovery.reference(approved))
+    current=journal.get(parent['operation_id'])
+    assert coordinator._continuation(journal,current)==grant
+    coordinator.settings={}
+    with pytest.raises(OnboardingError,match='reference_required'):
+        coordinator._continuation(journal,current)
 
 
 @pytest.mark.parametrize('fault', ['pending', 'completed', 'events', 'wrong-request', 'old-invitation',
@@ -180,3 +201,18 @@ def test_virtual_attachment_and_changed_intent_are_never_effect_authority(tmp_pa
     virtual['intended_transition']['cohort_admission']['receivers']['entrant']['candidate']['code_uid'] += 1
     with pytest.raises(OnboardingError, match='effect_not_authorized'):
         recovery.require_effect(journal, virtual, selected, 'membership', now_ms=now)
+
+
+def test_inactive_grant_cannot_execute_even_before_its_horizon(tmp_path, monkeypatch):
+    journal, parent, request, now = fixture(tmp_path, monkeypatch)
+    selected = recovery.reference(recovery.plan(journal, request, audit_identity={}))
+    grant = recovery.attach(journal, parent['operation_id'], selected)
+    current = journal.get(parent['operation_id'])
+    assert recovery.require_execution(journal, current, selected, 'old-selection-start') == grant
+    journal.advance(selected['operation_id'], 'completed')
+    # History remains readable; execution must not turn it into fresh permission.
+    assert recovery.attached(journal, current) == grant
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.require_execution(journal, current, selected, 'old-selection-start')
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.require_effect(journal, current, selected, 'old-selection-start', now_ms=now)

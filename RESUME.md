@@ -39,28 +39,34 @@ guest supports qualification only. Frozen hostd814, receiverc2, SDK3a, identitie
 original lifecycle bindings and real selections remain unchanged. Root never
 opened/executed another body's private SDK. Do not rerun these unchanged probes.
 
-Native invitation inspection and the linked authorization planner are now
-implemented in source. Inspection under the actual writer distinguishes absent,
-pending and completed RPCs without dispatch, frame refresh or result-cache writes.
-The separate immutable approval binds the original parent/intent/frontier,
-children/preservation, reconciled outcomes, helper pins and fixed remaining bound;
-it does not change the original receiving vectors. Attachment retries survive
-lost metadata acknowledgment without renewing permission. The reviewed stale-
-parent defect is fixed: fresh effects reread the real parent under its mutation
-lock; virtual attachments and degraded/compensated parents cannot authorize them.
-17 journal recovery cases,12 finite protocol cases,3 affected native cases (the
-pending case rerun after its final guard), release/journal coverage,70 CI cases,
-89-file typing and scoped lint pass. No authorization was planned/attached in
-the retained fixture, and no owner helper was rebuilt or reinstalled. The full
-reviewed [execution integration map](docs/design/admission-continuation.md#reviewed-execution-integration-map)
-is retained there; configuration and actual effect consumers remain pending.
+Linked admission recovery now connects the protected configuration and all
+remaining effect consumers in source. Maintenance dispatch is separate from the
+frozen receiver; the new social attempt retains the original recipe and requests.
+Native invitation absence is reinspected inside the actual authoring writer,
+including after a process exits between inspection and dispatch. Acceptance and
+publication lost acknowledgments recover only proven historical outcomes after
+expiry. Source/guest replacement, entrant initial startup, activation and original
+technical communication share the linked fixed bound and provenance. Root CAS,
+StartUnit and the initial file link recheck the bound at the actual effect.
+An inactive approval cannot execute even with a future horizon; completed-parent
+inspection remains historical.
 
-This source is not installed admission or production acceptance. The remaining
-[linked recovery authorization](docs/design/admission-continuation.md) must cover
-all remaining social, lifecycle/initial-start, activation and communication
-bounds, including any separately approved compatible helper. Do not mutate frozen
-owner settings to activate the new CLI or silently renew only the invitation.
-Follow the retained checkpoint; no new real interruption is authorized.
+Bounded Astra review closed the writer-reinspection, final-consumer deadline and
+historical-reconciliation findings. Candidate native tests cover the linked join,
+late original effects, inspection crash, expired acceptance recovery and linked
+publication/lost acknowledgment. Affected owner/controller/Root and CI contracts,
+89-file typing and scoped lint were qualified; overlapping test runs are not
+additional evidence. CI selects these actual contracts and executes candidate
+native coverage once, retaining the separate default identity producer.
+
+This integration is not installed or actual admission acceptance. No linked
+approval was planned/attached in the retained fixture, no new helper installed,
+and no expired effect executed. Capture/qualify one updated public maintenance
+helper against receiverc2/SDK3a, preserving frozen hostd814 and owner settings;
+then resume the SAME operation through its remaining native effects and a
+v2-compatible rollback. See [the execution design](docs/design/admission-continuation.md).
+Production selections and the unanswered real maintenance boundary remain
+unchanged. No new real interruption is authorized.
 
 The three VPS bodies actually select Matrix SDK
 `80542cee1d56e3d46bbda21f4174e3df75cf5585` and receiving code

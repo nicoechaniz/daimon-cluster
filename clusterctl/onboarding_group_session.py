@@ -211,7 +211,7 @@ class RelationshipSession:
         check_retained_ledger(self.root, self.journal, packet['command'])
         return relationship_request(self.root, self.journal, packet['command'], offline=self.hosted,
             deadline_ns=self.deadline_ns, membership_precondition=packet.get('membership_precondition'),
-            inspect_only=inspect_only)
+            inspect_only=inspect_only,effect_not_after_ms=packet.get('effect_not_after_ms'))
 
     def __exit__(self, *_):
         self.stack.close()

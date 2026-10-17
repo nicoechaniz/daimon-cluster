@@ -452,7 +452,7 @@ jobs:
             tests/test_onboarding_host_ownership.py -k 'root_worker or existing_authority' \
             -W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning
       - name: Qualify selected native admission consumers with the explicit SDK candidate
-        if: needs.scope.outputs.profile == 'admission' || needs.scope.outputs.profile == 'full' || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_admission.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_authorities.py')
+        if: needs.scope.outputs.profile == 'admission' || needs.scope.outputs.profile == 'full' || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_admission.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_authorities.py') || contains(needs.scope.outputs.pytest_args, 'tests/test_onboarding_group_publication.py')
         env:
           TEST_PROFILE: ${{ needs.scope.outputs.profile }}
           TEST_ARGUMENTS: ${{ needs.scope.outputs.pytest_args }}
@@ -470,7 +470,8 @@ jobs:
           if os.environ['TEST_PROFILE'] == 'full':
               selected = sorted(TESTS)
           elif os.environ['TEST_PROFILE'] == 'admission':
-              selected = ['tests/test_onboarding_group_admission.py']
+              selected = ['tests/test_onboarding_group_admission.py'] + [item for item in selected
+                  if item.split('::',1)[0] in TESTS and item.split('::',1)[0] != 'tests/test_onboarding_group_admission.py']
           else:
               selected = [item for item in selected if item.split('::', 1)[0] in TESTS]
           candidate = Path(os.environ['RUNNER_TEMP']) / 'admission-candidate-sdk'
@@ -487,6 +488,7 @@ jobs:
           --deselect=tests/test_guest_owner_bootstrap.py
           --deselect=tests/test_onboarding_group_admission.py
           --deselect=tests/test_onboarding_group_authorities.py
+          --deselect=tests/test_onboarding_group_publication.py
           -W error::ResourceWarning
           -W error::pytest.PytestUnraisableExceptionWarning
           --durations=10

@@ -138,6 +138,7 @@ class Target:
     def group_relationship(self, value: dict, *, authority_closure: dict,
                            expected_context_sha256: str | None = None,
                            membership_precondition: dict | None = None,
+                           effect_not_after_ms: int | None = None,
                            deadline_ns: int | None = None) -> dict:
         """Accept/ingest through native authentication before first managed start."""
         from .onboarding_group_admission import (
@@ -154,10 +155,12 @@ class Target:
             hosted = load_owner_runtime(root, self._reader, authorities=authorities,
                                         qualified_startup=self.qualified_startup)
             return relationship_request(root, self.root / 'group-admission', value,
-                offline=hosted, deadline_ns=deadline_ns, membership_precondition=membership_precondition)
+                offline=hosted, deadline_ns=deadline_ns, membership_precondition=membership_precondition,
+                effect_not_after_ms=effect_not_after_ms)
 
     def group_publication(self, value: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None,
+                          effect_not_after_ms: int | None = None,
                           deadline_ns: int | None = None) -> dict:
         from .onboarding_receiving_update import bootstrap_group
         from .onboarding_group_admission import (
@@ -183,6 +186,7 @@ class Target:
             hosted = load_owner_runtime(root, self._reader, authorities=authorities,
                                         qualified_startup=self.qualified_startup)
             return publication_request(hosted, group, journal, value, deadline_ns=deadline_ns,
+                effect_not_after_ms=effect_not_after_ms,
                 snapshot=lambda: bootstrap_group(self, self.document_bundle()))
 
     def prepare(self) -> dict:
@@ -864,7 +868,7 @@ def main(argv: list[str] | None = None) -> int:
                     or args.observation_deadline_ns > observation_deadline_ns):
                 raise OnboardingError('onboarding_observation_deadline_expired')
             observation_deadline_ns = args.observation_deadline_ns
-        if args.action == 'group-session':
+        if grouping:
             from .onboarding_group_session import hard_deadline
             probe_scope.enter_context(hard_deadline(observation_deadline_ns))
         probe_scope.enter_context(onboarding_sdk.probe_budget(observation_deadline_ns))
@@ -1024,7 +1028,8 @@ def main(argv: list[str] | None = None) -> int:
                 **({'expected_context_sha256': packet['expected_context_sha256']}
                    if 'expected_context_sha256' in packet else {}),
                 **({'membership_precondition': packet['membership_precondition']}
-                   if 'membership_precondition' in packet else {}))))
+                   if 'membership_precondition' in packet else {}),
+                **({'effect_not_after_ms':packet['effect_not_after_ms']} if 'effect_not_after_ms' in packet else {}))))
             return 0
         if args.action == 'peer-identity':
             from .onboarding_peer import identity

@@ -369,14 +369,19 @@ class GuestGroupClient:
         self.deadline_ns: int | None = None
         self._relationship_stack: ExitStack | None = None
         self._relationship_process: OwnerConversation | None = None
+        self.maintenance: tuple[Path, str] | None = None
 
-    def _call(self, action: str, **arguments) -> dict:
+    def _call(self, action: str, *, maintenance: bool = False, **arguments) -> dict:
         timeout = self.timeout_seconds
         if self.deadline_ns is not None:
-            timeout = min(timeout, (self.deadline_ns - time.monotonic_ns()) / 1_000_000_000)
+            remaining=(self.deadline_ns-time.monotonic_ns())/1_000_000_000
+            timeout = remaining if maintenance else min(timeout,remaining)
             if timeout <= 0:
                 raise OnboardingError('receiving_owner_deadline_expired')
-        result = self.backend._target_call(self.plan, action, candidate=self.candidate,
+        candidate = (self.maintenance or self.candidate) if maintenance else self.candidate
+        if maintenance and self.maintenance is not None and self.deadline_ns is not None and action.startswith('group-'):
+            arguments['owner_deadline_ns']=self.deadline_ns
+        result = self.backend._target_call(self.plan, action, candidate=candidate,
             observation_timeout_seconds=timeout, **arguments)
         if self.deadline_ns is not None and time.monotonic_ns() >= self.deadline_ns:
             raise OnboardingError('receiving_owner_deadline_expired')
@@ -404,8 +409,9 @@ class GuestGroupClient:
 
     def qualified_identity(self, *, expires_at_ms: int, require_admitted: bool = True,
                            native_tooling: dict | None = None) -> dict:
+        options: dict = {'native_tooling': native_tooling} if native_tooling is not None else {}
         value = self._call('receiving-identity', identity_expires_at_ms=expires_at_ms,
-            **({'native_tooling': native_tooling} if native_tooling is not None else {}))
+            **options)
         if (value.get('responder_association') != 'same-connection'
                 or value.get('plan_digest') != digest(self.plan)
                 or not isinstance(value.get('admission_parent'), dict)
@@ -422,34 +428,40 @@ class GuestGroupClient:
     def group_relationship(self, command: dict, *, authority_closure: dict,
                            expected_context_sha256: str | None = None,
                            membership_precondition: dict | None = None,
+                           effect_not_after_ms: int | None = None,
                            inspect_only: bool = False) -> dict:
         packet = dict(command=command,
             offline=True, authority_closure=authority_closure,
             **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
-            **({'membership_precondition': membership_precondition} if membership_precondition is not None else {}))
+            **({'membership_precondition': membership_precondition} if membership_precondition is not None else {}),
+            **({'effect_not_after_ms':effect_not_after_ms} if effect_not_after_ms is not None else {}))
         stack = getattr(self, '_relationship_stack', None)
         if type(inspect_only) is not bool or inspect_only and stack is None:
             raise OnboardingError('onboarding_group_invitation_inspection_required')
         if stack is None:
-            return self._call('group-relationship', group_request=packet)
+            return self._call('group-relationship', maintenance=True, group_request=packet)
         if self._relationship_process is None:
             if self.deadline_ns is None:
                 raise OnboardingError('receiving_host_deadline_required')
-            timeout = min(self.timeout_seconds, (self.deadline_ns-time.monotonic_ns())/1_000_000_000)
+            # One finite invocation has the caller's existing total budget.
+            # The one-shot default is not a second, shorter session horizon.
+            timeout = (self.deadline_ns-time.monotonic_ns())/1_000_000_000
             self._relationship_process = stack.enter_context(self.backend._target_relationship_session(
-                self.plan, packet, candidate=self.candidate, timeout_seconds=timeout,
+                self.plan, packet, candidate=self.maintenance or self.candidate, timeout_seconds=timeout,
                 deadline_ns=self.deadline_ns))
         return self._relationship_process.call({'inspect': packet} if inspect_only else packet)
 
     def group_relationship_scope(self):
         from .onboarding_group_session import supported_scope
-        return supported_scope(self, self.candidate[0], uid=os.geteuid(), code_digest=self.candidate[1])
+        code, code_digest = self.maintenance or self.candidate
+        return supported_scope(self, code, uid=os.geteuid(), code_digest=code_digest)
 
     def group_publication(self, command: dict, *, authority_closure: dict,
-                          expected_context_sha256: str | None = None) -> dict:
-        return self._call('group-publication', group_request=dict(command=command,
+                          expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None) -> dict:
+        return self._call('group-publication', maintenance=True, group_request=dict(command=command,
             offline=True, authority_closure=authority_closure,
-            **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {})))
+            **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
+            **({'effect_not_after_ms':effect_not_after_ms} if effect_not_after_ms is not None else {})))
 
     def apply_control(self, path: Path) -> dict:
         return self._call('receiving-control-apply', control_file=path)
@@ -538,12 +550,14 @@ class SourceGroupClient:
         self.deadline_ns: int | None = None
         self._relationship_stack: ExitStack | None = None
         self._relationship_process: OwnerConversation | None = None
+        self.maintenance: tuple[Path, str] | None = None
 
     def _call(self, arguments: list[str], *, command: dict | None = None,
-              module: str = 'clusterctl.onboarding_source', native_response: bool = False) -> dict:
+              module: str = 'clusterctl.onboarding_source', native_response: bool = False,
+              maintenance: bool = False) -> dict:
         deadline = time.monotonic_ns() + int(self.timeout_seconds * 1_000_000_000)
         if self.deadline_ns is not None:
-            deadline = min(deadline, self.deadline_ns)
+            deadline = self.deadline_ns if maintenance else min(deadline, self.deadline_ns)
         if deadline <= time.monotonic_ns():
             raise OnboardingError('receiving_owner_deadline_expired')
         info = self.config.lstat()
@@ -555,9 +569,10 @@ class SourceGroupClient:
             raise OnboardingError('invalid_receiving_control_request')
         if module not in {'clusterctl.onboarding_source', 'clusterctl.onboarding_owner_client'}:
             raise OnboardingError('receiving_source_owner_binding_required')
-        argv = onboarding_sdk.runtime_command(self.venv, self.imports, self.code, module, [
+        code, code_digest = (self.maintenance or (self.code, self.code_digest)) if maintenance else (self.code, self.code_digest)
+        argv = onboarding_sdk.runtime_command(self.venv, self.imports, code, module, [
             '--config', str(self.config), '--expected-config-sha256', self.config_sha256,
-            '--code-owner', str(self.code_uid), '--code-digest', self.code_digest,
+            '--code-owner', str(self.code_uid), '--code-digest', code_digest,
             '--observation-deadline-ns', str(deadline), *arguments])
         remaining = (deadline - time.monotonic_ns()) / 1_000_000_000
         if remaining <= 0:
@@ -634,27 +649,30 @@ class SourceGroupClient:
                            authority_closure: dict | None = None,
                            expected_context_sha256: str | None = None,
                            membership_precondition: dict | None = None,
+                           effect_not_after_ms: int | None = None,
                            inspect_only: bool = False) -> dict:
         packet = dict(command=command,
             offline=offline, authority_closure={} if authority_closure is None else authority_closure,
             **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
-            **({'membership_precondition': membership_precondition} if membership_precondition is not None else {}))
+            **({'membership_precondition': membership_precondition} if membership_precondition is not None else {}),
+            **({'effect_not_after_ms':effect_not_after_ms} if effect_not_after_ms is not None else {}))
         stack = getattr(self, '_relationship_stack', None)
         if type(inspect_only) is not bool or inspect_only and stack is None:
             raise OnboardingError('onboarding_group_invitation_inspection_required')
         if stack is None:
-            return self._call(['--group-request', '-'], command=packet)
+            return self._call(['--group-request', '-'], command=packet, maintenance=True)
         if self._relationship_process is None:
             self._relationship_process = stack.enter_context(self._relationship_conversation(packet))
         return self._relationship_process.call({'inspect': packet} if inspect_only else packet)
 
     def group_relationship_scope(self):
         from .onboarding_group_session import supported_scope
-        return supported_scope(self, self.code, uid=self.code_uid, code_digest=self.code_digest)
+        code, code_digest = self.maintenance or (self.code, self.code_digest)
+        return supported_scope(self, code, uid=self.code_uid, code_digest=code_digest)
 
     def _relationship_conversation(self, packet):
         from .onboarding_group_session import OwnerConversation
-        deadline = min(self.deadline_ns or 2**63-1,
+        deadline = self.deadline_ns if self.deadline_ns is not None else (
             time.monotonic_ns() + int(self.timeout_seconds*1_000_000_000))
         if self.lifecycle_journal is None:
             raise OnboardingError('receiving_source_lifecycle_binding_required')
@@ -668,9 +686,10 @@ class SourceGroupClient:
         def unchanged():
             if identity() != before:
                 raise OnboardingError('receiving_source_configuration_changed')
-        argv = onboarding_sdk.runtime_command(self.venv, self.imports, self.code, 'clusterctl.onboarding_source', [
+        code, code_digest = self.maintenance or (self.code, self.code_digest)
+        argv = onboarding_sdk.runtime_command(self.venv, self.imports, code, 'clusterctl.onboarding_source', [
             '--config', str(self.config), '--expected-config-sha256', self.config_sha256,
-            '--code-owner', str(self.code_uid), '--code-digest', self.code_digest,
+            '--code-owner', str(self.code_uid), '--code-digest', code_digest,
             '--observation-deadline-ns', str(deadline), '--group-request', '-', '--group-session',
             '--operation-journal', str(self.lifecycle_journal)])
         return OwnerConversation(argv, packet, deadline_ns=deadline, validate=unchanged,
@@ -678,10 +697,11 @@ class SourceGroupClient:
             env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'})
 
     def group_publication(self, command: dict, *, authority_closure: dict,
-                          expected_context_sha256: str | None = None) -> dict:
-        return self._call(['--group-request', '-'], command=dict(command=command,
+                          expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None) -> dict:
+        return self._call(['--group-request', '-'], maintenance=True, command=dict(command=command,
             offline=True, authority_closure=authority_closure,
-            **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {})))
+            **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
+            **({'effect_not_after_ms':effect_not_after_ms} if effect_not_after_ms is not None else {})))
 
     def apply_control(self, path: Path) -> dict:
         return self._call(['--apply-control', str(path)])
@@ -731,7 +751,7 @@ class SourceGroupClient:
         if self.lifecycle_journal is None:
             raise OnboardingError('receiving_source_lifecycle_binding_required')
         value = self._call(['--receiving-lifecycle', operation_id,
-            '--operation-journal', str(self.lifecycle_journal)])
+            '--operation-journal', str(self.lifecycle_journal)], maintenance=True)
         row = value.get('lifecycle')
         if (set(value) != {'schema', 'source_config_sha256', 'lifecycle'}
                 or value['schema'] != 'cluster-receiving-source-lifecycle/v1'
@@ -762,15 +782,19 @@ class SourceGroupClient:
             raise OnboardingError('receiving_source_lifecycle_conflict')
         return result
 
-    def lifecycle_action(self, operation_id: str, action: str) -> dict:
+    def lifecycle_action(self, operation_id: str, action: str, *, continuation: dict | None = None) -> dict:
         """Use the same qualified owner for the frozen Matrix-only lifecycle."""
         if self.lifecycle_journal is None or action not in {'quiesce', 'preserve', 'derive', 'start', 'quiescence'}:
             raise OnboardingError('receiving_source_lifecycle_binding_required')
+        if continuation is not None and action != 'start':
+            raise OnboardingError('onboarding_group_continuation_lifecycle_required')
         session = getattr(self, '_relationship_process', None)
         if action == 'quiescence' and session is not None:
             return session.call(dict(quiescence=operation_id))
         value = self._call(['--receiving-lifecycle', operation_id,
-            '--operation-journal', str(self.lifecycle_journal), '--lifecycle-action', action])
+            '--operation-journal', str(self.lifecycle_journal), '--lifecycle-action', action,
+            *(['--admission-continuation','-'] if continuation is not None else [])],
+            command=continuation, maintenance=True)
         if (set(value) != {'schema', 'source_config_sha256', 'operation_id', 'action', 'result'}
                 or value['schema'] != 'cluster-receiving-source-lifecycle-effect/v1'
                 or value['source_config_sha256'] != self.config_sha256
@@ -1159,12 +1183,19 @@ def admission_lifecycle_projection(row: dict, *, profile: str, name: str | None 
                 selection_sha256=snapshot['selection_sha256'],
                 publications={action: dict(command_sha256=receipt['command_sha256'],
                     result_sha256=digest(receipt['result'])) for action, receipt in publications.items()})
+        continuation = effects.get('start_continuation')
+        if continuation is not None:
+            from .onboarding_group_recovery import validate_lifecycle
+            preserved_sha256 = digest(dict(schema='cluster-source-bootstrap-preservation/v1',
+                operation_id=row['operation_id'],preserved=True,loaded_readiness='unobserved')) if profile == 'source' else digest(effects['owner_preserved'])
+            validate_lifecycle(row,candidate,continuation,preservation_sha256=preserved_sha256)
         return dict(schema='cluster-admission-lifecycle-projection/v1',
             **{key: link[key] for key in ('cohort_operation_id', 'cohort_intent_sha256', 'tribe_ref', 'owner')},
             link_sha256=digest(link), manifest_digest=call['manifest_digest'],
             snapshot_request_sha256=digest(link['snapshot_request']),
             owner_context_sha256=link['snapshot_request']['params']['owner_context_sha256'],
-            publication_operation_id=link['snapshot_request']['operation_id'], derived=derived)
+            publication_operation_id=link['snapshot_request']['operation_id'], derived=derived,
+            **({'continuation':continuation} if continuation is not None else {}))
     except (KeyError, TypeError, ValueError, AttributeError, OnboardingError):
         raise OnboardingError('receiving_admission_lifecycle_unobserved') from None
 
@@ -2352,7 +2383,8 @@ class SourceBootstrapController:
             return dict(schema='cluster-source-bootstrap-publication/v1', operation_id=self.operation_id,
                         published=True, loaded_readiness='unobserved')
 
-    def start(self, *, timeout_seconds: float = 30, deadline_ns: int | None = None) -> dict:
+    def start(self, *, timeout_seconds: float = 30, deadline_ns: int | None = None,
+              admission_continuation: dict | None = None) -> dict:
         """Start the selected exact command and retain actual controlled load.
 
         Older publication-only operations cannot use this method. The supported
@@ -2372,6 +2404,14 @@ class SourceBootstrapController:
             checked = self._qualify_candidate(row, candidate)
             self._budget(deadline_ns)
             observations = (row['runtime_observation'] or {}).get('source_bootstrap', {})
+            horizon = candidate['expires_at_ms']
+            if admission_continuation is not None:
+                from .onboarding_group_recovery import validate_lifecycle
+                horizon = validate_lifecycle(row,candidate,admission_continuation,preservation_sha256=digest(dict(
+                    schema='cluster-source-bootstrap-preservation/v1',operation_id=self.operation_id,
+                    preserved=True,loaded_readiness='unobserved')))
+                if 'owner_preserved' not in observations or observations.get('quiesced',{}).get('exit_observed') is not True:
+                    raise OnboardingError('receiving_admission_preservation_required')
             expected_group = derived_lifecycle_group(candidate, observations, candidate['qualification']['group'],
                 required='admission_link' in candidate)
             selected = observations.get('unit_selected')
@@ -2393,11 +2433,16 @@ class SourceBootstrapController:
                 intent = dict(unit_sha256=selected['selected_sha256'], candidate_sha256=digest(candidate))
                 self._record('start_intent', intent)
                 if inspected['manager']['ActiveState'] == 'inactive':
+                    if admission_continuation is not None:
+                        self._record('start_continuation',admission_continuation)
+                        deadline_ns = min(deadline_ns,time.monotonic_ns()+(
+                            horizon-time.time_ns()//1_000_000)*1_000_000)
+                        self._budget(deadline_ns)
                     self._stopped(frozen, candidate, deadline_ns=deadline_ns)
                     with self.source.writer():
                         if frozen.get('mode', 'issue') == 'preserve':
                             from daimon_matrix import operator_runtime_upgrade as upgrade
-                            preservation_authorization(frozen['preservation'], candidate['expires_at_ms'])
+                            preservation_authorization(frozen['preservation'], horizon)
                             bundle = being_seed._read(self.source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
                             if 'admission_link' in candidate:
                                 self._admission_preserved(frozen)
@@ -2745,9 +2790,11 @@ class GuestBootstrapController:
         self.journal.advance(self.operation_id, row['state'], runtime_observation=observations,
             expected_runtime_observation=row['runtime_observation'])
 
-    def execute(self, *, timeout_seconds: float = 30, authority_closure: dict | None = None, deadline_ns: int | None = None) -> dict:
+    def execute(self, *, timeout_seconds: float = 30, authority_closure: dict | None = None, deadline_ns: int | None = None,
+                continuation: dict | None = None, maintenance: tuple[Path,str] | None = None) -> dict:
         """Resume exact local effects; never blindly stop a replacement process."""
-        return self._advance(timeout_seconds=timeout_seconds, phase='load', authority_closure=authority_closure, deadline_ns=deadline_ns)
+        return self._advance(timeout_seconds=timeout_seconds, phase='load', authority_closure=authority_closure,
+            deadline_ns=deadline_ns,continuation=continuation,maintenance=maintenance)
 
     def quiesce(self, *, timeout_seconds: float = 30, deadline_ns: int | None = None) -> dict:
         """Retain and recheck predecessor exit without publishing or starting.
@@ -2796,7 +2843,8 @@ class GuestBootstrapController:
             plan_digest=digest(frozen['plan']), predecessor=previous, argv=candidate['argv'])
 
     def _advance(self, *, timeout_seconds: float, phase: str,
-                 authority_closure: dict | None = None, deadline_ns: int | None = None) -> dict:
+                 authority_closure: dict | None = None, deadline_ns: int | None = None,
+                 continuation: dict | None = None, maintenance: tuple[Path,str] | None = None) -> dict:
         from .onboarding_host import HostConfig
         if (type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 60
                 or deadline_ns is not None and (type(deadline_ns) is not int or deadline_ns <= 0)):
@@ -2848,6 +2896,13 @@ class GuestBootstrapController:
                 owner_request.update(mode=frozen['owner']['mode'], preservation=frozen['owner']['preservation'])
             effects = (row['runtime_observation'] or {}).get('guest_bootstraps', {}).get(self.name, {})
             link = candidate.get('admission_link')
+            horizon = candidate['expires_at_ms']
+            if continuation is not None:
+                from .onboarding_group_recovery import validate_lifecycle
+                if phase != 'load' or link is None or 'owner_preserved' not in effects or 'quiesced' not in effects:
+                    raise OnboardingError('receiving_admission_preservation_required')
+                horizon = validate_lifecycle(row,candidate,continuation,preservation_sha256=digest(effects['owner_preserved']))
+                record('start_continuation',continuation)
             if phase == 'derive' and (link is None or 'owner_preserved' not in effects or 'quiesced' not in effects):
                 raise OnboardingError('receiving_admission_preservation_required')
             if phase == 'load' and link is not None:
@@ -2857,8 +2912,10 @@ class GuestBootstrapController:
             if row['state'] == 'planned':
                 self.journal.advance(self.operation_id, 'runtime-dispatching')
             def root_call(action):
-                return self.backend._guest_service_call(frozen['plan'], action, candidate=vector,
-                    timeout_seconds=remaining(), request=root_request)
+                return self.backend._guest_service_call(frozen['plan'], action, candidate=maintenance or vector,
+                    timeout_seconds=remaining(), request=root_request,
+                    **({'owner_deadline_ns':deadline,**({'effect_not_after_ms':horizon}
+                        if action in {'bootstrap-select','bootstrap-start'} else {})} if continuation is not None else {}))
             def owner_call(action, **kwargs):
                 return self.backend._target_call(frozen['plan'], action, candidate=vector,
                     bootstrap_timeout_seconds=remaining(), bootstrap_request=owner_request, **kwargs)
@@ -2953,12 +3010,12 @@ class GuestBootstrapController:
                     return derived
             if 'unit_selected' not in effects:
                 if owner_request.get('mode') == 'preserve' and current['service']['unit_sha256'] == frozen['root']['service']['unit_sha256']:
-                    preservation_authorization(owner_request['preservation'], candidate['expires_at_ms'])
+                    preservation_authorization(owner_request['preservation'], horizon)
                 record('unit_selected', root_call('bootstrap-select'))
             # Reconcile the retained start, rather than reissuing it after a
             # lost ACK. Actual owner load/admission is checked independently.
             if owner_request.get('mode') == 'preserve' and current['service']['manager']['ActiveState'] == 'inactive':
-                preservation_authorization(owner_request['preservation'], candidate['expires_at_ms'])
+                preservation_authorization(owner_request['preservation'], horizon)
             record('started', root_call('bootstrap-start'))
             loaded = self._loaded(frozen, candidate, vector, remaining(), deadline_ns=deadline)
             record('controlled_loaded', loaded)
@@ -3253,17 +3310,21 @@ class CohortController:
         if admission is None:
             value = row['intended_transition'].get('cohort_activation')
         else:
+            from . import onboarding_group_recovery as recovery
+            grant = recovery.attached(self.journal, row)
             retained = (row['runtime_observation'] or {}).get('admission_activation_plan')
-            if (not isinstance(retained, dict) or set(retained) != {
+            if (not isinstance(retained, dict) or set(retained) - {'continuation_sha256'} != {
                     'schema', 'admission_sha256', 'plan_sha256', 'plan', 'receiving_readiness'}
                     or retained['schema'] != 'cluster-admission-activation-plan/v1'
                     or retained['admission_sha256'] != digest(admission)
                     or not isinstance(retained['plan'], dict)
                     or retained['plan_sha256'] != digest(retained['plan'])
-                    or retained['receiving_readiness'] != 'unobserved'):
+                    or retained['receiving_readiness'] != 'unobserved'
+                    or (grant is None) != ('continuation_sha256' not in retained)
+                    or grant is not None and retained['continuation_sha256'] != digest(grant)):
                 raise OnboardingError('receiving_admission_activation_unobserved')
             value = retained['plan']
-            if any(value.get(key) != item for key, item in admission['activation'].items()):
+            if any(value.get(key) != item for key, item in recovery.bounds(self.journal, row).items()):
                 raise OnboardingError('receiving_admission_activation_changed')
         if (not isinstance(value, dict) or set(value) != {'manifest_path', 'manifest_uid',
                 'roster_sha256', 'expires_at_ms', 'observation_window_ms', 'receivers'}
@@ -3309,6 +3370,7 @@ class CohortController:
         observation and lifecycle qualification remain the activation path.
         """
         from .operation_journal import JournalConflict
+        from . import onboarding_group_recovery as recovery
         with self.journal.mutation_lock(self.operation_id):
             row = self._row()
             admission = self._admission(row)
@@ -3316,10 +3378,15 @@ class CohortController:
                 raise OnboardingError('receiving_cohort_admission_required')
             value = dict(schema='cluster-admission-activation-plan/v1', admission_sha256=digest(admission),
                 plan_sha256=digest(plan), plan=plan, receiving_readiness='unobserved')
+            grant = recovery.attached(self.journal, row)
+            if grant is not None:
+                value['continuation_sha256'] = digest(grant)
             observations = dict(row['runtime_observation'] or {})
             retained = observations.get('admission_activation_plan')
             if retained is not None and retained != value:
                 raise JournalConflict('admission activation derivation changed')
+            if retained is None:
+                recovery.attached(self.journal, row, effect='activation')
             observations['admission_activation_plan'] = value
             self._activation({**row, 'runtime_observation': observations})
             if retained is None:
@@ -3572,10 +3639,14 @@ class CohortController:
             else:
                 frozen = lifecycle['expected_precondition']['guest_bootstraps'][name]['owner']
                 previous, server = frozen['predecessor'], frozen['origin']
-            if (not isinstance(proof, dict) or set(proof) != {'schema', 'cohort_operation_id',
+            from . import onboarding_group_recovery as recovery
+            continuation = recovery.lifecycle(self.journal,cohort,name,fresh=False)
+            if (not isinstance(proof, dict) or set(proof) - {'continuation'} != {'schema', 'cohort_operation_id',
                     'cohort_intent_sha256', 'tribe_ref', 'owner', 'link_sha256', 'manifest_digest',
                     'snapshot_request_sha256', 'owner_context_sha256', 'publication_operation_id', 'derived'}
                     or proof['schema'] != 'cluster-admission-lifecycle-projection/v1'
+                    or 'continuation' in proof and proof['continuation'] != continuation
+                    or require_group and continuation is not None and proof.get('continuation') != continuation
                     or proof['cohort_operation_id'] != self.operation_id
                     or proof['cohort_intent_sha256'] != digest(cohort['intent'])
                     or proof['tribe_ref'] != admission['tribe_ref']
@@ -3737,6 +3808,7 @@ class CohortController:
     def _initial_lifecycle(self, row: dict, name: str, recipe: dict) -> dict:
         """Consume the actual first-load producer, never replacement markers."""
         from .onboarding_service import initial_context, unit_content
+        from . import onboarding_group_recovery as recovery
         try:
             admission = self._admission(row)
             if (admission is None or name in {item['name'] for item in row['expected_precondition']['senders']}
@@ -3748,13 +3820,16 @@ class CohortController:
             intent, prepared, selected, started, loaded = (effect[key] for key in (
                 'intent', 'validated', 'selected', 'started', 'controlled_loaded'))
             binding, owner, request = intent['binding'], intent['owner'], intent['request']
+            grant = recovery.attached(self.journal, row)
             receiver = admission['receivers'][name]
             group = owner['group']
             expected_origin = {key: binding['origin'][key] for key in ('body_ref', 'embodiment_id', 'incarnation_id')}
             context = initial_context(json.loads(request['argv'][request['argv'].index('--initial-context-json') + 1]))
             fingerprint = hashlib.sha256(unit_content(request['argv'])).hexdigest()
             if (set(intent) != {'binding', 'owner', 'request', 'unit_sha256'}
-                    or set(binding) != {'schema', 'plan_digest', 'admission_sha256', 'profile_sha256', 'receiver', 'origin'}
+                    or set(binding) - {'continuation_sha256'} != {'schema', 'plan_digest', 'admission_sha256', 'profile_sha256', 'receiver', 'origin'}
+                    or (grant is None) != ('continuation_sha256' not in binding)
+                    or grant is not None and binding['continuation_sha256'] != digest(grant)
                     or binding['schema'] != 'cluster-managed-initial-binding/v1'
                     or binding['admission_sha256'] != digest(admission) or binding['receiver'] != receiver
                     or any(re.fullmatch('[0-9a-f]{64}', binding[key]) is None for key in ('profile_sha256', 'plan_digest'))
@@ -3772,7 +3847,7 @@ class CohortController:
                     or request['schema'] != 'cluster-guest-service-initial/v1' or request['predecessor'] is not None
                     or request['operation_id'] != guest_bootstrap_operation_id(self.operation_id)
                     or request['plan_digest'] != binding['plan_digest']
-                    or request['not_after_ms'] != admission['activation']['expires_at_ms']
+                    or request['not_after_ms'] != recovery.bounds(self.journal, row)['expires_at_ms']
                     or request['argv'].count('--initial-context-json') != 1
                     or context != dict(schema='cluster-initial-start-context/v1', owner_sha256=digest(owner),
                         profile_sha256=binding['profile_sha256'], not_after_ms=request['not_after_ms'])
@@ -3837,6 +3912,9 @@ class CohortController:
     def _prepare_activation(self) -> dict:
         with self.journal.mutation_lock(self.operation_id):
             row = self._row()
+            if self._admission(row) is not None:
+                from .onboarding_group_recovery import attached
+                attached(self.journal,row,effect='activation')
             plan, manifest = self._activation(row)
             # Configure/discover before the finite all-reader observation round.
             # Subsequent identity calls reuse their qualified owner process to
@@ -4290,6 +4368,9 @@ class CohortController:
             release = row['intent']['runtime_call']['manifest_digest']
             if set(row['runtime_observation'].get('sender_selections', {})) == set(self.owners):
                 return self._confirmed_selection(row, plan, manifest, activation)
+            if self._admission(row) is not None:
+                from .onboarding_group_recovery import attached
+                attached(self.journal,row,effect='activation')
             control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'receiving-control:' + self.operation_id))
             try:
                 self._require_all_revocations(row, activation)

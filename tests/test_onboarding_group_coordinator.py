@@ -523,6 +523,10 @@ def qualified_target_cli(tmp_path, monkeypatch, *, late=False):
     clock, calls = [1_000_000_000], []
     monkeypatch.setattr(target, 'time', SimpleNamespace(monotonic_ns=lambda: clock[0], time_ns=lambda: 1_000_000_000_000))
     monkeypatch.setattr(target.onboarding_sdk, 'time', target.time)
+    # This grammar/context test uses a synthetic clock; kernel lifetime is
+    # qualified separately with actual owner subprocesses.
+    from contextlib import nullcontext
+    monkeypatch.setattr('clusterctl.onboarding_group_session.hard_deadline', lambda deadline: nullcontext())
     monkeypatch.setattr(target, 'sys', SimpleNamespace(prefix=str(venv), argv=[]))
     monkeypatch.setattr(target.onboarding_code_successor, 'selection', lambda *a, **k: code)
     monkeypatch.setattr(target.onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {

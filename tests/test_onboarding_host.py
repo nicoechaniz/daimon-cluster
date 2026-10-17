@@ -547,13 +547,19 @@ def test_host_forwards_owner_bootstrap_only_as_guest_owner(tmp_path, monkeypatch
 
 @pytest.mark.parametrize('action', ['bootstrap-inspect', 'bootstrap-validate', 'bootstrap-quiesce',
                                   'bootstrap-select', 'bootstrap-start', 'bootstrap-steady'])
-def test_host_root_service_route_never_executes_private_sdk_or_installer(tmp_path, monkeypatch, action):
+@pytest.mark.parametrize('bounded',[False,True])
+def test_host_root_service_route_never_executes_private_sdk_or_installer(tmp_path, monkeypatch, action,bounded):
     backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
     options = dict(candidate=candidate, timeout_seconds=5)
     if action == 'bootstrap-inspect':
         options['owner_observation'] = {'process': {'pid': 123}, 'admission_parent': {'pid': 122}}
     else:
         options['request'] = {'plan_digest': digest(value)}
+    if bounded:
+        import time
+        options['owner_deadline_ns']=time.monotonic_ns()+4_000_000_000
+        if action in {'bootstrap-select','bootstrap-start'}:
+            options['effect_not_after_ms']=time.time_ns()//1_000_000+2000
     backend._guest_service_call(value, action, **options)
     argv, bounds = calls[0]
     assert argv[:6] == ['exec', 'dm-eko', '--user', '0', '--group', '0']
@@ -563,6 +569,11 @@ def test_host_root_service_route_never_executes_private_sdk_or_installer(tmp_pat
     assert not any('site-packages' in item or '/venv/' in item for item in argv)
     assert '--receive-only' not in argv and '--visibility-installation' not in argv
     assert 0 < bounds['timeout_seconds'] <= 5
+    if bounded:
+        assert int(argv[argv.index('--observation-deadline-ns')+1])==options['owner_deadline_ns']
+        if action in {'bootstrap-select','bootstrap-start'}:
+            assert int(argv[argv.index('--effect-not-after-ms')+1])==options['effect_not_after_ms']
+            assert json.loads(argv[argv.index('--bootstrap-request-json')+1])==options['request']
 
 
 @pytest.mark.parametrize('phase', ['freeze', 'stage', 'publish'])

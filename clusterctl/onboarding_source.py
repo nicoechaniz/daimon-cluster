@@ -100,6 +100,7 @@ class Source:
                            authority_closure: dict | None = None,
                            expected_context_sha256: str | None = None,
                            membership_precondition: dict | None = None,
+                           effect_not_after_ms: int | None = None,
                            deadline_ns: int | None = None) -> dict:
         """The qualified owner route supplies approval; no peer text grants it."""
         from .onboarding_group_admission import (
@@ -108,7 +109,7 @@ class Source:
         value = command(value)
         journal = self.outputs / 'group-admission'
         if not offline:
-            if authority_closure or expected_context_sha256 is not None or membership_precondition is not None:
+            if authority_closure or expected_context_sha256 is not None or membership_precondition is not None or effect_not_after_ms is not None:
                 raise OnboardingError('onboarding_group_relationship_writer_required')
             return relationship_request(self.root, journal, value, deadline_ns=deadline_ns)
         with self.writer():
@@ -118,10 +119,11 @@ class Source:
             hosted = load_owner_runtime(self.root, self._reader, authorities=authorities,
                                         qualified_startup=self.qualified_startup)
             return relationship_request(self.root, journal, value, offline=hosted, deadline_ns=deadline_ns,
-                membership_precondition=membership_precondition)
+                membership_precondition=membership_precondition,effect_not_after_ms=effect_not_after_ms)
 
     def group_publication(self, value: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None,
+                          effect_not_after_ms: int | None = None,
                           deadline_ns: int | None = None) -> dict:
         from .onboarding_receiving_update import source_bootstrap_group
         from .onboarding_group_admission import (
@@ -144,6 +146,7 @@ class Source:
             hosted = load_owner_runtime(self.root, self._reader, authorities=authorities,
                                         qualified_startup=self.qualified_startup)
             return publication_request(hosted, group, journal, value, deadline_ns=deadline_ns,
+                effect_not_after_ms=effect_not_after_ms,
                 snapshot=lambda: source_bootstrap_group(self, being_seed._read(
                     self.root / 'runtime.json', limit=being_seed.MAX_SELECTION)))
 
@@ -463,13 +466,15 @@ class Source:
         return prepare_source_admission(self, journal_path, request, config=config, deadline_ns=deadline_ns)
 
     def receiving_lifecycle_action(self, journal_path: Path, operation_id: str, action: str, *, deadline_ns: int,
-                                   social_operation_id: str | None = None) -> dict:
+                                   social_operation_id: str | None = None, admission_continuation: dict | None = None) -> dict:
         """Execute only the protected operation through the existing user unit."""
         from .operation_journal import OperationJournal
         from .onboarding_service import MatrixUserService
         from .onboarding_receiving_update import SourceBootstrapController
         if action not in {'quiesce', 'preserve', 'derive', 'start', 'quiescence'}:
             raise OnboardingError('receiving_source_lifecycle_conflict')
+        if admission_continuation is not None and action != 'start':
+            raise OnboardingError('onboarding_group_continuation_lifecycle_required')
         journal = OperationJournal.existing(being_seed._path(journal_path))
         row = None if journal is None else journal.get(operation_id)
         if row is None or row['operation'] != 'receiving-update':
@@ -497,7 +502,8 @@ class Source:
         elif action == 'quiesce':
             result = controller.quiesce(timeout_seconds=remaining, deadline_ns=deadline_ns)
         elif action == 'start':
-            result = controller.start(timeout_seconds=remaining, deadline_ns=deadline_ns)
+            result = controller.start(timeout_seconds=remaining, deadline_ns=deadline_ns,
+                **({'admission_continuation':admission_continuation} if admission_continuation is not None else {}))
         else:
             result = controller.observe_quiescence(timeout_seconds=remaining, deadline_ns=deadline_ns)
         if time.monotonic_ns() >= deadline_ns:
@@ -528,6 +534,7 @@ def main(argv=None) -> int:
     parser.add_argument('--receiving-lifecycle')
     parser.add_argument('--prepare-admission-lifecycle', type=Path)
     parser.add_argument('--lifecycle-action', choices=('quiesce', 'preserve', 'derive', 'start', 'quiescence'))
+    parser.add_argument('--admission-continuation', type=Path)
     parser.add_argument('--operation-journal', type=Path)
     parser.add_argument('--group-request', type=Path)
     parser.add_argument('--group-session', action='store_true')
@@ -550,6 +557,8 @@ def main(argv=None) -> int:
                 or (lifecycle or preparing or args.group_session) != (args.operation_journal is not None)
                 or args.group_session and (not grouping or args.group_request != Path('-'))
                 or args.lifecycle_action is not None and not lifecycle
+                or args.admission_continuation is not None and (
+                    not lifecycle or args.lifecycle_action != 'start' or args.admission_continuation != Path('-'))
                 or (lifecycle or preparing) and (args.ready_fd is not None or args.require_loaded)
                 or args.qualified_identity != (args.identity_expires_at_ms is not None)
                 or args.identity_expires_at_ms is not None and not 0 < args.identity_expires_at_ms < 2**53
@@ -564,7 +573,7 @@ def main(argv=None) -> int:
                 raise OnboardingError('onboarding_observation_deadline_expired')
         if args.observation_deadline_ns is not None and not 0 < args.observation_deadline_ns - time.monotonic_ns() <= 60_000_000_000:
             raise OnboardingError('onboarding_observation_deadline_expired')
-        if args.group_session:
+        if grouping:
             from .onboarding_group_session import hard_deadline
             probe_scope.enter_context(hard_deadline(args.observation_deadline_ns))
         if (controlling and (args.observe or args.require_loaded or args.ready_fd is not None)
@@ -626,8 +635,10 @@ def main(argv=None) -> int:
             else:
                 packet = being_seed._read(args.group_request, limit=being_seed.MAX_SELECTION)
             packet = request_packet(packet)
-            context = ({'expected_context_sha256': packet['expected_context_sha256']}
+            context:dict = ({'expected_context_sha256': packet['expected_context_sha256']}
                        if 'expected_context_sha256' in packet else {})
+            if 'effect_not_after_ms' in packet:
+                context['effect_not_after_ms']=packet['effect_not_after_ms']
             if 'action' in packet['command']:
                 result = source.group_publication(packet['command'], authority_closure=packet['authority_closure'],
                     deadline_ns=args.observation_deadline_ns, **context)
@@ -640,10 +651,16 @@ def main(argv=None) -> int:
             return 0
         if lifecycle:
             accept_deadline()
+            continuation = {}
+            if args.admission_continuation is not None:
+                raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION+1)
+                if len(raw)>being_seed.MAX_SELECTION:
+                    raise OnboardingError('onboarding_group_continuation_lifecycle_required')
+                continuation = {'admission_continuation':json.loads(raw)}
             result = (source.receiving_lifecycle(args.operation_journal, args.receiving_lifecycle)
                 if args.lifecycle_action is None else source.receiving_lifecycle_action(
                     args.operation_journal, args.receiving_lifecycle, args.lifecycle_action,
-                    deadline_ns=args.observation_deadline_ns))
+                    deadline_ns=args.observation_deadline_ns,**continuation))
             accept_deadline()
             print(json.dumps(result))
             return 0

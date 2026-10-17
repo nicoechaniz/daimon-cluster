@@ -35,7 +35,7 @@ PUBLICATIONS = {
 }
 
 
-def membership_recipe(value: dict, admission: dict, senders: list[dict]) -> dict:
+def membership_recipe(value: dict, admission: dict, senders: list[dict], *, expires_at_ms: int | None = None) -> dict:
     """Validate the protected social intent with the native signed reducer.
 
     Public signature consistency is not approval: the caller must obtain this
@@ -64,7 +64,8 @@ def membership_recipe(value: dict, admission: dict, senders: list[dict]) -> dict
                        for pin in value['owner_contexts'].values())
                 or type(value['membership_sequence']) is not int or value['membership_sequence'] < 0
                 or type(value['acceptance_not_after_ms']) is not int
-                or not 0 < value['acceptance_not_after_ms'] <= admission['activation']['expires_at_ms']):
+                or not 0 < value['acceptance_not_after_ms'] <= (
+                    admission['activation']['expires_at_ms'] if expires_at_ms is None else expires_at_ms)):
             raise ValueError
         authorities = {}
         for ref, row in value['authority_closure'].items():
@@ -183,6 +184,7 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
     )
     from daimon_matrix.weave import verify_event
     from daimon_matrix.operator_messaging import public_authority_history
+    from . import onboarding_group_recovery as recovery
 
     def budget():
         if type(deadline_ns) is not int or time.monotonic_ns() >= deadline_ns:
@@ -194,11 +196,12 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
         portal = row['intended_transition'].get('portal_admission', {})
         if admission is None or portal.get('schema') != 'cluster-portal-group-admission/v2':
             raise OnboardingError('onboarding_group_membership_recipe_required')
-        recipe = membership_recipe(portal.get('social'), admission, row['expected_precondition']['senders'])
+        recipe, state_key, step_prefix, provenance = recovery.membership(cohort.journal, row, admission)
         budget()
-        previous = (row['runtime_observation'] or {}).get('membership_admission')
+        previous = (row['runtime_observation'] or {}).get(state_key)
         if previous is not None:
-            if previous.get('recipe_sha256') != digest(recipe):
+            if (previous.get('recipe_sha256') != digest(recipe)
+                    or any(previous.get(key) != value for key, value in provenance.items())):
                 raise OnboardingError('onboarding_group_membership_intent_changed')
             if previous.get('result') is not None:
                 result = previous['result']
@@ -211,6 +214,7 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
                 # retained social completion cannot re-quiesce or reissue them,
                 # and remains explicitly historical rather than fresh readiness.
                 return copy.deepcopy(result)
+        deadline_ns = recovery.effect_deadline(cohort.journal, row, 'membership', deadline_ns)
         for owner in cohort.owners.values():
             scope.enter_context(cohort._owner_deadline(owner, deadline_ns))
             session = getattr(owner, 'group_relationship_scope', None)
@@ -220,6 +224,7 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
 
         def barrier():
             budget()
+            recovery.attached(cohort.journal, row)
             proof = cohort.require_revocation_barrier()
             if (proof.get('schema') != 'cluster-receiving-admission-barrier/v1'
                     or set(proof.get('current_senders', {})) != {s['name'] for s in row['expected_precondition']['senders']}
@@ -234,15 +239,57 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
         authorities = {ref: public_authority_history(item['authority'], item['history'])
                        for ref, item in recipe['authority_closure'].items()}
 
-        def retain(name: str, step: str, make: Callable[[], dict]) -> dict:
+        def guard_for(social):
+            return dict(schema='cluster-membership-authoring-precondition/v1',
+                tribe_ref=admission['tribe_ref'], founder_being_ref=social['invitation']['founder_being_ref'],
+                founder_epoch=social['invitation']['founder_epoch'], invitee_being_ref=admission['entrant']['being_ref'],
+                membership_sequence=social['membership_sequence'],
+                previous_membership_terminal_ref=social['previous_membership_terminal_ref'],
+                active_members=sorted({item['being_ref'] for item in row['expected_precondition']['senders']}),
+                not_after_ms=social['acceptance_not_after_ms'])
+
+        def inspect_original():
+            # Absence observed before approval is not a fresh writer observation.
+            # Inspect and author within the same finite owner invocation, retaining
+            # the original social context and the original invite's disposition.
+            barrier()
+            grant = recovery.attached(cohort.journal, row)
+            if grant is None:
+                raise OnboardingError('onboarding_group_continuation_reference_required')
+            founder = recipe['founder_owner']
+            original = command(dict(operation_id=recipe['operation_id'], step='membership-invite',
+                method='tribe.invite', params={'payload': portal['social']['invitation']}))
+            inspected = cohort.owners[founder].group_relationship(original, inspect_only=True,
+                authority_closure={ref:item for ref,item in recipe['authority_closure'].items()
+                    if ref != receivers[founder]['being_ref']}, expected_context_sha256=contexts[founder],
+                membership_precondition=guard_for(portal['social']),
+                **({'offline': True} if receivers[founder]['recipe']['profile'] == 'source' else {}))
+            if (set(inspected) != set(grant['inspection'])
+                    or any(inspected[key] != value for key,value in grant['inspection'].items()
+                        if key != 'observed_at_ms')
+                    or type(inspected['observed_at_ms']) is not int
+                    or not grant['inspection']['observed_at_ms'] <= inspected['observed_at_ms']):
+                raise OnboardingError('onboarding_group_continuation_native_outcome_changed')
             current = cohort._row()
             observations = copy.deepcopy(current['runtime_observation'] or {})
-            social = observations.setdefault('membership_admission', dict(recipe_sha256=digest(recipe), requests={}))
-            if social.get('recipe_sha256') != digest(recipe):
+            if 'original_inspection' not in observations[state_key]:
+                observations[state_key]['original_inspection']=inspected
+                cohort.journal.advance(cohort.operation_id, current['state'], runtime_observation=observations,
+                    expected_runtime_observation=current['runtime_observation'])
+
+        def retain(name: str, step: str, make: Callable[[], dict]) -> dict:
+            step = step_prefix+step
+            current = cohort._row()
+            observations = copy.deepcopy(current['runtime_observation'] or {})
+            social = observations.setdefault(state_key, dict(recipe_sha256=digest(recipe), **provenance, requests={}))
+            if (social.get('recipe_sha256') != digest(recipe)
+                    or any(social.get(key) != value for key,value in provenance.items())):
                 raise OnboardingError('onboarding_group_membership_intent_changed')
             entries = social['requests'].setdefault(name, {})
             entry = entries.get(step)
             if entry is None:
+                if provenance and step != step_prefix+'membership-result':
+                    recovery.attached(cohort.journal,row,effect='membership')
                 entries[step] = entry = dict(command=command(make()), result=None)
                 cohort.journal.advance(cohort.operation_id, current['state'], runtime_observation=observations,
                     expected_runtime_observation=current['runtime_observation'])
@@ -250,24 +297,24 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
                 raise OnboardingError('onboarding_group_membership_intent_changed')
             if entry['result'] is None:
                 barrier()
+                if provenance and entry['command']['method']=='tribe.invite':
+                    # A previous process may have exited after inspection but
+                    # before dispatch. Its observation never opens this writer.
+                    inspect_original()
                 owner = cohort.owners[name]
                 options = dict(authority_closure={ref: item for ref, item in recipe['authority_closure'].items()
                     if ref != receivers[name]['being_ref']}, expected_context_sha256=contexts[name])
+                if provenance:
+                    options['effect_not_after_ms']=recipe['acceptance_not_after_ms']
                 if receivers[name]['recipe']['profile'] == 'source':
                     options['offline'] = True
                 if entry['command']['method'] in {'tribe.invite', 'tribe.membership.accept'}:
-                    options['membership_precondition'] = dict(schema='cluster-membership-authoring-precondition/v1',
-                        tribe_ref=admission['tribe_ref'], founder_being_ref=recipe['invitation']['founder_being_ref'],
-                        founder_epoch=recipe['invitation']['founder_epoch'], invitee_being_ref=admission['entrant']['being_ref'],
-                        membership_sequence=recipe['membership_sequence'],
-                        previous_membership_terminal_ref=recipe['previous_membership_terminal_ref'],
-                        active_members=sorted({item['being_ref'] for item in row['expected_precondition']['senders']}),
-                        not_after_ms=recipe['acceptance_not_after_ms'])
+                    options['membership_precondition'] = guard_for(recipe)
                 result = owner.group_relationship(entry['command'], **options)
                 budget()
                 current = cohort._row()
                 observations = copy.deepcopy(current['runtime_observation'] or {})
-                saved = observations['membership_admission']['requests'][name][step]
+                saved = observations[state_key]['requests'][name][step]
                 if saved != entry:
                     raise OnboardingError('onboarding_group_membership_intent_changed')
                 saved['result'] = result
@@ -281,7 +328,7 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
             return result
 
         def request(step: str, method: str, params: dict) -> dict:
-            return dict(operation_id=recipe['operation_id'], step=step, method=method, params=params)
+            return dict(operation_id=recipe['operation_id'], step=step_prefix+step, method=method, params=params)
 
         founder, entrant = recipe['founder_owner'], recipe['entrant_owner']
         invitation = retain(founder, 'membership-invite',
@@ -320,7 +367,7 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
             return request('membership-accept', 'tribe.membership.accept', dict(payload=payload))
 
         accepted = event(retain(entrant, 'membership-accept', acceptance), entrant, 'matrix/tribe-membership-acceptance')
-        accepted_command = cohort._row()['runtime_observation']['membership_admission']['requests'][entrant]['membership-accept']['command']
+        accepted_command = cohort._row()['runtime_observation'][state_key]['requests'][entrant][step_prefix+'membership-accept']['command']
         if accepted['payload'] != accepted_command['params']['payload']:
             raise OnboardingError('onboarding_group_membership_native_event_changed')
         snapshots = {}
@@ -342,7 +389,7 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
             invitation=invited, acceptance=accepted, snapshots=snapshots, receiving_readiness='unobserved')
         current = cohort._row()
         observations = copy.deepcopy(current['runtime_observation'])
-        observations['membership_admission'].update(result=result, result_sha256=digest(result))
+        observations[state_key].update(result=result, result_sha256=digest(result))
         cohort.journal.advance(cohort.operation_id, current['state'], runtime_observation=observations,
             expected_runtime_observation=current['runtime_observation'])
         return result
@@ -491,6 +538,7 @@ def publish_admission_group(cohort, *, deadline_ns: int) -> dict:
     operations own recovery and CAS; a completed phase is historical evidence.
     """
     from daimon_matrix.messaging_config import config_digest
+    from . import onboarding_group_recovery as recovery
 
     def budget():
         if type(deadline_ns) is not int or time.monotonic_ns() >= deadline_ns:
@@ -502,19 +550,20 @@ def publish_admission_group(cohort, *, deadline_ns: int) -> dict:
         portal = row['intended_transition'].get('portal_admission', {})
         if admission is None or portal.get('schema') != 'cluster-portal-group-admission/v2':
             raise OnboardingError('onboarding_group_membership_recipe_required')
-        social = membership_recipe(portal.get('social'), admission, row['expected_precondition']['senders'])
+        social, state_key, _step_prefix, provenance = recovery.membership(cohort.journal, row, admission)
         recipe = publication_recipe(row['intended_transition'].get('admission_publications'), admission,
             social, row['expected_precondition']['senders'], row['intended_transition'].get('admission_preparations'))
         budget()
-        membership = (row['runtime_observation'] or {}).get('membership_admission', {})
+        membership = (row['runtime_observation'] or {}).get(state_key, {})
         joined = membership.get('result')
         if (membership.get('recipe_sha256') != digest(social) or not isinstance(joined, dict)
                 or membership.get('result_sha256') != digest(joined)
                 or joined.get('schema') != 'cluster-native-membership-admission/v1'
                 or joined.get('operation_id') != social['operation_id']
-                or joined.get('receiving_readiness') != 'unobserved'):
+                or joined.get('receiving_readiness') != 'unobserved'
+                or any(membership.get(key) != value for key,value in provenance.items())):
             raise OnboardingError('onboarding_group_membership_unobserved')
-        identity = dict(recipe_sha256=digest(recipe), membership_sha256=digest(joined))
+        identity = dict(recipe_sha256=digest(recipe), membership_sha256=digest(joined), **provenance)
         previous = (row['runtime_observation'] or {}).get('group_publication')
         if previous is not None:
             if any(previous.get(key) != pin for key, pin in identity.items()):
@@ -523,12 +572,14 @@ def publish_admission_group(cohort, *, deadline_ns: int) -> dict:
                 if previous.get('result_sha256') != digest(previous['result']):
                     raise OnboardingError('onboarding_group_publication_changed')
                 return copy.deepcopy(previous['result'])
+        deadline_ns = recovery.effect_deadline(cohort.journal, row, 'publication', deadline_ns)
         for owner in cohort.owners.values():
             scope.enter_context(cohort._owner_deadline(owner, deadline_ns))
         contexts = admission_owner_contexts(row, social)
 
         def barrier():
             budget()
+            recovery.attached(cohort.journal, row)
             proof = cohort.require_revocation_barrier()
             if (proof.get('schema') != 'cluster-receiving-admission-barrier/v1'
                     or set(proof.get('current_senders', {})) != {s['name'] for s in row['expected_precondition']['senders']}
@@ -555,6 +606,8 @@ def publish_admission_group(cohort, *, deadline_ns: int) -> dict:
             entries = phase['requests'].setdefault(name, {})
             entry = entries.get(key)
             if entry is None:
+                if provenance and action!='snapshot':
+                    recovery.attached(cohort.journal,row,effect='publication')
                 entries[key] = entry = dict(command=value, result=None)
                 cohort.journal.advance(cohort.operation_id, current['state'], runtime_observation=observations,
                     expected_runtime_observation=current['runtime_observation'])
@@ -567,7 +620,8 @@ def publish_admission_group(cohort, *, deadline_ns: int) -> dict:
             owner = cohort.owners[name]
             result = owner.group_publication(value, expected_context_sha256=contexts[name],
                 authority_closure={ref: item for ref, item in social['authority_closure'].items()
-                    if ref != admission['receivers'][name]['being_ref']})
+                    if ref != admission['receivers'][name]['being_ref']},
+                **({'effect_not_after_ms':social['acceptance_not_after_ms']} if provenance else {}))
             budget()
             if entry['result'] is None:
                 current = cohort._row()
@@ -708,7 +762,7 @@ def check_membership_precondition(hosted, value: dict, *, now_ms: int) -> None:
 
 def request_packet(value: dict) -> dict:
     fields = {'command', 'offline', 'authority_closure'}
-    optional = {'expected_context_sha256', 'membership_precondition'}
+    optional = {'expected_context_sha256', 'membership_precondition', 'effect_not_after_ms'}
     if (not isinstance(value, dict) or not fields <= set(value) <= fields | optional
             or type(value['offline']) is not bool or not isinstance(value['authority_closure'], dict)
             or 'expected_context_sha256' in value and (not value['offline']
@@ -718,6 +772,9 @@ def request_packet(value: dict) -> dict:
     publication = isinstance(value['command'], dict) and 'action' in value['command']
     if publication and not value['offline']:
         raise OnboardingError('onboarding_group_relationship_writer_required')
+    if 'effect_not_after_ms' in value and (not value['offline'] or type(value['effect_not_after_ms']) is not int
+            or not 0 < value['effect_not_after_ms'] < 2**53):
+        raise OnboardingError('onboarding_group_relationship_command_required')
     precondition = {}
     if 'membership_precondition' in value:
         if publication or not value['offline']:
@@ -726,7 +783,8 @@ def request_packet(value: dict) -> dict:
     return dict(command=(publication_command if publication else command)(value['command']), offline=value['offline'],
                 authority_closure=copy.deepcopy(value['authority_closure']),
                 **({'expected_context_sha256': value['expected_context_sha256']}
-                   if 'expected_context_sha256' in value else {}), **precondition)
+                   if 'expected_context_sha256' in value else {}), **precondition,
+                **({'effect_not_after_ms':value['effect_not_after_ms']} if 'effect_not_after_ms' in value else {}))
 
 
 def publication_command(value: dict) -> dict:
@@ -1191,6 +1249,7 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
 
 def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
                         deadline_ns: int | None = None,
+                        effect_not_after_ms: int | None = None,
                         snapshot: Callable[[], dict] | None = None) -> dict:
     """Resume one exact owner publication through supported Matrix operations.
 
@@ -1219,13 +1278,19 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
             binding.verify()
         directory = private_directory(operation / 'publications', create=True)
         path = directory / (selected['step'] + '.json')
-        intent = dict(schema='cluster-group-publication-operation/v1', command=selected,
+        intent:dict = dict(schema='cluster-group-publication-operation/v1', command=selected,
                       owner_context_sha256=digest(context))
+        if effect_not_after_ms is not None:
+            if type(effect_not_after_ms) is not int or not 0 < effect_not_after_ms < 2**53:
+                raise OnboardingError('onboarding_group_relationship_command_required')
+            intent['effect_not_after_ms']=effect_not_after_ms
         if path.exists():
             retained = being_seed._read(path, limit=being_seed.MAX_SELECTION)
             if retained != {**intent, 'result': retained.get('result')}:
                 raise OnboardingError('onboarding_group_publication_intent_conflict')
         else:
+            if effect_not_after_ms is not None and time.time_ns()//1_000_000 >= effect_not_after_ms and selected['action']!='snapshot':
+                raise OnboardingError('onboarding_group_continuation_fresh_effect_required')
             if (selected['action'] == 'application' and selected['params']['expected_application_sha256'] is None
                     and (group_root / 'application').exists()):
                 raise OnboardingError('onboarding_group_publication_changed')
@@ -1234,6 +1299,18 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
         for parent in (directory, operation, journal, journal.parent):
             _sync(parent)
         check_deadline()
+        if (effect_not_after_ms is not None and time.time_ns()//1_000_000 >= effect_not_after_ms
+                and selected['action']!='snapshot'):
+            if not isinstance(retained['result'],dict):
+                # No authenticated retained publication result: preserve the
+                # uncertainty; never retry an unproven SDK effect after expiry.
+                raise OnboardingError('onboarding_group_continuation_fresh_effect_required')
+            result=retained['result']
+            if (result.get('schema')!='cluster-group-publication-result/v1' or result.get('status')!='recorded'
+                    or any(result.get(key)!=selected[key] for key in ('operation_id','step','action'))
+                    or result.get('receiving_readiness')!='unobserved'):
+                raise OnboardingError('onboarding_group_publication_changed')
+            return copy.deepcopy(result)
         if 'application_precondition' in selected:
             from daimon_matrix.messaging_config import config_digest, read_publication
             guard = selected['application_precondition']
@@ -1294,7 +1371,7 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
 def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
                          offline=None, deadline_ns: int | None = None,
                          membership_precondition: dict | None = None,
-                         inspect_only: bool = False) -> dict:
+                         inspect_only: bool = False, effect_not_after_ms: int | None = None) -> dict:
     """Record or retry one native request; never return local capability material.
 
     A relationship snapshot is the native reducer's observation at its retained
@@ -1307,6 +1384,9 @@ def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
     from daimon_matrix.operator_capabilities import operator_capability_profile
 
     selected = command(value)
+    if effect_not_after_ms is not None and (offline is None or type(effect_not_after_ms) is not int
+            or not 0 < effect_not_after_ms < 2**53):
+        raise OnboardingError('onboarding_group_relationship_command_required')
     if type(inspect_only) is not bool or inspect_only and (offline is None or selected['method'] != 'tribe.invite'):
         raise OnboardingError('onboarding_group_invitation_inspection_required')
     guard = None
@@ -1335,6 +1415,8 @@ def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
                     ledger=check_retained_ledger(runtime_root, journal, selected))
     if guard is not None:
         identity['membership_precondition_sha256'] = digest(guard)
+    if effect_not_after_ms is not None:
+        identity['effect_not_after_ms']=effect_not_after_ms
     if (config.runtime_id != identity['runtime_id'] or config.runtime_label != identity['runtime_label']
             or config.expected_server != identity['server']
             or config.capability.client_id != 'client:operator:' + config.runtime_label + ':' + role
@@ -1481,6 +1563,9 @@ def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
         if path.exists():
             retained = being_seed._read(path, limit=being_seed.MAX_SELECTION)
         else:
+            if (effect_not_after_ms is not None and clock()>=effect_not_after_ms
+                    and selected['method']!='relationship.snapshot'):
+                raise OnboardingError('onboarding_group_continuation_fresh_effect_required')
             retained = dict(schema='cluster-group-relationship-operation/v1', command=selected,
                 identity=identity, request=client.prepare(selected['method'], selected['params']),
                 retired_requests=[], response=None)
@@ -1489,7 +1574,24 @@ def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
         for parent in (operation, journal, journal.parent):
             _sync(parent)
         request = retained['request']
-        if retained['response'] is None:
+        historical=(effect_not_after_ms is not None and clock()>=effect_not_after_ms
+            and selected['method']!='relationship.snapshot')
+        if retained['response'] is None and historical:
+            verify_loaded_stores()
+            rows=[row for row in offline.service.ledger.rpc_requests()
+                if row['client_id']==request['client_id'] and row['request_id']==request['request_id']]
+            if (len(rows)!=1 or rows[0]['request_hash']!=request_hash or rows[0]['method']!=selected['method']):
+                raise OnboardingError('onboarding_group_continuation_fresh_effect_required')
+            if rows[0]['state']!='completed':
+                raise OnboardingError('onboarding_group_membership_native_uncertain')
+            # Existing completed RPC under the same exclusive writer: this
+            # supported native call returns its response, never starts a request.
+            verify_loaded_stores()
+            check_deadline()
+            response=offline.service.ledger.begin_rpc(client_id=request['client_id'],request_id=request['request_id'],
+                request_hash=request_hash,method=selected['method'])
+            verify_loaded_stores()
+        elif retained['response'] is None:
             check_deadline()
             authoring_precondition(request, request_hash)
             if offline is not None and clock() - request['issued_at_ms'] > MAX_CLOCK_SKEW_MS:

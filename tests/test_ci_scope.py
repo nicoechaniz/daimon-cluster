@@ -937,3 +937,20 @@ def test_recovery_planner_and_native_inspection_select_exact_affected_contracts(
     assert ci_scope.select(changed+['clusterctl/onboarding_runtime.py'], ROOT, base='a'*40)[0] != 'admission'
     monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda *a, **k: False)
     assert ci_scope.select(changed, ROOT, base='a'*40)[0] != 'admission'
+
+
+def test_continuation_execution_selects_affected_roots_and_native_publication_once(monkeypatch):
+    from tools import ci_scope
+    changed=sorted(ci_scope.ADMISSION_EXECUTION_HASHES)+['tests/test_onboarding_group_publication.py',
+        'tests/test_guest_service_bootstrap.py','.github/workflows/tests.yml','tools/ci_scope.py']
+    monkeypatch.setattr(ci_scope,'receiving_support_only',lambda root,base,names,hashes=None:
+        base=='a'*40 and names==set(ci_scope.ADMISSION_EXECUTION_HASHES) and hashes==ci_scope.ADMISSION_EXECUTION_HASHES)
+    profile,selected=ci_scope.select(changed,ROOT,base='a'*40)
+    assert profile=='admission' and 'tests/test_guest_service_bootstrap.py' in selected
+    native=[item for item in selected if item.startswith('tests/test_onboarding_group_publication.py::')]
+    assert len(native)==len(set(native))==3
+    assert any('continuation-late-ack' in item for item in native)
+    assert ci_scope.select(changed,ROOT)[0]!='admission'
+    assert ci_scope.select(changed+['clusterctl/being_seed.py'],ROOT,base='a'*40)[0]!='admission'
+    monkeypatch.setattr(ci_scope,'receiving_support_only',lambda *a,**k:False)
+    assert ci_scope.select(changed,ROOT,base='a'*40)[0]!='admission'

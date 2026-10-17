@@ -463,7 +463,10 @@ class GuestServiceBootstrap:
             else:
                 inactive()
                 authorized_effect()
-                publish(self.manager.unit, candidate)
+                def before_publish():
+                    self._budget(deadline_ns)
+                    authorized_effect()
+                publish(self.manager.unit, candidate,pre_publish=before_publish)
                 authorized_effect()
                 self.manager.enable(deadline_ns=deadline_ns)
                 retained = self._record(root / 'selected.json', dict(
@@ -622,11 +625,18 @@ class GuestServiceBootstrap:
         self._budget(deadline_ns)
         return completed
 
-    def execute(self, action: str, request: dict, *, deadline_ns: int) -> dict:
+    def execute(self, action: str, request: dict, *, deadline_ns: int, effect_not_after_ms: int | None = None) -> dict:
         from .owner_process import PresenceError, ProcessPresence, observe_process_exit
         from contextlib import ExitStack
         if action not in {'validate', 'quiesce', 'quiescence', 'select', 'start', 'steady'}:
             raise OnboardingError('receiving_guest_service_request_required')
+        if effect_not_after_ms is not None and (action not in {'select','start'}
+                or type(effect_not_after_ms) is not int or not 0 < effect_not_after_ms < 2**53):
+            raise OnboardingError('receiving_guest_service_request_required')
+        def fresh_effect():
+            self._budget(deadline_ns)
+            if effect_not_after_ms is not None and time.time_ns()//1_000_000 >= effect_not_after_ms:
+                raise OnboardingError('receiving_preservation_authorization_expired')
         self._budget(deadline_ns)
         with selection_lock(self.manager.unit):
             if action == 'steady':
@@ -722,7 +732,7 @@ class GuestServiceBootstrap:
                 self._stopped(previous, candidate, deadline_ns=deadline_ns)
                 self._budget(deadline_ns)
                 result = select_entrypoint(self.manager.unit, request['argv'],
-                    previous_sha256=previous['service']['unit_sha256'])
+                    previous_sha256=previous['service']['unit_sha256'],pre_replace=fresh_effect)
                 result = self._record(root/'selected.json', result)
                 self._budget(deadline_ns)
                 return result
@@ -755,6 +765,7 @@ class GuestServiceBootstrap:
                     reloaded = self._stopped(previous, candidate, deadline_ns=deadline_ns)
                     if reloaded['unit_sha256'] != selected['selected_sha256']:
                         raise OnboardingError('receiving_guest_service_candidate_changed')
+                    fresh_effect()
                 self.manager.start(deadline_ns=deadline_ns, pre_start=before_start)
             elif current['manager']['ActiveState'] not in {'active', 'activating'} or intent is None:
                 raise OnboardingError('receiving_guest_service_started_process_changed')
@@ -973,7 +984,7 @@ def install(code: Path, *, receive_only: bool, visibility: Path | None = None,
         execute(['systemctl', 'enable', '--now', UNIT])
 
 
-def publish(path: Path, raw: bytes, *, mode: int = 0o600) -> None:
+def publish(path: Path, raw: bytes, *, mode: int = 0o600, pre_publish: Callable[[],None] | None = None) -> None:
     """Atomic owned publication, refusing replacement of an existing candidate."""
     directory = path.parent
     being_seed._path(directory)
@@ -993,6 +1004,8 @@ def publish(path: Path, raw: bytes, *, mode: int = 0o600) -> None:
                 output.write(raw)
                 output.flush()
                 os.fsync(output.fileno())
+            if pre_publish is not None:
+                pre_publish()
             os.link(temporary, path, follow_symlinks=False)
             parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
@@ -1025,12 +1038,25 @@ def main(argv=None) -> int:
     parser.add_argument('--bootstrap-request-json')
     parser.add_argument('--owner-observation-json')
     parser.add_argument('--timeout-seconds', type=float, default=30)
+    parser.add_argument('--observation-deadline-ns',type=int)
+    parser.add_argument('--effect-not-after-ms',type=int)
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument('--receive-only', action='store_true')
     selection.add_argument('--visibility-installation', type=Path)
     args = parser.parse_args(argv)
     stage = 'public-release'
     try:
+        deadline_ns=None
+        if args.action!='install':
+            if (not math.isfinite(args.timeout_seconds) or not 0 < args.timeout_seconds <= 60
+                    or args.observation_deadline_ns is not None and not 0 < args.observation_deadline_ns-time.monotonic_ns() <= 60_000_000_000
+                    or args.effect_not_after_ms is not None and (args.action not in {'bootstrap-select','bootstrap-start'}
+                        or not 0 < args.effect_not_after_ms < 2**53)):
+                raise OnboardingError('receiving_guest_service_request_required')
+            deadline_ns=min(time.monotonic_ns()+int(args.timeout_seconds*1_000_000_000),
+                args.observation_deadline_ns or 2**63-1)
+        elif args.observation_deadline_ns is not None or args.effect_not_after_ms is not None:
+            raise OnboardingError('receiving_guest_service_request_required')
         plan = validate_plan(json.loads(onboarding_release.regular(args.plan, uid=1000)))
         onboarding_code_successor.selection(args.runtime_code, args.runtime_digest, args.code,
                                              plan['release_digest'], uid=0)
@@ -1041,10 +1067,12 @@ def main(argv=None) -> int:
             raise OnboardingError('qualified_guest_service_required')
         if args.action != 'install':
             stage = args.action
+            assert deadline_ns is not None
             if (not math.isfinite(args.timeout_seconds) or not 0 < args.timeout_seconds <= 60
                     or args.receive_only or args.visibility_installation is not None or args.messaging_application is not None):
                 raise OnboardingError('receiving_guest_service_request_required')
-            deadline_ns = time.monotonic_ns()+int(args.timeout_seconds*1_000_000_000)
+            if time.monotonic_ns()>=deadline_ns:
+                raise OnboardingError('receiving_guest_service_deadline_expired')
             controller = GuestServiceBootstrap(MatrixGuestService(Path('/etc/systemd/system')/UNIT))
             if args.action == 'bootstrap-inspect':
                 if args.bootstrap_request_json is not None or (args.owner_observation_json is not None
@@ -1060,7 +1088,8 @@ def main(argv=None) -> int:
                 from .onboarding import digest
                 if request.get('plan_digest') != digest(plan):
                     raise OnboardingError('receiving_guest_service_request_required')
-                result = controller.execute(args.action.removeprefix('bootstrap-'), request, deadline_ns=deadline_ns)
+                result = controller.execute(args.action.removeprefix('bootstrap-'), request, deadline_ns=deadline_ns,
+                    **({'effect_not_after_ms':args.effect_not_after_ms} if args.effect_not_after_ms is not None else {}))
             print(json.dumps(result))
             return 0
         if args.bootstrap_request_json is not None or args.owner_observation_json is not None:

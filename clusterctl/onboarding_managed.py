@@ -293,6 +293,7 @@ class ManagedRuntime:
         )
         from .onboarding_service import command, unit_content
         from .operation_journal import JournalConflict
+        from . import onboarding_group_recovery as recovery
         if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 60:
             raise OnboardingError('receiving_host_deadline_required')
         deadline = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
@@ -312,7 +313,7 @@ class ManagedRuntime:
             approved = admission['receivers'][name]
             vector = Path(approved['candidate']['code']), approved['recipe']['prepared']['code_digest']
             prepared = approved['recipe']['prepared']
-            bounds = admission['activation']
+            bounds = recovery.bounds(cohort.journal, row)
             _manifest(Path(bounds['manifest_path']), row['intent']['runtime_call']['manifest_digest'],
                 uid=bounds['manifest_uid'])
             checked = preflight(vector[0], vector[1], Path(bounds['manifest_path']),
@@ -349,8 +350,12 @@ class ManagedRuntime:
             binding = dict(schema='cluster-managed-initial-binding/v1', plan_digest=digest(plan),
                 admission_sha256=digest(admission), profile_sha256=digest(configuration),
                 receiver=approved, origin=expected)
+            grant = recovery.attached(cohort.journal, row)
+            if grant is not None:
+                binding['continuation_sha256'] = digest(grant)
             intent = effects().get('intent')
             if intent is None:
+                recovery.attached(cohort.journal, row, effect='initial-start')
                 with ExitStack() as observations:
                     for sender in row['expected_precondition']['senders']:
                         observations.enter_context(cohort._owner_deadline(cohort.owners[sender['name']], deadline))
@@ -391,11 +396,18 @@ class ManagedRuntime:
             def root_call(action, *, fresh_effect=False, **kwargs):
                 budget = remaining()
                 if fresh_effect:
+                    recovery.attached(cohort.journal, row, effect='initial-start')
                     budget = min(budget, (bounds['expires_at_ms'] - time.time_ns() // 1_000_000) / 1000)
                     if budget <= 0:
                         raise OnboardingError('receiving_preservation_authorization_expired')
-                return self.backend._guest_service_call(plan, action, candidate=vector,
-                    timeout_seconds=budget, **kwargs)
+                dispatch=vector
+                extra:dict={}
+                if grant is not None:
+                    helper=grant['maintenance'][name]
+                    dispatch=Path(helper['code']),helper['code_digest']
+                    extra['owner_deadline_ns']=deadline
+                return self.backend._guest_service_call(plan, action, candidate=dispatch,
+                    timeout_seconds=budget, **extra,**kwargs)
             validated = root_call('bootstrap-validate', request=intent['request'])
             dispatch_state = validated.get('dispatch_state')
             if dispatch_state not in {'not-dispatched', 'intent-retained', 'started-recorded'}:

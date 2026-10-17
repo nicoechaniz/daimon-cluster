@@ -239,3 +239,25 @@ def test_kernel_owner_lane_forwards_candidate_without_replacing_identity_produce
     with pytest.raises(SystemExit):
         ci_guest_owner.main(['--uid', '1001', '--gid', '1002', '--sdk-commit', 'a'*40])
     assert captured == []
+
+
+def test_kernel_owner_isolates_pytest_without_lengthening_native_socket_homes(tmp_path, monkeypatch):
+    import shlex
+    import subprocess
+    import sys
+    from tools.ci_guest_owner import _owner_environment
+    monkeypatch.delenv('TMPDIR', raising=False)
+    monkeypatch.setenv('PYTEST_ADDOPTS', '-W "error::ResourceWarning"')
+    temporary = str(tmp_path / 'pytest owner')
+    environment = _owner_environment(temporary)
+    options = shlex.split(environment['PYTEST_ADDOPTS'])
+    assert options == ['-W', 'error::ResourceWarning', '--basetemp', temporary + '/pytest']
+    # Exercise an actual native-size Unix address, not a string-length assertion.
+    program = '''import socket,tempfile
+from pathlib import Path
+with tempfile.TemporaryDirectory(prefix='dm-owner-') as name:
+ path=Path(name)/'.local/state/daimon-onboarding/eko-codex/matrix/package/runtime/.s-abcdefgh'
+ path.parent.mkdir(parents=True)
+ with socket.socket(socket.AF_UNIX) as listener:listener.bind(str(path))
+'''
+    subprocess.run([sys.executable, '-I', '-c', program], env=environment, check=True)

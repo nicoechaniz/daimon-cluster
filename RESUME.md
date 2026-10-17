@@ -31,16 +31,19 @@ No new invitation, shadow parent or enlarged old horizon is a recovery route.
 Publication, managed first loads, activation, signed communication and compatible
 v2 rollback remain unobserved. Originalv1 is not a post-v2 rollback.
 
-Draft PR265 publishes sourceef1507c. CI38989940671 passed the actual guest
-owner lane but failed the native publication [recover] case because it invoked
-GuestOwnerBootstrap under the runner UID rather than required UID1000. This is
-a workflow routing defect; actual output is retained before diagnosis. The same
-existing kernel-owner helper now accepts exact selected native cases, retaining
-candidateb53 and separate805 identity producer. Its private temporary root also
-prevents owner/root pytest trees colliding after the root lane. The formerly
-failing case passes through that real UID1000 invocation in78.85s;75 affected
-workflow/selector cases and scoped lint pass. The correction changes no product
-runtime or installed helper. Do not rerun the old failed pipeline unchanged.
+Draft PR265 source8fc7eea's CI38992257942 failed after28 guest-owner cases:
+the actual admitted child could not bind its private AF_UNIX socket. A focused
+isolated reproduction traced the original failure to daemon.py's socket.bind;
+the observer then terminated the already-failing child before its traceback
+could reach stderr. The CI helper had expanded every tempfile-created native home
+by replacing TMPDIR to isolate pytest's owner. That workflow defect is corrected:
+keep ordinary native temp homes and isolate only pytest through its supported
+--basetemp option. Existing PYTEST_ADDOPTS quoting is preserved. The same exact
+kernelUID1000/candidateb53/default805 native case now passes in15.02s;76 affected
+workflow/scope cases pass1.23s, including a real native-size Unix socket regression.
+No product runtime, source SDK pin or installed artifact changed. Original source
+CI38989940671's runner UID failure and its78.85s corrected case remain valid evidence.
+Do not rerun a failed pipeline unchanged or treat a metadata lock as a live job.
 
 The publication-budget correction's4 affected coordinator cases passed1.80s;
 genuine candidate linked publication/lost-result passed42.93s. Per-owner and final
@@ -49,7 +52,13 @@ Neither this source correction nor CI changes select a synthetic/live artifact.
 
 Actual owner metadata now confirms an unpublished initial preparation prefix with
 retained client/binding and capability genesis, while final application is absent.
-Matrix#368 owns native prefix recovery; do not replay prepare or assume no effects.
+Matrix#368/PR369 owns native prefix recovery; source6bfb59a is reviewed/published,
+not installed acceptance. Actual owner stage-relative observation additionally found
+a retained opaque-message rollback journal. An isolated raw-pair copy has integrity
+ok and only inbox_meta/items/requests (meta1,1;otherrows0); SQLite leaves its zero-
+header journal present. The original pair is unchanged. Explicit trusted recovery
+must recognize this constructor prefix and preserve the same client/inode; never
+ignore/delete the journal, rerun prepare or mistake this for absence of effects.
 The remaining-effects proposal has conditional Astra design GO only, requiring
 native recovery and protected execution provenance before any fresh continuation.
 See docs/design/admission-continuation.md. Real Matrix/I/O remains independent.

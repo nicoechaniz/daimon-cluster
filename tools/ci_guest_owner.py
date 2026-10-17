@@ -9,6 +9,7 @@ import argparse
 import os
 from pathlib import Path
 import signal
+import shlex
 import sys
 import tempfile
 
@@ -21,6 +22,14 @@ def run(command: list[str], uid: int, gid: int) -> int:
     with tempfile.TemporaryDirectory(prefix='cluster-ci-owner-', dir='/tmp') as name:
         os.chown(name, uid, gid)
         return _mapped_run(command, uid, gid, name)
+
+
+def _owner_environment(temporary: str) -> dict[str, str]:
+    # Isolate pytest's owner, not every native runtime's home. Changing TMPDIR
+    # lengthens short AF_UNIX paths created by unrelated tempfile callers.
+    options = shlex.split(os.environ.get('PYTEST_ADDOPTS', ''))
+    options.extend(['--basetemp', str(Path(temporary) / 'pytest')])
+    return {**os.environ, 'PYTEST_ADDOPTS': shlex.join(options)}
 
 
 def _mapped_run(command: list[str], uid: int, gid: int, temporary: str) -> int:
@@ -40,7 +49,7 @@ def _mapped_run(command: list[str], uid: int, gid: int, temporary: str) -> int:
             os.close(mapped_read)
             os.setresgid(1000, 1000, 1000)
             os.setresuid(1000, 1000, 1000)
-            os.execve(command[0], command, {**os.environ, 'TMPDIR': temporary})
+            os.execve(command[0], command, _owner_environment(temporary))
         except BaseException as error:
             print(f'guest-owner namespace child failed: {error}', file=sys.stderr, flush=True)
             os._exit(1)

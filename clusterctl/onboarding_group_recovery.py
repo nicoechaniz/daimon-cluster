@@ -422,7 +422,7 @@ def _remaining_frontier(journal, parent: dict) -> dict:
                 or set(observed['admission_lifecycles']) != old
                 or set(observed['sender_revocations']) != old
                 or any(key in observed for key in ('initial_managed', 'admission_activation_plan',
-                    'cohort_activation', 'sender_initials', 'sender_selections', 'initial_steady',
+                    'cohort_activation', 'sender_initials', 'sender_selections', 'sender_replacements', 'initial_steady',
                     'admission_remaining_effects'))
                 or any(key.startswith(('loaded-', 'communication-', 'communication-intent-')) for key in phases)):
             raise ValueError

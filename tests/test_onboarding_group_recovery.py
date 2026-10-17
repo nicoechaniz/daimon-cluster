@@ -290,14 +290,15 @@ def test_remaining_approval_preserves_social_history_and_original_pending_reques
         recovery.remaining_plan(journal, {**request, 'expires_at_ms': clock[0]+1}, audit_identity={})
 
 
-@pytest.mark.parametrize('fault', ['initial', 'loaded', 'activation', 'communication', 'membership', 'completed-publication'])
+@pytest.mark.parametrize('fault', ['initial', 'replacement', 'loaded', 'activation', 'communication', 'membership', 'completed-publication'])
 def test_remaining_planner_refuses_later_or_incomplete_frontiers(tmp_path, monkeypatch, fault):
     journal, parent, request, _clock = remaining_fixture(tmp_path, monkeypatch)
     observed = copy.deepcopy(parent['runtime_observation'])
     if fault in {'loaded', 'communication'}:
         observed['portal_admission'][{'loaded': 'loaded-entrant', 'communication': 'communication-intent-send'}[fault]] = {}
-    elif fault in {'initial', 'activation'}:
-        observed[{'initial': 'initial_managed', 'activation': 'admission_activation_plan'}[fault]] = {}
+    elif fault in {'initial', 'replacement', 'activation'}:
+        observed[{'initial': 'initial_managed', 'replacement': 'sender_replacements',
+            'activation': 'admission_activation_plan'}[fault]] = {}
     elif fault == 'membership':
         observed['membership_continuation']['result'] = None
     else:

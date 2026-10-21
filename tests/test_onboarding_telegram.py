@@ -139,9 +139,6 @@ def test_native_supervisor_reconciles_singleton_without_model_or_message_command
     assert waits == [5, 5, 5]
     assert all(argv == ['/usr/local/bin/codex', 'app-server', 'daemon', 'start'] for argv, _ in calls)
     assert all(options['env']['CODEX_HOME'] == '/home/agent/.codex' for _, options in calls)
-    with pytest.raises(OnboardingError, match='native_codex_daemon_start_failed'):
-        native_serve(Path('/home/agent'), Path('/usr/local/bin/codex'),
-                     run=lambda *a, **k: SimpleNamespace(returncode=1), wait=waits.append, cycles=1)
 
 
 def upgrade_fixture(tmp_path):

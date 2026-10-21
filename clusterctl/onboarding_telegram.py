@@ -142,22 +142,16 @@ def native_service(home: Path, codex: Path, code: Path) -> bytes:
         'Environment=PATH=/usr/local/bin:/usr/bin:/bin\nUMask=0077\n'
         f'ExecStart={encoded}\nExecStop={command} app-server daemon stop\n'
         'Restart=on-failure\nRestartSec=5\nTimeoutStopSec=30\nKillMode=control-group\n'
-        'StandardOutput=null\nStandardError=null\n[Install]\nWantedBy=multi-user.target\n').encode()
+        'StandardOutput=null\nStandardError=journal\n[Install]\nWantedBy=multi-user.target\n').encode()
 
 
 def native_serve(home: Path, codex: Path, *, run=subprocess.run, wait=time.sleep, cycles=None) -> None:
     """Supervise the native singleton without inference or Matrix attention."""
-    env = dict(HOME=str(home), CODEX_HOME=str(home / '.codex'), PATH='/usr/local/bin:/usr/bin:/bin')
-    count = 0
-    while cycles is None or count < cycles:
-        # Native start is idempotent and waits for the control handshake. It
-        # recovers a departed daemon without replaying any conversation turn.
-        result = run([str(codex), 'app-server', 'daemon', 'start'], capture_output=True,
-                     text=True, timeout=180, check=False, env=env)
-        if result.returncode:
-            raise OnboardingError('native_codex_daemon_start_failed')
-        count += 1
-        wait(5)
+    from .native_codex_supervisor import serve
+    try:
+        serve(home, codex, run=run, wait=wait, cycles=cycles)
+    except RuntimeError as error:
+        raise OnboardingError('native_codex_daemon_start_failed') from error
 
 
 def api(token: str, method: str) -> dict:

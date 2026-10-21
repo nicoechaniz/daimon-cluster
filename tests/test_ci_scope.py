@@ -6,13 +6,12 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_login_recovery_qualifies_native_lifecycle_and_account_contracts(tmp_path):
+def test_login_recovery_qualifies_affected_account_contracts(tmp_path):
     changed=['tools/refresh_hosted_codex_login.py','tests/test_hosted_codex_login_refresh.py',
-             'clusterctl/onboarding_telegram.py','tests/test_onboarding_telegram.py',
              'docs/operations/codex-provider-login.md','tools/ci_scope.py','tests/test_ci_scope.py']
     profile,tests=select(changed,ROOT)
     assert profile=='account'
-    assert {'tests/test_onboarding_telegram.py','tests/test_onboarding_shared_login.py',
+    assert {'tests/test_onboarding_accounts.py','tests/test_onboarding_shared_login.py',
             'tests/test_hosted_codex_login_refresh.py'}<=set(tests)
     assert select(changed,tmp_path)==('full',['tests'])
     assert select([*changed,'clusterctl/onboarding_custody.py'],ROOT)==('full',['tests'])

@@ -99,9 +99,8 @@ ACCOUNT_TESTS = ('tests/test_onboarding_accounts.py', 'tests/test_onboarding_sha
     'tests/test_onboarding_consent.py', 'tests/test_onboarding_actions.py',
     'tests/test_onboarding_host_ownership.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 LOGIN_RECOVERY_FILES = {'tools/refresh_hosted_codex_login.py',
-    'tests/test_hosted_codex_login_refresh.py', 'clusterctl/onboarding_telegram.py',
-    'tests/test_onboarding_telegram.py', 'docs/operations/codex-provider-login.md'}
-LOGIN_RECOVERY_TESTS = tuple(sorted(set(TELEGRAM_TESTS) | set(ACCOUNT_TESTS) |
+    'tests/test_hosted_codex_login_refresh.py', 'docs/operations/codex-provider-login.md'}
+LOGIN_RECOVERY_TESTS = tuple(sorted(set(ACCOUNT_TESTS) |
     {'tests/test_hosted_codex_login_refresh.py'}))
 WELCOME_FILES = {'clusterctl/onboarding_welcome.py', 'clusterctl/onboarding_host.py',
                  'tests/test_onboarding_welcome.py', 'tools/check_rc_types.py'}

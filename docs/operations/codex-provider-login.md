@@ -45,6 +45,8 @@ can leave a legitimate child still starting. The hosted supervisor must retain
 that process for a bounded 180-second startup window and reuse idempotent native
 start, instead of exiting immediately and letting systemd kill the child's
 cgroup on every retry. A persistent failure remains visible after that window.
+Reuse the shared [native supervisor](../runbooks/native-codex-supervision.md)
+from Cluster #288, including its supported content-addressed maintenance drop-in.
 This changes supervision, not the daemon version or its stored conversations.
 
 An already-running supervisor adopts the correction at its next maintained

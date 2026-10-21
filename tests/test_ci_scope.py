@@ -6,6 +6,21 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_agenda_adapter_uses_home_coverage_and_preserves_native_boundaries():
+    from tools.ci_scope import HOME_TESTS
+    changed=['clusterctl/homes/agenda.py','clusterctl/homes/agenda_calendar.py',
+        'clusterctl/homes/service.py','clusterctl/homes/launcher.py',
+        'clusterctl/homes/agenda_assets/index.html','clusterctl/homes/agenda_assets/agenda.js',
+        'clusterctl/homes/agenda_assets/agenda.css','tests/test_home_agenda.py',
+        'tests/test_home_agenda_calendar.py','tools/agenda_owner.py','tools/qualify_agenda.py',
+        'tools/preview_agenda.py','tests/js/agenda-journey.cjs',
+        'docs/services/agenda.md','tools/ci_scope.py','tests/test_ci_scope.py']
+    assert select(changed, ROOT)==('homes',list(HOME_TESTS))
+    assert {'tests/test_home_agenda.py','tests/test_home_agenda_calendar.py'}<=set(HOME_TESTS)
+    for extra in ('requirements-weave.txt','clusterctl/onboarding_custody.py','unknown.py'):
+        assert select([*changed,extra],ROOT)==('full',['tests'])
+
+
 def test_closeout_operator_keeps_job_worker_and_progress_contracts(tmp_path):
     changed = ['tools/close_completed_onboarding.py', 'tests/test_onboarding_closeout.py',
                'docs/operations/onboarding-closeout.md', 'tools/ci_scope.py', 'tests/test_ci_scope.py']

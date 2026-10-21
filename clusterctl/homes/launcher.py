@@ -95,6 +95,11 @@ def catalog(app, home, subject, vpn, *, local_only=False):
         results = list(pool.map(read, selected))
     apps, seen, unavailable = [], set(), 0 if local_only else len(homes) - len(selected)
     owner_url = owner_app_url(app)
+    # Only an enabled, source-owned adapter may promote its exact private
+    # application route. A matching title or arbitrary HTTPS link cannot.
+    native_web_urls = {owner_url} if owner_url else set()
+    if getattr(app, 'agenda', None):
+        native_web_urls.update(h['public_url'] + '/agenda/' for h in app.homes.values())
     receivers = getattr(app, 'miniapp_receivers', {})
     receiver = paired_receiver(app, home, subject)
     def receiver_bot(ref):
@@ -108,7 +113,7 @@ def catalog(app, home, subject, vpn, *, local_only=False):
         unavailable += not available
         for entry in entries:
             url = entry.get('url')
-            owner_app = owner_url is not None and url == owner_url
+            owner_app = url in native_web_urls
             published_app = application(entry)
             if entry.get('kind') != 'link' or not (published_app or owner_app or app_url(url)):
                 continue

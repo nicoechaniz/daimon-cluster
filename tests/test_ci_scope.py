@@ -6,6 +6,17 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_login_recovery_qualifies_affected_account_contracts(tmp_path):
+    changed=['tools/refresh_hosted_codex_login.py','tests/test_hosted_codex_login_refresh.py',
+             'docs/operations/codex-provider-login.md','tools/ci_scope.py','tests/test_ci_scope.py']
+    profile,tests=select(changed,ROOT)
+    assert profile=='account'
+    assert {'tests/test_onboarding_accounts.py','tests/test_onboarding_shared_login.py',
+            'tests/test_hosted_codex_login_refresh.py'}<=set(tests)
+    assert select(changed,tmp_path)==('full',['tests'])
+    assert select([*changed,'clusterctl/onboarding_custody.py'],ROOT)==('full',['tests'])
+
+
 def test_closeout_operator_keeps_job_worker_and_progress_contracts(tmp_path):
     changed = ['tools/close_completed_onboarding.py', 'tests/test_onboarding_closeout.py',
                'docs/operations/onboarding-closeout.md', 'tools/ci_scope.py', 'tests/test_ci_scope.py']

@@ -145,19 +145,34 @@ def native_service(home: Path, codex: Path, code: Path) -> bytes:
         'StandardOutput=null\nStandardError=null\n[Install]\nWantedBy=multi-user.target\n').encode()
 
 
-def native_serve(home: Path, codex: Path, *, run=subprocess.run, wait=time.sleep, cycles=None) -> None:
+def native_serve(home: Path, codex: Path, *, run=subprocess.run, wait=time.sleep,
+                 cycles=None, clock=time.monotonic, startup_grace_seconds=180) -> None:
     """Supervise the native singleton without inference or Matrix attention."""
     env = dict(HOME=str(home), CODEX_HOME=str(home / '.codex'), PATH='/usr/local/bin:/usr/bin:/bin')
     count = 0
+    unready_since = None
     while cycles is None or count < cycles:
         # Native start is idempotent and waits for the control handshake. It
         # recovers a departed daemon without replaying any conversation turn.
         result = run([str(codex), 'app-server', 'daemon', 'start'], capture_output=True,
                      text=True, timeout=180, check=False, env=env)
         if result.returncode:
-            raise OnboardingError('native_codex_daemon_start_failed')
+            # The native CLI can time out after spawning a legitimate daemon.
+            # Exiting here makes systemd kill that still-starting child with
+            # the supervisor's cgroup, so every retry starts cold again.
+            # Keep this same supervisor alive for one bounded startup window;
+            # the existing idempotent native start observes the retained child.
+            now = clock()
+            if unready_since is None:
+                unready_since = now
+            if now - unready_since >= startup_grace_seconds:
+                raise OnboardingError('native_codex_daemon_start_failed')
+        else:
+            unready_since = None
         count += 1
         wait(5)
+    if unready_since is not None:
+        raise OnboardingError('native_codex_daemon_start_failed')
 
 
 def api(token: str, method: str) -> dict:

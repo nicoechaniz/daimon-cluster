@@ -144,6 +144,32 @@ def test_native_supervisor_reconciles_singleton_without_model_or_message_command
                      run=lambda *a, **k: SimpleNamespace(returncode=1), wait=waits.append, cycles=1)
 
 
+def test_native_supervisor_retains_slow_start_instead_of_exiting_its_cgroup():
+    from types import SimpleNamespace
+    from clusterctl.onboarding_telegram import native_serve
+    results = iter((1, 1, 0))
+    calls, waits = [], []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=next(results))
+    native_serve(Path('/home/agent'), Path('/usr/local/bin/codex'),
+                 run=run, wait=waits.append, cycles=3, clock=lambda: 0)
+    assert len(calls) == 3 and waits == [5, 5, 5]
+    assert all(argv[-1] == 'start' for argv in calls)
+
+
+def test_native_supervisor_unavailable_start_has_a_bounded_failure_window():
+    from types import SimpleNamespace
+    from clusterctl.onboarding_telegram import native_serve
+    clock = iter((0, 181))
+    waits = []
+    with pytest.raises(OnboardingError, match='native_codex_daemon_start_failed'):
+        native_serve(Path('/home/agent'), Path('/usr/local/bin/codex'),
+                     run=lambda *a, **k: SimpleNamespace(returncode=1),
+                     wait=waits.append, clock=lambda: next(clock))
+    assert waits == [5]
+
+
 def upgrade_fixture(tmp_path):
     from types import SimpleNamespace
     home = tmp_path / 'home'

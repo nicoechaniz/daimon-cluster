@@ -98,6 +98,11 @@ ACCOUNT_TESTS = ('tests/test_onboarding_accounts.py', 'tests/test_onboarding_sha
     'tests/test_onboarding_provider.py', 'tests/test_onboarding_ingress.py',
     'tests/test_onboarding_consent.py', 'tests/test_onboarding_actions.py',
     'tests/test_onboarding_host_ownership.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
+LOGIN_RECOVERY_FILES = {'tools/refresh_hosted_codex_login.py',
+    'tests/test_hosted_codex_login_refresh.py', 'clusterctl/onboarding_telegram.py',
+    'tests/test_onboarding_telegram.py', 'docs/operations/codex-provider-login.md'}
+LOGIN_RECOVERY_TESTS = tuple(sorted(set(TELEGRAM_TESTS) | set(ACCOUNT_TESTS) |
+    {'tests/test_hosted_codex_login_refresh.py'}))
 WELCOME_FILES = {'clusterctl/onboarding_welcome.py', 'clusterctl/onboarding_host.py',
                  'tests/test_onboarding_welcome.py', 'tools/check_rc_types.py'}
 WELCOME_TESTS = ('tests/test_onboarding_welcome.py', 'tests/test_onboarding.py',
@@ -539,6 +544,11 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
 
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
+    if (changed and set(changed) & {'tools/refresh_hosted_codex_login.py',
+                                   'tests/test_hosted_codex_login_refresh.py'}
+            and set(changed) <= LOGIN_RECOVERY_FILES | CI_FILES
+            and all((root / path).is_file() for path in LOGIN_RECOVERY_TESTS)):
+        return 'account', list(LOGIN_RECOVERY_TESTS)
     closeout_files = {'tools/close_completed_onboarding.py', 'tests/test_onboarding_closeout.py',
                       'docs/operations/onboarding-closeout.md'}
     closeout_tests = ['tests/test_onboarding_closeout.py', 'tests/test_onboarding.py',

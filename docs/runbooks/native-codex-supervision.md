@@ -45,6 +45,16 @@ uses the receiving owner's HOME/CODEX_HOME, scoped incident actor and existing
 Telegram/Sessions route. A running unit alone never proves functional readiness;
 automatic recovery starts departed infrastructure, never models or failed inputs.
 
+Published source and the active onboarding default are separate. A new package
+built from the corrected source imports this supervisor; a host worker selecting
+an older immutable generation still provisions the older behavior. Existing-body
+drop-in adoption does not update that selector. Track the supported default
+advance and receiver-local Alerts enrollment in
+[Cluster#241](https://github.com/nicoechaniz/daimon-cluster/issues/241).
+Keep its existing jobs, bindings, grants and compatible rollback. Until the actual
+worker selection and Alerts provisioning are qualified, report future automatic
+coverage as pending. Never infer it from Eko/Oliva deployment or a merged PR.
+
 Verify the native version handshake, the absence of repeated restarts across
 multiple former failure windows, and the receiving listener separately. An active
 supervisor alone is not readiness. Then apply any pending native configuration

@@ -28,10 +28,15 @@ restart does not authorize global Stop or replay of uncertain human input.
 To adopt only a supervisor correction while preserving the current daemon, first
 qualify this existing systemd seam on a disposable child process. Install the
 content-addressed supervisor and permanent ExecStart override. Temporarily clear
-ExecStop and set KillMode=process in a higher-priority drop-in, daemon-reload, then
-restart only the supervisor unit. Verify the native PID and process starttime are
+ExecStop and set KillMode=process, Restart=always and RestartMode=direct in a
+higher-priority temporary drop-in. After daemon-reload, signal only the supervisor
+main process with SIGTERM and let direct-mode systemd supervision replace it.
+An ordinary restart can stop listeners declaring Requires on the native unit;
+qualify with that real dependency in the disposable fixture too. Verify the
+native PID/starttime and dependent listener PID/starttime are
 unchanged and its actual version/control RPC succeeds. Remove only that temporary
-drop-in and daemon-reload to restore normal explicit Stop semantics. Retain the
+drop-in and daemon-reload to restore Restart=on-failure, normal restart mode and
+explicit Stop semantics. Retain the
 previous permanent selection and do not roll native history or credentials back.
 
 The independent Alerts runtime monitor checks native version/control, actual

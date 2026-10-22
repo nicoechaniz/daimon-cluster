@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   scope:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       profile: ${{ steps.scope.outputs.profile }}
       pytest_args: ${{ steps.scope.outputs.pytest_args }}
@@ -32,7 +32,7 @@ jobs:
     name: test (3.13.5)
     needs: scope
     if: needs.scope.outputs.profile != 'docs'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Run38728293267 reached75% without a failure before the old20min cap.
     # Budget the complete suite plus setup; owner/native deadlines stay fixed.
     timeout-minutes: 30
@@ -462,7 +462,7 @@ jobs:
   backup-export-disposable:
     needs: scope
     if: needs.scope.outputs.profile == 'full' || needs.scope.outputs.profile == 'onboarding'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -489,7 +489,7 @@ jobs:
   recovery-rebirth-disposable-hosts:
     needs: scope
     if: needs.scope.outputs.profile == 'full' || needs.scope.outputs.profile == 'onboarding'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5

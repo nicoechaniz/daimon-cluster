@@ -124,7 +124,8 @@ def test_shared_codex_daemon_has_its_own_lifecycle_outside_listener_cgroup():
     assert 'Requires=daimon-onboarding-codex.service' in listener
     assert 'ExecStartPre=' not in listener
     assert 'Type=simple' in native and 'Restart=on-failure' in native
-    assert 'native-serve' in native and 'app-server daemon stop' in native
+    assert str(code / 'clusterctl/native_codex_supervisor.py') in native
+    assert 'app-server daemon stop' in native
     assert 'StandardOutput=null' in native and 'CODEX_HOME=/home/agent/.codex' in native
 
 

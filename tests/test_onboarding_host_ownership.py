@@ -42,6 +42,7 @@ def test_registry_replay_preserves_other_bodies_and_rejects_changed_owner(tmp_pa
 def test_registry_refuses_public_directory_and_symlink(tmp_path):
     root = tmp_path / 'registry'
     root.mkdir(mode=0o755)
+    root.chmod(0o755)
     with pytest.raises(OnboardingError):
         OwnerRegistry(root)
     root.chmod(0o700)

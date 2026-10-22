@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULES = ("__init__.py", "being_seed.py", "onboarding_transfer.py", "onboarding.py", "onboarding_input.py",
            "onboarding_release.py", "onboarding_code_successor.py", "onboarding_owner_client.py", "onboarding_peer.py", "onboarding_guest.py", "onboarding_mounts.py", "onboarding_sdk.py",
            "onboarding_target.py", "onboarding_existing.py", "onboarding_credential.py", "owner_process.py", "onboarding_admission.py",
-           "onboarding_runtime.py", "onboarding_views.py", "onboarding_service.py", "onboarding_ssh.py", "onboarding_provider.py", "onboarding_telegram.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
+           "onboarding_runtime.py", "onboarding_views.py", "onboarding_service.py", "onboarding_ssh.py", "onboarding_provider.py", "onboarding_telegram.py", "native_codex_supervisor.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
 
 
 def copy_code(source: Path, target: Path) -> None:
@@ -40,10 +40,13 @@ def copy_code(source: Path, target: Path) -> None:
                 after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
             raise OnboardingError("build_code_changed")
     target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                         0o755 if source.stat().st_mode & 0o100 else 0o644)
+    mode = 0o755 if source.stat().st_mode & 0o100 else 0o644
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(raw)
+        # Operator umask0077 must not make qualified public code unreadable
+        # or remove executable bits required by the receiving artifact contract.
+        os.fchmod(stream.fileno(), mode)
 
 
 def capture_peer_tool(output: Path) -> None:
@@ -63,6 +66,34 @@ def capture_chat_tool(output: Path) -> None:
         raise OnboardingError('qualified_native_peer_tool_required')
 
 
+def native_successor(base: Path, base_digest: str, current: Path, current_digest: str,
+                     output: Path) -> dict:
+    """Update supervision only, keeping the selected context/SDK/binary/helpers."""
+    from clusterctl import onboarding_code_successor
+    selected = onboarding_code_successor.verify(current, current_digest, base, base_digest,
+                                                 uid=os.geteuid())
+    if output.exists() or output.is_symlink():
+        raise OnboardingError('receiving_code_destination_exists')
+    private_directory(output.parent)
+    output.mkdir(mode=0o755)
+    output.chmod(0o755)
+    replacements = {'clusterctl/' + name for name in (
+        'onboarding_telegram.py', 'onboarding_code_successor.py', 'native_codex_supervisor.py')}
+    for row in selected['files']:
+        if row['path'] not in replacements:
+            copy_code(current / row['path'], output / row['path'])
+    for name in replacements:
+        copy_code(ROOT / name, output / name)
+    for path in output.rglob('*'):
+        if path.is_dir():
+            path.chmod(0o755)
+    fingerprint = onboarding_release.seal(output, selected['profile'])
+    onboarding_code_successor.verify(output, fingerprint, base, base_digest, uid=os.geteuid())
+    return dict(release_digest=fingerprint, native_supervision=True,
+                previous_telegram_code_digest=current_digest,
+                sdk_changed=False, telegram_binary_changed=False)
+
+
 def build(checkout: Path, commons: Path, selected_profile: dict, output: Path, *, sdk: Path | None = None,
           telegram: Path | None = None) -> dict:
     selected_profile = onboarding_release.profile(selected_profile)
@@ -74,6 +105,7 @@ def build(checkout: Path, commons: Path, selected_profile: dict, output: Path, *
     if archive.returncode or len(archive.stdout) > 32 * 1024**2:
         raise OnboardingError("pinned_hmk_code_unavailable")
     output.mkdir(mode=0o755)
+    output.chmod(0o755)
     with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as incoming:
         for member in incoming.getmembers():
             path = output / "hmk" / relative(member.name.rstrip("/"))
@@ -148,6 +180,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--runtime-base", type=Path)
     parser.add_argument("--base-digest")
+    parser.add_argument('--native-supervisor-current', type=Path)
+    parser.add_argument('--current-digest')
     parser.add_argument("--sdk", type=Path)
     parser.add_argument("--telegram-artifact", type=Path)
     args = parser.parse_args()
@@ -157,9 +191,19 @@ def main() -> int:
                     args.hmk_checkout, args.commons, args.profile, args.sdk, args.telegram_artifact))):
                 raise OnboardingError('qualified_onboarding_runtime_required')
             from clusterctl.onboarding_code_successor import build as build_successor
-            result = build_successor(args.runtime_base, args.base_digest, ROOT / 'clusterctl', MODULES, args.output)
+            if args.native_supervisor_current is not None:
+                if args.current_digest is None:
+                    raise OnboardingError('qualified_onboarding_runtime_required')
+                result = native_successor(args.runtime_base, args.base_digest,
+                    args.native_supervisor_current, args.current_digest, args.output)
+            else:
+                if args.current_digest is not None:
+                    raise OnboardingError('qualified_onboarding_runtime_required')
+                result = build_successor(args.runtime_base, args.base_digest, ROOT / 'clusterctl', MODULES, args.output)
         else:
-            if args.base_digest is not None or any(value is None for value in (args.hmk_checkout, args.commons, args.profile)):
+            if (args.base_digest is not None or args.current_digest is not None
+                    or args.native_supervisor_current is not None
+                    or any(value is None for value in (args.hmk_checkout, args.commons, args.profile))):
                 raise OnboardingError('receiving_code_build_configuration_required')
             result = build(args.hmk_checkout, args.commons, json.loads(args.profile.read_bytes()), args.output,
                            sdk=args.sdk, telegram=args.telegram_artifact)

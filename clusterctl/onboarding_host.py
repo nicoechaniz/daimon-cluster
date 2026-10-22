@@ -97,6 +97,7 @@ class HostConfig:
     telegram_code: Path | None = None
     telegram_digest: str | None = None
     browser_artifact: dict[str, str] | None = None
+    runtime_health_registry: Path | None = None
 
     @classmethod
     def load(cls, path: Path, *, expected_value: dict | None = None) -> HostConfig:
@@ -107,7 +108,7 @@ class HostConfig:
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
         telegram_keys = {"telegram_code", "telegram_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "runtime_health_registry"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -256,10 +257,16 @@ class HostConfig:
         if 'browser_artifact' in value:
             from .onboarding_browser import artifact as browser_artifact_record
             browser_artifact = browser_artifact_record(value['browser_artifact'], value['browser_image'])
+        runtime_health_registry = None
+        if 'runtime_health_registry' in value:
+            selected = value['runtime_health_registry']
+            if not isinstance(selected, str) or not Path(selected).is_absolute():
+                raise OnboardingError('invalid_onboarding_host_configuration')
+            runtime_health_registry = private_directory(Path(selected))
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, runtime_health_registry)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:

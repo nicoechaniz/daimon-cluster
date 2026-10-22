@@ -23,7 +23,8 @@ class Worker:
     def __init__(self, store: JobStore, backend: Callable[[], Backend], *, concurrency: int = 2,
                  publish: Callable[[dict], None] | None = None,
                  plans: Callable[[], list[dict]] | None = None,
-                 homes: Callable[[dict], dict] | None = None):
+                 homes: Callable[[dict], dict] | None = None,
+                 runtime_health: Callable[[dict], dict] | None = None):
         if type(concurrency) is not int or not 1 <= concurrency <= 8:
             raise OnboardingError("invalid_worker_concurrency")
         self.store, self.backend = store, backend
@@ -31,6 +32,7 @@ class Worker:
         self.publish = publish
         self.plans = plans
         self.homes = homes
+        self.runtime_health = runtime_health
 
     def _enqueue(self) -> None:
         if self.plans:
@@ -48,6 +50,8 @@ class Worker:
             result = self.store.tick(name, self.backend)
             if self.publish:
                 self.publish(result)
+            if self.runtime_health:
+                self.runtime_health(result)
             if self.homes:
                 self.homes(result)
             return result
@@ -110,9 +114,11 @@ def main(argv: list[str] | None = None) -> int:
             from .onboarding_homes import configure
             homes=configure(args.home_placements,progress=config.progress,store=store,
                             backend=backend,worker_uid=os.geteuid())
+        from .onboarding_runtime_health import reconcile as enroll_health
         worker = Worker(store, backend, concurrency=config.concurrency,
                         publish=progress.publish if progress else None,
-                        plans=lambda: selections.current().approved_plans(), homes=homes)
+                        plans=lambda: selections.current().approved_plans(), homes=homes,
+                        runtime_health=lambda result: enroll_health(selections.current(), store, backend(), result))
         if args.once:
             print(json.dumps(worker.once()))
             return 0

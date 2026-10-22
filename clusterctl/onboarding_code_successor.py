@@ -224,6 +224,7 @@ def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, .
             or any(re.fullmatch(r'(?:__init__|[a-z][a-z0-9_]*)\.py', name) is None for name in modules)):
         raise OnboardingError('qualified_onboarding_runtime_required')
     output.mkdir(mode=0o755)
+    output.chmod(0o755)
     replaced = {'clusterctl/' + name for name in modules}
     if telegram is not None:
         replaced.update({'telegram/telecodex', 'telegram/artifact.json'})

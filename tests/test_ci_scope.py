@@ -6,6 +6,14 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_runtime_health_enrollment_keeps_authority_unknown_changes_full():
+    from tools.ci_scope import RUNTIME_HEALTH_FILES, RUNTIME_HEALTH_TESTS
+    changed = sorted(RUNTIME_HEALTH_FILES | {'tools/ci_scope.py','tests/test_ci_scope.py'})
+    assert select(changed,ROOT)==('telegram',list(RUNTIME_HEALTH_TESTS))
+    assert select([*changed,'clusterctl/onboarding_custody.py'],ROOT)==('full',['tests'])
+    assert select([*changed,'unknown-contract.json'],ROOT)==('full',['tests'])
+
+
 def test_native_supervision_scope_does_not_skip_unknown_or_authority_changes():
     from tools.ci_scope import NATIVE_SUPERVISOR_TESTS
     changed=['clusterctl/native_codex_supervisor.py','tests/test_native_codex_supervisor.py',

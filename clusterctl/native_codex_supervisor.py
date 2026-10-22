@@ -9,14 +9,19 @@ import time
 
 
 def serve(home: Path, codex: Path, *, run=subprocess.run, wait=time.sleep,
-          clock=time.monotonic, cycles=None, readiness_seconds=180) -> None:
+          clock=time.monotonic, cycles=None, readiness_seconds=180,
+          interval_seconds=30) -> None:
     env = dict(HOME=str(home), CODEX_HOME=str(home / '.codex'),
                PATH='/usr/local/bin:/usr/bin:/bin')
     count = 0
     while cycles is None or count < cycles:
-        result = run([str(codex), 'app-server', 'daemon', 'start'], capture_output=True,
-                     text=True, timeout=180, check=False, env=env)
-        if result.returncode:
+        try:
+            result = run([str(codex), 'app-server', 'daemon', 'start'], capture_output=True,
+                         text=True, timeout=180, check=False, env=env)
+            ready = result.returncode == 0
+        except subprocess.TimeoutExpired:
+            ready = False
+        if not ready:
             # A native start can time out while its child is still starting.
             # Exiting this cgroup supervisor would kill that child and repeat
             # the same cold start. Probe only; do not issue stop or another start.
@@ -34,9 +39,14 @@ def serve(home: Path, codex: Path, *, run=subprocess.run, wait=time.sleep,
                     print('native_codex_readiness_recovered', file=sys.stderr, flush=True)
                     break
             else:
-                raise RuntimeError('native_codex_daemon_start_failed')
+                # A failed control RPC does not prove process death. Exiting
+                # would run systemd ExecStop and kill uncertain active work.
+                # Retain the singleton; the independent runtime observer alerts.
+                # The next idempotent native start recovers an actually dead
+                # backend using its own process/lock validation, never replay.
+                print('native_codex_readiness_unconfirmed', file=sys.stderr, flush=True)
         count += 1
-        wait(5)
+        wait(interval_seconds)
 
 
 def main():

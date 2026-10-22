@@ -136,7 +136,7 @@ def test_native_supervisor_reconciles_singleton_without_model_or_message_command
         calls.append((argv, kwargs))
         return SimpleNamespace(returncode=0)
     native_serve(Path('/home/agent'), Path('/usr/local/bin/codex'), run=run, wait=waits.append, cycles=3)
-    assert waits == [5, 5, 5]
+    assert waits == [30, 30, 30]
     assert all(argv == ['/usr/local/bin/codex', 'app-server', 'daemon', 'start'] for argv, _ in calls)
     assert all(options['env']['CODEX_HOME'] == '/home/agent/.codex' for _, options in calls)
 

@@ -6,6 +6,15 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_native_supervision_scope_does_not_skip_unknown_or_authority_changes():
+    from tools.ci_scope import NATIVE_SUPERVISOR_TESTS
+    changed=['clusterctl/native_codex_supervisor.py','tests/test_native_codex_supervisor.py',
+             'tests/test_onboarding_telegram.py','tools/ci_scope.py','tests/test_ci_scope.py',
+             'docs/runbooks/native-codex-supervision.md']
+    assert select(changed,ROOT)==('telegram',list(NATIVE_SUPERVISOR_TESTS))
+    assert select([*changed,'clusterctl/onboarding_custody.py'],ROOT)==('full',['tests'])
+
+
 def test_login_recovery_qualifies_affected_account_contracts(tmp_path):
     changed=['tools/refresh_hosted_codex_login.py','tests/test_hosted_codex_login_refresh.py',
              'docs/operations/codex-provider-login.md','tools/ci_scope.py','tests/test_ci_scope.py']

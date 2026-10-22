@@ -15,8 +15,7 @@ from .onboarding import OnboardingError, digest, private_directory
 SCHEMA = 'cluster-runtime-health-enrollment/v1'
 
 
-def reconcile(config, store, backend, result: dict) -> dict:
-    directory = config.runtime_health_registry
+def reconcile(directory: Path | None, store, backend, result: dict) -> dict:
     if directory is None or 'telegram' not in result.get('completed_steps', []):
         return dict(enrolled=False)
     if not isinstance(result.get('name'), str) or not being_seed.NAME.fullmatch(result['name']):

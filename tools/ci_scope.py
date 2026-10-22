@@ -61,7 +61,7 @@ RUNTIME_HEALTH_FILES = {'clusterctl/onboarding_runtime_health.py',
     'clusterctl/onboarding_release.py','clusterctl/onboarding_code_successor.py',
     'clusterctl/onboarding_worker.py','clusterctl/onboarding_host.py',
     'clusterctl/onboarding_telegram.py','tools/build_onboarding_code.py',
-    'tools/install_host_runtime_health.py','tests/test_runtime_health_enrollment.py',
+    'tools/install_host_runtime_health.py','tools/install_onboarding_worker.py','tests/test_runtime_health_enrollment.py',
     'tests/test_onboarding_host_ownership.py','tests/test_onboarding_telegram.py',
     'docs/operations/hosted-runtime-health.md'}
 RUNTIME_HEALTH_TESTS = ('tests/test_runtime_health_enrollment.py',

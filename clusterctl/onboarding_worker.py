@@ -9,6 +9,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import os
 import signal
 import threading
 import time
@@ -115,10 +116,16 @@ def main(argv: list[str] | None = None) -> int:
             homes=configure(args.home_placements,progress=config.progress,store=store,
                             backend=backend,worker_uid=os.geteuid())
         from .onboarding_runtime_health import reconcile as enroll_health
+        registry = os.environ.get('DAIMON_RUNTIME_HEALTH_REGISTRY')
+        if registry is not None:
+            from .onboarding import private_directory
+            if not Path(registry).is_absolute():
+                raise OnboardingError('runtime_health_registry_required')
+            registry = private_directory(Path(registry))
         worker = Worker(store, backend, concurrency=config.concurrency,
                         publish=progress.publish if progress else None,
                         plans=lambda: selections.current().approved_plans(), homes=homes,
-                        runtime_health=lambda result: enroll_health(selections.current(), store, backend(), result))
+                        runtime_health=lambda result: enroll_health(registry, store, backend(), result))
         if args.once:
             print(json.dumps(worker.once()))
             return 0

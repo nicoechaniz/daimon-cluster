@@ -7,8 +7,10 @@ would silently undo the repair. Public-code file modes are explicit even under
 operator umask0077. Existing native history, accounts and Matrix SDK selectors are
 separate and remain unchanged.
 
-The existing onboarding worker accepts an operator-private
-`runtime_health_registry` directory in its fixed host configuration. After the
+The existing onboarding worker accepts an operator-private registry through
+`DAIMON_RUNTIME_HEALTH_REGISTRY` in its owned service unit. The maintained worker
+installer selects it with `--runtime-health-registry`; its control argv and the
+shared host configuration schema remain compatible with existing controllers. After the
 retained job has completed Telegram, it registers that exact authorized plan's
 resource with the host Alerts observer. Completed accepted jobs register through
 the same idempotent path without reopening uploads or repeating their stages.

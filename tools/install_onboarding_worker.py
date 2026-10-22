@@ -57,7 +57,8 @@ def _install_unit_locked(directory: Path, candidate: bytes, *, previous_sha256: 
     return True
 
 
-def service(release: Path, config: Path, *, home_placements: Path | None = None) -> bytes:
+def service(release: Path, config: Path, *, home_placements: Path | None = None,
+            runtime_health_registry: Path | None = None) -> bytes:
     if (release.parent != Path('/opt/daimon-cluster-releases')
             or not re.fullmatch(r'[0-9a-f]{40}', release.name)
             or not config.is_absolute() or '..' in config.parts):
@@ -67,12 +68,19 @@ def service(release: Path, config: Path, *, home_placements: Path | None = None)
         if not home_placements.is_absolute() or '..' in home_placements.parts:
             raise OnboardingError('qualified_home_placements_required')
         argv += ['--home-placements',str(home_placements)]
+    health_environment = ''
+    if runtime_health_registry is not None:
+        if not runtime_health_registry.is_absolute() or '..' in runtime_health_registry.parts:
+            raise OnboardingError('qualified_runtime_health_registry_required')
+        health_environment = 'Environment=' + json.dumps('DAIMON_RUNTIME_HEALTH_REGISTRY=' +
+            str(runtime_health_registry).replace('%', '%%')) + '\n'
     encoded = ' '.join(json.dumps(arg.replace('%', '%%').replace('$', '$$')) for arg in argv)
     return ('[Unit]\nDescription=Durable authorized Daimon onboarding worker\n'
         'After=network-online.target\nWants=network-online.target\n'
         '[Service]\nType=simple\nUser=root\nGroup=root\nUMask=0077\n'
         f'WorkingDirectory={release}\nExecStart={encoded}\n'
         'Environment=PYTHONDONTWRITEBYTECODE=1\n'
+        f'{health_environment}'
         'Restart=on-failure\nRestartSec=5\nKillMode=control-group\nTimeoutStopSec=30\n'
         'StandardOutput=null\nStandardError=null\n'
         '[Install]\nWantedBy=multi-user.target\n').encode()
@@ -85,11 +93,12 @@ def main(argv=None) -> int:
     parser.add_argument('--activate', action='store_true')
     parser.add_argument('--replace-unit-sha256', help='Exact installed predecessor; preserve rollback')
     parser.add_argument('--home-placements',type=Path)
+    parser.add_argument('--runtime-health-registry',type=Path)
     args = parser.parse_args(argv)
     try:
         if os.geteuid() != 0:
             raise OnboardingError('host_operator_required')
-        candidate = service(args.release, args.config,home_placements=args.home_placements)
+        candidate = service(args.release, args.config,home_placements=args.home_placements,runtime_health_registry=args.runtime_health_registry)
         HostConfig.load(args.config)
         # Verify the selected installation, never another checkout's SDK.
         result = subprocess.run([str(args.release / 'venv/bin/python'), '-c',

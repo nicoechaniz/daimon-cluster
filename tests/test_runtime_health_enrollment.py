@@ -12,7 +12,7 @@ from tests.test_onboarding import setup, advance
 def test_worker_enrollment_is_durable_and_does_not_replay_completed_onboarding(tmp_path):
     store, backend = setup(tmp_path)
     directory = tmp_path / 'health'; directory.mkdir(mode=0o700)
-    config = SimpleNamespace(runtime_health_registry=directory)
+    config = directory
     backend.instance = lambda plan: 'dm-' + plan['name']
     callback = lambda result: health.reconcile(config, store, backend, result)
     worker = Worker(store, lambda: backend, runtime_health=callback)
@@ -35,7 +35,7 @@ def test_worker_enrollment_is_durable_and_does_not_replay_completed_onboarding(t
 def test_registry_never_accepts_revoked_authority_or_rebinds_existing_resource(tmp_path):
     store, backend = setup(tmp_path); result = advance(store, backend)
     directory = tmp_path / 'health'; directory.mkdir(mode=0o700)
-    config = SimpleNamespace(runtime_health_registry=directory)
+    config = directory
     backend.instance = lambda plan: 'dm-' + plan['name']
     backend.granted = False
     with pytest.raises(ob.OnboardingError, match='refused'):
@@ -61,7 +61,7 @@ def test_sixteenth_existing_entries_remain_intact_and_overflow_failure_is_visibl
     for n in range(16):
         p=directory/f'n{n}.json';p.write_text(json.dumps(dict(schema=health.SCHEMA,name=f'n{n}',instance=f'dm-n{n}',resource_ref=f'container-dm-n{n}',plan_digest='a'*64)));p.chmod(0o600)
     before={p.name:p.read_bytes() for p in directory.iterdir()}
-    config=SimpleNamespace(runtime_health_registry=directory);backend.instance=lambda plan:'dm-'+plan['name']
+    config=directory;backend.instance=lambda plan:'dm-'+plan['name']
     worker=Worker(store,lambda:backend,runtime_health=lambda r:health.reconcile(config,store,backend,r))
     assert worker.once()[0]['state']=='attention-required'
     assert {p.name:p.read_bytes() for p in directory.glob('*.json')}==before
@@ -101,3 +101,12 @@ def test_native_only_successor_preserves_existing_context_sdk_and_binary_under_p
     assert (selected/'telegram/telecodex').stat().st_mode & 0o777==0o755
     assert (selected/'release.json').stat().st_mode & 0o777==0o644
     assert not any(p.stat().st_mode & 0o022 for p in selected.rglob('*'))
+
+
+def test_worker_health_binding_keeps_existing_control_argv_compatible():
+    from pathlib import Path
+    from tools.install_onboarding_worker import service
+    body=service(Path('/opt/daimon-cluster-releases')/('a'*40),Path('/var/lib/example/host.json'),home_placements=Path('/var/lib/example/homes.json'),runtime_health_registry=Path('/var/lib/example/health')).decode()
+    assert 'Environment="DAIMON_RUNTIME_HEALTH_REGISTRY=/var/lib/example/health"' in body
+    command=next(line for line in body.splitlines() if line.startswith('ExecStart='))
+    assert '--home-placements' in command and 'health' not in command

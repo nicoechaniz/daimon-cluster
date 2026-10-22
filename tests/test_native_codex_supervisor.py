@@ -22,14 +22,26 @@ def test_slow_start_is_allowed_to_complete_without_restart(slow_probe, capsys):
     assert 'readiness_recovered' in capsys.readouterr().err
 
 
-def test_permanent_failure_is_bounded_and_never_stops_or_restarts_child():
+def test_unconfirmed_readiness_preserves_child_and_retries_without_exiting(capsys):
     now, calls = [0], []
     def run(argv, **kwargs):
         calls.append(argv[-1])
         return SimpleNamespace(returncode=1)
-    with pytest.raises(RuntimeError, match='native_codex_daemon_start_failed'):
-        serve(Path('/fixture'), Path('/codex'), run=run,
-              wait=lambda n: now.__setitem__(0, now[0]+n), clock=lambda: now[0],
-              cycles=1, readiness_seconds=20)
-    assert calls == ['start'] + ['version']*4
-    assert now[0] == 20
+    serve(Path('/fixture'), Path('/codex'), run=run,
+          wait=lambda n: now.__setitem__(0, now[0]+n), clock=lambda: now[0],
+          cycles=2, readiness_seconds=20)
+    assert calls == (['start'] + ['version']*4)*2
+    assert now[0] == 100
+    assert capsys.readouterr().err.count('readiness_unconfirmed') == 2
+
+
+def test_native_start_timeout_retains_supervisor_until_control_recovers(capsys):
+    now,calls=[0],[]
+    def run(argv,**kwargs):
+        calls.append(argv[-1])
+        if argv[-1]=='start':raise subprocess.TimeoutExpired(argv,180)
+        return SimpleNamespace(returncode=0)
+    serve(Path('/fixture'),Path('/codex'),run=run,wait=lambda n:now.__setitem__(0,now[0]+n),
+          clock=lambda:now[0],cycles=1)
+    assert calls==['start','version']
+    assert 'readiness_recovered' in capsys.readouterr().err

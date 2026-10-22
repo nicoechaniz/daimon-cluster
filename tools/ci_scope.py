@@ -51,6 +51,11 @@ TELEGRAM_TESTS = ('tests/test_onboarding_telegram.py', 'tests/test_onboarding_co
     'tests/test_onboarding_guest.py', 'tests/test_onboarding_release.py',
     'tests/test_onboarding_consent.py', 'tests/test_onboarding_host_ownership.py',
     'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
+NATIVE_SUPERVISOR_FILES = {'clusterctl/native_codex_supervisor.py',
+    'tests/test_native_codex_supervisor.py', 'tests/test_onboarding_telegram.py',
+    'docs/runbooks/native-codex-supervision.md'}
+NATIVE_SUPERVISOR_TESTS = ('tests/test_native_codex_supervisor.py',
+    'tests/test_onboarding_telegram.py','tests/test_ci_scope.py','tests/test_ci_workflow.py')
 ONBOARDING_FILES = {'clusterctl/being_seed.py', 'clusterctl/onboarding.py',
     'clusterd/seed_handlers.py', 'clusterd/seed_ui.py', 'scripts/being-seed',
     'tools/build_onboarding_code.py', 'tools/build_onboarding_sdk.py',
@@ -543,6 +548,11 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
 
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
+    if (changed and set(changed) & {'clusterctl/native_codex_supervisor.py',
+                                   'tests/test_native_codex_supervisor.py'}
+            and set(changed) <= NATIVE_SUPERVISOR_FILES | CI_FILES
+            and all((root / path).is_file() for path in NATIVE_SUPERVISOR_TESTS)):
+        return 'telegram', list(NATIVE_SUPERVISOR_TESTS)
     if (changed and set(changed) & {'tools/refresh_hosted_codex_login.py',
                                    'tests/test_hosted_codex_login_refresh.py'}
             and set(changed) <= LOGIN_RECOVERY_FILES | CI_FILES

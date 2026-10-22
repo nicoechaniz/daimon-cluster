@@ -8,8 +8,12 @@ systemd and can create a permanent cold-start loop under load.
 `clusterctl.native_codex_supervisor.serve` preserves that starting child and probes
 `daemon version` for up to 180 seconds after a failed start. It does not issue Stop
 or another start during this grace. A successful probe resumes the existing
-singleton supervision; persistent failure exits visibly. Per-probe timeouts are
-bounded. Only safe status codes go to the journal, never captured native stderr.
+singleton supervision. Persistent timeout emits `native_codex_readiness_unconfirmed`
+and retains the process: control unresponsiveness is not proof of death. Exiting
+the supervisor would run ExecStop and kill uncertain work. Every command/window
+remains bounded; the next 30-second supervision cycle uses the native idempotent
+start to recover a genuinely departed backend. A start-command timeout is also
+retained. Only safe status codes go to the journal, never captured native stderr.
 Normal explicit service stop retains the existing native shutdown behavior.
 
 The onboarding service uses this same implementation. For an already deployed
@@ -20,6 +24,21 @@ restart policy. Retain the previous effective unit and exact drop-in for rollbac
 do not edit the immutable package, native history, authentication or memory.
 Adopt only under the receiving maintenance authorization. A selected service
 restart does not authorize global Stop or replay of uncertain human input.
+
+To adopt only a supervisor correction while preserving the current daemon, first
+qualify this existing systemd seam on a disposable child process. Install the
+content-addressed supervisor and permanent ExecStart override. Temporarily clear
+ExecStop and set KillMode=process in a higher-priority drop-in, daemon-reload, then
+restart only the supervisor unit. Verify the native PID and process starttime are
+unchanged and its actual version/control RPC succeeds. Remove only that temporary
+drop-in and daemon-reload to restore normal explicit Stop semantics. Retain the
+previous permanent selection and do not roll native history or credentials back.
+
+The independent Alerts runtime monitor checks native version/control, actual
+restart-counter increases, cgroup OOM-kill deltas and sustained memory PSI. It
+uses the receiving owner's HOME/CODEX_HOME, scoped incident actor and existing
+Telegram/Sessions route. A running unit alone never proves functional readiness;
+automatic recovery starts departed infrastructure, never models or failed inputs.
 
 Verify the native version handshake, the absence of repeated restarts across
 multiple former failure windows, and the receiving listener separately. An active

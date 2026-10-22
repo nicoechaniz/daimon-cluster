@@ -79,6 +79,7 @@ def seal(root: Path, selected_profile: dict) -> str:
     descriptor = os.open(root / "release.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(raw)
+        os.fchmod(stream.fileno(), 0o644)
         stream.flush()
         os.fsync(stream.fileno())
     descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)

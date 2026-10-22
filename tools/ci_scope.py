@@ -57,6 +57,20 @@ NATIVE_SUPERVISOR_FILES = {'clusterctl/native_codex_supervisor.py',
     'docs/runbooks/native-codex-supervision.md'}
 NATIVE_SUPERVISOR_TESTS = ('tests/test_native_codex_supervisor.py',
     'tests/test_onboarding_telegram.py','tests/test_ci_scope.py','tests/test_ci_workflow.py')
+RUNTIME_HEALTH_FILES = {'clusterctl/onboarding_runtime_health.py',
+    'clusterctl/onboarding_release.py','clusterctl/onboarding_code_successor.py',
+    'clusterctl/onboarding_worker.py','clusterctl/onboarding_host.py',
+    'clusterctl/onboarding_telegram.py','tools/build_onboarding_code.py',
+    'tools/install_host_runtime_health.py','tools/install_onboarding_worker.py','tests/test_runtime_health_enrollment.py',
+    'tests/test_onboarding_host_ownership.py','tests/test_onboarding_telegram.py',
+    'docs/operations/hosted-runtime-health.md'}
+RUNTIME_HEALTH_TESTS = ('tests/test_runtime_health_enrollment.py',
+    'tests/test_onboarding.py','tests/test_onboarding_worker_install.py',
+    'tests/test_onboarding_host.py','tests/test_onboarding_host_ownership.py',
+    'tests/test_onboarding_progress.py','tests/test_onboarding_code_successor.py',
+    'tests/test_onboarding_release.py','tests/test_onboarding_telegram.py',
+    'tests/test_native_codex_supervisor.py','tests/test_auth.py',
+    'tests/test_production_fences.py','tests/test_ci_scope.py','tests/test_ci_workflow.py')
 ONBOARDING_FILES = {'clusterctl/being_seed.py', 'clusterctl/onboarding.py',
     'clusterd/seed_handlers.py', 'clusterd/seed_ui.py', 'scripts/being-seed',
     'tools/build_onboarding_code.py', 'tools/build_onboarding_sdk.py',
@@ -549,6 +563,10 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
 
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
+    if (set(changed) & {'clusterctl/onboarding_runtime_health.py','tests/test_runtime_health_enrollment.py'}
+            and set(changed) <= RUNTIME_HEALTH_FILES | CI_FILES
+            and all((root / path).is_file() for path in RUNTIME_HEALTH_TESTS)):
+        return 'telegram', list(RUNTIME_HEALTH_TESTS)
     if (changed and set(changed) & {'clusterctl/native_codex_supervisor.py',
                                    'tests/test_native_codex_supervisor.py'}
             and set(changed) <= NATIVE_SUPERVISOR_FILES | CI_FILES

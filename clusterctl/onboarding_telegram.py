@@ -129,10 +129,8 @@ def service(home: Path, code: Path, codex: Path = Path('/usr/local/bin/codex')) 
 
 def native_service(home: Path, codex: Path, code: Path) -> bytes:
     # Separate cgroups preserve the shared native daemon across listener restarts.
-    launcher = ('import sys;sys.path.insert(0,sys.argv.pop(1));'
-                'from clusterctl.onboarding_telegram import main;raise SystemExit(main())')
-    args = ['/usr/bin/python3', '-B', '-I', '-c', launcher, str(code), 'native-serve',
-            '--code', str(code), '--plan', str(home / '.onboarding-input/plan.json')]
+    args = ['/usr/bin/python3', '-B', '-I', str(code / 'clusterctl/native_codex_supervisor.py'),
+            '--home', str(home), '--codex', str(codex)]
     encoded = ' '.join(json.dumps(arg.replace('%', '%%').replace('$', '$$')) for arg in args)
     command = json.dumps(str(codex))
     return ('[Unit]\nDescription=Receiving native Codex daemon\n'
@@ -451,7 +449,7 @@ def main(argv=None) -> int:
         elif args.action == 'native-install':
             if os.geteuid() != 0:
                 raise OnboardingError('qualified_guest_telegram_required')
-            publish(Path('/etc/systemd/system') / NATIVE_UNIT, native_service(home, codex, args.code))
+            publish(Path('/etc/systemd/system') / NATIVE_UNIT, native_service(home, codex, code))
             for command in (['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', NATIVE_UNIT]):
                 result = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
                 if result.returncode:

@@ -563,6 +563,15 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
 
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
+    behavior_files = {'clusterctl/behavior_delta.py', 'tests/test_behavior_delta.py',
+                      'tests/test_behavior_native.py', 'docs/runbooks/same-being-behavior.md',
+                      'tools/check_rc_types.py'}
+    behavior_tests = ['tests/test_behavior_delta.py', 'tests/test_behavior_native.py',
+                      'tests/test_operation_journal.py', 'tests/test_ci_scope.py',
+                      'tests/test_ci_workflow.py']
+    if (set(changed) & behavior_files and set(changed) <= behavior_files | CI_FILES
+            and all((root / name).is_file() for name in behavior_tests)):
+        return 'behavior', behavior_tests
     if (set(changed) & {'clusterctl/onboarding_runtime_health.py','tests/test_runtime_health_enrollment.py'}
             and set(changed) <= RUNTIME_HEALTH_FILES | CI_FILES
             and all((root / path).is_file() for path in RUNTIME_HEALTH_TESTS)):

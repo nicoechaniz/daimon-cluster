@@ -16,6 +16,7 @@ FILES = (
     "clusterctl/inventory.py",
     "clusterctl/locks.py",
     "clusterctl/operation_journal.py",
+    "clusterctl/behavior_delta.py",
     "clusterctl/production_fences.py",
     "clusterctl/matrix_host.py",
     "clusterctl/transfer.py",

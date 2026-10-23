@@ -945,3 +945,19 @@ def test_exact_owner_transport_diagnostic_keeps_maintenance_coverage(monkeypatch
     assert select(changed, ROOT, base='a'*40) == ('peer',list(ci_scope.MAINTENANCE_TESTS))
     monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *a, **kw: subprocess.CompletedProcess([],0,previous+b'\n# other change\n'))
     assert select(changed, ROOT, base='a'*40) == ('full',['tests'])
+
+
+def test_behavior_delta_keeps_journal_contracts_and_unknown_shared_changes_full(tmp_path):
+    changed = ['clusterctl/behavior_delta.py', 'tests/test_behavior_delta.py',
+               'tests/test_behavior_native.py', 'docs/runbooks/same-being-behavior.md',
+               'tools/ci_scope.py', 'tests/test_ci_scope.py', 'tools/check_rc_types.py',
+               '.github/workflows/tests.yml']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'behavior'
+    assert tests == ['tests/test_behavior_delta.py', 'tests/test_behavior_native.py',
+                     'tests/test_operation_journal.py', 'tests/test_ci_scope.py',
+                     'tests/test_ci_workflow.py']
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for extra in ('clusterctl/operation_journal.py', 'clusterctl/onboarding_custody.py',
+                  'requirements.txt', 'unknown.py'):
+        assert select([*changed, extra], ROOT) == ('full', ['tests'])

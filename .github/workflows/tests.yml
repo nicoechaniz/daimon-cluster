@@ -377,6 +377,9 @@ jobs:
           clusterctl/lifecycle.py
           clusterctl/matrix_host.py
           clusterctl/operation_journal.py
+          clusterctl/behavior_delta.py
+          tests/test_behavior_delta.py
+          tests/test_behavior_native.py
           clusterctl/park.py
           clusterctl/reconcile.py
           clusterctl/rebirth.py

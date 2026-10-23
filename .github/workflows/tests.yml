@@ -473,24 +473,25 @@ jobs:
           ref: f976a3a8d49932fc4a7cd909b32e3b34d964b6dc
           path: .qualification/dmk
           sparse-checkout: scripts
-      - name: Check out the exact selective Skills installer
-        if: needs.scope.outputs.profile == 'integration' || needs.scope.outputs.profile == 'full'
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          repository: AlterMundi/Skills
-          ref: 0be79f2bb402afc7ff49105d1a89d021ed0d6908
-          path: .qualification/skills
-          sparse-checkout: scripts
       - name: Qualify composed same-being owners with authenticated native transport
         if: needs.scope.outputs.profile == 'integration' || needs.scope.outputs.profile == 'full'
         run: |
           set -eu
           test "$(git -C .qualification/matrix rev-parse HEAD)" = b2386fcdf4931ffbce9a67c1c5afd6a07e201a5b
           test "$(git -C .qualification/dmk rev-parse HEAD)" = f976a3a8d49932fc4a7cd909b32e3b34d964b6dc
-          test "$(git -C .qualification/skills rev-parse HEAD)" = 0be79f2bb402afc7ff49105d1a89d021ed0d6908
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path('support/skills-update')
+          provenance = json.loads((root / 'PROVENANCE.json').read_bytes())
+          raw = (root / 'skills_update.py').read_bytes()
+          assert provenance['source_commit'] == '0be79f2bb402afc7ff49105d1a89d021ed0d6908'
+          assert hashlib.sha256(raw).hexdigest() == provenance['sha256'] == '776d4eb4490b200a7a608028d22f3cebe5098d1a5c02e380a9cba1bac2eb618f'
+          assert hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == provenance['source_blob']
+          PY
           SAME_BEING_MATRIX_SOURCE="$PWD/.qualification/matrix" \
           SAME_BEING_DMK_SCRIPTS="$PWD/.qualification/dmk/scripts" \
-          SAME_BEING_SKILLS_SCRIPT="$PWD/.qualification/skills/scripts/skills_update.py" \
+          SAME_BEING_SKILLS_SCRIPT="$PWD/support/skills-update/skills_update.py" \
           PYTHONPATH="$PWD/.qualification/matrix/src:$PWD" \
             python -m pytest tests/test_same_being_integration.py -q -x --tb=short \
             -W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning

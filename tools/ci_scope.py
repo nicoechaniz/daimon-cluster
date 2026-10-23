@@ -565,7 +565,8 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
     integration_files = {'clusterctl/same_being_integration.py', 'clusterctl/same_being_operator.py',
                          'tests/test_same_being_integration.py', 'tests/test_same_being_operator.py',
-                         'tests/test_behavior_native.py', 'docs/runbooks/same-being-integration.md'}
+                         'tests/test_behavior_native.py', 'docs/runbooks/same-being-integration.md',
+                         'support/skills-update/skills_update.py', 'support/skills-update/PROVENANCE.json'}
     integration_tests = ['tests/test_same_being_operator.py', 'tests/test_behavior_delta.py',
                          'tests/test_behavior_native.py', 'tests/test_operation_journal.py',
                          'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']

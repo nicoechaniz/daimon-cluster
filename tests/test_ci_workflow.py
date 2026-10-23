@@ -23,6 +23,9 @@ def test_same_being_composition_runs_exact_owners_without_replacing_installed_ma
     assert 'SAME_BEING_SKILLS_SCRIPT=' in composition
     assert 'python -m pytest tests/test_same_being_integration.py' in composition
     assert 'pip install' not in composition
+    assert 'repository: AlterMundi/Skills' not in composition
+    assert 'provenance[\'source_blob\']' in composition
+    assert 'support/skills-update/skills_update.py' in composition
     assert '--ignore=tests/test_same_being_integration.py' in workflow[end:]
 
 

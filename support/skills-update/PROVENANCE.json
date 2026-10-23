@@ -1,0 +1,9 @@
+{
+  "schema": "cluster-selected-source/v1",
+  "source_repository": "https://github.com/AlterMundi/Skills",
+  "source_commit": "0be79f2bb402afc7ff49105d1a89d021ed0d6908",
+  "source_path": "scripts/skills_update.py",
+  "source_blob": "77dcba506c4d298f1518eb3eb0d6cc65d8e1db59",
+  "sha256": "776d4eb4490b200a7a608028d22f3cebe5098d1a5c02e380a9cba1bac2eb618f",
+  "scope": "Exact standalone generic installer only; no skill collection, private bindings or credentials. Skills remains the owning source; refresh by exact source bytes, not a fork."
+}

@@ -104,6 +104,12 @@ lock, then verifies all selected preimages; unrelated transactions are untouched
 
 CI's `integration` profile runs affected journal/behavior/operator contracts and
 a separate real composed journey with exact Matrix/DMK/Skills source revisions.
+The standalone generic Skills installer is retained byte-for-byte under
+`support/skills-update`, with source commit/blob and SHA256 provenance. It remains
+owned by Skills and is not a fork or a copy of the skill collection. Public CI
+verifies those exact bytes rather than requiring cross-repository access to the
+private collection or adding a credential. Refresh it from its owning source
+when its selected contract changes.
 It does not replace the normal installed Matrix pin. Shared/unknown changes retain
 the full profile, including the composed journey. Local execution can supply
 `SAME_BEING_MATRIX_SOURCE`, `SAME_BEING_DMK_SCRIPTS`, `SAME_BEING_SKILLS_SCRIPT`

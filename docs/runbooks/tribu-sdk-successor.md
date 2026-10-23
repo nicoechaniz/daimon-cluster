@@ -178,6 +178,11 @@ operation before planning expansion; refusal occurs before interruption.
 The maintained maintenance coordinator accepts this validated Source expansion
 alongside preservation. Guest lifecycle and cohort requirements stay unchanged;
 do not bypass the coordinator with an improvised lower-level rollout.
+Source's existing owner-local lifecycle projection binds the permitted expansion
+to its original bundle, native publication and controlled load. Cohort adoption
+resolves only that declared bundle-hash transition; application, publication,
+visibility, identity and all guest selections remain pinned. It never rewrites
+the prepared recipe or infers a valid change from a currently running hash.
 
 The SDK builder accepts `--matrix-commit` for an explicit exact qualified
 successor revision. It seals the actual Matrix wheel SHA256 with that revision

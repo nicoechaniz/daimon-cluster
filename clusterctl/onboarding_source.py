@@ -411,6 +411,23 @@ class Source:
                 key: qualification[key] for key in ('code', 'code_uid')}}},
             runtime_observation={'source_bootstrap': {
                 key: effects[key] for key in ('quiesced', 'controlled_loaded') if key in effects}})
+        if frozen.get('mode') == 'expand' and 'capability_published' in effects:
+            from .onboarding_receiving_update import validate_source_additions, bootstrap_effects
+            import re
+            validate_source_additions(self.settings, frozen)
+            previous = frozen['preservation']['runtime_bytes_sha256']
+            current, _visibility = bootstrap_effects(effects, source=True, mode='expand')
+            loaded = effects.get('controlled_loaded', {}).get('loaded_runtime', {})
+            if (any(not isinstance(value, str) or re.fullmatch('[0-9a-f]{64}', value) is None
+                    for value in (previous, current)) or previous == current
+                    or frozen['predecessor'].get('runtime_status', {}).get('loaded_runtime', {}).get(
+                        'runtime_bundle_sha256') != previous
+                    or loaded.get('runtime_bundle_sha256') != current):
+                raise OnboardingError('receiving_source_lifecycle_conflict')
+            # Only this Source-owned, published native expansion can explain a
+            # changed bundle. No custody, private intent or arbitrary selector.
+            projected['runtime_observation']['source_bootstrap']['capability_expansion'] = dict(
+                before_runtime_sha256=previous, runtime_sha256=current)
         return dict(schema='cluster-receiving-source-lifecycle/v1',
             source_config_sha256=digest(self.settings), lifecycle=projected)
 

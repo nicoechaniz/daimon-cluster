@@ -27,6 +27,7 @@ from clusterctl.operation_journal import OperationJournal
 from clusterctl.same_being_integration import (
     IntegrationConflict, NativeMemory, SameBeingIntegration, SelectedSkills,
 )
+from tests.test_onboarding_group_authorities import group_source as group_source
 
 MATRIX_SOURCE = os.environ.get('SAME_BEING_MATRIX_SOURCE')
 DMK_SCRIPTS = os.environ.get('SAME_BEING_DMK_SCRIPTS')
@@ -159,15 +160,14 @@ def test_actual_source_loader_expands_only_required_profiles_and_injects_own_obs
     from daimon_matrix.keystore import EncryptedKeystore
     from daimon_matrix.local_api import create_capability, verify_response, request_hash
     from daimon_matrix.operator_capabilities import create_operator_capability_binding
-    from tests.test_dm024_runtime import RuntimeFixture, PASSWORD
     from clusterctl import onboarding_receiving_update as updates
     from clusterctl.onboarding_source import Source
     from clusterctl.same_being_operator import load_operator
 
-    fixture = RuntimeFixture()
-    fixture.setUp()
-    request.addfinalizer(fixture.tearDown)
-    root, bundle, _, _ = fixture.make_process_bundle()
+    initial_source, target, _peer_authority = request.getfixturevalue('group_source')
+    root, bundle, PASSWORD = initial_source.root, target.document_bundle(), bytes(target._reader())
+    group_paths = sorted((initial_source.outputs / 'tribe').rglob('*.json'))
+    group_before = {p: p.read_bytes() for p in group_paths}
     def now():
         return time.time_ns() // 1_000_000
     custody = EncryptedKeystore(root / 'custody.json').open(lambda: bytearray(PASSWORD))
@@ -210,9 +210,7 @@ def test_actual_source_loader_expands_only_required_profiles_and_injects_own_obs
     original_custody = EncryptedKeystore(root / 'custody.json').open(lambda: bytearray(PASSWORD))
     controller = next(row for row in original['capabilities'] if row['profile']['role'] == 'receiving-controller')
     binding_path = tmp_path / 'source-integration.json'
-    settings = dict(schema='cluster-onboarding-source/v1', runtime_root=str(root),
-        password_file=str(tmp_path / 'body.password'), native_visibility=str(tmp_path / 'unused.json'),
-        outputs=str(tmp_path / 'outputs'), applications=[], same_being_binding=str(binding_path))
+    settings = dict(initial_source.settings, same_being_binding=str(binding_path))
     assert updates.controller_bootstrap_mode(original, updates.controller_preservation(root, original)) == 'preserve'
     additions = updates.source_integration_additions(settings, original)
     assert additions == {role: sorted(methods) for role, methods in needed.items()}
@@ -247,6 +245,46 @@ def test_actual_source_loader_expands_only_required_profiles_and_injects_own_obs
         expected_server=runtime.service.origin, expected_runtime=runtime.service.runtime_identity)
     assert response['ok'] and response['result']['projection_receipts']['observer_available']
     assert runtime.service.projection_observer.__self__.binding == binding['binding']
+    assert {p: p.read_bytes() for p in group_paths} == group_before
+    # Project the real native publication through the owner-local lifecycle,
+    # then use it in the complete existing cohort state machine. Owner process
+    # observations there remain synthetic, not live service evidence.
+    from clusterctl import being_seed
+    from clusterctl.onboarding import digest
+    from clusterctl.onboarding_code_successor import plan_update
+    from tests.test_receiving_cohort_control import activation_fixture
+    cohort_root = tmp_path / 'cohort'
+    cohort_root.mkdir(mode=0o700)
+    before_hash = hashlib.sha256(canonical_bytes(original)).hexdigest()
+    after_hash = hashlib.sha256((root / 'runtime.json').read_bytes()).hexdigest()
+    assert before_hash != after_hash
+    cohort, owners, journal, identifier = activation_fixture(cohort_root, replacement=True,
+        bundle_transition=(before_hash, after_hash))
+    row = journal.get(identifier)
+    recipe = row['intended_transition']['cohort_activation']['receivers']['eko']
+    lifecycle = journal.get(recipe['lifecycle_operation_id'])
+    config = tmp_path / 'source-current.json'
+    being_seed._write(config, settings)
+    proof_journal = OperationJournal(tmp_path / 'native-lifecycle')
+    frozen.update(settings_sha256=digest(settings), preservation={'runtime_bytes_sha256': before_hash},
+        predecessor={'process': owners['eko'].process, 'server': owners['eko'].server,
+            'runtime_status': {'loaded_runtime': {'runtime_bundle_sha256': before_hash}}})
+    proof = plan_update(proof_journal, manifest_digest='a' * 64, target='native-expansion-proof',
+        expected_precondition={'source_bootstrap': frozen},
+        intended_transition={'source_bootstrap': {'qualification': dict(code='/public/qualified', code_uid=0, config=str(config))}},
+        audit_identity={'actor':'synthetic native qualification'})
+    effects = copy.deepcopy(lifecycle['runtime_observation']['source_bootstrap'])
+    effects['controlled_loaded']['loaded_runtime']['runtime_bundle_sha256'] = after_hash
+    effects.update(capability_published={'runtime_sha256': after_hash}, visibility_published={'installation_sha256':'f'*64})
+    proof_journal.advance(proof['operation_id'], 'runtime-dispatching', runtime_observation={'source_bootstrap':effects})
+    projected = source.receiving_lifecycle(tmp_path/'native-lifecycle', proof['operation_id'])['lifecycle']
+    assert projected['runtime_observation']['source_bootstrap']['capability_expansion'] == dict(
+        before_runtime_sha256=before_hash, runtime_sha256=after_hash)
+    lifecycle['runtime_observation']['source_bootstrap']['capability_expansion'] = (
+        projected['runtime_observation']['source_bootstrap']['capability_expansion'])
+    journal.advance(lifecycle['operation_id'], lifecycle['state'], runtime_observation=lifecycle['runtime_observation'])
+    assert cohort.activate()['receiving_readiness'] == 'qualified-local-projection'
+    assert journal.get(identifier)['intended_transition']['cohort_activation']['receivers']['eko']['selection'] == recipe['selection']
     # Compatible feature rollback keeps the selected SDK and expanded grants;
     # do not select an old validator that rejects the accepted capability rows.
     disabled = Source({k: v for k, v in settings.items() if k != 'same_being_binding'})

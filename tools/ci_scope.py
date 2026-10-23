@@ -572,11 +572,14 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
                          'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
     bootstrap_files = {'clusterctl/onboarding_source.py', 'clusterctl/onboarding_receiving_update.py',
                        'clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py',
+                       'tests/test_source_owner_adapter.py', 'tests/test_receiving_cohort_control.py',
                        'tools/build_onboarding_sdk.py', 'tools/build_receiving_maintenance.py',
                        'tests/test_onboarding_source.py', 'tests/test_source_bootstrap.py',
                        'tests/test_onboarding_sdk.py', 'docs/runbooks/tribu-sdk-successor.md'}
     bootstrap_tests = sorted(set(LOADED_STARTUP_TESTS) | set(MAINTENANCE_TESTS) | set(integration_tests))
-    if (set(changed) & (bootstrap_files - RUNBOOK_DOCS) and set(changed) <= bootstrap_files | integration_files | CI_FILES
+    if (set(changed) & (bootstrap_files - RUNBOOK_DOCS)
+            and set(changed) & (integration_files - RUNBOOK_DOCS)
+            and set(changed) <= bootstrap_files | integration_files | CI_FILES
             and all((root / name).is_file() for name in bootstrap_tests)
             and (root / 'tests/test_same_being_integration.py').is_file()):
         return 'integration-bootstrap', bootstrap_tests

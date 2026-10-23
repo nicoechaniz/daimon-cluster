@@ -2401,7 +2401,25 @@ class CohortController:
         selection = dict(receiving_code=startup['code_digest'], matrix_sdk=startup['matrix_wheel_sha256'],
             runtime_bundle_sha256=loaded['runtime_bundle_sha256'], application_sha256=application['application_sha256'],
             publication_sha256=application['publication_sha256'], visibility_installation_sha256=visibility['installation_sha256'])
-        if selection != recipe['selection']:
+        expected_selection = dict(recipe['selection'])
+        if recipe['profile'] == 'source' and lifecycle_row is not None:
+            effects = (lifecycle_row['runtime_observation'] or {}).get('source_bootstrap', {})
+            expansion = effects.get('capability_expansion')
+            if expansion is not None:
+                # The owner-local lifecycle projection verifies the exact
+                # permitted native expansion/publication. Resolve that one
+                # declared transition without changing the frozen recipe.
+                if (not isinstance(expansion, dict) or set(expansion) != {
+                        'before_runtime_sha256', 'runtime_sha256'}
+                        or expansion['before_runtime_sha256'] != expected_selection.get('runtime_bundle_sha256')
+                        or not isinstance(expansion['runtime_sha256'], str)
+                        or re.fullmatch('[0-9a-f]{64}', expansion['runtime_sha256']) is None
+                        or expansion['runtime_sha256'] == expansion['before_runtime_sha256']
+                        or effects.get('controlled_loaded', {}).get('loaded_runtime', {}).get(
+                            'runtime_bundle_sha256') != expansion['runtime_sha256']):
+                    raise OnboardingError('receiving_cohort_selection_changed')
+                expected_selection['runtime_bundle_sha256'] = expansion['runtime_sha256']
+        if selection != expected_selection:
             raise OnboardingError('receiving_cohort_selection_changed')
         receiver = next((item for item in manifest['required_receivers'] if
             (item['being_ref'], item['embodiment_id']) == (identity['being_ref'], current['server']['embodiment_id'])), None)

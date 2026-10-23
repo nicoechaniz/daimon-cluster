@@ -6,6 +6,7 @@ import json
 import os
 import selectors
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -13,8 +14,41 @@ import pytest
 
 from clusterctl.behavior_delta import BehaviorDelta
 from clusterctl.operation_journal import OperationJournal
+from clusterctl.same_being_operator import CodexConfigControl
 
 BINARY = os.environ.get('BEHAVIOR_NATIVE_BINARY')
+
+
+@pytest.mark.skipif(not BINARY, reason='exact native binary must be explicitly selected')
+def test_actual_native_websocket_config_control_uses_no_model(tmp_path):
+    binary = Path(BINARY).resolve(strict=True)
+    home = tmp_path / 'home'
+    native_home = home / '.codex'
+    native_home.mkdir(parents=True, mode=0o700)
+    config = native_home / 'config.toml'
+    config.write_text('model_reasoning_summary = "auto"\n')
+    env = dict(os.environ, HOME=str(home), CODEX_HOME=str(native_home))
+    with tempfile.TemporaryDirectory(prefix='config-control-') as short:
+        endpoint = Path(short) / 'native.sock'
+        with (tmp_path / 'native-stderr.log').open('wb') as stderr:
+            process = subprocess.Popen([str(binary), 'app-server', '--listen', 'unix://' + str(endpoint)],
+                                       env=env, cwd=home, stdout=subprocess.DEVNULL, stderr=stderr)
+            try:
+                deadline = time.monotonic() + 15
+                while not endpoint.exists() and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(.05)
+                assert endpoint.exists(), (tmp_path / 'native-stderr.log').read_text()
+                control = CodexConfigControl(endpoint)
+                before = control('config/read', dict(includeLayers=True, cwd=str(home)))
+                assert before['config']['model_reasoning_summary'] == 'auto'
+                control('config/batchWrite', dict(edits=[dict(keyPath='model_reasoning_summary',
+                    value='concise', mergeStrategy='replace')], reloadUserConfig=True))
+                assert control('config/read', dict(includeLayers=True, cwd=str(home)))['config']['model_reasoning_summary'] == 'concise'
+                with pytest.raises(ValueError, match='native_method_not_supported'):
+                    control('turn/start', {})
+            finally:
+                process.terminate()
+                process.wait(timeout=5)
 
 
 @pytest.mark.skipif(not BINARY, reason='exact native binary must be explicitly selected')

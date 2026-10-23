@@ -255,6 +255,62 @@ def test_dependency_rejection_precedes_composition(lifecycle, monkeypatch):
     assert lifecycle.events == []
 
 
+def test_visibility_requires_explicit_application(lifecycle, capsys):
+    assert lifecycle.invoke("--visibility-installation", "/synthetic") == 1
+    assert lifecycle.events == []
+    assert "matrix_visibility_requires_application" in capsys.readouterr().err
+
+
+def test_visibility_factory_reaches_runtime_with_all_host_hooks(lifecycle, monkeypatch):
+    factory = object()
+    module = ModuleType("daimon_matrix.operator_messaging")
+
+    def visibility(app, installation, *, clock):
+        assert app == lifecycle.root / "application"
+        assert installation == lifecycle.root / "visibility.json"
+        assert isinstance(clock(), int)
+        return factory
+
+    module.host_visibility_factory = visibility
+    monkeypatch.setitem(sys.modules, "daimon_matrix.operator_messaging", module)
+    original = lifecycle.api["runtime"].load_runtime
+
+    def load(*args, **kwargs):
+        assert kwargs.pop("egress_factory") is factory
+        return original(*args, **kwargs)
+
+    lifecycle.api["runtime"].load_runtime = load
+    assert (
+        lifecycle.invoke(
+            "--messaging-application",
+            str(lifecycle.root / "application"),
+            "--visibility-installation",
+            str(lifecycle.root / "visibility.json"),
+        )
+        == 0
+    )
+    assert lifecycle.events[-2:] == ["compose", "serve"]
+
+
+def test_missing_visibility_api_fails_closed_and_releases_lock(
+    lifecycle, monkeypatch, capsys
+):
+    monkeypatch.setitem(sys.modules, "daimon_matrix.operator_messaging", None)
+    assert (
+        lifecycle.invoke(
+            "--messaging-application",
+            str(lifecycle.root / "application"),
+            "--visibility-installation",
+            str(lifecycle.root / "visibility.json"),
+        )
+        == 1
+    )
+    assert lifecycle.events == ["dependency", "origin", "lock"]
+    assert "matrix_visibility_installation_rejected" in capsys.readouterr().err
+    with pytest.raises(OSError):
+        os.fstat(lifecycle.held[0])
+
+
 def test_runtime_rejection_precedes_composition(lifecycle, capsys):
     def reject(*args, **kwargs):
         raise host.MatrixHostError("invalid_runtime_bundle")
@@ -302,17 +358,28 @@ def test_application_startup_failure_releases_real_runtime_lock(monkeypatch):
         authority = fixtures._authority(now)
         origin = authority["origins"]["legion"]
         registry = fixtures.Registry(state)
-        registry.register(body_ref=origin["body_ref"], embodiment_id=origin["embodiment_id"])
-        registry.start(origin["embodiment_id"], incarnation_id=origin["incarnation_id"], started_at_ms=now)
+        registry.register(
+            body_ref=origin["body_ref"], embodiment_id=origin["embodiment_id"]
+        )
+        registry.start(
+            origin["embodiment_id"],
+            incarnation_id=origin["incarnation_id"],
+            started_at_ms=now,
+        )
         fixtures._write_runtime(state, authority, "legion", now)
         real_popen = fixtures.subprocess.Popen
 
         def configured_child(argv, **kwargs):
-            return real_popen([*argv, "--messaging-application", str(Path(name) / "missing")], **kwargs)
+            return real_popen(
+                [*argv, "--messaging-application", str(Path(name) / "missing")],
+                **kwargs,
+            )
 
         with monkeypatch.context() as scoped:
             scoped.setattr(fixtures.subprocess, "Popen", configured_child)
-            with pytest.raises(AssertionError, match="matrix_messaging_application_rejected"):
+            with pytest.raises(
+                AssertionError, match="matrix_messaging_application_rejected"
+            ):
                 fixtures._spawn(state, origin["embodiment_id"])
         process, _ = fixtures._spawn(state, origin["embodiment_id"])
         fixtures._stop(process)

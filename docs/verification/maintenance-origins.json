@@ -3,9 +3,11 @@
     "source_path": "clusterctl/matrix_host.py",
     "source_commit": "48caa742c212345783cad94537184adcfd2c439b",
     "source_sha256": "f4f5b971ef986cf74422c77f5ffa19763d83eb84a206b55cf3f132e11bf2dae4",
-    "candidate_sha256": "d24af0d7a4f1c7f4177be494129eff276d887fbaea5c7731c8f5b51d0327d42e",
+    "candidate_sha256": "44ab4e192448e7449479d6849b719a3ea01457dec9e00813006556792482bbd2",
     "changes": [
-      "Single host fence import redirected to private namespace"
+      "Single host fence import redirected to private namespace",
+      "Explicit signed visibility installation paired with messaging application; preserve all host hooks and fail closed without the required Matrix API",
+      "Candidate hash retains the composition test normalization from the installed Matrix pin to the historical reviewed pin"
     ]
   },
   "clusterctl/matrix_fencing/fences.py": {

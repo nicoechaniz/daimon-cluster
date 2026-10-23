@@ -6,6 +6,21 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_same_being_integration_keeps_owning_composition_and_unknown_changes_full(tmp_path):
+    changed = ['clusterctl/same_being_integration.py', 'clusterctl/same_being_operator.py',
+               'tests/test_same_being_integration.py', 'tests/test_same_being_operator.py',
+               'tests/test_behavior_native.py', 'docs/runbooks/same-being-integration.md',
+               'tools/ci_scope.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py',
+               '.github/workflows/tests.yml']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'integration'
+    assert {'tests/test_behavior_delta.py', 'tests/test_operation_journal.py',
+            'tests/test_same_being_operator.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select([*changed, 'clusterctl/onboarding_custody.py'], ROOT) == ('full', ['tests'])
+    assert select([*changed, 'requirements-weave.txt'], ROOT) == ('full', ['tests'])
+
+
 def test_runtime_health_enrollment_keeps_authority_unknown_changes_full():
     from tools.ci_scope import RUNTIME_HEALTH_FILES, RUNTIME_HEALTH_TESTS
     changed = sorted(RUNTIME_HEALTH_FILES | {'tools/ci_scope.py','tests/test_ci_scope.py'})

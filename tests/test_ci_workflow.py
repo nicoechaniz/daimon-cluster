@@ -13,6 +13,19 @@ from typing import Any
 import pytest
 
 
+def test_same_being_composition_runs_exact_owners_without_replacing_installed_matrix():
+    workflow = (Path(__file__).parents[1] / '.github/workflows/tests.yml').read_text()
+    start = workflow.index('      - name: Check out the exact same-being Matrix API candidate')
+    end = workflow.index('      - run: >-', start)
+    composition = workflow[start:end]
+    assert "needs.scope.outputs.profile == 'integration' || needs.scope.outputs.profile == 'full'" in composition
+    assert 'SAME_BEING_MATRIX_SOURCE=' in composition and 'SAME_BEING_DMK_SCRIPTS=' in composition
+    assert 'SAME_BEING_SKILLS_SCRIPT=' in composition
+    assert 'python -m pytest tests/test_same_being_integration.py' in composition
+    assert 'pip install' not in composition
+    assert '--ignore=tests/test_same_being_integration.py' in workflow[end:]
+
+
 def _private_inventory() -> Any:
     workflow = Path(__file__).parents[1] / ".github/workflows/tests.yml"
     raw = workflow.read_text(encoding="utf-8")

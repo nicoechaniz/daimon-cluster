@@ -563,6 +563,18 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
 
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
+    integration_files = {'clusterctl/same_being_integration.py', 'clusterctl/same_being_operator.py',
+                         'tests/test_same_being_integration.py', 'tests/test_same_being_operator.py',
+                         'tests/test_behavior_native.py', 'docs/runbooks/same-being-integration.md'}
+    integration_tests = ['tests/test_same_being_operator.py', 'tests/test_behavior_delta.py',
+                         'tests/test_behavior_native.py', 'tests/test_operation_journal.py',
+                         'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & integration_files and set(changed) <= integration_files | CI_FILES
+            and all((root / name).is_file() for name in integration_tests)
+            and (root / 'tests/test_same_being_integration.py').is_file()):
+        # The workflow separately runs the composed cases against exact owning
+        # sources, without replacing the normal installed Matrix pin.
+        return 'integration', integration_tests
     behavior_files = {'clusterctl/behavior_delta.py', 'tests/test_behavior_delta.py',
                       'tests/test_behavior_native.py', 'docs/runbooks/same-being-behavior.md',
                       'tools/check_rc_types.py'}

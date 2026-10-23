@@ -404,7 +404,7 @@ class Source:
             raise OnboardingError('receiving_source_lifecycle_conflict')
         effects = (row['runtime_observation'] or {}).get('source_bootstrap', {})
         # Never export intents, control capabilities, custody or another Source.
-        projected = dict(operation_id=operation_id, operation='receiving-update',
+        projected: dict[str, Any] = dict(operation_id=operation_id, operation='receiving-update',
             expected_precondition={'source_bootstrap': {'predecessor': {
                 key: frozen['predecessor'].get(key) for key in ('process', 'server')}}},
             intended_transition={'source_bootstrap': {'qualification': {

@@ -86,7 +86,7 @@ def source_module(name, path, expected_sha256):
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, 'rb') as stream:
         info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_size > 8 * 1024 * 1024:
+        if not stat.S_ISREG(info.st_mode) or info.st_uid not in {0, os.geteuid()} or info.st_size > 8 * 1024 * 1024:
             raise ValueError('integration_selected_module_not_regular')
         raw = stream.read(8 * 1024 * 1024 + 1)
     if hashlib.sha256(raw).hexdigest() != expected_sha256:
@@ -98,6 +98,36 @@ def source_module(name, path, expected_sha256):
     # after verification or requiring permission changes to the source repo.
     exec(compile(raw, str(path), 'exec'), module.__dict__)
     return module
+
+
+class OwnerMatrixClient:
+    """Route existing disjoint owner profiles without widening their grants."""
+
+    def __init__(self, mutation, observation=None):
+        self.clients = [mutation] if observation is None else [mutation, observation]
+        self.config, self.socket_path, self.clock = mutation.config, mutation.socket_path, mutation.clock
+        for client in self.clients:
+            if (client.socket_path != self.socket_path
+                    or client.config.expected_server != self.config.expected_server
+                    or client.config.runtime_id != self.config.runtime_id
+                    or client.config.runtime_label != self.config.runtime_label):
+                raise ValueError('integration_matrix_binding_changed')
+
+    def prepare(self, method, params, *, request_id=None):
+        for client in self.clients:
+            if method in client.config.capability.methods:
+                return client.prepare(method, params, request_id=request_id)
+        raise ValueError('integration_matrix_capability_unavailable')
+
+    def send(self, request):
+        for client in self.clients:
+            if client.config.capability.capability_id == request['capability_id']:
+                return client.send(request)
+        raise ValueError('integration_retained_matrix_request_changed')
+
+    def invoke(self, method, params):
+        request = self.prepare(method, params)
+        return request, self.send(request)
 
 
 class CodexConfigControl:
@@ -152,14 +182,20 @@ def load_operator(path, *, matrix=None):
         raise ValueError('integration_invalid_receiving_binding')
     if matrix is None:
         selected = config['matrix']
-        descriptor = os.open(selected['key_file'], os.O_RDONLY | os.O_NOFOLLOW)
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
-            os.close(descriptor)
-            raise ValueError('integration_existing_capability_not_private')
-        client_config = ClientConfig.load(Path(selected['client_config']), read_capability_key(descriptor))
-        matrix = LocalClient(Path(selected['socket']), client_config,
-                             timeout_seconds=selected.get('timeout_seconds', 40))
+        def existing_client(config_key, key_key):
+            descriptor = os.open(selected[key_key], os.O_RDONLY | os.O_NOFOLLOW)
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                os.close(descriptor)
+                raise ValueError('integration_existing_capability_not_private')
+            client_config = ClientConfig.load(Path(selected[config_key]), read_capability_key(descriptor))
+            return LocalClient(Path(selected['socket']), client_config,
+                               timeout_seconds=selected.get('timeout_seconds', 40))
+        mutation = existing_client('client_config', 'key_file')
+        if ('observe_client_config' in selected) != ('observe_key_file' in selected):
+            raise ValueError('integration_matrix_binding_changed')
+        observation = existing_client('observe_client_config', 'observe_key_file') if 'observe_client_config' in selected else None
+        matrix = OwnerMatrixClient(mutation, observation)
     journal = OperationJournal(config['journal'])
     memory = skills = behavior = None
     if config['memory'] is not None:
@@ -172,7 +208,7 @@ def load_operator(path, *, matrix=None):
                 raise ValueError('integration_invalid_selected_module_path')
             target = scripts / relative
             if (target.is_symlink() or not target.is_file()
-                    or target.stat().st_uid != os.geteuid() or target.stat().st_mode & 0o022
+                    or target.stat().st_uid not in {0, os.geteuid()} or target.stat().st_mode & 0o022
                     or hashlib.sha256(target.read_bytes()).hexdigest() != expected):
                 raise ValueError('integration_selected_package_changed')
             existing = sys.modules.get(Path(relative).stem)

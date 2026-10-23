@@ -161,6 +161,37 @@ Broader I/O and future-admission acceptance remain separate.
 
 ## Execute from the next missing effect
 
+### Selected same-being integration
+
+The optional Source setting `same_being_binding` selects the explicit local
+operator described in [same-being integration](same-being-integration.md).
+Prepare the binding and its original observation/weave client references without
+changing account, authority or peer membership. The existing Source freeze derives
+only missing `we.event.get` on `observe` and `we.propose`/`we.projection.receipt` on
+`weave`. With an active existing controller it retains an `expand` transition,
+using the existing native capability transaction during the same managed Source
+interruption. It neither reissues nor widens that controller. Other roles, keys,
+identity, history and the signed group remain unchanged. An unconfigured Source
+retains the original preserve/issue/renew behavior. Renewal and expansion are
+separate native contracts: if renewal is required first, finish that existing
+operation before planning expansion; refusal occurs before interruption.
+
+The SDK builder accepts `--matrix-commit` for an explicit exact qualified
+successor revision. It seals the actual Matrix wheel SHA256 with that revision
+and uses the supported explicit verifier; the historical default pin and its
+strict validation stay intact. Scratch/build files live beside the selected
+output, so choose an approved data-filesystem output for large artifacts. Never
+monkeypatch SDK constants or relabel an old wheel. A built/qualified candidate
+does not establish a loaded Source or useful two-body integration. Preserve old
+profiles and unresolved requests; inspect actual outstanding operations before
+capability expansion rather than inventing compatibility paths for absent work.
+For a compatible feature rollback after expansion, retain the selected SDK and
+accepted capability rows and remove the optional Source integration setting
+through its owning controlled configuration/lifecycle path. The normal Source
+loader remains usable without the observer. Do not swap in a historical SDK
+whose profile validator rejects the added methods, revoke grants by restoration,
+restore custody/history or replay the integration's old effects.
+
 Use one current operation and one reusable integrated receiving scenario. Keep
 its candidate, completed effects, reusable evidence and next missing effect in
 the existing work record. Dated trial scripts are evidence, not deployment entrypoints.

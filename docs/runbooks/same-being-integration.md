@@ -34,7 +34,11 @@ The private receiving binding uses `cluster-same-being-binding/v1` and exactly
 - `binding`: the verified local being/body/embodiment/incarnation/principal tuple.
 - `journal`: the existing owner-controlled OperationJournal directory.
 - `matrix`: existing `socket`, `client_config`, `key_file`, optional
-  `timeout_seconds`. Reuse the issued weave capability; do not copy credentials
+  `timeout_seconds`. Point those files at the issued weave profile. Select
+  `observe_client_config` and `observe_key_file` for the disjoint observation
+  profile. The operator routes reads/mutations through their existing clients;
+  a retained request is sent only with its original capability ID. A synthetic
+  all-method capability does not establish real profile composition. Do not copy credentials
   into selection documents. Old unresolved signed requests still require their
   original matching client profile, nonce and authentication bytes.
 - `memory`, or null: selected `scripts`, `files` (relative executable/helper
@@ -61,6 +65,14 @@ it does not load custody/runtime outside the daemon lock. Before child effects,
 the parent requires both the actual issued receipt method and receiving status
 reporting the trusted observer available. Do not claim this bootstrap deployed
 merely because the source seam exists.
+
+For the maintained Source host, explicit `same_being_binding` in its existing
+owner-private source configuration selects this binding. The host verifies the
+exact being/origin, runtime ID and its own Matrix socket before injection. Absence
+preserves the existing behavior. Immutable root-owned selected implementations
+are accepted by their verified hashes; binding/credential inputs remain private
+to the receiving UID. The maintenance helper closure includes the integration
+operator and behavioral adapter; no new service or startup attention is created.
 
 Native configuration uses the existing Codex daemon control WebSocket and only
 `config/read` or `config/batchWrite`, plus protocol initialization. Codex 0.163
@@ -104,12 +116,15 @@ lock, then verifies all selected preimages; unrelated transactions are untouched
 
 CI's `integration` profile runs affected journal/behavior/operator contracts and
 a separate real composed journey with exact Matrix/DMK/Skills source revisions.
-The standalone generic Skills installer is retained byte-for-byte under
-`support/skills-update`, with source commit/blob and SHA256 provenance. It remains
+The standalone generic Skills installer is retained byte-for-byte as
+`clusterctl/skill_update_installer.py`, with source commit/blob and SHA256 provenance
+under `support/skills-update`. It remains
 owned by Skills and is not a fork or a copy of the skill collection. Public CI
 verifies those exact bytes rather than requiring cross-repository access to the
 private collection or adding a credential. Refresh it from its owning source
 when its selected contract changes.
+The maintained immutable helper closure includes it; receiving bindings select
+that qualified file rather than a mutable development checkout.
 It does not replace the normal installed Matrix pin. Shared/unknown changes retain
 the full profile, including the composed journey. Local execution can supply
 `SAME_BEING_MATRIX_SOURCE`, `SAME_BEING_DMK_SCRIPTS`, `SAME_BEING_SKILLS_SCRIPT`

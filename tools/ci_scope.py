@@ -17,7 +17,7 @@ from pathlib import Path
 CI_FILES = {'.github/workflows/tests.yml', 'README.md', 'tools/ci_scope.py', 'tools/ci_guest_owner.py',
             'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'}
 # Closed documentation pages with no generated/runtime consumer. Unknown docs stay full.
-RUNBOOK_DOCS = {'docs/runbooks/native-codex-supervision.md',
+RUNBOOK_DOCS = {'docs/runbooks/native-codex-supervision.md', 'docs/runbooks/same-being-integration.md',
     'docs/runbooks/tribu-sdk-successor.md', 'docs/design/shared-home-styles.md',
     'README.md', 'RESUME.md', 'docs/PLAN.md', 'docs/design/matrix-convergence.md',
     'docs/design/onboarding-jobs.md', 'docs/design/provisioning-flow.md',
@@ -566,11 +566,20 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
     integration_files = {'clusterctl/same_being_integration.py', 'clusterctl/same_being_operator.py',
                          'tests/test_same_being_integration.py', 'tests/test_same_being_operator.py',
                          'tests/test_behavior_native.py', 'docs/runbooks/same-being-integration.md',
-                         'support/skills-update/skills_update.py', 'support/skills-update/PROVENANCE.json'}
+                         'clusterctl/skill_update_installer.py', 'support/skills-update/PROVENANCE.json'}
     integration_tests = ['tests/test_same_being_operator.py', 'tests/test_behavior_delta.py',
                          'tests/test_behavior_native.py', 'tests/test_operation_journal.py',
                          'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
-    if (set(changed) & integration_files and set(changed) <= integration_files | CI_FILES
+    bootstrap_files = {'clusterctl/onboarding_source.py', 'clusterctl/onboarding_receiving_update.py',
+                       'tools/build_onboarding_sdk.py', 'tools/build_receiving_maintenance.py',
+                       'tests/test_onboarding_source.py', 'tests/test_source_bootstrap.py',
+                       'tests/test_onboarding_sdk.py', 'docs/runbooks/tribu-sdk-successor.md'}
+    bootstrap_tests = sorted(set(LOADED_STARTUP_TESTS) | set(MAINTENANCE_TESTS) | set(integration_tests))
+    if (set(changed) & (bootstrap_files - RUNBOOK_DOCS) and set(changed) <= bootstrap_files | integration_files | CI_FILES
+            and all((root / name).is_file() for name in bootstrap_tests)
+            and (root / 'tests/test_same_being_integration.py').is_file()):
+        return 'integration-bootstrap', bootstrap_tests
+    if (set(changed) & (integration_files - RUNBOOK_DOCS) and set(changed) <= integration_files | CI_FILES
             and all((root / name).is_file() for name in integration_tests)
             and (root / 'tests/test_same_being_integration.py').is_file()):
         # The workflow separately runs the composed cases against exact owning

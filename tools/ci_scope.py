@@ -571,6 +571,7 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
                          'tests/test_behavior_native.py', 'tests/test_operation_journal.py',
                          'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
     bootstrap_files = {'clusterctl/onboarding_source.py', 'clusterctl/onboarding_receiving_update.py',
+                       'clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py',
                        'tools/build_onboarding_sdk.py', 'tools/build_receiving_maintenance.py',
                        'tests/test_onboarding_source.py', 'tests/test_source_bootstrap.py',
                        'tests/test_onboarding_sdk.py', 'docs/runbooks/tribu-sdk-successor.md'}

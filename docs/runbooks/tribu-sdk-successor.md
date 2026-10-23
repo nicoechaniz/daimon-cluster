@@ -175,6 +175,9 @@ identity, history and the signed group remain unchanged. An unconfigured Source
 retains the original preserve/issue/renew behavior. Renewal and expansion are
 separate native contracts: if renewal is required first, finish that existing
 operation before planning expansion; refusal occurs before interruption.
+The maintained maintenance coordinator accepts this validated Source expansion
+alongside preservation. Guest lifecycle and cohort requirements stay unchanged;
+do not bypass the coordinator with an improvised lower-level rollout.
 
 The SDK builder accepts `--matrix-commit` for an explicit exact qualified
 successor revision. It seals the actual Matrix wheel SHA256 with that revision

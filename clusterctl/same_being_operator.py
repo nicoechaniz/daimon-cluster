@@ -11,7 +11,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import re
 import stat
 import sys
 import time
@@ -19,6 +18,47 @@ import time
 from .behavior_delta import BehaviorDelta
 from .operation_journal import OperationJournal
 from .same_being_integration import NativeMemory, SameBeingIntegration, SelectedSkills
+
+# Exception prose (even an identifier-looking word) is private input, not a
+# public diagnostic. Only these maintained domain codes may reach stdout/stderr.
+PUBLIC_CODES = frozenset('integration_' + suffix for suffix in '''
+    behavior_adapter_unavailable behavior_binding_mismatch behavior_rollback_state_changed
+    behavior_source_bytes_changed behavior_source_closure_missing behavior_source_origin_changed
+    canonical_operation_uuid_required checkpoint_memory_binding_changed completed_effect_changed
+    content_not_in_proposal controls_rollback_started decision_preview_changed decision_view_changed
+    deliberate_local_decision effect_receipt_binding_changed effect_truth_unavailable effects_unobserved
+    empty_selection invalid_residual known_proposal_required local_decision_changed local_decision_fork
+    local_reason_required matrix_binding_changed matrix_capability_unavailable memory_adapter_unavailable
+    memory_being_mismatch memory_effect_unobserved memory_links_pending memory_packet_bounds
+    observed_effect_changed operation_binding_changed operation_not_resumable operation_selection_changed
+    projection_observer_unavailable proposal_content_refs_required proposal_projection_unavailable
+    retained_matrix_request_changed rollback_identity_collision rollback_not_resumable
+    rollback_requires_completed_parent skill_adapter_unavailable skill_effect_unobserved
+    skill_rollback_owner_changed skill_rollback_state_changed skill_selection_conflict source_event_changed
+    unrelated_skill_recovery duplicate_json_key existing_capability_not_private existing_module_selection_changed
+    input_too_large invalid_receiving_binding invalid_selected_module_path memory_environment_not_supported
+    memory_module_selection_missing native_deadline native_method_not_supported native_request_rejected
+    native_socket_not_owned operation_failed private_binding_or_input_required selected_module_changed
+    selected_module_not_regular selected_package_changed
+'''.split())
+PUBLIC_MATRIX_CODES = frozenset('''
+    protocol_rejected projection_invalid runtime_unavailable durable_conflict causal_gap
+    invalid_params unknown_target target_not_projectable decision_chain_failed decision_predecessor_mismatch
+    projection_effect_truth_unverifiable projection_known_proposal_required projection_local_adoption_required
+    projection_effect_actor_mismatch projection_effect_fence_holder_mismatch projection_effect_timing_invalid
+    projection_adoption_not_current projection_decision_view_changed projection_effect_identity_conflict
+    effect-truth-unverifiable effect-truth-discrepancy
+'''.split())
+
+
+def public_error(error):
+    code = str(error)
+    if code in PUBLIC_CODES:
+        return code
+    for prefix in ('integration_matrix_read_', 'integration_matrix_mutation_'):
+        if code.startswith(prefix) and code[len(prefix):] in PUBLIC_MATRIX_CODES:
+            return code
+    return 'integration_operation_failed'
 
 
 def private_json(path, *, maximum=128 * 1024 * 1024):
@@ -183,13 +223,21 @@ def load_operator(path, *, matrix=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binding', required=True, type=Path)
-    parser.add_argument('action', choices=('prepare', 'apply', 'recover', 'status', 'rollback'))
-    parser.add_argument('--operation-id', required=True)
+    parser.add_argument('action', choices=('inspect', 'prepare', 'apply', 'recover', 'status', 'rollback'))
+    parser.add_argument('--operation-id')
+    parser.add_argument('--source-event-id')
     parser.add_argument('--selection', type=Path)
     args = parser.parse_args(argv)
+    if args.action == 'inspect':
+        if args.source_event_id is None or args.selection is not None:
+            parser.error('inspect requires --source-event-id and no selection')
+    elif args.operation_id is None or args.source_event_id is not None:
+        parser.error('this action requires --operation-id and no --source-event-id')
     try:
         operator = load_operator(args.binding)
-        if args.action == 'prepare':
+        if args.action == 'inspect':
+            result = operator.inspect(args.source_event_id)
+        elif args.action == 'prepare':
             if args.selection is None:
                 parser.error('prepare requires --selection')
             result = operator.prepare(args.operation_id, **private_json(args.selection))
@@ -198,9 +246,8 @@ def main(argv=None):
                 parser.error('--selection is only used by prepare; retries use retained input')
             result = getattr(operator, args.action)(args.operation_id)
     except (ValueError, RuntimeError, OSError, KeyError) as error:
-        code = str(error)
-        safe = code if re.fullmatch('[a-z][a-z0-9_-]{0,100}', code) else 'integration_operation_failed'
-        print(json.dumps({'ok': False, 'code': safe, 'error_type': type(error).__name__}), file=sys.stderr)
+        print(json.dumps({'ok': False, 'code': public_error(error),
+                          'error_type': type(error).__name__}), file=sys.stderr)
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0

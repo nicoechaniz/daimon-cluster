@@ -345,6 +345,47 @@ def test_controls_rollback_preserves_later_skill_edit_before_any_inverse(compose
     assert integration.journal.get(integration._rollback_id(OPERATION)) is None
 
 
+def test_actual_kill_inside_skill_inverse_resumes_exact_native_rollback(composed):
+    integration, selection, memory, instructions, client, sync, source = composed
+    integration.prepare(OPERATION, **selection)
+    integration.apply(OPERATION)
+    adapter = integration.skills
+    transaction = adapter.installer.record(adapter.state, 'useful-example')['transaction']
+    retained = adapter.installer.transaction_dir(adapter.root, transaction) / 'retained/useful-example'
+    child = os.fork()
+    if child == 0:
+        original = adapter.installer.os.replace
+        def kill_inside_inverse(src, dst):
+            original(src, dst)
+            if Path(dst) == retained:
+                os.kill(os.getpid(), signal.SIGKILL)
+        adapter.installer.os.replace = kill_inside_inverse
+        integration.rollback(OPERATION)
+        os._exit(99)
+    _, outcome = os.waitpid(child, 0)
+    assert os.WIFSIGNALED(outcome) and os.WTERMSIG(outcome) == signal.SIGKILL
+    journal = adapter.installer.journal_path(adapter.state, transaction)
+    assert adapter.installer.read_json(journal)['status'] == 'rolling_back'
+    assert retained.is_dir()
+    assert integration.rollback(OPERATION)['controls_restored']
+    assert adapter.installer.read_json(journal)['status'] == 'rolled_back'
+    assert integration.rollback(OPERATION)['controls_restored']
+    assert retained.is_dir() and not (adapter.root / 'useful-example').exists()
+    with closing(memory.connect()) as con:
+        assert con.execute('select count(*) from chapters').fetchone()[0] == 1
+
+
+def test_residual_originals_stay_private_while_status_returns_only_summary(composed):
+    integration, selection, memory, instructions, client, sync, source = composed
+    private = ['/private/retained/original', {'note': 'private original retained locally'}]
+    selection['residual'] = private
+    status = integration.prepare(OPERATION, **selection)
+    assert status['residual']['count'] == 2
+    assert len(status['residual']['sha256']) == 64
+    assert 'private' not in json.dumps(status)
+    assert integration.journal.get(OPERATION)['intent']['selection']['residual'] == private
+
+
 @pytest.mark.parametrize('interrupted_stage', ['after-revert-return', 'after-behavior-rollback-return'])
 def test_lost_control_inverse_return_resumes_same_inverse(composed, interrupted_stage):
     integration, selection, memory, instructions, client, sync, source = composed
@@ -433,6 +474,7 @@ def test_actual_operator_cli_uses_private_binding_and_authenticated_native_socke
             assert result.returncode == 0, result.stderr.decode()
             return json.loads(result.stdout)
         try:
+            assert run('inspect', '--source-event-id', selection['source_event_id'])['local_state'] == 'pending'
             assert run('prepare', '--selection', str(selected))['state'] == 'planned'
             assert run('apply')['state'] == 'completed'
             assert run('recover')['materialized']

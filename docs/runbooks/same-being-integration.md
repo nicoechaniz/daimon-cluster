@@ -11,12 +11,15 @@ curator job or peer executor:
 
 ```sh
 python -m clusterctl.same_being_operator --binding RECEIVING.json \
+  inspect --source-event-id EVENT_UUID
+python -m clusterctl.same_being_operator --binding RECEIVING.json \
   prepare --operation-id UUID --selection SELECTED.json
 python -m clusterctl.same_being_operator --binding RECEIVING.json \
   apply --operation-id UUID
 ```
 
-`recover` resumes the same parent and its exact retained requests; `status`
+`inspect` returns proposal hashes/local decision without adopting. `recover`
+resumes the same parent and its exact retained requests; `status`
 reobserves actual children. `rollback` retains an inverse local decision and
 restores unchanged selected skills/configuration through their owning inverses.
 It deliberately retains attributed imported memory, history and concurrent writes.
@@ -91,6 +94,11 @@ remain owner-private. The whole selection is bounded to 128 MiB; DMK retains its
 own tighter packet and transaction bounds. No automatic journal retirement is
 authorized. Saved/read-back/reloaded settings report consumption **unverified**;
 actual receiving harness use must be established separately on both bodies.
+Residual originals stay in the private selection; status exposes only their count
+and digest. Error output accepts explicit maintained domain codes, never arbitrary
+exception prose even when it resembles an identifier. A kill during native skill
+rollback resumes only that retained `rolling_back` transaction under the owning
+lock, then verifies all selected preimages; unrelated transactions are untouched.
 
 ## Qualification and receiving boundary
 

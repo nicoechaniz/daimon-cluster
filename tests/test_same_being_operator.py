@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from clusterctl.same_being_operator import private_json, source_module
+from clusterctl.same_being_operator import private_json, public_error, source_module
 
 
 def test_private_binding_refuses_duplicates_and_public_inputs(tmp_path):
@@ -33,3 +33,10 @@ def test_selected_executable_uses_exact_bytes_without_changing_source_permission
     alias.symlink_to(source)
     with pytest.raises(OSError):
         source_module('_qualification_selected_code', alias, expected)
+
+
+def test_error_output_uses_known_codes_and_never_arbitrary_identifier_prose():
+    assert public_error(ValueError('private_human_word')) == 'integration_operation_failed'
+    assert public_error(ValueError('integration_matrix_mutation_private_human_word')) == 'integration_operation_failed'
+    assert public_error(ValueError('integration_selected_module_changed')) == 'integration_selected_module_changed'
+    assert public_error(ValueError('integration_matrix_mutation_protocol_rejected')) == 'integration_matrix_mutation_protocol_rejected'

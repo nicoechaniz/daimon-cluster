@@ -165,6 +165,16 @@ class SelectedSkills:
     def rollback(self, plan, transaction):
         self.prepare(plan)
         if transaction is not None:
+            with self.installer.locked(self.state) as state:
+                row = self.installer.read_json(self.installer.journal_path(state, transaction))
+                if (row['transaction'] != transaction or row['root'] != str(self.root)
+                        or any(row.get(k) != plan.get(k) for k in
+                               ('descriptor', 'expected', 'previous_records', 'reconciliation'))):
+                    raise IntegrationConflict('integration_skill_rollback_owner_changed')
+                if row['status'] == 'rolling_back':
+                    # A SIGKILL inside the owning inverse leaves this durable
+                    # phase. Resume only that exact native restore under its lock.
+                    self.installer.restore(state, row)
             self.installer.rollback(self.root, self.state, transaction)
         with self.installer.locked(self.state) as state:
             if not all(self.installer.snapshot(self.root / p['name']) == plan['expected'][p['name']]
@@ -244,6 +254,15 @@ class SameBeingIntegration:
                                     'native_file': self.behavior.native_file, 'cwd': self.behavior.cwd}
         return resources
 
+    def inspect(self, source_event_id):
+        """Read exact proposal references and local decision without adoption."""
+        event = self._source(source_event_id)
+        entry = self._decision(event)
+        return {'schema': 'cluster-same-being-inspection/v1',
+                'source_event_id': event['event_id'], 'kind': event['kind'],
+                'content_refs': event['payload']['content_refs'],
+                'local_state': entry['state'], 'decision_event_id': entry['decision_event_id']}
+
     @staticmethod
     def _behavior_args(selection):
         return {**selection, 'files': {path: None if raw is None else base64.b64decode(raw, validate=True)
@@ -257,6 +276,8 @@ class SameBeingIntegration:
             raise ValueError('integration_local_reason_required')
         if not (packets or skill_plan or behavior_selection):
             raise ValueError('integration_empty_selection')
+        if residual is not None and (not isinstance(residual, list) or len(residual) > 256):
+            raise ValueError('integration_invalid_residual')
         selection = dict(source_event_id=source_event_id, reason=reason, packets=packets,
                          skill_plan=skill_plan, behavior_selection=behavior_selection, behavior_sources=behavior_sources,
                          residual=residual or [], binding=self.binding, resources=self._resources())
@@ -338,7 +359,9 @@ class SameBeingIntegration:
                 'state': row['state'], 'observed': observed,
                 'materialized': all(value is not None for value in observed.values()),
                 'projection_receipted': bool((row['runtime_observation'] or {}).get('projection_event')),
-                'consumption': 'unverified', 'residual': row['intent']['selection']['residual'],
+                'consumption': 'unverified',
+                'residual': {'count': len(row['intent']['selection']['residual']),
+                             'sha256': digest(row['intent']['selection']['residual'])},
                 'controls_rollback': None if inverse is None else inverse['state']}
 
     def _mutation(self, row, progress, name, method, params):

@@ -315,18 +315,23 @@ class BehaviorDelta:
             if original['operation'] != 'behavior-delta' or original['state'] != 'completed':
                 raise BehaviorConflict('behavior_rollback_requires_completed_child')
             rollback_id = operation_id + ':rollback'
-            if self.journal.get(rollback_id) is None:
+            intent = copy.deepcopy(original['intent'])
+            intent.pop('schema')
+            for entry in intent['files']:
+                entry['before'], entry['after'] = entry['after'], entry['before']
+            if intent['config'] is not None:
+                config = intent['config']
+                config['before'], config['after'] = config['after'], config['before']
+            intent['rollback_of'] = operation_id
+            intent['runtime_call'] = {'inverse_of': original['intent_hash']}
+            retained = self.journal.get(rollback_id)
+            if retained is not None:
+                expected = {'schema': original['intent']['schema'], **intent}
+                if retained['operation'] != 'behavior-rollback' or retained['intent'] != expected:
+                    raise BehaviorConflict('behavior_rollback_identity_collision')
+            else:
                 if not self.status(operation_id)['materialized']:
                     raise BehaviorConflict('behavior_rollback_postcondition_changed')
-                intent = copy.deepcopy(original['intent'])
-                intent.pop('schema')
-                for entry in intent['files']:
-                    entry['before'], entry['after'] = entry['after'], entry['before']
-                if intent['config'] is not None:
-                    config = intent['config']
-                    config['before'], config['after'] = config['after'], config['before']
-                intent['rollback_of'] = operation_id
-                intent['runtime_call'] = {'inverse_of': original['intent_hash']}
                 self.journal.plan(operation='behavior-rollback', target='behavior:' + self.binding['body_ref'],
                                   operation_id=rollback_id, idempotency_key=rollback_id, intent=intent,
                                   expected_precondition={}, intended_transition={}, audit_identity=self.binding)

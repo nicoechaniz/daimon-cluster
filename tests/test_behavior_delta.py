@@ -227,3 +227,18 @@ def test_native_file_cannot_bypass_native_api_as_plain_content(setup):
         adapter.prepare('overwrite-config', source=SOURCE, source_refs=['a' * 64],
                         files={adapter.native_file: b'style = "bypass"'})
     assert not adapter.journal.list_all() and native.writes == 0
+
+
+def test_rollback_refuses_existing_unrelated_operation_with_inverse_name(setup, tmp_path):
+    adapter, native, path = setup
+    prepare(setup)
+    adapter.apply('selected')
+    unrelated = tmp_path / 'unrelated.md'
+    unrelated.write_text('other original')
+    adapter.prepare('selected:rollback', source=SOURCE, source_refs=['b' * 64],
+                    files={str(unrelated): b'other selected'})
+    adapter.apply('selected:rollback')
+    with pytest.raises(BehaviorConflict, match='rollback_identity_collision'):
+        adapter.rollback('selected')
+    assert path.read_text() == 'selected instruction'
+    assert unrelated.read_text() == 'other selected' and native.writes == 1

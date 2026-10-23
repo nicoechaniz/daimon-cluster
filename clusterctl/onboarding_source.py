@@ -16,6 +16,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from . import being_seed, onboarding_peer, onboarding_release
 from .onboarding import OnboardingError, digest, private_directory
@@ -25,7 +26,7 @@ from .onboarding_views import serve_views
 class Source:
     def __init__(self, settings: dict, *, code: Path | None = None, code_uid: int = 0,
                  code_digest: str | None = None, qualified_startup: dict | None = None):
-        if (not isinstance(settings, dict) or set(settings) != {'schema', 'runtime_root', 'password_file',
+        if (not isinstance(settings, dict) or set(settings) - {'same_being_binding'} != {'schema', 'runtime_root', 'password_file',
                 'native_visibility', 'outputs', 'applications'} or settings['schema'] != 'cluster-onboarding-source/v1'
                 or any(not isinstance(settings[key], str) or not Path(settings[key]).is_absolute()
                        for key in ('runtime_root', 'password_file', 'native_visibility', 'outputs'))
@@ -33,6 +34,11 @@ class Source:
             raise OnboardingError('invalid_onboarding_source_configuration')
         for key in ('runtime_root', 'password_file', 'native_visibility', 'outputs'):
             being_seed._path(Path(settings[key]))
+        if 'same_being_binding' in settings:
+            selected = settings['same_being_binding']
+            if not isinstance(selected, str) or not Path(selected).is_absolute():
+                raise OnboardingError('invalid_same_being_source_binding')
+            being_seed._path(Path(selected))
         self.settings = settings
         self.root = private_directory(Path(settings['runtime_root']))
         self.outputs = private_directory(Path(settings['outputs']), create=True)
@@ -55,19 +61,37 @@ class Source:
         from daimon_matrix.messaging_config import protected_read
         return bytearray(protected_read(Path(self.settings['password_file'])))
 
+    def integration_operator(self, bundle):
+        """Validate the selected local binding before load or interruption."""
+        if 'same_being_binding' not in self.settings:
+            return None
+        from .same_being_operator import load_operator
+        operator = load_operator(Path(self.settings['same_being_binding']))
+        expected = dict(bundle['local_origin'], being_ref=bundle['manifest']['being_ref'])
+        client = operator.matrix
+        if (operator.binding != expected or dict(client.config.expected_server) != bundle['local_origin']
+                or client.config.runtime_id != bundle['runtime_id']
+                or client.config.runtime_label != bundle['runtime_label']
+                or client.socket_path != self.root / 'matrix.sock'):
+            raise OnboardingError('same_being_source_body_mismatch')
+        return operator
+
     def _load(self, *, signed: bool):
         from daimon_matrix import daemon, native_egress, runtime
         def clock():
             return time.time_ns() // 1_000_000
-        options = ({'egress_factory': daemon._visibility_factory(self.visibility, clock=clock)} if signed else
-                   {'egress': native_egress.closed_visibility(clock=clock, catalog_mode='migrate')})
+        options: dict[str, Any] = ({'egress_factory': daemon._visibility_factory(self.visibility, clock=clock)} if signed else
+                                  {'egress': native_egress.closed_visibility(clock=clock, catalog_mode='migrate')})
         bundle = being_seed._read(self.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
         authorities = onboarding_peer.approved_group_authorities(self.root, self.outputs / 'tribe', bundle)
         if authorities:
             options['relationship_authorities'] = authorities
-        return runtime.load_runtime(self.root, 'runtime.json', self._reader, clock=clock,
-            **({} if self.qualified_startup is None else {'qualified_startup': self.qualified_startup}),
-            **options)
+        operator = self.integration_operator(bundle)
+        if operator is not None:
+            options['projection_observer'] = operator.observe_effect
+        if self.qualified_startup is not None:
+            options['qualified_startup'] = self.qualified_startup
+        return runtime.load_runtime(self.root, 'runtime.json', self._reader, clock=clock, **options)
 
     @contextmanager
     def writer(self):
@@ -380,13 +404,30 @@ class Source:
             raise OnboardingError('receiving_source_lifecycle_conflict')
         effects = (row['runtime_observation'] or {}).get('source_bootstrap', {})
         # Never export intents, control capabilities, custody or another Source.
-        projected = dict(operation_id=operation_id, operation='receiving-update',
+        projected: dict[str, Any] = dict(operation_id=operation_id, operation='receiving-update',
             expected_precondition={'source_bootstrap': {'predecessor': {
                 key: frozen['predecessor'].get(key) for key in ('process', 'server')}}},
             intended_transition={'source_bootstrap': {'qualification': {
                 key: qualification[key] for key in ('code', 'code_uid')}}},
             runtime_observation={'source_bootstrap': {
                 key: effects[key] for key in ('quiesced', 'controlled_loaded') if key in effects}})
+        if frozen.get('mode') == 'expand' and 'capability_published' in effects:
+            from .onboarding_receiving_update import validate_source_additions, bootstrap_effects
+            import re
+            validate_source_additions(self.settings, frozen)
+            previous = frozen['preservation']['runtime_bytes_sha256']
+            current, _visibility = bootstrap_effects(effects, source=True, mode='expand')
+            loaded = effects.get('controlled_loaded', {}).get('loaded_runtime', {})
+            if (any(not isinstance(value, str) or re.fullmatch('[0-9a-f]{64}', value) is None
+                    for value in (previous, current)) or previous == current
+                    or frozen['predecessor'].get('runtime_status', {}).get('loaded_runtime', {}).get(
+                        'runtime_bundle_sha256') != previous
+                    or loaded.get('runtime_bundle_sha256') != current):
+                raise OnboardingError('receiving_source_lifecycle_conflict')
+            # Only this Source-owned, published native expansion can explain a
+            # changed bundle. No custody, private intent or arbitrary selector.
+            projected['runtime_observation']['source_bootstrap']['capability_expansion'] = dict(
+                before_runtime_sha256=previous, runtime_sha256=current)
         return dict(schema='cluster-receiving-source-lifecycle/v1',
             source_config_sha256=digest(self.settings), lifecycle=projected)
 

@@ -403,6 +403,58 @@ def spec_fixture(tmp_path):
         source=source, guests={'eko': dict(grant=str(tmp_path / 'grant.json'), tooling={'profile': 'matrix-only'})})
 
 
+@pytest.mark.parametrize('mode', ['preserve', 'expand', 'renew'])
+def test_source_worker_retains_validated_expansion_in_supported_route(tmp_path, monkeypatch, mode):
+    import os
+    from pathlib import Path
+    from clusterctl import being_seed, onboarding_source, onboarding_service
+    from clusterctl import onboarding_receiving_update as updates
+    spec = spec_fixture(tmp_path)
+    spec['source'].update(uid=os.geteuid(), gid=os.getegid())
+    settings = {'same_being_binding': str(tmp_path / 'binding.json')}
+    spec['source']['config_sha256'] = digest(settings)
+    being_seed._write(Path(spec['source']['config']), settings)
+    monkeypatch.setattr(maintenance, '__file__', str(Path(spec['observer']['code']) / 'clusterctl/receiving_maintenance.py'))
+    monkeypatch.setattr(maintenance, '_sdk', lambda *_: ({}, {}))
+    monkeypatch.setattr(maintenance, '_owner_paths', lambda *_args, **_kwargs:
+        (Path(spec['observer']['code']), Path(maintenance.sys.prefix), tmp_path / 'imports'))
+    monkeypatch.setattr(maintenance.onboarding_sdk, 'startup_context', lambda *_: True)
+    monkeypatch.setattr(maintenance.onboarding_sdk, 'qualified_startup', lambda *_args, **_kwargs: {})
+    source = SimpleNamespace(root=Path(spec['source']['root']), settings=settings)
+    monkeypatch.setattr(onboarding_source, 'Source', lambda *_args, **_kwargs: source)
+    monkeypatch.setattr(onboarding_service, 'MatrixUserService', lambda *_: object())
+    calls = []
+    frozen = {'mode': mode}
+    if mode == 'expand':
+        frozen['capability_additions'] = {'observe': ['we.event.get'],
+            'weave': ['we.projection.receipt', 'we.propose']}
+    def freeze(*_):
+        calls.append('freeze')
+        return frozen
+    monkeypatch.setattr(updates, 'freeze_source_bootstrap', freeze)
+    monkeypatch.setattr(updates, 'prepare_source_bootstrap', lambda *_args, **_kwargs:
+        {'qualification': {'group': {'selected': {'socket': spec['source']['socket']}}}})
+    if mode == 'renew':
+        with pytest.raises(OnboardingError, match='preservation_required'):
+            maintenance.source_worker(spec, 'prepare')
+        assert OperationJournal(spec['source']['journal']).list_all() == []
+        return
+    first = maintenance.source_worker(spec, 'prepare')
+    assert first['frozen'] == frozen
+    assert maintenance.source_worker(spec, 'prepare')['reference'] == first['reference']
+    monkeypatch.setattr(updates, 'SourceBootstrapController', lambda journal, identifier, *_:
+        SimpleNamespace(identifier=identifier, row=journal.get(identifier)))
+    def resume(controller):
+        assert controller.identifier == first['reference']['operation_id']
+        assert controller.row['expected_precondition']['source_bootstrap'] == frozen
+        calls.append('resume')
+        return {'loaded': True}
+    monkeypatch.setattr(maintenance, 'resume_source', resume)
+    assert maintenance.source_worker(spec, 'execute')['loaded'] == {'loaded': True}
+    assert calls == ['freeze', 'resume']
+    assert len(OperationJournal(spec['source']['journal']).list_all()) == 1
+
+
 def test_source_adapter_drops_privileges_before_private_interpreter_and_never_reads_it(tmp_path, monkeypatch):
     import stat
     from pathlib import Path

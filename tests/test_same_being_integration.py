@@ -27,6 +27,7 @@ from clusterctl.operation_journal import OperationJournal
 from clusterctl.same_being_integration import (
     IntegrationConflict, NativeMemory, SameBeingIntegration, SelectedSkills,
 )
+from tests.test_onboarding_group_authorities import group_source as group_source
 
 MATRIX_SOURCE = os.environ.get('SAME_BEING_MATRIX_SOURCE')
 DMK_SCRIPTS = os.environ.get('SAME_BEING_DMK_SCRIPTS')
@@ -151,6 +152,149 @@ def composed(tmp_path, monkeypatch, request):
 
 
 OPERATION = '37600000-0000-4000-8000-000000000001'
+
+
+def test_actual_source_loader_expands_only_required_profiles_and_injects_own_observer(composed, tmp_path, request):
+    from daimon_matrix import operator_runtime_upgrade as upgrade
+    from daimon_matrix.canonical import canonical_bytes
+    from daimon_matrix.keystore import EncryptedKeystore
+    from daimon_matrix.local_api import create_capability, verify_response, request_hash
+    from daimon_matrix.operator_capabilities import create_operator_capability_binding
+    from clusterctl import onboarding_receiving_update as updates
+    from clusterctl.onboarding_source import Source
+    from clusterctl.same_being_operator import load_operator
+
+    initial_source, target, _peer_authority = request.getfixturevalue('group_source')
+    root, bundle, PASSWORD = initial_source.root, target.document_bundle(), bytes(target._reader())
+    group_paths = sorted((initial_source.outputs / 'tribe').rglob('*.json'))
+    group_before = {p: p.read_bytes() for p in group_paths}
+    def now():
+        return time.time_ns() // 1_000_000
+    custody = EncryptedKeystore(root / 'custody.json').open(lambda: bytearray(PASSWORD))
+    needed = {'observe': {'we.event.get'}, 'weave': {'we.propose', 'we.projection.receipt'}}
+    for row in bundle['capabilities']:
+        role = row['profile']['role']
+        if row['profile']['schema'] != 'dm.operator.capability-profile/v1' or role not in needed:
+            continue
+        previous = row['descriptor']
+        capability = create_capability(custody.secrets[row['secret_slot']], client_id=previous['client_id'],
+            methods=sorted(set(previous['methods']) - needed[role]),
+            not_before_ms=previous['not_before_ms'], not_after_ms=previous['not_after_ms'])
+        row['descriptor'] = capability.descriptor
+        path = root / row['profile']['client_directory'] / 'client.json'
+        config = json.loads(path.read_bytes())
+        config['capability'] = capability.descriptor
+        path.write_bytes(canonical_bytes(config))
+    bundle['operator_capability_binding'] = create_operator_capability_binding(
+        runtime_id=bundle['runtime_id'], runtime_label=bundle['runtime_label'], being_ref=bundle['manifest']['being_ref'],
+        origin=bundle['local_origin'], signing_seed=custody.secrets[bundle['keystore']['signing_slot']],
+        capability_rows=bundle['capabilities'])
+    (root / 'runtime.json').write_bytes(canonical_bytes(bundle))
+
+    def native_upgrade(name, additions, **options):
+        (root / upgrade.LOCK).touch(mode=0o600, exist_ok=True)
+        before = json.loads((root / 'runtime.json').read_bytes())
+        transaction = root.parent / name
+        ready = upgrade.stage_capabilities(source=root, transaction=transaction,
+            expected_source_sha256=upgrade.inventory_digest(root), expected_counter=before['keystore']['counter'],
+            expected_control_head=before['control_head'], expected_being_ref=before['manifest']['being_ref'],
+            expected_origin=before['local_origin'], add_methods=additions, expires_at_ms=now()+30000,
+            password=PASSWORD, externally_quiesced=True, **options)
+        upgrade.publish(source=root, transaction=transaction,
+            expected_receipt_sha256=hashlib.sha256((transaction / 'ready.json').read_bytes()).hexdigest(),
+            password=PASSWORD, externally_quiesced=True, capability_upgrade=True)
+        return ready
+
+    native_upgrade('original-controller', {}, provision_receiving_controller=True)
+    original = json.loads((root / 'runtime.json').read_bytes())
+    original_custody = EncryptedKeystore(root / 'custody.json').open(lambda: bytearray(PASSWORD))
+    controller = next(row for row in original['capabilities'] if row['profile']['role'] == 'receiving-controller')
+    binding_path = tmp_path / 'source-integration.json'
+    settings = dict(initial_source.settings, same_being_binding=str(binding_path))
+    assert updates.controller_bootstrap_mode(original, updates.controller_preservation(root, original)) == 'preserve'
+    additions = updates.source_integration_additions(settings, original)
+    assert additions == {role: sorted(methods) for role, methods in needed.items()}
+    frozen = dict(mode='expand', capability_additions=additions)
+    updates.validate_source_additions(settings, frozen)
+    ready = native_upgrade('integration-methods', additions, **updates.source_stage_options(frozen))
+    assert updates.source_stage_matches(ready, frozen)
+    after = json.loads((root / 'runtime.json').read_bytes())
+    assert next(row for row in after['capabilities'] if row['profile']['role'] == 'receiving-controller') == controller
+    assert updates.source_integration_additions(settings, after) == {}
+    assert after['local_origin'] == original['local_origin'] and after['control_head'] == original['control_head']
+    current = EncryptedKeystore(root / 'custody.json').open(lambda: bytearray(PASSWORD))
+    assert dict(current.secrets) == dict(original_custody.secrets)
+
+    password = Path(settings['password_file'])
+    password.write_bytes(PASSWORD)
+    password.chmod(0o600)
+    binding = dict(schema='cluster-same-being-binding/v1', binding=dict(after['local_origin'], being_ref=after['manifest']['being_ref']),
+        journal=str(tmp_path / 'source-journal'), memory=None, skills=None, behavior=None,
+        matrix=dict(socket=str(root / 'matrix.sock'), client_config=str(root / 'operator-clients/weave/client.json'),
+            key_file=str(root / 'operator-clients/weave/capability.key'), observe_client_config=str(root / 'client.json'),
+            observe_key_file=str(root / 'client.key')))
+    binding_path.write_text(json.dumps(binding))
+    binding_path.chmod(0o600)
+    source = Source(settings)
+    runtime = source._load(signed=False)
+    operator = load_operator(binding_path)
+    prepared = operator.matrix.prepare('runtime.status', {})
+    response = verify_response(runtime.service.handle(prepared),
+        next(c.config.capability for c in operator.matrix.clients if c.config.capability.capability_id == prepared['capability_id']),
+        expected_request_id=prepared['request_id'], expected_request_hash=request_hash(prepared),
+        expected_server=runtime.service.origin, expected_runtime=runtime.service.runtime_identity)
+    assert response['ok'] and response['result']['projection_receipts']['observer_available']
+    assert runtime.service.projection_observer.__self__.binding == binding['binding']
+    assert {p: p.read_bytes() for p in group_paths} == group_before
+    # Project the real native publication through the owner-local lifecycle,
+    # then use it in the complete existing cohort state machine. Owner process
+    # observations there remain synthetic, not live service evidence.
+    from clusterctl import being_seed
+    from clusterctl.onboarding import digest
+    from clusterctl.onboarding_code_successor import plan_update
+    from tests.test_receiving_cohort_control import activation_fixture
+    cohort_root = tmp_path / 'cohort'
+    cohort_root.mkdir(mode=0o700)
+    before_hash = hashlib.sha256(canonical_bytes(original)).hexdigest()
+    after_hash = hashlib.sha256((root / 'runtime.json').read_bytes()).hexdigest()
+    assert before_hash != after_hash
+    cohort, owners, journal, identifier = activation_fixture(cohort_root, replacement=True,
+        bundle_transition=(before_hash, after_hash))
+    row = journal.get(identifier)
+    recipe = row['intended_transition']['cohort_activation']['receivers']['eko']
+    lifecycle = journal.get(recipe['lifecycle_operation_id'])
+    config = tmp_path / 'source-current.json'
+    being_seed._write(config, settings)
+    proof_journal = OperationJournal(tmp_path / 'native-lifecycle')
+    frozen.update(settings_sha256=digest(settings), preservation={'runtime_bytes_sha256': before_hash},
+        predecessor={'process': owners['eko'].process, 'server': owners['eko'].server,
+            'runtime_status': {'loaded_runtime': {'runtime_bundle_sha256': before_hash}}})
+    proof = plan_update(proof_journal, manifest_digest='a' * 64, target='native-expansion-proof',
+        expected_precondition={'source_bootstrap': frozen},
+        intended_transition={'source_bootstrap': {'qualification': dict(code='/public/qualified', code_uid=0, config=str(config))}},
+        audit_identity={'actor':'synthetic native qualification'})
+    effects = copy.deepcopy(lifecycle['runtime_observation']['source_bootstrap'])
+    effects['controlled_loaded']['loaded_runtime']['runtime_bundle_sha256'] = after_hash
+    effects.update(capability_published={'runtime_sha256': after_hash}, visibility_published={'installation_sha256':'f'*64})
+    proof_journal.advance(proof['operation_id'], 'runtime-dispatching', runtime_observation={'source_bootstrap':effects})
+    projected = source.receiving_lifecycle(tmp_path/'native-lifecycle', proof['operation_id'])['lifecycle']
+    assert projected['runtime_observation']['source_bootstrap']['capability_expansion'] == dict(
+        before_runtime_sha256=before_hash, runtime_sha256=after_hash)
+    lifecycle['runtime_observation']['source_bootstrap']['capability_expansion'] = (
+        projected['runtime_observation']['source_bootstrap']['capability_expansion'])
+    journal.advance(lifecycle['operation_id'], lifecycle['state'], runtime_observation=lifecycle['runtime_observation'])
+    assert cohort.activate()['receiving_readiness'] == 'qualified-local-projection'
+    assert journal.get(identifier)['intended_transition']['cohort_activation']['receivers']['eko']['selection'] == recipe['selection']
+    # Compatible feature rollback keeps the selected SDK and expanded grants;
+    # do not select an old validator that rejects the accepted capability rows.
+    disabled = Source({k: v for k, v in settings.items() if k != 'same_being_binding'})
+    assert disabled._load(signed=False).service.projection_observer is None
+    assert json.loads((root / 'runtime.json').read_bytes()) == after
+    binding['binding']['body_ref'] = 'codex:other-receiving-body'
+    binding_path.write_text(json.dumps(binding))
+    from clusterctl.onboarding import OnboardingError
+    with pytest.raises(OnboardingError, match='same_being_source_body_mismatch'):
+        source._load(signed=False)
 
 
 def test_composed_real_children_preserve_pending_receipt_and_exact_requests(composed):
@@ -412,13 +556,17 @@ def test_actual_operator_cli_uses_private_binding_and_authenticated_native_socke
     from daimon_matrix.daemon import serve_connection
     from daimon_matrix.client import CLIENT_CONFIG_SCHEMA_V3
     from daimon_matrix.local_api import create_capability
+    from daimon_matrix.service import OPERATOR_CAPABILITY_PROFILES
     from clusterctl.same_being_operator import load_operator
     def now():
         return time.time_ns() // 1_000_000
     old = client.config.capability
-    capability = create_capability(old.key, client_id=old.client_id,
-        methods=list(old.methods), not_before_ms=now()-1000, not_after_ms=now()+120000)
-    client.service = replace(client.service, capabilities={capability.capability_id: capability}, clock=now)
+    capability = create_capability(old.key, client_id='client:qualified-weave',
+        methods=sorted(OPERATOR_CAPABILITY_PROFILES['weave']), not_before_ms=now()-1000, not_after_ms=now()+120000)
+    observe = create_capability(hashlib.sha256(b'qualified-observer-key').digest(), client_id='client:qualified-observe',
+        methods=sorted(OPERATOR_CAPABILITY_PROFILES['observe']), not_before_ms=now()-1000, not_after_ms=now()+120000)
+    client.service = replace(client.service, capabilities={capability.capability_id: capability,
+                                                          observe.capability_id: observe}, clock=now)
     client.service.ledger.clock = now
     def private(name, content):
         path = tmp_path / name
@@ -429,13 +577,18 @@ def test_actual_operator_cli_uses_private_binding_and_authenticated_native_socke
         expected_server=client.service.origin, runtime_id=client.service.runtime_identity['runtime_id'],
         runtime_label=client.service.runtime_identity['runtime_label']))
     key = private('capability.key', capability.key)
+    observer_config = private('observe-client.json', dict(schema=CLIENT_CONFIG_SCHEMA_V3, capability=observe.descriptor,
+        expected_server=client.service.origin, runtime_id=client.service.runtime_identity['runtime_id'],
+        runtime_label=client.service.runtime_identity['runtime_label']))
+    observer_key = private('observe.key', observe.key)
     scripts = Path(DMK_SCRIPTS)
     manifest = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in scripts.glob('*.py')}
     with tempfile.TemporaryDirectory(prefix='same-being-socket-') as short:
         endpoint = str(Path(short) / 'owner.sock')
         binding = private('receiving.json', dict(schema='cluster-same-being-binding/v1',
             binding=integration.binding, journal=str(integration.journal.path.parent),
-            matrix=dict(socket=endpoint, client_config=str(config), key_file=str(key)),
+            matrix=dict(socket=endpoint, client_config=str(config), key_file=str(key),
+                        observe_client_config=str(observer_config), observe_key_file=str(observer_key)),
             memory=dict(scripts=str(scripts), files=manifest,
                 environment=dict(HMK_AGENT_MEMORY_BASE=str(memory.BASE_DIR), HMK_DB_PATH=str(memory.DB_PATH)),
                 owner=integration.memory.owner, backup_config=integration.memory.backup_config),

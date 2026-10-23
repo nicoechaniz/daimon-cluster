@@ -25,6 +25,7 @@ MAINTENANCE_MODULES = tuple(dict.fromkeys((*(name for name in MODULES if name !=
     'onboarding_local_body.py', 'onboarding_enrollment.py', 'onboarding_enrollment_root.py',
     'onboarding_accounts.py', 'onboarding_consent.py', 'onboarding_approvals.py',
     'onboarding_custody.py', 'onboarding_holder_backup.py', 'onboarding_welcome.py',
+    'same_being_integration.py', 'same_being_operator.py', 'behavior_delta.py', 'skill_update_installer.py',
     'onboarding_acceptance.py', 'onboarding_ingress.py', 'onboarding_browser.py', 'browser.py')))
 
 

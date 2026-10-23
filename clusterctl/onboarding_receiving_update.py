@@ -823,10 +823,61 @@ def freeze_source_bootstrap(source, manager) -> dict:
         if preservation is not None and (predecessor['runtime_status'].get('loaded_runtime') or {}).get(
                 'runtime_bundle_sha256') != preservation['runtime_bytes_sha256']:
             raise OnboardingError('receiving_controller_loaded_bundle_conflict')
-        return dict(mode=controller_bootstrap_mode(bundle, preservation), preservation=preservation, settings_sha256=digest(source.settings), unit=str(manager.unit),
+        mode = controller_bootstrap_mode(bundle, preservation)
+        if 'same_being_binding' in source.settings:
+            source.integration_operator(bundle)
+        additions = source_integration_additions(source.settings, bundle)
+        if additions and mode == 'renew':
+            # The native upgrade deliberately separates controller renewal
+            # from new methods. Finish its existing renewal before planning
+            # expansion; never discover that refusal after interruption.
+            raise OnboardingError('receiving_integration_requires_controller_renewal')
+        if additions and mode == 'preserve':
+            mode = 'expand'
+        result = dict(mode=mode, preservation=preservation, settings_sha256=digest(source.settings), unit=str(manager.unit),
             service=service, scope=scope, predecessor=predecessor,
             bundle_sha256=digest(bundle), visibility_sha256=hashlib.sha256(visibility).hexdigest(),
             visibility_envelope=json.loads(visibility))
+        if additions:
+            result['capability_additions'] = additions
+        return result
+
+
+def source_integration_additions(settings: dict, bundle: dict) -> dict:
+    """Only explicit receiving configuration selects these missing methods."""
+    if 'same_being_binding' not in settings:
+        return {}
+    required = {'observe': {'we.event.get'}, 'weave': {'we.propose', 'we.projection.receipt'}}
+    rows = {row['profile']['role']: row for row in bundle['capabilities']
+            if row['profile']['schema'] == 'dm.operator.capability-profile/v1'}
+    if not required.keys() <= rows.keys():
+        raise OnboardingError('receiving_integration_owner_profiles_required')
+    return {role: missing for role, methods in required.items()
+            if (missing := sorted(methods - set(rows[role]['descriptor']['methods'])))}
+
+
+def source_stage_options(frozen: dict) -> dict:
+    mode = frozen.get('mode', 'issue')
+    return {} if mode == 'expand' else controller_stage_options(mode)
+
+
+def source_stage_matches(receipt: dict, frozen: dict) -> bool:
+    flags = (not receipt.get('renew_receiving_controller', False)
+             and not receipt.get('provision_receiving_controller', False)) if frozen.get('mode') == 'expand' else controller_stage_matches(receipt, frozen.get('mode', 'issue'))
+    return flags and receipt.get('add_methods') == frozen.get('capability_additions', {})
+
+
+def validate_source_additions(settings: dict, frozen: dict) -> None:
+    additions = frozen.get('capability_additions', {})
+    allowed = {'observe': {'we.event.get'}, 'weave': {'we.propose', 'we.projection.receipt'}}
+    if (not isinstance(additions, dict) or not additions.keys() <= allowed.keys()
+            or any(not isinstance(methods, list) or not methods or any(not isinstance(m, str) for m in methods)
+                   or methods != sorted(set(methods))
+                   or not set(methods) <= allowed[role] for role, methods in additions.items())
+            or additions and 'same_being_binding' not in settings
+            or additions and frozen.get('mode') not in {'issue', 'expand'}
+            or frozen.get('mode') == 'expand' and not additions):
+        raise OnboardingError('receiving_integration_capability_selection_changed')
 
 
 def prepare_source_bootstrap(source, *, home: Path, code: Path, code_digest: str,
@@ -1209,15 +1260,16 @@ class SourceBootstrapController:
         if (not isinstance(frozen, dict) or not isinstance(candidate, dict)
                 or frozen.get('settings_sha256') != digest(self.source.settings)
                 or frozen.get('unit') != str(self.manager.unit)
-                or frozen.get('mode', 'issue') not in {'issue', 'preserve', 'renew'}
-                or (frozen.get('mode', 'issue') in {'preserve', 'renew'}) != isinstance(frozen.get('preservation'), dict)
-                or frozen.get('mode') in {'preserve', 'renew'} and (
+                or frozen.get('mode', 'issue') not in {'issue', 'preserve', 'renew', 'expand'}
+                or (frozen.get('mode', 'issue') in {'preserve', 'renew', 'expand'}) != isinstance(frozen.get('preservation'), dict)
+                or frozen.get('mode') in {'preserve', 'renew', 'expand'} and (
                     'qualification' not in candidate
                     or frozen['preservation'].get('runtime_sha256') != frozen.get('bundle_sha256')
                     or frozen['preservation'].get('origin') != frozen['predecessor'].get('server'))
                 or set(candidate) not in ({'transaction', 'expires_at_ms', 'argv'},
                     {'transaction', 'expires_at_ms', 'argv', 'qualification'})):
             raise OnboardingError('receiving_bootstrap_binding_conflict')
+        validate_source_additions(self.source.settings, frozen)
         transaction = Path(candidate['transaction'])
         if (not transaction.is_absolute() or '..' in transaction.parts
                 or transaction.parent != self.source.root.parent or transaction == self.source.root):
@@ -1373,7 +1425,7 @@ class SourceBootstrapController:
                 self._qualify_candidate(row, candidate)
             if row['state'] == 'planned':
                 self.journal.advance(self.operation_id, 'runtime-dispatching')
-            if frozen.get('mode', 'issue') in {'preserve', 'renew'}:
+            if frozen.get('mode', 'issue') in {'preserve', 'renew', 'expand'}:
                 bundle = being_seed._read(self.source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
                 if controller_preservation(self.source.root, bundle) != frozen['preservation']:
                     raise OnboardingError('receiving_controller_preservation_changed')
@@ -1386,7 +1438,7 @@ class SourceBootstrapController:
                 # still prevents another publication or selection effect.
                 self._writer_quiesced()
                 return previous
-            if (frozen.get('mode') in {'preserve', 'renew'}
+            if (frozen.get('mode') in {'preserve', 'renew', 'expand'}
                     and self.manager.inspect()['manager']['ActiveState'] == 'inactive'):
                 # The frozen, authenticated predecessor can have been stopped
                 # after preparation. Observe its actual exit/current unit and
@@ -1416,7 +1468,7 @@ class SourceBootstrapController:
                         # A durable intent does not prove dispatch. Resume only
                         # this unchanged active unit; deactivating means await.
                         if values['ActiveState'] == 'active':
-                            if frozen.get('mode') == 'preserve':
+                            if frozen.get('mode') in {'preserve', 'expand'}:
                                 preservation_authorization(frozen['preservation'], candidate['expires_at_ms'])
                             elif frozen.get('mode') == 'renew':
                                 renewal_authorization(bundle, candidate['expires_at_ms'])
@@ -1443,7 +1495,7 @@ class SourceBootstrapController:
                     raise OnboardingError('receiving_bootstrap_predecessor_changed')
                 # Intent precedes stop; a lost CLI reply is not proof of failure.
                 self._record('stop_intent', dict(scope=scope, unit_sha256=inspected['unit_sha256']))
-                if frozen.get('mode') == 'preserve':
+                if frozen.get('mode') in {'preserve', 'expand'}:
                     preservation_authorization(frozen['preservation'], candidate['expires_at_ms'])
                 elif frozen.get('mode') == 'renew':
                     renewal_authorization(bundle, candidate['expires_at_ms'])
@@ -1540,15 +1592,14 @@ class SourceBootstrapController:
                 upgrade.stage_capabilities(source=self.source.root, transaction=transaction,
                     expected_source_sha256=intent['source_sha256'], expected_counter=intent['counter'],
                     expected_control_head=intent['control_head'], expected_being_ref=intent['being_ref'],
-                    expected_origin=intent['origin'], add_methods={},
-                    **controller_stage_options(frozen.get('mode', 'issue')), expires_at_ms=candidate['expires_at_ms'], password=password, externally_quiesced=True)
+                    expected_origin=intent['origin'], add_methods=frozen.get('capability_additions', {}),
+                    **source_stage_options(frozen), expires_at_ms=candidate['expires_at_ms'], password=password, externally_quiesced=True)
             ready = onboarding_release.regular(ready_path, uid=os.geteuid())
             receipt = json.loads(ready)
             intent = (self._row()[0]['runtime_observation'] or {})['source_bootstrap']['capability_intent']
             if (receipt.get('source_sha256') != intent['source_sha256']
                     or receipt.get('origin') != intent['origin'] or receipt.get('control_head') != intent['control_head']
-                    or not controller_stage_matches(receipt, frozen.get('mode', 'issue'))
-                    or receipt.get('add_methods') != {} or receipt.get('expires_at_ms') != candidate['expires_at_ms']):
+                    or not source_stage_matches(receipt, frozen) or receipt.get('expires_at_ms') != candidate['expires_at_ms']):
                 raise OnboardingError('receiving_bootstrap_binding_conflict')
             ready_hash = hashlib.sha256(ready).hexdigest()
             descriptor = os.open(ready_path, os.O_RDONLY | os.O_NOFOLLOW)
@@ -2350,7 +2401,25 @@ class CohortController:
         selection = dict(receiving_code=startup['code_digest'], matrix_sdk=startup['matrix_wheel_sha256'],
             runtime_bundle_sha256=loaded['runtime_bundle_sha256'], application_sha256=application['application_sha256'],
             publication_sha256=application['publication_sha256'], visibility_installation_sha256=visibility['installation_sha256'])
-        if selection != recipe['selection']:
+        expected_selection = dict(recipe['selection'])
+        if recipe['profile'] == 'source' and lifecycle_row is not None:
+            effects = (lifecycle_row['runtime_observation'] or {}).get('source_bootstrap', {})
+            expansion = effects.get('capability_expansion')
+            if expansion is not None:
+                # The owner-local lifecycle projection verifies the exact
+                # permitted native expansion/publication. Resolve that one
+                # declared transition without changing the frozen recipe.
+                if (not isinstance(expansion, dict) or set(expansion) != {
+                        'before_runtime_sha256', 'runtime_sha256'}
+                        or expansion['before_runtime_sha256'] != expected_selection.get('runtime_bundle_sha256')
+                        or not isinstance(expansion['runtime_sha256'], str)
+                        or re.fullmatch('[0-9a-f]{64}', expansion['runtime_sha256']) is None
+                        or expansion['runtime_sha256'] == expansion['before_runtime_sha256']
+                        or effects.get('controlled_loaded', {}).get('loaded_runtime', {}).get(
+                            'runtime_bundle_sha256') != expansion['runtime_sha256']):
+                    raise OnboardingError('receiving_cohort_selection_changed')
+                expected_selection['runtime_bundle_sha256'] = expansion['runtime_sha256']
+        if selection != expected_selection:
             raise OnboardingError('receiving_cohort_selection_changed')
         receiver = next((item for item in manifest['required_receivers'] if
             (item['being_ref'], item['embodiment_id']) == (identity['being_ref'], current['server']['embodiment_id'])), None)

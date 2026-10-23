@@ -18,14 +18,14 @@ def test_same_being_composition_runs_exact_owners_without_replacing_installed_ma
     start = workflow.index('      - name: Check out the exact same-being Matrix API candidate')
     end = workflow.index('      - run: >-', start)
     composition = workflow[start:end]
-    assert "needs.scope.outputs.profile == 'integration' || needs.scope.outputs.profile == 'full'" in composition
+    assert "startsWith(needs.scope.outputs.profile, 'integration') || needs.scope.outputs.profile == 'full'" in composition
     assert 'SAME_BEING_MATRIX_SOURCE=' in composition and 'SAME_BEING_DMK_SCRIPTS=' in composition
     assert 'SAME_BEING_SKILLS_SCRIPT=' in composition
     assert 'python -m pytest tests/test_same_being_integration.py' in composition
     assert 'pip install' not in composition
     assert 'repository: AlterMundi/Skills' not in composition
     assert 'provenance[\'source_blob\']' in composition
-    assert 'support/skills-update/skills_update.py' in composition
+    assert 'clusterctl/skill_update_installer.py' in composition
     assert '--ignore=tests/test_same_being_integration.py' in workflow[end:]
 
 

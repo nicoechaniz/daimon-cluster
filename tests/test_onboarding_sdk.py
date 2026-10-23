@@ -16,6 +16,29 @@ from tests.test_onboarding_guest import artifact
 from tools.build_onboarding_sdk import seal
 
 
+def test_explicit_sdk_revision_seals_exact_wheel_without_relaxing_legacy_default(tmp_path):
+    code, _, _ = fixture(tmp_path)
+    revision = 'a' * 40
+    default = onboarding_sdk.MATRIX_COMMIT
+    value = seal(code / 'sdk', matrix_commit=revision)
+    row, = [row for row in value['wheels'] if row['distribution'] == 'daimon-matrix']
+    assert value['matrix_commit'] == revision
+    assert onboarding_sdk.verify(code, uid=os.geteuid(), matrix_commit=revision,
+                                 matrix_wheel_sha256=row['sha256']) == value
+    with pytest.raises(OnboardingError, match='invalid_onboarding_sdk'):
+        onboarding_sdk.verify(code, uid=os.geteuid())
+    with pytest.raises(OnboardingError, match='onboarding_sdk_digest_mismatch'):
+        onboarding_sdk.verify(code, uid=os.geteuid(), matrix_commit=revision, matrix_wheel_sha256='b' * 64)
+    assert onboarding_sdk.MATRIX_COMMIT == default
+
+
+def test_sdk_builder_refuses_non_exact_revision_before_artifact_creation(tmp_path):
+    from tools.build_onboarding_sdk import build
+    with pytest.raises(OnboardingError, match='invalid_onboarding_sdk_revision'):
+        build(tmp_path, tmp_path / 'sdk', matrix_commit='main')
+    assert not (tmp_path / 'sdk').exists()
+
+
 def fixture(tmp_path, *, requirements=(), wheel_tag='py3-none-any'):
     code = tmp_path / "code"
     artifact(code)

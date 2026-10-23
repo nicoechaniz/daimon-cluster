@@ -6,6 +6,22 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_integration_bootstrap_keeps_loaded_source_cohort_and_guest_contracts():
+    from tools.ci_scope import LOADED_STARTUP_TESTS, MAINTENANCE_TESTS
+    changed = ['clusterctl/onboarding_source.py', 'clusterctl/onboarding_receiving_update.py',
+               'clusterctl/same_being_operator.py', 'tools/build_receiving_maintenance.py',
+               'tools/build_onboarding_sdk.py', 'tests/test_same_being_integration.py',
+               'tests/test_onboarding_sdk.py', 'tests/test_source_bootstrap.py',
+               'tools/ci_scope.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py',
+               '.github/workflows/tests.yml', 'docs/runbooks/same-being-integration.md',
+               'docs/runbooks/tribu-sdk-successor.md']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'integration-bootstrap'
+    assert set(LOADED_STARTUP_TESTS) | set(MAINTENANCE_TESTS) <= set(tests)
+    assert select([*changed, 'clusterctl/onboarding_custody.py'], ROOT) == ('full', ['tests'])
+    assert select([*changed, 'requirements-weave.txt'], ROOT) == ('full', ['tests'])
+
+
 def test_same_being_integration_keeps_owning_composition_and_unknown_changes_full(tmp_path):
     changed = ['clusterctl/same_being_integration.py', 'clusterctl/same_being_operator.py',
                'tests/test_same_being_integration.py', 'tests/test_same_being_operator.py',

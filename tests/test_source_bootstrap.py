@@ -19,6 +19,27 @@ from clusterctl.onboarding_service import MatrixUserService, selection_lock
 from clusterctl.operation_journal import OperationJournal
 
 
+@pytest.mark.parametrize('additions', [
+    {'memory': ['memory.project']}, {'weave': ['we.converse']},
+    {'weave': ['we.propose', 'we.propose']}, {'observe': [{'untrusted': 'method'}]},
+])
+def test_source_integration_expansion_refuses_unrelated_or_malformed_methods_before_control(additions):
+    from clusterctl.onboarding_receiving_update import validate_source_additions
+    with pytest.raises(OnboardingError, match='integration_capability_selection_changed'):
+        validate_source_additions({'same_being_binding': '/owner/local.json'},
+                                  {'mode': 'expand', 'capability_additions': additions})
+
+
+def test_source_integration_expansion_requires_explicit_setting_and_exact_native_flags():
+    from clusterctl.onboarding_receiving_update import source_stage_matches, validate_source_additions
+    frozen = {'mode': 'expand', 'capability_additions': {'weave': ['we.projection.receipt']}}
+    with pytest.raises(OnboardingError, match='integration_capability_selection_changed'):
+        validate_source_additions({}, frozen)
+    assert source_stage_matches({'add_methods': frozen['capability_additions']}, frozen)
+    assert not source_stage_matches({'add_methods': frozen['capability_additions'], 'provision_receiving_controller': True}, frozen)
+    assert not source_stage_matches({'add_methods': {}}, frozen)
+
+
 class FakeManager:
     def __init__(self, unit):
         self.unit = unit
@@ -581,7 +602,8 @@ def test_actual_prepared_command_is_rechecked_before_quiescence(tmp_path, fixtur
 
 
 @pytest.mark.parametrize('retained', [False, True])
-def test_source_preservation_expiry_distinguishes_new_stop_from_retained_quiescence(fixture, monkeypatch, retained):
+@pytest.mark.parametrize('mode', ['preserve', 'expand'])
+def test_source_preservation_expiry_distinguishes_new_stop_from_retained_quiescence(fixture, monkeypatch, retained, mode):
     import time
     from clusterctl import onboarding_receiving_update as updates
     source, manager, journal, identifier, _ = fixture
@@ -590,7 +612,11 @@ def test_source_preservation_expiry_distinguishes_new_stop_from_retained_quiesce
     now = time.time_ns() // 1_000_000
     pins = dict(runtime_sha256=frozen['bundle_sha256'], origin=frozen['predecessor']['server'],
         active=True, not_before_ms=now - 1000, not_after_ms=now + 7200000)
-    frozen.update(mode='preserve', preservation=pins)
+    frozen.update(mode=mode, preservation=pins)
+    if mode == 'expand':
+        source.settings['same_being_binding'] = '/owner/explicit-local-binding.json'
+        frozen['settings_sha256'] = updates.digest(source.settings)
+        frozen['capability_additions'] = {'weave': ['we.projection.receipt']}
     candidate = {**old['intended_transition']['source_bootstrap'], 'expires_at_ms': now + 60000,
         'qualification': {'fixture': 'qualified code seam'}}
     row = plan_update(journal, manifest_digest='a' * 64, target='source:preserved-quiescence',

@@ -274,7 +274,7 @@ def fixture(tmp_path):
     return path, original, runtime, owners, journal, row['operation_id']
 
 
-def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profile='source', assessment_fault=None, tooling_profile='matrix-only', host_configuration=None):
+def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profile='source', assessment_fault=None, tooling_profile='matrix-only', host_configuration=None, bundle_transition=None):
     """Fake RPC/import/load seams; actual protected manifest and journal."""
     from types import MethodType
     from tests.test_receiving_update_preflight import fixture as reader_fixture, call as qualify_reader
@@ -288,12 +288,13 @@ def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profi
     epochs = ['1'*64,'2'*64,'3'*64]
     recipes, before, required = {}, {}, []
     for name, owner in owners.items():
+        bundle_hash = bundle_transition[0] if bundle_transition is not None and name == 'eko' else 'f' * 64
         owner.server['incarnation_id'] = 'incarnation:'+name
         startup = dict(code_digest=code_digest,matrix_commit=baseline['matrix_revision'],
             matrix_wheel_sha256=baseline['matrix_wheel_sha256'],sdk_digest=baseline['sdk_digest'],
             reader=reader,process_id=owner.process['pid'],startup_instance_id=name)
         owner.loaded = dict(process_id=owner.process['pid'], qualified_startup=startup,runtime_id='runtime:'+name,
-            runtime_bundle_sha256='f'*64,authority_epoch={'accepted_manifest_hashes':epochs})
+            runtime_bundle_sha256=bundle_hash,authority_epoch={'accepted_manifest_hashes':epochs})
         owner.application = dict(loaded_view_sha256='9'*64,application_sha256='a'*64,
             tribe={'policy':{'tribe_ref':'tribe:fixture'}},
             publication_sha256='b'*64,shared_relationships=True,communication_store_role='ledger',
@@ -319,11 +320,11 @@ def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profi
             return {**self.status(),'identity':copy.deepcopy(self.identity),
                 **({'native_tooling':copy.deepcopy(self.native_catalog)} if native_tooling is not None else {}),
                 **({'admission_parent':copy.deepcopy(self.parent)} if require_admitted else {}),
-                'verified_identity':dict(identity=copy.deepcopy(self.identity),runtime_bundle_sha256='f'*64,
+                'verified_identity':dict(identity=copy.deepcopy(self.identity),runtime_bundle_sha256=self.loaded['runtime_bundle_sha256'],
                                          authority_control_head='control:fixture',
                                          expires_at_ms=expires_at_ms)}
         owner.qualified_identity=MethodType(qualified,owner)
-        selection=dict(receiving_code=code_digest,matrix_sdk=baseline['matrix_wheel_sha256'],runtime_bundle_sha256='f'*64,
+        selection=dict(receiving_code=code_digest,matrix_sdk=baseline['matrix_wheel_sha256'],runtime_bundle_sha256=bundle_hash,
             application_sha256='a'*64,publication_sha256='b'*64,visibility_installation_sha256='4'*64)
         before[name]={'old':name}
         required.append(dict(being_ref=owner.being,embodiment_id=owner.server['embodiment_id'],
@@ -369,6 +370,8 @@ def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profi
             owner.process = {**owner.process, 'start_ticks': owner.process['start_ticks'] + 1}
             owner.parent = {**owner.parent, 'start_ticks': owner.parent['start_ticks'] + 1}
             owner.gate = {**owner.gate, 'process_instance_id': name + ':replacement'}
+            if bundle_transition is not None and name == 'eko':
+                owner.loaded['runtime_bundle_sha256'] = bundle_transition[1]
         loaded = dict(process=owner.process,loaded_runtime=owner.loaded,loaded_application=owner.application)
         if profile == 'source':
             precondition={'source_bootstrap':{'predecessor':previous}}
@@ -439,6 +442,46 @@ def test_observed_replacements_get_fresh_fences_without_replacing_old_acks(tmp_p
     assert all(owner.effects==3 for owner in owners.values())
     assert controller.activate()==first
     assert all(owner.effects==3 for owner in owners.values())
+
+
+@pytest.mark.parametrize('fault', [None, 'missing', 'predecessor', 'loaded', 'application'])
+def test_source_expansion_resolves_only_the_owner_proved_bundle_transition(tmp_path, fault):
+    controller, owners, journal, identifier = activation_fixture(tmp_path, replacement=True)
+    row = journal.get(identifier)
+    recipe = row['intended_transition']['cohort_activation']['receivers']['eko']
+    lifecycle = journal.get(recipe['lifecycle_operation_id'])
+    effects = lifecycle['runtime_observation']['source_bootstrap']
+    before = copy.deepcopy(recipe['selection'])
+    owners['eko'].loaded['runtime_bundle_sha256'] = 'a' * 64
+    effects['controlled_loaded']['loaded_runtime']['runtime_bundle_sha256'] = 'a' * 64
+    effects['capability_expansion'] = dict(before_runtime_sha256=before['runtime_bundle_sha256'], runtime_sha256='a' * 64)
+    if fault == 'missing':
+        del effects['capability_expansion']
+    if fault == 'predecessor':
+        effects['capability_expansion']['before_runtime_sha256'] = 'b' * 64
+    if fault == 'loaded':
+        effects['controlled_loaded']['loaded_runtime']['runtime_bundle_sha256'] = 'b' * 64
+    if fault == 'application':
+        owners['eko'].application['application_sha256'] = 'b' * 64
+        effects['controlled_loaded']['loaded_application']['application_sha256'] = 'b' * 64
+    journal.advance(lifecycle['operation_id'], lifecycle['state'], runtime_observation=lifecycle['runtime_observation'])
+    # This retained orchestration fixture has synthetic owner observations;
+    # the composed native case separately supplies the actual publication proof.
+    original_identity = owners['eko'].qualified_identity
+    def identity(**kwargs):
+        value = original_identity(**kwargs)
+        value['verified_identity']['runtime_bundle_sha256'] = 'a' * 64
+        return value
+    owners['eko'].qualified_identity = identity
+    if fault:
+        with pytest.raises(OnboardingError, match='selection_changed'):
+            controller.activate()
+        assert all(owner.effects == 1 for owner in owners.values())
+    else:
+        result = controller.activate()
+        assert result['receiving_readiness'] == 'qualified-local-projection'
+        assert controller.activate() == result
+        assert journal.get(identifier)['intended_transition']['cohort_activation']['receivers']['eko']['selection'] == before
 
 
 @pytest.mark.parametrize('profile',['source','guest'])

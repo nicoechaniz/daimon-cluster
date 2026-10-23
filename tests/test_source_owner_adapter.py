@@ -355,7 +355,8 @@ def test_lifecycle_cli_requires_exact_query_mode(cli, capsys, extra):
     assert json.loads(capsys.readouterr().out)['error'] == 'native_onboarding_source_refused'
 
 
-def test_source_lifecycle_projection_binds_config_and_omits_unrelated_journal_data(tmp_path):
+@pytest.mark.parametrize('expansion', [False, True])
+def test_source_lifecycle_projection_binds_config_and_omits_unrelated_journal_data(tmp_path, expansion):
     from clusterctl.onboarding_code_successor import plan_update
     from clusterctl.operation_journal import OperationJournal
     root = tmp_path / 'runtime'
@@ -363,26 +364,41 @@ def test_source_lifecycle_projection_binds_config_and_omits_unrelated_journal_da
     settings = dict(schema='cluster-onboarding-source/v1', runtime_root=str(root),
         password_file=str(tmp_path / 'unused.unlock'), native_visibility=str(tmp_path / 'unused.json'),
         outputs=str(tmp_path / 'outputs'), applications=[])
+    if expansion:
+        settings['same_being_binding'] = str(tmp_path / 'integration.json')
     config = tmp_path / 'source.json'
     being_seed._write(config, settings)
     source = source_cli.Source(settings)
     journal_path = tmp_path / 'owner-journal'
     journal = OperationJournal(journal_path)
+    frozen = {'settings_sha256': digest(settings),
+        'predecessor': {'process': {'pid': 42}}, 'private_metadata': 'not-exported'}
+    if expansion:
+        frozen.update(mode='expand', capability_additions={'observe': ['we.event.get']},
+            preservation={'runtime_bytes_sha256': 'b' * 64})
+        frozen['predecessor']['runtime_status'] = {'loaded_runtime': {'runtime_bundle_sha256': 'b' * 64}}
     row = plan_update(journal, manifest_digest='a' * 64, target='receiving:source',
-        expected_precondition={'source_bootstrap': {'settings_sha256': digest(settings),
-            'predecessor': {'process': {'pid': 42}}, 'private_metadata': 'not-exported'}},
+        expected_precondition={'source_bootstrap': frozen},
         intended_transition={'source_bootstrap': {'transaction': '/owner/private-transaction',
             'qualification': {'code': '/public/code', 'code_uid': 0, 'config': str(config)}}},
         audit_identity={'actor': 'synthetic-private-audit'})
     effects = {'quiesced': {'exit_observed': True}, 'controlled_loaded': {'process': {'pid': 43}},
         'unrelated_private_metadata': 'not-exported'}
+    if expansion:
+        effects.update(capability_published={'runtime_sha256': 'c' * 64},
+            visibility_published={'installation_sha256': 'd' * 64})
+        effects['controlled_loaded']['loaded_runtime'] = {'runtime_bundle_sha256': 'c' * 64}
     journal.advance(row['operation_id'], 'runtime-dispatching',
         runtime_observation={'source_bootstrap': effects})
     before = journal.get(row['operation_id'])
     projection = source.receiving_lifecycle(journal_path, row['operation_id'])
     exported = projection['lifecycle']
     assert projection['source_config_sha256'] == digest(settings)
-    assert set(exported['runtime_observation']['source_bootstrap']) == {'quiesced', 'controlled_loaded'}
+    assert set(exported['runtime_observation']['source_bootstrap']) == (
+        {'quiesced', 'controlled_loaded', 'capability_expansion'} if expansion else {'quiesced', 'controlled_loaded'})
+    if expansion:
+        assert exported['runtime_observation']['source_bootstrap']['capability_expansion'] == dict(
+            before_runtime_sha256='b' * 64, runtime_sha256='c' * 64)
     assert 'not-exported' not in json.dumps(projection)
     assert 'synthetic-private-audit' not in json.dumps(projection)
     assert journal.get(row['operation_id']) == before

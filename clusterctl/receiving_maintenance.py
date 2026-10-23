@@ -212,7 +212,7 @@ def source_worker(spec: dict, action: str) -> dict:
     from .onboarding_source import Source
     from .onboarding_service import MatrixUserService
     from .onboarding_receiving_update import (SourceBootstrapController, freeze_source_bootstrap,
-                                              prepare_source_bootstrap)
+                                              prepare_source_bootstrap, validate_source_additions)
     source = Source(settings, code=_path(candidate['code']), code_uid=0,
                     code_digest=candidate['code_digest'])
     if source.root != _path(source_binding['root']):
@@ -230,8 +230,9 @@ def source_worker(spec: dict, action: str) -> dict:
             manifest_digest=candidate['manifest_digest'], transaction=_path(source_binding['transaction']),
             expires_at_ms=candidate['expires_at_ms'], code_uid=0, manifest_uid=0)
         frozen = freeze_source_bootstrap(source, manager)
-        if frozen.get('mode') != 'preserve':
+        if frozen.get('mode') not in {'preserve', 'expand'}:
             raise OnboardingError('receiving_maintenance_preservation_required')
+        validate_source_additions(settings, frozen)
         row = onboarding_code_successor.plan_update(journal, manifest_digest=candidate['manifest_digest'],
             target='source-bootstrap:maintenance:' + digest(spec),
             expected_precondition={'source_bootstrap': frozen, 'maintenance_binding': digest(spec)},

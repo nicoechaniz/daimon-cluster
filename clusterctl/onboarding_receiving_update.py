@@ -2465,7 +2465,8 @@ class CohortController:
             wire_read=sorted(set(startup['reader']['contract']['wire_read']) &
                 {'dm.tribe.conversation/v1', 'dm.tribe.direct-conversation/v1'}), authority_epochs=sorted(epochs))
         if observations is not None:
-            observations[name] = {key: current[key] for key in ('server', 'process', 'gate')}
+            observations[name] = {key: current[key] for key in ('server', 'process', 'gate', 'runtime_status')}
+            observations[name]['admission_parent'] = current.get('admission_parent')
         return dict(process=current['process'], server=current['server'],
             loaded_runtime=loaded, loaded_application={key: val for key, val in application.items() if key != 'reader_gates'},
             admission_parent=current.get('admission_parent'), selection=selection,
@@ -2951,11 +2952,29 @@ class CohortController:
             if set(row['runtime_observation'].get('sender_selections', {})) == set(self.owners):
                 return self._confirmed_selection(row, plan, manifest, activation)
             control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'receiving-control:' + self.operation_id))
+            # Retain actual Root control code before the fresh observation
+            # window and any dispatch. It is distinct from body/adoption code.
+            implementations = {}
+            for name, owner in self.owners.items():
+                describe = getattr(owner, 'observed_control_implementation', None)
+                if callable(describe):
+                    implementation = describe()
+                    if implementation is not None:
+                        implementations[name] = implementation
+            retained = row['runtime_observation'].get('control_implementations')
+            if retained is not None and retained != implementations:
+                raise OnboardingError('receiving_control_binding_conflict')
+            if implementations and retained is None:
+                observed = dict(row['runtime_observation'], control_implementations=implementations)
+                row = self.journal.advance(self.operation_id, row['state'], runtime_observation=observed,
+                    expected_runtime_observation=row['runtime_observation'])
             for name in sorted(self.owners):
                 # Refresh all required observers before each positive step. A
                 # local roster CAS remains enforced by each actual sender.
                 try:
-                    deadline = self._current_activation(row, plan, manifest, activation)
+                    current_observations: dict = {}
+                    deadline = self._current_activation(row, plan, manifest, activation,
+                        observations=current_observations)
                 except (OnboardingError, OSError):
                     self._fence_partial_activation(activation)
                     raise
@@ -2976,7 +2995,11 @@ class CohortController:
                 path = owner.root / 'receiving-control' / (control_id + '-select.json')
                 try:
                     with self._owner_deadline(owner, deadline):
-                        result = owner.prepare_apply_control(command, path)
+                        apply_observed = getattr(owner, 'prepare_apply_observed_control', None)
+                        if callable(apply_observed):
+                            result = apply_observed(command, path, observation=current_observations[name])
+                        else:
+                            result = owner.prepare_apply_control(command, path)
                         self._accept_activation_deadline(deadline)
                     if (not isinstance(result, dict)
                             or not {'process', 'server', 'gate', 'request_sha256', 'command_sha256'} <= set(result)

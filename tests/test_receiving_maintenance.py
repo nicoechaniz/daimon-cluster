@@ -96,6 +96,55 @@ def test_source_owner_transport_retains_closed_failure_class(tmp_path, monkeypat
         owner.status()
 
 
+@pytest.mark.parametrize('fast', [False, True])
+def test_control_helper_is_distinct_from_pinned_adoption_observer(tmp_path, monkeypatch, fast):
+    import os
+    import time
+    config = tmp_path/'source.json'
+    config.write_text('{}')
+    config.chmod(0o600)
+    deadline = time.monotonic_ns()+5_000_000_000
+    base = SimpleNamespace(root=tmp_path/'runtime', socket=tmp_path/'tribe.sock', config=config,
+        owner_uid=os.geteuid(), owner_gid=os.getegid(), timeout_seconds=60, deadline_ns=deadline,
+        venv=tmp_path/'sdk'/'old'/'venv')
+    observer = dict(code=str(tmp_path/'observer'), code_digest='a'*64)
+    coordinator = dict(code=str(tmp_path/'coordinator'), code_digest='b'*64)
+    owner = maintenance.PinnedOwnerClient(base, observer, {'pinned':True},
+        body_code=tmp_path/'body', control_implementation=coordinator)
+    sdk = {'exact_same_sdk':True}
+    monkeypatch.setattr(maintenance, '_sdk', lambda *args:(sdk, {}))
+    def command(venv, imports, code, module, arguments):
+        return [str(code), module, *arguments]
+    monkeypatch.setattr(maintenance.onboarding_sdk, 'runtime_command', command)
+    calls = []
+    def run(argv, **kwargs):
+        calls.append((argv, json.loads(kwargs['input'])))
+        assert 0 < kwargs['timeout'] <= 5
+        return SimpleNamespace(returncode=0, stdout='{"accepted":true}', stderr='')
+    monkeypatch.setattr(maintenance.subprocess, 'run', run)
+    if fast:
+        assert owner.observed_control_implementation() == dict(code_digest='b'*64, sdk_digest=digest(sdk))
+        result = owner.prepare_apply_observed_control({'same_request':True},tmp_path/'request',observation={'fresh':True})
+    else:
+        result = owner.prepare_apply_control({'same_request':True},tmp_path/'request')
+    assert result == {'accepted':True}
+    argv, payload = calls[0]
+    assert argv[0] == (coordinator if fast else observer)['code']
+    assert argv[argv.index('--deadline-ns')+1] == str(deadline)
+    assert payload == {'expected':{'pinned':True},'command':{'same_request':True},
+        **({'observation':{'fresh':True}} if fast else {})}
+    owner.status()
+    assert calls[-1][0][0] == observer['code'] and 'observation' not in calls[-1][1]
+
+
+def test_fast_control_rejects_different_sdk_before_dispatch(tmp_path, monkeypatch):
+    owner = maintenance.PinnedOwnerClient(SimpleNamespace(),dict(code=str(tmp_path/'observer'),code_digest='a'*64),
+        {},body_code=tmp_path/'body',control_implementation=dict(code=str(tmp_path/'control'),code_digest='b'*64))
+    monkeypatch.setattr(maintenance, '_sdk', lambda code, fingerprint:({'sdk':fingerprint}, {}))
+    with pytest.raises(OnboardingError,match='binding_conflict'):
+        owner.observed_control_implementation()
+
+
 def reassessment_fixture(tmp_path, monkeypatch):
     """Real cohort journal/manifest, fake native owners; no SDK/lifecycle effects."""
     import copy

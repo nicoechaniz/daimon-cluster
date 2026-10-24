@@ -4,6 +4,8 @@ import os
 import socket
 import time
 import uuid
+from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +13,7 @@ import pytest
 from clusterctl import onboarding_owner_control as control
 from clusterctl.onboarding import OnboardingError
 from daimon_matrix.local_api import CAPABILITY_SCHEMA, LocalCapability, create_request, request_hash
+from clusterctl.owner_process import ConnectedProcessObserver
 
 
 def fixture(tmp_path):
@@ -26,7 +29,7 @@ def fixture(tmp_path):
         visibility=dict(installation_sha256='e'*64))
     runtime = dict(qualified_startup=dict(code_digest='f'*64, matrix_wheel_sha256='1'*64),
         runtime_bundle_sha256='2'*64)
-    gate = dict(schema='dm.runtime.reader-state/v1', channel_id='tribe', controlled=True,
+    gate = dict(schema='dm.receiving.reader-selection/v1', channel_id='tribe', controlled=True,
         process_instance_id=command['process_instance_id'], process_id=process['pid'],
         context_sha256='3'*64, head='a'*64, phase='revoke', readers=[],
         operation_id=command['operation_id'], release_digest=command['release_digest'], request_sha256='4'*64)
@@ -108,6 +111,105 @@ def test_lost_ack_reuses_original_native_request_without_reauthoring(tmp_path):
         sends = [v[1] for v in calls if isinstance(v,tuple)]
         assert sends[0] == sends[1]
     finally:
+        listener.close()
+
+
+def observed_fixture(tmp_path):
+    values = fixture(tmp_path)
+    owner, original, expected, command, path, state, calls, listener = values
+    listener.listen(10)
+    process = dict(uid=os.geteuid(), pid=os.getpid(), start_ticks=int(
+        Path('/proc/self/stat').read_text().rpartition(')')[2].split()[19]),
+        boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip())
+    expected['process'] = state['process'] = process
+    state['gate']['process_id'] = process['pid']
+    state['runtime_status']['loaded_runtime']['runtime_id'] = 'fixture-runtime'
+    observer = ConnectedProcessObserver().__enter__()
+    owner._observer = observer
+
+    @dataclass(frozen=True)
+    class Client:
+        config: object
+        connection_observer: object
+        def prepare(self, *args): return original.prepare(*args)
+        def send(self, request):
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.connect(str(owner.socket))
+                with self.connection_observer(connection):
+                    return original.send(request)
+
+    client = Client(SimpleNamespace(expected_server=state['server'], runtime_id='fixture-runtime'), observer)
+    owner._client = lambda role: client
+    return values, observer
+
+
+@pytest.mark.parametrize('lost_ack', [False, True])
+def test_fresh_observation_skips_status_and_exact_retry_pins_real_peer(tmp_path, lost_ack):
+    values, observer = observed_fixture(tmp_path)
+    owner, client, expected, command, path, state, calls, listener = values
+    try:
+        client.lost = lost_ack
+        observed = copy.deepcopy(state)
+        if lost_ack:
+            with pytest.raises(TimeoutError):
+                control.execute(owner, command, path, expected=expected,
+                    deadline_ns=owner.deadline_ns, observation=observed)
+        else:
+            control.execute(owner, command, path, expected=expected,
+                deadline_ns=owner.deadline_ns, observation=observed)
+        raw = path.read_bytes()
+        result = control.execute(owner, command, path, expected=expected,
+            deadline_ns=owner.deadline_ns, observation=copy.deepcopy(state))
+        assert path.read_bytes() == raw and result['gate']['phase'] == 'select'
+        assert 'status' not in calls and calls.count('prepare') == 1
+        sends = [v[1] for v in calls if isinstance(v, tuple)]
+        assert len(sends) == 2 and sends[0] == sends[1]
+        assert observer.process == expected['process']
+    finally:
+        observer.__exit__()
+        listener.close()
+
+
+def test_observed_control_refuses_other_socket_peer_before_dispatch(tmp_path):
+    values, observer = observed_fixture(tmp_path)
+    owner, _client, expected, command, path, state, calls, listener = values
+    # The declared process really exists, but it does not own this socket.
+    parent = Path('/proc') / str(os.getppid())
+    process = {**state['process'], 'pid':os.getppid(), 'start_ticks':int(
+        (parent/'stat').read_text().rpartition(')')[2].split()[19])}
+    state['process'] = expected['process'] = process
+    state['gate']['process_id'] = process['pid']
+    try:
+        with pytest.raises(OnboardingError, match='process_changed'):
+            control.execute(owner, command, path, expected=expected,
+                deadline_ns=owner.deadline_ns, observation=state)
+        assert path.exists(), 'retain the exact prepared request'
+        assert 'status' not in calls and not any(isinstance(v,tuple) for v in calls)
+    finally:
+        observer.__exit__()
+        listener.close()
+
+
+@pytest.mark.parametrize('fault', ['parent', 'deadline', 'head', 'context'])
+def test_observed_control_keeps_existing_refusals(tmp_path, monkeypatch, fault):
+    values, observer = observed_fixture(tmp_path)
+    owner, client, expected, command, path, state, calls, listener = values
+    try:
+        if fault == 'parent':
+            expected['admission_parent'] = {'pid': -1}
+        elif fault == 'deadline':
+            owner.deadline_ns = time.monotonic_ns()-1
+        elif fault == 'head':
+            state['gate']['head'] = '0'*64
+        else:
+            client.corrupt = 'context_sha256'
+        with pytest.raises(OnboardingError, match='parent_changed|deadline_expired|binding_conflict|completion_uncertain'):
+            control.execute(owner, command, path, expected=expected,
+                deadline_ns=owner.deadline_ns, observation=state)
+        assert 'status' not in calls
+        assert path.exists() == (fault == 'context')
+    finally:
+        observer.__exit__()
         listener.close()
 
 

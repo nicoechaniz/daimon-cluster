@@ -7,18 +7,20 @@ Its absolute deadline bounds this invocation; the native service owns the CAS.
 from __future__ import annotations
 
 import json
+import copy
 import os
 import re
 import sys
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from . import being_seed
 from .onboarding import OnboardingError, digest
 from .onboarding_receiving_update import OwnerGroupClient
-from .owner_process import ParentProcessPresence
+from .owner_process import ParentProcessPresence, ProcessPresence
 
 PUBLIC_ERRORS = frozenset({
     'receiving_owner_deadline_expired', 'receiving_owner_deadline_binding_required',
@@ -133,11 +135,13 @@ def qualified_identity(owner: OwnerGroupClient, *, expected: dict[str, Any],
 
 
 def execute(owner: OwnerGroupClient, command: dict[str, Any], path: Path, *,
-            expected: dict[str, Any], deadline_ns: int) -> dict[str, Any]:
-    """One authenticated status, durable exact request and reconciled native ACK.
+            expected: dict[str, Any], deadline_ns: int,
+            observation: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Durable exact request and native ACK within the original adoption window.
 
-    The caller keeps this owner's observer open. Do not use a previous invocation's
-    observation or make another request after an uncertain submission.
+    The optional observation is the coordinator's just-completed all-required
+    adoption, never a previous invocation's cache. Pin its process/parent and
+    require that exact socket peer before sending. Without it, read status once.
     """
     from daimon_matrix.local_api import MAX_CLOCK_SKEW_MS, request_hash
 
@@ -145,11 +149,21 @@ def execute(owner: OwnerGroupClient, command: dict[str, Any], path: Path, *,
     if owner.deadline_ns != deadline_ns:
         raise OnboardingError('receiving_owner_deadline_binding_required')
     with being_seed._locked(owner._control_directory(path)), ExitStack() as stack:
-        current = owner.status()
+        current = owner.status() if observation is None else copy.deepcopy(observation)
         _accept(deadline_ns)
         if (current['process'] != expected['process'] or current['server'] != expected['server']
                 or _selection(current) != expected['selection']):
             raise OnboardingError('receiving_control_process_changed')
+        presence = None
+        if observation is not None:
+            presence = stack.enter_context(ProcessPresence(current['process']))
+            gate = current['gate']
+            if (gate.get('schema') != 'dm.receiving.reader-selection/v1'
+                    or gate.get('channel_id') != 'tribe' or gate.get('controlled') is not True
+                    or gate.get('process_id') != current['process']['pid']
+                    or not isinstance(gate.get('context_sha256'), str)
+                    or re.fullmatch('[0-9a-f]{64}', gate['context_sha256']) is None):
+                raise OnboardingError('receiving_control_binding_conflict')
         parent = None
         if expected.get('admission_parent') is not None:
             parent = stack.enter_context(ParentProcessPresence(current['process']))
@@ -157,6 +171,30 @@ def execute(owner: OwnerGroupClient, command: dict[str, Any], path: Path, *,
                 raise OnboardingError('receiving_control_parent_changed')
         socket_before = owner.socket.lstat()
         client = owner._client('receiving-controller')
+        if observation is not None:
+            if (dict(client.config.expected_server) != current['server']
+                    or client.config.runtime_id != current['runtime_status']['loaded_runtime']['runtime_id']):
+                raise OnboardingError('receiving_control_binding_conflict')
+            observer = owner._observer
+            if observer is None or client.connection_observer is not observer:
+                raise OnboardingError('receiving_owner_scope_required')
+
+            @contextmanager
+            def pinned_connection(connection):
+                # LocalClient enters this scope BEFORE sendall. A wrong peer
+                # must never receive the authenticated request, even if its MAC
+                # response would subsequently be rejected.
+                with observer(connection):
+                    if observer.process != current['process']:
+                        raise OnboardingError('receiving_control_process_changed')
+                    assert presence is not None
+                    presence.verify()
+                    if parent is not None:
+                        parent.verify()
+                    _accept(deadline_ns)
+                    yield
+
+            client = replace(client, connection_observer=pinned_connection)
         fresh = not path.exists()
         if fresh:
             if (current['gate']['process_instance_id'] != command.get('process_instance_id')
@@ -184,7 +222,10 @@ def execute(owner: OwnerGroupClient, command: dict[str, Any], path: Path, *,
             parent.verify()
         if owner._observer is None:
             raise OnboardingError('receiving_owner_scope_required')
-        owner._observer.verify()
+        if presence is None:
+            owner._observer.verify()
+        else:
+            presence.verify()
         # LocalClient verifies the response MAC, request hash, runtime and server.
         # SDK0dc reconciles this method against its live CAS/physical fence even
         # on a cached request. A second status is not that stronger proof.
@@ -243,6 +284,10 @@ def main() -> int:
         identity_query = args.identity_expires_at_ms is not None
         fields = ({'expected', 'native_tooling'} if identity_query else
             {'expected'} if args.observe_only else {'command', 'expected'})
+        if isinstance(value, dict) and 'observation' in value and not (identity_query or args.observe_only):
+            fields = fields | {'observation'}
+            if not isinstance(value['observation'], dict):
+                raise OnboardingError('invalid_receiving_control_request')
         if (not isinstance(value, dict) or set(value) != fields
                 or (args.observe_only or identity_query) != (args.path is None)
                 or identity_query != (args.code is not None) or args.observe_only and identity_query
@@ -261,7 +306,8 @@ def main() -> int:
             else:
                 assert args.path is not None
                 result = execute(owner, value['command'], args.path,
-                    expected=value['expected'], deadline_ns=args.deadline_ns)
+                    expected=value['expected'], deadline_ns=args.deadline_ns,
+                    observation=value.get('observation'))
         print(json.dumps(result))
         return 0
     except Exception as error:

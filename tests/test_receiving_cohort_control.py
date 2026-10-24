@@ -1243,6 +1243,40 @@ def test_failed_cohort_query_joins_other_reader_before_returning(tmp_path, monke
     assert all(owner.gate['readers'] == [] for owner in owners.values())
 
 
+def test_positive_control_reuses_actual_round_and_retains_implementation_first(tmp_path, monkeypatch):
+    controller, owners, journal, identifier = activation_fixture(tmp_path)
+    calls = []
+    implementation = dict(code_digest='7'*64, sdk_digest='8'*64)
+    for name, owner in owners.items():
+        owner.observed_control_implementation = lambda: dict(implementation)
+        original = owner.prepare_apply_control
+        def observed(command, path, *, observation, who=name, call=original):
+            row = journal.get(identifier)
+            assert row['runtime_observation']['control_implementations'] == {
+                key:implementation for key in owners}
+            current = owners[who].status()
+            assert all(observation[key] == current[key] for key in ('server','process','gate','runtime_status'))
+            assert owners[who].deadline_ns > time.monotonic_ns()
+            calls.append(who)
+            return call(command, path)
+        monkeypatch.setattr(owner, 'prepare_apply_observed_control', observed, raising=False)
+    assert len(controller.activate()['readers']) == len(owners)
+    assert sorted(calls) == sorted(owners)
+
+
+def test_retained_fast_control_implementation_cannot_change_mid_activation(tmp_path, monkeypatch):
+    controller, owners, journal, identifier = activation_fixture(tmp_path)
+    controller.prepare_activation()
+    row = journal.get(identifier)
+    journal.advance(identifier, row['state'], runtime_observation={**row['runtime_observation'],
+        'control_implementations': {name:dict(code_digest='7'*64, sdk_digest='8'*64) for name in owners}})
+    for owner in owners.values():
+        owner.observed_control_implementation = lambda: dict(code_digest='9'*64, sdk_digest='8'*64)
+        monkeypatch.setattr(owner, 'prepare_apply_control', lambda *a,**k:pytest.fail('dispatched changed helper'))
+    with pytest.raises(OnboardingError, match='binding_conflict'):
+        controller.activate()
+
+
 def test_combined_owner_control_keeps_durable_request_after_lost_acceptance(
     tmp_path, monkeypatch
 ):

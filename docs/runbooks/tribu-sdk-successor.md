@@ -60,6 +60,21 @@ Source private SDK/config/journal access occurs only after dropping to its actua
 UID/GID with supplementary groups cleared. Root retains public selections and
 child references, never Source custody or a copied writable owner journal.
 
+After bootstrap preparation, derive the original owner preconditions from its
+retained process/parent, runtime and signed group hashes. Guest observer pins are
+the candidate, so resolve the **original** helper/SDK from the unchanged protected
+HostConfig instead. Require the complete selection hash to match the approved
+manifest predecessor. The existing short owner client then obtains fresh
+authenticated identity, process, selection and guest-admission proof. Retain that
+returned observation; prepared data is never current proof. Do not repeat the
+cold Target bootstrap path or widen its deadline merely to obtain this view.
+Sender freezing and subsequent cohort adoption remain fresh and unchanged.
+
+A qualified Root coordinator correction can resume the same spec and retained
+children while body and observer generations remain pinned. Record the actual
+coordinator generation separately; do not rebuild receivers or edit the frozen
+spec, recipes or predecessor vectors just to adopt a coordinator-only correction.
+
 Notify the human before `apply` interrupts Matrix services. This does not grant
 permission for global Stop, Codex/Telegram restart or unrelated service changes.
 With complete jobs, the onboarding worker stays active and existing nonblocking

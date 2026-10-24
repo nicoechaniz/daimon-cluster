@@ -17,8 +17,9 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
-from .onboarding import OnboardingError
+from .onboarding import OnboardingError, refusal_diagnostic
 from .onboarding_admission import ReceivingHolder
 from .owner_process import ProcessPresence
 
@@ -146,11 +147,12 @@ class AdmittedDaemon:
         ready_read, ready_write = os.pipe()
         self.connection = parent
         launcher = ("import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
-                    "from clusterctl.onboarding_runtime import child_main;"
-                    "raise SystemExit(child_main(Path(sys.argv[2]),json.loads(sys.argv[3]),"
+                    "from clusterctl.onboarding_runtime import child_entry;"
+                    "raise SystemExit(child_entry(Path(sys.argv[2]),json.loads(sys.argv[3]),"
                     "json.loads(sys.argv[4]),int(sys.argv[5]),int(sys.argv[6]),int(sys.argv[7]),"
                     "sys.argv[8]=='true',Path(sys.argv[9]) if sys.argv[9] else None,"
-                    "Path(sys.argv[10]) if sys.argv[10] else None,int(sys.argv[11]),sys.argv[12]))")
+                    "Path(sys.argv[10]) if sys.argv[10] else None,int(sys.argv[11]),sys.argv[12],"
+                    "diagnostic_fd=int(sys.argv[13])))")
         def spawn():
             environment = {'PATH':os.defpath, 'LANG':'C.UTF-8', 'HOME':str(self.target.home),
                 'LD_LIBRARY_PATH':str(Path(sys.base_prefix)/'lib')}
@@ -177,22 +179,28 @@ code = sys.argv.pop(1)
 sys.path[:0] = [code, imports]
 sys.dont_write_bytecode = True
 sys.pycache_prefix = imports + '/.disabled-bytecode'
-from clusterctl.onboarding_runtime import child_main
+from clusterctl.onboarding_runtime import child_entry
 import json
-raise SystemExit(child_main(Path(sys.argv[1]), json.loads(sys.argv[2]), json.loads(sys.argv[3]),
+raise SystemExit(child_entry(Path(sys.argv[1]), json.loads(sys.argv[2]), json.loads(sys.argv[3]),
     int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]), sys.argv[7]=='true',
     Path(sys.argv[8]) if sys.argv[8] else None, Path(sys.argv[9]) if sys.argv[9] else None,
-    int(sys.argv[10]), sys.argv[11]))
+    int(sys.argv[10]), sys.argv[11], diagnostic_fd=int(sys.argv[12])))
 '''
                 command = [str(venv / 'bin/python'), '-B', '-I', '-S', '-c', child_launcher,
                            str(venv), str(imports), str(self.target.code), *arguments]
             else:
                 command = [sys.executable, '-B', '-I', '-c', launcher,
                            str(Path(__file__).resolve().parents[1]), *arguments]
-            self.process = subprocess.Popen(command,
-                pass_fds=(child.fileno(), ready_write), stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                env=environment)
+            # Keep arbitrary child/library stderr closed. Only our structured
+            # refusal reporter receives a duplicate of the parent's stderr.
+            diagnostic = os.dup(2)
+            try:
+                self.process = subprocess.Popen([*command, str(diagnostic)],
+                    pass_fds=(child.fileno(), ready_write, diagnostic), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    env=environment)
+            finally:
+                os.close(diagnostic)
             pid = self.process.pid
             try:
                 self.presence = ProcessPresence(dict(uid=os.geteuid(), pid=pid,
@@ -251,7 +259,7 @@ raise SystemExit(child_main(Path(sys.argv[1]), json.loads(sys.argv[2]), json.loa
 
 def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
                receive_only, visibility_installation, messaging_application=None, code_uid=0,
-               code_digest=None):
+               code_digest=None, *, startup_diagnostics=False, diagnostic_fd=None):
     # The parent checks its own tree, but only this child can attest its boot.
     # Do this before importing Matrix or opening Body custody.
     from . import onboarding_sdk, onboarding_code_successor
@@ -354,7 +362,50 @@ def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
         else:
             daemon.serve_forever(hosted, stop=stopping, ready_descriptor=ready_descriptor)
         return 0
+    except Exception as error:
+        if not startup_diagnostics:
+            raise
+        # Report before closing the observer socket. Its EOF revokes execution,
+        # so a normal Python excepthook can otherwise lose this original error.
+        report_child_refusal(error, diagnostic_fd=diagnostic_fd)
+        return 1
     finally:
         stopping.set()
         connection.close()
         os.close(lock)
+
+
+def report_child_refusal(error: Exception, *, diagnostic_fd: int | None = None) -> None:
+    """Bounded code locations, never exception text, source lines or locals."""
+    import traceback
+    details: list[dict[str, Any]] = []
+    seen = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen and len(details) < 8:
+        seen.add(id(current))
+        frames = list(traceback.walk_tb(current.__traceback__))[-16:]
+        details.append({'class': type(current).__name__, 'frames': [
+            {'module': Path(frame.f_code.co_filename).name,
+             'function': frame.f_code.co_name, 'line': line}
+            for frame, line in frames]})
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    raw = json.dumps({**refusal_diagnostic(error, stage='native-child'),
+                      'exceptions': details}) + '\n'
+    if diagnostic_fd is None:
+        print(raw, end='', file=sys.stderr, flush=True)
+    else:
+        pending = memoryview(raw.encode())
+        while pending:
+            written = os.write(diagnostic_fd, pending)
+            if written <= 0:
+                raise OSError('child_diagnostic_write_failed')
+            pending = pending[written:]
+
+
+def child_entry(*args, diagnostic_fd=None):
+    """Keep early qualification refusals inside the same safe diagnostic path."""
+    try:
+        return child_main(*args, startup_diagnostics=True, diagnostic_fd=diagnostic_fd)
+    except Exception as error:
+        report_child_refusal(error, diagnostic_fd=diagnostic_fd)
+        return 1

@@ -6,6 +6,22 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_runtime_child_change_keeps_real_admission_group_and_guest_launchers(tmp_path):
+    changed=['clusterctl/onboarding_runtime.py', 'tests/test_onboarding_runtime.py',
+             'tools/ci_scope.py', 'tests/test_ci_scope.py', 'docs/runbooks/tribu-sdk-successor.md']
+    profile, tests=select(changed, ROOT)
+    assert profile=='peer'
+    assert {'tests/test_onboarding_runtime.py', 'tests/test_onboarding_admission.py',
+            'tests/test_onboarding_group.py', 'tests/test_onboarding_group_authorities.py',
+            'tests/test_guest_service_bootstrap.py', 'tests/test_guest_owner_bootstrap.py',
+            'tests/test_guest_bootstrap_controller.py'} <= set(tests)
+    assert 'tests/test_onboarding_sdk.py' not in tests
+    assert select(changed, tmp_path)==('full',['tests'])
+    for extra in ('clusterctl/onboarding_sdk.py', 'clusterctl/onboarding_admission.py',
+                  'clusterctl/admission_supervisor.py', 'requirements-weave.txt', 'unknown.py'):
+        assert select([*changed,extra],ROOT)==('full',['tests'])
+
+
 def test_integration_bootstrap_keeps_loaded_source_cohort_and_guest_contracts():
     from tools.ci_scope import LOADED_STARTUP_TESTS, MAINTENANCE_TESTS
     changed = ['clusterctl/onboarding_source.py', 'clusterctl/onboarding_receiving_update.py',

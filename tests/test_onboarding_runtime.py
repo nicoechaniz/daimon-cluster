@@ -146,7 +146,8 @@ def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(
 
 
 @pytest.mark.parametrize('receive_only', [False, True])
-def test_signed_group_is_selected_before_base_visibility_composition(tmp_path, monkeypatch, receive_only):
+@pytest.mark.parametrize('diagnostics', [False, True])
+def test_signed_group_is_selected_before_base_visibility_composition(tmp_path, monkeypatch, receive_only, diagnostics, capsys):
     """Composition-order seam only; actual group startup has its own qualification."""
     import socket
     from types import SimpleNamespace
@@ -174,18 +175,72 @@ def test_signed_group_is_selected_before_base_visibility_composition(tmp_path, m
     monkeypatch.setattr(daemon, 'acquire_lock', lambda *_args:acquire(root))
     left,right=socket.socketpair()
     descriptor=left.detach()
+    report=onboarding_runtime.report_child_refusal
+    def before_close(error, **kwargs):
+        # The observer's EOF can kill this child before an excepthook runs.
+        os.fstat(descriptor)
+        report(error, **kwargs)
+    monkeypatch.setattr(onboarding_runtime, 'report_child_refusal', before_close)
     try:
         expected=OnboardingError if receive_only else RuntimeError
         match='onboarding_visibility_selection_required' if receive_only else 'composition-observed'
-        with pytest.raises(expected,match=match):
-            onboarding_runtime.child_main(tmp_path,{'release_digest':'a'*64},{},descriptor,
-                None,os.getppid(),receive_only,None,code_uid=os.geteuid())
+        args=(tmp_path,{'release_digest':'a'*64},{},descriptor,None,os.getppid(),receive_only,None,None,os.geteuid())
+        if diagnostics:
+            assert onboarding_runtime.child_entry(*args)==1
+            raw=capsys.readouterr().err
+            value=json.loads(raw)
+            assert value['stage']=='native-child'
+            assert value['exceptions'][0]['class']==expected.__name__
+            assert value['exceptions'][0]['frames']
+            assert str(tmp_path) not in raw
+            assert match not in raw  # arbitrary exception prose is never logged
+        else:
+            with pytest.raises(expected,match=match):
+                onboarding_runtime.child_main(*args)
         assert len(observed)==(0 if receive_only else 1)
     finally:
         right.close()
         # Explicit receive-only refusal happens before the child takes the FD.
         if receive_only:
             os.close(descriptor)
+
+
+def test_early_child_refusal_preserves_chained_code_locations_without_originals(monkeypatch, capsys):
+    from clusterctl import onboarding_runtime
+    secret='private credential and /private/body/path'
+    def refusal(*_args, **_kwargs):
+        try:
+            raise ValueError(secret)
+        except ValueError as error:
+            raise RuntimeError(secret) from error
+    monkeypatch.setattr(onboarding_runtime, 'child_main', refusal)
+    assert onboarding_runtime.child_entry()==1
+    raw=capsys.readouterr().err
+    value=json.loads(raw)
+    assert value['code']=='unclassified_refusal'
+    assert [row['class'] for row in value['exceptions']]==['RuntimeError','ValueError']
+    assert secret not in raw and 'private/body' not in raw
+    assert all('/' not in frame['module'] for row in value['exceptions'] for frame in row['frames'])
+
+
+def test_child_refusal_uses_only_the_explicit_diagnostic_descriptor(monkeypatch, capsys):
+    from clusterctl import onboarding_runtime
+    def refusal(*_args, **_kwargs):
+        raise ValueError('private exception must not reach either stderr')
+    monkeypatch.setattr(onboarding_runtime, 'child_main', refusal)
+    reader, writer=os.pipe()
+    try:
+        assert onboarding_runtime.child_entry(diagnostic_fd=writer)==1
+        os.close(writer)
+        writer=-1
+        raw=os.read(reader,65536).decode()
+        assert json.loads(raw)['exceptions'][0]['class']=='ValueError'
+        assert 'private exception' not in raw
+        assert capsys.readouterr().err==''
+    finally:
+        os.close(reader)
+        if writer>=0:
+            os.close(writer)
 
 
 @pytest.mark.parametrize('change', [

@@ -862,6 +862,17 @@ replacement remains a separate lifecycle operation. Restore any paused workers
 on both successful and contained-failure paths. Keep the initial startup failure
 separate from the recovery outcome; a generic refusal is not its diagnosis.
 
+An admitted child's original startup refusal must be reported before closing its
+body-observer socket: that EOF revokes execution and can kill the child before a
+normal Python traceback is emitted. Current child launchers keep arbitrary stderr
+closed and pass a separate duplicate of the parent's stderr only to their
+structured reporter. It emits bounded `native-child` diagnostics with the allowlisted
+code, exception classes and code basenames/functions/line numbers. Exception text,
+source lines, locals and private path prefixes are excluded. Inspect this retained
+journal entry before retrying a generic `onboarding_runtime_not_ready`; a missing
+entry does not establish a readiness timeout, authority failure or OOM. Readiness,
+admission, shutdown and helper-selection checks remain unchanged.
+
 ## Current admitted maintenance observation (#270)
 
 The qualified helper's explicit `admitted-running --require-loaded

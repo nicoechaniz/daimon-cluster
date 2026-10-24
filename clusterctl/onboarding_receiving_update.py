@@ -157,7 +157,7 @@ class OwnerGroupClient:
     def _observe_status(self) -> dict:
         before = self.socket.lstat()
         client = self._client('status')
-        response = client.runtime_status()[1]
+        response = self._status_response(client)
         if response.get('ok') is not True:
             raise OnboardingError('receiving_group_status_unavailable')
         after = self.socket.lstat()
@@ -176,6 +176,9 @@ class OwnerGroupClient:
         self._accept_deadline()
         return dict(process=process, server=response['server'], runtime_status=status,
                     receiving_readiness='unobserved')
+
+    def _status_response(self, client) -> dict:
+        return client.runtime_status()[1]
 
     def base_status(self) -> dict:
         """Pin an authenticated predecessor without claiming loaded readiness.
@@ -2476,6 +2479,7 @@ class CohortController:
 
     def _adoption_round(self, plan: dict, manifest: dict, *, observations: dict) -> dict:
         """Overlap independent queries, then validate every result serially."""
+        self._observation_implementations(retain=False)
         names = sorted(self.owners)
         if len({id(owner) for owner in self.owners.values()}) != len(names):
             raise OnboardingError('receiving_sender_vector_invalid')
@@ -2563,6 +2567,7 @@ class CohortController:
 
     def _prepare_activation(self) -> dict:
         with self.journal.mutation_lock(self.operation_id):
+            self._observation_implementations(retain=True)
             row = self._row()
             plan, manifest = self._activation(row)
             # Configure/discover before the finite all-reader observation round.
@@ -2615,6 +2620,27 @@ class CohortController:
             self.journal.advance(self.operation_id, row['state'], runtime_observation=observations,
                 expected_runtime_observation=row['runtime_observation'])
             return activation
+
+    def _observation_implementations(self, *, retain: bool) -> None:
+        """Bind actual observer code before queries, never relabel the body."""
+        implementations = {}
+        for name, owner in self.owners.items():
+            describe = getattr(owner, 'observation_implementation', None)
+            if callable(describe):
+                implementation = describe()
+                if implementation is not None:
+                    implementations[name] = implementation
+        row = self._row()
+        retained = (row['runtime_observation'] or {}).get('observation_implementations')
+        if retained is not None and retained != implementations:
+            raise OnboardingError('receiving_control_binding_conflict')
+        if implementations and retained is None:
+            if not retain:
+                raise OnboardingError('receiving_control_binding_conflict')
+            self.journal.advance(self.operation_id, row['state'],
+                runtime_observation={**(row['runtime_observation'] or {}),
+                    'observation_implementations': implementations},
+                expected_runtime_observation=row['runtime_observation'])
 
     def reconcile_tooling(self) -> dict:
         from .onboarding_owner_client import validate_tooling_recipe

@@ -89,10 +89,27 @@ The fast control executes the actual qualified immutable Root coordinator's
 control module with the observer's exact same SDK. It uses existing readonly
 guest mounts. Its code and SDK digests are retained as `control_implementations`
 in that activation operation before dispatch; they are not evidence that the
-body or adoption observer changed. Ordinary controls and all adoption queries
-continue using the frozen observer. A coordinator correction never mutates it.
+body changed. Ordinary controls continue using the frozen observer. A coordinator
+correction never mutates it.
 A fenced activation still needs the linked reassessment below, with the original
 expiry and lifecycle/tooling receipts; do not repeat installation or restart.
+
+The qualified Root helper can also execute observations using a retained exact
+`runtime.status` request. The native cached-status contract reauthenticates and
+recomputes live receiving state; it does not return an old observation. This runs
+one full status computation instead of two and avoids the response write, while
+retaining journal lookup and every current-state check. Preserve the complete
+signed request before its first dispatch, scoped to the actual process tuple and
+current capability/client runtime identity. Verify the socket peer before sending
+and retain exact bytes after a lost return. A refusal is not receiving readiness.
+
+Ordinary preparation/barrier reads prime this request before the positive
+freshness round. All-required identity, application, native-tooling, roster and
+admission checks still finish within the original absolute window. Root retains
+its actual code/SDK as `coordinator:<digest>` in maintenance and as
+`observation_implementations` in the cohort before those queries. Do not label
+these observations as executed by the frozen observer. Readonly helper mounts
+may be prepared during linked reassessment; no body SDK or lifecycle is replayed.
 
 Notify the human before `apply` interrupts Matrix services. This does not grant
 permission for global Stop, Codex/Telegram restart or unrelated service changes.

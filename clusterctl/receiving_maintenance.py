@@ -317,9 +317,10 @@ def expected_owner(observed: dict) -> dict:
 class PinnedOwnerClient:
     """Maintain one observed process with the approved short owner-control CLI.
 
-    Body tooling/lifecycle APIs remain on the body selection. Observation and
-    controls execute the separately approved observer; their replies still have
-    to match the authenticated actual body/process, not the observer startup.
+    Body tooling/lifecycle APIs remain on the body selection. Ordinary controls
+    use the frozen observer. A qualified same-SDK Root correction can supply
+    explicitly attributed observations/fast controls; replies must still match
+    the authenticated actual body/process, never the helper's own startup.
     """
 
     def __init__(self, base, observer: dict, expected: dict, *, body_code: Path,
@@ -347,13 +348,15 @@ class PinnedOwnerClient:
         if expires_at_ms is not None and require_admitted != guest:
             raise OnboardingError('receiving_control_parent_changed')
         implementation = self.observer
-        if observation is not None:
-            if command is None or self.control_implementation is None:
+        retained_status = command is None and self.control_implementation is not None
+        if observation is not None or retained_status:
+            if observation is not None and (command is None or self.control_implementation is None):
                 raise OnboardingError('receiving_control_binding_conflict')
+            assert self.control_implementation is not None
             implementation = self.control_implementation
         code, fingerprint = _artifact(implementation)
         sdk, _ = _sdk(code, fingerprint)
-        if observation is not None:
+        if observation is not None or retained_status:
             observer_sdk, _ = _sdk(*_artifact(self.observer))
             if sdk != observer_sdk:
                 raise OnboardingError('receiving_control_binding_conflict')
@@ -381,6 +384,8 @@ class PinnedOwnerClient:
             options = dict(user=self.base.owner_uid, group=self.base.owner_gid, extra_groups=())
         arguments = ['--root', str(self.root), '--socket', str(self.socket), '--deadline-ns', str(deadline),
                      '--time-namespace', self.time_namespace]
+        if retained_status:
+            arguments += ['--retain-status']
         payload = {'expected': self.expected}
         if expires_at_ms is not None:
             arguments += ['--identity-expires-at-ms', str(expires_at_ms), '--code', str(self.body_code)]
@@ -435,6 +440,9 @@ class PinnedOwnerClient:
         if sdk != observer_sdk:
             raise OnboardingError('receiving_control_binding_conflict')
         return dict(code_digest=fingerprint, sdk_digest=digest(sdk))
+
+    def observation_implementation(self) -> dict | None:
+        return self.observed_control_implementation()
 
     def prepare_apply_observed_control(self, command: dict, path: Path, *, observation: dict):
         if self.control_implementation is None:
@@ -504,6 +512,9 @@ class ReceivingMaintenance:
             intended_transition={'maintenance_binding': digest(spec)},
             audit_identity={'actor': 'receiving-maintenance'})
         self.operation_id = row['operation_id']
+        self._record('coordinator:' + coordinator_digest, dict(
+            code_digest=coordinator_digest, sdk_digest=digest(coordinator_sdk),
+            observations='retained-native-status', controls='fresh-observed-native-cas'))
 
     def _effects(self) -> dict:
         row = self.journal.get(self.operation_id)
@@ -688,11 +699,15 @@ class ReceivingMaintenance:
     def _owners(self, observed: dict) -> dict:
         bases = self._base_owners(observer=False)
         owners = {}
+        implementation = getattr(self, 'control_implementation', None)
+        if implementation is not None:
+            for plan in self.plans.values():
+                self._mount_code(plan, _artifact(implementation))
         for name, base in bases.items():
             code = self.body[0] if name == 'source' else self.backend._runtime_paths(
                 self.plans[name], self.backend._receiving_base(self.plans[name]), candidate=self.body)[0]
             owners[name] = PinnedOwnerClient(base, self.spec['observer'], expected_owner(observed[name]), body_code=code,
-                control_implementation=self.control_implementation)
+                control_implementation=implementation)
         return owners
 
     def _prepared_observations(self, manifest: dict) -> dict:
@@ -888,10 +903,6 @@ class ReceivingMaintenance:
         if cohort_id != original_id and 'cohort_activation' not in (controller._row()['runtime_observation'] or {}):
             controller.revoke_senders()
         controller.reconcile_tooling()
-        implementation = getattr(self, 'control_implementation', None)
-        if implementation is not None:
-            for plan in self.plans.values():
-                self._mount_code(plan, _artifact(implementation))
         # activate owns partial/full selection reconciliation; never replay
         # its preparation/revoke barrier after a positive selection.
         result = controller.activate()

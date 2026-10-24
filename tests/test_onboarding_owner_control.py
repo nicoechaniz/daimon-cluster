@@ -213,6 +213,73 @@ def test_observed_control_keeps_existing_refusals(tmp_path, monkeypatch, fault):
         listener.close()
 
 
+@pytest.mark.parametrize('lost_reply', [False, True])
+def test_retained_status_keeps_exact_request_but_reads_current_result(tmp_path, lost_reply):
+    values, observer = observed_fixture(tmp_path)
+    owner, _client, expected, _command, _path, state, calls, listener = values
+    owner.expected_process = expected['process']
+    capability = LocalCapability(dict(schema=CAPABILITY_SCHEMA, capability_id='status-cap',
+        client_id='client:status', key_id='status-key', methods=['runtime.status'],
+        status='active', not_before_ms=0, not_after_ms=2**53-1), b's'*32)
+    sent = []
+    lost = [lost_reply]
+    current = [{'ok':True,'result':{'fresh':1}}]
+    @dataclass(frozen=True)
+    class StatusClient:
+        config: object
+        connection_observer: object
+        def prepare(self, method, params):
+            calls.append('status-prepare')
+            return create_request(capability, request_id=str(uuid.uuid4()),
+                issued_at_ms=time.time_ns()//1_000_000, method=method, params=params, nonce=os.urandom(16))
+        def send(self, request):
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.connect(str(owner.socket))
+                with self.connection_observer(connection):
+                    sent.append(copy.deepcopy(request))
+                    if lost[0]:
+                        lost[0] = False
+                        raise TimeoutError('lost status reply')
+                    return copy.deepcopy(current[0])
+    client = StatusClient(SimpleNamespace(capability=capability,expected_server=state['server'],
+        runtime_id='fixture-runtime',runtime_label='fixture'),observer)
+    try:
+        if lost_reply:
+            with pytest.raises(TimeoutError):
+                control.RetainedStatusOwner._status_response(owner,client)
+        else:
+            assert control.RetainedStatusOwner._status_response(owner,client)['result']['fresh']==1
+        files = list((tmp_path/'receiving-control').glob('status-*.json'))
+        assert len(files)==1
+        saved = files[0].read_bytes()
+        current[0] = {'ok':True,'result':{'fresh':2}}
+        assert control.RetainedStatusOwner._status_response(owner,client)['result']['fresh']==2
+        current[0] = {'ok':False,'error':{'code':'runtime_unavailable'}}
+        assert control.RetainedStatusOwner._status_response(owner,client)['ok'] is False
+        assert files[0].read_bytes()==saved and calls.count('status-prepare')==1
+        assert len(sent)==3 and all(request==sent[0] for request in sent)
+    finally:
+        observer.__exit__()
+        listener.close()
+
+
+def test_expired_retained_status_never_prepares_or_dispatches(tmp_path):
+    values, observer = observed_fixture(tmp_path)
+    owner, _client, expected, _command, _path, state, calls, listener = values
+    owner.expected_process=expected['process']
+    owner.deadline_ns=time.monotonic_ns()-1
+    capability=SimpleNamespace(descriptor={'exact':'status'})
+    client=SimpleNamespace(config=SimpleNamespace(capability=capability,expected_server=state['server'],
+        runtime_id='fixture-runtime',runtime_label='fixture'))
+    try:
+        with pytest.raises(OnboardingError,match='deadline_expired'):
+            control.RetainedStatusOwner._status_response(owner,client)
+        assert not calls and not list(tmp_path.rglob('status-*.json'))
+    finally:
+        observer.__exit__()
+        listener.close()
+
+
 @pytest.mark.parametrize('field',['readers','process_instance_id','request_sha256','context_sha256','head'])
 def test_invalid_control_ack_never_becomes_a_success(tmp_path,field):
     owner, client, expected, command, path, _state, _calls, listener = fixture(tmp_path)

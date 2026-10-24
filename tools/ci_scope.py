@@ -563,6 +563,18 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
 
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
+    predecessor_status = {'clusterctl/onboarding_target.py', 'clusterctl/onboarding_owner_control.py',
+                          'tests/test_onboarding_target.py', 'tests/test_onboarding_owner_control.py',
+                          'tests/test_guest_owner_bootstrap.py'}
+    if ({'clusterctl/onboarding_target.py', 'clusterctl/onboarding_owner_control.py'} <= set(changed)
+            and set(changed) <= predecessor_status | CI_FILES | RUNBOOK_DOCS):
+        # Reuse the native bootstrap and whole maintenance consumer closure.
+        # No SDK, custody, admission or resource-authority source changed.
+        tests = list(dict.fromkeys((*MAINTENANCE_TESTS,
+            'tests/test_onboarding_target.py', 'tests/test_guest_owner_bootstrap.py',
+            'tests/test_onboarding_runtime.py')))
+        if all((root / path).is_file() for path in tests):
+            return 'peer', tests
     runtime_files = {'clusterctl/onboarding_runtime.py', 'tests/test_onboarding_runtime.py'}
     runtime_tests = ['tests/test_onboarding_runtime.py', 'tests/test_onboarding_admission.py',
                      'tests/test_onboarding_group.py', 'tests/test_onboarding_group_authorities.py',

@@ -61,6 +61,25 @@ class RetainedStatusOwner(OwnerGroupClient):
         super().__init__(*args, **kwargs)
         self.expected_process = copy.deepcopy(expected_process)
 
+    @classmethod
+    def connected_status_response(cls, client, *, root: Path, observer, deadline_ns: int) -> dict:
+        """Borrow an authenticated existing connection pin, not another probe.
+
+        Bootstrap admission has already authenticated scope.me on this observer.
+        Only the request is retained; native status is recomputed on every read.
+        The caller retains ownership of the observer for its remaining checks.
+        """
+        if (observer is None or not isinstance(observer.process, dict)
+                or client.connection_observer is not observer):
+            raise OnboardingError('receiving_owner_scope_required')
+        owner = cls(root, client.socket_path, deadline_ns=deadline_ns,
+                    expected_process=observer.process)
+        owner._observer = observer
+        try:
+            return owner._status_response(client)
+        finally:
+            owner._observer = None
+
     def _status_response(self, client) -> dict:
         if self.deadline_ns is None or self._observer is None:
             raise OnboardingError('receiving_owner_scope_required')

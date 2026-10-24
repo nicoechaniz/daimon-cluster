@@ -1,5 +1,25 @@
 # Receiver-compatible Matrix updates
 
+## Routine observation and software correction before activation
+
+The owner requests the authenticated `runtime.status` receiving view, including
+actual current body admission, loaded application and reader gates. It avoids a
+full ledger audit and Weave projection during the finite adoption round. Exact
+requests remain retained per process, capability and view; only authenticated
+`invalid_params` permits legacy full-status/scope fallback. A timeout or changed
+process never authorizes fallback or reuse of an old admission.
+
+If all controlled body loads completed but a software defect prevents the first
+activation, create the ordinary corrected maintenance intent from those
+actual predecessors, without preparing its cohort yet. Use `link-software-successor
+--successor-spec PATH` on the original operation. This requires unchanged owner,
+stores and authority, no activation/positive selection, fresh empty gates bound
+to the controlled loads, and the same finite authorization horizon. The retained
+parent and cohort links permanently refuse old activation, `apply`/`reassess`, including after a lost
+return. It neither changes the old recipe nor creates an activation receipt.
+Then prepare and apply the new operation; it freezes the now-current gates and
+owns only the software lifecycle it actually needs.
+
 ## Recovery carrier readiness
 
 A release requiring `explicit-unattempted-carrier-recovery/v1` also requires the

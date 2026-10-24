@@ -766,3 +766,129 @@ def test_prepared_host_drift_during_observation_does_not_freeze_it(prepared_owne
     with pytest.raises(OnboardingError, match='receiving_maintenance_host_changed'):
         coordinator._prepared_observations(manifest)
     assert calls == ['source', 'eko']
+
+
+def software_successor_fixture(tmp_path, monkeypatch):
+    import copy
+    from pathlib import Path
+    from clusterctl import being_seed, onboarding_receiving_update as updates
+    from tests.test_receiving_cohort_control import activation_fixture
+    controller, owners, journal, cohort_id = activation_fixture(tmp_path, replacement=True)
+    for owner in owners.values():
+        owner.gate = {**owner.gate, 'phase': 'unselected', 'readers': [],
+            'operation_id': None, 'release_digest': None}
+    # The fixture names two guests; use their real lifecycle rows and relabel
+    # the Source name consistently without inventing a production receipt.
+    owners['source'] = owners.pop('oliva')
+    row = journal.get(cohort_id)
+    recipe = row['intended_transition']['cohort_activation']['receivers'].pop('oliva')
+    row['intended_transition']['cohort_activation']['receivers']['source'] = recipe
+    before = row['expected_precondition']
+    for sender in before['senders']:
+        if sender['name'] == 'oliva':
+            sender['name'] = 'source'
+    before['senders'].sort(key=lambda sender: sender['name'])
+    before['receiver_selections']['source'] = before['receiver_selections'].pop('oliva')
+    # Publish a new real immutable cohort intent rather than editing old intent.
+    cohort = plan_update(journal, manifest_digest=row['intent']['runtime_call']['manifest_digest'],
+        target='software-correction-cohort', expected_precondition=row['expected_precondition'],
+        intended_transition=row['intended_transition'], audit_identity={'actor':'fixture'})
+    for name, owner in owners.items():
+        owner.loaded['local_origin'] = copy.deepcopy(owner.server)
+        recipe = row['intended_transition']['cohort_activation']['receivers'][name]
+        life = journal.get(recipe['lifecycle_operation_id'])
+        observed = life['runtime_observation']
+        observed['source_bootstrap']['controlled_loaded']['loaded_runtime'] = copy.deepcopy(owner.loaded)
+        journal.advance(life['operation_id'],life['state'],runtime_observation=observed)
+    spec = spec_fixture(tmp_path)
+    manifest = json.loads(Path(row['intended_transition']['cohort_activation']['manifest_path']).read_text())
+    spec['candidate']['manifest_path'] = row['intended_transition']['cohort_activation']['manifest_path']
+    spec['candidate']['manifest_digest'] = digest(manifest)
+    spec['journal'] = str(tmp_path/'activation-journal')
+    parent = plan_update(journal, manifest_digest=spec['candidate']['manifest_digest'],
+        target='receiving-maintenance:'+spec['name']+':'+digest(spec),
+        expected_precondition={'maintenance_spec':spec}, intended_transition={}, audit_identity={'actor':'fixture'})
+    loaded = {}
+    for name, owner in owners.items():
+        loaded['loaded:'+name] = dict(process=copy.deepcopy(owner.process),
+            loaded_runtime=copy.deepcopy(owner.loaded), loaded_application=copy.deepcopy(owner.application))
+    journal.advance(parent['operation_id'],parent['state'],runtime_observation={'maintenance':{
+        'cohort':{'operation_id':cohort['operation_id']}, **loaded}})
+    operation = maintenance.ReceivingMaintenance.__new__(maintenance.ReceivingMaintenance)
+    operation.spec,operation.journal,operation.operation_id=spec,journal,parent['operation_id']
+    operation.plans={'eko':{}}
+    operation._owners=lambda _:owners
+    # Fixture manifest UID only; production continues to require Root ownership.
+    read=updates._manifest
+    import os
+    monkeypatch.setattr(updates,'_manifest',lambda path,fingerprint,**kw:read(path,fingerprint,uid=os.geteuid()))
+    following=copy.deepcopy(spec)
+    following['name']='corrected'
+    following['candidate']['code_digest']='f'*64
+    following['source']['transaction']=str(tmp_path/'new-owner-transaction')
+    corrected=copy.deepcopy(manifest)
+    for item in corrected['required_receivers']:
+        name=next(name for name,owner in owners.items() if owner.server['embodiment_id']==item['embodiment_id'])
+        item['expected_selection_sha256']=digest(maintenance.expected_owner(loaded['loaded:'+name])['selection'])
+    corrected_path=tmp_path/'corrected-release.json'
+    being_seed._write(corrected_path,corrected)
+    following['candidate'].update(manifest_path=str(corrected_path),manifest_digest=digest(corrected))
+    new=plan_update(journal,manifest_digest=following['candidate']['manifest_digest'],
+        target='receiving-maintenance:'+following['name']+':'+digest(following),
+        expected_precondition={'maintenance_spec':following},intended_transition={},audit_identity={'actor':'fixture'})
+    return operation,following,owners,cohort['operation_id']
+
+
+@pytest.mark.parametrize('lost_return',[None,'parent','cohort'])
+def test_pre_activation_software_link_is_terminal_without_new_effects(tmp_path,monkeypatch,lost_return):
+    operation,following,owners,cohort=software_successor_fixture(tmp_path,monkeypatch)
+    before={name:owner.effects for name,owner in owners.items()}
+    if lost_return:
+        record=operation._record
+        def lose(*args):
+            if lost_return=='parent':record(*args)
+            raise OSError('lost link return')
+        monkeypatch.setattr(operation,'_record',lose)
+        with pytest.raises(OSError):operation.link_software_successor(following)
+        with pytest.raises(OnboardingError,match='software_superseded'):operation.apply()
+        monkeypatch.setattr(operation,'_record',record)
+    result=operation.link_software_successor(following)
+    assert result['phase']=='software-superseded'
+    with pytest.raises(OnboardingError,match='software_superseded'):
+        operation.apply()
+    with pytest.raises(OnboardingError,match='software_superseded'):
+        operation._apply()
+    assert {name:owner.effects for name,owner in owners.items()}==before
+    assert 'cohort_activation' not in operation.journal.get(cohort)['runtime_observation']
+    from clusterctl.onboarding_receiving_update import CohortController
+    old=CohortController(operation.journal,cohort,owners)
+    for action in (old.activate,old.prepare_activation,old.revoke_senders):
+        with pytest.raises(OnboardingError,match='software_superseded'):action()
+
+
+@pytest.mark.parametrize('fault',['positive','activated','changed-process','already-applied'])
+def test_software_link_refuses_unproven_or_active_predecessor(tmp_path,monkeypatch,fault):
+    operation,following,owners,cohort=software_successor_fixture(tmp_path,monkeypatch)
+    if fault=='positive':owners['eko'].gate.update(phase='select',readers=[{'active':True}])
+    elif fault=='changed-process':owners['eko'].process={**owners['eko'].process,'start_ticks':999}
+    else:
+        row=operation.journal.get(cohort if fault=='activated' else operation.operation_id)
+        observed=row['runtime_observation'] or {}
+        if fault=='activated':observed['cohort_activation']={'records':{}}
+        else:observed['maintenance']['receiving-selected']={}
+        operation.journal.advance(row['operation_id'],row['state'],runtime_observation=observed)
+    with pytest.raises(OnboardingError,match='reassessment_required|predecessor_changed'):
+        operation.link_software_successor(following)
+    assert 'software-successor' not in operation._effects()
+
+
+def test_software_link_refreshes_prior_disabled_proof_before_retirement(tmp_path,monkeypatch):
+    from clusterctl.onboarding_receiving_update import CohortController
+    operation,following,owners,cohort=software_successor_fixture(tmp_path,monkeypatch)
+    controller=CohortController(operation.journal,cohort,owners)
+    assert all(value['state']=='observed-disabled' for value in controller.reconcile_reassessment().values())
+    owners['eko'].gate.update(phase='select',readers=[{'new':'positive'}])
+    with pytest.raises(OnboardingError,match='reassessment_required'):
+        operation.link_software_successor(following)
+    assert 'software-successor' not in operation._effects()
+    assert 'cohort_software_successor' not in operation.journal.get(cohort)['runtime_observation']

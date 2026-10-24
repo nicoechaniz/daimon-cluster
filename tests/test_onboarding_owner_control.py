@@ -274,7 +274,7 @@ def test_expired_retained_status_never_prepares_or_dispatches(tmp_path):
     owner, _client, expected, _command, _path, state, calls, listener = values
     owner.expected_process=expected['process']
     owner.deadline_ns=time.monotonic_ns()-1
-    capability=SimpleNamespace(descriptor={'exact':'status'})
+    capability=SimpleNamespace(descriptor={'exact':'status'},methods=['runtime.status'])
     client=SimpleNamespace(config=SimpleNamespace(capability=capability,expected_server=state['server'],
         runtime_id='fixture-runtime',runtime_label='fixture'))
     try:
@@ -516,3 +516,33 @@ def test_observer_catalog_uses_actual_body_sdk_not_observer_sdk(tmp_path, monkey
             assert catalog[2]['venv'] == body and catalog[2]['venv'] != observer
     finally:
         listener.close()
+
+
+@pytest.mark.parametrize('error', ['invalid_params', 'authority_revoked', 'runtime_unavailable'])
+def test_status_view_fallback_requires_authenticated_unsupported_params(error):
+    from clusterctl.onboarding_receiving_update import OwnerGroupClient
+    calls = []
+    class Client:
+        config = SimpleNamespace(capability=SimpleNamespace(methods=['runtime.status','scope.me']))
+        def invoke(self, method, params):
+            calls.append((method, params))
+            return None, {'ok': False, 'error': {'code': error}}
+        def runtime_status(self):
+            calls.append(('legacy', {}))
+            return None, {'ok': True, 'result': {'legacy': True}}
+    response = OwnerGroupClient._status_response(None, Client())
+    assert len(calls) == (2 if error == 'invalid_params' else 1)
+    assert response['ok'] is (error == 'invalid_params')
+
+
+def test_new_receiving_identity_uses_fresh_same_response_without_scope_projection():
+    from clusterctl.onboarding_receiving_update import OwnerGroupClient
+    from tests.test_receiving_cohort_control import identity_fixture
+    response, status, server = identity_fixture()
+    status.update(schema='dm.runtime.receiving-status/v1', identity=response['result'])
+    owner = SimpleNamespace(status=lambda: dict(runtime_status=status, server=server),
+        _client=lambda *args: pytest.fail('redundant full scope/projection read'))
+    assert OwnerGroupClient.identity(owner, require_admitted=True)['identity']['origin'] == server
+    response['result']['body']['state'] = 'stopped'
+    with pytest.raises(OnboardingError, match='admission_conflict'):
+        OwnerGroupClient.identity(owner, require_admitted=True)

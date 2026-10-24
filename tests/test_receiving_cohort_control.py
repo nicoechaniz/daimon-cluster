@@ -1540,3 +1540,25 @@ def test_completed_typed_selection_inspection_never_reissues_controls(tmp_path, 
         controller.activate()
     assert gates == {name: owner.gate for name, owner in owners.items()}
     assert effects == {name: owner.effects for name, owner in owners.items()}
+
+
+@pytest.mark.parametrize('fault', [None, 'process', 'application', 'unknown-phase', 'positive'])
+def test_preactivation_repair_observes_only_bound_empty_current_load(tmp_path, fault):
+    controller, owners, journal, identifier = activation_fixture(tmp_path, replacement=True)
+    for owner in owners.values():
+        owner.gate = {**owner.gate, 'phase': 'unselected', 'readers': [],
+            'operation_id': None, 'release_digest': None}
+    if fault == 'process':
+        owners['eko'].process = {**owners['eko'].process, 'start_ticks': 999}
+    elif fault == 'application':
+        owners['eko'].application = {**owners['eko'].application, 'application_sha256': '0'*64}
+    elif fault == 'unknown-phase':
+        owners['eko'].gate['phase'] = 'unknown'
+    elif fault == 'positive':
+        owners['eko'].gate.update(phase='select', readers=[{'not':'empty'}])
+    before = {name: owner.effects for name, owner in owners.items()}
+    result = controller.reconcile_reassessment()
+    assert result['eko']['state'] == ('observed-disabled' if fault is None else 'uncertain')
+    assert result['oliva']['state'] == 'observed-disabled'
+    assert {name: owner.effects for name, owner in owners.items()} == before
+    assert 'cohort_activation' not in journal.get(identifier)['runtime_observation']

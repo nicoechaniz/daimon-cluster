@@ -40,6 +40,7 @@ _WIRES = sorted(
 _FEATURES = sorted(
     {
         "membership-group/v1",
+        "single-authority-group/v1",
         "root-history/v1",
         "semantic-body-legs/v3",
         "confirmed-visibility-before-egress/v1",
@@ -52,6 +53,8 @@ _FEATURES = sorted(
         "bounded-group-fanout/v1",
         "membership-direct/v1",
         "signed-roster-cas/v1",
+        "durable-reader-recovery/v1",
+        "credential-bound-reader-validity/v1",
     }
 )
 _CONTRACT_FIELDS = {
@@ -166,7 +169,11 @@ def describe_reader() -> dict[str, Any]:
             },
             "wire_read": list(_WIRES),
             "wire_write": list(_WIRES),
-            "store_versions": {"communication": [4], "visibility_catalog": [1]},
+            "store_versions": {
+                "communication": [4],
+                "visibility_catalog": [1],
+                "reader_control": [1, 2],
+            },
             "capabilities": list(_FEATURES),
             "pending_inspection": [
                 "dm.tribe.delivery/v1",

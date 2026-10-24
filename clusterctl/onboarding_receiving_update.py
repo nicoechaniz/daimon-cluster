@@ -57,8 +57,9 @@ def receiving_identity(response: dict, runtime_status: dict, server: dict,
 def verify_receiving_identity(bundle: dict, observed: dict, *, expires_at_ms: int) -> dict:
     """Verify current public credential validity in the authenticated loaded bundle.
 
-    The selected horizon stays finite even for until-revoked credentials. This
-    derives evidence only; it never unlocks custody or loads another runtime.
+    The observation horizon stays finite even for until-revoked credentials.
+    It does not shorten the signed credential validity. This derives evidence
+    only; it never unlocks custody or loads another runtime.
     """
     from daimon_matrix.messaging_config import _public_identity
     from daimon_matrix.operator_rebirth import authority_from_runtime_bundle
@@ -105,6 +106,22 @@ def verify_receiving_identity(bundle: dict, observed: dict, *, expires_at_ms: in
         authority_control_head=public['control_head'],
         runtime_bundle_sha256=loaded['runtime_bundle_sha256'], credential_validity=validity,
         verified_at_ms=now, expires_at_ms=expires_at_ms)
+
+
+def _reader_active(reader: dict, now: int) -> bool:
+    """Check selected validity without converting indefinite authority to a date."""
+    if reader.get('schema') == 'dm.receiving.reader/v2':
+        from daimon_matrix.identity import validity_contains, validate_validity
+        return validity_contains(validate_validity(reader['validity']), now)
+    return reader['expires_at_ms'] > now
+
+
+def _reader_proof_expiry(record: dict) -> int:
+    # Retained V1 operations predate the separated proof horizon. Their exact
+    # finite reader expiry remains authoritative; do not reinterpret history.
+    if 'identity_expires_at_ms' in record:
+        return record['identity_expires_at_ms']
+    return record['reader']['expires_at_ms']
 
 
 class OwnerGroupClient:
@@ -2486,6 +2503,25 @@ class CohortController:
             loaded_view_sha256=application['loaded_view_sha256'], expires_at_ms=verified['expires_at_ms'],
             wire_read=sorted(set(startup['reader']['contract']['wire_read']) &
                 {'dm.tribe.conversation/v1', 'dm.tribe.direct-conversation/v1'}), authority_epochs=sorted(epochs))
+        credential_bound = 'credential-bound-reader-validity/v1' in manifest['contract']['capabilities']
+        if credential_bound:
+            from daimon_matrix.identity import validate_validity
+            if ('credential-bound-reader-validity/v1' not in receiving.get('features', [])
+                    or 'dm.runtime.reader-selection/v2' not in receiving.get('contracts', [])
+                    or 2 not in store_versions.get('reader_control', [])):
+                raise OnboardingError('receiving_cohort_reader_validity_unsupported')
+            validity = verified.get('credential_validity')
+            if isinstance(validity, dict) and set(validity) == {'valid_from_ms', 'valid_until_ms'}:
+                validity = dict(mode='finite', not_before_ms=validity['valid_from_ms'],
+                    not_after_ms=validity['valid_until_ms'])
+            try:
+                validity = validate_validity(validity)
+            except ValueError:
+                raise OnboardingError('receiving_cohort_reader_validity_invalid') from None
+            del reader['expires_at_ms']
+            reader.update(schema='dm.receiving.reader/v2', validity=validity)
+            if not _reader_active(reader, time.time_ns() // 1_000_000):
+                raise OnboardingError('receiving_cohort_identity_changed')
         if observations is not None:
             observations[name] = {key: current[key] for key in ('server', 'process', 'gate', 'runtime_status')}
             observations[name]['admission_parent'] = current.get('admission_parent')
@@ -2493,6 +2529,7 @@ class CohortController:
             loaded_runtime=loaded, loaded_application={key: val for key, val in application.items() if key != 'reader_gates'},
             admission_parent=current.get('admission_parent'), selection=selection,
             roster_sha256=roster['roster_sha256'], reader=reader,
+            **({'identity_expires_at_ms': verified['expires_at_ms']} if credential_bound else {}),
             **({'native_tooling': native} if tooling['profile'] == 'codex' else {}),
             observed_at_ms=observed_at_ms, observed_at_ns=observed_at_ns)
 
@@ -2598,7 +2635,7 @@ class CohortController:
             records = self._adoption_round(plan, manifest, observations=observations)
             now = time.time_ns() // 1_000_000
             if any(now - item['observed_at_ms'] > plan['observation_window_ms']
-                   or item['reader']['expires_at_ms'] <= now for item in records.values()):
+                   or (_reader_proof_expiry(item) <= now or not _reader_active(item['reader'], now)) for item in records.values()):
                 raise OnboardingError('receiving_cohort_observation_expired')
             frozen = row['expected_precondition']['receiver_selections']
             for name, record in records.items():
@@ -2608,7 +2645,7 @@ class CohortController:
                     raise OnboardingError('receiving_cohort_predecessor_changed')
             row = self._activation_barrier(row, plan, records, observations)
             now = time.time_ns() // 1_000_000
-            if any(item['reader']['expires_at_ms'] <= now for item in records.values()):
+            if any((_reader_proof_expiry(item) <= now or not _reader_active(item['reader'], now)) for item in records.values()):
                 raise OnboardingError('receiving_cohort_observation_expired')
             if any(now - item['observed_at_ms'] > plan['observation_window_ms'] for item in records.values()):
                 # First-time replacement controls can consume the observation
@@ -2624,7 +2661,7 @@ class CohortController:
                 row = self._activation_barrier(row, plan, records, fresh)
                 now = time.time_ns() // 1_000_000
             if any(now - item['observed_at_ms'] > plan['observation_window_ms']
-                   or item['reader']['expires_at_ms'] <= now for item in records.values()):
+                   or (_reader_proof_expiry(item) <= now or not _reader_active(item['reader'], now)) for item in records.values()):
                 raise OnboardingError('receiving_cohort_observation_expired')
             readers = sorted([item['reader'] for item in records.values()], key=lambda item: (item['being_ref'], item['embodiment_id']))
             observations = dict(row['runtime_observation'] or {})
@@ -2808,12 +2845,12 @@ class CohortController:
                 raise OnboardingError('receiving_cohort_activation_changed')
         now = time.time_ns() // 1_000_000
         if any(now - item['observed_at_ms'] > plan['observation_window_ms']
-               or item['reader']['expires_at_ms'] <= now for item in records.values()):
+               or (_reader_proof_expiry(item) <= now or not _reader_active(item['reader'], now)) for item in records.values()):
             raise OnboardingError('receiving_cohort_activation_changed')
         deadline = min(item['observed_at_ns'] + plan['observation_window_ms'] * 1_000_000
             for item in records.values())
         deadline = min(deadline, time.monotonic_ns() + min(
-            item['reader']['expires_at_ms'] - now for item in records.values()) * 1_000_000)
+            _reader_proof_expiry(item) - now for item in records.values()) * 1_000_000)
         self._accept_activation_deadline(deadline)
         return deadline
 
@@ -2964,7 +3001,7 @@ class CohortController:
                 if any(current[key] != accepted[key] for key in ('server', 'process', 'gate')):
                     raise OnboardingError('receiving_cohort_selection_changed')
             self._accept_activation_deadline(deadline)
-            if any(item['expires_at_ms'] <= time.time_ns() // 1_000_000 for item in activation['readers']):
+            if any(not _reader_active(item, time.time_ns() // 1_000_000) for item in activation['readers']):
                 raise OnboardingError('receiving_cohort_observation_expired')
         except (OnboardingError, OSError):
             self._fence_partial_activation(activation)
@@ -3036,6 +3073,8 @@ class CohortController:
                 command = dict(process_instance_id=revoked['gate']['process_instance_id'], channel_id='tribe',
                     expected_head=revoked['gate']['head'], operation_id=control_id, release_digest=release,
                     phase='select', readers=activation['readers'], expected_roster_sha256=activation['roster_sha256'])
+                if 'credential-bound-reader-validity/v1' in manifest['contract']['capabilities']:
+                    command['schema'] = 'dm.runtime.reader-selection/v2'
                 owner = self.owners[name]
                 path = owner.root / 'receiving-control' / (control_id + '-select.json')
                 try:

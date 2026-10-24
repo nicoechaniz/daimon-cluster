@@ -80,14 +80,24 @@ class RetainedStatusOwner(OwnerGroupClient):
         finally:
             owner._observer = None
 
-    def _status_response(self, client) -> dict:
+    def _status_response(self, client, *, params: dict | None = None) -> dict:
+        if params is None:
+            if 'scope.me' not in client.config.capability.methods:
+                return RetainedStatusOwner._status_response(self, client, params={})
+            response = RetainedStatusOwner._status_response(self, client, params={'view': 'receiving'})
+            if response.get('ok') is False and response.get('error', {}).get('code') == 'invalid_params':
+                return RetainedStatusOwner._status_response(self, client, params={})
+            return response
         if self.deadline_ns is None or self._observer is None:
             raise OnboardingError('receiving_owner_scope_required')
         deadline = self.deadline_ns
         binding = dict(process=self.expected_process,
             capability=client.config.capability.descriptor, server=dict(client.config.expected_server),
             runtime_id=client.config.runtime_id, runtime_label=client.config.runtime_label)
-        path = self.root / 'receiving-control' / ('status-' + digest(binding) + '.json')
+        # Preserve legacy request bytes and file names. The closed new view is
+        # a distinct read request, never a relabeling of retained old params.
+        prefix = 'status-receiving-' if params else 'status-'
+        path = self.root / 'receiving-control' / (prefix + digest(binding) + '.json')
         with being_seed._locked(self._control_directory(path)), ProcessPresence(self.expected_process) as presence:
             _accept(deadline)
             if path.exists():
@@ -97,10 +107,10 @@ class RetainedStatusOwner(OwnerGroupClient):
                     raise OnboardingError('receiving_control_binding_conflict')
                 request = saved['request']
             else:
-                request = client.prepare('runtime.status', {})
+                request = client.prepare('runtime.status', params)
                 being_seed._write(path, dict(schema='cluster-receiving-status-request/v1',
                     binding=binding, request=request), limit=being_seed.MAX_SELECTION)
-            if request.get('method') != 'runtime.status' or request.get('params') != {}:
+            if request.get('method') != 'runtime.status' or request.get('params') != params:
                 raise OnboardingError('receiving_control_binding_conflict')
             self._durable_control(path)
             observer = self._observer

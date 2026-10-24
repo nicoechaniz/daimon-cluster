@@ -202,7 +202,14 @@ class OwnerGroupClient:
                     observation_started_at_ns=self._status_read_started_ns)
 
     def _status_response(self, client) -> dict:
-        return client.runtime_status()[1]
+        if 'scope.me' not in client.config.capability.methods:
+            return client.runtime_status()[1]
+        response = client.invoke('runtime.status', {'view': 'receiving'})[1]
+        # Only a verified native unsupported-view refusal permits the legacy
+        # full observation. Timeouts, authority and process failures propagate.
+        if response.get('ok') is False and response.get('error', {}).get('code') == 'invalid_params':
+            return client.runtime_status()[1]
+        return response
 
     def base_status(self) -> dict:
         """Pin an authenticated predecessor without claiming loaded readiness.
@@ -236,6 +243,11 @@ class OwnerGroupClient:
         neither this query nor Source's user-service proves Cluster admission.
         """
         observed = self.status()
+        status = observed['runtime_status']
+        if status.get('schema') == 'dm.runtime.receiving-status/v1':
+            identity = receiving_identity(dict(ok=True, result=status.get('identity'),
+                server=observed['server']), status, observed['server'], require_admitted=require_admitted)
+            return {**observed, 'identity': identity}
         before = self.socket.lstat()
         response = self._client('status').scope_me()[1]
         after = self.socket.lstat()
@@ -2209,6 +2221,8 @@ class CohortController:
         if (row is None or row['operation'] != 'receiving-update'
                 or row['state'] in {'degraded', 'compensated', 'completed'}):
             raise OnboardingError('receiving_cohort_operation_required')
+        if (row['runtime_observation'] or {}).get('cohort_software_successor') is not None:
+            raise OnboardingError('receiving_maintenance_software_superseded')
         before, after = row['expected_precondition'], row['intended_transition']
         call = row['intent'].get('runtime_call', {})
         if (call.get('precondition_digest') != digest(before)
@@ -2899,8 +2913,23 @@ class CohortController:
                 gate = current['gate']
                 if (gate.get('phase') not in {'revoke', 'select'}
                         or (gate.get('operation_id'), gate.get('release_digest')) != (old_id, release)):
-                    if name in repairs and gate.get('readers') == []:
-                        repairs[name] = {'state': 'observed-disabled'}
+                    # A replacement starts unselected. Old-process revoke ACKs
+                    # cannot describe its gates; bind a fresh empty observation
+                    # to the lifecycle's actual controlled load instead.
+                    recipe = row['intended_transition']['cohort_activation']['receivers'][name]
+                    lifecycle = self._lifecycle(name, recipe)
+                    effects = {} if lifecycle is None else lifecycle['runtime_observation'] or {}
+                    loaded = (effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
+                        else effects.get('guest_bootstraps', {}).get(name, {})).get('controlled_loaded')
+                    if (gate.get('phase') in {'unselected', 'select'} and gate.get('readers') == []
+                            and isinstance(loaded, dict) and loaded.get('process') == current['process']
+                            and loaded.get('loaded_runtime') == current['runtime_status'].get('loaded_runtime')
+                            and loaded.get('loaded_application') == {key: value for key, value in
+                                current['runtime_status'].get('loaded_application', {}).items() if key != 'reader_gates'}):
+                        repairs[name] = dict(state='observed-disabled', process=current['process'],
+                            server=current['server'], gate=gate)
+                    else:
+                        repairs[name] = {'state': 'uncertain'}
                     continue
                 record = activation['records'].get(name)
                 if (not isinstance(record, dict) or current['process'] != record['process']
@@ -2975,19 +3004,60 @@ class CohortController:
 
     def reconcile_reassessment(self) -> dict:
         with self.journal.mutation_lock(self.operation_id):
+            return self._reconcile_reassessment()
+
+    def _reconcile_reassessment(self) -> dict:
+        row = self._row()
+        activation = (row['runtime_observation'] or {}).get('cohort_activation')
+        if activation is None:
+            records = dict((row['runtime_observation'] or {}).get('sender_revocations', {}))
+            for name, value in (row['runtime_observation'] or {}).get('sender_replacements', {}).items():
+                # An unacknowledged replacement never inherits old proof.
+                records[name] = value.get('accepted', value)
+            activation = {'records': records}
+        elif 'cohort_reassessment' not in row['runtime_observation']:
+            raise OnboardingError('receiving_cohort_reassessment_required')
+        self._fence_partial_activation(activation)
+        return self._row()['runtime_observation']['cohort_reassessment']
+
+    def retire_before_activation(self, successor: dict) -> dict:
+        """Close this cohort before preparing the ordinary software successor."""
+        with self.journal.mutation_lock(self.operation_id):
+            row = self.journal.get(self.operation_id)
+            if row is None:
+                raise OnboardingError('receiving_cohort_operation_required')
+            retained = (row['runtime_observation'] or {}).get('cohort_software_successor')
+            if retained is not None:
+                if retained != successor:
+                    raise OnboardingError('receiving_maintenance_child_conflict')
+                return retained
             row = self._row()
-            activation = (row['runtime_observation'] or {}).get('cohort_activation')
-            if activation is None:
-                records = dict((row['runtime_observation'] or {}).get('sender_revocations', {}))
-                for name, value in (row['runtime_observation'] or {}).get('sender_replacements', {}).items():
-                    # An unacknowledged replacement remains uncertain. It must
-                    # never inherit the old process's observation.
-                    records[name] = value.get('accepted', value)
-                activation = {'records': records}
-            elif 'cohort_reassessment' not in row['runtime_observation']:
-                raise OnboardingError('receiving_cohort_reassessment_required')
-            self._fence_partial_activation(activation)
-            return self._row()['runtime_observation']['cohort_reassessment']
+            observations = row['runtime_observation'] or {}
+            if 'cohort_activation' in observations or observations.get('sender_selections'):
+                raise OnboardingError('receiving_maintenance_reassessment_required')
+            self._reconcile_reassessment()
+            row = self._row()
+            disabled = {}
+            for name, owner in sorted(self.owners.items()):
+                current = owner.status()
+                recipe = row['intended_transition']['cohort_activation']['receivers'][name]
+                lifecycle = self._lifecycle(name, recipe)
+                effects = {} if lifecycle is None else lifecycle['runtime_observation'] or {}
+                loaded = (effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
+                    else effects.get('guest_bootstraps', {}).get(name, {})).get('controlled_loaded')
+                if (current['gate'].get('phase') not in {'unselected', 'select'}
+                        or current['gate'].get('readers') != [] or not isinstance(loaded, dict)
+                        or loaded.get('process') != current['process']
+                        or loaded.get('loaded_runtime') != current['runtime_status'].get('loaded_runtime')
+                        or loaded.get('loaded_application') != {key: value for key, value in
+                            current['runtime_status'].get('loaded_application', {}).items() if key != 'reader_gates'}):
+                    raise OnboardingError('receiving_maintenance_reassessment_required')
+                disabled[name] = current
+            observed = {**(row['runtime_observation'] or {}),
+                'cohort_software_successor': successor, 'software_disabled': disabled}
+            self.journal.advance(self.operation_id, row['state'], runtime_observation=observed,
+                expected_runtime_observation=row['runtime_observation'])
+            return successor
 
     def _confirmed_selection(self, row: dict, plan: dict, manifest: dict, activation: dict) -> dict:
         """Reconcile a fully retained selection using fresh all-required proof.

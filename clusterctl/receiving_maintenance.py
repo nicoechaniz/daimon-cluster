@@ -40,6 +40,7 @@ PUBLIC_ERRORS = OWNER_PUBLIC_ERRORS | receiving_worker.PUBLIC_ERRORS | frozenset
     'receiving_bootstrap_binding_conflict',
     'receiving_host_deadline_expired', 'receiving_host_launch_failed',
     'receiving_maintenance_reassessment_required',
+    'receiving_maintenance_software_superseded',
     'receiving_native_tooling_unobserved',
     'qualified_receiving_observer_required', 'receiving_source_configuration_changed',
     'receiving_source_owner_binding_required', 'receiving_required_cohort_changed',
@@ -568,6 +569,7 @@ class ReceivingMaintenance:
         from .onboarding_receiving_update import _manifest
         with self.journal.mutation_lock(self.operation_id):
             effects = self._effects()
+            self._assert_not_superseded(effects)
             if 'cohort' not in effects or 'receiving-selected' in effects:
                 raise OnboardingError('receiving_maintenance_reassessment_required')
             successor = digest(dict(previous=previous_id, manifest_digest=manifest_digest))
@@ -637,6 +639,79 @@ class ReceivingMaintenance:
                 raise OnboardingError('receiving_maintenance_child_conflict')
             self._record(key, dict(operation_id=child['operation_id'], previous_operation_id=previous_id,
                 manifest_path=str(manifest_path), manifest_digest=manifest_digest))
+            return self.status()
+
+    def _assert_not_superseded(self, effects: dict) -> None:
+        cohort = self.journal.get(self._cohort_tip(effects)) if 'cohort' in effects else None
+        if 'software-successor' in effects or (cohort is not None and
+                (cohort['runtime_observation'] or {}).get('cohort_software_successor') is not None):
+            raise OnboardingError('receiving_maintenance_software_superseded')
+
+    def link_software_successor(self, successor_spec: dict) -> dict:
+        """Retire a preactivation operation in favor of an ordinary successor intent.
+
+        Observe current empty gates against actual controlled loads, then retain
+        the link before allowing further effects. No activation, lifecycle or
+        rollback is invented. A lost return cannot reactivate the old operation.
+        """
+        from .onboarding_receiving_update import CohortController, _manifest
+        successor_spec = validate(successor_spec)
+        with self.journal.mutation_lock(self.operation_id):
+            effects = self._effects()
+            target = 'receiving-maintenance:' + successor_spec['name'] + ':' + digest(successor_spec)
+            following = self.journal.latest_for_idempotency_key('receiving-update:' + target + ':' +
+                successor_spec['candidate']['manifest_digest'])
+            if (following is None or following['operation_id'] == self.operation_id
+                    or following['expected_precondition'] != {'maintenance_spec': successor_spec}):
+                raise OnboardingError('receiving_maintenance_child_conflict')
+            link = dict(operation_id=following['operation_id'], maintenance_binding=digest(successor_spec))
+            if 'software-successor' in effects:
+                if effects['software-successor'] != link:
+                    raise OnboardingError('receiving_maintenance_child_conflict')
+                return self.status()
+            # The ordinary successor owns any new bytes. It preserves the same
+            # owners, stores, authority and finite maintenance authorization.
+            source_keys = set(self.spec['source']) - {'transaction', 'bootstrap_venv', 'bootstrap_imports'}
+            if (any(successor_spec.get(key) != self.spec.get(key) for key in
+                    ('schema', 'journal', 'host_config', 'guests', 'worker'))
+                    or any(successor_spec['source'][key] != self.spec['source'][key] for key in source_keys)
+                    or successor_spec['candidate']['code_digest'] == self.spec['candidate']['code_digest']
+                    or successor_spec['candidate']['expires_at_ms'] > self.spec['candidate']['expires_at_ms']
+                    or 'receiving-selected' in effects or 'cohort' not in effects):
+                raise OnboardingError('receiving_maintenance_reassessment_required')
+            if successor_spec['candidate']['expires_at_ms'] <= time.time_ns() // 1_000_000:
+                raise OnboardingError('receiving_preservation_authorization_expired')
+            next_effects = (following['runtime_observation'] or {}).get('maintenance', {})
+            if any(not key.startswith('coordinator:') for key in next_effects):
+                raise OnboardingError('receiving_maintenance_reassessment_required')
+            cohort_id = self._cohort_tip(effects)
+            cohort = self.journal.get(cohort_id)
+            observed = {} if cohort is None else cohort['runtime_observation'] or {}
+            if cohort is None or 'cohort_activation' in observed or observed.get('sender_selections'):
+                raise OnboardingError('receiving_maintenance_reassessment_required')
+            plan = cohort['intended_transition']['cohort_activation']
+            names = set(plan['receivers'])
+            if names != {'source', *self.plans}:
+                raise OnboardingError('receiving_required_cohort_changed')
+            old = _manifest(_path(self.spec['candidate']['manifest_path']),
+                self.spec['candidate']['manifest_digest'], uid=0)
+            new = _manifest(_path(successor_spec['candidate']['manifest_path']),
+                successor_spec['candidate']['manifest_digest'], uid=0)
+            if new['authorities'] != old['authorities']:
+                raise OnboardingError('receiving_maintenance_child_conflict')
+            if {(item['being_ref'], item['embodiment_id']) for item in new['required_receivers']} != {
+                    (item['being_ref'], item['embodiment_id']) for item in old['required_receivers']}:
+                raise OnboardingError('receiving_required_cohort_changed')
+            loaded = {name: effects['loaded:' + name] for name in names}
+            required = {item['embodiment_id']: item for item in new['required_receivers']}
+            if set(required) != {expected_owner(value)['server']['embodiment_id'] for value in loaded.values()}:
+                raise OnboardingError('receiving_required_cohort_changed')
+            for value in loaded.values():
+                owner = expected_owner(value)
+                if required[owner['server']['embodiment_id']]['expected_selection_sha256'] != digest(owner['selection']):
+                    raise OnboardingError('receiving_cohort_predecessor_changed')
+            CohortController(self.journal, cohort_id, self._owners(loaded)).retire_before_activation(link)
+            self._record('software-successor', link)
             return self.status()
 
     def _prepare_reassessment(self, previous: dict, plan: dict, manifest_path: Path,
@@ -856,6 +931,7 @@ class ReceivingMaintenance:
 
     def apply(self) -> dict:
         with self.journal.mutation_lock(self.operation_id):
+            self._assert_not_superseded(self._effects())
             if getattr(self, 'pause_worker', False):
                 from .onboarding_service import selection_lock
                 manager = receiving_worker.WorkerManager(config_path=self.config_path)
@@ -874,6 +950,7 @@ class ReceivingMaintenance:
         from .onboarding_host import HostBackend, HostConfig
         from .onboarding_receiving_update import CohortController, GuestBootstrapController
         effects = self._effects()
+        self._assert_not_superseded(effects)
         if 'cohort' not in effects:
             raise OnboardingError('receiving_maintenance_preparation_required')
         original_id = effects['cohort']['operation_id']
@@ -919,7 +996,9 @@ class ReceivingMaintenance:
         effects = self._effects()
         return dict(operation_id=self.operation_id,
             cohort_operation_id=self._cohort_tip(effects) if 'cohort' in effects else None,
-            phase='receiving-selected' if 'receiving-selected' in effects else 'prepared' if 'cohort' in effects else 'preparing',
+            phase='software-superseded' if 'software-successor' in effects else
+                  'receiving-selected' if 'receiving-selected' in effects else 'prepared' if 'cohort' in effects else 'preparing',
+            software_successor=effects.get('software-successor'),
             loaded=sorted(name.removeprefix('loaded:') for name in effects if name.startswith('loaded:')),
             prepared_receivers=sorted(name.removeprefix('guest:') for name in effects if name.startswith('guest:')),
             communication='unobserved', worker_paused=None if receiving_worker.restoration_pending(self.spec) else False)
@@ -929,7 +1008,8 @@ def main(argv=None) -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--owner', choices=('prepare-sdk', 'prepare', 'execute'))
     mode.add_argument('--spec', type=Path)
-    parser.add_argument('action', nargs='?', choices=('prepare', 'apply', 'status', 'reassess'))
+    parser.add_argument('action', nargs='?', choices=('prepare', 'apply', 'status', 'reassess', 'link-software-successor'))
+    parser.add_argument('--successor-spec', type=Path)
     parser.add_argument('--manifest', type=Path)
     parser.add_argument('--manifest-digest')
     parser.add_argument('--previous-cohort')
@@ -938,7 +1018,7 @@ def main(argv=None) -> int:
     try:
         if args.owner:
             if (args.action is not None or args.manifest is not None or args.manifest_digest is not None
-                    or args.previous_cohort is not None):
+                    or args.previous_cohort is not None or args.successor_spec is not None):
                 raise OnboardingError('receiving_maintenance_action_required')
             raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1)
             if len(raw) > being_seed.MAX_SELECTION:
@@ -951,6 +1031,8 @@ def main(argv=None) -> int:
             if args.spec.stat().st_mode & 0o077:
                 raise OnboardingError('receiving_maintenance_binding_required')
             spec = validate(json.loads(raw))
+            if (args.action == 'link-software-successor') != (args.successor_spec is not None):
+                raise OnboardingError('receiving_maintenance_binding_required')
             recovery = (args.manifest, args.manifest_digest, args.previous_cohort)
             if ((args.action == 'reassess') != all(value is not None for value in recovery)
                     or args.action != 'reassess' and any(value is not None for value in recovery)):
@@ -965,12 +1047,19 @@ def main(argv=None) -> int:
                     effects = (row['runtime_observation'] or {}).get('maintenance', {})
                     result.update(operation_id=row['operation_id'],
                         cohort_operation_id=ReceivingMaintenance._cohort_tip(effects) if 'cohort' in effects else None,
-                        phase='receiving-selected' if 'receiving-selected' in effects else
+                        software_successor=effects.get('software-successor'),
+                        phase='software-superseded' if 'software-successor' in effects else
+                              'receiving-selected' if 'receiving-selected' in effects else
                               'prepared' if 'cohort' in effects else 'preparing')
             else:
                 operation = ReceivingMaintenance(spec)
                 if args.action == 'reassess':
                     result = operation.reassess(args.manifest, args.manifest_digest, args.previous_cohort)
+                elif args.action == 'link-software-successor':
+                    following = onboarding_release.regular(args.successor_spec, uid=0)
+                    if args.successor_spec.stat().st_mode & 0o077:
+                        raise OnboardingError('receiving_maintenance_binding_required')
+                    result = operation.link_software_successor(json.loads(following))
                 else:
                     result = operation.prepare() if args.action == 'prepare' else operation.apply()
         if args.spec is not None and receiving_worker.restoration_pending(spec):

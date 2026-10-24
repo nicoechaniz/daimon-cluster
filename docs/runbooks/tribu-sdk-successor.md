@@ -104,12 +104,22 @@ current capability/client runtime identity. Verify the socket peer before sendin
 and retain exact bytes after a lost return. A refusal is not receiving readiness.
 
 Ordinary preparation/barrier reads prime this request before the positive
-freshness round. All-required identity, application, native-tooling, roster and
-admission checks still finish within the original absolute window. Root retains
+freshness round. Queries keep their absolute deadline; all-required identity,
+application, native-tooling, roster and admission validation and controls remain
+within the 60-second data-age window described below. Root retains
 its actual code/SDK as `coordinator:<digest>` in maintenance and as
 `observation_implementations` in the cohort before those queries. Do not label
 these observations as executed by the frozen observer. Readonly helper mounts
 may be prepared during linked reassessment; no body SDK or lifecycle is replayed.
+
+The query's absolute deadline still includes helper launch and stays fixed.
+For the subsequent control's data-age bound, a qualified same-time-namespace
+helper reports monotonic time **before its first authenticated status RPC**.
+Root requires it inside that actual invocation interval and before the query
+deadline. The 60-second control freshness window starts at this conservative
+read bound, rather than at interpreter/bootstrap launch. Completion, native
+tooling and cached-response timestamps never renew it. Missing legacy metadata
+retains the earlier Root-launch bound. Expiry and all-required checks stay fixed.
 
 Notify the human before `apply` interrupts Matrix services. This does not grant
 permission for global Stop, Codex/Telegram restart or unrelated service changes.

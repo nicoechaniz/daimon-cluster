@@ -563,6 +563,19 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
 
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
+    runtime_files = {'clusterctl/onboarding_runtime.py', 'tests/test_onboarding_runtime.py'}
+    runtime_tests = ['tests/test_onboarding_runtime.py', 'tests/test_onboarding_admission.py',
+                     'tests/test_onboarding_group.py', 'tests/test_onboarding_group_authorities.py',
+                     'tests/test_guest_service_bootstrap.py', 'tests/test_guest_owner_bootstrap.py',
+                     'tests/test_guest_bootstrap_controller.py',
+                     'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (runtime_files <= set(changed)
+            and set(changed) <= runtime_files | CI_FILES | {'docs/runbooks/tribu-sdk-successor.md'}
+            and all((root / name).is_file() for name in runtime_tests)):
+        # Child launch/readiness, real admission, group composition and both
+        # qualified guest bootstrap routes. Unchanged SDK builders and Source
+        # expansion need no repeat; broader/shared edits retain their coverage.
+        return 'peer', runtime_tests
     integration_files = {'clusterctl/same_being_integration.py', 'clusterctl/same_being_operator.py',
                          'tests/test_same_being_integration.py', 'tests/test_same_being_operator.py',
                          'tests/test_behavior_native.py', 'docs/runbooks/same-being-integration.md',

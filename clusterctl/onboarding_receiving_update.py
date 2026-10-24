@@ -120,12 +120,14 @@ class OwnerGroupClient:
         self.socket = socket_path
         self.deadline_ns = deadline_ns
         self._observer: ConnectedProcessObserver | None = None
+        self._status_read_started_ns: int | None = None
 
     def __enter__(self) -> OwnerGroupClient:
         if self._observer is not None:
             raise OnboardingError('receiving_owner_scope_required')
         self._observer = ConnectedProcessObserver()
         self._observer.__enter__()
+        self._status_read_started_ns = None
         return self
 
     def __exit__(self, *args):
@@ -157,6 +159,10 @@ class OwnerGroupClient:
     def _observe_status(self) -> dict:
         before = self.socket.lstat()
         client = self._client('status')
+        # First read-start in this owner scope, never response completion or a
+        # cached response's timestamp. Include request retention/dispatch cost.
+        if self._status_read_started_ns is None:
+            self._status_read_started_ns = time.monotonic_ns()
         response = self._status_response(client)
         if response.get('ok') is not True:
             raise OnboardingError('receiving_group_status_unavailable')
@@ -175,7 +181,8 @@ class OwnerGroupClient:
             raise OnboardingError('receiving_group_responder_conflict')
         self._accept_deadline()
         return dict(process=process, server=response['server'], runtime_status=status,
-                    receiving_readiness='unobserved')
+                    receiving_readiness='unobserved',
+                    observation_started_at_ns=self._status_read_started_ns)
 
     def _status_response(self, client) -> dict:
         return client.runtime_status()[1]
@@ -2335,6 +2342,18 @@ class CohortController:
         with self._owner_deadline(self.owners[name], observation_deadline):
             current = self.owners[name].qualified_identity(expires_at_ms=plan['expires_at_ms'],
                 require_admitted=plan['receivers'][name]['profile'] == 'guest', **context[1])
+        ended_at_ns = time.monotonic_ns()
+        owner = self.owners[name]
+        if getattr(owner, 'bound_observation_clock', False) is True and 'observation_started_at_ns' in current:
+            started = current['observation_started_at_ns']
+            if (type(started) is not int or not observed_at_ns <= started <= ended_at_ns
+                    or started >= observation_deadline):
+                raise OnboardingError('receiving_owner_deadline_binding_required')
+            # Helpers verify Root's time namespace. Convert using Root's clock
+            # pair rather than trusting a guest wall clock. Legacy helpers keep
+            # their earlier conservative launch bound.
+            observed_at_ms += (started - observed_at_ns) // 1_000_000
+            observed_at_ns = started
         return current, observed_at_ms, observed_at_ns
 
     def _adoption(self, name: str, plan: dict, manifest: dict,

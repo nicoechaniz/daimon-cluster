@@ -1284,6 +1284,42 @@ def test_retained_fast_control_implementation_cannot_change_mid_activation(tmp_p
         controller.activate()
 
 
+@pytest.mark.parametrize('helper,bound,expected', [
+    (110_000_000_000,True,110_000_000_000),
+    (None,True,100_000_000_000),
+    (110_000_000_000,False,100_000_000_000),
+    (99_000_000_000,True,None),
+    (151_000_000_000,True,None),
+    (True,True,None),
+])
+def test_qualified_read_start_is_bounded_by_actual_query_interval(monkeypatch, helper, bound, expected):
+    from clusterctl import onboarding_receiving_update as module
+    from types import SimpleNamespace
+    ticks=iter((100_000_000_000,100_000_000_000,150_000_000_000,150_000_000_000))
+    monkeypatch.setattr(module,'time',SimpleNamespace(time_ns=lambda:1_000_000_000,
+        monotonic_ns=lambda:next(ticks)))
+    current={} if helper is None else {'observation_started_at_ns':helper}
+    deadlines=[]
+    class Owner:
+        deadline_ns=None
+        bound_observation_clock=bound
+        def qualified_identity(self, **kwargs):
+            deadlines.append(self.deadline_ns)
+            return current
+    owner=Owner()
+    controller=CohortController(None,'unused',{'eko':owner})
+    plan={'observation_window_ms':60000,'expires_at_ms':100000,
+          'receivers':{'eko':{'profile':'guest'}}}
+    if expected is None:
+        with pytest.raises(OnboardingError,match='deadline_binding_required'):
+            controller._observe_adoption('eko',plan,context=({}, {}, None, {}),deadline_ns=160_000_000_000)
+    else:
+        actual,wall,started=controller._observe_adoption('eko',plan,context=({}, {}, None, {}),deadline_ns=160_000_000_000)
+        assert actual is current and started==expected
+        assert wall==1000+(expected-100_000_000_000)//1_000_000
+    assert deadlines==[160_000_000_000] and owner.deadline_ns is None
+
+
 def test_combined_owner_control_keeps_durable_request_after_lost_acceptance(
     tmp_path, monkeypatch
 ):

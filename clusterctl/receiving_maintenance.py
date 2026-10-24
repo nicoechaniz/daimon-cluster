@@ -444,6 +444,11 @@ class PinnedOwnerClient:
     def observation_implementation(self) -> dict | None:
         return self.observed_control_implementation()
 
+    @property
+    def bound_observation_clock(self) -> bool:
+        # _call verifies this actual immutable helper and its time namespace.
+        return self.control_implementation is not None
+
     def prepare_apply_observed_control(self, command: dict, path: Path, *, observation: dict):
         if self.control_implementation is None:
             return self.prepare_apply_control(command, path)

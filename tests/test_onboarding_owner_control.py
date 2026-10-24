@@ -143,12 +143,14 @@ def observed_fixture(tmp_path):
     return values, observer
 
 
+@pytest.mark.parametrize('gate_schema', ['dm.receiving.reader-selection/v1', 'dm.receiving.reader-selection/v2'])
 @pytest.mark.parametrize('lost_ack', [False, True])
-def test_fresh_observation_skips_status_and_exact_retry_pins_real_peer(tmp_path, lost_ack):
+def test_fresh_observation_skips_status_and_exact_retry_pins_real_peer(tmp_path, lost_ack, gate_schema):
     values, observer = observed_fixture(tmp_path)
     owner, client, expected, command, path, state, calls, listener = values
     try:
         client.lost = lost_ack
+        state['gate']['schema'] = gate_schema
         observed = copy.deepcopy(state)
         if lost_ack:
             with pytest.raises(TimeoutError):

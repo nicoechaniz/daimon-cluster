@@ -633,6 +633,18 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
     if (set(changed) & closeout_files and set(changed) <= closeout_files | CI_FILES
             and all((root / name).is_file() for name in closeout_tests)):
         return 'peer', closeout_tests
+    reader_fixtures = {'tests/fixtures/receiving_reader/canonical.py',
+        'tests/fixtures/receiving_reader/release_compatibility.py',
+        'tests/fixtures/receiving_reader/PROVENANCE.json'}
+    if ({'clusterctl/onboarding_receiving_update.py', 'tests/test_receiving_cohort_control.py'} <= set(changed)
+            and set(changed) & reader_fixtures
+            and set(changed) <= MAINTENANCE_FILES | reader_fixtures | CI_FILES | RUNBOOK_DOCS):
+        # A cohort policy plus its attributed public reader fixture needs the
+        # existing native/cohort and installed-reader checks, not unrelated
+        # physical recovery, archive, accounts or admission qualification.
+        tests = list(dict.fromkeys((*MAINTENANCE_TESTS, *UPDATE_PREFLIGHT_TESTS)))
+        if all((root / path).is_file() for path in tests):
+            return 'peer', tests
     host = {'clusterctl/onboarding_host.py', 'tests/test_onboarding_host.py'}
     if (({'clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py'} <= set(changed)
             or {'clusterctl/onboarding_receiving_update.py', 'tests/test_receiving_cohort_control.py'} <= set(changed))

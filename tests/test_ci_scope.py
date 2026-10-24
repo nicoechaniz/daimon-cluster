@@ -1008,3 +1008,17 @@ def test_behavior_delta_keeps_journal_contracts_and_unknown_shared_changes_full(
     for extra in ('clusterctl/operation_journal.py', 'clusterctl/onboarding_custody.py',
                   'requirements.txt', 'unknown.py'):
         assert select([*changed, extra], ROOT) == ('full', ['tests'])
+
+
+def test_cohort_with_public_reader_fixture_composes_installed_coverage():
+    from tools import ci_scope
+    changed = ['clusterctl/onboarding_receiving_update.py', 'tests/test_receiving_cohort_control.py',
+        'tests/fixtures/receiving_reader/PROVENANCE.json',
+        'tests/fixtures/receiving_reader/release_compatibility.py',
+        'docs/runbooks/tribu-sdk-successor.md', 'tools/ci_scope.py', 'tests/test_ci_scope.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'peer'
+    assert set(tests) == set(ci_scope.MAINTENANCE_TESTS) | set(ci_scope.UPDATE_PREFLIGHT_TESTS)
+    for extra in ('clusterctl/onboarding_custody.py', 'clusterctl/onboarding_sdk.py',
+                  'requirements-weave.txt', 'unknown.py'):
+        assert select([*changed, extra], ROOT) == ('full', ['tests'])

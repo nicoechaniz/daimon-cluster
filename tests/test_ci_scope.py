@@ -6,6 +6,22 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_predecessor_status_reuse_keeps_native_bootstrap_and_maintenance(tmp_path):
+    from tools.ci_scope import MAINTENANCE_TESTS
+    changed=['clusterctl/onboarding_target.py', 'clusterctl/onboarding_owner_control.py',
+             'tests/test_guest_owner_bootstrap.py', 'tools/ci_scope.py', 'tests/test_ci_scope.py',
+             'docs/runbooks/tribu-sdk-successor.md']
+    profile, tests=select(changed,ROOT)
+    assert profile=='peer'
+    assert set(MAINTENANCE_TESTS) | {'tests/test_onboarding_target.py',
+        'tests/test_guest_owner_bootstrap.py', 'tests/test_onboarding_runtime.py'} <= set(tests)
+    assert 'tests/test_onboarding_sdk.py' not in tests
+    assert select(changed,tmp_path)==('full',['tests'])
+    for extra in ('clusterctl/onboarding_sdk.py','clusterctl/onboarding_admission.py',
+                  'clusterctl/onboarding_custody.py','unknown.py'):
+        assert select([*changed,extra],ROOT)==('full',['tests'])
+
+
 def test_runtime_child_change_keeps_real_admission_group_and_guest_launchers(tmp_path):
     changed=['clusterctl/onboarding_runtime.py', 'tests/test_onboarding_runtime.py',
              'tools/ci_scope.py', 'tests/test_ci_scope.py', 'docs/runbooks/tribu-sdk-successor.md']

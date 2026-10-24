@@ -506,7 +506,7 @@ class Target:
         That mode never establishes group load or qualified receiving readiness.
         """
         from daimon_matrix.client import ClientConfig, LocalClient
-        if bootstrap_base_only and (not admitted or require_loaded):
+        if bootstrap_base_only and (not admitted or require_loaded or deadline_ns is None):
             raise OnboardingError('invalid_receiving_bootstrap_observation')
         if deadline_ns is not None:
             if 'deadline_ns' not in getattr(LocalClient, '__dataclass_fields__', {}):
@@ -577,7 +577,28 @@ class Target:
                     raise OnboardingError('onboarding_observation_deadline_expired')
             client = LocalClient(root / "matrix.sock", config, timeout_seconds=40,
                                  **options)
-            _, status = client.runtime_status()
+            def admission_scope():
+                _, observed = client.scope_me()
+                scope_result = observed.get('result')
+                body = scope_result.get('body') if isinstance(scope_result, dict) else None
+                if (observed.get('ok') is not True or observed.get('server') != expected
+                        or not isinstance(body, dict) or body.get('state') != 'running'
+                        or any(body.get(field) != expected[field] for field in
+                               ('body_ref', 'embodiment_id', 'incarnation_id'))):
+                    raise OnboardingError('onboarding_admission_not_current')
+                return observed
+
+            admission = None
+            if bootstrap_base_only:
+                assert deadline_ns is not None
+                # This already-required authenticated RPC establishes the real
+                # responder pin before retaining a status request for that process.
+                admission = admission_scope()
+                from .onboarding_owner_control import RetainedStatusOwner
+                status = RetainedStatusOwner.connected_status_response(client,
+                    root=root, observer=presence, deadline_ns=deadline_ns)
+            else:
+                _, status = client.runtime_status()
             if status["ok"] is not True or any(status["server"].get(field) != value for field, value in expected.items()):
                 raise OnboardingError("onboarding_daemon_origin_conflict")
             loaded = status['result'].get('loaded_runtime')
@@ -618,13 +639,7 @@ class Target:
                     raise OnboardingError('qualified_onboarding_loaded_view_required')
             identity = None
             if admitted:
-                _, observed = client.scope_me()
-                scope_result = observed.get('result')
-                body = scope_result.get('body') if isinstance(scope_result, dict) else None
-                if (observed.get('ok') is not True or not isinstance(body, dict) or body.get('state') != 'running'
-                        or any(body.get(field) != expected[field] for field in
-                               ('body_ref', 'embodiment_id', 'incarnation_id'))):
-                    raise OnboardingError('onboarding_admission_not_current')
+                observed = admission if admission is not None else admission_scope()
                 from .onboarding_receiving_update import receiving_identity
                 identity = receiving_identity(observed, status['result'], status['server'])
                 if public is not None and any(identity[field] != public[selected] for field, selected in (

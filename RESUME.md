@@ -4,7 +4,29 @@ Architecture/profile navigation is
 [Matrix current architecture](https://github.com/AlterMundi/daimon-matrix/blob/main/docs/current-architecture.md).
 Current selections below supersede the explicitly historical qualification.
 
-## Current receiving maintenance — 2026-10-18
+## Current receiving maintenance — 2026-10-24
+
+CompAII, Eko and Oliva actually load body `07902c2a`, SDK `5e3f2a1e`,
+Matrix `b74a979a` and Cluster `c85a9d87`. Source's full selected memory binding
+is restored. Root coordinator `af5575a6` is a separately qualified control and
+observation implementation, not the body/SDK selected by the running daemons.
+
+Parent `08467c5b` completed linked cohort `15bf63ee` with authenticated current
+positive selections for all three. Native group send `605074a5` produced message
+`a0ec9519`, Source's retained copy, Eko and Oliva's signed delivered receipts and
+one confirmed Tribu echo. Three unavailable sibling bodies remain explicit.
+[Observed deployment and receipt hashes](https://github.com/nicoechaniz/daimon-cluster/issues/305#issuecomment-6380104091).
+
+PR304/Matrix PR387 corrected the scoped memory loader and historical preparation
+compatibility. PR306–308 completed coordinator-only activation recovery without
+repeating body lifecycle, SDK installation, Codex/Telegram restart or global Stop.
+Original failed/fenced operations, exact requests, expiry and rollback remain
+retained. Use the maintained runbook below; never replay dated phase scripts.
+Cold post-start observation and closed diagnostics remain open in #305. Matrix
+#376 remains active: actual two-body memory/skill/behavior integration and Legion
+consumption are unfinished. VPS communication is not proof of convergence.
+
+## Historical receiving maintenance — 2026-10-18
 
 CompAII, Eko and Oliva now load receiving helper `6dffe887` with unchanged
 Matrix `9b2b8ec2c455d3bf316bc00dc9e1bac44e9d5094`, SDK `53c4ee01` and

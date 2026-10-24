@@ -649,6 +649,55 @@ class ReceivingMaintenance:
             owners[name] = PinnedOwnerClient(base, self.spec['observer'], expected_owner(observed[name]), body_code=code)
         return owners
 
+    def _prepared_observations(self, manifest: dict) -> dict:
+        """Reobserve qualified predecessors without repeating cold bootstrap.
+
+        Prepared records supply preconditions, never current proof. The existing
+        short client authenticates each actual process, selection and admission.
+        """
+        from .onboarding_host import HostConfig
+        if self.backend.config != HostConfig.load(self.config_path):
+            raise OnboardingError('receiving_maintenance_host_changed')
+        effects, originals = self._effects(), {}
+        for name, base in self._base_owners(observer=False).items():
+            prepared = effects['source' if name == 'source' else 'guest:' + name]
+            frozen = prepared['frozen'] if name == 'source' else prepared['frozen']['owner']
+            predecessor = frozen['predecessor']
+            if name == 'source':
+                loaded = predecessor['runtime_status']['loaded_runtime']
+                startup = loaded['qualified_startup']
+                origin = loaded['local_origin']
+                group = prepared['request']['qualification']['group']
+                body_code = self.body[0]
+            else:
+                plan = self.plans[name]
+                previous_code, _, _ = self.backend._runtime_paths(plan, self.backend._receiving_base(plan))
+                host_code, host_digest = self.backend._runtime_selection(plan)
+                if host_code is None or host_digest != previous_code.name:
+                    raise OnboardingError('receiving_cohort_predecessor_changed')
+                _, parameters = _sdk(host_code, host_digest)
+                startup = dict(code_digest=host_digest, matrix_wheel_sha256=parameters['matrix_wheel_sha256'])
+                origin, group = frozen['origin'], frozen['group']
+                body_code = self.backend._runtime_paths(plan, self.backend._receiving_base(plan),
+                    candidate=self.body)[0]
+            expected = dict(process=predecessor['process'], server=origin,
+                admission_parent=predecessor.get('admission_parent'), selection=dict(
+                    receiving_code=startup['code_digest'], matrix_sdk=startup['matrix_wheel_sha256'],
+                    runtime_bundle_sha256=frozen['preservation']['runtime_bytes_sha256'],
+                    application_sha256=group['application_sha256'],
+                    publication_sha256=group['publication_sha256'],
+                    visibility_installation_sha256=group['installation_sha256']))
+            receiver = next((row for row in manifest['required_receivers']
+                if row['embodiment_id'] == origin['embodiment_id']), None)
+            if receiver is None or receiver['expected_selection_sha256'] != digest(expected['selection']):
+                raise OnboardingError('receiving_cohort_predecessor_changed')
+            owner = PinnedOwnerClient(base, self.spec['observer'], expected, body_code=body_code)
+            expiry = min(self.spec['candidate']['expires_at_ms'], time.time_ns() // 1_000_000 + 60000)
+            originals[name] = owner.qualified_identity(expires_at_ms=expiry, require_admitted=name != 'source')
+        if self.backend.config != HostConfig.load(self.config_path):
+            raise OnboardingError('receiving_maintenance_host_changed')
+        return originals
+
     def prepare(self) -> dict:
         from .onboarding_host import RUNTIME_SELECTION_KEYS
         from .onboarding_receiving_update import prepare_guest_bootstrap, freeze_senders, _manifest
@@ -678,7 +727,7 @@ class ReceivingMaintenance:
             # Freeze originals only after artifact preparation, before revocation
             # or any lifecycle effect. Exact retry reuses these retained vectors.
             if 'before' not in effects:
-                originals = {name: owner.status() for name, owner in self._base_owners(observer=True).items()}
+                originals = self._prepared_observations(manifest)
                 self._record('before', originals)
             originals = self._effects()['before']
             roster = current_roster(originals['source'])

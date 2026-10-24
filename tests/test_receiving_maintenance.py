@@ -617,3 +617,102 @@ def test_source_preparation_checks_real_root_transaction_before_sdk_staging(tmp_
         updates.prepare_source_bootstrap(source,home=tmp_path,code=tmp_path,code_digest='a'*64,
             config=tmp_path/'config',manifest_path=tmp_path/'manifest',manifest_digest='b'*64,
             transaction=tmp_path/'wrong-parent',expires_at_ms=1)
+
+
+@pytest.fixture
+def prepared_owners(tmp_path, monkeypatch):
+    """Qualified old body, different new observer, no cold lifecycle or RPC."""
+    import time
+    from pathlib import Path
+    from clusterctl.onboarding_host import HostConfig
+    coordinator = object.__new__(maintenance.ReceivingMaintenance)
+    coordinator.config_path = tmp_path/'host.json'
+    original = object()
+    old_code, old_sdk = '1'*64, '2'*64
+    coordinator.body = (tmp_path/('9'*64), '9'*64)
+    coordinator.spec = {'candidate': {'expires_at_ms': time.time_ns()//1_000_000+3600000},
+                        'observer': {'code': str(coordinator.body[0]), 'code_digest': '9'*64}}
+    coordinator.plans = {'eko': {'name': 'eko'}}
+    coordinator.backend = SimpleNamespace(config=original,
+        _receiving_base=lambda plan: tmp_path/'base',
+        _runtime_selection=lambda plan: (tmp_path/old_code, old_code),
+        _runtime_paths=lambda plan, base, candidate=None:
+            (Path('/guest')/(candidate[1] if candidate else old_code), [], {}))
+    monkeypatch.setattr(HostConfig, 'load', lambda path: original)
+    monkeypatch.setattr(maintenance, '_sdk', lambda code, checksum:
+        ({}, {'matrix_wheel_sha256': old_sdk}))
+    group = {'application_sha256': '3'*64, 'publication_sha256': '4'*64,
+             'installation_sha256': '5'*64}
+    effects, manifest, expected = {}, {'required_receivers': []}, {}
+    for index, name in enumerate(('source', 'eko')):
+        origin = {'embodiment_id': name, 'body_ref': name, 'incarnation_id': name, 'principal_id': name}
+        predecessor = {'process': {'pid': index+10}}
+        if name == 'eko':
+            predecessor['admission_parent'] = {'pid': 9}
+        else:
+            predecessor['runtime_status'] = {'loaded_runtime': {
+                'qualified_startup': {'code_digest': old_code, 'matrix_wheel_sha256': old_sdk},
+                'local_origin': origin}}
+        frozen = {'predecessor': predecessor, 'preservation': {'runtime_bytes_sha256': '6'*64}}
+        if name == 'source':
+            effects[name] = {'frozen': frozen, 'request': {'qualification': {'group': group}}}
+        else:
+            frozen.update(origin=origin, group=group,
+                code_digest='9'*64, observer_startup={'matrix_wheel_sha256': '8'*64})
+            effects['guest:'+name] = {'frozen': {'owner': frozen}}
+        vector = dict(process=predecessor['process'], server=origin,
+            admission_parent=predecessor.get('admission_parent'), selection=dict(
+                receiving_code=old_code, matrix_sdk=old_sdk, runtime_bundle_sha256='6'*64,
+                application_sha256='3'*64, publication_sha256='4'*64,
+                visibility_installation_sha256='5'*64))
+        expected[name] = vector
+        manifest['required_receivers'].append({'embodiment_id': name,
+            'expected_selection_sha256': digest(vector['selection'])})
+    coordinator._effects = lambda: effects
+    bases = {name: SimpleNamespace(name=name) for name in expected}
+    coordinator._base_owners = lambda **kwargs: bases
+    calls = []
+    class FreshOwner:
+        def __init__(self, base, observer, vector, **kwargs):
+            self.base, self.vector = base, vector
+        def status(self):
+            pytest.fail('cold bootstrap/status repeated')
+        def qualified_identity(self, **kwargs):
+            assert self.vector == expected[self.base.name]
+            assert kwargs['require_admitted'] is (self.base.name == 'eko')
+            assert time.time_ns()//1_000_000 < kwargs['expires_at_ms'] <= time.time_ns()//1_000_000+60000
+            calls.append(self.base.name)
+            return {'fresh_native_observation': self.base.name}
+    monkeypatch.setattr(maintenance, 'PinnedOwnerClient', FreshOwner)
+    return coordinator, manifest, calls, HostConfig
+
+
+def test_prepared_predecessors_get_fresh_short_proof_not_observer_pins(prepared_owners):
+    coordinator, manifest, calls, _ = prepared_owners
+    assert coordinator._prepared_observations(manifest) == {
+        'source': {'fresh_native_observation': 'source'}, 'eko': {'fresh_native_observation': 'eko'}}
+    assert calls == ['source', 'eko']
+
+
+def test_prepared_manifest_mismatch_refuses_before_owner_call(prepared_owners):
+    coordinator, manifest, calls, _ = prepared_owners
+    manifest['required_receivers'][0]['expected_selection_sha256'] = '0'*64
+    with pytest.raises(OnboardingError, match='receiving_cohort_predecessor_changed'):
+        coordinator._prepared_observations(manifest)
+    assert not calls
+
+
+def test_prepared_host_selection_drift_refuses_before_owner_call(prepared_owners, monkeypatch):
+    coordinator, manifest, calls, host = prepared_owners
+    monkeypatch.setattr(host, 'load', lambda path: object())
+    with pytest.raises(OnboardingError, match='receiving_maintenance_host_changed'):
+        coordinator._prepared_observations(manifest)
+    assert not calls
+
+
+def test_prepared_host_drift_during_observation_does_not_freeze_it(prepared_owners, monkeypatch):
+    coordinator, manifest, calls, host = prepared_owners
+    monkeypatch.setattr(host, 'load', lambda path: coordinator.backend.config if not calls else object())
+    with pytest.raises(OnboardingError, match='receiving_maintenance_host_changed'):
+        coordinator._prepared_observations(manifest)
+    assert calls == ['source', 'eko']

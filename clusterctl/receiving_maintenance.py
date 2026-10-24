@@ -322,9 +322,11 @@ class PinnedOwnerClient:
     to match the authenticated actual body/process, not the observer startup.
     """
 
-    def __init__(self, base, observer: dict, expected: dict, *, body_code: Path):
+    def __init__(self, base, observer: dict, expected: dict, *, body_code: Path,
+                 control_implementation: dict | None = None):
         self.base, self.observer, self.expected = base, copy.deepcopy(observer), copy.deepcopy(expected)
         self.body_code = body_code
+        self.control_implementation = copy.deepcopy(control_implementation)
         self.time_namespace = os.readlink('/proc/self/ns/time')
 
     def __getattr__(self, name):
@@ -339,13 +341,22 @@ class PinnedOwnerClient:
         self.base.deadline_ns = value
 
     def _call(self, *, command=None, path=None, expires_at_ms=None, native_tooling=None,
-              require_admitted=False) -> dict:
+              require_admitted=False, observation=None) -> dict:
         from .onboarding_receiving_update import GuestGroupClient
         guest = isinstance(self.base, GuestGroupClient)
         if expires_at_ms is not None and require_admitted != guest:
             raise OnboardingError('receiving_control_parent_changed')
-        code, fingerprint = _artifact(self.observer)
+        implementation = self.observer
+        if observation is not None:
+            if command is None or self.control_implementation is None:
+                raise OnboardingError('receiving_control_binding_conflict')
+            implementation = self.control_implementation
+        code, fingerprint = _artifact(implementation)
         sdk, _ = _sdk(code, fingerprint)
+        if observation is not None:
+            observer_sdk, _ = _sdk(*_artifact(self.observer))
+            if sdk != observer_sdk:
+                raise OnboardingError('receiving_control_binding_conflict')
         deadline = time.monotonic_ns() + int(self.base.timeout_seconds * 1_000_000_000)
         if self.deadline_ns is not None:
             deadline = min(deadline, self.deadline_ns)
@@ -385,6 +396,8 @@ class PinnedOwnerClient:
         else:
             arguments += ['--path', str(path)]
             payload['command'] = command
+            if observation is not None:
+                payload['observation'] = observation
         argv = onboarding_sdk.runtime_command(generation / 'venv', generation / 'runtime-imports',
             code, 'clusterctl.onboarding_owner_control', arguments)
         if guest:
@@ -411,6 +424,22 @@ class PinnedOwnerClient:
 
     def prepare_apply_control(self, command: dict, path: Path):
         return self._call(command=command, path=path)
+
+    def observed_control_implementation(self) -> dict | None:
+        """Return actual qualified control code, separate from body/observer."""
+        if self.control_implementation is None:
+            return None
+        code, fingerprint = _artifact(self.control_implementation)
+        sdk, _ = _sdk(code, fingerprint)
+        observer_sdk, _ = _sdk(*_artifact(self.observer))
+        if sdk != observer_sdk:
+            raise OnboardingError('receiving_control_binding_conflict')
+        return dict(code_digest=fingerprint, sdk_digest=digest(sdk))
+
+    def prepare_apply_observed_control(self, command: dict, path: Path, *, observation: dict):
+        if self.control_implementation is None:
+            return self.prepare_apply_control(command, path)
+        return self._call(command=command, path=path, observation=observation)
 
     def qualified_identity(self, *, expires_at_ms: int, require_admitted: bool = False,
                            native_tooling: dict | None = None):
@@ -455,6 +484,19 @@ class ReceivingMaintenance:
             onboarding_code_successor.verify(code, fingerprint, self.backend.config.code,
                 self.backend.config.release_digest, uid=0)
             _sdk(code, fingerprint)
+        # A coordinator-only correction must not silently become body or
+        # adoption-observer evidence. Derive executable control bytes only from
+        # this actual qualified immutable Root module, never spec/peer input.
+        coordinator_code = Path(__file__).resolve().parent.parent
+        release = json.loads(onboarding_release.regular(coordinator_code / 'release.json', uid=0))
+        coordinator_digest = digest(release)
+        onboarding_code_successor.verify(coordinator_code, coordinator_digest, self.backend.config.code,
+            self.backend.config.release_digest, uid=0)
+        coordinator_sdk, _ = _sdk(coordinator_code, coordinator_digest)
+        observer_sdk, _ = _sdk(*self.observer)
+        if coordinator_sdk != observer_sdk:
+            raise OnboardingError('receiving_control_binding_conflict')
+        self.control_implementation = dict(code=str(coordinator_code), code_digest=coordinator_digest)
         row = onboarding_code_successor.plan_update(self.journal,
             manifest_digest=spec['candidate']['manifest_digest'],
             target='receiving-maintenance:' + spec['name'] + ':' + digest(spec),
@@ -604,7 +646,7 @@ class ReceivingMaintenance:
                 maintenance_parent=self.operation_id, previous_cohort=previous['operation_id']),
             intended_transition={'cohort_activation': plan}, audit_identity={'actor': 'receiving-maintenance'})
 
-    def _mounted_sdk(self, plan: dict, vector: tuple[Path, str]) -> None:
+    def _mount_code(self, plan: dict, vector: tuple[Path, str]) -> None:
         backend = self.backend
         _, _, mounts = backend._runtime_paths(plan, backend._receiving_base(plan), candidate=vector)
         if not backend._mounted(plan, mounts):
@@ -616,7 +658,10 @@ class ReceivingMaintenance:
                     timeout_seconds=20)
         if not backend._mounted(plan, mounts):
             raise OnboardingError('qualified_onboarding_candidate_mount_required')
-        ready = backend._target_call(plan, 'sdk-prepare', candidate=vector)
+
+    def _mounted_sdk(self, plan: dict, vector: tuple[Path, str]) -> None:
+        self._mount_code(plan, vector)
+        ready = self.backend._target_call(plan, 'sdk-prepare', candidate=vector)
         if ready.get('ready') is not True:
             raise OnboardingError('qualified_guest_bootstrap_candidate_required')
 
@@ -646,7 +691,8 @@ class ReceivingMaintenance:
         for name, base in bases.items():
             code = self.body[0] if name == 'source' else self.backend._runtime_paths(
                 self.plans[name], self.backend._receiving_base(self.plans[name]), candidate=self.body)[0]
-            owners[name] = PinnedOwnerClient(base, self.spec['observer'], expected_owner(observed[name]), body_code=code)
+            owners[name] = PinnedOwnerClient(base, self.spec['observer'], expected_owner(observed[name]), body_code=code,
+                control_implementation=self.control_implementation)
         return owners
 
     def _prepared_observations(self, manifest: dict) -> dict:
@@ -842,6 +888,10 @@ class ReceivingMaintenance:
         if cohort_id != original_id and 'cohort_activation' not in (controller._row()['runtime_observation'] or {}):
             controller.revoke_senders()
         controller.reconcile_tooling()
+        implementation = getattr(self, 'control_implementation', None)
+        if implementation is not None:
+            for plan in self.plans.values():
+                self._mount_code(plan, _artifact(implementation))
         # activate owns partial/full selection reconciliation; never replay
         # its preparation/revoke barrier after a positive selection.
         result = controller.activate()

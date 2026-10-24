@@ -75,6 +75,25 @@ children while body and observer generations remain pinned. Record the actual
 coordinator generation separately; do not rebuild receivers or edit the frozen
 spec, recipes or predecessor vectors just to adopt a coordinator-only correction.
 
+For positive activation, the coordinator can pass each sender's actual observation
+from the just-completed all-required adoption round to its short control client.
+The original absolute freshness deadline and time namespace remain unchanged.
+This skips only a duplicate `runtime.status`: exact loaded SDK/application,
+identity, admission, native tooling, roster, expiry and all-required adoption
+checks still run. The control pins the observed process and guest parent, checks
+the real socket peer before sending any authenticated bytes, retains the same
+durable request, and reconciles native CAS/response/hash/context. An ACK lost
+after the gate advances retries that identical request; it does not author another.
+
+The fast control executes the actual qualified immutable Root coordinator's
+control module with the observer's exact same SDK. It uses existing readonly
+guest mounts. Its code and SDK digests are retained as `control_implementations`
+in that activation operation before dispatch; they are not evidence that the
+body or adoption observer changed. Ordinary controls and all adoption queries
+continue using the frozen observer. A coordinator correction never mutates it.
+A fenced activation still needs the linked reassessment below, with the original
+expiry and lifecycle/tooling receipts; do not repeat installation or restart.
+
 Notify the human before `apply` interrupts Matrix services. This does not grant
 permission for global Stop, Codex/Telegram restart or unrelated service changes.
 With complete jobs, the onboarding worker stays active and existing nonblocking

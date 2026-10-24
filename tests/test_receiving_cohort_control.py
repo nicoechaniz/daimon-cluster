@@ -359,6 +359,9 @@ def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profi
         authorities={'current':authorities,'candidate':copy.deepcopy(authorities)})
     if not credential_bound:
         manifest['contract']['capabilities'].remove('credential-bound-reader-validity/v1')
+        manifest['contract']['capabilities'].remove('explicit-unattempted-carrier-recovery/v1')
+        for mode in ('wire_read', 'wire_write'):
+            manifest['contract'][mode].remove('dm.tribe.recovery-conversation/v1')
         manifest['contract']['store_versions'].pop('reader_control')
     manifest_path=tmp_path/'activation-manifest.json'
     being_seed._write(manifest_path,manifest)
@@ -452,6 +455,7 @@ def test_credential_bound_cohort_keeps_real_validity_and_finite_proof(tmp_path, 
         assert record['identity_expires_at_ms'] == proof_deadline
         assert record['reader']['schema'] == 'dm.receiving.reader/v2'
         assert record['reader']['validity'] == validity
+        assert 'dm.tribe.recovery-conversation/v1' in record['reader']['wire_read']
         assert 'expires_at_ms' not in record['reader']
     assert all(owner.gate['schema'] == 'dm.runtime.reader-selection/v2' for owner in owners.values())
     effects = {name: owner.effects for name, owner in owners.items()}
@@ -460,6 +464,16 @@ def test_credential_bound_cohort_keeps_real_validity_and_finite_proof(tmp_path, 
     # The proof horizon remains finite and is not used as credential lifetime.
     if mode == 'finite':
         assert proof_deadline < validity['not_after_ms']
+
+
+def test_legacy_reader_selection_never_advertises_recovery_wire(tmp_path):
+    controller, owners, journal, identifier = activation_fixture(tmp_path)
+    controller.activate()
+    records = journal.get(identifier)['runtime_observation']['cohort_activation']['records']
+    assert all('dm.tribe.recovery-conversation/v1' not in record['reader']['wire_read']
+               for record in records.values())
+    assert all('expires_at_ms' in record['reader'] and 'validity' not in record['reader']
+               for record in records.values())
 
 
 def test_typed_cohort_requires_actual_owner_v2_support_before_selection(tmp_path):

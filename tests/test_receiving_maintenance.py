@@ -134,7 +134,8 @@ def test_control_helper_is_distinct_from_pinned_adoption_observer(tmp_path, monk
     assert payload == {'expected':{'pinned':True},'command':{'same_request':True},
         **({'observation':{'fresh':True}} if fast else {})}
     owner.status()
-    assert calls[-1][0][0] == observer['code'] and 'observation' not in calls[-1][1]
+    assert calls[-1][0][0] == coordinator['code'] and '--retain-status' in calls[-1][0]
+    assert 'observation' not in calls[-1][1]
 
 
 def test_fast_control_rejects_different_sdk_before_dispatch(tmp_path, monkeypatch):

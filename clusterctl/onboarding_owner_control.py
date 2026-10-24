@@ -49,6 +49,62 @@ def _selection(observed: dict[str, Any]) -> dict[str, Any]:
         visibility_installation_sha256=application['visibility']['installation_sha256'])
 
 
+class RetainedStatusOwner(OwnerGroupClient):
+    """Exact status retries still recompute live native receiving state.
+
+    The native cached-status contract reauthenticates and dispatches current
+    status, avoiding a second computation and response write. The token is scoped
+    to this actual process and current client identity, not a cached observation.
+    """
+
+    def __init__(self, *args, expected_process: dict, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.expected_process = copy.deepcopy(expected_process)
+
+    def _status_response(self, client) -> dict:
+        if self.deadline_ns is None or self._observer is None:
+            raise OnboardingError('receiving_owner_scope_required')
+        deadline = self.deadline_ns
+        binding = dict(process=self.expected_process,
+            capability=client.config.capability.descriptor, server=dict(client.config.expected_server),
+            runtime_id=client.config.runtime_id, runtime_label=client.config.runtime_label)
+        path = self.root / 'receiving-control' / ('status-' + digest(binding) + '.json')
+        with being_seed._locked(self._control_directory(path)), ProcessPresence(self.expected_process) as presence:
+            _accept(deadline)
+            if path.exists():
+                saved = being_seed._read(path, limit=being_seed.MAX_SELECTION)
+                if (set(saved) != {'schema', 'binding', 'request'}
+                        or saved['schema'] != 'cluster-receiving-status-request/v1' or saved['binding'] != binding):
+                    raise OnboardingError('receiving_control_binding_conflict')
+                request = saved['request']
+            else:
+                request = client.prepare('runtime.status', {})
+                being_seed._write(path, dict(schema='cluster-receiving-status-request/v1',
+                    binding=binding, request=request), limit=being_seed.MAX_SELECTION)
+            if request.get('method') != 'runtime.status' or request.get('params') != {}:
+                raise OnboardingError('receiving_control_binding_conflict')
+            self._durable_control(path)
+            observer = self._observer
+            if client.connection_observer is not observer:
+                raise OnboardingError('receiving_owner_scope_required')
+
+            @contextmanager
+            def pinned(connection):
+                with observer(connection):
+                    if observer.process != self.expected_process:
+                        raise OnboardingError('receiving_control_process_changed')
+                    presence.verify()
+                    _accept(deadline)
+                    yield
+
+            # Native send authenticates retained bytes with the current client,
+            # then verifies the reply. A prior refusal never counts as readiness.
+            response = replace(client, connection_observer=pinned).send(request)
+            presence.verify()
+            _accept(deadline)
+            return response
+
+
 def observe(owner: OwnerGroupClient, *, expected: dict[str, Any],
             deadline_ns: int) -> dict[str, Any]:
     """Read a known loaded owner; full adoption remains the coordinator's job."""
@@ -268,6 +324,7 @@ def main() -> int:
     parser.add_argument('--socket', type=Path, required=True)
     parser.add_argument('--path', type=Path)
     parser.add_argument('--observe-only', action='store_true')
+    parser.add_argument('--retain-status', action='store_true')
     parser.add_argument('--identity-expires-at-ms', type=int)
     parser.add_argument('--code', type=Path)
     parser.add_argument('--body-venv', type=Path)
@@ -292,9 +349,13 @@ def main() -> int:
                 or (args.observe_only or identity_query) != (args.path is None)
                 or identity_query != (args.code is not None) or args.observe_only and identity_query
                 or args.body_venv is not None and not identity_query
+                or args.retain_status and not (identity_query or args.observe_only)
                 or args.require_admitted and not identity_query):
             raise OnboardingError('invalid_receiving_control_request')
-        with OwnerGroupClient(args.root, args.socket, deadline_ns=args.deadline_ns) as owner:
+        selected_owner = (RetainedStatusOwner(args.root, args.socket, deadline_ns=args.deadline_ns,
+            expected_process=value['expected']['process']) if args.retain_status else
+            OwnerGroupClient(args.root, args.socket, deadline_ns=args.deadline_ns))
+        with selected_owner as owner:
             if identity_query:
                 assert args.code is not None
                 result = qualified_identity(owner, expected=value['expected'],

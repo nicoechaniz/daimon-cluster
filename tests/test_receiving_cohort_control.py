@@ -1249,6 +1249,13 @@ def test_positive_control_reuses_actual_round_and_retains_implementation_first(t
     implementation = dict(code_digest='7'*64, sdk_digest='8'*64)
     for name, owner in owners.items():
         owner.observed_control_implementation = lambda: dict(implementation)
+        owner.observation_implementation = lambda: dict(implementation)
+        original_query = owner.qualified_identity
+        def query(*args, call=original_query, **kwargs):
+            retained = journal.get(identifier)['runtime_observation']['observation_implementations']
+            assert retained == {key:implementation for key in owners}
+            return call(*args, **kwargs)
+        monkeypatch.setattr(owner, 'qualified_identity', query)
         original = owner.prepare_apply_control
         def observed(command, path, *, observation, who=name, call=original):
             row = journal.get(identifier)

@@ -1,5 +1,15 @@
 # Receiver-compatible Matrix updates
 
+## Recovery carrier readiness
+
+A release requiring `explicit-unattempted-carrier-recovery/v1` also requires the
+credential-bound V2 selection. Each actual loaded reader must advertise
+`dm.tribe.recovery-conversation/v1`; the cohort includes it in those V2 rows under
+the same verified adoption and roster CAS. Legacy V1 selections keep their old
+wire set. Publishing the SDK does not enable a new wire on existing selections.
+Original-message recovery remains an explicit owner request after all required
+readers adopt; never invoke it to bypass an incomplete deployment.
+
 ## Reader validity and finite maintenance
 
 When the approved manifest requires `credential-bound-reader-validity/v1`, all

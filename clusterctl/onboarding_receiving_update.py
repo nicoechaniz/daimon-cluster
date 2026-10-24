@@ -2497,13 +2497,19 @@ class CohortController:
                 or lifecycle.get('loaded_application') != {key: val for key, val in application.items() if key != 'reader_gates'}
                 or recipe['profile'] == 'guest' and lifecycle.get('admission_parent') != current.get('admission_parent')):
             raise OnboardingError('receiving_cohort_lifecycle_unobserved')
+        credential_bound = 'credential-bound-reader-validity/v1' in manifest['contract']['capabilities']
+        recovery = 'explicit-unattempted-carrier-recovery/v1' in manifest['contract']['capabilities']
+        supported_wires = {'dm.tribe.conversation/v1', 'dm.tribe.direct-conversation/v1'}
+        if recovery:
+            if not credential_bound:
+                raise OnboardingError('receiving_cohort_reader_validity_unsupported')
+            supported_wires.add('dm.tribe.recovery-conversation/v1')
         reader = dict(being_ref=identity['being_ref'], embodiment_id=current['server']['embodiment_id'],
             incarnation_id=current['server']['incarnation_id'], credential_id=identity['credential_ref'],
             authority_manifest_hash=identity['manifest_hash'], receiving_selection_sha256=digest(selection),
             loaded_view_sha256=application['loaded_view_sha256'], expires_at_ms=verified['expires_at_ms'],
             wire_read=sorted(set(startup['reader']['contract']['wire_read']) &
-                {'dm.tribe.conversation/v1', 'dm.tribe.direct-conversation/v1'}), authority_epochs=sorted(epochs))
-        credential_bound = 'credential-bound-reader-validity/v1' in manifest['contract']['capabilities']
+                supported_wires), authority_epochs=sorted(epochs))
         if credential_bound:
             from daimon_matrix.identity import validate_validity
             if ('credential-bound-reader-validity/v1' not in receiving.get('features', [])

@@ -82,6 +82,16 @@ Source private SDK/config/journal access occurs only after dropping to its actua
 UID/GID with supplementary groups cleared. Root retains public selections and
 child references, never Source custody or a copied writable owner journal.
 
+The bootstrap base observation uses its already-required authenticated `scope.me`
+first to pin the actual process. Its subsequent `runtime.status` retains exact
+request bytes for that process and base client identity through the existing
+status-request journal. A retry recomputes current native status once; it never
+uses a cached observation or changes the original deadline. Public/client
+preimages, admission, manager parent, socket and bundle checks remain required.
+A helper correction uses its actual qualified code generation and the unchanged
+SDK; do not edit an immutable body or relabel the helper's startup as another
+candidate. Failed preparation leaves the old communication processes enabled.
+
 After bootstrap preparation, derive the original owner preconditions from its
 retained process/parent, runtime and signed group hashes. Guest observer pins are
 the candidate, so resolve the **original** helper/SDK from the unchanged protected

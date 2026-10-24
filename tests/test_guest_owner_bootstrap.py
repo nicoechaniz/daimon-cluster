@@ -262,6 +262,10 @@ def test_predecessor_freeze_uses_actual_base_and_admission_without_group_status(
             def __init__(self, socket_path, config, **options):
                 self.socket_path = socket_path
                 self.base = Client(socket_path, config, **options)
+            def __getattr__(self, name):
+                return getattr(self.base, name)
+            def send(self, request):
+                return self.base.send(request)
             def runtime_status(self):
                 if self.socket_path == group_socket:
                     queried.append('group')
@@ -275,22 +279,28 @@ def test_predecessor_freeze_uses_actual_base_and_admission_without_group_status(
         monkeypatch.setattr(target, 'observe', lambda: pytest.fail(
             'read-only predecessor observation reopened birth/custody or archived pairs'))
         observed = target.running(admitted=True, deadline_ns=deadline(), bootstrap_base_only=True)
+        status_files = list((target.package/'runtime/receiving-control').glob('status-*.json'))
+        assert len(status_files) == 1
+        retained_status = status_files[0].read_bytes()
+        assert set(json.loads(retained_status)) == {'schema', 'binding', 'request'}
         assert observed['process']['pid'] == presence['process']['pid']
         assert observed['admission_parent']['pid'] == os.getpid()
         assert observed['responder_association'] == 'same-connection'
         assert observed['group_runtime_status'] is None and observed['receiving_readiness'] == 'unobserved'
         frozen = freeze_guest_bootstrap(target, deadline_ns=deadline())
         assert frozen['runtime_sha256'] == digest(target.document_bundle())
+        assert status_files[0].read_bytes() == retained_status
+        assert list((target.package/'runtime/receiving-control').glob('status-*.json')) == status_files
         assert frozen['predecessor']['process'] == observed['process'] and queried == ['group']
-        status = LegacyGroupRestrictedClient.runtime_status
+        status = LegacyGroupRestrictedClient.send
         for field in ('being_ref', 'local_origin'):
-            def wrong_identity(self):
-                identifier, response = status(self)
+            def wrong_identity(self, request):
+                response = status(self, request)
                 response = copy.deepcopy(response)
                 response['result'][field] = 'different authenticated runtime'
-                return identifier, response
+                return response
             with monkeypatch.context() as wrong:
-                wrong.setattr(LegacyGroupRestrictedClient, 'runtime_status', wrong_identity)
+                wrong.setattr(LegacyGroupRestrictedClient, 'send', wrong_identity)
                 with pytest.raises(OnboardingError, match='^receiving_identity_admission_conflict$'):
                     freeze_guest_bootstrap(target, deadline_ns=deadline())
         scope = LegacyGroupRestrictedClient.scope_me
@@ -326,15 +336,15 @@ def test_predecessor_freeze_uses_actual_base_and_admission_without_group_status(
         finally:
             binding.write_bytes(original_binding)
         bundle = target.document_bundle()
-        def different_loaded_bundle(self):
-            identifier, response = status(self)
+        def different_loaded_bundle(self, request):
+            response = status(self, request)
             response = copy.deepcopy(response)
             response['result']['loaded_runtime'] = dict(process_id=observed['process']['pid'],
                 runtime_bundle_sha256='0'*64, runtime_id=bundle['runtime_id'],
                 local_origin=bundle['local_origin'])
-            return identifier, response
+            return response
         with monkeypatch.context() as changed:
-            changed.setattr(LegacyGroupRestrictedClient, 'runtime_status', different_loaded_bundle)
+            changed.setattr(LegacyGroupRestrictedClient, 'send', different_loaded_bundle)
             with pytest.raises(OnboardingError, match='^onboarding_loaded_base_conflict$'):
                 freeze_guest_bootstrap(target, deadline_ns=deadline())
         assert actual_observe() == old and not (target.root / 'receiving-bootstrap').exists()

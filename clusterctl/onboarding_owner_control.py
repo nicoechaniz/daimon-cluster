@@ -292,7 +292,9 @@ def execute(owner: OwnerGroupClient, command: dict[str, Any], path: Path, *,
         gate = response.get('result')
         fingerprint = request_hash(request)
         if (not isinstance(gate, dict)
-                or gate.get('schema') != current['gate']['schema']
+                or gate.get('schema') != ('dm.receiving.reader-selection/v2'
+                    if command.get('schema') == 'dm.runtime.reader-selection/v2'
+                    else 'dm.receiving.reader-selection/v1')
                 or gate.get('controlled') is not True
                 or gate.get('context_sha256') != current['gate']['context_sha256']
                 or gate.get('process_id') != current['process']['pid']

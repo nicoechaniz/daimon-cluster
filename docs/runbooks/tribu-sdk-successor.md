@@ -14,7 +14,11 @@ The finite operation deadline, fresh identity proof expiry and 60-second data-ag
 window still bound this transaction. They do not become the selected credential's
 lifetime. Old manifests and retained V1 rows keep their exact finite expiry;
 software preparation alone converts nothing. No renewal timer or model attention
-is introduced. The first V2 journal write requires a V2-capable SDK for recovery
+is introduced. A completed V2 operation's later inspection may refuse stale,
+unavailable or incompatible proof; that readonly refusal does not revoke accepted
+readers or issue new controls under an expired intent. Use an explicit supported
+recovery for an observed incompatible binding. The first V2 journal write requires
+a V2-capable SDK for recovery
 and rollback, even if the selection is later cleared through a V1 control. Never
 restore a V1-only validator to a V2 journal or rewrite old finite reader history.
 

@@ -1504,3 +1504,25 @@ def test_codex_configuration_without_catalog_cannot_be_receiving_adoption(tmp_pa
         controller.prepare_activation()
     assert all(owner.gate['readers'] == [] for owner in owners.values())
     assert 'native_tooling' not in journal.get(identifier)['runtime_observation']
+
+
+@pytest.mark.parametrize('observation', ['expired-proof', 'unavailable', 'changed-process'])
+def test_completed_typed_selection_inspection_never_reissues_controls(tmp_path, monkeypatch, observation):
+    from clusterctl import onboarding_receiving_update as updates
+    controller, owners, journal, identifier = activation_fixture(tmp_path, credential_bound=True)
+    controller.activate()
+    gates = {name: copy.deepcopy(owner.gate) for name, owner in owners.items()}
+    effects = {name: owner.effects for name, owner in owners.items()}
+    if observation == 'expired-proof':
+        deadline = journal.get(identifier)['intended_transition']['cohort_activation']['expires_at_ms']
+        monkeypatch.setattr(updates.time, 'time_ns', lambda: (deadline + 1) * 1000000)
+    elif observation == 'unavailable':
+        def unavailable(**kwargs):
+            raise OSError('synthetic readonly observation unavailable')
+        owners['eko'].qualified_identity = unavailable
+    else:
+        owners['eko'].process = {**owners['eko'].process, 'start_ticks':123456}
+    with pytest.raises((OnboardingError, OSError)):
+        controller.activate()
+    assert gates == {name: owner.gate for name, owner in owners.items()}
+    assert effects == {name: owner.effects for name, owner in owners.items()}

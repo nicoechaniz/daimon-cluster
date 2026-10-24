@@ -3004,7 +3004,14 @@ class CohortController:
             if any(not _reader_active(item, time.time_ns() // 1_000_000) for item in activation['readers']):
                 raise OnboardingError('receiving_cohort_observation_expired')
         except (OnboardingError, OSError):
-            self._fence_partial_activation(activation)
+            # A completed credential-bound selection is durable. This path
+            # only inspects its accepted effects: stale/unavailable proof does
+            # not revoke those effects or authorize fresh controls. A changed
+            # binding remains an explicit incompatibility for a new recovery.
+            # Legacy finite operations retain their historical fence behavior.
+            if not all(reader.get('schema') == 'dm.receiving.reader/v2'
+                       for reader in activation['readers']):
+                self._fence_partial_activation(activation)
             raise
         return dict(schema='cluster-receiving-cohort-selection/v1', operation_id=self.operation_id,
             manifest_digest=release, evidence_sha256=activation['evidence_sha256'],

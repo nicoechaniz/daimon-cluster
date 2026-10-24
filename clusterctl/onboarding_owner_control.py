@@ -214,7 +214,7 @@ def execute(owner: OwnerGroupClient, command: dict[str, Any], path: Path, *,
         if observation is not None:
             presence = stack.enter_context(ProcessPresence(current['process']))
             gate = current['gate']
-            if (gate.get('schema') != 'dm.receiving.reader-selection/v1'
+            if (gate.get('schema') not in {'dm.receiving.reader-selection/v1', 'dm.receiving.reader-selection/v2'}
                     or gate.get('channel_id') != 'tribe' or gate.get('controlled') is not True
                     or gate.get('process_id') != current['process']['pid']
                     or not isinstance(gate.get('context_sha256'), str)
@@ -292,7 +292,9 @@ def execute(owner: OwnerGroupClient, command: dict[str, Any], path: Path, *,
         gate = response.get('result')
         fingerprint = request_hash(request)
         if (not isinstance(gate, dict)
-                or gate.get('schema') != current['gate']['schema']
+                or gate.get('schema') != ('dm.receiving.reader-selection/v2'
+                    if command.get('schema') == 'dm.runtime.reader-selection/v2'
+                    else 'dm.receiving.reader-selection/v1')
                 or gate.get('controlled') is not True
                 or gate.get('context_sha256') != current['gate']['context_sha256']
                 or gate.get('process_id') != current['process']['pid']

@@ -1,5 +1,27 @@
 # Receiver-compatible Matrix updates
 
+## Reader validity and finite maintenance
+
+When the approved manifest requires `credential-bound-reader-validity/v1`, all
+required receivers must actually advertise owner-control V2 and journal V2 in
+both their qualified reader and authenticated loaded status. The coordinator
+constructs `dm.receiving.reader/v2` rows from each body's verified signed
+credential, retaining finite or explicit until-revoked validity. It submits the
+explicit `dm.runtime.reader-selection/v2` command under the same signed-roster
+CAS and native process fence.
+
+The finite operation deadline, fresh identity proof expiry and 60-second data-age
+window still bound this transaction. They do not become the selected credential's
+lifetime. Old manifests and retained V1 rows keep their exact finite expiry;
+software preparation alone converts nothing. No renewal timer or model attention
+is introduced. A completed V2 operation's later inspection may refuse stale,
+unavailable or incompatible proof; that readonly refusal does not revoke accepted
+readers or issue new controls under an expired intent. Use an explicit supported
+recovery for an observed incompatible binding. The first V2 journal write requires
+a V2-capable SDK for recovery
+and rollback, even if the selection is later cleared through a V1 control. Never
+restore a V1-only validator to a V2 journal or rewrite old finite reader history.
+
 ## Supported routine maintenance command
 
 For already admitted Source and guest bodies, use the maintained

@@ -274,7 +274,7 @@ def fixture(tmp_path):
     return path, original, runtime, owners, journal, row['operation_id']
 
 
-def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profile='source', assessment_fault=None, tooling_profile='matrix-only', host_configuration=None, bundle_transition=None):
+def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profile='source', assessment_fault=None, tooling_profile='matrix-only', host_configuration=None, bundle_transition=None, credential_bound=False):
     """Fake RPC/import/load seams; actual protected manifest and journal."""
     from types import MethodType
     from tests.test_receiving_update_preflight import fixture as reader_fixture, call as qualify_reader
@@ -312,7 +312,9 @@ def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profi
             result = original()
             result['runtime_status'].update(loaded_runtime=copy.deepcopy(self.loaded),
                 loaded_application=copy.deepcopy(self.application),
-                receiving={'features':['signed-roster-cas/v1'],'rosters':{'tribe':copy.deepcopy(self.roster)}})
+                receiving={'features':['signed-roster-cas/v1'] + (['credential-bound-reader-validity/v1'] if credential_bound else []),
+                    'contracts':['dm.runtime.reader-selection/v1', 'dm.runtime.reader-selection/v2'] if credential_bound else ['dm.runtime.reader-selection/v1'],
+                    'rosters':{'tribe':copy.deepcopy(self.roster)}})
             return result
         owner.status = MethodType(status,owner)
         def qualified(self, *, expires_at_ms, require_admitted, native_tooling=None):
@@ -322,7 +324,8 @@ def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profi
                 **({'admission_parent':copy.deepcopy(self.parent)} if require_admitted else {}),
                 'verified_identity':dict(identity=copy.deepcopy(self.identity),runtime_bundle_sha256=self.loaded['runtime_bundle_sha256'],
                                          authority_control_head='control:fixture',
-                                         expires_at_ms=expires_at_ms)}
+                                         expires_at_ms=expires_at_ms,
+                                         credential_validity=copy.deepcopy(getattr(self, 'credential_validity', {'mode':'until-revoked','not_before_ms':0})))}
         owner.qualified_identity=MethodType(qualified,owner)
         selection=dict(receiving_code=code_digest,matrix_sdk=baseline['matrix_wheel_sha256'],runtime_bundle_sha256=bundle_hash,
             application_sha256='a'*64,publication_sha256='b'*64,visibility_installation_sha256='4'*64)
@@ -354,6 +357,9 @@ def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profi
         artifacts={'receiving_code':code_digest,'matrix_sdk':baseline['matrix_wheel_sha256']},required_receivers=required,
         provenance={**reader_manifest['provenance']},contract=copy.deepcopy(reader['contract']),
         authorities={'current':authorities,'candidate':copy.deepcopy(authorities)})
+    if not credential_bound:
+        manifest['contract']['capabilities'].remove('credential-bound-reader-validity/v1')
+        manifest['contract']['store_versions'].pop('reader_control')
     manifest_path=tmp_path/'activation-manifest.json'
     being_seed._write(manifest_path,manifest)
     journal=OperationJournal(tmp_path/'activation-journal')
@@ -429,6 +435,44 @@ def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profi
     else:
         controller.revoke_senders()
     return controller,owners,journal,row['operation_id']
+
+
+@pytest.mark.parametrize('mode', ['finite', 'until-revoked'])
+def test_credential_bound_cohort_keeps_real_validity_and_finite_proof(tmp_path, mode):
+    controller, owners, journal, identifier = activation_fixture(tmp_path, credential_bound=True)
+    proof_deadline = journal.get(identifier)['intended_transition']['cohort_activation']['expires_at_ms']
+    validity = dict(mode=mode, not_before_ms=0)
+    if mode == 'finite':
+        validity['not_after_ms'] = proof_deadline + 3600000
+    for owner in owners.values():
+        owner.credential_validity = copy.deepcopy(validity)
+    result = controller.activate()
+    activation = journal.get(identifier)['runtime_observation']['cohort_activation']
+    for record in activation['records'].values():
+        assert record['identity_expires_at_ms'] == proof_deadline
+        assert record['reader']['schema'] == 'dm.receiving.reader/v2'
+        assert record['reader']['validity'] == validity
+        assert 'expires_at_ms' not in record['reader']
+    assert all(owner.gate['schema'] == 'dm.runtime.reader-selection/v2' for owner in owners.values())
+    effects = {name: owner.effects for name, owner in owners.items()}
+    assert controller.activate() == result
+    assert effects == {name: owner.effects for name, owner in owners.items()}
+    # The proof horizon remains finite and is not used as credential lifetime.
+    if mode == 'finite':
+        assert proof_deadline < validity['not_after_ms']
+
+
+def test_typed_cohort_requires_actual_owner_v2_support_before_selection(tmp_path):
+    controller, owners, _, _ = activation_fixture(tmp_path, credential_bound=True)
+    original = owners['eko'].status
+    def legacy_status():
+        value = original()
+        value['runtime_status']['receiving']['contracts'] = ['dm.runtime.reader-selection/v1']
+        return value
+    owners['eko'].status = legacy_status
+    with pytest.raises(OnboardingError, match='reader_validity_unsupported'):
+        controller.activate()
+    assert all(owner.gate['readers'] == [] for owner in owners.values())
 
 
 @pytest.mark.parametrize('profile',['source','guest'])
@@ -1460,3 +1504,25 @@ def test_codex_configuration_without_catalog_cannot_be_receiving_adoption(tmp_pa
         controller.prepare_activation()
     assert all(owner.gate['readers'] == [] for owner in owners.values())
     assert 'native_tooling' not in journal.get(identifier)['runtime_observation']
+
+
+@pytest.mark.parametrize('observation', ['expired-proof', 'unavailable', 'changed-process'])
+def test_completed_typed_selection_inspection_never_reissues_controls(tmp_path, monkeypatch, observation):
+    from clusterctl import onboarding_receiving_update as updates
+    controller, owners, journal, identifier = activation_fixture(tmp_path, credential_bound=True)
+    controller.activate()
+    gates = {name: copy.deepcopy(owner.gate) for name, owner in owners.items()}
+    effects = {name: owner.effects for name, owner in owners.items()}
+    if observation == 'expired-proof':
+        deadline = journal.get(identifier)['intended_transition']['cohort_activation']['expires_at_ms']
+        monkeypatch.setattr(updates.time, 'time_ns', lambda: (deadline + 1) * 1000000)
+    elif observation == 'unavailable':
+        def unavailable(**kwargs):
+            raise OSError('synthetic readonly observation unavailable')
+        owners['eko'].qualified_identity = unavailable
+    else:
+        owners['eko'].process = {**owners['eko'].process, 'start_ticks':123456}
+    with pytest.raises((OnboardingError, OSError)):
+        controller.activate()
+    assert gates == {name: owner.gate for name, owner in owners.items()}
+    assert effects == {name: owner.effects for name, owner in owners.items()}

@@ -50,6 +50,7 @@ def fixture(tmp_path):
             calls.append(('send', copy.deepcopy(request)))
             result = {**state['gate'], **{k:command[k] for k in (
                 'channel_id','process_instance_id','phase','operation_id','release_digest','readers')},
+                'schema': ('dm.receiving.reader-selection/v2' if command.get('schema') == 'dm.runtime.reader-selection/v2' else 'dm.receiving.reader-selection/v1'),
                 'head':'5'*64, 'request_sha256':request_hash(request)}
             state['gate'] = copy.deepcopy(result)
             if self.lost:
@@ -143,12 +144,17 @@ def observed_fixture(tmp_path):
     return values, observer
 
 
+@pytest.mark.parametrize('command_schema', [None, 'dm.runtime.reader-selection/v2'])
+@pytest.mark.parametrize('gate_schema', ['dm.receiving.reader-selection/v1', 'dm.receiving.reader-selection/v2'])
 @pytest.mark.parametrize('lost_ack', [False, True])
-def test_fresh_observation_skips_status_and_exact_retry_pins_real_peer(tmp_path, lost_ack):
+def test_fresh_observation_skips_status_and_exact_retry_pins_real_peer(tmp_path, lost_ack, gate_schema, command_schema):
     values, observer = observed_fixture(tmp_path)
     owner, client, expected, command, path, state, calls, listener = values
     try:
         client.lost = lost_ack
+        state['gate']['schema'] = gate_schema
+        if command_schema is not None:
+            command['schema'] = command_schema
         observed = copy.deepcopy(state)
         if lost_ack:
             with pytest.raises(TimeoutError):

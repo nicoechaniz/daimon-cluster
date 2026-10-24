@@ -1,10 +1,52 @@
 """Receiving binding and executable-selection boundaries, without model calls."""
 import hashlib
 import json
+import os
+import sys
+from types import SimpleNamespace
 
 import pytest
 
 from clusterctl.same_being_operator import private_json, public_error, source_module
+
+
+@pytest.mark.parametrize('failure', [None, 'memoryctl', 'legacy_native_sync'])
+def test_memory_bootstrap_preserves_qualified_import_context_and_environment(tmp_path, monkeypatch, failure):
+    from clusterctl import same_being_operator as operator
+    monkeypatch.delitem(sys.modules, 'legacy_native_sync', raising=False)
+
+    scripts = tmp_path / 'selected-scripts'
+    scripts.mkdir()
+    for name in ('memoryctl', 'same_being_sync', 'backupctl', 'legacy_native_sync'):
+        text = ('import os, sys\n'
+                'assert os.environ["HMK_DB_PATH"] == "selected-database"\n'
+                'sys.path.append("bootstrap-added-path")\n'
+                'def load(*args): return {"selected": True}\n')
+        if name == failure:
+            text += 'raise RuntimeError("selected bootstrap failed")\n'
+        (scripts / (name + '.py')).write_text(text)
+    hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in scripts.iterdir()}
+    binding = tmp_path / 'binding.json'
+    binding.write_text(json.dumps(dict(schema='cluster-same-being-binding/v1',
+        binding={name: 'qualified-' + name for name in ('being_ref', 'body_ref', 'embodiment_id', 'incarnation_id', 'principal_id')},
+        journal=str(tmp_path / 'journal'), matrix={}, skills=None, behavior=None,
+        memory=dict(scripts=str(scripts), files=hashes, environment={'HMK_DB_PATH': 'selected-database'},
+                    legacy_provenance=str(tmp_path / 'legacy.json'), legacy_provenance_sha256='unused',
+                    owner={'being_ref': 'qualified-being_ref'}, backup_config={}))))
+    binding.chmod(0o600)
+    monkeypatch.setenv('HMK_DB_PATH', 'original-database')
+    monkeypatch.setattr(operator, 'NativeMemory',
+                        lambda memory, sync, backup, owner, config, **kwargs:
+                        SimpleNamespace(owner=owner, legacy=kwargs['legacy']))
+    original = (sys.path[:], sys.dont_write_bytecode, sys.pycache_prefix)
+    if failure:
+        with pytest.raises(RuntimeError, match='selected bootstrap failed'):
+            operator.load_operator(binding, matrix=object())
+    else:
+        loaded = operator.load_operator(binding, matrix=object())
+        assert loaded.memory.legacy == {'selected': True}
+    assert (sys.path, sys.dont_write_bytecode, sys.pycache_prefix) == original
+    assert os.environ['HMK_DB_PATH'] == 'original-database'
 
 
 def test_private_binding_refuses_duplicates_and_public_inputs(tmp_path):

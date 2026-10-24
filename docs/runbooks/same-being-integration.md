@@ -46,8 +46,11 @@ The private receiving binding uses `cluster-same-being-binding/v1` and exactly
   `pool_lineage`, and existing `backup_config`. Optional `legacy_provenance` and
   `legacy_provenance_sha256` select DMK's own retained legacy adapter. The
   environment names are the existing HMK receiving names; only explicitly
-  supported memory paths are accepted. The loader restores process environment
-  after resolving the owning module. Use it during trusted bootstrap, before
+  supported memory paths are accepted. The loader restores both process environment
+  and the exact import path after resolving the selected modules and optional
+  legacy adapter, including failed imports. This preserves the SDK's already
+  qualified startup fingerprint; never recompute or weaken that guard to accept
+  a leaking adapter. Use it during trusted bootstrap, before
   concurrent service work; different already-loaded helper bytes are refused.
 - `skills`, or null: existing `installer`, its `installer_sha256`, source
   `repository`, receiving `root` and installer `state`. The immutable descriptor
@@ -73,6 +76,13 @@ preserves the existing behavior. Immutable root-owned selected implementations
 are accepted by their verified hashes; binding/credential inputs remain private
 to the receiving UID. The maintenance helper closure includes the integration
 operator and behavioral adapter; no new service or startup attention is created.
+
+If a selected optional memory adapter prevents startup, its supported `null`
+binding can recover the service while preserving the corpus and history. Retain
+the exact previous binding, report memory effects unavailable, and restore it
+only after the corrected loader is actually selected. Recover the retained
+maintenance operation forward; do not repeat accepted capability publication or
+restore a prior SDK that cannot validate the accepted capability profiles.
 
 Native configuration uses the existing Codex daemon control WebSocket and only
 `config/read` or `config/batchWrite`, plus protocol initialization. Codex 0.163

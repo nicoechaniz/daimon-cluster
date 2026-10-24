@@ -73,14 +73,26 @@ def composed(tmp_path, monkeypatch, request):
         memory.init_db()
         memories.append(memory)
     source, memory = memories
-    source.add_text('library', 'Useful attributed original', 'Preserved original memory and its source.')
+    original_id = source.add_text('library', 'Useful attributed original', 'Preserved original memory and its source.')
     owner = dict(fixture.origins['daimonmatrix'], being_ref=fixture.state.being_ref)
     source_owner = dict(fixture.origins['legion'], being_ref=fixture.state.being_ref)
     memory_owner = {k: owner[k] for k in ('being_ref', 'body_ref', 'embodiment_id', 'incarnation_id')}
     memory_owner['pool_lineage'] = 'qualified-receiver'
     incoming_owner = {k: source_owner[k] for k in memory_owner if k != 'pool_lineage'}
     incoming_owner['pool_lineage'] = 'qualified-source'
-    packet = sync.export(source.DB_PATH, incoming_owner)
+    legacy = None
+    if getattr(request, 'param', False):
+        decoder = module('qualified_legacy', Path(DMK_SCRIPTS) / 'legacy_native_sync.py')
+        with closing(source.connect()) as con:
+            original = dict(sync.record(con, original_id), access_count=0, last_access=None)
+        for key in ('record_uid', 'revision', 'engram_type', 'source_metadata_json', 'actor', 'event_ts', 'location_json'):
+            original.pop(key)
+        origin_hash = decoder.original_hash(incoming_owner['pool_lineage'], original)
+        legacy = decoder.Legacy(dict(schema='compaii.private-native-sync/v1',
+            origins={origin_hash: dict(source_label=incoming_owner['pool_lineage'], original=original)},
+            bindings={incoming_owner['pool_lineage'] + ':' + origin_hash:
+                      dict(chapter_id=original_id, record_hash=decoder.digest(original))}, plans={}, edges={}))
+    packet = sync.export(source.DB_PATH, incoming_owner, legacy=legacy)
     repo = tmp_path / 'skills-source'
     repo.mkdir(mode=0o700)
     def git(*args):
@@ -139,7 +151,7 @@ def composed(tmp_path, monkeypatch, request):
     journal = OperationJournal(tmp_path / 'journal')
     behavior = BehaviorDelta(journal, owner)
     integration = SameBeingIntegration(journal, owner, client, cluster,
-        memory=NativeMemory(memory, sync, backup, memory_owner, backup_config),
+        memory=NativeMemory(memory, sync, backup, memory_owner, backup_config, legacy=legacy),
         skills=SelectedSkills(installer, repo, skills_root, skills_state), behavior=behavior)
     client.service = replace(hosted, projection_observer=integration.observe_effect)
     selection = dict(source_event_id=event['event_id'], reason='Integrate this selected attributed delta',
@@ -551,6 +563,7 @@ def test_lost_control_inverse_return_resumes_same_inverse(composed, interrupted_
     assert all(request == requests[0] for request in requests)
 
 
+@pytest.mark.parametrize('composed', [False, True], indirect=True)
 def test_actual_operator_cli_uses_private_binding_and_authenticated_native_socket(composed, tmp_path):
     integration, selection, memory, instructions, client, sync, source = composed
     from daimon_matrix.daemon import serve_connection
@@ -595,8 +608,24 @@ def test_actual_operator_cli_uses_private_binding_and_authenticated_native_socke
             skills=dict(installer=SKILLS_SCRIPT, installer_sha256=hashlib.sha256(Path(SKILLS_SCRIPT).read_bytes()).hexdigest(),
                 repository=str(integration.skills.repository), root=str(integration.skills.root), state=str(integration.skills.state)),
             behavior={}))
+        if integration.memory.legacy is not None:
+            sidecar = private('legacy.json', integration.memory.legacy.state)
+            selected_binding = json.loads(binding.read_bytes())
+            selected_binding['memory'].update(legacy_provenance=str(sidecar),
+                legacy_provenance_sha256=hashlib.sha256(sidecar.read_bytes()).hexdigest())
+            binding.write_text(json.dumps(selected_binding))
+            assert selection['packets'][0]['records'][0]['document']['legacy_sources']
         # The trusted host bootstrap resolves exactly the same owning journal.
+        # Exercise an isolated loader rather than inheriting the fixture's DMK
+        # script path; subsequent apply/recovery still use the real selected APIs.
+        original_path = sys.path[:]
+        sys.path[:] = [p for p in sys.path if p != str(scripts)]
+        bootstrap_path = sys.path[:]
+        bootstrap_environment = dict(os.environ)
         observer = load_operator(binding, matrix=client)
+        assert sys.path == bootstrap_path
+        assert dict(os.environ) == bootstrap_environment
+        sys.path[:] = original_path
         client.service = replace(client.service, projection_observer=observer.observe_effect)
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         listener.bind(endpoint)

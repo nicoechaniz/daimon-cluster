@@ -218,29 +218,38 @@ def load_operator(path, *, matrix=None):
                     raise ValueError('integration_existing_module_selection_changed')
         if any(name not in hashes for name in ('memoryctl.py', 'same_being_sync.py', 'backupctl.py')):
             raise ValueError('integration_memory_module_selection_missing')
-        sys.path.insert(0, str(scripts))
         # memoryctl resolves its receiving globals at import. Preserve the
-        # daemon's environment; reject an already bound different memory pool.
+        # daemon's environment and qualified import context. The selected
+        # package may itself insert its script directory while bootstrapping.
         environment = selected['environment']
         if set(environment) - {'HMK_AGENT_MEMORY_BASE', 'HMK_DB_PATH', 'HMK_WORKSPACE_ROOT', 'HMK_ENV_FILE', 'HMK_HERMES_HOME'}:
             raise ValueError('integration_memory_environment_not_supported')
         old = {name: os.environ.get(name) for name in environment}
+        original_path = sys.path[:]
         try:
+            sys.path.insert(0, str(scripts))
             os.environ.update(environment)
             namespace = '_integration_' + hashlib.sha256(str(scripts).encode()).hexdigest()[:16]
             modules = {name: source_module(namespace + '_' + name, scripts / (name + '.py'), hashes[name + '.py'])
                        for name in ('memoryctl', 'same_being_sync', 'backupctl')}
+            # Native exchange validates legacy packets with a late canonical
+            # import. Register only the already hash-checked selected helper;
+            # retaining the script path would invalidate qualified startup.
+            legacy_module = (source_module('legacy_native_sync', scripts / 'legacy_native_sync.py',
+                                          hashes['legacy_native_sync.py'])
+                             if 'legacy_native_sync.py' in hashes else None)
+            legacy = None
+            if selected.get('legacy_provenance'):
+                if legacy_module is None:
+                    raise ValueError('integration_memory_module_selection_missing')
+                legacy = legacy_module.load(Path(selected['legacy_provenance']), selected['legacy_provenance_sha256'])
         finally:
+            sys.path[:] = original_path
             for name, value in old.items():
                 if value is None:
                     os.environ.pop(name, None)
                 else:
                     os.environ[name] = value
-        legacy = None
-        if selected.get('legacy_provenance'):
-            legacy_module = source_module(namespace + '_legacy_native_sync', scripts / 'legacy_native_sync.py',
-                                          hashes['legacy_native_sync.py'])
-            legacy = legacy_module.load(Path(selected['legacy_provenance']), selected['legacy_provenance_sha256'])
         memory = NativeMemory(modules['memoryctl'], modules['same_being_sync'], modules['backupctl'],
                               selected['owner'], selected['backup_config'], legacy=legacy)
     if config['skills'] is not None:

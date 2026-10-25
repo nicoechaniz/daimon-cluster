@@ -10,8 +10,9 @@ import pytest
 from clusterctl.same_being_operator import private_json, public_error, source_module
 
 
-@pytest.mark.parametrize('failure', [None, 'memoryctl', 'legacy_native_sync'])
-def test_memory_bootstrap_preserves_qualified_import_context_and_environment(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize('failure', [None, 'memoryctl', 'legacy_native_sync', 'legacy_unsupported'])
+@pytest.mark.parametrize('lineage', [None, 'retained-local'])
+def test_memory_bootstrap_preserves_qualified_import_context_and_environment(tmp_path, monkeypatch, failure, lineage):
     from clusterctl import same_being_operator as operator
     monkeypatch.delitem(sys.modules, 'legacy_native_sync', raising=False)
 
@@ -21,7 +22,10 @@ def test_memory_bootstrap_preserves_qualified_import_context_and_environment(tmp
         text = ('import os, sys\n'
                 'assert os.environ["HMK_DB_PATH"] == "selected-database"\n'
                 'sys.path.append("bootstrap-added-path")\n'
-                'def load(*args): return {"selected": True}\n')
+                'def load(*args, receiving_lineage=None):\n'
+                ' return {"selected": True, "lineage": receiving_lineage}\n')
+        if name == 'legacy_native_sync' and failure == 'legacy_unsupported':
+            text += 'def load(*args): return {"selected": True, "lineage": None}\n'
         if name == failure:
             text += 'raise RuntimeError("selected bootstrap failed")\n'
         (scripts / (name + '.py')).write_text(text)
@@ -34,17 +38,24 @@ def test_memory_bootstrap_preserves_qualified_import_context_and_environment(tmp
                     legacy_provenance=str(tmp_path / 'legacy.json'), legacy_provenance_sha256='unused',
                     owner={'being_ref': 'qualified-being_ref'}, backup_config={}))))
     binding.chmod(0o600)
+    if lineage is not None:
+        selected = json.loads(binding.read_text())
+        selected['memory']['legacy_receiving_lineage'] = lineage
+        binding.write_text(json.dumps(selected))
     monkeypatch.setenv('HMK_DB_PATH', 'original-database')
     monkeypatch.setattr(operator, 'NativeMemory',
                         lambda memory, sync, backup, owner, config, **kwargs:
                         SimpleNamespace(owner=owner, legacy=kwargs['legacy']))
     original = (sys.path[:], sys.dont_write_bytecode, sys.pycache_prefix)
-    if failure:
+    if failure == 'legacy_unsupported' and lineage is not None:
+        with pytest.raises(ValueError, match='integration_legacy_receiving_lineage_unavailable'):
+            operator.load_operator(binding, matrix=object())
+    elif failure not in (None, 'legacy_unsupported'):
         with pytest.raises(RuntimeError, match='selected bootstrap failed'):
             operator.load_operator(binding, matrix=object())
     else:
         loaded = operator.load_operator(binding, matrix=object())
-        assert loaded.memory.legacy == {'selected': True}
+        assert loaded.memory.legacy == {'selected': True, 'lineage': lineage}
     assert (sys.path, sys.dont_write_bytecode, sys.pycache_prefix) == original
     assert os.environ['HMK_DB_PATH'] == 'original-database'
 
@@ -81,4 +92,5 @@ def test_error_output_uses_known_codes_and_never_arbitrary_identifier_prose():
     assert public_error(ValueError('private_human_word')) == 'integration_operation_failed'
     assert public_error(ValueError('integration_matrix_mutation_private_human_word')) == 'integration_operation_failed'
     assert public_error(ValueError('integration_selected_module_changed')) == 'integration_selected_module_changed'
+    assert public_error(ValueError('integration_legacy_receiving_lineage_unavailable')) == 'integration_legacy_receiving_lineage_unavailable'
     assert public_error(ValueError('integration_matrix_mutation_protocol_rejected')) == 'integration_matrix_mutation_protocol_rejected'

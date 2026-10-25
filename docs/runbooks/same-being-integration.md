@@ -52,6 +52,12 @@ The private receiving binding uses `cluster-same-being-binding/v1` and exactly
   qualified startup fingerprint; never recompute or weaken that guard to accept
   a leaking adapter. Use it during trusted bootstrap, before
   concurrent service work; different already-loaded helper bytes are refused.
+  Optional `legacy_receiving_lineage` selects the existing receiving namespace in
+  that sidecar when it differs from the canonical native owner's `pool_lineage`.
+  Select the DMK adapter supporting this argument; an older helper refuses an
+  explicit selection. Omission preserves its existing call. Keep original source
+  lineages, native owner identity and sidecar bytes unchanged; never guess which
+  of several pools is local or silently reimport their existing records.
 - `skills`, or null: existing `installer`, its `installer_sha256`, source
   `repository`, receiving `root` and installer `state`. The immutable descriptor
   selects exact source Git/package bytes. Pending recovery is scoped to the exact
@@ -90,6 +96,12 @@ advertises a rendezvous symlink: resolve and validate its protected physical
 owner-only socket before connecting. It is not a plain NDJSON socket. No new
 daemon, native session, model turn or credential is created. Selected native
 writes reuse the behavioral adapter's exact user-layer CAS/reload contract.
+For baseline discovery, verify the live server's actual executable against its
+retained package/kernel process evidence. A CLI reporting the same version can
+be a different build. Pin the server executable in the native observation and
+run the isolated default read with those exact bytes; retain launch-client and
+custom-build provenance separately. A corrected association supersedes the old
+observation without rewriting its files, signed proposals or pending effects.
 
 The private selection contains `source_event_id`, an explicit local `reason`, and
 one or more of `packets`, `skill_plan`, `behavior_selection`. Behavioral selection

@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 from pathlib import Path
@@ -37,7 +38,8 @@ PUBLIC_CODES = frozenset('integration_' + suffix for suffix in '''
     skill_rollback_owner_changed skill_rollback_state_changed skill_selection_conflict source_event_changed
     unrelated_skill_recovery duplicate_json_key existing_capability_not_private existing_module_selection_changed
     input_too_large invalid_receiving_binding invalid_selected_module_path memory_environment_not_supported
-    memory_module_selection_missing native_deadline native_method_not_supported native_request_rejected
+    memory_module_selection_missing invalid_legacy_receiving_lineage legacy_receiving_lineage_unavailable
+    native_deadline native_method_not_supported native_request_rejected
     native_socket_not_owned operation_failed private_binding_or_input_required selected_module_changed
     selected_module_not_regular selected_package_changed
 '''.split())
@@ -200,6 +202,11 @@ def load_operator(path, *, matrix=None):
     memory = skills = behavior = None
     if config['memory'] is not None:
         selected = config['memory']
+        lineage = selected.get('legacy_receiving_lineage')
+        if 'legacy_receiving_lineage' in selected and (
+                not isinstance(lineage, str) or not 1 <= len(lineage) <= 256
+                or not selected.get('legacy_provenance')):
+            raise ValueError('integration_invalid_legacy_receiving_lineage')
         scripts = Path(selected['scripts'])
         hashes = selected['files']
         # Verify the selected package closure, including imported helpers.
@@ -242,7 +249,13 @@ def load_operator(path, *, matrix=None):
             if selected.get('legacy_provenance'):
                 if legacy_module is None:
                     raise ValueError('integration_memory_module_selection_missing')
-                legacy = legacy_module.load(Path(selected['legacy_provenance']), selected['legacy_provenance_sha256'])
+                options = {}
+                if lineage is not None:
+                    if 'receiving_lineage' not in inspect.signature(legacy_module.load).parameters:
+                        raise ValueError('integration_legacy_receiving_lineage_unavailable')
+                    options['receiving_lineage'] = lineage
+                legacy = legacy_module.load(Path(selected['legacy_provenance']),
+                                            selected['legacy_provenance_sha256'], **options)
         finally:
             sys.path[:] = original_path
             for name, value in old.items():

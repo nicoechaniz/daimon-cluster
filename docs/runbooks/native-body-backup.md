@@ -14,6 +14,8 @@ modifies SSH admission. Keep the plaintext unlock file below the excluded backup
 state directory. Retain the sealed envelope alongside the offhost ciphertext.
 
 Repeated preparation preserves the same unlock material, envelope and repository.
+Envelope output is explicitly created with mode0600 rather than relying on the
+age version or inherited umask to choose private file permissions.
 Missing unlock material for an existing repository must be recovered, never
 replaced with a new password. Retained partial envelopes require inspection;
 preparation does not overwrite them or claim that a backup is usable.

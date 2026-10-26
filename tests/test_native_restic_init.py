@@ -70,7 +70,11 @@ def test_real_envelope_recovers_same_password_and_repeated_init_preserves_histor
     selected.write_bytes(key)
     selected.chmod(0o600)
     state = tmp_path / 'state'
-    result = module.initialize(state, selected, selected)
+    original_umask = os.umask(0o022)
+    try:
+        result = module.initialize(state, selected, selected)
+    finally:
+        os.umask(original_umask)
     password = (state / 'credentials/restic-password').read_bytes()
     envelope = (state / 'recovery.age').read_bytes()
     config = (state / 'restic/config').read_bytes()

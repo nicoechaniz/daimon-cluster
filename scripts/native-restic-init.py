@@ -90,8 +90,12 @@ def initialize(state: Path, recipients: Path, operator_public: Path) -> dict:
         partial = state / 'recovery.age.partial'
         if partial.exists() or partial.is_symlink():
             raise PreparationError('native_backup_partial_envelope_retained')
-        subprocess.run(['age', '-R', str(retained), '-o', str(partial), str(password)],
-                       check=True, capture_output=True)
+        descriptor = os.open(partial, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(descriptor, 'wb') as output:
+            subprocess.run(['age', '-R', str(retained), str(password)],
+                           check=True, stdout=output, stderr=subprocess.PIPE)
+            output.flush()
+            os.fsync(output.fileno())
         if len(protected(partial, private=True)) < 100:
             raise PreparationError('native_backup_envelope_unconfirmed')
         os.replace(partial, sealed)

@@ -7,6 +7,8 @@ backup encryption, SSH changes or automatic replay are performed here.
 from __future__ import annotations
 
 import argparse
+import fcntl
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -196,6 +198,36 @@ def load_plan(state: Path) -> dict:
     return plan
 
 
+@contextmanager
+def state_lock(state: Path):
+    descriptor = os.open(state / 'capture.lock',
+                         os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise CaptureError('capture_operation_already_running') from error
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def safe_target(destination: Path, source: str) -> Path:
+    target = destination
+    for part in Path(source).parts[1:]:
+        if part in {'.', '..'}:
+            raise CaptureError('capture_destination_invalid')
+        target /= part
+        try:
+            info = target.lstat()
+        except FileNotFoundError:
+            target.mkdir()
+            info = target.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise CaptureError('capture_destination_not_directory')
+    return target
+
+
 def capture(state: Path, writers: list[str], activators: list[str]) -> dict:
     writers = units(writers, ('.service',))
     if activators:
@@ -229,15 +261,18 @@ def capture(state: Path, writers: list[str], activators: list[str]) -> dict:
             raise CaptureError('capture_quiescence_unconfirmed')
         with (state / 'capture-final.log').open('wb') as log:
             for source in plan['source_roots']:
-                target = destination / source.lstrip('/')
-                target.mkdir(parents=True, exist_ok=True)
+                target = safe_target(destination, source)
                 command = ['rsync', '--archive', '--acls', '--xattrs', '--hard-links',
                            '--numeric-ids', '--one-file-system', '--sparse', '--delete',
                            '--delete-excluded', '--stats']
                 exclusions = list(plan['excluded_mounts_and_runtime'])
                 # Protect other durable mount roots during the parent pass.
-                exclusions += [x for x in plan['source_roots']
-                               if x != source and below(Path(x), Path(source))]
+                children = [x for x in plan['source_roots']
+                            if x != source and below(Path(x), Path(source))]
+                for child in children:
+                    relative = str(Path(child).relative_to(source))
+                    command += ['--filter', 'P /' + relative + '/***',
+                                '--filter', 'H /' + relative + '/***']
                 for exclusion in exclusions:
                     if below(Path(exclusion), Path(source)):
                         relative = str(Path(exclusion).relative_to(source))
@@ -274,10 +309,11 @@ def main() -> int:
     os.umask(0o077)
     previous = signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
     try:
-        result = (recover(args.state) if args.recover_only else
+        with state_lock(args.state):
+            result = (recover(args.state) if args.recover_only else
                   prepare(args.state, args.required_paths) if args.prepare_only else
                   capture(args.state, args.writers, args.activators))
-        print(json.dumps(result))
+            print(json.dumps(result))
     finally:
         signal.signal(signal.SIGTERM, previous)
     return 0

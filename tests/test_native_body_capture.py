@@ -208,3 +208,51 @@ def test_actual_rsync_final_delta_removes_stale_seed_without_touching_live(tmp_p
     assert (target / 'current').read_text() == (live / 'current').read_text()
     assert (target / 'link').is_symlink()
     assert not (live / 'stale').exists()
+
+
+def test_state_lock_excludes_capture_recovery_and_preparation(tmp_path):
+    root = state(tmp_path)
+    with mod.state_lock(root):
+        with pytest.raises(mod.CaptureError, match='already_running'):
+            with mod.state_lock(root):
+                pytest.fail('concurrent operation admitted')
+    with mod.state_lock(root):
+        pass
+
+
+def test_additional_root_target_rejects_symlink_ancestor(tmp_path):
+    root = state(tmp_path)
+    destination = root / 'capture/root'
+    (destination / 'boot').symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(mod.CaptureError, match='not_directory'):
+        mod.safe_target(destination, '/boot/efi')
+
+
+def test_actual_rsync_preserves_child_seed_during_parent_pass(tmp_path):
+    import shutil
+    assert shutil.which('rsync'), 'rsync required for native capture contract'
+    root = state(tmp_path)
+    live = tmp_path / 'source'
+    child = live / 'boot'
+    child.mkdir(parents=True)
+    (child / 'kernel').write_text('retained kernel bytes')
+    (live / 'config').write_text('native configuration')
+    target = root / 'capture/root' / str(child).lstrip('/')
+    target.mkdir(parents=True)
+    shutil.copy2(child / 'kernel', target / 'kernel')
+    retained_inode = (target / 'kernel').stat().st_ino
+    (target / 'stale').write_text('removed source file')
+    real_run = subprocess.run
+    def selected(argv, **kwargs):
+        if argv[0] == 'systemctl':
+            return subprocess.CompletedProcess(argv, 0)
+        return real_run(argv, **kwargs)
+    with patch.object(mod, 'load_plan', return_value={
+            'source_roots': [str(live), str(child)], 'excluded_mounts_and_runtime': [str(root)]}), \
+         patch.object(mod, 'active', return_value=True), \
+         patch.object(mod, 'stopped', return_value=True), \
+         patch.object(mod.subprocess, 'run', side_effect=selected):
+        assert mod.capture(root, ['writer.service'], [])['capture_consistent']
+    assert (target / 'kernel').stat().st_ino == retained_inode
+    assert not (target / 'stale').exists()
+    assert (target.parent / 'config').read_text() == 'native configuration'

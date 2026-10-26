@@ -309,7 +309,8 @@ def test_predecessor_freeze_uses_actual_base_and_admission_without_group_status(
             def wrong_identity(self, request):
                 response = status(self, request)
                 response = copy.deepcopy(response)
-                response['result'][field] = 'different authenticated runtime'
+                if response.get('ok') is True:
+                    response['result'][field] = 'different authenticated runtime'
                 return response
             with monkeypatch.context() as wrong:
                 wrong.setattr(LegacyGroupRestrictedClient, 'send', wrong_identity)

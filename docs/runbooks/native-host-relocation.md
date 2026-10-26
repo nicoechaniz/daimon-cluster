@@ -24,6 +24,14 @@ comparison as success.
 
 ## Runtime capability and startup
 
+Use one finite startup deadline through admission launch, all composed views and
+SDK reader restoration. A selected SDK that supports `startup_deadline_ns` receives
+the remaining shared envelope; legacy SDKs retain their existing API and limits.
+Do not give every layer a renewed timeout or cancel valid signed-history recovery
+with an independent five-second view subwindow. Keep live-control freshness and
+credential validity separate. Closed recovery stage/code diagnostics can identify
+deadline, storage and verification failures without logging private exception text.
+
 A matching Python version alone is insufficient. Test the actual primitives used
 by the receiving implementation before opening custody. Eko's 2026-10-26 move
 found CPython3.13.5 builds without `os.pidfd_open`, which cannot provide Cluster's
@@ -79,6 +87,14 @@ scoped managed Matrix restart should recover the selected readers under the new
 host's stable binding without a second activation or model turn. Preserve the
 before/after process and recovery evidence. These contracts already exist; a new
 messaging protocol is unnecessary.
+
+The current Matrix `dm.receiving-release/v1` declares one shared `matrix_sdk`;
+its per-receiver artifact overrides explicitly exclude that key. Do not fabricate
+a mixed-SDK v1 manifest or simply remove its revision checks. For an authorized
+body-specific owner repair involving different SDKs, qualify coherent releases
+for each selected SDK and verify their common wire/authority requirements before
+the current owner controls. Preserve that explicit repair's exact mixed vector;
+it does not establish completion of a uniform-SDK `CohortController` rollout.
 
 ## Physical ownership and maintenance frontier
 

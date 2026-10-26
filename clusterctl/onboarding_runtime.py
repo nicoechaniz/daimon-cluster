@@ -22,11 +22,12 @@ from typing import Any
 from .onboarding import OnboardingError, refusal_diagnostic
 from .onboarding_admission import ReceivingHolder
 from .owner_process import ProcessPresence
+from .onboarding_views import STARTUP_TIMEOUT_S
 
 MAX_FRAME = 4096
 # Real receiving histories can take longer than five seconds to authenticate.
 # Readiness still requires the actual native READY pipe under current admission.
-READY_TIMEOUT_S = 60
+READY_TIMEOUT_S = STARTUP_TIMEOUT_S
 
 
 def serve(target, profile: dict, *, receive_only=False, visibility_installation=None, messaging_application=None, ready_descriptor=None):
@@ -138,6 +139,7 @@ class AdmittedDaemon:
                 return
 
     def start(self, *, receive_only=False, visibility_installation=None, messaging_application=None):
+        startup_deadline_ns = time.monotonic_ns() + READY_TIMEOUT_S * 1_000_000_000
         if receive_only == (visibility_installation is not None):
             raise OnboardingError("onboarding_visibility_selection_required")
         if messaging_application is not None and receive_only:
@@ -152,7 +154,7 @@ class AdmittedDaemon:
                     "json.loads(sys.argv[4]),int(sys.argv[5]),int(sys.argv[6]),int(sys.argv[7]),"
                     "sys.argv[8]=='true',Path(sys.argv[9]) if sys.argv[9] else None,"
                     "Path(sys.argv[10]) if sys.argv[10] else None,int(sys.argv[11]),sys.argv[12],"
-                    "diagnostic_fd=int(sys.argv[13])))")
+                    "startup_deadline_ns=int(sys.argv[13]),diagnostic_fd=int(sys.argv[14])))")
         def spawn():
             environment = {'PATH':os.defpath, 'LANG':'C.UTF-8', 'HOME':str(self.target.home),
                 'LD_LIBRARY_PATH':str(Path(sys.base_prefix)/'lib')}
@@ -162,7 +164,7 @@ class AdmittedDaemon:
                 json.dumps(self.target.genesis), str(child.fileno()), str(ready_write), str(os.getpid()),
                 'true' if receive_only else 'false', str(visibility_installation) if visibility_installation else '',
                 str(messaging_application) if messaging_application else '', str(self.target.code_uid),
-                self.target.code_digest]
+                self.target.code_digest, str(startup_deadline_ns)]
             from . import onboarding_code_successor, onboarding_sdk
             parameters = onboarding_code_successor.sdk_parameters(self.target.code, uid=self.target.code_uid)
             if parameters:
@@ -184,7 +186,8 @@ import json
 raise SystemExit(child_entry(Path(sys.argv[1]), json.loads(sys.argv[2]), json.loads(sys.argv[3]),
     int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]), sys.argv[7]=='true',
     Path(sys.argv[8]) if sys.argv[8] else None, Path(sys.argv[9]) if sys.argv[9] else None,
-    int(sys.argv[10]), sys.argv[11], diagnostic_fd=int(sys.argv[12])))
+    int(sys.argv[10]), sys.argv[11], startup_deadline_ns=int(sys.argv[12]),
+    diagnostic_fd=int(sys.argv[13])))
 '''
                 command = [str(venv / 'bin/python'), '-B', '-I', '-S', '-c', child_launcher,
                            str(venv), str(imports), str(self.target.code), *arguments]
@@ -223,7 +226,10 @@ raise SystemExit(child_entry(Path(sys.argv[1]), json.loads(sys.argv[2]), json.lo
             self.thread.start()
             with selectors.DefaultSelector() as selector:
                 selector.register(ready_read, selectors.EVENT_READ)
-                if not selector.select(READY_TIMEOUT_S) or os.read(ready_read, 16) != b'READY\n':
+                remaining = max(0, (startup_deadline_ns - time.monotonic_ns()) / 1_000_000_000)
+                if (remaining <= 0 or not selector.select(remaining)
+                        or time.monotonic_ns() >= startup_deadline_ns
+                        or os.read(ready_read, 16) != b'READY\n'):
                     raise OnboardingError('onboarding_runtime_not_ready')
             if self.supervisor.verify_current(minimum_remaining_s=1) is None:
                 raise OnboardingError('onboarding_admission_not_current')
@@ -259,7 +265,8 @@ raise SystemExit(child_entry(Path(sys.argv[1]), json.loads(sys.argv[2]), json.lo
 
 def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
                receive_only, visibility_installation, messaging_application=None, code_uid=0,
-               code_digest=None, *, startup_diagnostics=False, diagnostic_fd=None):
+               code_digest=None, *, startup_diagnostics=False, diagnostic_fd=None,
+               startup_deadline_ns=None):
     # The parent checks its own tree, but only this child can attest its boot.
     # Do this before importing Matrix or opening Body custody.
     from . import onboarding_sdk, onboarding_code_successor
@@ -358,9 +365,13 @@ def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
                 application_view(hosted, Path(row['directory']), Path(row['visibility'])),
                 socket_path=hosted.state_root / row['socket'])
                 for row in additional_applications(target)]
-            serve_views([hosted, peer, *extras], stopping, ready_descriptor=ready_descriptor)
+            serve_views([hosted, peer, *extras], stopping, ready_descriptor=ready_descriptor,
+                startup_deadline_ns=startup_deadline_ns)
         else:
-            daemon.serve_forever(hosted, stop=stopping, ready_descriptor=ready_descriptor)
+            from .onboarding_views import serve_native_view
+            serve_native_view(hosted, stopping, ready_descriptor=ready_descriptor,
+                startup_deadline_ns=(startup_deadline_ns if startup_deadline_ns is not None
+                    else time.monotonic_ns() + READY_TIMEOUT_S * 1_000_000_000))
         return 0
     except Exception as error:
         if not startup_diagnostics:
@@ -384,10 +395,19 @@ def report_child_refusal(error: Exception, *, diagnostic_fd: int | None = None) 
     while current is not None and id(current) not in seen and len(details) < 8:
         seen.add(id(current))
         frames = list(traceback.walk_tb(current.__traceback__))[-16:]
-        details.append({'class': type(current).__name__, 'frames': [
+        detail: dict[str, Any] = {'class': type(current).__name__, 'frames': [
             {'module': Path(frame.f_code.co_filename).name,
              'function': frame.f_code.co_name, 'line': line}
-            for frame, line in frames]})
+            for frame, line in frames]}
+        recovery = getattr(current, 'recovery_failure', None)
+        if (isinstance(recovery, dict) and set(recovery) == {'stage', 'code'}
+                and recovery['stage'] in {'load', 'authorize', 'append', 'invalidate'}
+                and recovery['code'] in {'verification_failed', 'reader_journal_deadline_expired',
+                    'reader_journal_record_invalid', 'reader_journal_chain_invalid',
+                    'tribe_record_corrupt', 'messaging_binding_rejected',
+                    'storage_busy_or_unavailable', 'storage_unavailable'}):
+            detail['reader_recovery_failure'] = dict(recovery)
+        details.append(detail)
         current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
     raw = json.dumps({**refusal_diagnostic(error, stage='native-child'),
                       'exceptions': details}) + '\n'
@@ -402,10 +422,11 @@ def report_child_refusal(error: Exception, *, diagnostic_fd: int | None = None) 
             pending = pending[written:]
 
 
-def child_entry(*args, diagnostic_fd=None):
+def child_entry(*args, diagnostic_fd=None, startup_deadline_ns=None):
     """Keep early qualification refusals inside the same safe diagnostic path."""
     try:
-        return child_main(*args, startup_diagnostics=True, diagnostic_fd=diagnostic_fd)
+        return child_main(*args, startup_diagnostics=True, diagnostic_fd=diagnostic_fd,
+            startup_deadline_ns=startup_deadline_ns)
     except Exception as error:
         report_child_refusal(error, diagnostic_fd=diagnostic_fd)
         return 1

@@ -206,3 +206,34 @@ def test_foreign_unit_is_preserved_before_any_systemctl_effect(tmp_path, foreign
     with pytest.raises((OnboardingError, ValueError)):
         install(code, receive_only=True, directory=tmp_path, run=calls.append)
     assert unit.read_bytes() == original and not calls
+
+
+def test_native_profile_freezes_mount_slice_and_path_without_weakening_guest(tmp_path, monkeypatch):
+    import hashlib
+    from clusterctl import onboarding_service
+    unit = tmp_path / UNIT
+    native = unit.with_name(UNIT + '.d') / '99-native-fixture.conf'
+    raw = (b'[Unit]\nAfter=network-online.target\n'
+           b'RequiresMountsFor=/home/agent/shared /home/agent/research\n'
+           b'[Service]\nSlice=fixture.slice\n'
+           b'Environment=PATH=/opt/native-python/bin:/usr/bin:/bin\n')
+    monkeypatch.setattr(onboarding_service.onboarding_release, 'regular', lambda path, uid: raw)
+    manager = onboarding_service.MatrixNativeService(unit)
+    assert manager._guest_dropins(str(native)) == {str(native): hashlib.sha256(raw).hexdigest()}
+    with pytest.raises(OnboardingError, match='scope_required'):
+        onboarding_service.MatrixGuestService(unit)._guest_dropins(str(native))
+    changed = raw.replace(b'fixture.slice', b'other.slice')
+    monkeypatch.setattr(onboarding_service.onboarding_release, 'regular', lambda path, uid: changed)
+    assert manager._guest_dropins(str(native)) != {str(native): hashlib.sha256(raw).hexdigest()}
+
+
+@pytest.mark.parametrize('override', [b'ExecStart=/foreign\n', b'User=root\n',
+    b'Environment=LD_PRELOAD=/foreign.so\n'])
+def test_native_profile_rejects_execution_and_identity_overrides(tmp_path, monkeypatch, override):
+    from clusterctl import onboarding_service
+    unit = tmp_path / UNIT
+    native = unit.with_name(UNIT + '.d') / '99-native-fixture.conf'
+    monkeypatch.setattr(onboarding_service.onboarding_release, 'regular',
+        lambda path, uid: b'[Service]\nSlice=fixture.slice\n' + override)
+    with pytest.raises(OnboardingError, match='scope_required'):
+        onboarding_service.MatrixNativeService(unit)._guest_dropins(str(native))

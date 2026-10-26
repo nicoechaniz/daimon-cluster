@@ -7,6 +7,7 @@ import os
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -286,7 +287,8 @@ def test_journal_and_jobs_are_owned_during_both_typed_routes(fixture):
     assert controller.execute()['receiving_readiness'] == 'unobserved'
 
 
-def test_preparation_reuses_maintained_command_and_refuses_sdk_mismatch_before_root(fixture, monkeypatch):
+@pytest.mark.parametrize("native", [False, True])
+def test_preparation_reuses_maintained_command_and_refuses_sdk_mismatch_before_root(fixture, monkeypatch, native):
     controller, backend, calls, _ = fixture
     row, frozen, candidate = controller._row()
     manifest = dict(provenance={'matrix_revision': candidate['prepared']['matrix_revision']},
@@ -308,11 +310,15 @@ def test_preparation_reuses_maintained_command_and_refuses_sdk_mismatch_before_r
     root = backend._guest_service_call
     backend._guest_service_call = lambda _plan, action, **_kwargs: (
         copy.deepcopy(frozen['root']) if action == 'bootstrap-inspect' else root(_plan, action, **_kwargs))
+    backend.native_body = lambda _plan: SimpleNamespace(python=Path('/opt/qualified-native-python/bin/python3')) if native else None
     prepared, selected = updates.prepare_guest_bootstrap(backend, frozen['plan'],
         candidate=(Path(candidate['runtime_code']), candidate['runtime_digest']),
         manifest_path=Path(candidate['manifest_path']), manifest_digest=row['intent']['runtime_call']['manifest_digest'],
         expires_at_ms=candidate['expires_at_ms'], manifest_uid=candidate['manifest_uid'])
-    assert prepared == frozen and selected == candidate and backend.stops == backend.starts == 0
+    expected_candidate = copy.deepcopy(candidate)
+    if native:
+        expected_candidate['argv'][0] = '/opt/qualified-native-python/bin/python3'
+    assert prepared == frozen and selected == expected_candidate and backend.stops == backend.starts == 0
     backend._target_call = lambda _plan, action, **kwargs: (
         {'ready': True, 'matrix_commit': '0' * 40} if action == 'sdk-prepare' else copy.deepcopy(frozen['owner']))
     with pytest.raises(OnboardingError, match='candidate_required'):

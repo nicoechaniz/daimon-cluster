@@ -161,6 +161,13 @@ does not change Matrix identity, signed authority or message semantics.
 
 ## Rollback
 
+After native placement is accepted, an old worker/configuration pair is not a
+safe rollback if it restores retired Incus reconciliation. Preserve its bytes
+as history, but keep only the onboarding worker stopped on an uncertain failed
+maintenance adoption and recover forward using the native placement and a
+compatible worker. A software rollback must retain the native-source exclusion;
+it never authorizes starting the stopped origin or restoring old job databases.
+
 Keep the source stopped and retain its original configuration/data. Before moving
 back, stop the selected receiving writer and observe release of its admission.
 Return current state and history with inverse ownership mapping; preserve all new

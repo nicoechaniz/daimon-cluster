@@ -84,11 +84,12 @@ def test_host_tooling_reconciliation_uses_owner_cli_without_private_sdk_reads(tm
         code_digest='a'*64, sdk_digest=digest(sdk), matrix_commit=sdk['matrix_commit'])
     calls = []
     def dispatch(value, command, **options):
+        assert options['home'] is True
         calls.append(command)
         return json.dumps(result)
     host = SimpleNamespace(authorize=lambda *a: True, _receiving_base=lambda p: Path('/public/base'),
         _runtime_paths=lambda *a, **k: (Path('/public/selected'), [], {}),
-        _mounted=lambda *a, **k: True, instance=lambda p: 'dm-fixture', _dispatch=dispatch)
+        runtime_available=lambda *a, **k: True, execute_body=dispatch)
     monkeypatch.setattr(owner.onboarding_sdk, 'verify', lambda *a, **k: sdk)
     monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {})
     native_read = Path.read_bytes
@@ -102,7 +103,7 @@ def test_host_tooling_reconciliation_uses_owner_cli_without_private_sdk_reads(tm
         binding_filename=binding_filename)
     assert client.reconcile(plan(), operation_id, **arguments) == result
     command = calls[0]
-    assert command[:8] == ['exec', 'dm-fixture', '--user', '1000', '--group', '1000', '--env', 'HOME=/home/agent']
+    assert 'exec' not in command  # Physical placement belongs to execute_body.
     assert 'clusterctl.onboarding_owner_client' in command
     assert command[command.index('--codex-home')+1] == '/home/agent/.codex'
     assert command[command.index('--binding')+1] == '/home/agent/existing-attachment/'+binding_filename

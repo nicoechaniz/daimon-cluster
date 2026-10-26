@@ -41,6 +41,14 @@ Retain native histories and uncertain inputs; readiness recovery is not input
 replay. Provider login acceptance is separate from a running daemon: verify native
 account/quota operations, preserve the selected account and request its existing
 device-login procedure when the provider has revoked those credentials.
+After a completed external CLI device login, reload the existing daemon through
+`account/read` with `refreshToken:true` on its authenticated native connection.
+Verify the retained selected account and an actual `account/rateLimits/read`
+response before reporting provider acceptance. A persisted `codex login status`
+alone is insufficient; a cached empty account before this reload does not mean
+the new login failed. This recovery needs no daemon or conversation restart.
+Run a private diagnostic helper from an owner-readable task path, not an
+operator-only directory the receiving user cannot traverse.
 
 ## Matrix, shared services and receiving activation
 
@@ -82,14 +90,33 @@ do not delete journals to clear its binding guard. Local monitoring, off-host
 availability observation, consistent backups and tested restore routes are
 separate receiving responsibilities.
 
-The current HostBackend and GuestGroupClient maintenance composition still uses
-Incus target invocation. A native host requires a supported remote adapter to
-the existing receiving-owner CLI/session contracts, pinned access and real remote
-process/ready observations. An old instance name must not select a stopped source
-or cause a VM restart. Until that adapter is installed, preflight must report the
-native receiver as unsupported before any cohort revocation or activation; never
-simulate Incus with SSH wrappers or claim fleet update convergence. Adding this
-transport does not change Matrix identity, signed authority or message semantics.
+Host configuration may select a protected `native_by_name` placement locator for
+an existing approved plan. Each row pins `placement` and `placement_digest`, so
+changing a referenced placement cannot redirect a retained maintenance operation.
+The `cluster-native-body-placement/v1` record retains
+that plan's digest, pinned SSH host/port/user, local identity and known-host file
+references, receiving machine-id SHA256, home and qualified bootstrap interpreter.
+It contains references only, never credential values. Resolve exact private
+placement from the receiving operator record. Existing administrative access is
+used only for authorized foreground operation; a new SSH service requires its own
+dedicated identity under the repository's administrative-access rule.
+
+`HostBackend.execute_body` selects real native execution or the existing Incus
+backend. Native maintenance copies only qualified public code, independently
+verifies receiving bytes and invokes the existing target, owner-control and
+service contracts. It neither models a native host as an Incus instance nor
+creates fake mounts. Native Incus operations are refused. The owner-control
+deadline is rebased to the receiving kernel and time namespace, bounded by both
+the sender's remaining interval and original wall expiry; remote process and
+admission proofs still come from the actual receiver. Timeout preserves the
+operation's uncertain effects and never implies permission to replay it.
+
+An old instance name must not select the stopped source or cause a VM restart.
+Preflight every native receiver's qualified artifact, interpreter, authenticated
+owner and current selected state before cohort revocation or activation. Until
+the adapter and placement are actually adopted, that receiver remains an explicit
+maintenance gap; source code alone is not fleet update convergence. This transport
+does not change Matrix identity, signed authority or message semantics.
 
 ## Rollback
 

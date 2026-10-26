@@ -97,6 +97,7 @@ class HostConfig:
     telegram_code: Path | None = None
     telegram_digest: str | None = None
     browser_artifact: dict[str, str] | None = None
+    native_by_name: dict[str, tuple[Path, str]] | None = None
 
     @classmethod
     def load(cls, path: Path, *, expected_value: dict | None = None) -> HostConfig:
@@ -107,7 +108,7 @@ class HostConfig:
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
         telegram_keys = {"telegram_code", "telegram_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -256,10 +257,24 @@ class HostConfig:
         if 'browser_artifact' in value:
             from .onboarding_browser import artifact as browser_artifact_record
             browser_artifact = browser_artifact_record(value['browser_artifact'], value['browser_image'])
+        native_by_name = None
+        if 'native_by_name' in value:
+            selected = value['native_by_name']
+            if (not isinstance(selected, dict) or not 1 <= len(selected) <= being_seed.MAX_SEEDS
+                    or any(not isinstance(name, str) or not being_seed.NAME.fullmatch(name)
+                        or not isinstance(row, dict) or set(row) != {'placement', 'placement_digest'}
+                        or not isinstance(row['placement'], str) or not Path(row['placement']).is_absolute()
+                        or not sha(row['placement_digest']) for name, row in selected.items())):
+                raise OnboardingError('native_receiving_placement_required')
+            native_by_name = {name: (Path(row['placement']), row['placement_digest'])
+                              for name, row in selected.items()}
+            for locator, fingerprint in native_by_name.values():
+                if digest(being_seed._read(locator)) != fingerprint:
+                    raise OnboardingError('native_receiving_placement_changed')
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -285,6 +300,49 @@ class HostBackend:
         self.config = config
         self.run = run or self._run
         self.input_cache = input_cache if input_cache is not None else onboarding_input.VerificationCache()
+
+    def native_body(self, plan: dict):
+        selected = (getattr(self.config, 'native_by_name', None) or {}).get(plan['name'])
+        if selected is None:
+            return None
+        from .native_body import NativeBody
+        return NativeBody.load(selected[0], plan, expected_digest=selected[1])
+
+    def body_python(self, plan: dict) -> Path:
+        native = self.native_body(plan)
+        return native.python if native is not None else Path('/usr/bin/python3')
+
+    def execute_body(self, plan: dict, argv: list[str], *, uid: int = 1000, gid: int = 1000,
+                     home: bool = False, input_data: str | None = None,
+                     timeout_seconds: float | None = None, deadline_ns: int | None = None,
+                     owner_clock: bool = False) -> str:
+        """Execute through physical placement; do not translate Incus commands."""
+        if not self.authorize(plan, digest(plan)):
+            raise OnboardingError('host_authorization_required')
+        native = self.native_body(plan)
+        if native is not None:
+            return native.execute(argv, uid=uid, gid=gid,
+                env={'HOME': '/home/agent'} if home else None, input_data=input_data,
+                timeout_seconds=60 if timeout_seconds is None else timeout_seconds,
+                deadline_ns=deadline_ns, owner_clock=owner_clock)
+        command = ['exec', self.instance(plan), '--user', str(uid), '--group', str(gid),
+                   *(['--env', 'HOME=/home/agent'] if home else []), '--', *argv]
+        return self._dispatch(plan, command, input_data=input_data,
+                              timeout_seconds=timeout_seconds, deadline_ns=deadline_ns)
+
+    def runtime_available(self, plan: dict, candidate: tuple[Path, str], *,
+                          prepare: bool = False, deadline_ns: int | None = None) -> bool:
+        """Availability means verified native files or actual Incus mounts."""
+        base = self._receiving_base(plan)
+        code, _, mounts = self._runtime_paths(plan, base, candidate=candidate)
+        native = self.native_body(plan)
+        if native is not None:
+            if not self.authorize(plan, digest(plan)):
+                raise OnboardingError('host_authorization_required')
+            if prepare:
+                return native.prepare_code(candidate[0], candidate[1], deadline_ns=deadline_ns) == code
+            return native.code_available(code, candidate[1], deadline_ns=deadline_ns)
+        return self._mounted(plan, mounts, deadline_ns=deadline_ns)
 
     @staticmethod
     def _run(argv: list[str], *, timeout_seconds: float | None = None,
@@ -360,6 +418,8 @@ class HostBackend:
         return instances, volumes
 
     def _environment(self, plan: dict) -> Observation:
+        if self.native_body(plan) is not None:
+            raise OnboardingError('native_receiving_initial_enrollment_unsupported')
         instances, volumes = self._inventory()
         name, fingerprint = self.instance(plan), digest(plan)
         rows = [row for row in instances if row.get("name") == name]
@@ -853,11 +913,15 @@ class HostBackend:
         onboarding_code_successor.verify(runtime_code, runtime_digest,
             self.config.code, plan['release_digest'], uid=os.geteuid())
         code = Path('/opt/daimon-onboarding-runtime') / runtime_digest
+        if self.native_body(plan) is not None:
+            return code, ['--runtime-code', str(code), '--runtime-digest', runtime_digest], {}
         mount = dict(type='disk', source=str(runtime_code), path=str(code), readonly='true', shift='true')
         return code, ['--runtime-code', str(code), '--runtime-digest', runtime_digest], {
             'runtime-' + runtime_digest[:55]: mount}
 
     def _mounted(self, plan: dict, mounts: dict, *, deadline_ns: int | None = None) -> bool:
+        if self.native_body(plan) is not None:
+            raise OnboardingError('native_receiving_mount_unsupported')
         if deadline_ns is None:
             instances, _ = self._inventory()
         else:
@@ -1037,7 +1101,7 @@ class HostBackend:
                     'receiving-bootstrap-stage', 'receiving-bootstrap-publish', 'receiving-identity'}
                     or profile is not None or peer_packet is not None or peer_being_ref is not None
                     or not onboarding_code_successor.sdk_parameters(candidate[0], uid=os.geteuid())
-                    or not self._mounted(plan, mounts, deadline_ns=deadline_ns)):
+                    or not self.runtime_available(plan, candidate, deadline_ns=deadline_ns)):
                 raise OnboardingError('qualified_onboarding_candidate_mount_required')
         from .onboarding_service import code_command
         public = "/home/agent/.onboarding-matrix"
@@ -1107,17 +1171,15 @@ class HostBackend:
                 raise OnboardingError('receiving_host_deadline_expired')
             arguments += ['--bootstrap-timeout-seconds' if bootstrapping else '--observation-timeout-seconds', str(remaining)]
         if prepared_venv is None:
-            owner_command = code_command(Path('/usr/bin/python3'), runtime_code,
+            owner_command = code_command(self.body_python(plan), runtime_code,
                 'clusterctl.onboarding_target', arguments)
         else:
             from .onboarding_sdk import runtime_command
             owner_command = runtime_command(prepared_venv, prepared_venv.parent / 'runtime-imports',
                 runtime_code, 'clusterctl.onboarding_target', arguments)
-        command = ["exec", self.instance(plan), "--user", "1000", "--group", "1000",
-            "--env", "HOME=/home/agent", "--", *owner_command]
         dispatch: dict = {} if input_data is None else {'input_data': input_data}
-        result = (self._dispatch(plan, command, **dispatch) if deadline_ns is None
-            else self._dispatch(plan, command, timeout_seconds=remaining, deadline_ns=deadline_ns, **dispatch))
+        result = self.execute_body(plan, owner_command, home=True, timeout_seconds=remaining,
+            deadline_ns=deadline_ns, **dispatch)
         value = json.loads(result)
         if not isinstance(value, dict):
             raise OnboardingError('invalid_onboarding_observation')
@@ -1146,7 +1208,7 @@ class HostBackend:
         base = self._receiving_base(plan)
         code, runtime_args, mounts = self._runtime_paths(plan, base, candidate=candidate)
         if (not onboarding_code_successor.sdk_parameters(candidate[0], uid=os.geteuid())
-                or not self._mounted(plan, mounts, deadline_ns=deadline_ns)):
+                or not self.runtime_available(plan, candidate, deadline_ns=deadline_ns)):
             raise OnboardingError('qualified_onboarding_candidate_mount_required')
         arguments = ['--action', action, '--code', str(base), *runtime_args,
             '--plan', '/home/agent/.onboarding-input/plan.json']
@@ -1158,7 +1220,7 @@ class HostBackend:
             onboarding_code_successor.selection(implementation[0], implementation[1],
                 self.config.code, self.config.release_digest, uid=os.geteuid())
             code, _, implementation_mounts = self._runtime_paths(plan, base, candidate=implementation)
-            if not self._mounted(plan, implementation_mounts, deadline_ns=deadline_ns):
+            if not self.runtime_available(plan, implementation, deadline_ns=deadline_ns):
                 raise OnboardingError('qualified_onboarding_candidate_mount_required')
             arguments += ['--implementation-code', str(code), '--implementation-digest', implementation[1]]
         for flag, value, limit in (('--bootstrap-request-json', request, 65536),
@@ -1173,9 +1235,9 @@ class HostBackend:
             raise OnboardingError('receiving_host_deadline_expired')
         arguments += ['--timeout-seconds', str(remaining)]
         from .onboarding_service import code_command
-        command = ['exec', self.instance(plan), '--user', '0', '--group', '0', '--',
-            *code_command(Path('/usr/bin/python3'), code, 'clusterctl.onboarding_service', arguments)]
-        raw = self._dispatch(plan, command, timeout_seconds=remaining, deadline_ns=deadline_ns)
+        command = code_command(self.body_python(plan), code, 'clusterctl.onboarding_service', arguments)
+        raw = self.execute_body(plan, command, uid=0, gid=0,
+            timeout_seconds=remaining, deadline_ns=deadline_ns)
         value = json.loads(raw)
         if not isinstance(value, dict) or value.get('installed') is False:
             raise OnboardingError('receiving_guest_service_observation_failed')
@@ -1250,6 +1312,8 @@ class HostBackend:
         # revocation while an earlier long Incus operation was in flight.
         if not self.authorize(plan, digest(plan)):
             raise OnboardingError("host_authorization_required")
+        if self.native_body(plan) is not None:
+            raise OnboardingError('native_receiving_incus_unsupported')
         if deadline_ns is not None:
             remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
             if remaining <= 0:

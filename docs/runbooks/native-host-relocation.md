@@ -42,6 +42,18 @@ ensurepip wheel also matters: an unrelated host pip can lack the SDK verifier's
 dependency-check API. Preserve mutable interpreter-binding preimages, verify the
 actual qualified SDK startup, and keep immutable application/dependency artifacts.
 
+Public helper staging and private SDK preparation are separate existing steps.
+Before selecting a new helper/SDK entrypoint, run the selected
+`clusterctl.onboarding_target sdk-prepare` as the actual receiving owner, using
+the retained native interpreter and exact runtime/base/plan pins. This prepares
+the content-addressed private environment and closed runtime-import tree; it
+does not start a model or select a service. Public `NativeBody.prepare_code`
+alone does not perform it. `admitted-serve` intentionally observes those prepared
+artifacts rather than installing dependencies during startup. A missing SDK
+directory therefore needs this preparation, not another transfer, identity
+enrollment, provider login or service-restart loop. Preserve and inspect any
+existing preparation attempt before resuming its supported idempotent operation.
+
 Let the selected systemd supervisor start Codex. Observe readiness through its
 existing native version/control RPC and verify the actual daemon and updater
 cgroups. A second launcher outside systemd can steal singleton ownership.

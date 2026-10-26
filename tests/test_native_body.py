@@ -111,6 +111,8 @@ def test_real_remote_launcher_rebases_owner_clock_and_namespace(monkeypatch, wal
     def observe(binary, argv, env):
         assert argv == ['owner', '--deadline-ns', str(expected_deadline), '--time-namespace', 'receiver-kernel']
         assert env['HOME'] == '/home/agent'
+        assert env['PATH'] == '/usr/local/bin:' + os.defpath
+        assert '/home/agent/.local/bin' not in env['PATH']
         raise ExecObserved()
     monkeypatch.setattr(os, 'execvpe', observe)
     with pytest.raises(ExecObserved):

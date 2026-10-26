@@ -694,7 +694,8 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         tests = list(dict.fromkeys((*MAINTENANCE_TESTS, *UPDATE_PREFLIGHT_TESTS)))
         if all((root / path).is_file() for path in tests):
             return 'peer', tests
-    native_profile_files = {'clusterctl/onboarding_service.py',
+    native_profile_files = {'clusterctl/native_body.py', 'tests/test_native_body.py',
+        'clusterctl/onboarding_service.py',
         'clusterctl/onboarding_host.py', 'clusterctl/onboarding_receiving_update.py',
         'tests/test_onboarding_service.py', 'tests/test_guest_service_bootstrap.py',
         'tests/test_guest_bootstrap_controller.py', 'tests/test_onboarding_peer_host.py'}

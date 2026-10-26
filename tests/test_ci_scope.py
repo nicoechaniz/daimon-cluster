@@ -1080,6 +1080,7 @@ def test_native_service_profile_scope_requires_exact_host_and_consumers(monkeypa
         'clusterctl/onboarding_receiving_update.py', 'tests/test_onboarding_service.py',
         'tests/test_guest_bootstrap_controller.py', 'tools/ci_scope.py',
         'tests/test_ci_scope.py', 'tests/test_onboarding_peer_host.py',
+        'clusterctl/native_body.py', 'tests/test_native_body.py',
         'docs/runbooks/native-host-relocation.md']
     profile, tests = select(changed, ROOT, base='a' * 40)
     assert profile == 'peer'

@@ -40,7 +40,7 @@ if request['owner_clock']:
 os.setgroups([])
 os.setgid(request['gid']);os.setuid(request['uid'])
 os.chdir(request['home'])
-os.execvpe(argv[0],argv,{'PATH':os.defpath,'LANG':'C.UTF-8',
+os.execvpe(argv[0],argv,{'PATH':'/usr/local/bin:'+os.defpath,'LANG':'C.UTF-8',
     'PYTHONDONTWRITEBYTECODE':'1',**request['env']})
 '''
 

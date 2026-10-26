@@ -1093,3 +1093,15 @@ def test_native_service_profile_scope_requires_exact_host_and_consumers(monkeypa
     monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *_a, **_k:
         subprocess.CompletedProcess([], 0, previous + b'\n# unrelated host change\n'))
     assert select(changed, ROOT, base='a' * 40) == ('full', ['tests'])
+
+
+def test_native_backup_preparation_has_closed_scope_and_real_contracts(tmp_path):
+    changed = ['scripts/native-restic-init.py', 'tests/test_native_restic_init.py',
+        'docs/runbooks/native-body-backup.md', 'tools/ci_scope.py', 'tests/test_ci_scope.py',
+        '.github/workflows/tests.yml']
+    assert select(changed, ROOT) == ('native-backup', ['tests/test_native_restic_init.py',
+        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'])
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for extra in ('clusterctl/native_body.py', 'scripts/restic-mirror-pull.sh',
+                  'requirements.txt', 'unknown.py'):
+        assert select([*changed, extra], ROOT) == ('full', ['tests'])

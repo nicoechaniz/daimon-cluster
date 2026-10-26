@@ -1,5 +1,10 @@
 # Quiesced snapshots design (issue #14 design input)
 
+Current native relocation work uses [the native body backup contract](../runbooks/native-body-backup.md).
+The dated Incus/host-wide procedure below is historical and must not be used
+as the native member default. Native capture and offhost restore acceptance
+remain incomplete until the receiving record proves them.
+
 Status: design v0.1 (2026-08-01). Implementation lands in M3 after the
 pilot (#13). Inputs: threat model B8 (hostile restore), contracts #4
 (backup manifest schema), profile/volume layout (#8).

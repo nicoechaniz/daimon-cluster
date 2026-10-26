@@ -3,6 +3,10 @@
 Roadmap: Cluster214/222; cross-system design proposal:
 https://github.com/AlterMundi/daimon-matrix/issues/328.
 
+For application layout, see [the shared composition patterns](app-composition.md).
+They complement this appearance contract; they do not change its design authority
+or replace the maintained Homemaker templates.
+
 ## Actual source and candidate state
 
 Homemaker's owning repository is AnnieScigliano/homemaker, inspected read-only

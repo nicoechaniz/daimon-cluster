@@ -4,6 +4,11 @@ Owner: [Cluster #244](https://github.com/nicoechaniz/daimon-cluster/issues/244).
 The launcher is a native client of the existing homes gateway. It creates no
 bot consumer, access authority, identity, model call or session-control provider.
 
+The [shared app composition direction](app-composition.md) explains the quiet
+header, readable tool directory and narrow-screen layout derived from the recent
+PsicopoMPo/Interaction work. It preserves this launcher's existing behavior and
+Homemaker appearance contract; it does not deploy changes to other authors' apps.
+
 ## First useful route
 
 **Apps is the launcher**, not a destination app. A private bot menu may open its

@@ -453,8 +453,13 @@ class PinnedOwnerClient:
 
     @property
     def bound_observation_clock(self) -> bool:
-        # _call verifies this actual immutable helper and its time namespace.
-        return self.control_implementation is not None
+        # Local/Incus controls share Root's kernel clock. Native SSH rebases
+        # deadlines on the receiver, so its raw read-start cannot be compared
+        # with Root's monotonic interval. Keep the conservative launch bound.
+        from .onboarding_receiving_update import GuestGroupClient
+        return self.control_implementation is not None and not (
+            isinstance(self.base, GuestGroupClient)
+            and self.base.backend.native_body(self.base.plan) is not None)
 
     def prepare_apply_observed_control(self, command: dict, path: Path, *, observation: dict):
         if self.control_implementation is None:

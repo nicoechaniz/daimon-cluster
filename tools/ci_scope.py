@@ -345,6 +345,7 @@ MAINTENANCE_TESTS = ('tests/test_native_body.py', 'tests/test_receiving_worker.p
     'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 
 NATIVE_RECEIVING_FILES = {'clusterctl/native_body.py', 'tests/test_native_body.py',
+    'tests/test_receiving_cohort_control.py',
     'clusterctl/onboarding_host.py', 'tests/test_onboarding_host.py',
     'clusterctl/onboarding_owner_client.py', 'tests/test_onboarding_owner_client.py',
     'clusterctl/onboarding_worker.py', 'tests/test_onboarding_progress.py',

@@ -1064,3 +1064,30 @@ def test_cohort_with_public_reader_fixture_composes_installed_coverage():
     for extra in ('clusterctl/onboarding_custody.py', 'clusterctl/onboarding_sdk.py',
                   'requirements-weave.txt', 'unknown.py'):
         assert select([*changed, extra], ROOT) == ('full', ['tests'])
+
+
+def test_native_service_profile_scope_requires_exact_host_and_consumers(monkeypatch, tmp_path):
+    import subprocess
+    from tools import ci_scope
+    current = (ROOT / 'clusterctl/onboarding_host.py').read_bytes()
+    addition = (b"        if self.native_body(plan) is not None:\n"
+                b"            arguments.append('--native-host')\n")
+    assert current.count(addition) == 1
+    previous = current.replace(addition, b'', 1)
+    monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *_a, **_k:
+        subprocess.CompletedProcess([], 0, previous))
+    changed = ['clusterctl/onboarding_service.py', 'clusterctl/onboarding_host.py',
+        'clusterctl/onboarding_receiving_update.py', 'tests/test_onboarding_service.py',
+        'tests/test_guest_bootstrap_controller.py', 'tools/ci_scope.py',
+        'tests/test_ci_scope.py', 'docs/runbooks/native-host-relocation.md']
+    profile, tests = select(changed, ROOT, base='a' * 40)
+    assert profile == 'peer'
+    assert set(ci_scope.MAINTENANCE_TESTS) <= set(tests)
+    assert {'tests/test_onboarding_service.py', 'tests/test_guest_service_bootstrap.py',
+            'tests/test_guest_owner_bootstrap.py'} <= set(tests)
+    assert select(changed, tmp_path, base='a' * 40) == ('full', ['tests'])
+    for extra in ('requirements-weave.txt', 'clusterctl/onboarding_custody.py', 'unknown.py'):
+        assert select([*changed, extra], ROOT, base='a' * 40) == ('full', ['tests'])
+    monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *_a, **_k:
+        subprocess.CompletedProcess([], 0, previous + b'\n# unrelated host change\n'))
+    assert select(changed, ROOT, base='a' * 40) == ('full', ['tests'])

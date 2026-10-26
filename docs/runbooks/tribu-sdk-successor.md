@@ -996,6 +996,11 @@ journal entry before retrying a generic `onboarding_runtime_not_ready`; a missin
 entry does not establish a readiness timeout, authority failure or OOM. Readiness,
 admission, shutdown and helper-selection checks remain unchanged.
 
+For multi-view startup, inspect the chained worker refusal as well. Readiness
+cleanup joins the serving threads and preserves their original exception for
+the bounded reporter, including a failure before its READY publication. A
+readiness EOF must not mask that exception as a generic not-ready result.
+
 ## Current admitted maintenance observation (#270)
 
 The qualified helper's explicit `admitted-running --require-loaded

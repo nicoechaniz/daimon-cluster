@@ -591,13 +591,15 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         if all((root / path).is_file() for path in tests):
             return 'peer', tests
     runtime_files = {'clusterctl/onboarding_runtime.py', 'tests/test_onboarding_runtime.py'}
-    runtime_tests = ['tests/test_onboarding_runtime.py', 'tests/test_onboarding_admission.py',
+    view_files = {'clusterctl/onboarding_views.py', 'tests/test_onboarding_views.py'}
+    runtime_tests = ['tests/test_onboarding_runtime.py', 'tests/test_onboarding_views.py',
+                     'tests/test_onboarding_source.py', 'tests/test_onboarding_admission.py',
                      'tests/test_onboarding_group.py', 'tests/test_onboarding_group_authorities.py',
                      'tests/test_guest_service_bootstrap.py', 'tests/test_guest_owner_bootstrap.py',
                      'tests/test_guest_bootstrap_controller.py',
                      'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
-    if (runtime_files <= set(changed)
-            and set(changed) <= runtime_files | CI_FILES | {'docs/runbooks/tribu-sdk-successor.md'}
+    if ((runtime_files <= set(changed) or view_files <= set(changed))
+            and set(changed) <= runtime_files | view_files | CI_FILES | {'docs/runbooks/tribu-sdk-successor.md'}
             and all((root / name).is_file() for name in runtime_tests)):
         # Child launch/readiness, real admission, group composition and both
         # qualified guest bootstrap routes. Unchanged SDK builders and Source

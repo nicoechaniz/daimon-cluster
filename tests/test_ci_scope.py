@@ -52,6 +52,17 @@ def test_runtime_child_change_keeps_real_admission_group_and_guest_launchers(tmp
         assert select([*changed,extra],ROOT)==('full',['tests'])
 
 
+def test_view_startup_change_covers_source_and_admitted_runtime_without_sdk_rebuild():
+    changed = ['clusterctl/onboarding_views.py', 'tests/test_onboarding_views.py',
+               'tools/ci_scope.py', 'tests/test_ci_scope.py', 'docs/runbooks/tribu-sdk-successor.md']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'peer'
+    assert {'tests/test_onboarding_views.py', 'tests/test_onboarding_runtime.py',
+            'tests/test_onboarding_source.py', 'tests/test_onboarding_group.py'} <= set(tests)
+    assert 'tests/test_onboarding_sdk.py' not in tests
+    assert select([*changed, 'clusterctl/onboarding_sdk.py'], ROOT) == ('full', ['tests'])
+
+
 def test_integration_bootstrap_keeps_loaded_source_cohort_and_guest_contracts():
     from tools.ci_scope import LOADED_STARTUP_TESTS, MAINTENANCE_TESTS
     changed = ['clusterctl/onboarding_source.py', 'clusterctl/onboarding_receiving_update.py',

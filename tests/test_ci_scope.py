@@ -1079,7 +1079,8 @@ def test_native_service_profile_scope_requires_exact_host_and_consumers(monkeypa
     changed = ['clusterctl/onboarding_service.py', 'clusterctl/onboarding_host.py',
         'clusterctl/onboarding_receiving_update.py', 'tests/test_onboarding_service.py',
         'tests/test_guest_bootstrap_controller.py', 'tools/ci_scope.py',
-        'tests/test_ci_scope.py', 'docs/runbooks/native-host-relocation.md']
+        'tests/test_ci_scope.py', 'tests/test_onboarding_peer_host.py',
+        'docs/runbooks/native-host-relocation.md']
     profile, tests = select(changed, ROOT, base='a' * 40)
     assert profile == 'peer'
     assert set(ci_scope.MAINTENANCE_TESTS) <= set(tests)

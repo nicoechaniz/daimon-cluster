@@ -697,7 +697,7 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
     native_profile_files = {'clusterctl/onboarding_service.py',
         'clusterctl/onboarding_host.py', 'clusterctl/onboarding_receiving_update.py',
         'tests/test_onboarding_service.py', 'tests/test_guest_service_bootstrap.py',
-        'tests/test_guest_bootstrap_controller.py'}
+        'tests/test_guest_bootstrap_controller.py', 'tests/test_onboarding_peer_host.py'}
     native_profile_tests = list(dict.fromkeys((*MAINTENANCE_TESTS,
         'tests/test_onboarding_service.py', 'tests/test_guest_service_bootstrap.py',
         'tests/test_guest_owner_bootstrap.py', 'tests/test_onboarding_managed.py',

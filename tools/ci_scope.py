@@ -17,7 +17,7 @@ from pathlib import Path
 CI_FILES = {'.github/workflows/tests.yml', 'README.md', 'tools/ci_scope.py', 'tools/ci_guest_owner.py',
             'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'}
 # Closed documentation pages with no generated/runtime consumer. Unknown docs stay full.
-RUNBOOK_DOCS = {'docs/runbooks/native-codex-supervision.md', 'docs/runbooks/same-being-integration.md',
+RUNBOOK_DOCS = {'docs/runbooks/native-codex-supervision.md', 'docs/runbooks/native-host-relocation.md', 'docs/runbooks/same-being-integration.md',
     'docs/runbooks/tribu-sdk-successor.md', 'docs/design/shared-home-styles.md',
     'README.md', 'RESUME.md', 'docs/PLAN.md', 'docs/design/matrix-convergence.md',
     'docs/design/onboarding-jobs.md', 'docs/design/provisioning-flow.md',

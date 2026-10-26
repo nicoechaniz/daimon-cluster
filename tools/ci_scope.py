@@ -599,11 +599,13 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
     native_backup_files = {'scripts/native-restic-init.py',
+        'scripts/native-body-capture.py', 'tests/test_native_body_capture.py',
         'tests/test_native_restic_init.py', 'docs/runbooks/native-body-backup.md',
         'docs/design/backup-targets.md', 'docs/design/quiesced-snapshots.md'}
-    native_backup_tests = ['tests/test_native_restic_init.py',
+    native_backup_tests = ['tests/test_native_restic_init.py', 'tests/test_native_body_capture.py',
         'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
-    if ({'scripts/native-restic-init.py', 'tests/test_native_restic_init.py'} <= set(changed)
+    if (({'scripts/native-restic-init.py', 'tests/test_native_restic_init.py'} <= set(changed)
+             or {'scripts/native-body-capture.py', 'tests/test_native_body_capture.py'} <= set(changed))
             and set(changed) <= native_backup_files | CI_FILES
             and all((root / name).is_file() for name in native_backup_tests)):
         return 'native-backup', native_backup_tests

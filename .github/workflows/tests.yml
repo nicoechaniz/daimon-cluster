@@ -53,7 +53,7 @@ jobs:
         if: needs.scope.outputs.profile == 'native-backup'
         run: |
           sudo apt-get update -qq
-          sudo env NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends age restic
+          sudo env NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends age restic rsync
           age --version
           restic version
       - name: Harden and record the trusted qualification interpreter

@@ -1,5 +1,17 @@
 # Receiver-compatible Matrix updates
 
+## Resolve receiver placement before maintenance
+
+A receiver is a signed body, not necessarily an Incus guest on the coordinator.
+Resolve its current maintained host and native/container route before selecting
+an execution backend. Eko lives natively on MEDUSA; the Source dm-eko instance
+is a disabled rollback and must not receive routine updates or be restarted by
+historical onboarding reconciliation. Use the protected native_by_name binding
+and the native relocation runbook. Until executable maintenance/worker adoption
+is observed, retain that gap; never silently fall back to the stopped origin.
+Preserve independent CompAII/Oliva work and all existing signed identities.
+
+
 ## Routine observation and software correction before activation
 
 The owner requests the authenticated `runtime.status` receiving view, including
@@ -995,6 +1007,11 @@ source lines, locals and private path prefixes are excluded. Inspect this retain
 journal entry before retrying a generic `onboarding_runtime_not_ready`; a missing
 entry does not establish a readiness timeout, authority failure or OOM. Readiness,
 admission, shutdown and helper-selection checks remain unchanged.
+
+For multi-view startup, inspect the chained worker refusal as well. Readiness
+cleanup joins the serving threads and preserves their original exception for
+the bounded reporter, including a failure before its READY publication. A
+readiness EOF must not mask that exception as a generic not-ready result.
 
 ## Current admitted maintenance observation (#270)
 

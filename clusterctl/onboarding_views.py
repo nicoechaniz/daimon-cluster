@@ -79,5 +79,8 @@ def serve_views(views: list[Any], stop: threading.Event, *, ready_descriptor: in
                     os.close(writer)
             except OSError:
                 pass
-    if errors:
-        raise OnboardingError('onboarding_runtime_view_failed') from errors[0]
+        # A readiness EOF/timeout also enters this cleanup. Preserve a worker's
+        # actual refusal after joining it; code after finally would be skipped
+        # by the readiness exception and hide the cause from the safe reporter.
+        if errors:
+            raise OnboardingError('onboarding_runtime_view_failed') from errors[0]

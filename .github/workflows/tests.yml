@@ -49,6 +49,13 @@ jobs:
             requirements-homes.txt
             requirements-home-login.txt
             constraints.txt
+      - name: Install native backup recovery tools
+        if: needs.scope.outputs.profile == 'native-backup'
+        run: |
+          sudo apt-get update -qq
+          sudo env NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends age restic
+          age --version
+          restic version
       - name: Harden and record the trusted qualification interpreter
         if: needs.scope.outputs.profile == 'full'
         env:

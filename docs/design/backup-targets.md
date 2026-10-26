@@ -1,5 +1,10 @@
 # Backup targets strategy (issue #15 design input)
 
+Current native relocation work uses [the native body backup contract](../runbooks/native-body-backup.md).
+The dated Incus/host-wide procedure below is historical and must not be used
+as the native member default. Native capture and offhost restore acceptance
+remain incomplete until the receiving record proves them.
+
 UPDATE 2026-08-01 — model inverted (Nico's call): the legion's sshd
 stays closed by design. The encrypted restic repo lives LOCAL on
 daimonmatrix; the legion PULLS its off-host copy over its existing ssh

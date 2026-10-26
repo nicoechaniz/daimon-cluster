@@ -9,6 +9,30 @@ header, readable tool directory and narrow-screen layout derived from the recent
 PsicopoMPo/Interaction work. It preserves this launcher's existing behavior and
 Homemaker appearance contract; it does not deploy changes to other authors' apps.
 
+## Deliver a composition-only release
+
+The gateway reads launcher assets and their content versions from its selected
+source directory. For a CSS-only update, retain that exact gateway base and
+prepare an immutable successor whose source-file manifest differs only at
+`clusterctl/homes/launcher/launcher.css`, using the CSS from the qualified commit.
+Do not upgrade unrelated Cluster, authority or onboarding code to deliver a
+launcher layout. Preserve the existing interpreter, configuration, Homemaker
+source/state, publication stores and application routes.
+
+Select the prepared source through the receiving service's existing unit
+configuration, retaining its previous selection for rollback. Announce the brief
+shared web-gateway restart; no global Stop, bot restart or native-session restart
+is needed. Confirm fresh HTML names the new CSS content digest, those exact bytes
+are served under the immutable URL, and JavaScript/configuration remain unchanged.
+Check the actual browser catalogue and narrow layout after reloading the page.
+
+Rollback changes only that software selection and restarts the same gateway;
+never restore an old registry, authentication database or input journal. Exact
+receiving paths, manifests and activation receipts belong in the operator's
+private infrastructure binding. The common launcher is one shared app; adopting
+its layout does not modify the applications it links to or authorize changes to
+their templates and receiving installations.
+
 ## First useful route
 
 **Apps is the launcher**, not a destination app. A private bot menu may open its

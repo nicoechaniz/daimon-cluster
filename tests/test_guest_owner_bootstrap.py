@@ -352,9 +352,10 @@ def test_predecessor_freeze_uses_actual_base_and_admission_without_group_status(
         def different_loaded_bundle(self, request):
             response = status(self, request)
             response = copy.deepcopy(response)
-            response['result']['loaded_runtime'] = dict(process_id=observed['process']['pid'],
-                runtime_bundle_sha256='0'*64, runtime_id=bundle['runtime_id'],
-                local_origin=bundle['local_origin'])
+            if response.get('ok') is True:
+                response['result']['loaded_runtime'] = dict(process_id=observed['process']['pid'],
+                    runtime_bundle_sha256='0'*64, runtime_id=bundle['runtime_id'],
+                    local_origin=bundle['local_origin'])
             return response
         with monkeypatch.context() as changed:
             changed.setattr(LegacyGroupRestrictedClient, 'send', different_loaded_bundle)

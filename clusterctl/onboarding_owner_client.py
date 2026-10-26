@@ -766,7 +766,7 @@ class OwnerClient:
             raise OnboardingError('host_authorization_required')
         base = self.host._receiving_base(plan)
         guest_code, _, mounts = self.host._runtime_paths(plan, base, candidate=candidate)
-        if not self.host._mounted(plan, mounts, deadline_ns=deadline):
+        if not self.host.runtime_available(plan, candidate, deadline_ns=deadline):
             raise OnboardingError('qualified_onboarding_candidate_mount_required')
         from .onboarding_code_successor import sdk_parameters
         sdk = onboarding_sdk.verify(candidate[0], uid=0, **sdk_parameters(candidate[0], uid=0))
@@ -779,8 +779,7 @@ class OwnerClient:
                 *[part for path in connections for part in ('--connection-mirror', str(path))],
                 *(['--native-endpoint', str(native_endpoint)] if native_endpoint is not None else []),
                 *[part for thread in native_threads for part in ('--native-thread', thread)]])
-        raw = self.host._dispatch(plan, ['exec', self.host.instance(plan), '--user', '1000',
-            '--group', '1000', '--env', 'HOME=/home/agent', '--', *argv],
+        raw = self.host.execute_body(plan, argv, home=True,
             timeout_seconds=remaining(), deadline_ns=deadline)
         remaining()
         if len(raw.encode()) > 65536:

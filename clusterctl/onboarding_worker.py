@@ -9,7 +9,6 @@ import argparse
 import concurrent.futures
 import json
 import os
-import os
 import signal
 import threading
 import time
@@ -25,7 +24,8 @@ class Worker:
                  publish: Callable[[dict], None] | None = None,
                  plans: Callable[[], list[dict]] | None = None,
                  homes: Callable[[dict], dict] | None = None,
-                 runtime_health: Callable[[dict], dict] | None = None):
+                 runtime_health: Callable[[dict], dict] | None = None,
+                 relocated: Callable[[str], dict | None] | None = None):
         if type(concurrency) is not int or not 1 <= concurrency <= 8:
             raise OnboardingError("invalid_worker_concurrency")
         self.store, self.backend = store, backend
@@ -34,6 +34,7 @@ class Worker:
         self.plans = plans
         self.homes = homes
         self.runtime_health = runtime_health
+        self.relocated = relocated
 
     def _enqueue(self) -> None:
         if self.plans:
@@ -45,6 +46,14 @@ class Worker:
 
     def _tick(self, name: str) -> dict:
         try:
+            # A physical move preserves completed enrollment history. Its new
+            # placement owns maintenance; old home/health callbacks must not
+            # reconcile a stopped source container from that historical job.
+            retained = self.relocated(name) if self.relocated else None
+            if retained is not None:
+                if self.publish:
+                    self.publish(retained)
+                return retained
             reconcile = getattr(self.homes, 'reconcile_committed', None)
             if reconcile:
                 reconcile(name)
@@ -108,6 +117,15 @@ def main(argv: list[str] | None = None) -> int:
 
         progress = Progress(config.progress, worker_uid=os.geteuid()) if config.progress else None
         store=JobStore(config.jobs)
+        def relocated(name: str) -> dict | None:
+            if name not in (selections.current().native_by_name or {}):
+                return None
+            record = store._load(name)
+            owner = backend()
+            if (record['state'] != 'complete' or owner.native_body(record['plan']) is None
+                    or not owner.authorize(record['plan'], record['plan_digest'])):
+                raise OnboardingError('native_receiving_completed_enrollment_required')
+            return store.project(record)
         homes=None
         if args.home_placements:
             if progress is None:
@@ -126,7 +144,8 @@ def main(argv: list[str] | None = None) -> int:
         worker = Worker(store, backend, concurrency=config.concurrency,
                         publish=progress.publish if progress else None,
                         plans=lambda: selections.current().approved_plans(), homes=homes,
-                        runtime_health=lambda result: enroll_health(registry, store, backend(), result))
+                        runtime_health=lambda result: enroll_health(registry, store, backend(), result),
+                        relocated=relocated)
         if args.once:
             print(json.dumps(worker.once()))
             return 0

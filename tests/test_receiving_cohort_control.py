@@ -1378,6 +1378,34 @@ def test_qualified_read_start_is_bounded_by_actual_query_interval(monkeypatch, h
     assert deadlines==[160_000_000_000] and owner.deadline_ns is None
 
 
+@pytest.mark.parametrize('native,remote_started,expected', [
+    (True, 9_999_000_000_000, 100_000_000_000),
+    (False, 110_000_000_000, 110_000_000_000),
+])
+def test_native_owner_clock_uses_root_launch_while_incus_keeps_precise_bound(
+    tmp_path, monkeypatch, native, remote_started, expected
+):
+    from types import SimpleNamespace
+    from clusterctl import onboarding_receiving_update as module, receiving_maintenance
+    backend = SimpleNamespace(native_body=lambda plan: object() if native else None)
+    base = module.GuestGroupClient(backend, {'name': 'eko'}, (tmp_path/'code', 'a'*64), root=tmp_path/'owner')
+    owner = receiving_maintenance.PinnedOwnerClient(base, {}, {}, body_code=tmp_path/'code',
+                                                   control_implementation={'qualified': True})
+    current = {'observation_started_at_ns': remote_started}
+    owner.qualified_identity = lambda **kwargs: current
+    ticks = iter((100_000_000_000, 100_000_000_000, 150_000_000_000, 150_000_000_000))
+    monkeypatch.setattr(module, 'time', SimpleNamespace(time_ns=lambda: 1_000_000_000,
+                                                       monotonic_ns=lambda: next(ticks)))
+    controller = CohortController(None, 'unused', {'eko': owner})
+    plan = {'observation_window_ms': 60000, 'expires_at_ms': 100000,
+            'receivers': {'eko': {'profile': 'guest'}}}
+    actual, wall, started = controller._observe_adoption('eko', plan, context=({}, {}, None, {}),
+                                                        deadline_ns=160_000_000_000)
+    assert actual is current and started == expected
+    assert wall == 1000 + (expected - 100_000_000_000) // 1_000_000
+    assert owner.deadline_ns is None
+
+
 def test_combined_owner_control_keeps_durable_request_after_lost_acceptance(
     tmp_path, monkeypatch
 ):

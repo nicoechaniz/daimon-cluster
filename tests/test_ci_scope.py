@@ -6,6 +6,20 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_native_receiving_carrier_keeps_mixed_host_owner_and_worker_contracts(tmp_path):
+    from tools.ci_scope import NATIVE_RECEIVING_FILES, NATIVE_RECEIVING_TESTS
+    changed = sorted(NATIVE_RECEIVING_FILES | {'tools/ci_scope.py', 'tests/test_ci_scope.py',
+                                             'docs/runbooks/native-host-relocation.md'})
+    assert select(changed, ROOT) == ('peer', list(NATIVE_RECEIVING_TESTS))
+    assert {'tests/test_native_body.py', 'tests/test_onboarding_host.py',
+            'tests/test_onboarding_owner_control.py', 'tests/test_onboarding_managed.py',
+            'tests/test_onboarding_progress.py', 'tests/test_onboarding_code_successor.py'} <= set(NATIVE_RECEIVING_TESTS)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for extra in ('clusterctl/admission.py', 'clusterctl/onboarding_custody.py',
+                  'clusterctl/onboarding_sdk.py', 'requirements-weave.txt', 'unknown.py'):
+        assert select([*changed, extra], ROOT) == ('full', ['tests'])
+
+
 def test_predecessor_status_reuse_keeps_native_bootstrap_and_maintenance(tmp_path):
     from tools.ci_scope import MAINTENANCE_TESTS
     changed=['clusterctl/onboarding_target.py', 'clusterctl/onboarding_owner_control.py',

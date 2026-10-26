@@ -30,6 +30,12 @@ MODULE = 'clusterctl.receiving_maintenance'
 
 # Disclosure is based on known public codes, never spelling of exception text.
 PUBLIC_ERRORS = OWNER_PUBLIC_ERRORS | receiving_worker.PUBLIC_ERRORS | frozenset({
+    'native_receiving_placement_required', 'native_receiving_host_changed',
+    'native_receiving_placement_changed',
+    'native_receiving_code_changed', 'native_receiving_code_unconfirmed',
+    'native_receiving_preparation_in_flight', 'native_receiving_preparation_changed',
+    'native_receiving_operation_unconfirmed', 'native_receiving_incus_unsupported',
+    'native_receiving_mount_unsupported', 'invalid_native_receiving_request',
     'receiving_maintenance_binding_required', 'receiving_maintenance_child_conflict',
     'receiving_maintenance_owner_required', 'receiving_maintenance_preparation_required',
     'receiving_maintenance_preservation_required', 'receiving_maintenance_action_required',
@@ -373,7 +379,7 @@ class PinnedOwnerClient:
                 raise OnboardingError('host_authorization_required')
             vector = (code, fingerprint)
             code, _, mounts = backend._runtime_paths(plan, backend._receiving_base(plan), candidate=vector)
-            if not backend._mounted(plan, mounts, deadline_ns=deadline):
+            if not backend.runtime_available(plan, vector, deadline_ns=deadline):
                 raise OnboardingError('qualified_onboarding_candidate_mount_required')
             generation = Path('/home/agent/.local/share/daimon-matrix/sdk') / digest(sdk)
         else:
@@ -407,8 +413,8 @@ class PinnedOwnerClient:
         argv = onboarding_sdk.runtime_command(generation / 'venv', generation / 'runtime-imports',
             code, 'clusterctl.onboarding_owner_control', arguments)
         if guest:
-            result = backend._dispatch(plan, ['exec', backend.instance(plan), '--user', '1000',
-                '--group', '1000', '--', *argv], input_data=json.dumps(payload), deadline_ns=deadline)
+            result = backend.execute_body(plan, argv, input_data=json.dumps(payload),
+                deadline_ns=deadline, owner_clock=backend.native_body(plan) is not None)
             # _dispatch already enforces the host deadline and command status.
             result = SimpleNamespace(returncode=0, stdout=result, stderr='')
         else:
@@ -447,8 +453,13 @@ class PinnedOwnerClient:
 
     @property
     def bound_observation_clock(self) -> bool:
-        # _call verifies this actual immutable helper and its time namespace.
-        return self.control_implementation is not None
+        # Local/Incus controls share Root's kernel clock. Native SSH rebases
+        # deadlines on the receiver, so its raw read-start cannot be compared
+        # with Root's monotonic interval. Keep the conservative launch bound.
+        from .onboarding_receiving_update import GuestGroupClient
+        return self.control_implementation is not None and not (
+            isinstance(self.base, GuestGroupClient)
+            and self.base.backend.native_body(self.base.plan) is not None)
 
     def prepare_apply_observed_control(self, command: dict, path: Path, *, observation: dict):
         if self.control_implementation is None:
@@ -739,6 +750,10 @@ class ReceivingMaintenance:
 
     def _mount_code(self, plan: dict, vector: tuple[Path, str]) -> None:
         backend = self.backend
+        if backend.native_body(plan) is not None:
+            if not backend.runtime_available(plan, vector, prepare=True):
+                raise OnboardingError('native_receiving_code_unconfirmed')
+            return
         _, _, mounts = backend._runtime_paths(plan, backend._receiving_base(plan), candidate=vector)
         if not backend._mounted(plan, mounts):
             for name, device in mounts.items():

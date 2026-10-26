@@ -27,6 +27,7 @@ FILES = (
     "clusterctl/being_seed.py",
     "clusterctl/onboarding.py",
     "clusterctl/onboarding_host.py",
+    "clusterctl/native_body.py",
     "clusterctl/onboarding_worker.py",
     "clusterctl/onboarding_progress.py",
     "clusterctl/onboarding_consent.py",

@@ -328,18 +328,33 @@ OWNER_CONTROL_TESTS = ('tests/test_onboarding_owner_control.py',
 # Routine receiving maintenance composes controllers without changing SDK,
 # authority, custody or the native model. Unknown deltas retain wider coverage.
 MAINTENANCE_FILES = {'clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py',
+    'clusterctl/native_body.py', 'tests/test_native_body.py',
+    'clusterctl/onboarding_worker.py', 'tests/test_onboarding_progress.py',
     'clusterctl/receiving_worker.py', 'tests/test_receiving_worker.py',
     'tools/build_receiving_maintenance.py', 'tools/check_rc_types.py',
     'clusterctl/onboarding_owner_control.py', 'tests/test_onboarding_owner_control.py', 'tests/test_receiving_cohort_control.py',
     'clusterctl/onboarding_owner_client.py', 'tests/test_onboarding_owner_client.py',
     'clusterctl/onboarding_receiving_update.py', 'tests/test_guest_bootstrap_controller.py'}
-MAINTENANCE_TESTS = ('tests/test_receiving_worker.py', 'tests/test_receiving_maintenance.py', 'tests/test_onboarding_owner_control.py',
+MAINTENANCE_TESTS = ('tests/test_native_body.py', 'tests/test_receiving_worker.py', 'tests/test_receiving_maintenance.py', 'tests/test_onboarding_owner_control.py',
+    'tests/test_onboarding_progress.py', 'tests/test_onboarding_worker_install.py',
     'tests/test_source_bootstrap.py', 'tests/test_source_owner_adapter.py',
     'tests/test_guest_bootstrap_controller.py', 'tests/test_receiving_cohort_control.py',
     'tests/test_receiving_host_selection.py', 'tests/test_receiving_update_journal.py',
     'tests/test_receiving_process_observation.py', 'tests/test_onboarding_owner_client.py',
     'tests/test_onboarding_host.py', 'tests/test_onboarding_host_ownership.py',
     'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
+
+NATIVE_RECEIVING_FILES = {'clusterctl/native_body.py', 'tests/test_native_body.py',
+    'tests/test_receiving_cohort_control.py',
+    'clusterctl/onboarding_host.py', 'tests/test_onboarding_host.py',
+    'clusterctl/onboarding_owner_client.py', 'tests/test_onboarding_owner_client.py',
+    'clusterctl/onboarding_worker.py', 'tests/test_onboarding_progress.py',
+    'clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py',
+    'tools/build_receiving_maintenance.py', 'tools/check_rc_types.py'}
+NATIVE_RECEIVING_TESTS = tuple(dict.fromkeys((*MAINTENANCE_TESTS,
+    'tests/test_onboarding.py', 'tests/test_onboarding_managed.py',
+    'tests/test_onboarding_code_successor.py', 'tests/test_onboarding_release.py',
+    'tests/test_operational_assets.py')))
 
 
 LOADED_STARTUP_FILES = {'RESUME.md', 'clusterctl/onboarding_sdk.py', 'clusterctl/onboarding_target.py',
@@ -658,6 +673,13 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         if all((root / path).is_file() for path in tests):
             return 'peer', tests
     host = {'clusterctl/onboarding_host.py', 'tests/test_onboarding_host.py'}
+    if ({'clusterctl/native_body.py', 'tests/test_native_body.py'} <= set(changed)
+            and set(changed) <= NATIVE_RECEIVING_FILES | CI_FILES | RUNBOOK_DOCS
+            and all((root / name).is_file() for name in NATIVE_RECEIVING_TESTS)):
+        # Native placement changes the carrier, code availability and clock
+        # domain. Keep actual owner/bootstrap/host/worker contracts; no archive
+        # recovery or unrelated account/physical-recovery jobs are affected.
+        return 'peer', list(NATIVE_RECEIVING_TESTS)
     if (({'clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py'} <= set(changed)
             or {'clusterctl/onboarding_receiving_update.py', 'tests/test_receiving_cohort_control.py'} <= set(changed))
             and set(changed) <= MAINTENANCE_FILES | host | CI_FILES | RUNBOOK_DOCS

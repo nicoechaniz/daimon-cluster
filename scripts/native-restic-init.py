@@ -12,6 +12,7 @@ import os
 import secrets
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -115,10 +116,23 @@ def main() -> int:
     parser.add_argument('--recipients', type=Path, required=True)
     parser.add_argument('--operator-public', type=Path, required=True)
     args = parser.parse_args()
-    if os.geteuid() != 0:
-        raise PreparationError('native_backup_operator_required')
-    os.umask(0o077)
-    print(json.dumps(initialize(args.state, args.recipients, args.operator_public)))
+    try:
+        if os.geteuid() != 0:
+            raise PreparationError('native_backup_operator_required')
+        os.umask(0o077)
+        result = initialize(args.state, args.recipients, args.operator_public)
+    except PreparationError as error:
+        print(json.dumps({'error': str(error)}), file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as error:
+        tool = error.cmd[0] if error.cmd[0] in {'age', 'restic'} else 'unknown'
+        print(json.dumps({'error': 'native_backup_tool_unconfirmed', 'tool': tool,
+                          'exit_code': error.returncode}), file=sys.stderr)
+        return 1
+    except (OSError, UnicodeError):
+        print(json.dumps({'error': 'native_backup_local_io_unconfirmed'}), file=sys.stderr)
+        return 1
+    print(json.dumps(result))
     return 0
 
 

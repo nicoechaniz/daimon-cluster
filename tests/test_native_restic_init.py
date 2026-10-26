@@ -82,3 +82,14 @@ def test_real_envelope_recovers_same_password_and_repeated_init_preserves_histor
     assert (state / 'recovery.age').read_bytes() == envelope
     assert (state / 'restic/config').read_bytes() == config
     assert os.stat(state / 'credentials/restic-password').st_mode & 0o077 == 0
+
+
+def test_cli_reports_only_closed_refusal_without_private_arguments(monkeypatch, capsys):
+    import sys
+    monkeypatch.setattr(os, 'geteuid', lambda: 1000)
+    monkeypatch.setattr(sys, 'argv', ['native-restic-init', '--state', '/selected/state',
+        '--recipients', '/selected/recipients', '--operator-public', '/selected/operator'])
+    assert module.main() == 1
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert output.err == '{"error": "native_backup_operator_required"}\n'

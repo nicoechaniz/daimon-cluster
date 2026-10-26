@@ -1100,8 +1100,18 @@ def test_native_backup_preparation_has_closed_scope_and_real_contracts(tmp_path)
         'docs/runbooks/native-body-backup.md', 'tools/ci_scope.py', 'tests/test_ci_scope.py',
         '.github/workflows/tests.yml']
     assert select(changed, ROOT) == ('native-backup', ['tests/test_native_restic_init.py',
-        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'])
+        'tests/test_native_body_capture.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'])
     assert select(changed, tmp_path) == ('full', ['tests'])
     for extra in ('clusterctl/native_body.py', 'scripts/restic-mirror-pull.sh',
                   'requirements.txt', 'unknown.py'):
         assert select([*changed, extra], ROOT) == ('full', ['tests'])
+
+
+def test_native_capture_uses_closed_native_backup_profile():
+    changed = ['scripts/native-body-capture.py', 'tests/test_native_body_capture.py',
+               'docs/runbooks/native-body-backup.md', 'tools/ci_scope.py',
+               'tests/test_ci_scope.py', '.github/workflows/tests.yml']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'native-backup'
+    assert 'tests/test_native_body_capture.py' in tests
+    assert select([*changed, 'scripts/restic-mirror-pull.sh'], ROOT) == ('full', ['tests'])

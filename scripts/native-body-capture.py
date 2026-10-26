@@ -14,6 +14,8 @@ import signal
 import sys
 import tempfile
 import subprocess
+import stat
+from collections import Counter
 from pathlib import Path
 
 
@@ -93,6 +95,107 @@ def recover(state: Path, receipt: dict | None = None) -> dict:
     return receipt
 
 
+def mounts() -> list[dict]:
+    result = json.loads(subprocess.check_output(
+        ['findmnt', '--json', '--output', 'TARGET,FSTYPE'], text=True, timeout=15))
+    rows = []
+    def visit(items):
+        for item in items:
+            rows.append({'target': item['target'], 'fstype': item['fstype']})
+            visit(item.get('children', []))
+    visit(result['filesystems'])
+    return sorted(rows, key=lambda item: (item['target'], item['fstype']))
+
+
+def below(path: Path, parent: Path) -> bool:
+    return path == parent or parent in path.parents
+
+
+def seed_boundary(destination: Path, mount_rows: list[dict]) -> dict:
+    if destination.resolve() != destination or not destination.is_dir():
+        raise CaptureError('capture_seed_path_invalid')
+    if any(below(Path(row['target']), destination) for row in mount_rows):
+        raise CaptureError('capture_seed_is_mounted')
+    # A hot rsync seed may have internal hardlinks, but none may alias data
+    # outside the disposable seed. Count links without following symlinks.
+    counts = Counter()
+    links = {}
+    for directory, _, files in os.walk(destination, followlinks=False):
+        for filename in files:
+            info = (Path(directory) / filename).lstat()
+            if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+                key = (info.st_dev, info.st_ino)
+                counts[key] += 1
+                links[key] = info.st_nlink
+    if any(counts[key] != count for key, count in links.items()):
+        raise CaptureError('capture_seed_has_external_hardlinks')
+    info = destination.stat()
+    return {'path': str(destination), 'device': info.st_dev, 'inode': info.st_ino,
+            'purpose': 'disposable-independent-backup-seed'}
+
+
+def coverage(state: Path, mount_rows: list[dict], required_paths: list[Path]) -> dict:
+    local_types = {'ext2', 'ext3', 'ext4', 'btrfs', 'xfs', 'zfs', 'vfat'}
+    ignored = [Path(x) for x in ['/proc', '/sys', '/dev', '/run', '/tmp',
+                                 '/lost+found']] + [state]
+    sources = [Path('/')]
+    exclusions = list(ignored)
+    root_device = Path('/').stat().st_dev
+    for row in sorted(mount_rows, key=lambda item: len(Path(item['target']).parts)):
+        path = Path(row['target'])
+        if path == Path('/') or any(below(path, parent) for parent in ignored):
+            continue
+        if row['fstype'] in local_types:
+            # Same-device bind mounts are included by the root rsync. Separate
+            # durable filesystems need their own pass, including boot/EFI.
+            if path.stat().st_dev != root_device:
+                sources.append(path)
+        else:
+            exclusions.append(path)
+    for path in sources + exclusions:
+        if not re.fullmatch(r'/[A-Za-z0-9_./+-]*', str(path)):
+            raise CaptureError('capture_mount_pattern_unsupported')
+    for path in required_paths:
+        resolved = path.resolve(strict=True)
+        if any(below(resolved, excluded) for excluded in exclusions):
+            raise CaptureError('capture_required_store_excluded')
+        if not any(below(resolved, source) and resolved.stat().st_dev == source.stat().st_dev
+                   for source in sources):
+            raise CaptureError('capture_required_store_uncovered')
+    return {'source_roots': [str(path) for path in sources],
+            'excluded_mounts_and_runtime': sorted(set(str(path) for path in exclusions)),
+            'required_paths': [str(path) for path in required_paths],
+            'mounts': mount_rows}
+
+
+def prepare(state: Path, required_paths: list[Path]) -> dict:
+    if not required_paths:
+        raise CaptureError('capture_required_store_declaration_missing')
+    rows = mounts()
+    destination = state / 'capture/root'
+    plan = {'schema': 'native-body-capture-plan/v1',
+            'seed': seed_boundary(destination, rows),
+            **coverage(state, rows, required_paths)}
+    persist(state / 'capture-plan.json', plan)
+    return plan
+
+
+def load_plan(state: Path) -> dict:
+    path = state / 'capture-plan.json'
+    if path.is_symlink() or path.stat().st_uid != os.geteuid() or path.stat().st_mode & 0o077:
+        raise CaptureError('capture_plan_not_protected')
+    plan = json.loads(path.read_text())
+    if plan['schema'] != 'native-body-capture-plan/v1' or plan['mounts'] != mounts():
+        raise CaptureError('capture_mount_coverage_changed')
+    seed = seed_boundary(state / 'capture/root', plan['mounts'])
+    if seed != plan['seed']:
+        raise CaptureError('capture_seed_changed')
+    current = coverage(state, plan['mounts'], [Path(x) for x in plan['required_paths']])
+    if any(current[key] != plan[key] for key in current):
+        raise CaptureError('capture_coverage_changed')
+    return plan
+
+
 def capture(state: Path, writers: list[str], activators: list[str]) -> dict:
     writers = units(writers, ('.service',))
     if activators:
@@ -107,10 +210,11 @@ def capture(state: Path, writers: list[str], activators: list[str]) -> dict:
     if (destination.is_symlink() or not destination.is_dir()
             or destination.resolve() != destination):
         raise CaptureError('capture_preseed_required')
+    plan = load_plan(state)
     order = activators + writers
     previously_active = [unit for unit in order if active(unit)]
     receipt = {'schema': 'native-body-capture/v1', 'previously_active': previously_active,
-               'capture_consistent': False, 'availability_restored': False}
+               'capture_consistent': False, 'availability_restored': False, 'plan': plan}
     path = state / 'capture-attempt.json'
     if path.exists():
         raise CaptureError('capture_attempt_retained')
@@ -123,16 +227,24 @@ def capture(state: Path, writers: list[str], activators: list[str]) -> dict:
             subprocess.run(['systemctl', 'stop', unit], check=True, timeout=120)
         if not all(stopped(unit) for unit in order):
             raise CaptureError('capture_quiescence_unconfirmed')
-        exclusions = ['/proc/***', '/sys/***', '/dev/***', '/run/***', '/tmp/***',
-                      '/mnt/***', '/media/***', '/lost+found/***', str(state) + '/***']
-        command = ['rsync', '--archive', '--acls', '--xattrs', '--hard-links',
-                   '--numeric-ids', '--one-file-system', '--sparse', '--delete',
-                   '--delete-excluded', '--stats']
-        for exclusion in exclusions:
-            command += ['--exclude', exclusion]
-        command += ['/', str(destination) + '/']
         with (state / 'capture-final.log').open('wb') as log:
-            subprocess.run(command, check=True, stdout=log, stderr=subprocess.STDOUT, timeout=300)
+            for source in plan['source_roots']:
+                target = destination / source.lstrip('/')
+                target.mkdir(parents=True, exist_ok=True)
+                command = ['rsync', '--archive', '--acls', '--xattrs', '--hard-links',
+                           '--numeric-ids', '--one-file-system', '--sparse', '--delete',
+                           '--delete-excluded', '--stats']
+                exclusions = list(plan['excluded_mounts_and_runtime'])
+                # Protect other durable mount roots during the parent pass.
+                exclusions += [x for x in plan['source_roots']
+                               if x != source and below(Path(x), Path(source))]
+                for exclusion in exclusions:
+                    if below(Path(exclusion), Path(source)):
+                        relative = str(Path(exclusion).relative_to(source))
+                        command += ['--exclude', '/' + relative + '/***']
+                command += [source.rstrip('/') + '/', str(target) + '/']
+                subprocess.run(command, check=True, stdout=log, stderr=subprocess.STDOUT,
+                               timeout=300)
         if not all(stopped(unit) for unit in order):
             raise CaptureError('capture_writer_reactivated')
         receipt['capture_consistent'] = True
@@ -149,7 +261,10 @@ def capture(state: Path, writers: list[str], activators: list[str]) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--recover-only', action='store_true')
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument('--recover-only', action='store_true')
+    actions.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--required-paths', type=Path, nargs='*', default=[])
     parser.add_argument('--state', type=Path, required=True)
     parser.add_argument('--writers', nargs='+', default=[])
     parser.add_argument('--activators', nargs='*', default=[])
@@ -160,6 +275,7 @@ def main() -> int:
     previous = signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
     try:
         result = (recover(args.state) if args.recover_only else
+                  prepare(args.state, args.required_paths) if args.prepare_only else
                   capture(args.state, args.writers, args.activators))
         print(json.dumps(result))
     finally:

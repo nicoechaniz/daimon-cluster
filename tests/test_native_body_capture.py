@@ -13,6 +13,12 @@ mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)
 
 
+@pytest.fixture(autouse=True)
+def selected_plan(monkeypatch):
+    monkeypatch.setattr(mod, 'load_plan', lambda state: {
+        'source_roots': ['/'], 'excluded_mounts_and_runtime': [str(state)]})
+
+
 def state(tmp_path):
     root = tmp_path / 'private'
     root.mkdir(mode=0o700)
@@ -130,3 +136,75 @@ def test_exclusion_metacharacters_rejected_before_effects(tmp_path):
     with patch.object(mod.subprocess, 'run') as run, pytest.raises(mod.CaptureError):
         mod.capture(root, ['writer.service'], [])
     run.assert_not_called()
+
+
+def test_seed_rejects_external_hardlinks_but_accepts_internal_links(tmp_path):
+    import os
+    root = state(tmp_path)
+    dest = root / 'capture/root'
+    live = tmp_path / 'live'
+    live.write_text('retained work')
+    os.link(live, dest / 'aliased')
+    with pytest.raises(mod.CaptureError, match='external_hardlinks'):
+        mod.seed_boundary(dest, [])
+    (dest / 'aliased').unlink()
+    (dest / 'file').write_text('independent')
+    os.link(dest / 'file', dest / 'second-name')
+    assert mod.seed_boundary(dest, [])['purpose'] == 'disposable-independent-backup-seed'
+
+
+def test_seed_rejects_symlink_or_mounted_destination(tmp_path):
+    root = state(tmp_path)
+    dest = root / 'capture/root'
+    with pytest.raises(mod.CaptureError, match='is_mounted'):
+        mod.seed_boundary(dest, [{'target': str(dest / 'live')}])
+    dest.rmdir()
+    dest.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(mod.CaptureError, match='path_invalid'):
+        mod.seed_boundary(dest, [])
+
+
+def test_required_store_on_excluded_remote_mount_is_not_claimed_backed_up(tmp_path):
+    root = state(tmp_path)
+    remote = Path('/srv/selected-remote')
+    rows = [{'target': '/', 'fstype': 'ext4'},
+            {'target': str(remote), 'fstype': 'fuse.sshfs'}]
+    resolve = Path.resolve
+    with patch.object(Path, 'resolve', lambda path, **kwargs:
+                      path if path == remote else resolve(path, **kwargs)):
+        with pytest.raises(mod.CaptureError, match='required_store_excluded'):
+            mod.coverage(root, rows, [remote])
+        result = mod.coverage(root, rows, [Path('/')])
+    assert str(remote) in result['excluded_mounts_and_runtime']
+    assert result['source_roots'] == ['/']
+
+
+def test_actual_rsync_final_delta_removes_stale_seed_without_touching_live(tmp_path):
+    import shutil
+    if not shutil.which('rsync'):
+        pytest.skip('rsync is required for actual capture delta test')
+    root = state(tmp_path)
+    live = tmp_path / 'source'
+    live.mkdir()
+    (live / 'current').write_text('new version')
+    (live / 'link').symlink_to('current')
+    target = root / 'capture/root' / str(live).lstrip('/')
+    target.mkdir(parents=True)
+    (target / 'stale').write_text('old version')
+    with patch.object(mod, 'load_plan', return_value={
+            'source_roots': [str(live)], 'excluded_mounts_and_runtime': [str(root)]}), \
+         patch.object(mod, 'active', return_value=True), \
+         patch.object(mod, 'stopped', return_value=True), \
+         patch.object(mod.subprocess, 'run', wraps=mod.subprocess.run) as run:
+        # Keep rsync real and isolate systemd from the host.
+        def selected(argv, **kwargs):
+            if argv[0] == 'systemctl':
+                return subprocess.CompletedProcess(argv, 0)
+            return run._mock_wraps(argv, **kwargs)
+        run.side_effect = selected
+        result = mod.capture(root, ['writer.service'], [])
+    assert result['capture_consistent']
+    assert not (target / 'stale').exists()
+    assert (target / 'current').read_text() == (live / 'current').read_text()
+    assert (target / 'link').is_symlink()
+    assert not (live / 'stale').exists()

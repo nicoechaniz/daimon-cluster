@@ -27,7 +27,25 @@ claim is that the mirror **service** lacks decryption authority; root is not
 cryptographically excluded. Background export/pull uses its own restricted
 identity, never an administrative private key.
 
-## Consistent capture contract — implementation still pending
+## Consistent capture
+
+`scripts/native-body-capture.py --prepare-only --state <private-state>
+--required-paths <declared-durable-paths...>` records the independent disposable
+seed's path/device/inode and actual filesystem coverage before any service stops.
+It rejects seed hardlinks outside that tree, mount aliases and changed coverage.
+Separate local filesystems (including boot/EFI) receive explicit capture passes;
+virtual/remote mounts are excluded and cannot satisfy a required durable store.
+Preserve shared remote bindings under their owning service's backup contract.
+
+With that retained plan, invoke the helper with the actual body `--writers` and
+`--activators`. It preserves their original active state, stops activators first,
+and restores writers before activators even after a failed copy. It persists the
+attempt before stopping, handles SIGTERM through recovery, bounds subprocesses,
+and offers `--recover-only` to restore retained availability without recapture.
+Run in the host's persistent operator session. On an interruption inspect its
+actual process/attempt first; never retry an uncertain capture automatically.
+Once an attempt is retained, recovery is the supported first action. A later
+capture uses a new explicitly retained attempt, preserving the previous evidence.
 
 A hot pre-copy reduces the final pause but is not a recovery point. An online
 SQLite backup can verify one database; it cannot establish consistency among

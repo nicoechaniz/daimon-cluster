@@ -279,18 +279,30 @@ def test_predecessor_freeze_uses_actual_base_and_admission_without_group_status(
         monkeypatch.setattr(target, 'observe', lambda: pytest.fail(
             'read-only predecessor observation reopened birth/custody or archived pairs'))
         observed = target.running(admitted=True, deadline_ns=deadline(), bootstrap_base_only=True)
-        status_files = list((target.package/'runtime/receiving-control').glob('status-*.json'))
-        assert len(status_files) == 1
-        retained_status = status_files[0].read_bytes()
-        assert set(json.loads(retained_status)) == {'schema', 'binding', 'request'}
+        status_files = sorted((target.package/'runtime/receiving-control').glob('status-*.json'))
+        retained_status = {path.name: path.read_bytes() for path in status_files}
+        # The receiving-view probe and its legacy fallback are distinct retained
+        # requests. Freeze must reuse every existing request, not assume that
+        # the selected predecessor supports the receiving view.
+        assert retained_status
+        views = set()
+        for path in status_files:
+            record = json.loads(retained_status[path.name])
+            assert set(record) == {'schema', 'binding', 'request'}
+            assert record['request']['method'] == 'runtime.status'
+            params = record['request']['params']
+            assert params in ({}, {'view': 'receiving'})
+            views.add(json.dumps(params, sort_keys=True))
+            assert record['binding']['process'] == presence['process']
+        assert len(retained_status) == len(views)
         assert observed['process']['pid'] == presence['process']['pid']
         assert observed['admission_parent']['pid'] == os.getpid()
         assert observed['responder_association'] == 'same-connection'
         assert observed['group_runtime_status'] is None and observed['receiving_readiness'] == 'unobserved'
         frozen = freeze_guest_bootstrap(target, deadline_ns=deadline())
         assert frozen['runtime_sha256'] == digest(target.document_bundle())
-        assert status_files[0].read_bytes() == retained_status
-        assert list((target.package/'runtime/receiving-control').glob('status-*.json')) == status_files
+        assert {path.name: path.read_bytes() for path in
+                (target.package/'runtime/receiving-control').glob('status-*.json')} == retained_status
         assert frozen['predecessor']['process'] == observed['process'] and queried == ['group']
         status = LegacyGroupRestrictedClient.send
         for field in ('being_ref', 'local_origin'):

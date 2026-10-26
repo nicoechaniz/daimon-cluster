@@ -47,6 +47,29 @@ def test_registry_never_accepts_revoked_authority_or_rebinds_existing_resource(t
         health.reconcile(config, store, backend, result)
 
 
+def test_retired_placement_is_not_resurrected_by_completed_onboarding(tmp_path):
+    store, backend = setup(tmp_path); result = advance(store, backend)
+    directory = tmp_path / 'health'; directory.mkdir(mode=0o700)
+    backend.instance = lambda plan: 'dm-' + plan['name']
+    health.reconcile(directory, store, backend, result)
+    path = directory / 'eko.json'; original = path.read_bytes()
+    retired = directory / 'eko.json.retired'; path.rename(retired)
+    before = (store.directory('eko') / 'job.json').read_bytes(); calls = list(backend.calls)
+    assert health.reconcile(directory, store, backend, result) == dict(enrolled=False, retired=True)
+    assert not path.exists() and retired.read_bytes() == original
+    # Recover an exact duplicate left by a legacy reconciler without replay.
+    path.write_bytes(original); path.chmod(0o600)
+    assert health.reconcile(directory, store, backend, result)['retired']
+    assert not path.exists()
+    assert (store.directory('eko') / 'job.json').read_bytes() == before
+    assert backend.calls == calls
+    changed = json.loads(original); changed['plan_digest'] = 'f' * 64
+    retired.write_text(json.dumps(changed))
+    with pytest.raises(ob.OnboardingError, match='retirement_preserved'):
+        health.reconcile(directory, store, backend, result)
+    assert not path.exists()
+
+
 def test_fresh_bundle_includes_native_supervisor_and_can_import_it(tmp_path, monkeypatch):
     from tests.test_onboarding_release import test_builder_captures_mutable_code_but_publishes_qualified_read_only_artifact
     test_builder_captures_mutable_code_but_publishes_qualified_read_only_artifact(tmp_path, monkeypatch)

@@ -58,3 +58,12 @@ source/journal to drain pending delivery. Explicitly retire observation through
 Alerts only after its selected timer is stopped; old warnings and uncertain
 receipts remain history. Removing the host registry selection disables future
 enrollment, not already-accepted authority or current body work.
+# Retired placements
+
+After a body relocates, use the existing Alerts monitor's explicit
+`--retire-enrollment NAME` operation after verifying receiving coverage. The retained
+`NAME.json.retired` record prevents completed historical onboarding from restoring
+that old container's observation. Reconciliation leaves the job, authority and all
+source work unchanged. A different plan cannot replace a retirement implicitly;
+reactivation requires an explicit operator decision. Keep the receiving host's
+local observation and independent external coverage separate.

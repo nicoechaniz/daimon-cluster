@@ -55,6 +55,22 @@ def _register(directory, store, backend, result):
                  resource_ref='container-' + backend.instance(plan), plan_digest=digest(plan))
     path = directory / (plan['name'] + '.json')
     with being_seed._locked(directory):
+        retired = path.with_name(path.name + '.retired')
+        if retired.exists():
+            if json.loads(onboarding_release.regular(retired, uid=os.geteuid(), limit=4096)) != value:
+                raise OnboardingError('runtime_health_retirement_preserved')
+            # A completed historical onboarding is not a request to reactivate
+            # observation after an explicit host relocation/retirement.
+            if path.exists():
+                if json.loads(onboarding_release.regular(path, uid=os.geteuid(), limit=4096)) != value:
+                    raise OnboardingError('runtime_health_enrollment_preserved')
+                path.unlink()
+                descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            return dict(enrolled=False, retired=True)
         if path.exists():
             if json.loads(onboarding_release.regular(path, uid=os.geteuid(), limit=4096)) != value:
                 raise OnboardingError('runtime_health_enrollment_preserved')

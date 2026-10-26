@@ -710,7 +710,8 @@ def test_telegram_upgrade_covers_native_binding_idle_database_and_receiving_moun
 
 
 def test_closed_runbook_docs_skip_runtime_jobs_but_mixed_changes_keep_coverage():
-    docs = ['docs/runbooks/tribu-sdk-successor.md']
+    docs = ['docs/runbooks/tribu-sdk-successor.md', 'docs/runbooks/native-codex-supervision.md',
+            'docs/runbooks/native-host-relocation.md']
     assert select(docs, ROOT) == ('docs', [])
     assert select(docs + ['tools/ci_scope.py'], ROOT)[0] == 'ci'
     for boundary in ('clusterctl/onboarding_runtime.py', 'configs/nftables.conf',

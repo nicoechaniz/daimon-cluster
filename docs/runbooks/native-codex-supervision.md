@@ -16,6 +16,15 @@ start to recover a genuinely departed backend. A start-command timeout is also
 retained. Only safe status codes go to the journal, never captured native stderr.
 Normal explicit service stop retains the existing native shutdown behavior.
 
+The service supervisor is the sole startup owner. After starting its systemd
+unit, wait with bounded `daemon version` observations. Do not issue another
+`daemon start` from an SSH shell to make a Type=simple unit ready: that caller
+can win the singleton race and leave the real daemon or updater outside the
+service cgroup. Verify the actual native PID's cgroup, not only MainPID. The
+managed native start also recovers a departed updater; preserve an already
+running model daemon when repairing only that helper. See
+[native host relocation](native-host-relocation.md) for receiving evidence.
+
 The onboarding service uses this same implementation. For an already deployed
 immutable onboarding package, the stdlib-only module also accepts `--home` and
 `--codex`. Select its verified content-addressed copy through an existing native

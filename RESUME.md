@@ -13,8 +13,14 @@ public helper staging is observed, but shared default/worker adoption and ongoin
 offhost backups are still open. A missing native route is a delivery gap, never
 permission to fall back to the disabled source. Signed origin labels/identity and
 all native history remain unchanged. See docs/runbooks/native-host-relocation.md.
-Sai Telegram usability is confirmed; a later Matrix-only readiness failure is
-under repair, separately from that human acceptance and earlier signed receipts.
+Sai Telegram usability is confirmed. Matrix PR400 and Cluster PR324 repaired the
+later startup refusal, with actual signed group/direct/reply delivery, one scoped
+managed Matrix restart recovering all three readers, and post-restart delivery.
+Cluster PR326 adds native maintenance drop-ins, private Python preservation and
+closed system PATH. Installed owner tooling uses Eko's current SDK; active native
+catalog reload is separate. Default worker adoption and ongoing offhost backups
+must be checked against the retained migration checkpoint, not inferred from
+merged source or earlier receipts.
 
 # Current deployment and historical qualification
 

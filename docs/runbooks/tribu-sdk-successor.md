@@ -1,5 +1,17 @@
 # Receiver-compatible Matrix updates
 
+## Resolve receiver placement before maintenance
+
+A receiver is a signed body, not necessarily an Incus guest on the coordinator.
+Resolve its current maintained host and native/container route before selecting
+an execution backend. Eko lives natively on MEDUSA; the Source dm-eko instance
+is a disabled rollback and must not receive routine updates or be restarted by
+historical onboarding reconciliation. Use the protected native_by_name binding
+and the native relocation runbook. Until executable maintenance/worker adoption
+is observed, retain that gap; never silently fall back to the stopped origin.
+Preserve independent CompAII/Oliva work and all existing signed identities.
+
+
 ## Routine observation and software correction before activation
 
 The owner requests the authenticated `runtime.status` receiving view, including

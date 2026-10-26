@@ -1,3 +1,21 @@
+## Current physical placement — 2026-10-26
+
+The existing Eko Codex body now lives natively on MEDUSA, its dedicated Contabo
+VPS, with host administration. The old Source dm-eko is stopped/autostart=false
+and must remain disabled until Sai confirms full acceptance and planned source
+retirement is performed. Do not target that origin for routine updates or restart
+it from a completed onboarding record. CompAII remains on daimonmatrix and Oliva
+remains in its current Incus container there; their future moves are separate.
+
+Resolve current placement from Shared Resources host-medusa and each receiving
+private binding. NativeBody/native_by_name maintenance is merged in PR321;
+public helper staging is observed, but shared default/worker adoption and ongoing
+offhost backups are still open. A missing native route is a delivery gap, never
+permission to fall back to the disabled source. Signed origin labels/identity and
+all native history remain unchanged. See docs/runbooks/native-host-relocation.md.
+Sai Telegram usability is confirmed; a later Matrix-only readiness failure is
+under repair, separately from that human acceptance and earlier signed receipts.
+
 # Current deployment and historical qualification
 
 Architecture/profile navigation is

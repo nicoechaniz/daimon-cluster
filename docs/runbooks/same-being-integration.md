@@ -90,6 +90,25 @@ only after the corrected loader is actually selected. Recover the retained
 maintenance operation forward; do not repeat accepted capability publication or
 restore a prior SDK that cannot validate the accepted capability profiles.
 
+Before a memory parent, compare the integration binding's backup policy with
+its maintained receiving DMK configuration. A frozen integration binding is not
+the canonical backup-policy owner. Reuse an already supported growth policy and
+its selected code rather than creating another policy, deleting protected
+checkpoints, or repeatedly reserving under an obsolete fixed ceiling. Preserve
+retained parents and pre-write checkpoint attempts. Resume an existing parent
+only with its exact retained resource binding; correct resource drift before
+planning a new parent, never rewrite an old selection to match a new policy.
+
+A writer-only DMK correction does not by itself require a Matrix restart. Verify
+that the serving observer's status implementation remains compatible and that its
+exact receiving resources are unchanged. In particular, the backup configuration
+hash is part of those resources: changing that policy requires an observer
+refresh before it can truthfully accept the new parent's receipt. Preserve the
+existing SDK, authority and unaffected services; use the owning scoped maintenance
+route with its actual interruption authorization. Captured Root maintenance
+scripts must also pin or capture executable selectors before importing code; a
+captured launcher alone does not freeze a mutable selector it reads.
+
 Native configuration uses the existing Codex daemon control WebSocket and only
 `config/read` or `config/batchWrite`, plus protocol initialization. Codex 0.163
 advertises a rendezvous symlink: resolve and validate its protected physical

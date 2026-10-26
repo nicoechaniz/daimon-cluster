@@ -441,6 +441,26 @@ HOME_WORKER_TESTS = ('tests/test_home_worker_successor.py', 'tests/test_onboardi
     'tests/test_home_gateway.py', 'tests/test_home_access.py')
 
 
+def native_profile_host_only(root: Path, base: str) -> bool:
+    """Recognize only the native service-profile flag at its existing call site."""
+    if not re.fullmatch(r'[0-9a-f]{40}', base):
+        return False
+    name = 'clusterctl/onboarding_host.py'
+    previous = subprocess.run(['git', 'show', base + ':' + name], cwd=root,
+                              capture_output=True, check=False)
+    if previous.returncode:
+        return False
+    try:
+        current = (root / name).read_bytes()
+    except OSError:
+        return False
+    anchor = b"            '--plan', '/home/agent/.onboarding-input/plan.json']\n"
+    addition = (b"        if self.native_body(plan) is not None:\n"
+                b"            arguments.append('--native-host')\n")
+    return (previous.stdout.count(anchor) == 1
+            and previous.stdout.replace(anchor, anchor + addition, 1) == current)
+
+
 def host_observation_only(root: Path, base: str) -> bool:
     """Recognize exact qualified host receiving changes, never a filename.
 
@@ -674,6 +694,23 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         tests = list(dict.fromkeys((*MAINTENANCE_TESTS, *UPDATE_PREFLIGHT_TESTS)))
         if all((root / path).is_file() for path in tests):
             return 'peer', tests
+    native_profile_files = {'clusterctl/native_body.py', 'tests/test_native_body.py',
+        'clusterctl/onboarding_service.py',
+        'clusterctl/onboarding_host.py', 'clusterctl/onboarding_receiving_update.py',
+        'tests/test_onboarding_service.py', 'tests/test_guest_service_bootstrap.py',
+        'tests/test_guest_bootstrap_controller.py', 'tests/test_onboarding_peer_host.py'}
+    native_profile_tests = list(dict.fromkeys((*MAINTENANCE_TESTS,
+        'tests/test_onboarding_service.py', 'tests/test_guest_service_bootstrap.py',
+        'tests/test_guest_owner_bootstrap.py', 'tests/test_onboarding_managed.py',
+        'tests/test_onboarding_peer_host.py')))
+    if ({'clusterctl/onboarding_service.py', 'tests/test_onboarding_service.py',
+            'clusterctl/onboarding_receiving_update.py',
+            'tests/test_guest_bootstrap_controller.py'} <= set(changed)
+            and set(changed) <= native_profile_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / name).is_file() for name in native_profile_tests)
+            and ('clusterctl/onboarding_host.py' not in changed
+                 or native_profile_host_only(root, base))):
+        return 'peer', native_profile_tests
     host = {'clusterctl/onboarding_host.py', 'tests/test_onboarding_host.py'}
     if ({'clusterctl/native_body.py', 'tests/test_native_body.py'} <= set(changed)
             and set(changed) <= NATIVE_RECEIVING_FILES | CI_FILES | RUNBOOK_DOCS

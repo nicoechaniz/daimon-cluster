@@ -1212,6 +1212,8 @@ class HostBackend:
             raise OnboardingError('qualified_onboarding_candidate_mount_required')
         arguments = ['--action', action, '--code', str(base), *runtime_args,
             '--plan', '/home/agent/.onboarding-input/plan.json']
+        if self.native_body(plan) is not None:
+            arguments.append('--native-host')
         if implementation is not None:
             # Updating this control-plane implementation does not select or
             # restart the target body's already running receiving code.

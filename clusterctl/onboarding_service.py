@@ -210,6 +210,49 @@ class MatrixGuestService(MatrixUserService):
             raise OnboardingError('receiving_matrix_process_scope_required') from None
 
 
+class MatrixNativeService(MatrixGuestService):
+    """Preserve the native host's maintained mount, slice and PATH additions."""
+
+    def _guest_dropins(self, paths: str) -> dict:
+        selected = [Path(path) for path in paths.split()]
+        directory = self.unit.with_name(self.unit.name + '.d')
+        native = [path for path in selected if path.parent == directory
+                  and re.fullmatch(r'99-native-[a-z0-9][a-z0-9-]*\.conf', path.name)]
+        result = super()._guest_dropins(' '.join(str(path) for path in selected if path not in native))
+        if len(set(selected)) != len(selected):
+            raise OnboardingError('receiving_matrix_service_scope_required')
+        for path in native:
+            raw = onboarding_release.regular(path, uid=self._unit_uid)
+            section = None
+            for line in raw.decode().splitlines():
+                line = line.strip()
+                if not line or line.startswith(('#', ';')):
+                    continue
+                if line in {'[Unit]', '[Service]'}:
+                    section = line[1:-1]
+                    continue
+                key, separator, value = line.partition('=')
+                permitted = False
+                if section == 'Unit' and key == 'After':
+                    permitted = value == 'network-online.target'
+                elif section == 'Unit' and key == 'RequiresMountsFor':
+                    permitted = bool(value.split()) and all(
+                        Path(item).is_absolute() and '..' not in Path(item).parts
+                        and not any(char in item for char in '%$\\') for item in value.split())
+                elif section == 'Service' and key == 'Slice':
+                    permitted = re.fullmatch(r'[a-z0-9][a-z0-9-]*\.slice', value) is not None
+                elif section == 'Service' and key == 'Environment' and value.startswith('PATH='):
+                    entries = value.removeprefix('PATH=').split(':')
+                    permitted = all(item and Path(item).is_absolute()
+                        and '..' not in Path(item).parts
+                        and not any(char.isspace() or char in '%$\\\"' for char in item)
+                        for item in entries)
+                if not separator or not permitted:
+                    raise OnboardingError('receiving_matrix_service_scope_required')
+            result[str(path)] = hashlib.sha256(raw).hexdigest()
+        return result
+
+
 class GuestServiceBootstrap:
     """Root-side effects for the existing Matrix-only guest unit.
 
@@ -786,6 +829,7 @@ def main(argv=None) -> int:
     parser.add_argument('--implementation-code', type=Path)
     parser.add_argument('--implementation-digest')
     parser.add_argument('--messaging-application', type=Path)
+    parser.add_argument('--native-host', action='store_true', help='use the native named-unit maintenance profile')
     parser.add_argument('--action', choices=('install', 'bootstrap-inspect', 'bootstrap-validate', 'bootstrap-quiesce',
         'bootstrap-select', 'bootstrap-start', 'bootstrap-recover-start'), default='install')
     parser.add_argument('--bootstrap-request-json')
@@ -820,7 +864,8 @@ def main(argv=None) -> int:
                     or args.receive_only or args.visibility_installation is not None or args.messaging_application is not None):
                 raise OnboardingError('receiving_guest_service_request_required')
             deadline_ns = time.monotonic_ns()+int(args.timeout_seconds*1_000_000_000)
-            controller = GuestServiceBootstrap(MatrixGuestService(Path('/etc/systemd/system')/UNIT))
+            manager = MatrixNativeService if args.native_host else MatrixGuestService
+            controller = GuestServiceBootstrap(manager(Path('/etc/systemd/system')/UNIT))
             if args.action == 'bootstrap-inspect':
                 if args.bootstrap_request_json is not None or (args.owner_observation_json is not None
                         and len(args.owner_observation_json.encode()) > 2*1024**2):
@@ -844,6 +889,8 @@ def main(argv=None) -> int:
             print(json.dumps(result))
             return 0
         if args.bootstrap_request_json is not None or args.owner_observation_json is not None:
+            raise OnboardingError('receiving_guest_service_request_required')
+        if args.native_host:
             raise OnboardingError('receiving_guest_service_request_required')
         stage = 'service-installation'
         install(args.code, receive_only=args.receive_only, visibility=args.visibility_installation,

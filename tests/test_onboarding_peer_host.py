@@ -52,10 +52,11 @@ def test_host_retry_reuses_signed_response_and_retains_native_source(journey, tm
     typed = object.__new__(HostBackend)
     typed.config = SimpleNamespace(peer=path, custody=tmp_path / 'custody', custody_grants=tmp_path / 'grants', views=views)
     typed._ceremony = lambda p: SimpleNamespace(authorize=lambda p: True)
+    typed.authorize = lambda p, fingerprint: fingerprint == digest(p)
     typed._guest_paths = lambda p: (None, target.code, {})
     typed._runtime_paths = lambda p, code: (code, [], {})
     commands = []
-    typed._dispatch = lambda p, argv: commands.append(argv) or '{}'
+    typed._dispatch = lambda p, argv, **kwargs: commands.append(argv) or '{}'
     packet = source.tool.read_public(source.directory(fingerprint) / 'offer.json')
     typed._target_call(plan, 'peer-accept', peer_packet=packet, peer_being_ref=source_being)
     command = commands[-1]

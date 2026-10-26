@@ -1835,6 +1835,10 @@ def prepare_guest_bootstrap(backend, plan: dict, *, candidate: tuple[Path, str],
     selected, _, _ = backend._runtime_paths(plan, base, candidate=candidate)
     argv = command(base, receive_only=False, visibility=Path(owner['group']['selected']['visibility']),
         runtime_code=selected, runtime_digest=candidate[1])
+    # The native placement already pins its qualified bootstrap interpreter.
+    # A unit update must not silently switch it to the host's unrelated Python.
+    if hasattr(backend, 'native_body') and (native := backend.native_body(plan)) is not None:
+        argv[0] = str(native.python)
     # Validate the maintained unit encoding locally before interruption. Root
     # subsequently validates against its actual preserved disk unit too.
     from .onboarding_service import entrypoint

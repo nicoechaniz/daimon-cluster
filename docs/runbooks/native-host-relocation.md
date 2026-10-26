@@ -133,11 +133,24 @@ dedicated identity under the repository's administrative-access rule.
 backend. Native maintenance copies only qualified public code, independently
 verifies receiving bytes and invokes the existing target, owner-control and
 service contracts. It neither models a native host as an Incus instance nor
-creates fake mounts. Native Incus operations are refused. The owner-control
+creates fake mounts. Native Incus operations are refused. Native owner commands
+retain a closed system search path including `/usr/local/bin`, where an
+administrator-installed Codex launcher can live. They never inherit arbitrary
+SSH environment or user-writable PATH entries. The owner-control
 deadline is rebased to the receiving kernel and time namespace, bounded by both
 the sender's remaining interval and original wall expiry; remote process and
 admission proofs still come from the actual receiver. Timeout preserves the
 operation's uncertain effects and never implies permission to replay it.
+
+The protected native placement explicitly selects the native Matrix service
+inspection profile. It preserves root-owned `99-native-*.conf` additions for
+network readiness, required mounts, the application slice and the executable
+search PATH. Executable/identity overrides remain rejected, and the existing
+bootstrap operation freezes every accepted drop-in's exact bytes before any
+service effect. Incus receivers retain their existing stricter guest profile.
+Candidate native unit arguments keep the placement's qualified bootstrap Python;
+they must not fall back to the host's unrelated `/usr/bin/python3`. These are
+extensions of the existing named-unit bootstrap, not another update mechanism.
 
 An old instance name must not select the stopped source or cause a VM restart.
 Preflight every native receiver's qualified artifact, interpreter, authenticated

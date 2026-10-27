@@ -122,6 +122,17 @@ run the isolated default read with those exact bytes; retain launch-client and
 custom-build provenance separately. A corrected association supersedes the old
 observation without rewriting its files, signed proposals or pending effects.
 
+When classifying configuration intent, compare the effective native result with
+that exact binary's retained default and inspect its raw user layer/origins.
+Creating an optional configuration object can expand many absent typed fields:
+for example, a declared TUI preference causes `config/read` to enumerate otherwise
+undeclared keymaps and null fields. Do not count those expansions as personal
+behavior to synchronize. Keep UI seen-state, host bindings, credentials and tool
+grants local; distinguish actual declared preferences from harness defaults and
+session overrides. Retain the old observation and supersede its classification
+rather than rewriting evidence. A candidate classification alone does not prove
+receiving adoption or native model consumption.
+
 The private selection contains `source_event_id`, an explicit local `reason`, and
 one or more of `packets`, `skill_plan`, `behavior_selection`. Behavioral selection
 uses the adapter's verified source tuple, exact `source_refs`, local `files`

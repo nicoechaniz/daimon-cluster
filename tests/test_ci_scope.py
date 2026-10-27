@@ -6,6 +6,19 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_guest_bootstrap_consumer_keeps_all_receiving_contracts_without_full_apps(tmp_path):
+    from tools.ci_scope import LOADED_STARTUP_TESTS, MAINTENANCE_TESTS
+    changed = ['clusterctl/onboarding_receiving_update.py',
+        'tests/test_guest_bootstrap_controller.py', 'tools/ci_scope.py', 'tests/test_ci_scope.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'peer'
+    assert set(LOADED_STARTUP_TESTS) | set(MAINTENANCE_TESTS) <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for extra in ('clusterctl/onboarding_custody.py', 'clusterctl/onboarding_sdk.py',
+                  'requirements-weave.txt', 'unknown.py'):
+        assert select([*changed, extra], ROOT) == ('full', ['tests'])
+
+
 def test_native_receiving_carrier_keeps_mixed_host_owner_and_worker_contracts(tmp_path):
     from tools.ci_scope import NATIVE_RECEIVING_FILES, NATIVE_RECEIVING_TESTS
     changed = sorted(NATIVE_RECEIVING_FILES | {'tools/ci_scope.py', 'tests/test_ci_scope.py',

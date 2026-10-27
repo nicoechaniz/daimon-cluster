@@ -705,6 +705,16 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         tests = list(dict.fromkeys((*MAINTENANCE_TESTS, *UPDATE_PREFLIGHT_TESTS)))
         if all((root / path).is_file() for path in tests):
             return 'peer', tests
+    guest_controller_files = {'clusterctl/onboarding_receiving_update.py',
+        'tests/test_guest_bootstrap_controller.py'}
+    if (guest_controller_files <= set(changed)
+            and set(changed) <= guest_controller_files | CI_FILES | RUNBOOK_DOCS):
+        # The shared receiving module still needs its Source, guest, journal,
+        # SDK/preflight and maintenance contracts; unrelated application suites
+        # and disposable host jobs do not qualify this controller-only change.
+        tests = list(dict.fromkeys((*LOADED_STARTUP_TESTS, *MAINTENANCE_TESTS)))
+        if all((root / name).is_file() for name in tests):
+            return 'peer', tests
     native_profile_files = {'clusterctl/native_body.py', 'tests/test_native_body.py',
         'clusterctl/onboarding_service.py',
         'clusterctl/onboarding_host.py', 'clusterctl/onboarding_receiving_update.py',

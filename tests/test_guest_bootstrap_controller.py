@@ -585,3 +585,116 @@ def test_managed_start_recovery_refuses_backend_configuration_drift_before_obser
     with pytest.raises(OnboardingError, match='binding_conflict'):
         controller.recover_start(str(uuid.uuid4()), implementation=(Path('/qualified/maintenance'), 'f' * 64))
     assert calls == previous and controller.journal.get(controller.operation_id) == row
+
+
+def loaded_successor_backend(controller, backend, monkeypatch, *, lose=False, drift=None):
+    """Use the existing native-boundary fake; never claim real systemd proof."""
+    original = controller.execute()
+    row = controller.journal.get(controller.operation_id)
+    started = copy.deepcopy(row['runtime_observation']['guest_bootstraps']['eko']['started'])
+    real_root, real_owner = backend._guest_service_call, backend._target_call
+    requests = []
+    lost = [lose]
+
+    def owner(*args, **options):
+        assert args[1] == 'admitted-running'
+        result = copy.deepcopy(real_owner(*args, **options))
+        result['process'].update(pid=433, start_ticks=22)
+        result['admission_parent'].update(pid=422, start_ticks=21)
+        startup = result['runtime_status']['loaded_runtime']['qualified_startup']
+        startup['process_id'] = 433
+        result['group_runtime_status']['receiving']['channels']['tribe'] = dict(
+            controlled=True, phase='unselected', readers=[], process_id=433)
+        if drift == 'sdk':
+            startup['sdk_digest'] = '0' * 64
+        return result
+
+    def root(plan, action, **options):
+        if action == 'bootstrap-recover-start':
+            request = options['request']
+            requests.append(copy.deepcopy(request))
+            receipt = dict(schema='cluster-guest-start-successor/v1',
+                recovery_operation_id=request['operation_id'], recovery_sha256=digest(request),
+                bootstrap_sha256=digest(request['bootstrap']), started_sha256=digest(started),
+                implementation_sha256='f' * 64, predecessor_parent=started['admission_parent'],
+                predecessor_exited=True, scope={k: request['successor'][k]
+                    for k in ('process', 'admission_parent')},
+                manager=request['successor']['service']['manager'], unit_sha256='e' * 64)
+            if lost and lost.pop():
+                raise OSError('lost managed successor reply')
+            return receipt
+        assert action == 'bootstrap-inspect', 'recovery repeated lifecycle'
+        result = copy.deepcopy(real_root(plan, action, **options))
+        result['service']['manager'].update(MainPID='422', InvocationID='managed-successor')
+        result['scope']['process'].update(pid=433, start_ticks=22)
+        result['scope']['admission_parent'].update(pid=422, start_ticks=21)
+        if drift == 'unit':
+            result['service']['unit_sha256'] = '0' * 64
+        if drift == 'admission':
+            result['scope']['admission_parent']['pid'] = 999
+        return result
+
+    monkeypatch.setattr(backend, '_guest_service_call', root)
+    monkeypatch.setattr(backend, '_target_call', owner)
+    expired_now = row['intended_transition']['guest_bootstraps']['eko']['expires_at_ms'] + 1
+    monkeypatch.setattr(updates.time, 'time_ns', lambda: expired_now * 1_000_000)
+    return original, row, requests, expired_now + 60000
+
+
+@pytest.mark.parametrize('lost_reply', [False, True])
+def test_loaded_successor_has_new_finite_authorization_and_preserves_original(fixture, monkeypatch, lost_reply):
+    controller, backend, calls, _ = fixture
+    original, before, requests, expiry = loaded_successor_backend(
+        controller, backend, monkeypatch, lose=lost_reply)
+    recovery = str(uuid.uuid4())
+    implementation = (Path('/qualified/maintenance'), 'f' * 64)
+    if lost_reply:
+        with pytest.raises(OSError, match='lost managed successor'):
+            controller.recover_loaded_start(recovery, implementation=implementation, expires_at_ms=expiry)
+    loaded = controller.recover_loaded_start(recovery, implementation=implementation, expires_at_ms=expiry)
+    after = controller.journal.get(controller.operation_id)
+    assert after['expected_precondition'] == before['expected_precondition']
+    assert after['intended_transition'] == before['intended_transition']
+    effects = after['runtime_observation']['guest_bootstraps']['eko']
+    assert effects['controlled_loaded'] == original
+    assert updates.controlled_load(effects) == loaded
+    from clusterctl.receiving_maintenance import ReceivingMaintenance
+    parent = ReceivingMaintenance.__new__(ReceivingMaintenance)
+    parent.plans = {'eko': {}}
+    parent.journal = controller.journal
+    parent_effects = {'loaded:source': {'retained': 'source'}, 'loaded:eko': original,
+        'child:eko': {'operation_id': controller.operation_id}}
+    parent._effects = lambda: parent_effects
+    assert parent.current_loads()['eko'] == loaded
+    assert parent_effects['loaded:eko'] == original
+    assert loaded['process']['pid'] == 433
+    assert requests[0] == requests[-1]
+    assert requests[-1]['expires_at_ms'] == expiry
+    assert controller.recover_loaded_start(
+        recovery, implementation=implementation, expires_at_ms=expiry) == loaded
+    assert controller.execute() == loaded
+    previous_calls = list(calls)
+    with pytest.raises(OnboardingError, match='recovery_conflict'):
+        controller.recover_loaded_start(recovery, implementation=implementation, expires_at_ms=expiry + 1)
+    assert calls == previous_calls
+    assert backend.stops == backend.starts == backend.stages == backend.publications == 1
+    fork = copy.deepcopy(effects)
+    fork['controlled_load_successor:' + str(uuid.uuid4())] = copy.deepcopy(
+        fork['controlled_load_successor:' + recovery])
+    with pytest.raises(OnboardingError, match='recovery_conflict'):
+        updates.controlled_load(fork)
+
+
+@pytest.mark.parametrize('drift', ['sdk', 'unit', 'admission'])
+def test_loaded_successor_rejects_changed_receiving_contract(fixture, monkeypatch, drift):
+    controller, backend, calls, _ = fixture
+    original, before, requests, expiry = loaded_successor_backend(
+        controller, backend, monkeypatch, drift=drift)
+    with pytest.raises(OnboardingError, match='recovery_conflict|loaded_conflict'):
+        controller.recover_loaded_start(str(uuid.uuid4()),
+            implementation=(Path('/qualified/maintenance'), 'f' * 64), expires_at_ms=expiry)
+    effects = controller.journal.get(controller.operation_id)['runtime_observation']['guest_bootstraps']['eko']
+    assert effects['controlled_loaded'] == original
+    assert updates.controlled_load(effects) == original
+    assert not any(key.startswith('controlled_load_successor:') for key in effects)
+    assert backend.stops == backend.starts == backend.stages == backend.publications == 1

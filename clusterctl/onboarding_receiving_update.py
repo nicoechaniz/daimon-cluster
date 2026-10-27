@@ -1849,6 +1849,56 @@ def prepare_guest_bootstrap(backend, plan: dict, *, candidate: tuple[Path, str],
         argv=argv, expires_at_ms=expires_at_ms)
 
 
+def controlled_load(effects: dict) -> dict | None:
+    """Resolve retained managed successors without replacing the first load.
+
+    Explicit predecessor hashes define the chain; insertion order and timestamps
+    do not select a process. Fresh receiving observations remain mandatory.
+    """
+    current = effects.get('controlled_loaded')
+    if current is not None and not isinstance(current, dict):
+        raise OnboardingError('receiving_guest_start_recovery_conflict')
+    pending = {key.removeprefix('controlled_load_successor:'): value
+        for key, value in effects.items() if key.startswith('controlled_load_successor:')}
+    if pending and not isinstance(current, dict):
+        raise OnboardingError('receiving_guest_start_recovery_conflict')
+    seen = set()
+    while pending:
+        if not isinstance(current, dict):
+            raise OnboardingError('receiving_guest_start_recovery_conflict')
+        fingerprint = digest(current)
+        if fingerprint in seen:
+            raise OnboardingError('receiving_guest_start_recovery_conflict')
+        seen.add(fingerprint)
+        matches = [(key, value) for key, value in pending.items()
+            if isinstance(value, dict) and value.get('previous_load_sha256') == fingerprint]
+        if len(matches) != 1:
+            raise OnboardingError('receiving_guest_start_recovery_conflict')
+        recovery_id, link = matches[0]
+        authorization = effects.get('load_recovery_authorization:' + recovery_id)
+        request = effects.get('start_recovery_request:' + recovery_id)
+        receipt = effects.get('start_recovery_receipt:' + recovery_id)
+        started = effects.get('started')
+        loaded = link.get('loaded')
+        if (set(link) != {'previous_load_sha256', 'loaded'}
+                or not isinstance(authorization, dict) or not isinstance(request, dict)
+                or not isinstance(receipt, dict) or not isinstance(loaded, dict)
+                or not isinstance(started, dict)
+                or authorization.get('previous_load_sha256') != fingerprint
+                or request.get('expires_at_ms') != authorization.get('expires_at_ms')
+                or request.get('operation_id') != recovery_id
+                or request.get('implementation_sha256') != authorization.get('implementation_sha256')
+                or receipt.get('recovery_sha256') != digest(request)
+                or receipt.get('started_sha256') != digest(started)
+                or receipt.get('scope', {}).get('process') != loaded.get('process')
+                or receipt.get('scope', {}).get('admission_parent') != loaded.get('admission_parent')
+                or loaded.get('start_recovery_operation_id') != recovery_id):
+            raise OnboardingError('receiving_guest_start_recovery_conflict')
+        current = loaded
+        del pending[recovery_id]
+    return current
+
+
 class GuestBootstrapController:
     """One journal/job-owned operation spans public root and private owner calls.
 
@@ -2069,6 +2119,23 @@ class GuestBootstrapController:
     def recover_start(self, recovery_id: str, *, implementation: tuple[Path, str],
                       timeout_seconds: float = 30) -> dict:
         """Adopt an exact managed successor before load; no stop/start or renewal."""
+        return self._recover_start(recovery_id, implementation=implementation,
+            timeout_seconds=timeout_seconds)
+
+    def recover_loaded_start(self, recovery_id: str, *, implementation: tuple[Path, str],
+                             expires_at_ms: int, timeout_seconds: float = 30) -> dict:
+        """Authorize one finite recovery of an already loaded managed body.
+
+        This does not renew the expired software operation or its credentials.
+        Original load/start records remain history; only a proven managed
+        successor can be appended, and a lost return retains the exact request.
+        """
+        return self._recover_start(recovery_id, implementation=implementation,
+            timeout_seconds=timeout_seconds, recovery_expires_at_ms=expires_at_ms)
+
+    def _recover_start(self, recovery_id: str, *, implementation: tuple[Path, str],
+                       timeout_seconds: float,
+                       recovery_expires_at_ms: int | None = None) -> dict:
         from .onboarding_host import HostConfig
         if str(uuid.UUID(recovery_id)) != recovery_id:
             raise OnboardingError('receiving_guest_start_recovery_required')
@@ -2084,10 +2151,39 @@ class GuestBootstrapController:
             if self.backend.config != HostConfig.load(Path(row['expected_precondition']['host_config'])):
                 raise OnboardingError('receiving_guest_bootstrap_binding_conflict')
             effects = (row['runtime_observation'] or {}).get('guest_bootstraps', {}).get(self.name, {})
-            if 'controlled_loaded' in effects or any(key not in effects for key in
-                    ('candidate_validated', 'quiesced', 'unit_selected', 'started')):
+            previous_load = controlled_load(effects)
+            successor = recovery_expires_at_ms is not None
+            if (successor != (previous_load is not None) or any(key not in effects for key in
+                    ('candidate_validated', 'quiesced', 'unit_selected', 'started'))):
                 raise OnboardingError('receiving_guest_start_recovery_required')
-            if candidate['expires_at_ms'] <= time.time_ns() // 1_000_000:
+            expiry = recovery_expires_at_ms if successor else candidate['expires_at_ms']
+            if type(expiry) is not int or not 0 < expiry < 2**53:
+                raise OnboardingError('receiving_guest_start_recovery_required')
+            if successor:
+                assert previous_load is not None
+                key = 'load_recovery_authorization:' + recovery_id
+                retained = effects.get(key)
+                authorization = dict(previous_load_sha256=digest(previous_load),
+                    expires_at_ms=expiry, implementation_sha256=implementation[1])
+                if retained is not None:
+                    if (not isinstance(retained, dict)
+                            or retained.get('expires_at_ms') != expiry
+                            or retained.get('implementation_sha256') != implementation[1]):
+                        raise OnboardingError('receiving_guest_start_recovery_conflict')
+                    completed = effects.get('controlled_load_successor:' + recovery_id)
+                    if completed is not None:
+                        if controlled_load(effects) != completed.get('loaded'):
+                            raise OnboardingError('receiving_guest_start_recovery_conflict')
+                        return self._loaded(frozen, candidate,
+                            (Path(candidate['runtime_code']), candidate['runtime_digest']),
+                            timeout_seconds, start_recovery_id=recovery_id)
+                    if retained != authorization:
+                        raise OnboardingError('receiving_guest_start_recovery_conflict')
+                else:
+                    if expiry <= time.time_ns() // 1_000_000:
+                        raise OnboardingError('receiving_guest_bootstrap_authorization_expired')
+                    self._record(key, authorization)
+            if expiry <= time.time_ns() // 1_000_000:
                 raise OnboardingError('receiving_guest_bootstrap_authorization_expired')
             vector = (Path(candidate['runtime_code']), candidate['runtime_digest'])
             checked = preflight(vector[0], vector[1], Path(candidate['manifest_path']),
@@ -2098,6 +2194,8 @@ class GuestBootstrapController:
                 raise OnboardingError('receiving_guest_bootstrap_candidate_changed')
             observed = self.backend._target_call(frozen['plan'], 'admitted-running', candidate=self._observation_vector(row, vector),
                 observation_timeout_seconds=timeout_seconds, require_loaded=True, current_native=True)
+            if successor and previous_load is not None and observed['process'] == previous_load['process']:
+                raise OnboardingError('receiving_guest_start_recovery_required')
             root = self.backend._guest_service_call(frozen['plan'], 'bootstrap-inspect', candidate=vector,
                 timeout_seconds=timeout_seconds, owner_observation={key: observed[key]
                     for key in ('process', 'admission_parent')})
@@ -2108,7 +2206,7 @@ class GuestBootstrapController:
             request = dict(schema='cluster-guest-start-recovery/v1', operation_id=recovery_id,
                 bootstrap=bootstrap, started_sha256=digest(effects['started']),
                 successor={**{key: observed[key] for key in ('process', 'admission_parent')}, 'service': root['service']},
-                implementation_sha256=implementation[1], expires_at_ms=candidate['expires_at_ms'])
+                implementation_sha256=implementation[1], expires_at_ms=expiry)
             self._record('start_recovery_request:' + recovery_id, request)
             receipt = self.backend._guest_service_call(frozen['plan'], 'bootstrap-recover-start',
                 candidate=vector, timeout_seconds=timeout_seconds, request=request, implementation=implementation)
@@ -2126,12 +2224,19 @@ class GuestBootstrapController:
                 raise OnboardingError('receiving_guest_start_recovery_conflict')
             self._record('start_recovery_receipt:' + recovery_id, receipt)
             loaded = self._loaded(frozen, candidate, vector, timeout_seconds,
-                observed=observed, start_recovery_id=recovery_id)
-            self._record('controlled_loaded', loaded)
+                observed=observed, start_recovery_id=recovery_id,
+                previous_load=previous_load if successor else None)
+            if successor:
+                assert previous_load is not None
+                self._record('controlled_load_successor:' + recovery_id,
+                    dict(previous_load_sha256=digest(previous_load), loaded=loaded))
+            else:
+                self._record('controlled_loaded', loaded)
             return loaded
 
     def _loaded(self, frozen: dict, candidate: dict, vector: tuple[Path, str], timeout_seconds: float,
-                *, observed: dict | None = None, start_recovery_id: str | None = None) -> dict:
+                *, observed: dict | None = None, start_recovery_id: str | None = None,
+                previous_load: dict | None = None) -> dict:
         if observed is None:
             row = self._row()[0]
             observed = self.backend._target_call(frozen['plan'], 'admitted-running', candidate=self._observation_vector(row, vector),
@@ -2140,8 +2245,9 @@ class GuestBootstrapController:
             timeout_seconds=timeout_seconds, owner_observation={key: observed[key]
                 for key in ('process', 'admission_parent')})
         effects = self._row()[0]['runtime_observation']['guest_bootstraps'][self.name]
+        retained_load = controlled_load(effects)
         if start_recovery_id is None:
-            start_recovery_id = effects.get('controlled_loaded', {}).get('start_recovery_operation_id')
+            start_recovery_id = (retained_load or {}).get('start_recovery_operation_id')
         manager = effects['started']['manager']
         if start_recovery_id is not None:
             request = effects.get('start_recovery_request:' + start_recovery_id)
@@ -2177,7 +2283,9 @@ class GuestBootstrapController:
                 or application['publication_sha256'] != frozen['owner']['group']['publication_sha256']
                 or application['visibility']['installation_sha256'] != frozen['owner']['group']['installation_sha256']
                 or gate['controlled'] is not True or gate['process_id'] != observed['process']['pid']
-                or 'controlled_loaded' not in effects and (gate['phase'] != 'unselected' or gate['readers'])):
+                or retained_load is None and (gate['phase'] != 'unselected' or gate['readers'])
+                or previous_load is not None and (retained_load != previous_load
+                    or gate['phase'] not in {'unselected', 'select'} or gate['readers'])):
             raise OnboardingError('receiving_guest_bootstrap_loaded_conflict')
         result = dict(schema='cluster-guest-bootstrap-loaded/v1', process=observed['process'],
             admission_parent=observed['admission_parent'], runtime_sha256=observed['runtime_sha256'],
@@ -2187,7 +2295,7 @@ class GuestBootstrapController:
             group_sha256=frozen['owner']['group_sha256'], receiving_readiness='unobserved')
         if start_recovery_id is not None:
             result['start_recovery_operation_id'] = start_recovery_id
-        if effects.get('controlled_loaded', result) != result:
+        if retained_load is not None and retained_load != result and previous_load is None:
             raise OnboardingError('receiving_guest_bootstrap_loaded_conflict')
         return result
 
@@ -2475,7 +2583,7 @@ class CohortController:
                         or not isinstance(expansion['runtime_sha256'], str)
                         or re.fullmatch('[0-9a-f]{64}', expansion['runtime_sha256']) is None
                         or expansion['runtime_sha256'] == expansion['before_runtime_sha256']
-                        or effects.get('controlled_loaded', {}).get('loaded_runtime', {}).get(
+                        or (controlled_load(effects) or {}).get('loaded_runtime', {}).get(
                             'runtime_bundle_sha256') != expansion['runtime_sha256']):
                     raise OnboardingError('receiving_cohort_selection_changed')
                 expected_selection['runtime_bundle_sha256'] = expansion['runtime_sha256']
@@ -2511,8 +2619,8 @@ class CohortController:
         if recipe['profile'] == 'guest' and not isinstance(current.get('admission_parent'), dict):
             raise OnboardingError('receiving_cohort_admission_required')
         effects = {} if lifecycle_row is None else lifecycle_row['runtime_observation'] or {}
-        lifecycle = (effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
-            else effects.get('guest_bootstraps', {}).get(name, {})).get('controlled_loaded')
+        lifecycle = controlled_load(effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
+                    else effects.get('guest_bootstraps', {}).get(name, {}))
         if (not isinstance(lifecycle, dict) or lifecycle.get('process') != current['process']
                 or lifecycle.get('loaded_runtime') != loaded
                 or lifecycle.get('loaded_application') != {key: val for key, val in application.items() if key != 'reader_gates'}
@@ -2926,8 +3034,8 @@ class CohortController:
                     recipe = row['intended_transition']['cohort_activation']['receivers'][name]
                     lifecycle = self._lifecycle(name, recipe)
                     effects = {} if lifecycle is None else lifecycle['runtime_observation'] or {}
-                    loaded = (effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
-                        else effects.get('guest_bootstraps', {}).get(name, {})).get('controlled_loaded')
+                    loaded = controlled_load(effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
+                    else effects.get('guest_bootstraps', {}).get(name, {}))
                     if (gate.get('phase') in {'unselected', 'select'} and gate.get('readers') == []
                             and isinstance(loaded, dict) and loaded.get('process') == current['process']
                             and loaded.get('loaded_runtime') == current['runtime_status'].get('loaded_runtime')
@@ -3050,8 +3158,8 @@ class CohortController:
                 recipe = row['intended_transition']['cohort_activation']['receivers'][name]
                 lifecycle = self._lifecycle(name, recipe)
                 effects = {} if lifecycle is None else lifecycle['runtime_observation'] or {}
-                loaded = (effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
-                    else effects.get('guest_bootstraps', {}).get(name, {})).get('controlled_loaded')
+                loaded = controlled_load(effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
+                    else effects.get('guest_bootstraps', {}).get(name, {}))
                 if (current['gate'].get('phase') not in {'unselected', 'select'}
                         or current['gate'].get('readers') != [] or not isinstance(loaded, dict)
                         or loaded.get('process') != current['process']

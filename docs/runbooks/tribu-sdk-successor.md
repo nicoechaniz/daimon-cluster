@@ -34,6 +34,25 @@ owns only the software lifecycle it actually needs.
 
 ## Recovery carrier readiness
 
+### Managed restart after an already verified load
+
+If the managed process changes after `controlled_loaded`, preserve that original
+load and use `GuestBootstrapController.recover_loaded_start` with one retained
+recovery ID, qualified implementation and independently selected finite
+`expires_at_ms`. This authorization does not edit or renew the old software
+operation, identity or credentials. The existing Root primitive proves the
+current unit, admission parent and process without stop/start. The controller
+appends a load successor linked to its predecessor hash; `controlled_load` and
+`ReceivingMaintenance.current_loads` resolve this explicit chain. Reuse the same
+ID and deadline after a lost return; conflicting parameters are refused.
+
+If the original activation horizon expired, retain its outcome and reconcile its
+empty gates. Prepare only a new activation intent from the current selections,
+fresh compatible preflights and the original lifecycle IDs. Do not replay SDK
+installation or software lifecycle, replace the first load, or edit a frozen
+spec to make its deadline current. A coordinator-only correction keeps body and
+SDK selections unchanged.
+
 A release requiring `explicit-unattempted-carrier-recovery/v1` also requires the
 credential-bound V2 selection. Each actual loaded reader must advertise
 `dm.tribe.recovery-conversation/v1`; the cohort includes it in those V2 rows under

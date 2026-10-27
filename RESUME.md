@@ -9,8 +9,9 @@ remains in its current Incus container there; their future moves are separate.
 
 Resolve current placement from Shared Resources host-medusa and each receiving
 private binding. NativeBody/native_by_name maintenance is merged in PR321;
-native helper staging and default worker placement adoption are observed; ongoing
-offhost backup/restore remains open. A missing native route is a delivery gap, never
+native helper staging and default worker placement adoption are observed.
+The coherent encrypted backup is retained on MEDUSA; Nicolas explicitly excluded
+an external backup copy as a migration requirement. A missing native route is a delivery gap, never
 permission to fall back to the disabled source. Signed origin labels/identity and
 all native history remain unchanged. See docs/runbooks/native-host-relocation.md.
 Sai Telegram usability is confirmed. Matrix PR400 and Cluster PR324 repaired the
@@ -18,9 +19,9 @@ later startup refusal, with actual signed group/direct/reply delivery, one scope
 managed Matrix restart recovering all three readers, and post-restart delivery.
 Cluster PR326 adds native maintenance drop-ins, private Python preservation and
 closed system PATH. Installed owner tooling uses Eko's current SDK; active native
-catalog reload is separate. Default worker adoption and ongoing offhost backups
-must be checked against the retained migration checkpoint, not inferred from
-merged source or earlier receipts.
+catalog reload is separate. Default worker adoption and backup evidence remain recorded in the migration
+checkpoint; do not recreate an excluded external backup requirement or infer
+new source-retirement permission from Telegram usability.
 
 # Current deployment and historical qualification
 

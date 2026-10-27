@@ -39,7 +39,13 @@ owns only the software lifecycle it actually needs.
 If the managed process changes after `controlled_loaded`, preserve that original
 load and use `GuestBootstrapController.recover_loaded_start` with one retained
 recovery ID, qualified implementation and independently selected finite
-`expires_at_ms`. This authorization does not edit or renew the old software
+`expires_at_ms`. Before dispatch, make the exact qualified helper available
+through `HostBackend.runtime_available(..., prepare=True)` for native placement
+or the maintained read-only mount route for Incus. Verify public helper traversal
+as the actual consuming UID, including any newly created parent directory:
+a private shell umask can narrow an explicit `mkdir(mode=0o755)`. Keep build
+metadata, journals and bindings private; correct only public code traversal.
+This authorization does not edit or renew the old software
 operation, identity or credentials. The existing Root primitive proves the
 current unit, admission parent and process without stop/start. The controller
 appends a load successor linked to its predecessor hash; `controlled_load` and

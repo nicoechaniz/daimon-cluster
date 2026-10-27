@@ -151,3 +151,25 @@ route usable. Credential creation/get are denied on isolated content responses.
 No external scripts, native-model activation or biometric data collection is
 involved. A virtual-authenticator check qualifies WebAuthn behavior, not the
 human's actual biometric hardware. Retain that distinction in delivery evidence.
+
+### Opt-in live 3D review
+
+A current isolated work may opt in with the `home-artifact:live-review` message
+(`enabled` boolean). The parent accepts only its actual opaque-origin iframe;
+it derives the existing resource from trusted frame metadata. No child URL,
+resource ID or path is accepted. Explicit historical-version views stay pinned.
+
+The parent reads the fixed `review-live.json` from the same authorized resource.
+The manifest must declare `schema=dm.review-live/v1`, `gallery=gallery.json` and
+a SHA-256. `X-Home-Version` identifies the already checked selected backend
+version; the gallery is fetched through that immutable version and digest-checked
+before `home-artifact:review-update` is posted to the child. Revocation/current
+and historical grants still apply to each read; no identity enters the iframe.
+
+Limits:16KiB manifest,25MiB streamed gallery,20second timeout, one request in
+flight and one10second visible-page timer. Errors back off to60seconds. Hidden
+pages, pagehide and explicit unsubscribe cancel the request and timers. No
+agent process, presence log or new login/store is involved. Only a subscribed
+viewer containing the matching live client uses this bridge; ordinary artifacts
+and selected media downloads keep their existing behavior. The renderer owns
+mesh validation and state-preserving replacement, not the authority boundary.

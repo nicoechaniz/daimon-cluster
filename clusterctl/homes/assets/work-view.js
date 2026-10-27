@@ -14,7 +14,7 @@ if (frame) {
   }
   openFragment();
   frame.addEventListener('load', () => {
-    frame.contentWindow.postMessage({type:'home-artifact:capabilities', downloads:true}, '*');
+    frame.contentWindow.postMessage({type:'home-artifact:capabilities', downloads:true, liveReview:frame.dataset.liveReview === 'current' && typeof installLiveReview === 'function'}, '*');
   });
   window.addEventListener('hashchange', openFragment);
   window.addEventListener('message', event => {
@@ -40,3 +40,5 @@ if (frame) {
     history.replaceState(null, '', location.pathname + location.search + event.data.fragment);
   });
 }
+
+if (frame && typeof installLiveReview === 'function') installLiveReview(frame);

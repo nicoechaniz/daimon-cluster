@@ -368,6 +368,9 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
             assert b"https://content.example/r/" in body
             assert b"Selected files" not in body and b"Versions available" not in body
             assert b"/work-view.js" in body
+            assert b"/work-live-review.js" in body
+            assert b'data-live-review="current"' in body
+            assert b'data-live-review="pinned"' in get(view + "?display=work&version=" + entries[0]["version_ref"])[1]
             assert ("data-download-root=\"/works/" + "a" * 32 + "/" + entries[0]["version_ref"] + "/\"").encode() in body
             assert media_file.encode() in body
             private_view = "/view/" + "c" * 32 + "?display=work"
@@ -377,6 +380,7 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
             assert get(view + "?display=work&display=details")[0] == 404
             assert get(view + "?display=work&version=" + "0" * 64)[0] == 404
             assert get("/work-view.js")[2]["Content-Type"].startswith("text/javascript")
+            assert get("/work-live-review.js")[2]["Content-Type"].startswith("text/javascript")
             # Trusted pages preserve same-origin browser form proofs without
             # disclosing referrers to another origin. Uploaded bytes retain
             # their independent no-referrer/sandbox policy below.
@@ -386,6 +390,7 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
             assert get(path, extra={"Range": "bytes=0-3"})[0] == 404
             code, body, headers = get(path, token, extra={"Range": "bytes=0-3"})
             assert code == 206 and body == b"<p>S"
+            assert headers["X-Home-Version"] == entries[2]["version_ref"]
             assert "sandbox" in headers["Content-Security-Policy"]
             assert headers["Content-Disposition"] == "attachment"
             assert headers['Referrer-Policy'] == 'no-referrer'

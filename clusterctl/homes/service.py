@@ -569,8 +569,9 @@ def preview(app, home, reference, version, subject, vpn, *, origin, parent_token
             display = display.replace(' src="', ' data-src="', 1)
             media_files = [name for name in selected["files"] if re.fullmatch(r"media/[a-f0-9]{64}\.[a-z0-9]{1,8}", name)]
             download_root = "/works/" + reference + "/" + selected["version_ref"] + "/"
+            display = display.replace('<iframe ', '<iframe data-live-review="' + ('current' if version == 'current' else 'pinned') + '" ', 1)
             display = display.replace('<iframe ', '<iframe data-download-root="' + esc(download_root, quote=True) + '" data-download-files="' + esc(json.dumps(media_files), quote=True) + '" ', 1)
-        return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected["title"])} · {esc(app.homes[home]["name"])}</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script><script src="/work-view.js" defer></script></head><body class="work-view">{display}</body></html>'''.encode()
+        return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected["title"])} · {esc(app.homes[home]["name"])}</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script><script src="/work-live-review.js" defer></script><script src="/work-view.js" defer></script></head><body class="work-view">{display}</body></html>'''.encode()
     versions = ['<li><a href="/view/' + reference + '">Current version</a></li>']
     for previous in reversed(current.get("versions", [])):
         if app.policy.allows(previous, home=home, subject=subject, dedicated_vpn=vpn):
@@ -880,6 +881,8 @@ def handler(app, *, owner=False):
                         ),
                         "text/html; charset=utf-8",
                     )
+                elif path == "/work-live-review.js":
+                    self.respond(200, (Path(__file__).parent / "assets" / "work-live-review.js").read_bytes(), "text/javascript; charset=utf-8")
                 elif path == "/work-view.js":
                     self.respond(
                         200,
@@ -1008,6 +1011,7 @@ def handler(app, *, owner=False):
                         ):
                             if response.headers.get(name):
                                 self.send_header(name, response.headers[name])
+                        self.send_header("X-Home-Version", selected["version_ref"])
                         self.send_header("Cache-Control", "no-store")
                         self.send_header("X-Content-Type-Options", "nosniff")
                         self.send_header("Permissions-Policy", "publickey-credentials-create=(), publickey-credentials-get=()")

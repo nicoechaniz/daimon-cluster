@@ -76,3 +76,19 @@ waiting followed by recovered readiness, with the actual managed native version
 reported by the control handshake. The receiving private record retains exact
 versions, unit selection, timings and rollback. This fixes restart amplification;
 it does not claim to remove every underlying source of slow startup.
+
+## Diagnosing a retained graceful drain
+
+A successful version/control probe does not prove that turn admission is open.
+When clients report `serverShuttingDown`, inspect the existing maintenance
+launcher, retained receipt and loaded-thread activity before issuing a restart.
+A SIGHUP drain can wait for a long-running turn while rejecting new human input.
+Adopt the running maintenance job; do not start a competing handoff. Availability
+fallback to the old package does not establish candidate adoption. Preserve
+uncertain continuation metadata and verify frontend recovery separately.
+
+Inspect native rollouts with a bounded seek/tail read (for example 64 KiB),
+filtering event types and excluding private message bodies unless needed. Never
+load a complete rollout with `read_text().splitlines()` to inspect its tail:
+long-lived sessions can exceed host memory and trigger OOM termination of the
+very daemon being diagnosed. A diagnostic read must not endanger live work.

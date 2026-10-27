@@ -1590,3 +1590,36 @@ def test_preactivation_repair_observes_only_bound_empty_current_load(tmp_path, f
     assert result['oliva']['state'] == 'observed-disabled'
     assert {name: owner.effects for name, owner in owners.items()} == before
     assert 'cohort_activation' not in journal.get(identifier)['runtime_observation']
+
+
+def test_adoption_resolves_explicit_managed_load_successor(tmp_path):
+    controller, owners, journal, identifier = activation_fixture(tmp_path, replacement=True, profile='guest')
+    row = journal.get(identifier)
+    plan, manifest = controller._activation(row)
+    name = 'eko'
+    owner = owners[name]
+    life_id = plan['receivers'][name]['lifecycle_operation_id']
+    life = journal.get(life_id)
+    effects = life['runtime_observation']['guest_bootstraps'][name]
+    original = copy.deepcopy(effects['controlled_loaded'])
+    owner.process = {**owner.process, 'start_ticks': owner.process['start_ticks'] + 10}
+    owner.parent = {**owner.parent, 'start_ticks': owner.parent['start_ticks'] + 10}
+    with pytest.raises(OnboardingError, match='lifecycle_unobserved'):
+        controller._adoption(name, plan, manifest)
+    recovery = str(uuid.uuid4())
+    request = dict(operation_id=recovery, implementation_sha256='f' * 64,
+        expires_at_ms=time.time_ns() // 1_000_000 + 60000)
+    loaded = {**copy.deepcopy(original), 'process': copy.deepcopy(owner.process),
+        'admission_parent': copy.deepcopy(owner.parent), 'start_recovery_operation_id': recovery}
+    effects['started'] = {'admission_parent': original['admission_parent']}
+    effects['load_recovery_authorization:' + recovery] = dict(
+        previous_load_sha256=digest(original), expires_at_ms=request['expires_at_ms'],
+        implementation_sha256=request['implementation_sha256'])
+    effects['start_recovery_request:' + recovery] = request
+    effects['start_recovery_receipt:' + recovery] = dict(recovery_sha256=digest(request),
+        started_sha256=digest(effects['started']), scope={'process': loaded['process'],
+            'admission_parent': loaded['admission_parent']})
+    effects['controlled_load_successor:' + recovery] = dict(previous_load_sha256=digest(original), loaded=loaded)
+    journal.advance(life_id, life['state'], runtime_observation=life['runtime_observation'])
+    assert controller._adoption(name, plan, manifest)['process'] == owner.process
+    assert journal.get(life_id)['runtime_observation']['guest_bootstraps'][name]['controlled_loaded'] == original

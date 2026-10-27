@@ -539,6 +539,27 @@ class ReceivingMaintenance:
             raise OnboardingError('receiving_maintenance_binding_required')
         return (row['runtime_observation'] or {}).get('maintenance', {})
 
+    def current_loads(self, names: tuple[str, ...] | None = None) -> dict:
+        """Resolve explicit lifecycle successors, retaining initial parent loads."""
+        from .onboarding_receiving_update import controlled_load
+        effects = self._effects()
+        selected = ('source', *self.plans) if names is None else names
+        loaded = {name: effects['loaded:' + name] for name in selected}
+        for name in selected:
+            reference = effects.get('child:' + name)
+            if reference is None:
+                continue  # Historical parent-only projections remain unchanged.
+            row = self.journal.get(reference['operation_id'])
+            if row is None:
+                continue  # This projection alone never proves a lifecycle.
+            guest = (row['runtime_observation'] or {}).get('guest_bootstraps', {}).get(name, {})
+            if not any(key.startswith('controlled_load_successor:') for key in guest):
+                continue
+            if guest.get('controlled_loaded') != loaded[name]:
+                raise OnboardingError('receiving_maintenance_child_conflict')
+            loaded[name] = controlled_load(guest)
+        return loaded
+
     def _record(self, name: str, value: dict) -> dict:
         row = self.journal.get(self.operation_id)
         if row is None:
@@ -713,7 +734,7 @@ class ReceivingMaintenance:
             if {(item['being_ref'], item['embodiment_id']) for item in new['required_receivers']} != {
                     (item['being_ref'], item['embodiment_id']) for item in old['required_receivers']}:
                 raise OnboardingError('receiving_required_cohort_changed')
-            loaded = {name: effects['loaded:' + name] for name in names}
+            loaded = self.current_loads()
             required = {item['embodiment_id']: item for item in new['required_receivers']}
             if set(required) != {expected_owner(value)['server']['embodiment_id'] for value in loaded.values()}:
                 raise OnboardingError('receiving_required_cohort_changed')
@@ -729,7 +750,7 @@ class ReceivingMaintenance:
                               manifest_digest: str, selections: dict, target: str) -> dict:
         from .onboarding_receiving_update import freeze_senders, preflight
         effects = self._effects()
-        loaded = {name: effects['loaded:' + name] for name in plan['receivers']}
+        loaded = self.current_loads(tuple(plan['receivers']))
         owners = self._owners(loaded)
         senders = freeze_senders(owners, tribe_ref=previous['expected_precondition']['tribe_ref'])
         for sender in senders:
@@ -994,7 +1015,7 @@ class ReceivingMaintenance:
             reference = self._effects()['child:' + name]
             lifecycle = GuestBootstrapController(self.journal, reference['operation_id'], self.backend, name)
             self._record('loaded:' + name, lifecycle.execute(timeout_seconds=60))
-        loaded = {name: self._effects()['loaded:' + name] for name in ('source', *self.plans)}
+        loaded = self.current_loads()
         cohort_id = self._cohort_tip(self._effects())
         controller = CohortController(self.journal, cohort_id, self._owners(loaded))
         if cohort_id != original_id and 'cohort_activation' not in (controller._row()['runtime_observation'] or {}):

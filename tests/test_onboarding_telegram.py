@@ -266,7 +266,7 @@ def test_foreign_unit_is_preserved_before_any_upgrade_effect(tmp_path):
     assert unit.read_bytes() == b'An unrelated receiving service.' and not calls
 
 
-@pytest.mark.parametrize("prefix", ["", "RETAINED_GOAL_", "RETAINED_SESSIONS_"])
+@pytest.mark.parametrize("prefix", ["", "RETAINED_GOAL_", "RETAINED_SESSIONS_", "RETAINED_ROUTING_"])
 def test_release_preserves_predecessors_and_rejects_mixed_pins(tmp_path, monkeypatch, prefix):
     import hashlib
     from clusterctl import onboarding_telegram as telegram

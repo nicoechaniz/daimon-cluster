@@ -11,7 +11,9 @@ function installLiveReview(frame) {
     if (pending) pending.abort();
   }
   async function bytes(response, limit) {
-    if (!response.ok || Number(response.headers.get('Content-Length')) > limit) throw Error('Review unavailable');
+    if (!response.ok || Number(response.headers.get('Content-Length')) > limit) {
+      await response.body?.cancel(); throw Error('Review unavailable');
+    }
     const reader = response.body.getReader(); let size = 0; const chunks = [];
     try {
       for (;;) {

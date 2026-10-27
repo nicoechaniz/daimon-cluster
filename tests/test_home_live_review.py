@@ -35,3 +35,25 @@ send(false);assert.equal(timers.size,0);assert(calls.every(url=>url.startsWith('
 })();
 '''
     subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)
+
+
+def test_live_review_rejects_denial_oversize_and_pinned_views():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required')
+    source = Path(__file__).resolve().parents[1] / 'clusterctl/homes/assets/work-live-review.js'
+    fixture = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+(async()=>{for(const mode of ['denied','oversize-header','oversize-stream','pinned']){
+ let calls=0,cancelled=0;const events={},messages=[],child={postMessage:m=>messages.push(m)};
+ const frame={contentWindow:child,dataset:{liveReview:mode==='pinned'?'pinned':'current',downloadRoot:'/works/'+'a'.repeat(32)+'/'+'b'.repeat(64)+'/'}};
+ const context={window:{addEventListener:(n,f)=>events[n]=f},document:{hidden:false,addEventListener(){}},Uint8Array,TextDecoder,AbortController,
+ setTimeout:()=>1,clearTimeout(){},fetch:async()=>{calls++;return {ok:mode!=='denied',headers:{get:n=>n==='Content-Length'&&mode==='oversize-header'?'20000':null},body:{cancel:async()=>{cancelled++},getReader:()=>({read:async()=>({done:false,value:new Uint8Array(20000)}),cancel:async()=>{cancelled++}})}}}};
+ vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);context.installLiveReview(frame);
+ if(mode==='pinned'){assert(!events.message);continue;}
+ events.message({source:child,origin:'null',data:{type:'home-artifact:live-review',enabled:true}});
+ for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
+ assert.equal(calls,1);assert.equal(messages.length,0);assert.equal(cancelled,1,mode);
+}})();
+'''
+    subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)

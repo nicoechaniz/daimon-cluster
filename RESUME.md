@@ -1,3 +1,31 @@
+## Current receiving deployment and maintenance — 2026-10-27
+
+CompAII, Eko on native MEDUSA and Oliva load body/observer `f6b369a9`,
+Matrix SDK `43f05fdb`, Matrix source `6cb82e5a` and wheel `9e46fe11`.
+Activation `948a07b9` is linked into original maintenance `369e8ec1`, whose
+retained phase is receiving-selected. Root coordinator `95158300` performed the
+activation; the newer coordinator-only maintenance CLI `ef5e0159` is installed
+and its actual status resolves this same selected parent/cohort. Neither helper
+version identifies the body selection.
+
+Source native group message `006e6cc4` has Eko and Oliva signed delivered
+receipts and a confirmed Tribu echo. Model-free Eko reply `24d3c58d` preserves
+the parent/thread and has Source and Oliva signed delivered receipts. Three
+unavailable sibling bodies remain explicitly unconfirmed. No new model turn,
+Codex/Telegram restart, global Stop or uncertain-message remint occurred.
+[Actual acceptance and receipt hashes](https://github.com/AlterMundi/daimon-matrix/issues/376#issuecomment-6435797213).
+
+Use the maintained receiving CLI (`recover-managed-start`, `continue-activation`,
+then ordinary `apply`) for the next authorized recovery. It prepares the exact
+helper, retains finite intents/requests and links completion into the original
+parent. Do not execute dated phase scripts, reinstall unchanged SDKs, recreate
+identities or repeat successful service lifecycle to repair observation. See
+[Cluster PR339](https://github.com/nicoechaniz/daimon-cluster/pull/339) and its
+`docs/runbooks/tribu-sdk-successor.md`. CLI-only CI passed302 cases; unchanged
+body qualification from PR336 remains valid. Matrix #376 remains active for the
+remaining same-being behavioral/native-consumption delta; this deployment is not
+completion of that goal. Earlier dated deployment sections are history.
+
 ## Current physical placement — 2026-10-26
 
 The existing Eko Codex body now lives natively on MEDUSA, its dedicated Contabo
@@ -29,7 +57,7 @@ Architecture/profile navigation is
 [Matrix current architecture](https://github.com/AlterMundi/daimon-matrix/blob/main/docs/current-architecture.md).
 Current selections below supersede the explicitly historical qualification.
 
-## Current receiving maintenance — 2026-10-24
+## Historical receiving maintenance — 2026-10-24
 
 CompAII, Eko and Oliva actually load body `07902c2a`, SDK `5e3f2a1e`,
 Matrix `b74a979a` and Cluster `c85a9d87`. Source's full selected memory binding

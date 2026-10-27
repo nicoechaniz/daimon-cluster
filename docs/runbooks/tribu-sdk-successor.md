@@ -117,6 +117,20 @@ python -B -m clusterctl.receiving_maintenance --spec "$maintenance_spec" apply
 python -B -m clusterctl.receiving_maintenance --spec "$maintenance_spec" status
 ```
 
+Construct the release with receivers sorted by `(being_ref, embodiment_id)` and
+validate it with the candidate's existing release reader before preparation.
+Use the installed worker's exact protected `--config` path; an equivalent copy
+is not its maintenance binding. If a migrated body's selector still describes
+its old runtime, reconcile metadata to its already observed qualified runtime
+through `apply_host_selection`, preserving the full host preimage and native
+placement. This changes no service and is not a new receiving acceptance.
+Preserve an unsuccessful operation's frozen spec; a corrected plan reuses
+unchanged installed SDK generations.
+
+Public immutable code, its parent directories and the release manifest must be
+readable/traversable by the actual receiving UID. Private specs, journals and
+bindings remain private; do not loosen those to fix access to public artifacts.
+
 `prepare` installs only missing immutable SDK generations, prepares readonly
 mounts, preflights each receiver and freezes the original processes and child
 operations. It does not stop services, change active selectors or revoke senders.

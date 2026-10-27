@@ -319,6 +319,21 @@ def test_preparation_reuses_maintained_command_and_refuses_sdk_mismatch_before_r
     if native:
         expected_candidate['argv'][0] = '/opt/qualified-native-python/bin/python3'
     assert prepared == frozen and selected == expected_candidate and backend.stops == backend.starts == 0
+    # Consume exactly what preparation emitted, through the real journal/controller
+    # validator. Native preparation must not become an unusable operation.
+    retained = plan_update(controller.journal,
+        manifest_digest=row['intent']['runtime_call']['manifest_digest'],
+        target=row['target'] + ':prepared',
+        expected_precondition=row['expected_precondition'],
+        intended_transition={'guest_bootstraps': {'eko': selected}},
+        audit_identity={'actor': 'synthetic'})
+    consumer = GuestBootstrapController(controller.journal, retained['operation_id'], backend, 'eko')
+    assert consumer._row()[2] == selected
+    if native:
+        backend.native_body = lambda _plan: SimpleNamespace(python=Path('/opt/changed-python/bin/python3'))
+        with pytest.raises(OnboardingError, match='bootstrap_binding_conflict'):
+            consumer._row()
+        backend.native_body = lambda _plan: SimpleNamespace(python=Path('/opt/qualified-native-python/bin/python3'))
     backend._target_call = lambda _plan, action, **kwargs: (
         {'ready': True, 'matrix_commit': '0' * 40} if action == 'sdk-prepare' else copy.deepcopy(frozen['owner']))
     with pytest.raises(OnboardingError, match='candidate_required'):

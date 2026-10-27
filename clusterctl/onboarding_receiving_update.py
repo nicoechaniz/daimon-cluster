@@ -1927,9 +1927,12 @@ class GuestBootstrapController:
         from .onboarding_service import command
         base = Path('/opt/daimon-onboarding') / frozen['plan']['release_digest']
         selected = Path('/opt/daimon-onboarding-runtime') / candidate['runtime_digest']
-        if candidate['argv'] != command(base, receive_only=False,
-                visibility=Path(frozen['owner']['group']['selected']['visibility']),
-                runtime_code=selected, runtime_digest=candidate['runtime_digest']):
+        expected_argv = command(base, receive_only=False,
+            visibility=Path(frozen['owner']['group']['selected']['visibility']),
+            runtime_code=selected, runtime_digest=candidate['runtime_digest'])
+        if hasattr(self.backend, 'native_body') and (native := self.backend.native_body(frozen['plan'])) is not None:
+            expected_argv[0] = str(native.python)
+        if candidate['argv'] != expected_argv:
             raise OnboardingError('receiving_guest_bootstrap_binding_conflict')
         return row, frozen, candidate
 

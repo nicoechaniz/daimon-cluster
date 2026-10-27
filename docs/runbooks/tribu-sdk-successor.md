@@ -52,12 +52,32 @@ appends a load successor linked to its predecessor hash; `controlled_load` and
 `ReceivingMaintenance.current_loads` resolve this explicit chain. Reuse the same
 ID and deadline after a lost return; conflicting parameters are refused.
 
-If the original activation horizon expired, retain its outcome and reconcile its
-empty gates. Prepare only a new activation intent from the current selections,
-fresh compatible preflights and the original lifecycle IDs. Do not replay SDK
-installation or software lifecycle, replace the first load, or edit a frozen
+Use the owning maintenance CLI instead of writing a phase-specific Python driver.
+A managed guest recovery stages the exact qualified helper through the current
+native/container route before delegating the retained recovery:
+
+```sh
+python -B -m clusterctl.receiving_maintenance --spec "$maintenance_spec" recover-managed-start \
+  --receiver "$receiver" --recovery-id "$recovery_id" --expires-at-ms "$recovery_expiry"
+```
+
+If the original activation horizon expired, the explicit bounded continuation
+reconciles empty gates, derives the compatible release from the retained candidate
+selections and links one activation child into the same maintenance parent:
+
+```sh
+python -B -m clusterctl.receiving_maintenance --spec "$maintenance_spec" continue-activation \
+  --previous-cohort "$previous_cohort" --expires-at-ms "$activation_expiry"
+python -B -m clusterctl.receiving_maintenance --spec "$maintenance_spec" apply
+```
+
+Retain the same parameters after a lost return. Normal apply completes only
+missing tooling/selection and records the parent result; no separate completion
+script is needed. An unfenced positive selection refuses this continuation: use
+its existing apply/reconciliation instead of disabling a healthy cohort. Do not
+replay SDK installation or lifecycle, replace the first load, or edit a frozen
 spec to make its deadline current. A coordinator-only correction keeps body and
-SDK selections unchanged.
+SDK selections unchanged. Original `reassess` retains its original horizon.
 
 A release requiring `explicit-unattempted-carrier-recovery/v1` also requires the
 credential-bound V2 selection. Each actual loaded reader must advertise

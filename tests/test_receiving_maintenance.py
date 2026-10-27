@@ -892,3 +892,104 @@ def test_software_link_refreshes_prior_disabled_proof_before_retirement(tmp_path
         operation.link_software_successor(following)
     assert 'software-successor' not in operation._effects()
     assert 'cohort_software_successor' not in operation.journal.get(cohort)['runtime_observation']
+
+
+@pytest.mark.parametrize('loss', [False, True])
+def test_expired_activation_continues_under_same_parent_without_software_work(tmp_path, monkeypatch, loss):
+    import time
+    from clusterctl.onboarding_receiving_update import CohortController
+    operation, owners, _, _, previous = reassessment_fixture(tmp_path, monkeypatch)
+    old = operation.journal.get(previous)
+    deadline = old['intended_transition']['cohort_activation']['expires_at_ms']
+    monkeypatch.setattr(time, 'time_ns', lambda: (deadline + 1) * 1_000_000)
+    expiry = deadline + 60000
+    initial_effects = [owner.effects for owner in owners.values()]
+    if loss:
+        original = operation._prepare_reassessment
+        def lost(*args):
+            original(*args)
+            raise OSError('lost activation intent return')
+        monkeypatch.setattr(operation, '_prepare_reassessment', lost)
+        with pytest.raises(OSError, match='lost activation intent'):
+            operation.continue_activation(previous, expiry)
+        monkeypatch.setattr(operation, '_prepare_reassessment', lambda *a:
+            pytest.fail('recreated retained child'))
+    operation.continue_activation(previous, expiry)
+    child = operation.journal.get(operation._cohort_tip(operation._effects()))
+    assert child['operation_id'] != previous
+    assert child['intended_transition']['cohort_activation']['expires_at_ms'] == expiry
+    assert operation.journal.get(previous)['intended_transition'] == old['intended_transition']
+    assert [owner.effects for owner in owners.values()] == initial_effects
+    count = len(operation.journal.list_all())
+    with pytest.raises(OnboardingError, match='reassessment_required|child_conflict'):
+        operation.continue_activation(previous, expiry + 1)
+    operation.continue_activation(previous, expiry)
+    assert len(operation.journal.list_all()) == count
+    cohort = CohortController(operation.journal, child['operation_id'], owners)
+    cohort.revoke_senders()
+    cohort.reconcile_tooling()
+    result = cohort.activate()
+    operation._record('receiving-selected', result)
+    assert operation.continue_activation(previous, expiry)['phase'] == 'receiving-selected'
+
+
+def test_expired_activation_never_disables_an_unfenced_positive_selection(tmp_path, monkeypatch):
+    import time
+    operation, _, _, _, previous = reassessment_fixture(tmp_path, monkeypatch)
+    row = operation.journal.get(previous)
+    observation = dict(row['runtime_observation'])
+    observation.pop('cohort_reassessment', None)
+    observation['sender_selections'] = {'eko': {'retained_positive': True}}
+    operation.journal.advance(previous, row['state'], runtime_observation=observation,
+        expected_runtime_observation=row['runtime_observation'])
+    horizon = row['intended_transition']['cohort_activation']['expires_at_ms']
+    monkeypatch.setattr(time, 'time_ns', lambda: (horizon + 1) * 1_000_000)
+    with pytest.raises(OnboardingError, match='reassessment_required'):
+        operation.continue_activation(previous, horizon + 60000)
+    assert operation._cohort_tip(operation._effects()) == previous
+
+
+def test_lost_continuation_child_is_linked_after_expiry_without_native_replay(tmp_path, monkeypatch):
+    import time
+    operation, _, _, _, previous = reassessment_fixture(tmp_path, monkeypatch)
+    deadline = operation.journal.get(previous)['intended_transition']['cohort_activation']['expires_at_ms']
+    clock = [deadline + 1]
+    monkeypatch.setattr(time, 'time_ns', lambda: clock[0] * 1_000_000)
+    expiry = deadline + 60000
+    original = operation._prepare_reassessment
+    def lost(*args):
+        original(*args)
+        raise OSError('lost child return')
+    monkeypatch.setattr(operation, '_prepare_reassessment', lost)
+    with pytest.raises(OSError):
+        operation.continue_activation(previous, expiry)
+    clock[0] = expiry + 1
+    owners = operation._owners
+    monkeypatch.setattr(operation, '_owners', lambda *a: pytest.fail('replayed native controls'))
+    operation.continue_activation(previous, expiry)
+    child = operation._cohort_tip(operation._effects())
+    assert child != previous
+    assert operation.journal.get(child)['intended_transition']['cohort_activation']['expires_at_ms'] == expiry
+    monkeypatch.setattr(operation, '_owners', owners)
+    monkeypatch.setattr(operation, '_prepare_reassessment', original)
+    operation.continue_activation(child, expiry + 60000)
+    assert operation._cohort_tip(operation._effects()) != child
+
+
+def test_authorization_only_failure_can_continue_with_a_new_finite_intent(tmp_path, monkeypatch):
+    import time
+    operation, _, _, _, previous = reassessment_fixture(tmp_path, monkeypatch)
+    deadline = operation.journal.get(previous)['intended_transition']['cohort_activation']['expires_at_ms']
+    clock = [deadline + 1]
+    monkeypatch.setattr(time, 'time_ns', lambda: clock[0] * 1_000_000)
+    owners = operation._owners
+    monkeypatch.setattr(operation, '_owners', lambda *a: (_ for _ in ()).throw(OSError('not dispatched')))
+    with pytest.raises(OSError):
+        operation.continue_activation(previous, deadline + 60000)
+    old = {k: v for k, v in operation._effects().items() if k.startswith('activation-continuation:')}
+    assert len(old) == 1
+    clock[0] = deadline + 60001
+    monkeypatch.setattr(operation, '_owners', owners)
+    operation.continue_activation(previous, deadline + 120000)
+    current = {k: v for k, v in operation._effects().items() if k.startswith('activation-continuation:')}
+    assert len(current) == 2 and all(current[k] == v for k, v in old.items())

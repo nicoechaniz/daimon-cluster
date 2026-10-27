@@ -740,6 +740,18 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         # domain. Keep actual owner/bootstrap/host/worker contracts; no archive
         # recovery or unrelated account/physical-recovery jobs are affected.
         return 'peer', list(NATIVE_RECEIVING_TESTS)
+    maintenance_orchestration = {'clusterctl/receiving_maintenance.py',
+        'tests/test_receiving_maintenance.py', 'tests/test_guest_bootstrap_controller.py'}
+    orchestration_tests = ['tests/test_receiving_maintenance.py',
+        'tests/test_guest_bootstrap_controller.py', 'tests/test_receiving_cohort_control.py',
+        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if ({'clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py'} <= set(changed)
+            and set(changed) <= maintenance_orchestration | CI_FILES | RUNBOOK_DOCS
+            and all((root / name).is_file() for name in orchestration_tests)):
+        # The owner/native/carrier implementations are unchanged. Exercise the
+        # real composed controllers and retained maintenance/CI boundaries;
+        # reuse their existing qualification instead of rerunning body setup.
+        return 'peer', orchestration_tests
     if (({'clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py'} <= set(changed)
             or {'clusterctl/onboarding_receiving_update.py', 'tests/test_receiving_cohort_control.py'} <= set(changed))
             and set(changed) <= MAINTENANCE_FILES | host | CI_FILES | RUNBOOK_DOCS

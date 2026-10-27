@@ -698,3 +698,41 @@ def test_loaded_successor_rejects_changed_receiving_contract(fixture, monkeypatc
     assert updates.controlled_load(effects) == original
     assert not any(key.startswith('controlled_load_successor:') for key in effects)
     assert backend.stops == backend.starts == backend.stages == backend.publications == 1
+
+
+def test_maintenance_recovery_prepares_retained_helper_before_native_effect(fixture, monkeypatch):
+    from clusterctl.receiving_maintenance import ReceivingMaintenance
+    controller, backend, calls, _ = fixture
+    original, _, requests, expiry = loaded_successor_backend(controller, backend, monkeypatch, lose=True)
+    journal = controller.journal
+    row = plan_update(journal, manifest_digest='a' * 64, target='receiving-maintenance:staging-fixture',
+        expected_precondition={'maintenance_spec': {'fixture': 'staging'}}, intended_transition={}, audit_identity={'actor': 'fixture'})
+    journal.advance(row['operation_id'], row['state'], runtime_observation={'maintenance': {
+        'loaded:eko': original, 'child:eko': {'operation_id': controller.operation_id}}})
+    parent = ReceivingMaintenance.__new__(ReceivingMaintenance)
+    parent.spec = {'fixture': 'staging'}
+    parent.journal, parent.operation_id, parent.backend = journal, row['operation_id'], backend
+    parent.plans = {'eko': backend.config}  # Opaque plan for the orchestration seam.
+    parent.control_implementation = dict(code='/qualified/maintenance', code_digest='f' * 64)
+    parent.status = lambda: {'phase': 'prepared'}
+    staged = []
+    parent._mount_code = lambda plan, vector: staged.append(vector)
+    root = backend._guest_service_call
+    def require_staging(*args, **kwargs):
+        assert staged and staged[-1] == (Path('/qualified/maintenance'), 'f' * 64)
+        return root(*args, **kwargs)
+    monkeypatch.setattr(backend, '_guest_service_call', require_staging)
+    recovery = str(uuid.uuid4())
+    with pytest.raises(OSError, match='lost managed successor'):
+        parent.recover_managed_start('eko', recovery, expiry)
+    # A newer coordinator must resume the original implementation/request.
+    parent.control_implementation = dict(code='/different/coordinator', code_digest='0' * 64)
+    parent.recover_managed_start('eko', recovery, expiry)
+    assert requests[0] == requests[-1]
+    assert parent.current_loads(('eko',))['eko']['process']['pid'] == 433
+    assert parent._effects()['loaded:eko'] == original
+    count = len(staged)
+    with pytest.raises(OnboardingError, match='child_conflict'):
+        parent.recover_managed_start('eko', recovery, expiry + 1)
+    assert len(staged) == count
+    assert backend.stops == backend.starts == backend.stages == backend.publications == 1

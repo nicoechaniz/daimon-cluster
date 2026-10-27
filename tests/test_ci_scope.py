@@ -1128,3 +1128,16 @@ def test_native_capture_uses_closed_native_backup_profile():
     assert profile == 'native-backup'
     assert 'tests/test_native_body_capture.py' in tests
     assert select([*changed, 'scripts/restic-mirror-pull.sh'], ROOT) == ('full', ['tests'])
+
+
+def test_maintenance_orchestration_reuses_unchanged_body_qualification(tmp_path):
+    changed = ['clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py',
+        'tests/test_guest_bootstrap_controller.py', 'tools/ci_scope.py', 'tests/test_ci_scope.py',
+        'docs/runbooks/tribu-sdk-successor.md']
+    assert select(changed, ROOT) == ('peer', ['tests/test_receiving_maintenance.py',
+        'tests/test_guest_bootstrap_controller.py', 'tests/test_receiving_cohort_control.py',
+        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'])
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for extra in ('clusterctl/onboarding_host.py', 'clusterctl/onboarding_sdk.py',
+                  'clusterctl/onboarding_custody.py', 'unknown.py'):
+        assert select([*changed, extra], ROOT) == ('full', ['tests'])

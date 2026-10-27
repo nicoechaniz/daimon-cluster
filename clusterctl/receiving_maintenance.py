@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -591,7 +592,110 @@ class ReceivingMaintenance:
             links.remove(link)
         return current
 
-    def reassess(self, manifest_path: Path, manifest_digest: str, previous_id: str) -> dict:
+    def recover_managed_start(self, name: str, recovery_id: str, expires_at_ms: int) -> dict:
+        """Prepare the qualified helper and recover one retained guest load."""
+        from .onboarding_receiving_update import GuestBootstrapController
+        if (name not in self.plans or str(uuid.UUID(recovery_id)) != recovery_id
+                or type(expires_at_ms) is not int or not 0 < expires_at_ms < 2**53):
+            raise OnboardingError('receiving_maintenance_binding_required')
+        with self.journal.mutation_lock(self.operation_id):
+            effects = self._effects()
+            self._assert_not_superseded(effects)
+            if 'loaded:' + name not in effects or 'child:' + name not in effects:
+                raise OnboardingError('receiving_maintenance_preparation_required')
+            key = 'managed-recovery:' + recovery_id
+            intent = dict(receiver=name, expires_at_ms=expires_at_ms)
+            retained = effects.get(key)
+            if retained is not None:
+                if {k: retained[k] for k in intent} != intent:
+                    raise OnboardingError('receiving_maintenance_child_conflict')
+            else:
+                if expires_at_ms <= time.time_ns() // 1_000_000:
+                    raise OnboardingError('receiving_preservation_authorization_expired')
+                retained = self._record(key, dict(intent, implementation=self.control_implementation))
+            implementation = _artifact(retained['implementation'])
+            self._mount_code(self.plans[name], implementation)
+            child = GuestBootstrapController(self.journal,
+                effects['child:' + name]['operation_id'], self.backend, name)
+            child.recover_loaded_start(recovery_id, implementation=implementation,
+                expires_at_ms=expires_at_ms, timeout_seconds=60)
+            return self.status()
+
+    def continue_activation(self, previous_id: str, expires_at_ms: int) -> dict:
+        """Continue expired activation using current loads, without software work.
+
+        This is a new explicit finite activation intent, not an extension of the
+        old software operation. The normal parent apply remains the only runner.
+        """
+        from .onboarding_receiving_update import CohortController, _manifest
+        with self.journal.mutation_lock(self.operation_id):
+            effects = self._effects()
+            self._assert_not_superseded(effects)
+            previous = self.journal.get(previous_id)
+            if previous is None or 'cohort' not in effects:
+                raise OnboardingError('receiving_maintenance_child_conflict')
+            plan = previous['intended_transition']['cohort_activation']
+            manifest = copy.deepcopy(_manifest(Path(plan['manifest_path']),
+                previous['intent']['runtime_call']['manifest_digest'], uid=plan['manifest_uid']))
+            for receiver in manifest['required_receivers']:
+                matches = [recipe for recipe in plan['receivers'].values() if
+                    (recipe['prepared']['being_ref'], recipe['prepared']['embodiment_id']) ==
+                    (receiver['being_ref'], receiver['embodiment_id'])]
+                if len(matches) != 1:
+                    raise OnboardingError('receiving_required_cohort_changed')
+                receiver['expected_selection_sha256'] = digest(matches[0]['selection'])
+            manifest_digest = digest(manifest)
+            key = 'assessment:' + digest(dict(previous=previous_id,
+                manifest_digest=manifest_digest, activation_expires_at_ms=expires_at_ms))
+            path = self.journal.path.parent / ('activation-' + digest(dict(
+                parent=self.operation_id, previous=previous_id, expires_at_ms=expires_at_ms)) + '.json')
+            if key in effects:
+                retained = effects[key]
+                child = self.journal.get(retained['operation_id'])
+                if (retained != dict(operation_id=retained['operation_id'],
+                        previous_operation_id=previous_id, manifest_path=str(path), manifest_digest=manifest_digest)
+                        or child is None or child['intended_transition']['cohort_activation']['expires_at_ms'] != expires_at_ms):
+                    raise OnboardingError('receiving_maintenance_child_conflict')
+                self._cohort_tip(effects)
+                return self.status()
+            target = 'receiving:maintenance-reassessment:' + digest(dict(
+                parent=self.operation_id, previous=previous_id, activation_continuation=True))
+            child = self.journal.latest_for_idempotency_key('receiving-update:' + target + ':' + manifest_digest)
+            if child is not None:
+                retained_plan = child['intended_transition'].get('cohort_activation', {})
+                if (retained_plan.get('expires_at_ms') != expires_at_ms
+                        or retained_plan.get('manifest_path') != str(path)):
+                    raise OnboardingError('receiving_maintenance_child_conflict')
+                # Link an exact lost return even after expiry; no controls run.
+            else:
+                if (previous_id != self._cohort_tip(effects) or 'receiving-selected' in effects
+                        or type(expires_at_ms) is not int or not 0 < expires_at_ms < 2**53
+                        or plan['expires_at_ms'] > time.time_ns() // 1_000_000
+                        or expires_at_ms <= time.time_ns() // 1_000_000):
+                    raise OnboardingError('receiving_maintenance_reassessment_required')
+                authorization = dict(expires_at_ms=expires_at_ms)
+                auth_key = 'activation-continuation:' + digest(dict(
+                    previous=previous_id, expires_at_ms=expires_at_ms))
+                if auth_key in effects and effects[auth_key] != authorization:
+                    raise OnboardingError('receiving_maintenance_child_conflict')
+                observed = previous['runtime_observation'] or {}
+                repairs = observed.get('cohort_reassessment', {})
+                fenced = (set(repairs) == set(plan['receivers']) and all(
+                    item.get('state') in {'disabled', 'observed-disabled'} for item in repairs.values()))
+                if observed.get('sender_selections') and not fenced:
+                    raise OnboardingError('receiving_maintenance_reassessment_required')
+                self._record(auth_key, authorization)
+                owners = self._owners(self.current_loads(tuple(plan['receivers'])))
+                CohortController(self.journal, previous_id, owners).reconcile_reassessment()
+                if path.exists() and being_seed._read(path) != manifest:
+                    raise OnboardingError('receiving_maintenance_child_conflict')
+                if not path.exists():
+                    being_seed._write(path, manifest)
+        return self.reassess(path, manifest_digest, previous_id,
+            activation_expires_at_ms=expires_at_ms)
+
+    def reassess(self, manifest_path: Path, manifest_digest: str, previous_id: str, *,
+                 activation_expires_at_ms: int | None = None) -> dict:
         """Prepare a linked activation-only successor after a completed fence.
 
         The manifest can change only exact predecessor selection hashes. This
@@ -602,9 +706,15 @@ class ReceivingMaintenance:
         with self.journal.mutation_lock(self.operation_id):
             effects = self._effects()
             self._assert_not_superseded(effects)
+            if activation_expires_at_ms is not None and effects.get(
+                    'activation-continuation:' + digest(dict(previous=previous_id,
+                        expires_at_ms=activation_expires_at_ms))) != dict(expires_at_ms=activation_expires_at_ms):
+                raise OnboardingError('receiving_maintenance_reassessment_required')
             if 'cohort' not in effects or 'receiving-selected' in effects:
                 raise OnboardingError('receiving_maintenance_reassessment_required')
-            successor = digest(dict(previous=previous_id, manifest_digest=manifest_digest))
+            continuation = {} if activation_expires_at_ms is None else dict(
+                activation_expires_at_ms=activation_expires_at_ms)
+            successor = digest(dict(previous=previous_id, manifest_digest=manifest_digest, **continuation))
             key = 'assessment:' + successor
             if key in effects:
                 retained = effects[key]
@@ -632,21 +742,31 @@ class ReceivingMaintenance:
                 receiver['expected_selection_sha256'] = digest(selections[matches[0]])
             if manifest != expected:
                 raise OnboardingError('receiving_maintenance_child_conflict')
-            if plan['expires_at_ms'] <= time.time_ns() // 1_000_000:
-                raise OnboardingError('receiving_preservation_authorization_expired')
-            repairs = (previous['runtime_observation'] or {}).get('cohort_reassessment', {})
-            if (set(repairs) != set(plan['receivers']) or
-                    any(item.get('state') not in {'disabled', 'observed-disabled'} for item in repairs.values())):
-                raise OnboardingError('receiving_maintenance_reassessment_required')
-            native = (previous['runtime_observation'] or {}).get('native_tooling', {})
-            for name, recipe in plan['receivers'].items():
-                if recipe['tooling']['profile'] == 'codex':
-                    accepted = native.get(name)
-                    if (not isinstance(accepted, dict) or accepted.get('schema') != 'cluster-native-chat-tooling/v1'
-                            or accepted.get('status') != 'configured'):
-                        raise OnboardingError('receiving_native_tooling_unobserved')
-            target = 'receiving:maintenance-reassessment:' + digest(dict(parent=self.operation_id, previous=previous_id))
+            if activation_expires_at_ms is not None:
+                if type(activation_expires_at_ms) is not int or not 0 < activation_expires_at_ms < 2**53:
+                    raise OnboardingError('receiving_maintenance_reassessment_required')
+                original_expiry = plan['expires_at_ms']
+                plan['expires_at_ms'] = activation_expires_at_ms
+            target = 'receiving:maintenance-reassessment:' + digest(dict(
+                parent=self.operation_id, previous=previous_id,
+                **({} if activation_expires_at_ms is None else {'activation_continuation': True})))
             retained = self.journal.latest_for_idempotency_key('receiving-update:' + target + ':' + manifest_digest)
+            native = (previous['runtime_observation'] or {}).get('native_tooling', {})
+            if retained is None:
+                if activation_expires_at_ms is not None and original_expiry > time.time_ns() // 1_000_000:
+                    raise OnboardingError('receiving_maintenance_reassessment_required')
+                if plan['expires_at_ms'] <= time.time_ns() // 1_000_000:
+                    raise OnboardingError('receiving_preservation_authorization_expired')
+                repairs = (previous['runtime_observation'] or {}).get('cohort_reassessment', {})
+                if (set(repairs) != set(plan['receivers']) or
+                        any(item.get('state') not in {'disabled', 'observed-disabled'} for item in repairs.values())):
+                    raise OnboardingError('receiving_maintenance_reassessment_required')
+                for name, recipe in plan['receivers'].items():
+                    if activation_expires_at_ms is None and recipe['tooling']['profile'] == 'codex':
+                        accepted = native.get(name)
+                        if (not isinstance(accepted, dict) or accepted.get('schema') != 'cluster-native-chat-tooling/v1'
+                                or accepted.get('status') != 'configured'):
+                            raise OnboardingError('receiving_native_tooling_unobserved')
             if retained is not None:
                 # A crash after child creation must not refreeze new timestamps
                 # or author another child. Its exact vectors remain authoritative.
@@ -655,6 +775,7 @@ class ReceivingMaintenance:
                         or retained['expected_precondition'].get('previous_cohort') != previous_id
                         or retained['intended_transition'].get('cohort_activation', {}).get('manifest_path') != str(manifest_path)
                         or retained['intended_transition']['cohort_activation'].get('manifest_uid') != 0
+                        or retained['intended_transition']['cohort_activation'].get('expires_at_ms') != plan['expires_at_ms']
                         or retained['intent']['runtime_call'] != dict(manifest_digest=manifest_digest,
                             precondition_digest=digest(retained['expected_precondition']),
                             transition_digest=digest(retained['intended_transition']))):
@@ -663,7 +784,9 @@ class ReceivingMaintenance:
             else:
                 child = self._prepare_reassessment(previous, plan, manifest_path, manifest_digest, selections, target)
             observed = dict(child['runtime_observation'] or {})
-            if 'native_tooling' not in observed:
+            if activation_expires_at_ms is not None:
+                pass  # Normal apply verifies current tooling; do not relabel old process evidence.
+            elif 'native_tooling' not in observed:
                 observed['native_tooling'] = native
                 self.journal.advance(child['operation_id'], child['state'], runtime_observation=observed,
                     expected_runtime_observation=child['runtime_observation'])
@@ -1044,17 +1167,22 @@ def main(argv=None) -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--owner', choices=('prepare-sdk', 'prepare', 'execute'))
     mode.add_argument('--spec', type=Path)
-    parser.add_argument('action', nargs='?', choices=('prepare', 'apply', 'status', 'reassess', 'link-software-successor'))
+    parser.add_argument('action', nargs='?', choices=('prepare', 'apply', 'status', 'reassess', 'link-software-successor',
+        'recover-managed-start', 'continue-activation'))
     parser.add_argument('--successor-spec', type=Path)
     parser.add_argument('--manifest', type=Path)
     parser.add_argument('--manifest-digest')
     parser.add_argument('--previous-cohort')
+    parser.add_argument('--expires-at-ms', type=int)
+    parser.add_argument('--receiver')
+    parser.add_argument('--recovery-id')
     args = parser.parse_args(argv)
     operation = None
     try:
         if args.owner:
             if (args.action is not None or args.manifest is not None or args.manifest_digest is not None
-                    or args.previous_cohort is not None or args.successor_spec is not None):
+                    or args.previous_cohort is not None or args.successor_spec is not None
+                    or any(v is not None for v in (args.expires_at_ms, args.receiver, args.recovery_id))):
                 raise OnboardingError('receiving_maintenance_action_required')
             raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1)
             if len(raw) > being_seed.MAX_SELECTION:
@@ -1069,7 +1197,12 @@ def main(argv=None) -> int:
             spec = validate(json.loads(raw))
             if (args.action == 'link-software-successor') != (args.successor_spec is not None):
                 raise OnboardingError('receiving_maintenance_binding_required')
-            recovery = (args.manifest, args.manifest_digest, args.previous_cohort)
+            if ((args.action in {'recover-managed-start', 'continue-activation'}) != (args.expires_at_ms is not None)
+                    or (args.action == 'recover-managed-start') != (args.receiver is not None and args.recovery_id is not None)
+                    or args.action != 'recover-managed-start' and (args.receiver is not None or args.recovery_id is not None)):
+                raise OnboardingError('receiving_maintenance_binding_required')
+            recovery = (args.manifest, args.manifest_digest,
+                None if args.action == 'continue-activation' else args.previous_cohort)
             if ((args.action == 'reassess') != all(value is not None for value in recovery)
                     or args.action != 'reassess' and any(value is not None for value in recovery)):
                 raise OnboardingError('receiving_maintenance_binding_required')
@@ -1089,7 +1222,13 @@ def main(argv=None) -> int:
                               'prepared' if 'cohort' in effects else 'preparing')
             else:
                 operation = ReceivingMaintenance(spec)
-                if args.action == 'reassess':
+                if args.action == 'continue-activation':
+                    if args.previous_cohort is None:
+                        raise OnboardingError('receiving_maintenance_binding_required')
+                    result = operation.continue_activation(args.previous_cohort, args.expires_at_ms)
+                elif args.action == 'recover-managed-start':
+                    result = operation.recover_managed_start(args.receiver, args.recovery_id, args.expires_at_ms)
+                elif args.action == 'reassess':
                     result = operation.reassess(args.manifest, args.manifest_digest, args.previous_cohort)
                 elif args.action == 'link-software-successor':
                     following = onboarding_release.regular(args.successor_spec, uid=0)

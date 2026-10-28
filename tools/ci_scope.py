@@ -716,7 +716,8 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         if all((root / name).is_file() for name in tests):
             return 'peer', tests
     vm_placement_files = {'clusterctl/native_body.py', 'clusterctl/vm_body.py',
-                          'tests/test_native_body.py', 'tests/test_vm_body.py'}
+                          'tests/test_native_body.py', 'tests/test_vm_body.py',
+                          'tools/build_receiving_maintenance.py', 'tools/check_rc_types.py'}
     if ({'clusterctl/native_body.py', 'clusterctl/vm_body.py', 'tests/test_vm_body.py'} <= set(changed)
             and set(changed) <= vm_placement_files | CI_FILES | RUNBOOK_DOCS
             and all((root / name).is_file() for name in (*NATIVE_RECEIVING_TESTS, 'tests/test_vm_body.py'))):

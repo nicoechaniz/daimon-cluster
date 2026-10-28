@@ -87,3 +87,85 @@ def test_existing_host_binding_uses_vm_os_controls_and_refuses_container_reconci
     assert backend.execute_body(plan,['owner-control'],home=True)=='retained-native-result'
     with pytest.raises(OnboardingError,match='native_receiving_incus_unsupported'):
         backend._dispatch(plan,['restart','dm-'+plan['name']])
+
+
+def remote_placement(tmp_path):
+    plan,path,row=placement(tmp_path)
+    row['host_machine_id_sha256']='b'*64
+    key=tmp_path/'parent.key';key.write_text('fixture key reference');key.chmod(0o600)
+    hosts=tmp_path/'hosts';hosts.write_text('fixture host reference');hosts.chmod(0o600)
+    row['incus_host_ssh']=dict(host='fixture.invalid',port=22,ssh_user='operator',
+        identity_file=str(key),identity_uid=os.geteuid(),known_hosts=str(hosts),bootstrap_python='/usr/bin/python3')
+    being_seed._write(path,row)
+    return plan,path,row
+
+
+def test_remote_vm_checks_both_host_and_guest_without_key_installation(tmp_path,monkeypatch):
+    import shlex
+    plan,path,row=remote_placement(tmp_path);body=native_body.NativeBody.load(path,plan)
+    calls=[]
+    def run(argv,**kwargs):
+        calls.append(argv)
+        assert argv[0]=='ssh' and 'StrictHostKeyChecking=yes' in argv
+        remote=shlex.split(argv[-1]);assert remote[4]==vm_body.HOST_LAUNCH
+        assert remote[5]==row['host_machine_id_sha256']
+        incus=json.loads(remote[6])
+        if 'query' in incus:
+            return SimpleNamespace(returncode=0,stdout=json.dumps({'type':'virtual-machine',
+                'config':{'volatile.uuid':row['instance_uuid']}}))
+        request=json.loads(incus[-1])
+        assert request['machine_id_sha256']==row['machine_id_sha256']
+        assert request['argv']==['owner','literal ; $(unchanged)']
+        assert kwargs['input']=='original request'
+        return SimpleNamespace(returncode=0,stdout='retained',stderr='')
+    monkeypatch.setattr(vm_body.subprocess,'run',run)
+    assert body.execute(['owner','literal ; $(unchanged)'],input_data='original request')=='retained'
+    assert len(calls)==2
+
+
+def test_remote_public_transfer_uses_existing_rsync_directly_into_agent(tmp_path,monkeypatch):
+    import shlex
+    plan,path,_=remote_placement(tmp_path);body=native_body.NativeBody.load(path,plan)
+    monkeypatch.setattr(vm_body.VMBody,'_verify_instance',lambda *a:None)
+    monkeypatch.setattr(vm_body.VMBody,'execute',lambda *a,**k:'')
+    calls=[]
+    def run(argv,**kwargs):
+        calls.append(argv);assert argv[0]=='rsync' and '--delete' not in argv
+        server=shlex.split(argv[argv.index('--rsync-path')+1])
+        assert server[4]==vm_body.HOST_LAUNCH
+        assert json.loads(server[6])[-4:]==['exec','dm-oliva','--','rsync']
+        assert argv[-1].endswith(':/opt/retained-stage/')
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(vm_body.subprocess,'run',run)
+    body._transfer_code(tmp_path,Path('/opt/retained-stage'),2)
+    assert len(calls)==1
+
+
+def test_parent_ssh_reference_is_closed_and_private(tmp_path):
+    plan,path,row=remote_placement(tmp_path)
+    row['incus_host_ssh']['host']='-oProxyCommand=invalid';being_seed._write(path,row)
+    with pytest.raises(OnboardingError,match='vm_receiving_placement_required'):
+        native_body.NativeBody.load(path,plan)
+
+
+def test_remote_parent_mismatch_stops_before_guest_operation(tmp_path,monkeypatch):
+    plan,path,_=remote_placement(tmp_path);body=native_body.NativeBody.load(path,plan);calls=[]
+    def run(argv,**kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=1,stdout='',stderr='vm_receiving_host_changed\n')
+    monkeypatch.setattr(vm_body.subprocess,'run',run)
+    with pytest.raises(OnboardingError,match='^vm_receiving_host_changed$'):
+        body.execute(['owner'])
+    assert len(calls)==1
+
+
+def test_parent_launcher_validates_actual_host_and_preserves_rsync_server_arguments():
+    import subprocess,sys
+    actual=hashlib.sha256(Path('/etc/machine-id').read_bytes().strip()).hexdigest()
+    argv=[sys.executable,'-I','-c',vm_body.HOST_LAUNCH,actual,
+          json.dumps(['/usr/bin/printf','%s\n','literal ; $(not executed)']),'--server','-s']
+    result=subprocess.run(argv,capture_output=True,text=True,check=True)
+    assert result.stdout=='literal ; $(not executed)\n--server\n-s\n'
+    argv[4]='b'*64
+    result=subprocess.run(argv,capture_output=True,text=True)
+    assert result.returncode!=0 and result.stdout=='' and result.stderr.strip()=='vm_receiving_host_changed'

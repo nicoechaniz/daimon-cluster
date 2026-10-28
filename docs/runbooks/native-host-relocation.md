@@ -184,7 +184,27 @@ SHA256 values, `bootstrap_python` and `/home/agent` home. The instance name must
 be the existing plan's `dm-<name>`; the actual Incus type and UUID are checked
 before agent execution or transfer. A replaced container/VM is refused.
 
-This locator selects local Incus agent transport, not another SSH admission.
+The locator uses the local agent when the operator's machine identity matches
+the pinned parent host. During a phased move, an optional `incus_host_ssh` map
+can retain the existing authorized parent-host `host`, `port`, `ssh_user`,
+`identity_file`, `identity_uid`, `known_hosts` and `bootstrap_python` references.
+A different operator host must use these validated private references. The
+remote launcher independently checks the parent machine identity before Incus
+checks the VM type/UUID; the guest launcher still checks its own machine identity.
+After the control plane moves to that parent, the same locator uses the local
+agent without requiring obsolete Source SSH files. No admission keys change.
+
+Qualified public-code transfer from another operator uses the existing rsync/SSH
+route directly into the Incus guest's protected stage, then the same inventory
+verification and atomic publication. No third public-code cache or private-key
+copy into another being is needed. The receiver guest needs `rsync` for this
+remote path; a container package inventory does not prove it is installed.
+Prepare the distro package and dependencies before selecting the remote
+maintenance route, using verified offline packages if staging egress is fenced.
+The same retained preparation resumes after
+uncertainty; do not change its ID or treat a transport timeout as no effect.
+
+This locator reuses Incus agent transport, not another SSH admission.
 The same command validation, receiving clock rebasing, UID selection, original
 request input and uncertainty behavior remain in force. Only qualified public
 code is copied into retained staging, independently verified and atomically
@@ -249,6 +269,15 @@ owner and current selected state before cohort revocation or activation. Until
 the adapter and placement are actually adopted, that receiver remains an explicit
 maintenance gap; source code alone is not fleet update convergence. This transport
 does not change Matrix identity, signed authority or message semantics.
+
+## Retained operator recovery access
+
+Nicolas reiterated on2026-10-28 that CompAII remains the authorized operator
+and recovery backstop. A relocation must preserve that existing administrative
+reach alongside Nicolas and each daimon own access. Do not remove keys, narrow
+existing operator grants or make recovery depend only on the migrated bot or
+provider login. Reuse existing admissions; this instruction grants no new
+custody, identity, cross-being data access or global Stop.
 
 ## Rollback
 

@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ _spec = importlib.util.spec_from_file_location(
     'native_body_capture', Path(__file__).resolve().parents[1] / 'scripts/native-body-capture.py')
 mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)
+REAL_LOAD_PLAN = mod.load_plan
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +26,84 @@ def state(tmp_path):
     root.mkdir(mode=0o700)
     (root / 'capture/root').mkdir(parents=True)
     return root
+
+
+@pytest.fixture
+def store_tree():
+    # /tmp is intentionally excluded by the production capture contract.
+    with tempfile.TemporaryDirectory(prefix='native-store-test-',dir='/var/tmp') as name:
+        base=Path(name)
+        for leaf in ('body','other-vm'):(base/leaf).mkdir()
+        yield base
+
+
+def test_declared_stores_do_not_include_other_bodies_or_nested_mounts(tmp_path,store_tree):
+    root=state(tmp_path)
+    body=store_tree/'body';nested=body/'external';nested.mkdir()
+    rows=[{'target':'/','fstype':'ext4'},{'target':str(nested),'fstype':'ext4'}]
+    plan=mod.coverage(root,rows,[body],[body])
+    assert plan['source_roots']==[str(body)]
+    assert str(nested) in plan['excluded_mounts_and_runtime']
+    with pytest.raises(mod.CaptureError,match='required_store_excluded'):
+        mod.coverage(root,rows,[nested],[body])
+    with pytest.raises(mod.CaptureError,match='required_store_uncovered'):
+        mod.coverage(root,rows,[store_tree/'other-vm'],[body])
+
+
+def test_declared_sources_reject_overlap_and_symlink_alias(tmp_path,store_tree):
+    body=store_tree/'body';child=body/'child';child.mkdir()
+    rows=[{'target':'/','fstype':'ext4'}]
+    with pytest.raises(mod.CaptureError,match='source_boundary_overlap'):
+        mod.coverage(state(tmp_path),rows,[body],[body,child])
+    alias=store_tree/'alias';alias.symlink_to(body,target_is_directory=True)
+    with pytest.raises(mod.CaptureError,match='source_boundary_invalid'):
+        mod.coverage(tmp_path,rows,[body],[alias])
+
+
+def test_retained_store_plan_rejects_scope_changes_and_extra_seed_data(tmp_path,store_tree):
+    root=state(tmp_path);body=store_tree/'body';rows=[{'target':'/','fstype':'ext4'}]
+    with patch.object(mod,'mounts',return_value=rows),patch.object(mod,'load_plan',REAL_LOAD_PLAN):
+        plan=mod.prepare(root,[body],[body])
+        assert mod.load_plan(root)==plan
+        extra=root/'capture/root/other-vm';extra.mkdir();(extra/'disk').write_bytes(b'unrelated')
+        with pytest.raises(mod.CaptureError,match='seed_outside_store_boundary'):mod.load_plan(root)
+        (extra/'disk').unlink();extra.rmdir()
+        plan['source_roots']=['/'];mod.persist(root/'capture-plan.json',plan)
+        with pytest.raises(mod.CaptureError,match='coverage_changed'):mod.load_plan(root)
+
+
+def test_real_declared_store_delta_leaves_unrelated_vm_untouched(tmp_path,store_tree):
+    root=state(tmp_path);body=store_tree/'body';other=store_tree/'other-vm'
+    (body/'memory').write_text('retained body')
+    (other/'disk').write_bytes(b'other live VM')
+    rows=[{'target':'/','fstype':'ext4'}]
+    with patch.object(mod,'mounts',return_value=rows):plan=mod.prepare(root,[body],[body])
+    real_run=subprocess.run
+    def run(argv,**kwargs):
+        if argv[0]=='systemctl':return subprocess.CompletedProcess(argv,0)
+        return real_run(argv,**kwargs)
+    with patch.object(mod,'load_plan',return_value=plan), \
+         patch.object(mod,'mounts',return_value=rows), \
+         patch.object(mod,'active',return_value=True),patch.object(mod,'stopped',return_value=True), \
+         patch.object(mod.subprocess,'run',side_effect=run):
+        assert mod.capture(root,['body.service'],[])['capture_consistent']
+    assert (root/'capture/root'/str(body).lstrip('/')/'memory').read_text()=='retained body'
+    assert not (root/'capture/root'/str(other).lstrip('/')).exists()
+    assert (other/'disk').read_bytes()==b'other live VM'
+
+
+def test_store_replacement_and_relevant_mount_drift_refuse_but_other_vm_does_not(tmp_path,store_tree):
+    root=state(tmp_path);body=store_tree/'body';other=store_tree/'other-vm'
+    rows=[{'target':'/','fstype':'ext4'}]
+    with patch.object(mod,'mounts',return_value=rows),patch.object(mod,'load_plan',REAL_LOAD_PLAN):
+        plan=mod.prepare(root,[body],[body])
+        rows.append({'target':str(other),'fstype':'ext4'})
+        assert mod.load_plan(root)==plan
+        nested=body/'nested';nested.mkdir();rows.append({'target':str(nested),'fstype':'ext4'})
+        with pytest.raises(mod.CaptureError,match='coverage_changed'):mod.load_plan(root)
+        rows.pop();nested.rmdir()
+        body.rename(store_tree/'old-body');body.mkdir()
+        with pytest.raises(mod.CaptureError,match='coverage_changed'):mod.load_plan(root)
 
 
 @pytest.mark.parametrize('unit', ['user:0:writer.service', 'user:01000:writer.service',

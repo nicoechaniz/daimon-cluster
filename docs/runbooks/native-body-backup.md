@@ -37,6 +37,23 @@ Separate local filesystems (including boot/EFI) receive explicit capture passes;
 virtual/remote mounts are excluded and cannot satisfy a required durable store.
 Preserve shared remote bindings under their owning service's backup contract.
 
+`--required-paths` asserts coverage; it does not limit the default whole-filesystem
+capture. On a host shared with VMs or other bodies, use prepare-only with
+`--source-paths <canonical-store>...` to select disjoint physical store directories.
+Declare every required body store, including targets outside the home reached
+through symlinks. Required stores outside that selection fail before any stop.
+Nested mounts are excluded even when they are same-device bind aliases; declare
+their canonical stores separately. Overlapping or duplicate source directories
+and seeds containing unrelated data are refused rather than copied twice.
+The selected source boundary and directory identities are retained and revalidated
+before and after capture. Unrelated mount changes do not invalidate a declared
+store plan. Recovery restores prior availability without recapturing data;
+omitting the option preserves existing dedicated-host plans. These body-specific
+captures do not establish consistency of a live VM disk or replace the shared
+services' and VM's separate backup boundaries. Check actual size, free-space
+reserve and retention before seeding or encrypting; do not copy a shared host's
+entire data volume merely to capture one body.
+
 With that retained plan, invoke the helper with the actual body `--writers` and
 `--activators`. It preserves their original active state, stops activators first,
 and restores writers before activators even after a failed copy. It persists the

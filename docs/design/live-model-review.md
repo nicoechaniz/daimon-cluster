@@ -35,5 +35,45 @@ Run affected `test_home_live_review.py`, `test_home_gateway.py` and
 manual check downloads no geometry; a changed model preserves document, camera,
 controls and selection; rejected models retain their accepted version. Source
 publication and fixture success do not mean the receiving gateway is activated.
-Follow receiving live-cutover consent/review and same-plan GO. Preserve the
+Use the existing authorized task scope for routine receiving activation/repair;
+do not demand redundant same-plan GO. Ask only for genuinely missing authority. Preserve the
 selected runtime, configuration, session/authority stores, grants and other apps.
+
+## Reader-filtered project selector
+
+A current work frame may request `home-artifact:review-catalog`. The parent reads
+its ordinary same-origin `/catalog.json`, already filtered by the current reader
+policy. `model_review:true` marks HTML artifacts with both fixed `gallery.json`
+and `review-live.json` files. It grants nothing: every later manifest/gallery
+read still uses existing per-resource checks, including revocation after listing.
+Only marked artifacts, at most64 resources, are projected as resource/title pairs
+to the isolated child; links, recipients, paths and unreadable metadata are absent.
+Catalog responses are bounded at1MiB/2048entries and20seconds; no persistent cache.
+
+The child may send `home-artifact:review-select` with a resource from that returned
+list. Arbitrary resources/URLs/files are rejected before reads. The parent aborts
+superseded loads, reads only that resource's fixed manifest and version-pinned
+hash-verified gallery under the existing16KiB/25MiB/20second limits. It posts a
+candidate with `switching:true` and a bounded request ID; it keeps its accepted
+resource/version until the child returns `home-artifact:review-applied` matching
+that request/resource/version with `accepted:true`. The renderer stages validated
+geometry and waits for matching `home-artifact:review-commit` before applying it;
+`review-cancel` drops a superseded/hidden/timed-out candidate. This prevents a
+hide/cancel race from relabeling the previous project. Invalid geometry retains the
+previous project; the live subscription subsequently follows the accepted one.
+Same-project old renderers retain their preceding opt-in bridge behavior. Pinned
+historical views offer no selector. Hidden/unloaded pages abort pending work.
+
+The universal renderer contains only its initial permitted gallery. Other model
+bytes cross from the authorized parent on selection, rather than being embedded
+in the six-reader shared artifact. Project selection resets framing; updates to
+the same project preserve the existing view. Copied selection context includes
+resource, scene fingerprint and immutable publication version, avoiding ambiguous
+identical scene IDs from different projects. No login, user list, service, audience
+expansion, background agent attention or model-store duplication is introduced.
+
+Source/browser qualification and receiving activation are separate. This selector extends the earlier same-resource bridge. Nicolas explicitly
+authorized its activation on2026-10-28 and removed redundant same-plan GO requests.
+Follow current AGENTS: verify the concrete scoped change, preserve actual grants
+and state, retain rollback and observe receiving behavior. New scope/authority
+and fresh global Stop consent remain separate.

@@ -53,7 +53,7 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert');
  const context={window:{addEventListener:(n,f)=>events[n]=f},document:{hidden:false,addEventListener(){}},Uint8Array,TextDecoder,AbortController,
  setTimeout:()=>1,clearTimeout(){},fetch:async()=>{calls++;return {ok:mode!=='denied',headers:{get:n=>n==='Content-Length'&&mode==='oversize-header'?'20000':null},body:{cancel:async()=>{cancelled++},getReader:()=>({read:async()=>({done:false,value:new Uint8Array(20000)}),cancel:async()=>{cancelled++}})}}}};
  vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);context.installLiveReview(frame);
- if(mode==='pinned'){assert(!events.message);continue;}
+ if(mode==='pinned'){events.message({source:child,origin:'null',data:{type:'home-artifact:live-review',enabled:true}});assert.equal(calls,0);continue;}
  events.message({source:child,origin:'null',data:{type:'home-artifact:live-review',enabled:true}});
  for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
  assert.equal(calls,1);assert.equal(messages.filter(m=>m.type==='home-artifact:review-update').length,0);assert.equal(messages.at(-1).type,'home-artifact:review-error');assert.equal(cancelled,1,mode);
@@ -104,5 +104,36 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert'),{webcrypto}=req
  choose(a);await waitFor(()=>switched(a));const cancelled=messages.at(-1).requestId;
  context.document.hidden=true;docs.visibilitychange();await flush();assert(messages.some(m=>m.type==='home-artifact:review-cancel'&&m.requestId===cancelled));assert.equal(current().resource,b);assert.equal(timers.size,0);const count=calls.length;choose(a);await flush();assert.equal(calls.length,count);
 })();
+'''
+    subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)
+
+
+def test_pinned_review_hydrates_only_exact_revision_and_requires_commit():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required')
+    source = Path(__file__).resolve().parents[1] / 'clusterctl/homes/assets/work-live-review.js'
+    fixture = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert'),{webcrypto}=require('crypto');
+(async()=>{for(const mode of ['valid','denied','wrong-version','bad-hash','reject','hidden']){
+ const a='a'.repeat(32),v='1'.repeat(64),events={},docs={},calls=[],messages=[],timers=new Map();let tid=0;
+ const data=JSON.stringify({scenes:[{title:'Pinned fixture'}]}),hash=Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(data))).toString('hex');
+ const frame={dataset:{liveReview:'pinned',downloadRoot:'/works/'+a+'/'+v+'/'},contentWindow:{postMessage:m=>messages.push(m)}};
+ const document={hidden:false,addEventListener:(k,f)=>docs[k]=f};
+ const context={window:{addEventListener:(k,f)=>events[k]=f},document,Uint8Array,TextDecoder,AbortController,crypto:webcrypto,setTimeout:(f,d)=>{timers.set(++tid,{f,d});return tid},clearTimeout:id=>timers.delete(id),fetch:async url=>{calls.push(url);return new Response(mode==='denied'?'Denied':url.endsWith('review-live.json')?JSON.stringify({schema:'dm.review-live/v1',gallery:'gallery.json',sha256:mode==='bad-hash'?'0'.repeat(64):hash}):data,{status:mode==='denied'?404:200,headers:{'X-Home-Version':mode==='wrong-version'?'2'.repeat(64):v}})}};
+ vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);context.installLiveReview(frame);
+ const send=(data,source=frame.contentWindow,origin='null')=>events.message({data,source,origin});
+ const flush=async()=>{for(let i=0;i<25;i++)await new Promise(r=>setImmediate(r))};
+ send({type:'home-artifact:review-select',resource:a});send({type:'home-artifact:review-catalog'});send({type:'home-artifact:live-review',enabled:true});send({type:'home-artifact:review-load-pinned',path:'evil'});send({type:'home-artifact:review-load-pinned'},{});await flush();assert.equal(calls.length,0);
+ send({type:'home-artifact:review-load-pinned'});await flush();
+ const update=messages.find(m=>m.type==='home-artifact:review-update');
+ if(['denied','wrong-version','bad-hash'].includes(mode)){assert(!update,mode);assert.equal(messages.at(-1).type,'home-artifact:review-error');assert.equal(timers.size,0);continue;}
+ assert(update&&update.pinned&&update.switching,mode);assert.equal(update.version,v);assert(!messages.some(m=>m.type==='home-artifact:review-commit'));
+ if(mode==='hidden'){document.hidden=true;docs.visibilitychange();await flush();assert(messages.some(m=>m.type==='home-artifact:review-cancel'));assert(!messages.some(m=>m.type==='home-artifact:review-commit'));assert.equal(timers.size,0);continue;}
+ send({type:'home-artifact:review-applied',requestId:update.requestId,version:v,resource:a,accepted:mode!=='reject'});await flush();
+ assert.equal(messages.some(m=>m.type==='home-artifact:review-commit'),mode==='valid');assert.equal(timers.size,0);
+ const n=calls.length;send({type:'home-artifact:review-load-pinned'});await flush();if(mode==='valid'){assert.equal(calls.length,n);assert.equal(messages.at(-1).type,'home-artifact:review-current')}
+ assert(calls.every(url=>url.startsWith('/works/'+a+'/'+v+'/')));
+}})();
 '''
     subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)

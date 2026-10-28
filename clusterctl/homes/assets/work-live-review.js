@@ -3,7 +3,8 @@
 function installLiveReview(frame) {
   const root = frame.dataset.downloadRoot || '';
   const match = /^\/works\/([a-f0-9]{32})\/([a-f0-9]{64})\/$/.exec(root);
-  if (!match || frame.dataset.liveReview !== 'current') return;
+  if (!match) return;
+  const current = frame.dataset.liveReview === 'current';
   let resource = match[1], target = null, catalog = new Map(), catalogPending = null, acknowledgment = null, serial = 0;
   let version = match[2], wanted = false, timer = null, pending = null, requestTimeout = null, delay = 10000, immediate = false;
   const post = data => frame.contentWindow.postMessage(data, '*');
@@ -46,6 +47,44 @@ function installLiveReview(frame) {
     const result = new Uint8Array(size); let offset = 0;
     for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
     return result;
+  }
+  // Historical views may hydrate only their original immutable gallery.
+  // No catalog, current-version lookup, resource switch or recurring timer.
+  if (!current) {
+    let loaded = false;
+    async function hydrate() {
+      if (document.hidden || pending) return;
+      if (loaded) { post({type:'home-artifact:review-current',version,resource}); return; }
+      const controller = new AbortController(); pending = controller;
+      const deadline = setTimeout(() => {controller.abort();if(acknowledgment){post({type:'home-artifact:review-cancel',requestId:acknowledgment.requestId});acknowledgment.resolve(false);acknowledgment=null;}}, 20000);
+      try {
+        const response = await fetch(root + 'review-live.json', {cache:'no-store',signal:controller.signal});
+        if (response.headers.get('X-Home-Version') !== version) throw Error('Pinned version mismatch');
+        const manifest = JSON.parse(new TextDecoder().decode(await bytes(response,16384)));
+        if (manifest.schema !== 'dm.review-live/v1' || manifest.gallery !== 'gallery.json' || !/^[a-f0-9]{64}$/.test(manifest.sha256 || '')) throw Error('Invalid pinned manifest');
+        const payload = await fetch(root + 'gallery.json', {cache:'no-store',signal:controller.signal});
+        if (payload.headers.get('X-Home-Version') !== version) throw Error('Pinned gallery mismatch');
+        const data = await bytes(payload,25 * 1024 * 1024);
+        const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',data)),b=>b.toString(16).padStart(2,'0')).join('');
+        if (digest !== manifest.sha256) throw Error('Pinned payload mismatch');
+        const gallery = JSON.parse(new TextDecoder().decode(data));
+        if (controller.signal.aborted || document.hidden) return;
+        const requestId = String(++serial);
+        const accepted = new Promise(resolve=>{acknowledgment={requestId,resource,version,resolve}});
+        post({type:'home-artifact:review-update',version,resource,gallery,requestId,switching:true,pinned:true});
+        if (!await accepted || controller.signal.aborted || document.hidden) throw Error('Pinned review not accepted');
+        post({type:'home-artifact:review-commit',requestId,version,resource}); loaded = true;
+      } catch (error) { if (!controller.signal.aborted) post({type:'home-artifact:review-error'}); }
+      finally { clearTimeout(deadline); pending = null; }
+    }
+    window.addEventListener('message',event=>{
+      if (event.source !== frame.contentWindow || event.origin !== 'null') return;
+      if(event.data?.type==='home-artifact:review-applied' && acknowledgment && event.data.requestId===acknowledgment.requestId && event.data.resource===resource && event.data.version===version){const resolve=acknowledgment.resolve;acknowledgment=null;resolve(event.data.accepted===true);return;}
+      if (event.data?.type === 'home-artifact:review-load-pinned' && Object.keys(event.data).length === 1) hydrate();
+    });
+    document.addEventListener('visibilitychange',()=>{if(document.hidden) cancel()});
+    window.addEventListener('pagehide',()=>{cancel()});
+    return;
   }
   async function poll() {
     if (!wanted || document.hidden || pending) return;

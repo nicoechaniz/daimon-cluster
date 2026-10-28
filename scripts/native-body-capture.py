@@ -11,6 +11,7 @@ import fcntl
 from contextlib import contextmanager
 import json
 import os
+import pwd
 import re
 import signal
 import sys
@@ -25,18 +26,49 @@ class CaptureError(ValueError):
     pass
 
 
+def unit_target(value: str) -> tuple[int | None, str]:
+    """Keep bare system units compatible; user managers require an explicit UID."""
+    uid = None
+    name = value
+    if value.startswith('user:'):
+        parts = value.split(':')
+        if len(parts) != 3 or not re.fullmatch(r'[1-9][0-9]{0,9}', parts[1]):
+            raise CaptureError('capture_boundary_invalid')
+        uid = int(parts[1])
+        if uid > 2**31 - 1:
+            raise CaptureError('capture_boundary_invalid')
+        name = parts[2]
+    if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.@-]*', name):
+        raise CaptureError('capture_boundary_invalid')
+    return uid, name
+
+
+def systemctl(unit: str, action: str, *properties: str) -> list[str]:
+    uid, name = unit_target(unit)
+    if uid is None:
+        return ['systemctl', action, name, *properties]
+    try:
+        account = pwd.getpwuid(uid)
+    except KeyError as error:
+        raise CaptureError('capture_user_account_unavailable') from error
+    return ['/usr/sbin/runuser', '--user', account.pw_name, '--', '/usr/bin/env', '-i',
+            'PATH=/usr/bin:/bin', f'HOME={account.pw_dir}', f'USER={account.pw_name}',
+            f'XDG_RUNTIME_DIR=/run/user/{uid}',
+            f'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus',
+            '/usr/bin/systemctl', '--user', action, name, *properties]
+
+
 def units(values: list[str], suffixes: tuple[str, ...]) -> list[str]:
     if not values or len(set(values)) != len(values):
         raise CaptureError('capture_boundary_invalid')
-    if any(not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.@-]*', x) or not x.endswith(suffixes)
-           for x in values):
+    if any(not unit_target(x)[1].endswith(suffixes) for x in values):
         raise CaptureError('capture_boundary_invalid')
     return values
 
 
 def active(unit: str) -> bool:
     value = subprocess.check_output(
-        ['systemctl', 'show', unit, '--property=ActiveState', '--value'], text=True, timeout=10).strip()
+        systemctl(unit, 'show', '--property=ActiveState', '--value'), text=True, timeout=10).strip()
     if value not in {'active', 'inactive', 'failed'}:
         raise CaptureError('capture_service_transitional')
     return value == 'active'
@@ -44,8 +76,8 @@ def active(unit: str) -> bool:
 
 def stopped(unit: str) -> bool:
     result = subprocess.check_output(
-        ['systemctl', 'show', unit, '--property=ActiveState', '--property=Result',
-         '--property=ControlGroup'], text=True, timeout=10)
+        systemctl(unit, 'show', '--property=ActiveState', '--property=Result',
+                  '--property=ControlGroup'), text=True, timeout=10)
     values = dict(line.split('=', 1) for line in result.splitlines() if '=' in line)
     if values.get('ActiveState') != 'inactive' or values.get('Result', 'success') != 'success':
         return False
@@ -86,7 +118,7 @@ def recover(state: Path, receipt: dict | None = None) -> dict:
     # Reverse saved stop order: writers first, activation sources last.
     for unit in reversed(previous):
         try:
-            result = subprocess.run(['systemctl', 'start', unit], check=False, timeout=120)
+            result = subprocess.run(systemctl(unit, 'start'), check=False, timeout=120)
             if result.returncode or not active(unit):
                 failures.append(unit)
         except (OSError, subprocess.SubprocessError, CaptureError):
@@ -256,7 +288,7 @@ def capture(state: Path, writers: list[str], activators: list[str]) -> dict:
         # Activation sources stop before writers. systemd observes native graceful
         # shutdown; a timeout/kill is not accepted as a consistent cutoff.
         for unit in order:
-            subprocess.run(['systemctl', 'stop', unit], check=True, timeout=120)
+            subprocess.run(systemctl(unit, 'stop'), check=True, timeout=120)
         if not all(stopped(unit) for unit in order):
             raise CaptureError('capture_quiescence_unconfirmed')
         with (state / 'capture-final.log').open('wb') as log:

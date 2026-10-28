@@ -47,6 +47,16 @@ actual process/attempt first; never retry an uncertain capture automatically.
 Once an attempt is retained, recovery is the supported first action. A later
 capture uses a new explicitly retained attempt, preserving the previous evidence.
 
+Bare writer/activator names select the system manager. For a native body's user
+services, pass `user:<numeric-uid>:<unit>` in the same boundary, for example
+`--writers shared.service user:1000:body.service --activators user:1000:body.timer`.
+The operator resolves that existing account and calls its exact user bus with a
+clean environment. Scope stays in the retained attempt and recovery uses the
+same manager; equal service names in system and user scope remain distinct.
+List static services behind timers/sockets even while idle, and preserve their
+inactive state. Preparing or recovering a capture never starts a user manager,
+enables a unit or changes a goal's paused/blocked status.
+
 A hot pre-copy reduces the final pause but is not a recovery point. An online
 SQLite backup can verify one database; it cannot establish consistency among
 Matrix authority/history/receipt stores, Codex rollouts and Telecodex transport

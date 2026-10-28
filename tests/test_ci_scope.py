@@ -1141,3 +1141,15 @@ def test_maintenance_orchestration_reuses_unchanged_body_qualification(tmp_path)
     for extra in ('clusterctl/onboarding_host.py', 'clusterctl/onboarding_sdk.py',
                   'clusterctl/onboarding_custody.py', 'unknown.py'):
         assert select([*changed, extra], ROOT) == ('full', ['tests'])
+
+
+def test_vm_os_transport_keeps_native_maintenance_and_refuses_unrelated_deltas(tmp_path):
+    from tools import ci_scope
+    changed=['clusterctl/native_body.py','clusterctl/vm_body.py','tests/test_vm_body.py',
+             'docs/runbooks/native-host-relocation.md','tools/ci_scope.py','tests/test_ci_scope.py']
+    profile, tests=select(changed,ROOT)
+    assert profile=='peer'
+    assert set(ci_scope.NATIVE_RECEIVING_TESTS)|{'tests/test_vm_body.py'} <= set(tests)
+    assert select(changed,tmp_path)==('full',['tests'])
+    for extra in ('clusterctl/onboarding_host.py','clusterctl/onboarding_custody.py','requirements.txt'):
+        assert select([*changed,extra],ROOT)==('full',['tests'])

@@ -51,11 +51,19 @@ acceptance criterion.
 ## Live authority and review
 
 Do not create Matrix root/embodiment custody, sign governance artifacts,
-rotate Tribe keys, contact external participant hosts, merge a change that
-requires independent review, or perform a live cutover without its recorded
-consent/review and exact same-plan GO. Synthetic and disposable rehearsals may
-proceed only when their cleanup and access boundaries are independently
-testable.
+rotate Tribe keys, contact external participant hosts, or merge a change that
+requires independent review without the applicable recorded authorization.
+
+Nicolas clarified on2026-10-28 that an already-authorized task includes its
+routine scoped deployment and repair. Do not demand another same-plan GO when
+the existing request already authorizes the intended result. Prepare and verify
+the concrete change, choose the appropriate activation time, preserve actual
+resource grants, configuration/state, conversations and a practical rollback,
+and observe receiving behavior. Ask only for a genuinely new scope, authority
+or missing human decision. This clarification does not authorize changes to
+custody, credentials, administrative access, production-host exclusions or a
+coordinated global Stop; their explicit consent requirements remain in force.
+Synthetic/disposable rehearsals must retain testable cleanup/access boundaries.
 
 ## Tribe group invariant — human correction, 2026-10-13
 

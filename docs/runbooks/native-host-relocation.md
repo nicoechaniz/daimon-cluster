@@ -49,6 +49,20 @@ original metadata. Never replace account databases, globally chown staging, or
 assume `--numeric-ids` alone establishes correct receiving access. This mapping
 is for host services; retain each body's independently verified UID/ACL mapping.
 
+Translate explicit local UID references in selected configuration together with
+their service-owned stores. For example, `consent_uid` names the receiving intake
+service account; copying its old numeric value after mapping the seed store to
+the new account makes `HostConfig.load` refuse the worker. Preserve consent,
+plan and grant record bytes. Validate the actual selected config and completed
+native/VM routes in the intended mount view without running intake or ticking
+jobs; an unmounted placeholder is not that view.
+
+When merging Source control state with an already active receiving VM, retain
+its current qualified local locator instead of overwriting it with the Source
+remote route. Use `NativeBody.load` and the config's canonical placement digest;
+a JSON file's byte hash is a different representation. Preserve both provenance
+and the receiving binding, without re-enrollment or duplicate activation.
+
 Initial direct copies from a running source are staging, not a coherent final
 snapshot. Keep them private and outside active service paths. Bound transfer
 runtime, retained partials/logs and destination headroom; retain exact jobs and

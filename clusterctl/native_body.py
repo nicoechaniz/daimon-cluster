@@ -71,6 +71,13 @@ print(json.dumps({'available':True,'code_digest':fingerprint}))
 '''
 
 
+def ssh_arguments(value: dict) -> list[str]:
+    return ['ssh', '-F', '/dev/null', '-o', 'BatchMode=yes',
+            '-o', 'StrictHostKeyChecking=yes', '-o', 'IdentitiesOnly=yes',
+            '-o', 'ConnectTimeout=8', '-o', 'UserKnownHostsFile=' + value['known_hosts'],
+            '-i', value['identity_file'], '-p', str(value['port'])]
+
+
 @dataclass(frozen=True)
 class NativeBody:
     value: dict
@@ -117,10 +124,7 @@ class NativeBody:
         return Path(self.value['bootstrap_python'])
 
     def ssh(self) -> list[str]:
-        return ['ssh', '-F', '/dev/null', '-o', 'BatchMode=yes',
-                '-o', 'StrictHostKeyChecking=yes', '-o', 'IdentitiesOnly=yes',
-                '-o', 'ConnectTimeout=8', '-o', 'UserKnownHostsFile=' + self.value['known_hosts'],
-                '-i', self.value['identity_file'], '-p', str(self.value['port'])]
+        return ssh_arguments(self.value)
 
     def code_available(self, code: Path, fingerprint: str, *, deadline_ns: int | None = None) -> bool:
         value = json.loads(self.execute([str(self.python), '-B', '-I', '-c', PUBLIC_CODE,
@@ -249,7 +253,7 @@ if result!=0 and ctypes.get_errno()!=errno.EEXIST:raise OSError(ctypes.get_errno
             from .onboarding_owner_control import PUBLIC_ERRORS
             for line in result.stderr.splitlines():
                 if line in {'native_receiving_host_changed', 'receiving_host_deadline_expired',
-                            'native_receiving_code_changed'}:
+                            'native_receiving_code_changed', 'vm_receiving_host_changed'}:
                     raise OnboardingError(line)
                 try:
                     detail = json.loads(line)

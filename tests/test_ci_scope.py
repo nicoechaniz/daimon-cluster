@@ -1151,5 +1151,6 @@ def test_vm_os_transport_keeps_native_maintenance_and_refuses_unrelated_deltas(t
     assert profile=='peer'
     assert set(ci_scope.NATIVE_RECEIVING_TESTS)|{'tests/test_vm_body.py'} <= set(tests)
     assert select(changed,tmp_path)==('full',['tests'])
+    assert select([*changed,'tools/build_receiving_maintenance.py','tools/check_rc_types.py'],ROOT)[0]=='peer'
     for extra in ('clusterctl/onboarding_host.py','clusterctl/onboarding_custody.py','requirements.txt'):
         assert select([*changed,extra],ROOT)==('full',['tests'])

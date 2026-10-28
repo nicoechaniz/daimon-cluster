@@ -8,7 +8,7 @@ A current work iframe can subscribe with `home-artifact:live-review` and a boole
 `enabled`. Repeating an enabled subscription requests an immediate check (the
 renderer uses it for **Reload models**). Parent-owned frame metadata selects the
 resource; child-supplied paths, resource IDs and credentials are never accepted.
-Pinned historical views do not install the bridge.
+Pinned historical views never subscribe to current publications; their optional one-shot hydration stays bound to the original resource/version.
 
 The parent checks fixed `review-live.json`, validates its schema/hash, and reads
 only `gallery.json` at the returned immutable native version. It sends validated
@@ -77,3 +77,28 @@ authorized its activation on2026-10-28 and removed redundant same-plan GO reques
 Follow current AGENTS: verify the concrete scoped change, preserve actual grants
 and state, retain rollback and observe receiving behavior. New scope/authority
 and fresh global Stop consent remain separate.
+
+## Packed display meshes and pinned bootstrap hydration
+
+A capable parent advertises `reviewPacked:true`. The fixed gallery.json may then
+use `dm.review-packed/v1`: scene/part metadata plus one gzip buffer, little-endian
+Int32XYZ position deltas and Uint16triangle deltas. The producer selects an
+explicit display quantum; this format never modifies manufacturing sources.
+The visible model fingerprint must identify the decoded positions and winding.
+The default ordinary JSON transport remains supported unchanged.
+
+Existing authority and immutable-version/digest checks run before decoding. The
+parent bounds declared/expanded bytes at25MiB, verifies the decompressed digest,
+checks inventories, finite coordinate ranges and all face indices, then forwards
+ordinary meshes to the isolated renderer's existing validation/acceptance flow.
+There is no external buffer URL, new resource or widened grant. Malformed data
+retains the current accepted model. The paired portable producer is in the
+shared3d-design-and-fabrication skill; qualify both forms before publishing.
+
+For an immutable historical bootstrap, `reviewPinned:true` permits only the exact
+original fixed manifest and gallery through `home-artifact:review-load-pinned`.
+It requires matching version/digest and the same child acceptance/commit step;
+there is no current lookup, catalog, project switch or recurring timer. A hidden,
+cancelled or rejected load never commits. Ordinary historical pages retain their
+embedded models. Parents loaded before these optional capabilities need one
+initial reopen; later live updates do not reload their document.

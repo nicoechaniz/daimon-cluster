@@ -124,8 +124,9 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert'),{webcrypto}=req
  vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);context.installLiveReview(frame);
  const send=(data,source=frame.contentWindow,origin='null')=>events.message({data,source,origin});
  const flush=async()=>{for(let i=0;i<25;i++)await new Promise(r=>setImmediate(r))};
+ const waitFor=async predicate=>{const end=Date.now()+2000;while(!predicate()){if(Date.now()>end)throw Error('Pinned bridge state timed out');await new Promise(r=>setTimeout(r,2));}};
  send({type:'home-artifact:review-select',resource:a});send({type:'home-artifact:review-catalog'});send({type:'home-artifact:live-review',enabled:true});send({type:'home-artifact:review-load-pinned',path:'evil'});send({type:'home-artifact:review-load-pinned'},{});await flush();assert.equal(calls.length,0);
- send({type:'home-artifact:review-load-pinned'});await flush();
+ send({type:'home-artifact:review-load-pinned'});await waitFor(()=>messages.some(m=>['home-artifact:review-update','home-artifact:review-error'].includes(m.type)));
  const update=messages.find(m=>m.type==='home-artifact:review-update');
  if(['denied','wrong-version','bad-hash'].includes(mode)){assert(!update,mode);assert.equal(messages.at(-1).type,'home-artifact:review-error');assert.equal(timers.size,0);continue;}
  assert(update&&update.pinned&&update.switching,mode);assert.equal(update.version,v);assert(!messages.some(m=>m.type==='home-artifact:review-commit'));
@@ -137,3 +138,35 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert'),{webcrypto}=req
 }})();
 '''
     subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)
+
+
+def test_packed_gallery_decoder_preserves_geometry_and_rejects_corruption():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required')
+    source = Path(__file__).resolve().parents[1] / 'clusterctl/homes/assets/work-live-review.js'
+    fixture = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert'),{webcrypto}=require('crypto'),zlib=require('zlib');
+(async()=>{
+ const context={Uint8Array,DataView,Blob,DecompressionStream,atob,crypto:webcrypto};
+ vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
+ const raw=Buffer.alloc(72);let cursor=0;
+ for(const d of [[0,0,0],[100,0,0],[-100,100,0],[0,-100,100]])for(const n of d){raw.writeInt32LE(n,cursor);cursor+=4}
+ for(const d of [[0,1,2],[0,2,3],[0,3,1],[1,2,1]])for(const n of d){raw.writeUInt16LE(n,cursor);cursor+=2}
+ const wrap=async bytes=>({schema:'dm.review-packed/v1',scenes:[{units:'mm',parts:[{id:'tetra',label:'tetra',color:'#123456',mesh:{origin:[1,2,3],scale:.01,vertices:4,triangles:4}}]}],buffer:{encoding:'gzip/i32-delta-xyz+u16-delta-tri/le',size:72,sha256:Buffer.from(await webcrypto.subtle.digest('SHA-256',bytes)).toString('hex'),data:zlib.gzipSync(bytes).toString('base64')}});
+ const packed=await wrap(raw),decode=p=>context.decodeReviewGallery(p),copy=()=>JSON.parse(JSON.stringify(packed));
+ const output=await decode(packed),part=output.scenes[0].parts[0];
+ assert.deepStrictEqual(JSON.parse(JSON.stringify(part.vertices)),[[1,2,3],[2,2,3],[1,3,3],[1,2,4]]);
+ assert.deepStrictEqual(JSON.parse(JSON.stringify(part.faces)),[[0,1,2],[0,2,3],[0,3,1],[1,3,2]]);assert(!part.mesh);
+ const plain={scenes:[]};assert.strictEqual(await decode(plain),plain);
+ let bad=copy();bad.buffer.sha256='0'.repeat(64);await assert.rejects(decode(bad),/digest/);
+ bad=copy();bad.buffer.size++;await assert.rejects(decode(bad),/size/);
+ bad=copy();bad.scenes[0].parts[0].mesh.vertices=65536;await assert.rejects(decode(bad),/mesh/);
+ bad=copy();bad.buffer.encoding='external-url';await assert.rejects(decode(bad),/Invalid/);
+ bad=copy();bad.scenes[0].parts[0].mesh.scale=0;await assert.rejects(decode(bad),/mesh/);
+ const invalid=Buffer.from(raw);invalid.writeUInt16LE(65535,50);await assert.rejects(decode(await wrap(invalid)),/index/);
+ const bomb=Buffer.alloc(8192);bad=await wrap(bomb);await assert.rejects(decode(bad),/exceeds/);
+})();
+'''
+    subprocess.run([node, '-e', fixture, str(source)], check=True,
+                   capture_output=True, text=True, timeout=20)

@@ -14,7 +14,7 @@ if (frame) {
   }
   openFragment();
   frame.addEventListener('load', () => {
-    frame.contentWindow.postMessage({type:'home-artifact:capabilities', downloads:true, reviewPinned:typeof installLiveReview === 'function' && frame.dataset.liveReview !== 'current', liveReview:frame.dataset.liveReview === 'current' && typeof installLiveReview === 'function', reviewCatalog:frame.dataset.liveReview === 'current' && typeof installLiveReview === 'function', resource:(/^\/works\/([a-f0-9]{32})\//.exec(frame.dataset.downloadRoot || '') || [])[1]}, '*');
+    frame.contentWindow.postMessage({type:'home-artifact:capabilities', downloads:true, reviewPacked:typeof decodeReviewGallery === 'function', reviewPinned:typeof installLiveReview === 'function' && frame.dataset.liveReview !== 'current', liveReview:frame.dataset.liveReview === 'current' && typeof installLiveReview === 'function', reviewCatalog:frame.dataset.liveReview === 'current' && typeof installLiveReview === 'function', resource:(/^\/works\/([a-f0-9]{32})\//.exec(frame.dataset.downloadRoot || '') || [])[1]}, '*');
   });
   window.addEventListener('hashchange', openFragment);
   window.addEventListener('message', event => {

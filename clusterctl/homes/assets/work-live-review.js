@@ -1,5 +1,76 @@
 // Authorized review updates. Child selection is restricted to the current reader catalog.
 'use strict';
+// Optional bounded packed display meshes; same fixed gallery/resource authority.
+async function decodeReviewGallery(data) {
+  if (data?.schema !== 'dm.review-packed/v1') return data;
+  const limit = 25 * 1024 * 1024, buffer = data.buffer;
+  if (!buffer || buffer.encoding !== 'gzip/i32-delta-xyz+u16-delta-tri/le'
+      || !Number.isInteger(buffer.size) || buffer.size < 1 || buffer.size > limit
+      || !/^[a-f0-9]{64}$/.test(buffer.sha256 || '')
+      || typeof buffer.data !== 'string' || buffer.data.length > Math.ceil(limit / 3) * 4
+      || buffer.data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(buffer.data)
+      || !Array.isArray(data.scenes) || !data.scenes.length || data.scenes.length > 64)
+    throw Error('Invalid packed gallery');
+  let expected = 0;
+  for (const scene of data.scenes) {
+    if (!Array.isArray(scene.parts) || !scene.parts.length || scene.parts.length > 256) throw Error('Invalid packed parts');
+    let triangles = 0;
+    for (const part of scene.parts) {
+      const m = part.mesh;
+      if (!m || !Array.isArray(m.origin) || m.origin.length !== 3
+          || !m.origin.every(n => Number.isFinite(n) && Math.abs(n) <= 1e9)
+          || !Number.isFinite(m.scale) || m.scale <= 0 || m.scale > 1
+          || !Number.isInteger(m.vertices) || m.vertices < 3 || m.vertices > 65535
+          || !Number.isInteger(m.triangles) || m.triangles < 1 || m.triangles > 300000)
+        throw Error('Invalid packed mesh');
+      triangles += m.triangles; expected += m.vertices * 12 + m.triangles * 6;
+      if (triangles > 300000 || expected > limit) throw Error('Packed geometry budget');
+    }
+  }
+  if (expected !== buffer.size) throw Error('Packed size mismatch');
+  const compressed = Uint8Array.from(atob(buffer.data), c => c.charCodeAt(0));
+  const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const reader = stream.getReader(), chunks = []; let size = 0;
+  try {
+    for (;;) {
+      const {done, value} = await reader.read(); if (done) break;
+      size += value.byteLength;
+      if (size > expected) throw Error('Expanded packed gallery exceeds limit');
+      chunks.push(value);
+    }
+  } catch (error) { await reader.cancel(); throw error; }
+  if (size !== expected) throw Error('Truncated packed gallery');
+  const raw = new Uint8Array(size); let offset = 0;
+  for (const chunk of chunks) {raw.set(chunk, offset); offset += chunk.byteLength;}
+  const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',raw)), b => b.toString(16).padStart(2,'0')).join('');
+  if (digest !== buffer.sha256) throw Error('Packed geometry digest mismatch');
+  const view = new DataView(raw.buffer); let cursor = 0;
+  const scenes = data.scenes.map(scene => ({...scene, parts:scene.parts.map(part => {
+    const m = part.mesh, previous = [0,0,0], vertices = [], faces = [];
+    for (let i=0; i<m.vertices; i++) {
+      const vertex = [];
+      for (let k=0; k<3; k++) {
+        previous[k] += view.getInt32(cursor,true); cursor += 4;
+        const n = m.origin[k] + previous[k] * m.scale;
+        if (!Number.isSafeInteger(previous[k]) || previous[k] < 0 || previous[k] > 2147483647
+            || !Number.isFinite(n) || Math.abs(n) > 1e9) throw Error('Packed vertex range');
+        vertex.push(n);
+      }
+      vertices.push(vertex);
+    }
+    let a = 0;
+    for (let i=0; i<m.triangles; i++) {
+      a += view.getUint16(cursor,true); const b = a + view.getUint16(cursor+2,true), c = a + view.getUint16(cursor+4,true); cursor += 6;
+      if (a >= m.vertices || b >= m.vertices || c >= m.vertices) throw Error('Packed triangle index');
+      faces.push([a,b,c]);
+    }
+    const {mesh, ...metadata} = part;
+    return {...metadata, vertices, faces};
+  })}));
+  if (cursor !== size) throw Error('Unused packed geometry');
+  return {scenes, navigation:data.navigation || {}};
+}
+
 function installLiveReview(frame) {
   const root = frame.dataset.downloadRoot || '';
   const match = /^\/works\/([a-f0-9]{32})\/([a-f0-9]{64})\/$/.exec(root);
@@ -67,7 +138,7 @@ function installLiveReview(frame) {
         const data = await bytes(payload,25 * 1024 * 1024);
         const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',data)),b=>b.toString(16).padStart(2,'0')).join('');
         if (digest !== manifest.sha256) throw Error('Pinned payload mismatch');
-        const gallery = JSON.parse(new TextDecoder().decode(data));
+        const gallery = await decodeReviewGallery(JSON.parse(new TextDecoder().decode(data)));
         if (controller.signal.aborted || document.hidden) return;
         const requestId = String(++serial);
         const accepted = new Promise(resolve=>{acknowledgment={requestId,resource,version,resolve}});
@@ -102,7 +173,7 @@ function installLiveReview(frame) {
         const data = await bytes(response, 25 * 1024 * 1024);
         const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)), b => b.toString(16).padStart(2,'0')).join('');
         if (digest !== manifest.sha256) throw Error('Review payload mismatch');
-        const gallery = JSON.parse(new TextDecoder().decode(data));
+        const gallery = await decodeReviewGallery(JSON.parse(new TextDecoder().decode(data)));
         if (!wanted || document.hidden || controller.signal.aborted) return;
         if (requested) {
           const requestId = String(++serial);

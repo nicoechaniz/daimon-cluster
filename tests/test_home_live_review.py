@@ -21,15 +21,18 @@ const context={window:{addEventListener:(n,f)=>listeners[n]=f},document,Uint8Arr
 setTimeout:(f,d)=>{timers.set(++tid,{f,d});return tid},clearTimeout:id=>timers.delete(id),fetch:async url=>{calls.push(url);const manifest=url.endsWith('review-live.json');return new Response(manifest?JSON.stringify({schema:'dm.review-live/v1',gallery:'gallery.json',sha256:bad?'0'.repeat(64):hash}):gallery,{headers:{'X-Home-Version':next}})}};
 vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);context.installLiveReview(frame);
 const flush=async()=>{for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));await Promise.all(digestJobs);await new Promise(r=>setImmediate(r));};
+const updates=()=>messages.filter(m=>m.type==='home-artifact:review-update');
 const send=(enabled,source=frame.contentWindow,origin='null')=>listeners.message({source,origin,data:{type:'home-artifact:live-review',enabled,resource:'evil',path:'secret'}});
 send(true,child);send(true,frame.contentWindow,'https://evil.example');await flush();assert.equal(calls.length,0);
-send(true);await flush();assert.equal(calls.length,1);assert.equal(messages.length,0);assert.equal([...timers.values()][0].d,10000);
-next='c'.repeat(64);{const [id,timer]=[...timers.entries()][0];timers.delete(id);timer.f();}await flush();assert.equal(calls.length,3);assert.equal(messages.length,1);assert.equal(messages[0].version,next);assert.equal(calls[2],'/works/'+resource+'/'+next+'/gallery.json');
+send(true);await flush();assert.equal(calls.length,1);assert.equal(updates().length,0);assert.equal(messages.at(-1).type,'home-artifact:review-current');assert.equal([...timers.values()][0].d,10000);
+next='c'.repeat(64);{const [id,timer]=[...timers.entries()][0];timers.delete(id);timer.f();}await flush();assert.equal(calls.length,3);assert.equal(updates().length,1);assert.equal(updates()[0].version,next);assert.equal(calls[2],'/works/'+resource+'/'+next+'/gallery.json');
 // A failed integrity check must preserve the previously posted model.
-send(false);next='d'.repeat(64);bad=true;send(true);await flush();assert.equal(messages.length,1);
+send(false);next='d'.repeat(64);bad=true;send(true);await flush();assert.equal(updates().length,1);assert.equal(messages.at(-1).type,'home-artifact:review-error');
 document.hidden=true;docListeners.visibilitychange();assert.equal(timers.size,0);
 const before=calls.length;send(true);await flush();assert.equal(calls.length,before);
-document.hidden=false;bad=false;docListeners.visibilitychange();await flush();assert.equal(messages.length,2);
+document.hidden=false;bad=false;docListeners.visibilitychange();await flush();assert.equal(updates().length,2);
+// Manual refresh repeats only the small manifest when version is unchanged.
+const checks=calls.length,changed=updates().length;send(true);await flush();assert.equal(calls.length,checks+1);assert.equal(updates().length,changed);assert.equal(messages.at(-1).type,'home-artifact:review-current');
 send(false);assert.equal(timers.size,0);assert(calls.every(url=>url.startsWith('/works/'+resource+'/')));
 // Manifest and geometry limits are enforced, including streamed payloads.
 })();
@@ -53,7 +56,7 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert');
  if(mode==='pinned'){assert(!events.message);continue;}
  events.message({source:child,origin:'null',data:{type:'home-artifact:live-review',enabled:true}});
  for(let i=0;i<8;i++)await new Promise(r=>setImmediate(r));
- assert.equal(calls,1);assert.equal(messages.length,0);assert.equal(cancelled,1,mode);
+ assert.equal(calls,1);assert.equal(messages.filter(m=>m.type==='home-artifact:review-update').length,0);assert.equal(messages.at(-1).type,'home-artifact:review-error');assert.equal(cancelled,1,mode);
 }})();
 '''
     subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)

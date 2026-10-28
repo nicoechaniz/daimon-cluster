@@ -22,34 +22,39 @@ parent. Do not execute dated phase scripts, reinstall unchanged SDKs, recreate
 identities or repeat successful service lifecycle to repair observation. See
 [Cluster PR339](https://github.com/nicoechaniz/daimon-cluster/pull/339) and its
 `docs/runbooks/tribu-sdk-successor.md`. CLI-only CI passed302 cases; unchanged
-body qualification from PR336 remains valid. Matrix #376 remains active for the
-remaining same-being behavioral/native-consumption delta; this deployment is not
-completion of that goal. Earlier dated deployment sections are history.
+body qualification from PR336 remains valid. The prior sync/Weave goal #376 is complete; the active whole-host migration
+is separate and remains unfinished. Earlier dated deployment sections are history.
 
-## Current physical placement — 2026-10-26
+## Current physical placement — 2026-10-28
 
-The existing Eko Codex body now lives natively on MEDUSA, its dedicated Contabo
-VPS, with host administration. The old Source dm-eko is stopped/autostart=false
-and must remain disabled until Sai confirms full acceptance and planned source
-retirement is performed. Do not target that origin for routine updates or restart
-it from a completed onboarding record. CompAII remains on daimonmatrix and Oliva
-remains in its current Incus container there; their future moves are separate.
+Eko Codex is native on MEDUSA. Its old Source dm-eko is stopped with autostart
+false and retained until Sai confirms complete acceptance and source retirement
+is separately authorized. Never use it as an update target.
 
-Resolve current placement from Shared Resources host-medusa and each receiving
-private binding. NativeBody/native_by_name maintenance is merged in PR321;
-native helper staging and default worker placement adoption are observed.
-The coherent encrypted backup is retained on MEDUSA; Nicolas explicitly excluded
-an external backup copy as a migration requirement. A missing native route is a delivery gap, never
-permission to fall back to the disabled source. Signed origin labels/identity and
-all native history remain unchanged. See docs/runbooks/native-host-relocation.md.
-Sai Telegram usability is confirmed. Matrix PR400 and Cluster PR324 repaired the
-later startup refusal, with actual signed group/direct/reply delivery, one scoped
-managed Matrix restart recovering all three readers, and post-restart delivery.
-Cluster PR326 adds native maintenance drop-ins, private Python preservation and
-closed system PATH. Installed owner tooling uses Eko's current SDK; active native
-catalog reload is separate. Default worker adoption and backup evidence remain recorded in the migration
-checkpoint; do not recreate an excluded external backup requirement or infer
-new source-retirement permission from Telegram usability.
+Oliva now runs in the full KVM resource `vm-dm-oliva` on Shared Resources
+`host-ovh-sys-game-2`, managed by Incus. Her original Source dm-oliva is stopped
+with autostart false and retained; never restart or update it as an active body.
+The writer-fenced final root/home checksum streams completed successfully.
+Native provider, bot authentication, apps and actual consumer file access pass.
+All three Matrix readers survived the scoped restart, directed roundtrip with
+CompAII is signed, and a distinct post-restart group has signed delivery at
+CompAII and Eko. Earlier uncertain group delivery remains uncertain. Human
+acceptance is still pending; completed native turns do not substitute for it.
+Shared services remain Source-backed during the rest of the host migration.
+
+CompAII and final shared services remain active on daimonmatrix. Their final
+cutover to the new host still requires Nicolas personal confirmation. The active
+migration includes ALL functioning host services/data and the Cluster control
+plane; initial live copies are staging, not a coherent final snapshot. Preserve
+receiving boot/network/administration and the original sources. No source
+retirement, global Stop, duplicate identity writer or autonomous wakeup follows.
+
+Resolve fleet routes from Shared Resources `host-medusa`, `host-daimonmatrix`,
+`host-ovh-sys-game-2`, `vm-dm-oliva` and historical `container-dm-oliva`, plus
+receiving private bindings. Signed origin labels never override physical placement.
+Maintained deployment and dependency evidence: Shared Resources
+`docs/services/new-ovh-game-host.md` and `docs/services/medusa.md`.
+
 
 # Current deployment and historical qualification
 

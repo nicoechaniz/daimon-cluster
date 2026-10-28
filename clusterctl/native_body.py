@@ -79,6 +79,9 @@ class NativeBody:
     @classmethod
     def load(cls, locator: Path, plan: dict, *, expected_digest: str | None = None) -> NativeBody:
         value = being_seed._read(locator)
+        if value.get('schema') == 'cluster-incus-vm-body-placement/v1':
+            from .vm_body import VMBody
+            return VMBody.load(locator, plan, expected_digest=expected_digest)
         if expected_digest is not None and digest(value) != expected_digest:
             raise OnboardingError('native_receiving_placement_changed')
         required = {'schema', 'plan_digest', 'host', 'port', 'ssh_user',
@@ -171,19 +174,8 @@ class NativeBody:
         remaining = (deadline - time.monotonic_ns()) / 1e9
         if remaining <= 0:
             raise OnboardingError('receiving_host_deadline_expired')
-        host = self.value['host']
-        if ':' in host:
-            host = '[' + host + ']'
-        destination = self.value['ssh_user'] + '@' + host + ':' + str(stage) + '/'
-        try:
-            result = subprocess.run(['rsync', '--archive', '--checksum', '--protect-args',
-                '--chmod=D755,F644', '-e', shlex.join(self.ssh()), '--', str(source) + '/', destination],
-                capture_output=True, timeout=remaining, env={'PATH': os.defpath, 'LANG': 'C.UTF-8'})
-        except subprocess.TimeoutExpired:
-            raise OnboardingError('receiving_host_deadline_expired') from None
-        except OSError:
-            raise OnboardingError('receiving_host_launch_failed') from None
-        if result.returncode or not self.code_available(stage, fingerprint, deadline_ns=deadline):
+        self._transfer_code(source, stage, remaining)
+        if not self.code_available(stage, fingerprint, deadline_ns=deadline):
             raise OnboardingError('native_receiving_code_unconfirmed')
         # Never replace even an empty foreign directory. Another operator may
         # publish the same qualified generation, in which case verify it below.
@@ -197,6 +189,26 @@ if result!=0 and ctypes.get_errno()!=errno.EEXIST:raise OSError(ctypes.get_errno
         if not self.code_available(code, fingerprint, deadline_ns=deadline):
             raise OnboardingError('native_receiving_code_unconfirmed')
         return code
+
+    def _transfer_code(self, source: Path, stage: Path, remaining: float) -> None:
+        host = self.value['host']
+        if ':' in host:
+            host = '[' + host + ']'
+        destination = self.value['ssh_user'] + '@' + host + ':' + str(stage) + '/'
+        try:
+            result = subprocess.run(['rsync', '--archive', '--checksum', '--protect-args',
+                '--chmod=D755,F644', '-e', shlex.join(self.ssh()), '--', str(source) + '/', destination],
+                capture_output=True, timeout=remaining, env={'PATH': os.defpath, 'LANG': 'C.UTF-8'})
+        except subprocess.TimeoutExpired:
+            raise OnboardingError('receiving_host_deadline_expired') from None
+        except OSError:
+            raise OnboardingError('receiving_host_launch_failed') from None
+        if result.returncode:
+            raise OnboardingError('native_receiving_code_unconfirmed')
+
+    def _transport_command(self, command: list[str], *, timeout_seconds: float) -> list[str]:
+        target = self.value['ssh_user'] + '@' + self.value['host']
+        return [*self.ssh(), '--', target, shlex.join(command)]
 
     def execute(self, argv: list[str], *, uid: int = 1000, gid: int = 1000,
                 env: dict | None = None, input_data: str | None = None,
@@ -220,9 +232,13 @@ if result!=0 and ctypes.get_errno()!=errno.EEXIST:raise OSError(ctypes.get_errno
                        remaining_seconds=remaining, expires_at_ms=time.time_ns() // 1_000_000 + int(remaining * 1000),
                        owner_clock=owner_clock)
         command = [str(self.python), '-B', '-I', '-c', REMOTE_LAUNCH, json.dumps(request)]
-        target = self.value['ssh_user'] + '@' + self.value['host']
         try:
-            result = subprocess.run([*self.ssh(), '--', target, shlex.join(command)],
+            transport_started = time.monotonic()
+            transport_command = self._transport_command(command, timeout_seconds=remaining)
+            remaining -= time.monotonic() - transport_started
+            if remaining <= 0:
+                raise OnboardingError('receiving_host_deadline_expired')
+            result = subprocess.run(transport_command,
                 input=input_data, capture_output=True, text=True, timeout=remaining,
                 env={'PATH': os.defpath, 'LANG': 'C.UTF-8'})
         except subprocess.TimeoutExpired:

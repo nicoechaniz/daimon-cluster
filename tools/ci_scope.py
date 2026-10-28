@@ -715,6 +715,14 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         tests = list(dict.fromkeys((*LOADED_STARTUP_TESTS, *MAINTENANCE_TESTS)))
         if all((root / name).is_file() for name in tests):
             return 'peer', tests
+    vm_placement_files = {'clusterctl/native_body.py', 'clusterctl/vm_body.py',
+                          'tests/test_native_body.py', 'tests/test_vm_body.py'}
+    if ({'clusterctl/native_body.py', 'clusterctl/vm_body.py', 'tests/test_vm_body.py'} <= set(changed)
+            and set(changed) <= vm_placement_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / name).is_file() for name in (*NATIVE_RECEIVING_TESTS, 'tests/test_vm_body.py'))):
+        # New local agent transport reuses native OS maintenance; no changes to
+        # provisioning, SDK authority, admission, network or model execution.
+        return 'peer', [*NATIVE_RECEIVING_TESTS, 'tests/test_vm_body.py']
     native_profile_files = {'clusterctl/native_body.py', 'tests/test_native_body.py',
         'clusterctl/onboarding_service.py',
         'clusterctl/onboarding_host.py', 'clusterctl/onboarding_receiving_update.py',

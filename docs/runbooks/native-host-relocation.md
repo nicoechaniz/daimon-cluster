@@ -69,6 +69,19 @@ is absent; do not claim that container-device validation proves VM readiness.
 This is not permission to expose an unauthenticated service or invent another
 Matrix transport. Retain originals as migration evidence.
 
+Check filesystem visibility inside the actual VM, not only its Incus device
+map. With the qualified Incus6.0.4 Debian13 guest, a newly hot-added read-only
+directory was not visible; the same device was mounted on cold boot and its
+file checksum matched the host. Removing that active mounted device also
+failed; the guest shutdown was then observed waiting on the filesystem unmount.
+The identity-free blank guest required a force stop, followed by repair of the
+same Cluster stop operation and offline device removal. Do not apply that
+blank-guest recovery to a running body or infer production interruption consent.
+Stage the required disks before first body
+activation and verify them as the consumer. A configured device is not proof
+of an accessible code path; never restart an active body solely to conceal
+that distinction.
+
 Incus source behavior and device contracts:
 [image-derived type](https://github.com/lxc/incus/blob/v6.0.4/cmd/incus/create.go),
 [VM proxy restrictions](https://github.com/lxc/incus/blob/v6.0.4/doc/reference/devices_proxy.md),
@@ -159,6 +172,32 @@ body-specific owner repair involving different SDKs, qualify coherent releases
 for each selected SDK and verify their common wire/authority requirements before
 the current owner controls. Preserve that explicit repair's exact mixed vector;
 it does not establish completion of a uniform-SDK `CohortController` rollout.
+
+## Full-OS VM maintenance placement
+
+A retained body in a full Incus-managed VM uses the same native OS code
+adoption and owner-control contracts as a dedicated host. The historical
+`native_by_name` selector also accepts a protected
+`cluster-incus-vm-body-placement/v1` locator: exact approved `plan_digest`,
+local Incus `project`, `instance`, `instance_uuid`, host and guest machine-ID
+SHA256 values, `bootstrap_python` and `/home/agent` home. The instance name must
+be the existing plan's `dm-<name>`; the actual Incus type and UUID are checked
+before agent execution or transfer. A replaced container/VM is refused.
+
+This locator selects local Incus agent transport, not another SSH admission.
+The same command validation, receiving clock rebasing, UID selection, original
+request input and uncertainty behavior remain in force. Only qualified public
+code is copied into retained staging, independently verified and atomically
+published inside the guest. Existing code is verified rather than replaced.
+Private home, sessions and authority are separate migration data, never code
+preparation inputs. No model, service or conversation starts during preparation.
+
+Physical lifecycle stays in the ordinary Cluster resource journal. The OS
+maintenance placement does not run container initial-enrollment reconciliation,
+recreate a home volume or hot-mount successive SDK generations. Source host
+proxies/shared-service composition must still be translated and verified under
+their actual audience and grants before production cutover. A passing transport
+qualification does not establish that integration or receiving acceptance.
 
 ## Physical ownership and maintenance frontier
 

@@ -60,3 +60,49 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert');
 }})();
 '''
     subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)
+
+
+def test_review_selector_uses_reader_catalog_and_commits_only_accepted_switch():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required')
+    source = Path(__file__).resolve().parents[1] / 'clusterctl/homes/assets/work-live-review.js'
+    fixture = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert'),{webcrypto}=require('crypto');
+(async()=>{
+ const a='a'.repeat(32),b='b'.repeat(32),v='1'.repeat(64),w='2'.repeat(64),events={},docs={},messages=[],calls=[],timers=new Map();let tid=0,deny=false;
+ const payload=JSON.stringify({scenes:[{title:'Allowed private scene'}]}),hash=Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(payload))).toString('hex');
+ const frame={dataset:{liveReview:'current',downloadRoot:'/works/'+a+'/'+v+'/'},contentWindow:{postMessage:m=>messages.push(m)}};
+ const context={window:{addEventListener:(k,f)=>events[k]=f},document:{hidden:false,addEventListener:(k,f)=>docs[k]=f},Uint8Array,TextDecoder,AbortController,crypto:webcrypto,
+ setTimeout:(f,d)=>{timers.set(++tid,{f,d});return tid},clearTimeout:id=>timers.delete(id),fetch:async url=>{
+  calls.push(url);if(url==='/catalog.json')return new Response(JSON.stringify({entries:[{kind:'artifact',model_review:true,resource_ref:'dm:resource:v1:'+a,title:'Shared'},{kind:'artifact',model_review:true,resource_ref:'dm:resource:v1:'+b,title:'Permitted private'},{kind:'link',model_review:true,resource_ref:'dm:resource:v1:'+'c'.repeat(32),title:'Not a model'}]}));
+  if(deny&&url.includes(b))return new Response('Denied',{status:404});
+  const version=url.includes(b)?w:v;
+  return new Response(url.endsWith('review-live.json')?JSON.stringify({schema:'dm.review-live/v1',gallery:'gallery.json',sha256:hash}):payload,{headers:{'X-Home-Version':version}});
+ }};
+ vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);context.installLiveReview(frame);
+ const send=(data,source=frame.contentWindow,origin='null')=>events.message({source,origin,data});
+ const flush=async()=>{for(let i=0;i<20;i++)await new Promise(r=>setImmediate(r));};
+ const waitFor=async predicate=>{const end=Date.now()+2000;while(!predicate()){if(Date.now()>end)throw Error('Expected bridge state timed out');await new Promise(r=>setTimeout(r,2));}};
+ const choose=resource=>send({type:'home-artifact:review-select',resource});
+ const switched=resource=>messages.at(-1)?.type==='home-artifact:review-update'&&messages.at(-1).resource===resource;
+ choose(b);await flush();assert.equal(calls.length,0,'uncatalogued resource cannot trigger a read');
+ send({type:'home-artifact:review-catalog'},{});await flush();assert.equal(calls.length,0);
+ send({type:'home-artifact:review-catalog'});await flush();assert.equal(messages.at(-1).entries.length,2);
+ choose('c'.repeat(32));await flush();assert.equal(calls.length,1,'links are not readable gallery targets');
+ choose(b);await waitFor(()=>switched(b));let update=messages.at(-1);assert.equal(update.type,'home-artifact:review-update');assert.equal(update.resource,b);
+ const current=()=>messages.filter(m=>m.type==='home-artifact:review-current').at(-1);
+ assert(!current(),'selected target is not committed before child validation');
+ send({type:'home-artifact:review-applied',...update, type:'home-artifact:review-applied',requestId:'forged',accepted:true});await flush();assert(!current());
+ send({type:'home-artifact:review-applied',requestId:update.requestId,resource:b,version:w,accepted:true});await flush();assert.equal(current().resource,b);
+ send({type:'home-artifact:live-review',enabled:true});await flush();assert.equal(calls.at(-1),'/works/'+b+'/current/review-live.json','live refresh follows the accepted resource');
+ choose(a);await waitFor(()=>switched(a));update=messages.at(-1);
+ send({type:'home-artifact:review-applied',requestId:update.requestId,resource:a,version:v,accepted:false});await flush();assert.equal(messages.at(-1).type,'home-artifact:review-error');
+ send({type:'home-artifact:live-review',enabled:true});await flush();assert.equal(current().resource,b,'invalid target preserves current resource');
+ // Same target/version also needs an acknowledgment, rather than hanging.
+ choose(b);await waitFor(()=>switched(b));update=messages.at(-1);send({type:'home-artifact:review-applied',requestId:update.requestId,resource:b,version:w,accepted:true});await flush();assert.equal(current().resource,b);
+ choose(a);await waitFor(()=>switched(a));const cancelled=messages.at(-1).requestId;
+ context.document.hidden=true;docs.visibilitychange();await flush();assert(messages.some(m=>m.type==='home-artifact:review-cancel'&&m.requestId===cancelled));assert.equal(current().resource,b);assert.equal(timers.size,0);const count=calls.length;choose(a);await flush();assert.equal(calls.length,count);
+})();
+'''
+    subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)

@@ -446,6 +446,11 @@ def audience_view(entry, home):
         "resource_ref": "dm:resource:v1:" + reference,
         "url": url,
         "preview_url": "/view/" + reference if entry["kind"] == "artifact" else None,
+        # Projection runs only after entries() has applied the reader policy.
+        # A fixed-file marker is discovery, never a new content-read grant.
+        "model_review": entry["kind"] == "artifact"
+        and {"gallery.json", "review-live.json"}.issubset(entry.get("files", []))
+        and entry.get("entrypoint", "").endswith(".html"),
     }
 
 

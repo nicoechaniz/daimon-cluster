@@ -267,6 +267,9 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
             ]
         )
     ]
+    # Private model discovery must use the same filtered projection as reads.
+    entries[3]["files"].extend(["gallery.json", "review-live.json"])
+    entries[3]["version_ref"] = version_digest(entries[3])
     media_file = "media/" + "e" * 64 + ".wav"
     entries[0]["files"].append(media_file)
     entries[0]["version_ref"] = version_digest(entries[0])
@@ -349,6 +352,10 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
             def visible(credential="", vpn=False):
                 return json.loads(get("/catalog.json", credential, vpn)[1])["entries"]
 
+            assert not any(e["model_review"] for e in visible())
+            assert not any(e["model_review"] for e in visible(token))
+            reviews = [e for e in visible(other) if e["model_review"]]
+            assert [e["resource_ref"] for e in reviews] == ["dm:resource:v1:" + "d" * 32]
             assert len(visible()) == 1
             assert len(visible(vpn=True)) == 2
             assert {e["visibility"] for e in visible(token)} == {

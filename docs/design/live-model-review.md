@@ -35,7 +35,8 @@ Run affected `test_home_live_review.py`, `test_home_gateway.py` and
 manual check downloads no geometry; a changed model preserves document, camera,
 controls and selection; rejected models retain their accepted version. Source
 publication and fixture success do not mean the receiving gateway is activated.
-Follow receiving live-cutover consent/review and same-plan GO. Preserve the
+Use the existing authorized task scope for routine receiving activation/repair;
+do not demand redundant same-plan GO. Ask only for genuinely missing authority. Preserve the
 selected runtime, configuration, session/authority stores, grants and other apps.
 
 ## Reader-filtered project selector
@@ -71,6 +72,8 @@ resource, scene fingerprint and immutable publication version, avoiding ambiguou
 identical scene IDs from different projects. No login, user list, service, audience
 expansion, background agent attention or model-store duplication is introduced.
 
-Source/browser qualification and receiving activation are separate. This selector
-extends the earlier same-resource cutover; its deployment needs its own recorded
-review and same-plan GO under repository AGENTS, not inferred from PR343's GO.
+Source/browser qualification and receiving activation are separate. This selector extends the earlier same-resource bridge. Nicolas explicitly
+authorized its activation on2026-10-28 and removed redundant same-plan GO requests.
+Follow current AGENTS: verify the concrete scoped change, preserve actual grants
+and state, retain rollback and observe receiving behavior. New scope/authority
+and fresh global Stop consent remain separate.

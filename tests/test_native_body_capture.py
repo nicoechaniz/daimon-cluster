@@ -26,6 +26,59 @@ def state(tmp_path):
     return root
 
 
+@pytest.mark.parametrize('unit', ['user:0:writer.service', 'user:01000:writer.service',
+    'user:1000:--all.service', 'user:1000:writer.service:extra',
+    'user:9999999999:writer.service', 'user:alice:writer.service'])
+def test_invalid_user_scope_never_controls_services(tmp_path, unit):
+    with patch.object(mod.subprocess, 'run') as run, \
+         pytest.raises(mod.CaptureError, match='boundary_invalid'):
+        mod.capture(state(tmp_path), [unit], [])
+    run.assert_not_called()
+
+
+def test_user_target_uses_exact_manager_and_clean_environment():
+    import types
+    account=types.SimpleNamespace(pw_name='selected',pw_dir='/home/selected')
+    with patch.object(mod.pwd, 'getpwuid', return_value=account) as lookup:
+        argv=mod.systemctl('user:1000:writer.service','stop')
+    lookup.assert_called_once_with(1000)
+    assert argv[:6]==['/usr/sbin/runuser','--user','selected','--','/usr/bin/env','-i']
+    assert 'XDG_RUNTIME_DIR=/run/user/1000' in argv
+    assert 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus' in argv
+    assert argv[-4:]==['/usr/bin/systemctl','--user','stop','writer.service']
+    assert mod.systemctl('writer.service','stop')==['systemctl','stop','writer.service']
+
+
+def test_mixed_scope_failure_recovers_same_managers_and_retains_scope(tmp_path):
+    root=state(tmp_path)
+    calls=[]
+    def run(argv,**kwargs):
+        calls.append(argv)
+        if argv[0]=='rsync':raise subprocess.CalledProcessError(24,argv)
+        return subprocess.CompletedProcess(argv,0)
+    with patch.object(mod,'active',return_value=True), \
+         patch.object(mod,'stopped',return_value=True), \
+         patch.object(mod.subprocess,'run',side_effect=run), \
+         pytest.raises(mod.CaptureError):
+        mod.capture(root,['writer.service','user:1000:writer.service'],['user:1000:source.timer'])
+    assert calls[0][-3:]==['--user','stop','source.timer']
+    assert calls[1]==['systemctl','stop','writer.service']
+    assert calls[-2]==['systemctl','start','writer.service']
+    assert calls[-1][-3:]==['--user','start','source.timer']
+    receipt=json.loads((root/'capture-attempt.json').read_text())
+    assert receipt['previously_active']==['user:1000:source.timer','writer.service','user:1000:writer.service']
+    assert receipt['availability_restored'] and not receipt['capture_consistent']
+
+
+def test_missing_user_account_refuses_before_any_stop(tmp_path):
+    with patch.object(mod.pwd,'getpwuid',side_effect=KeyError), \
+         patch.object(mod.subprocess,'check_output',return_value='active\n'), \
+         patch.object(mod.subprocess,'run') as run, \
+         pytest.raises(mod.CaptureError,match='user_account_unavailable'):
+        mod.capture(state(tmp_path),['writer.service','user:1000:writer.service'],[])
+    run.assert_not_called()
+
+
 @pytest.mark.parametrize('failure', ['none', 'copy', 'quiescence'])
 def test_capture_always_recovers_previous_availability(tmp_path, failure):
     root = state(tmp_path)

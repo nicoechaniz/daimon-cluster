@@ -41,6 +41,14 @@ two copies of a bot, VPN node, signed writer or paid worker to test a move.
 The final writer fence, consistent delta, receiving activation and DNS switch
 remain separate from initial preparation. Preserve uncertainty and paused work.
 
+For a source `incus exec` tar stream, disable its unused stdin explicitly and
+use GNU timeout `--foreground` in the task-owned tmux pane. A separate timeout
+process group can stop on terminal control while its parent session and remote
+reader remain alive. Inspect actual process states and transfer advancement;
+a live tmux handle alone does not prove bytes are moving. Terminate only a
+verified stopped task group before resuming the retained inert destination,
+preserving its previous terminal result and partial bytes.
+
 For a selected KVM guest, first qualify host virtualization and an Incus storage
 pool on the data filesystem. Reuse `clusterctl create` with a pinned **local VM
 image**, followed by the ordinary journaled `start` when a blank guest may boot.

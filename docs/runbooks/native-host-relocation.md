@@ -49,6 +49,20 @@ a live tmux handle alone does not prove bytes are moving. Terminate only a
 verified stopped task group before resuming the retained inert destination,
 preserving its previous terminal result and partial bytes.
 
+A final stopped-container delta can use a readonly view in a task-private mount
+namespace with the existing pinned SSH/rsync-to-VM route, without a source archive
+or restarting the old body. Reproduce the complete original disk mount map,
+including bind mounts inside home; copying only the underlying home volume can
+replace mounted admission inputs with empty protected directories. Inspect each
+volume's actual physical ownership and retained Incus ID map separately: an
+unshifted root and shifted custom home must not receive the same translation.
+ID-mapped readonly mounts preserve the source filesystem rather than chowning it.
+Before fencing, compare UID/GID/mode and symlink metadata against the live guest
+namespace. Preserve symlinks as links; following an absolute link from the host
+view can escape to an unrelated host path. Keep these mounts private, bounded to
+the transfer, and unmount them on exit. Never exclude mounted code by applying
+an implicit one-filesystem copy restriction.
+
 For a selected KVM guest, first qualify host virtualization and an Incus storage
 pool on the data filesystem. Reuse `clusterctl create` with a pinned **local VM
 image**, followed by the ordinary journaled `start` when a blank guest may boot.
@@ -150,6 +164,30 @@ per-pair enrollment is required. Keep common services with their established
 owners, preserving application authorization and scoped file grants. Keep live
 native/Matrix/memory databases local to the body. Verify shared files as their
 actual consumer, including parent-directory traversal and selected write grants.
+
+Cross-host delivery must retain live shared dependencies, not just snapshots of
+their former bind mounts. Reuse the established per-actor restricted SFTP/SSHFS
+route for research clients/outboxes and the same-audience presentation cache,
+keeping read-only and write grants distinct. Use the moving body's own scoped
+key; do not copy another being's key or weaken administrative SSH admission.
+Retain private local copies before selecting remote mounts. Pin the actual
+receiving service SSH host key before a later shared-host move, preserving the
+old pin during the phased transition; do not replace the new host's administrative
+SSH identity to make existing client pins work.
+
+Resolve messaging endpoints from the actually selected application and running
+listeners. An absent listener plus a restarting service is unavailability, not
+proof that the selected route became obsolete. The existing native compatibility
+address/socket-proxy composition can retain old private endpoints. Keep that
+loopback address separate from the VM's real gateway, preserve peer application
+authorization, and verify signed receiving delivery after activation. A socket
+relay is physical routing, never per-pair enrollment or proof of group readiness.
+
+For retained local health journals, use the owning Alerts monitor's explicit
+`--relocate-to` transition after the final coherent copy. Preserve its original
+authority, incidents and uncertain outbox; select the actual VM cgroup boundary
+and independently verify receiving samples. Do not erase the observer database
+to bypass its binding check. See [the maintained observation relocation contract](https://github.com/AlterMundi/daimon-alerts/blob/main/docs/runtime-health.md#move-a-retained-local-observer-to-a-different-physical-boundary).
 
 Retain the original VPN node only on the selected active host. Preserve compatible
 old ingress during DNS cache expiry. Verify dedicated receiving HTTPS before

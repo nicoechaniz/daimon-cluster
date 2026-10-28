@@ -22,6 +22,58 @@ If a receiving filesystem cannot represent original metadata, retain the exact
 original values and content proof separately; do not rewrite a failed literal
 comparison as success.
 
+## Whole-host preparation and an Incus-managed VM
+
+When the human selects a complete host move, inventory the Cluster control plane,
+shared services, user and system units, sockets, timers, storage mounts and all
+bind-mounted state as well as each daimon. Copying one home or a container root
+is not complete: custom home volumes and immutable code mounted from elsewhere
+must remain recoverable. Preserve the original UID/GID, ACL, xattr, hardlink and
+symlink metadata and the source mount map. A native target must keep its own
+boot, network and administrative access rather than blindly replacing its OS.
+
+Initial direct copies from a running source are staging, not a coherent final
+snapshot. Keep them private and outside active service paths. Bound transfer
+runtime, retained partials/logs and destination headroom; retain exact jobs and
+resume their existing destinations after interruption. Keep source writers and
+production routes active until the human's selected cutover boundary. Never run
+two copies of a bot, VPN node, signed writer or paid worker to test a move.
+The final writer fence, consistent delta, receiving activation and DNS switch
+remain separate from initial preparation. Preserve uncertainty and paused work.
+
+For a selected KVM guest, first qualify host virtualization and an Incus storage
+pool on the data filesystem. Reuse `clusterctl create` with a pinned **local VM
+image**, followed by the ordinary journaled `start` when a blank guest may boot.
+Incus derives the virtual-machine type from a local image's metadata; an absent
+`--vm` flag in Cluster's adapter does not prove a missing creation capability.
+Confirm the imported image fingerprint and type before creating, and independently
+read the created instance type afterward. A named alias alone is insufficient.
+Use an existing profile for explicit CPU, memory, disk and autostart bounds.
+Keep the receiving resource operation journal; creating a blank generic resource
+is not Matrix enrollment, identity adoption or control-plane migration.
+
+Debian separates QEMU features into packages. Incus may install successfully yet
+VM start can fail without `qemu-system-modules-spice` when recommendations were
+omitted. Read the retained operation's actual `last_error`, correct its concrete
+runtime dependency and use `clusterctl repair --operation-id` for that same
+operation. Do not recreate the VM or mint another operation to hide the failure.
+A running QEMU process alone does not establish agent or application readiness.
+
+Do not import a container's device/configuration map unchanged into a VM.
+Filesystem disks can use virtiofs/9p; verify ownership and access as the actual
+consumer. VM proxy devices support NAT mode only, with a static guest IP and the
+host as gateway. Container loopback/Unix proxies and host TUN passthrough therefore
+must be translated by the owning receiving backend, preserving each original
+application's audience and grant. Extend that existing composition if its VM path
+is absent; do not claim that container-device validation proves VM readiness.
+This is not permission to expose an unauthenticated service or invent another
+Matrix transport. Retain originals as migration evidence.
+
+Incus source behavior and device contracts:
+[image-derived type](https://github.com/lxc/incus/blob/v6.0.4/cmd/incus/create.go),
+[VM proxy restrictions](https://github.com/lxc/incus/blob/v6.0.4/doc/reference/devices_proxy.md),
+[disk sharing](https://github.com/lxc/incus/blob/v6.0.4/doc/reference/devices_disk.md).
+
 ## Runtime capability and startup
 
 Use one finite startup deadline through admission launch, all composed views and

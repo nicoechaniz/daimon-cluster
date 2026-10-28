@@ -32,6 +32,17 @@ must remain recoverable. Preserve the original UID/GID, ACL, xattr, hardlink and
 symlink metadata and the source mount map. A native target must keep its own
 boot, network and administrative access rather than blindly replacing its OS.
 
+Classify unit activation separately from copying unit files. Do not restart every
+unit that was active in an earlier inventory: a per-connection service needs its
+owning socket, a timer-triggered worker should retain its timer, and a historical
+one-shot timer can run its old action again when restarted. Preserve original
+files and enablement as evidence, but keep retired bodies, qualification fixtures,
+completed one-shots and on-demand applications unselected. A historical unit that
+is inactive yet enabled must not silently become a receiving boot activator.
+Keep receiving distribution/boot/network units authoritative. Refresh application
+unit bytes at the final delta and reapply only explicit receiving adaptations;
+installing an earlier candidate over refreshed files can undo later deployments.
+
 Before selecting host-service data, compare each consuming account's numeric
 UID/GID with the receiving OS. Package installation can allocate the same number
 to a different service. Inspect the actual daemon process credentials as well

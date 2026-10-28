@@ -32,6 +32,16 @@ must remain recoverable. Preserve the original UID/GID, ACL, xattr, hardlink and
 symlink metadata and the source mount map. A native target must keep its own
 boot, network and administrative access rather than blindly replacing its OS.
 
+Before selecting host-service data, compare each consuming account's numeric
+UID/GID with the receiving OS. Package installation can allocate the same number
+to a different service: the 2026-10-28 receiving Caddy account occupied Source's
+Cluster UID/GID. Preserve receiving accounts and administrative admission, prepare
+only missing non-login service accounts, and translate ownership on explicitly
+selected service-owned paths with rsync's user/group maps. Keep the archived
+original metadata. Never replace account databases, globally chown staging, or
+assume `--numeric-ids` alone establishes correct receiving access. This mapping
+is for host services; retain each body's independently verified UID/ACL mapping.
+
 Initial direct copies from a running source are staging, not a coherent final
 snapshot. Keep them private and outside active service paths. Bound transfer
 runtime, retained partials/logs and destination headroom; retain exact jobs and
@@ -40,6 +50,12 @@ production routes active until the human's selected cutover boundary. Never run
 two copies of a bot, VPN node, signed writer or paid worker to test a move.
 The final writer fence, consistent delta, receiving activation and DNS switch
 remain separate from initial preparation. Preserve uncertainty and paused work.
+
+A fenced body's final delta takes disk priority over this migration's background
+bulk seed. Set priority on the actual reading transfer child, not only its parent;
+an explicit launcher can otherwise restore the lower priority. Inspect real I/O
+advancement before treating a quiet checksum log as a stall. Adjust only the
+identified task processes and preserve their retained jobs and destinations.
 
 For a source `incus exec` tar stream, disable its unused stdin explicitly and
 use GNU timeout `--foreground` in the task-owned tmux pane. A separate timeout
@@ -185,8 +201,9 @@ relay is physical routing, never per-pair enrollment or proof of group readiness
 
 For retained local health journals, use the owning Alerts monitor's explicit
 `--relocate-to` transition after the final coherent copy. Preserve its original
-authority, incidents and uncertain outbox; select the actual VM cgroup boundary
-and independently verify receiving samples. Do not erase the observer database
+authority, incidents and uncertain outbox; select whole-OS memory observation
+for a full VM/native OS and independently verify receiving samples. A system
+slice alone excludes other consumers and is not full VM memory coverage. Do not erase the observer database
 to bypass its binding check. See [the maintained observation relocation contract](https://github.com/AlterMundi/daimon-alerts/blob/main/docs/runtime-health.md#move-a-retained-local-observer-to-a-different-physical-boundary).
 
 Retain the original VPN node only on the selected active host. Preserve compatible

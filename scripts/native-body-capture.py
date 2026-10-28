@@ -145,7 +145,9 @@ def below(path: Path, parent: Path) -> bool:
     return path == parent or parent in path.parents
 
 
-def seed_boundary(destination: Path, mount_rows: list[dict]) -> dict:
+def seed_boundary(destination: Path, mount_rows: list[dict],
+                  source_paths: list[Path] | None = None,
+                  exclusions: list[str] | None = None) -> dict:
     if destination.resolve() != destination or not destination.is_dir():
         raise CaptureError('capture_seed_path_invalid')
     if any(below(Path(row['target']), destination) for row in mount_rows):
@@ -154,7 +156,17 @@ def seed_boundary(destination: Path, mount_rows: list[dict]) -> dict:
     # outside the disposable seed. Count links without following symlinks.
     counts = Counter()
     links = {}
-    for directory, _, files in os.walk(destination, followlinks=False):
+    for directory, directories, files in os.walk(destination, followlinks=False):
+        if source_paths is not None:
+            for name in directories + files:
+                item = Path(directory) / name
+                logical = Path('/') / item.relative_to(destination)
+                is_directory = stat.S_ISDIR(item.lstat().st_mode)
+                selected = any(below(logical, source) for source in source_paths)
+                ancestor = is_directory and any(below(source, logical) for source in source_paths)
+                if (not selected and not ancestor) or any(
+                        below(logical, Path(excluded)) for excluded in exclusions or []):
+                    raise CaptureError('capture_seed_outside_store_boundary')
         for filename in files:
             info = (Path(directory) / filename).lstat()
             if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
@@ -168,7 +180,10 @@ def seed_boundary(destination: Path, mount_rows: list[dict]) -> dict:
             'purpose': 'disposable-independent-backup-seed'}
 
 
-def coverage(state: Path, mount_rows: list[dict], required_paths: list[Path]) -> dict:
+def coverage(state: Path, mount_rows: list[dict], required_paths: list[Path],
+             source_paths: list[Path] | None = None) -> dict:
+    if source_paths is not None:
+        return store_coverage(state, mount_rows, required_paths, source_paths)
     local_types = {'ext2', 'ext3', 'ext4', 'btrfs', 'xfs', 'zfs', 'vfat'}
     ignored = [Path(x) for x in ['/proc', '/sys', '/dev', '/run', '/tmp',
                                  '/lost+found']] + [state]
@@ -202,14 +217,65 @@ def coverage(state: Path, mount_rows: list[dict], required_paths: list[Path]) ->
             'mounts': mount_rows}
 
 
-def prepare(state: Path, required_paths: list[Path]) -> dict:
+def store_coverage(state: Path, mount_rows: list[dict], required_paths: list[Path],
+                   source_paths: list[Path]) -> dict:
+    """Capture disjoint declared stores, not every filesystem on a shared host."""
+    if not source_paths or len(set(source_paths)) != len(source_paths):
+        raise CaptureError('capture_source_boundary_invalid')
+    sources = sorted(source_paths)
+    physical = set()
+    identities = []
+    for path in sources:
+        if (not path.is_absolute() or '..' in path.parts or path.resolve(strict=True) != path
+                or not path.is_dir() or not re.fullmatch(r'/[A-Za-z0-9_./+-]*', str(path))):
+            raise CaptureError('capture_source_boundary_invalid')
+        identity = (path.stat().st_dev, path.stat().st_ino)
+        if identity in physical:
+            raise CaptureError('capture_source_alias_duplicate')
+        physical.add(identity)
+        identities.append({'path': str(path), 'device': identity[0], 'inode': identity[1]})
+        if any(other != path and below(path, other) for other in sources):
+            raise CaptureError('capture_source_boundary_overlap')
+    relevant = [row for row in mount_rows if any(
+        below(Path(row['target']), path) or below(path, Path(row['target']))
+        for path in [*sources, state])]
+    base = coverage(state, relevant, [])
+    for path in sources:
+        if any(below(path, Path(p)) for p in base['excluded_mounts_and_runtime']):
+            raise CaptureError('capture_source_store_excluded')
+    exclusions = set(base['excluded_mounts_and_runtime'])
+    # A nested mount is a separate store, even for same-device bind aliases.
+    # Required paths below it must fail rather than silently claim coverage.
+    for row in relevant:
+        path = Path(row['target'])
+        if any(path != source and below(path, source) for source in sources):
+            if not re.fullmatch(r'/[A-Za-z0-9_./+-]*', str(path)):
+                raise CaptureError('capture_mount_pattern_unsupported')
+            exclusions.add(str(path))
+    for path in required_paths:
+        resolved = path.resolve(strict=True)
+        if any(below(resolved, Path(p)) for p in exclusions):
+            raise CaptureError('capture_required_store_excluded')
+        if not any(below(resolved, source) and resolved.stat().st_dev == source.stat().st_dev
+                   for source in sources):
+            raise CaptureError('capture_required_store_uncovered')
+    return {**base, 'source_roots': [str(p) for p in sources],
+            'selected_source_paths': [str(p) for p in sources],
+            'source_store_identities': identities,
+            'required_paths': [str(p) for p in required_paths],
+            'excluded_mounts_and_runtime': sorted(exclusions)}
+
+
+def prepare(state: Path, required_paths: list[Path], source_paths: list[Path] | None = None) -> dict:
     if not required_paths:
         raise CaptureError('capture_required_store_declaration_missing')
     rows = mounts()
     destination = state / 'capture/root'
+    selected = coverage(state, rows, required_paths, source_paths)
     plan = {'schema': 'native-body-capture-plan/v1',
-            'seed': seed_boundary(destination, rows),
-            **coverage(state, rows, required_paths)}
+            'seed': seed_boundary(destination, rows, source_paths,
+                                  selected['excluded_mounts_and_runtime']),
+            **selected}
     persist(state / 'capture-plan.json', plan)
     return plan
 
@@ -219,14 +285,19 @@ def load_plan(state: Path) -> dict:
     if path.is_symlink() or path.stat().st_uid != os.geteuid() or path.stat().st_mode & 0o077:
         raise CaptureError('capture_plan_not_protected')
     plan = json.loads(path.read_text())
-    if plan['schema'] != 'native-body-capture-plan/v1' or plan['mounts'] != mounts():
+    rows = mounts()
+    if (plan['schema'] != 'native-body-capture-plan/v1'
+            or ('selected_source_paths' not in plan and plan['mounts'] != rows)):
         raise CaptureError('capture_mount_coverage_changed')
-    seed = seed_boundary(state / 'capture/root', plan['mounts'])
-    if seed != plan['seed']:
-        raise CaptureError('capture_seed_changed')
-    current = coverage(state, plan['mounts'], [Path(x) for x in plan['required_paths']])
+    sources = ([Path(x) for x in plan['selected_source_paths']]
+               if 'selected_source_paths' in plan else None)
+    current = coverage(state, rows, [Path(x) for x in plan['required_paths']], sources)
     if any(current[key] != plan[key] for key in current):
         raise CaptureError('capture_coverage_changed')
+    seed = seed_boundary(state / 'capture/root', rows, sources,
+                         current['excluded_mounts_and_runtime'])
+    if seed != plan['seed']:
+        raise CaptureError('capture_seed_changed')
     return plan
 
 
@@ -314,6 +385,11 @@ def capture(state: Path, writers: list[str], activators: list[str]) -> dict:
                                timeout=300)
         if not all(stopped(unit) for unit in order):
             raise CaptureError('capture_writer_reactivated')
+        if 'selected_source_paths' in plan:
+            current = coverage(state, mounts(), [Path(x) for x in plan['required_paths']],
+                               [Path(x) for x in plan['selected_source_paths']])
+            if any(current[key] != plan[key] for key in current):
+                raise CaptureError('capture_coverage_changed')
         receipt['capture_consistent'] = True
     except Exception as error:
         failure = error
@@ -332,10 +408,14 @@ def main() -> int:
     actions.add_argument('--recover-only', action='store_true')
     actions.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--required-paths', type=Path, nargs='*', default=[])
+    parser.add_argument('--source-paths', type=Path, nargs='+', default=None,
+                        help='Disjoint canonical local stores, for prepare-only; required paths assert coverage')
     parser.add_argument('--state', type=Path, required=True)
     parser.add_argument('--writers', nargs='+', default=[])
     parser.add_argument('--activators', nargs='*', default=[])
     args = parser.parse_args()
+    if args.source_paths is not None and not args.prepare_only:
+        raise CaptureError('capture_sources_require_preparation')
     if os.geteuid() != 0:
         raise CaptureError('capture_operator_required')
     os.umask(0o077)
@@ -343,7 +423,7 @@ def main() -> int:
     try:
         with state_lock(args.state):
             result = (recover(args.state) if args.recover_only else
-                  prepare(args.state, args.required_paths) if args.prepare_only else
+                  prepare(args.state, args.required_paths, args.source_paths) if args.prepare_only else
                   capture(args.state, args.writers, args.activators))
             print(json.dumps(result))
     finally:

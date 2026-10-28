@@ -14,7 +14,7 @@ if (frame) {
   }
   openFragment();
   frame.addEventListener('load', () => {
-    frame.contentWindow.postMessage({type:'home-artifact:capabilities', downloads:true, liveReview:frame.dataset.liveReview === 'current' && typeof installLiveReview === 'function'}, '*');
+    frame.contentWindow.postMessage({type:'home-artifact:capabilities', downloads:true, liveReview:frame.dataset.liveReview === 'current' && typeof installLiveReview === 'function', reviewCatalog:frame.dataset.liveReview === 'current' && typeof installLiveReview === 'function', resource:(/^\/works\/([a-f0-9]{32})\//.exec(frame.dataset.downloadRoot || '') || [])[1]}, '*');
   });
   window.addEventListener('hashchange', openFragment);
   window.addEventListener('message', event => {

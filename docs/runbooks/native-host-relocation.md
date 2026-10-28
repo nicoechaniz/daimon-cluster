@@ -34,7 +34,14 @@ boot, network and administrative access rather than blindly replacing its OS.
 
 Before selecting host-service data, compare each consuming account's numeric
 UID/GID with the receiving OS. Package installation can allocate the same number
-to a different service: the 2026-10-28 receiving Caddy account occupied Source's
+to a different service. Inspect the actual daemon process credentials as well
+as systemd's `User=`: daemons may start as root and drop privileges internally.
+For example, the receiving ZeroTier account differed from Source even though
+its unit did not select a user; copying numeric ownership alone assigned its
+private node identity to the receiving DNS service. Translate only the selected
+ZeroTier state and verify that the actual receiving daemon account can read its
+unchanged identity, without starting a duplicate node. The receiving Caddy
+account also occupied Source's
 Cluster UID/GID. Preserve receiving accounts and administrative admission, prepare
 only missing non-login service accounts, and translate ownership on explicitly
 selected service-owned paths with rsync's user/group maps. Keep the archived

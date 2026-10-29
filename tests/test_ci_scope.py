@@ -6,6 +6,20 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_native_h8_profile_keeps_real_admission_and_native_group_contracts(tmp_path):
+    changed = ['clusterctl/rebirth_host.py', 'clusterctl/rebirth_native.py',
+        'clusterctl/onboarding_source.py', 'tests/test_rebirth_native.py',
+        'docs/runbooks/rebirth-native-profile.md', 'tools/ci_scope.py', 'tests/test_ci_scope.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'peer'
+    assert {'tests/test_rebirth.py', 'tests/test_rebirth_native.py',
+            'tests/test_onboarding_source.py', 'tests/test_onboarding_group_authorities.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for extra in ('clusterctl/admission.py', 'clusterctl/onboarding_sdk.py',
+                  'clusterctl/onboarding_custody.py', 'requirements.txt', 'unknown.py'):
+        assert select([*changed, extra], ROOT) == ('full', ['tests'])
+
+
 def test_guest_bootstrap_consumer_keeps_all_receiving_contracts_without_full_apps(tmp_path):
     from tools.ci_scope import LOADED_STARTUP_TESTS, MAINTENANCE_TESTS
     changed = ['clusterctl/onboarding_receiving_update.py',

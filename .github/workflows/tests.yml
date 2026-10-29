@@ -395,6 +395,8 @@ jobs:
           clusterctl/reconcile.py
           clusterctl/rebirth.py
           clusterctl/rebirth_host.py
+          clusterctl/rebirth_native.py
+          tests/test_rebirth_native.py
           clusterctl/recovery_rebirth.py
           clusterctl/transfer.py
           clusterd/__main__.py

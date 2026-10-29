@@ -598,6 +598,19 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
 
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
+    native_h8_files = {'clusterctl/rebirth_host.py', 'clusterctl/rebirth_native.py',
+        'clusterctl/onboarding_source.py', 'tests/test_rebirth_native.py',
+        'docs/runbooks/rebirth-native-profile.md'}
+    native_h8_tests = ['tests/test_rebirth_native.py', 'tests/test_rebirth.py',
+        'tests/test_onboarding_source.py', 'tests/test_onboarding_group_authorities.py',
+        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if ({'clusterctl/rebirth_host.py', 'clusterctl/rebirth_native.py',
+         'tests/test_rebirth_native.py'} <= set(changed)
+            and set(changed) <= native_h8_files | CI_FILES
+            and all((root / name).is_file() for name in native_h8_tests)):
+        # Keep real H7/H8, shared lease and native/group loading contracts.
+        # No backup, relocation, SDK artifacts or provider implementation changes.
+        return 'peer', native_h8_tests
     native_backup_files = {'scripts/native-restic-init.py',
         'scripts/native-body-capture.py', 'tests/test_native_body_capture.py',
         'tests/test_native_restic_init.py', 'docs/runbooks/native-body-backup.md',

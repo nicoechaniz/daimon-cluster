@@ -22,7 +22,8 @@ from .admission import (
     AdmissionEndpoint,
     AdmissionError,
 )
-from .admission_supervisor import AdmissionSupervisor as _AdmissionSupervisor, _SUPERVISORS, _SUPERVISORS_LOCK
+from .admission_supervisor import _SUPERVISORS, _SUPERVISORS_LOCK
+from .admission_supervisor import AdmissionSupervisor as _AdmissionSupervisor
 from .embodiments import Registry, RegistryError
 from .locks import acquire
 from .matrix_host import MATRIX_CONTRACT_COMMIT, _matrix_api, matrix_client, matrix_root
@@ -377,6 +378,7 @@ def launch_rebirth_host(
     admission_client: AdmissionClient | None = None,
     admission_lease_ttl_s: int = DEFAULT_LEASE_TTL_S,
     visibility_installation: Path | None = None,
+    native_source_profile: Path | None = None,
 ) -> tuple[subprocess.Popen[bytes], dict[str, Any]]:
     """Admit, start and authenticate one installed fresh embodiment."""
 
@@ -390,6 +392,17 @@ def launch_rebirth_host(
         raise RebirthHostError("rebirth_host_argument_rejected")
     state = _owner_directory(Path(state_dir), create=True)
     identity = _installed_identity(state, embodiment_id)
+    native_selection = None
+    if native_source_profile is not None:
+        if production_fence_verifier or visibility_installation is not None:
+            os.close(password_descriptor)
+            raise RebirthHostError("rebirth_host_native_options_conflict")
+        from . import rebirth_native
+        try:
+            native_selection = rebirth_native.prepare(state, identity, native_source_profile, password_descriptor)
+        except BaseException:
+            os.close(password_descriptor)
+            raise
     origin = identity["origin"]
     rollout_gate = identity["rollout_gate"]
     if rollout_gate is not None:
@@ -459,6 +472,8 @@ def launch_rebirth_host(
                     "matrix_contract_commit": MATRIX_CONTRACT_COMMIT,
                 },
             }
+            if native_selection is not None:
+                intent["runtime_call"] = {"operation":"native-source", "selection":native_selection}
             record = journal.latest_for_target(target)
             if record is None:
                 record = journal.plan(
@@ -627,11 +642,13 @@ def launch_rebirth_host(
                 command.append("--production-fence-verifier")
             if visibility_installation is not None:
                 command.extend(["--visibility-installation", str(visibility_installation)])
+            if native_selection is not None:
+                command = rebirth_native.command(native_selection, ready_write)
             process: subprocess.Popen[bytes] | None = None
             try:
                 process = subprocess.Popen(
                     command,
-                    pass_fds=(password_descriptor, ready_write),
+                    pass_fds=((ready_write,) if native_selection is not None else (password_descriptor, ready_write)),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -659,7 +676,8 @@ def launch_rebirth_host(
                 )
                 if ready_admission is None:
                     raise RebirthHostError("rebirth_host_admission_lost_at_ready")
-                observation = _verify_ready(state, identity)
+                observation = (_verify_ready(state, identity) if native_selection is None else
+                    rebirth_native.verify_ready(state, identity, process.pid, native_selection))
                 if record["state"] == "runtime-dispatching":
                     record = journal.advance(
                         record["operation_id"],
@@ -747,6 +765,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--password-fd", type=int, required=True)
     parser.add_argument("--ready-fd", type=int)
     parser.add_argument("--production-fence-verifier", action="store_true")
+    parser.add_argument("--native-source-profile", type=Path)
     args = parser.parse_args(argv)
     try:
         process, result = launch_rebirth_host(
@@ -754,6 +773,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.embodiment_id,
             args.password_fd,
             production_fence_verifier=args.production_fence_verifier,
+            native_source_profile=args.native_source_profile,
         )
         if args.ready_fd is not None:
             os.write(args.ready_fd, b"READY\n")

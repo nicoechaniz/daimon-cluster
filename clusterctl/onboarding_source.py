@@ -471,7 +471,6 @@ def main(argv=None) -> int:
                 or args.qualified_identity != (args.identity_expires_at_ms is not None)
                 or args.identity_expires_at_ms is not None and not 0 < args.identity_expires_at_ms < 2**53
                 or (args.owner_status or args.qualified_identity) and (args.ready_fd is not None or args.require_loaded)
-                or args.expected_config_sha256 is not None and not receiving
                 or args.observation_deadline_ns is not None and not receiving):
             raise OnboardingError('invalid_receiving_control_request')
         if (args.owner_status or args.qualified_identity or lifecycle) and args.observation_deadline_ns is None:

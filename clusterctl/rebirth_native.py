@@ -73,7 +73,7 @@ def command(selection: dict, ready_fd: int) -> list[str]:
              'if os.getppid()!=expected_parent: raise SystemExit(1)\n'
              'if ctypes.CDLL(None,use_errno=True).prctl(1,signal.SIGKILL,0,0,0)!=0: raise SystemExit(1)\n'
              'if os.getppid()!=expected_parent: raise SystemExit(1)\n'
-             f'config=json.load(open({selection["config"]!r},"rb"))\n'
+             f'with open({selection["config"]!r},"rb") as stream: config=json.load(stream)\n'
              f'if hashlib.sha256(json.dumps(config,sort_keys=True,separators=(",", ":")).encode()).hexdigest()!={selection["config_sha256"]!r}: raise SystemExit(1)\n')
     result[5] = guard + result[5]
     return result

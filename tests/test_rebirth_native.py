@@ -116,6 +116,7 @@ def test_native_child_refuses_changed_config_and_dies_with_parent(tmp_path):
         if parent.poll() is None:
             parent.kill()
             parent.wait(timeout=5)
+        parent.stdout.close()
         if child_pid:
             try:
                 os.kill(child_pid, signal.SIGKILL)

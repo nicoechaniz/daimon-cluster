@@ -1,5 +1,23 @@
 # Receiver-compatible Matrix updates
 
+## Local authority changes and the group selector
+
+After an authorized same-being enrollment or retirement, republish the current
+group application/visibility through Matrix, then call
+`onboarding_peer.republish_group_selection` under the same native writer, with
+a retained operation UUID and the exact prior selection digest. The predecessor
+is verified against its original epoch; the new selection is verified against
+the current epoch. Its original group/routes remain selected and its old signed
+document remains in the operation record. Repeating the operation recovers the
+same successor without re-signing or rewriting history. Keep egress stopped
+until the runtime and required peers have accepted the coherent update.
+
+Do not load the new runtime through an old current-state group selector while
+performing this transition. Retain the already verified foreign-authority closure
+for the offline native operation; after publication, ordinary startup must again
+resolve it from the signed current group. This is a scoped maintenance operation,
+not another relationship ceremony or a reason to restart native model sessions.
+
 ## Resolve receiver placement before maintenance
 
 A receiver is a signed body, not necessarily an Incus guest on the coordinator.

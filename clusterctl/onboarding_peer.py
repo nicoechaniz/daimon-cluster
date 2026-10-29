@@ -17,7 +17,7 @@ import types
 from contextlib import closing
 from pathlib import Path
 
-from . import onboarding_release
+from . import being_seed, onboarding_release
 from .onboarding import OnboardingError, digest, private_directory
 
 TOOL_SHA256 = 'd1f67e40bbc8c08eff0e0f96354e107d2f8219b258c661b81b9e98a60565c03c'
@@ -209,12 +209,93 @@ def approved_group_application(hosted, group_root: Path):
         verify_binding(hosted, value, binding))
 
 
+def republish_group_selection(hosted, group_root: Path, *, operation_id: str,
+                              expected_selection_sha256: str) -> dict:
+    """Advance an existing group selector after its application republication.
+
+    The previous selector is authenticated in its own historical epoch. The
+    successor must be valid now, preserving the selected group and all routes.
+    A retained exact operation recovers a lost reply without re-signing history.
+    The caller holds the native runtime writer and keeps egress stopped.
+    """
+    import re
+    import uuid
+    from daimon_matrix.messaging_config import (
+        create_binding, read_publication, verify_binding, verify_binding_within_history,
+    )
+    try:
+        if (str(uuid.UUID(operation_id)) != operation_id
+                or not isinstance(expected_selection_sha256, str)
+                or re.fullmatch(r'[0-9a-f]{64}', expected_selection_sha256) is None):
+            raise ValueError
+    except (TypeError, ValueError, AttributeError):
+        raise OnboardingError('onboarding_group_selection_operation_required') from None
+    private_directory(group_root)
+    with being_seed._locked(group_root):
+        path = group_root / 'selection.json'
+        before = being_seed._read(path)
+        operations = group_root / 'selection-operations'
+        operation = operations / (operation_id + '.json')
+        command = dict(operation_id=operation_id,
+            expected_selection_sha256=expected_selection_sha256)
+        retained = being_seed._read(operation, limit=2 * being_seed.MAX_SELECTION) if operation.exists() else None
+        predecessor = before if retained is None else retained['before']
+        if (digest(predecessor) != expected_selection_sha256
+                or set(predecessor) != {'document', 'binding'}):
+            raise OnboardingError('onboarding_group_selection_changed')
+        verify_binding_within_history(hosted, predecessor['document'], predecessor['binding'])
+        application, _ = read_publication(hosted, group_root / 'application')
+        document = copy.deepcopy(predecessor['document'])
+        document['application_sha256'] = digest(application)
+        if retained is None:
+            candidate = dict(document=document, binding=create_binding(hosted, document))
+        else:
+            if (retained.get('schema') != 'cluster-onboarding-group-republication/v1'
+                    or retained['command'] != command
+                    or retained['candidate']['document'] != document):
+                raise OnboardingError('onboarding_group_selection_operation_conflict')
+            candidate = retained['candidate']
+        # This validates the actual new publication, group identity and current
+        # owner signature before retaining an operation or replacing selection.
+        _validate_group_packet(group_root, candidate,
+            lambda value, binding: verify_binding(hosted, value, binding))
+        if before not in (predecessor, candidate):
+            raise OnboardingError('onboarding_group_selection_changed')
+        private_directory(operations, create=True)
+        if retained is None:
+            being_seed._write(operation, dict(schema='cluster-onboarding-group-republication/v1',
+                command=command, before=predecessor, candidate=candidate),
+                limit=2 * being_seed.MAX_SELECTION)
+        for directory in (operations, group_root):
+            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        if being_seed._read(path) not in (predecessor, candidate):
+            raise OnboardingError('onboarding_group_selection_changed')
+        if before != candidate:
+            being_seed._write(path, candidate)
+        else:
+            descriptor = os.open(group_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        return dict(status='selected', selection_sha256=digest(candidate),
+            application_sha256=document['application_sha256'], receiving_readiness='unobserved')
+
+
 def _approved_group(group_root: Path, verify):
-    from daimon_matrix.messaging_config import APPLICATION_SCHEMA_V3, _read_publication
     path = group_root / 'selection.json'
     if not path.exists():
         return None
     packet = json.loads(onboarding_release.regular(path, uid=os.geteuid()))
+    return _validate_group_packet(group_root, packet, verify)
+
+
+def _validate_group_packet(group_root: Path, packet: dict, verify):
+    from daimon_matrix.messaging_config import APPLICATION_SCHEMA_V3, _read_publication
     if set(packet) != {'document', 'binding'}:
         raise OnboardingError('approved_onboarding_group_required')
     document = packet['document']

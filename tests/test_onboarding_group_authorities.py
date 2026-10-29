@@ -113,3 +113,87 @@ def test_tampered_group_is_refused_before_private_custody(group_source, monkeypa
     monkeypatch.setattr(source, '_reader', lambda: pytest.fail('tampered group opened private custody'))
     with pytest.raises(Exception, match='binding|group'):
         source._load(signed=False)
+
+
+def advance_group_owner(source, target, peer):
+    """Enroll a genuine synthetic sibling; retain the published selector."""
+    from daimon_matrix import native_egress, runtime
+    from daimon_matrix.canonical import canonical_bytes
+    from daimon_matrix.keystore import EncryptedKeystore
+    from daimon_matrix.operator_messaging import republish
+    from daimon_matrix.operator_rebirth import (
+        apply_activation_to_runtime_bundle, authority_from_runtime_bundle,
+        authorize_enrollment_request, create_enrollment_request,
+    )
+    from clusterctl.onboarding import digest
+    bundle = target.document_bundle()
+    base = authority_from_runtime_bundle(bundle)
+    custody = target.home.parent / 'custody' / digest(target.plan)
+    contents = EncryptedKeystore(custody / 'root/holder.json').open(
+        lambda: bytearray((custody / 'root.unlock').read_bytes()))
+    now = time.time_ns() // 1_000_000
+    request = create_enrollment_request(base, signing_seed=os.urandom(32),
+        encryption_private=os.urandom(32), transport_seed=os.urandom(32),
+        body_ref='codex:test:sibling', embodiment_id='embodiment:' + str(uuid.uuid4()),
+        incarnation_id='incarnation:' + str(uuid.uuid4()), principal_id='sibling@test',
+        created_at_ms=now, expires_at_ms=now+60000, nonce=os.urandom(32))
+    activation = authorize_enrollment_request(request, base,
+        root_seeds=tuple(contents.secrets.values()), issued_at_ms=now)
+    successor = apply_activation_to_runtime_bundle(bundle, activation, base,
+        target_endpoint='http://127.0.0.1:45999/dm-peer/v1')
+    (source.root / 'runtime.json').write_bytes(canonical_bytes(successor))
+    def clock():
+        return time.time_ns() // 1_000_000
+    current = runtime.load_runtime(source.root, 'runtime.json', target._reader,
+        clock=clock, relationship_authorities={peer.manifest.being_ref: peer},
+        egress=native_egress.closed_visibility(clock=clock, catalog_mode='migrate'))
+    republish(current, source.outputs / 'tribe/application')
+    return current
+
+
+@pytest.mark.parametrize('lost_reply', [False, True])
+def test_group_selector_follows_real_authority_advance_and_recovers_exactly(group_source, monkeypatch, lost_reply):
+    from clusterctl.onboarding import digest
+    from clusterctl.onboarding_peer import approved_group_application, republish_group_selection
+    source, target, peer = group_source
+    selected = source.outputs / 'tribe/selection.json'
+    predecessor = being_seed._read(selected)
+    current = advance_group_owner(source, target, peer)
+    with pytest.raises(Exception, match='binding'):
+        approved_group_application(current, selected.parent)
+    arguments = dict(operation_id=str(uuid.uuid4()), expected_selection_sha256=digest(predecessor))
+    original = being_seed._write
+    def interrupted(path, value, **options):
+        original(path, value, **options)
+        if path == selected:
+            raise OSError('synthetic lost selector reply')
+    if lost_reply:
+        monkeypatch.setattr(being_seed, '_write', interrupted)
+        with pytest.raises(OSError, match='synthetic lost'):
+            republish_group_selection(current, selected.parent, **arguments)
+        monkeypatch.setattr(being_seed, '_write', original)
+    result = republish_group_selection(current, selected.parent, **arguments)
+    retained = selected.read_bytes()
+    assert republish_group_selection(current, selected.parent, **arguments) == result
+    assert selected.read_bytes() == retained
+    assert approved_group_application(current, selected.parent)['application_sha256'] == result['application_sha256']
+    assert source._load(signed=False).service.relationships.authority_resolver(peer.manifest.being_ref) == peer
+    operation = being_seed._read(selected.parent / 'selection-operations' / (arguments['operation_id'] + '.json'))
+    assert operation['before'] == predecessor
+
+
+def test_group_selector_republication_rejects_forged_predecessor(group_source):
+    from clusterctl.onboarding import digest
+    from clusterctl.onboarding_peer import republish_group_selection
+    source, target, peer = group_source
+    selected = source.outputs / 'tribe/selection.json'
+    current = advance_group_owner(source, target, peer)
+    forged = being_seed._read(selected)
+    forged['document']['tribe_ref'] += '-forged'
+    being_seed._write(selected, forged)
+    original = selected.read_bytes()
+    with pytest.raises(Exception, match='binding'):
+        republish_group_selection(current, selected.parent, operation_id=str(uuid.uuid4()),
+            expected_selection_sha256=digest(forged))
+    assert selected.read_bytes() == original
+    assert not (selected.parent / 'selection-operations').exists()

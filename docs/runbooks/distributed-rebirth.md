@@ -10,7 +10,12 @@ Replace every uppercase token from a signed, content-addressed preflight. Do
 not paste private keys or passwords into shell arguments, environment
 variables, issue comments, logs, or public receipts.
 
-## Mandatory preflight and GO
+## Authorization and receiving preparation
+
+Use the retained human authorization for the actual enrollment and scoped
+maintenance. Routine deployment/repair within that scope does not require a new
+GO tied to a plan digest. Ask only for a missing decision or authority. This
+does not authorize global Stop, source retirement or unrelated access changes.
 
 Record one immutable plan containing:
 
@@ -20,8 +25,9 @@ Record one immutable plan containing:
   the intended target body, principal, host, listener and advertised endpoint;
 - per-host state root, service unit and status-client identity by redacted
   digest, plus owner/mode checks for every private root;
-- a fresh quiesced backup cutoff, repository-check result, independent
-  off-host copy and restore-smoke receipt;
+- the recovery points needed for the state actually changed, preserving original
+  history and custody; reuse qualified backups and retained sources rather than
+  making every fresh-body addition depend on another full-host backup;
 - root/recovery custody owner and location policy, target-custody owner, who
   may open each password descriptor, and proof that no host/process receives
   both root seeds and target private keys;
@@ -30,14 +36,14 @@ Record one immutable plan containing:
 - maintenance window, restart order, stop triggers, forward-recovery owner and
   the later root-signed target-retirement policy.
 
-Read-only discovery may happen before approval. Do not install the candidate,
-create target custody, sign an enrollment, change a runtime bundle, restart a
-peer, admit the target, or change a service until the operator replies `GO`
-while naming the exact plan digest. A changed commit, manifest, participant,
-endpoint, backup cutoff or custody policy invalidates that GO.
+Before irreversible authority activation, verify the exact candidate against
+the required receiving SDKs and current body inventory. Preserve target/Root
+custody separation and scoped restart/readiness evidence. A changed manifest or
+participant set requires correcting the actual candidate, not asking again for
+permission already supplied. Never replay an uncertain effect.
 
-Preflight must stop on dirty/unreviewed commits, non-green gates, an incomplete
-active set, partial `/we`, integrity failure, unchecked backup, shared private
+Preflight must stop on unqualified candidate bytes, an incomplete
+active set, partial `/we`, integrity failure, missing required recovery, shared private
 bytes, an implicit route, a listener collision, an unsafe file mode or a
 service without a tested restart path.
 
@@ -80,8 +86,9 @@ exec 3<&-
 ```
 
 `TARGET_PROFILE.json` must name exactly every current active predecessor and a
-distinct target endpoint. Preparation performs reachability checks but creates
-no relationship or authority. Verify that `REQUEST.json` is the only exported
+distinct target endpoint. Preparation validates the endpoint shape and builds
+the carrier; this alone does not prove a network connection. It creates no
+relationship or authority. Verify that `REQUEST.json` is the only exported
 preparation artifact and that it contains no path, password, private key,
 custody or payload field.
 

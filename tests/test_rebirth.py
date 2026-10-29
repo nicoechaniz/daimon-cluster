@@ -1541,6 +1541,74 @@ def test_peer_rollout_waits_for_authenticated_restarted_daemon(short_tmp_path):
         assert process.returncode == 0, stderr
 
 
+def test_native_peer_rollout_keeps_original_root_and_authenticates_exact_process(short_tmp_path):
+    import select
+
+    fixture, state, _values = _install(short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000)
+    rollout = distributed_rebirth.create_rollout_bundle(fixture["package"])
+    peer_id = min(fixture["peers"])
+    root = fixture["peers"][peer_id]
+    assert root != matrix_root(state, peer_id)
+    before = (root / "runtime.json").read_bytes()
+    password = fixture["peer_passwords"][peer_id]
+
+    def start_native():
+        password_read, password_write = os.pipe()
+        ready_read, ready_write = os.pipe()
+        process = subprocess.Popen([
+            sys.executable, "-B", "-m", "daimon_matrix.daemon",
+            "--state-root", str(root), "--password-fd", str(password_read),
+            "--ready-fd", str(ready_write), "--closed-visibility",
+        ], pass_fds=(password_read, ready_write), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        os.close(password_read)
+        os.close(ready_write)
+        os.write(password_write, password)
+        os.close(password_write)
+        try:
+            assert select.select([ready_read], [], [], 10)[0], 'Native readiness timed out'
+            ready = os.read(ready_read, 64)
+            if ready != b'READY\n':
+                _, error = process.communicate(timeout=10)
+                raise AssertionError(error)
+            return process
+        except BaseException:
+            if process.poll() is None:
+                process.terminate()
+                process.communicate(timeout=10)
+            raise
+        finally:
+            os.close(ready_read)
+
+    process = start_native()
+    try:
+        with pytest.raises(distributed_rebirth.DistributedRebirthError, match='native_writer_busy'):
+            distributed_rebirth.apply_peer_rollout(state, rollout, peer_id, runtime_root=root)
+        assert (root / "runtime.json").read_bytes() == before
+    finally:
+        _stop_rebirth_host(process)
+    result = distributed_rebirth.apply_peer_rollout(state, rollout, peer_id, runtime_root=root)
+    assert result['state'] == 'restart-required'
+    assert not matrix_root(state, peer_id).exists()
+    record = OperationJournal(state).latest_for_target(
+        f"distributed-rebirth:{rollout['rollout_id']}:{peer_id}")
+    assert record['intent']['native_runtime_root'] == str(root)
+    assert distributed_rebirth.apply_peer_rollout(state, rollout, peer_id, runtime_root=root) == result
+    process = start_native()
+    try:
+        acknowledged = distributed_rebirth.acknowledge_peer_rollout(state, rollout, peer_id, runtime_root=root)
+        assert acknowledged['state'] == 'completed'
+        observed = OperationJournal(state).get(record['operation_id'])['logical_observation']['native_receiving']
+        assert observed['process']['pid'] == process.pid
+        assert observed['harness_lifecycle_claimed'] is False
+        assert distributed_rebirth.acknowledge_peer_rollout(state, rollout, peer_id) == acknowledged
+        with pytest.raises(distributed_rebirth.DistributedRebirthError, match='native_root_rejected'):
+            distributed_rebirth.acknowledge_peer_rollout(state, rollout, peer_id,
+                runtime_root=fixture['package']/"runtime")
+    finally:
+        _stop_rebirth_host(process)
+
+
 def test_distributed_target_cannot_start_before_exact_all_peer_admission(
     short_tmp_path,
 ):

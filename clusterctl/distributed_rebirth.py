@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
+import time
 import uuid
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final
 
@@ -316,12 +319,76 @@ def _record_for_peer(
     )
 
 
+def _peer_root(state: Path, embodiment_id: str, native_root: str | Path | None) -> Path:
+    root = _owner_directory(Path(native_root) if native_root is not None
+                            else matrix_root(state, embodiment_id))
+    if root.resolve(strict=True) != root:
+        raise DistributedRebirthError('distributed_peer_native_root_rejected')
+    return root
+
+
+@contextmanager
+def _peer_writer(root: Path, *, native: bool):
+    if not native:
+        yield
+        return
+    try:
+        descriptor = _matrix_api()['daemon'].acquire_lock(root)
+    except BlockingIOError as error:
+        raise DistributedRebirthError('distributed_peer_native_writer_busy') from error
+    except (OSError, RuntimeError) as error:
+        raise DistributedRebirthError('distributed_peer_native_writer_rejected') from error
+    try:
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _native_peer_observation(root: Path, bundle: dict) -> tuple[dict, dict, dict, dict]:
+    """Reuse current native owner identity/process proof, without a model turn."""
+    from .onboarding_receiving_update import (
+        OwnerGroupClient, receiving_identity, verify_receiving_identity,
+    )
+    socket_name = bundle.get('socket')
+    if not isinstance(socket_name, str) or Path(socket_name).name != socket_name:
+        raise DistributedRebirthError('distributed_peer_native_root_rejected')
+    with OwnerGroupClient(root, root / socket_name,
+                          deadline_ns=time.monotonic_ns() + 60_000_000_000) as owner:
+        client = owner._client('status')
+        status_response = client.runtime_status()[1]
+        me_response = client.scope_me()[1]
+        we_response = client.scope_we()[1]
+        responses = [status_response, me_response, we_response]
+        if any(response.get('ok') is not True for response in responses):
+            raise DistributedRebirthError('distributed_peer_status_rejected')
+        if owner._observer is None or owner._observer.process is None:
+            raise DistributedRebirthError('distributed_peer_native_process_unconfirmed')
+        server = dict(client.config.expected_server)
+        if any(response.get('server') != server for response in responses):
+            raise DistributedRebirthError('distributed_peer_native_process_unconfirmed')
+        status, me, we = [response['result'] for response in responses]
+        identity = receiving_identity(me_response, status, server, require_admitted=False)
+        observed = dict(runtime_status=status, identity=identity, server=server,
+                        process=owner._observer.process)
+        verified = verify_receiving_identity(bundle, observed,
+            expires_at_ms=time.time_ns() // 1_000_000 + 60_000)
+        info = root.stat()
+        if status['loaded_runtime'].get('state_root_identity') != dict(
+                device=info.st_dev, inode=info.st_ino):
+            raise DistributedRebirthError('distributed_peer_native_root_rejected')
+        owner._observer.verify()
+        proof = dict(profile='native-runtime', process=owner._observer.process,
+                     verified_identity=verified, harness_lifecycle_claimed=False)
+        return status, me, we, proof
+
+
 def apply_peer_rollout(
     state_dir: str | Path,
     rollout_value: Mapping[str, Any] | str | Path,
     embodiment_id: str,
     *,
     actor: str = "clusterctl-distributed-rebirth",
+    runtime_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Apply one successor locally and leave an open restart-required journal."""
 
@@ -329,11 +396,12 @@ def apply_peer_rollout(
     rollout = _load_rollout(rollout_value)
     if embodiment_id not in rollout["participant_embodiment_ids"]:
         raise DistributedRebirthError("distributed_peer_not_participant")
-    root = _owner_directory(matrix_root(state, embodiment_id))
+    root = _peer_root(state, embodiment_id, runtime_root)
     bundle_path = root / "runtime.json"
     journal = OperationJournal(state)
     target = f"distributed-rebirth:{rollout['rollout_id']}:{embodiment_id}"
-    with acquire(state, embodiment_id, "distributed-rebirth"):
+    with acquire(state, embodiment_id, "distributed-rebirth"), _peer_writer(
+            root, native=runtime_root is not None):
         bundle = _read_json(bundle_path)
         origin = bundle.get("local_origin")
         if not isinstance(origin, dict) or origin.get("embodiment_id") != embodiment_id:
@@ -347,6 +415,8 @@ def apply_peer_rollout(
             "successor_manifest_hash": rollout["successor_manifest_hash"],
             "matrix_contract_commit": MATRIX_CONTRACT_COMMIT,
         }
+        if runtime_root is not None:
+            intent['native_runtime_root'] = str(root)
         record = _record_for_peer(journal, rollout, embodiment_id)
         if record is None:
             record = journal.plan(
@@ -437,6 +507,7 @@ def acknowledge_peer_rollout(
     embodiment_id: str,
     *,
     actor: str = "clusterctl-distributed-rebirth",
+    runtime_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Authenticate the restarted local daemon and emit one exact acknowledgement."""
 
@@ -447,16 +518,24 @@ def acknowledge_peer_rollout(
         record = _record_for_peer(journal, rollout, embodiment_id)
         if record is None or record["operation"] != "distributed-rebirth-peer":
             raise DistributedRebirthError("distributed_peer_application_missing")
+        selected_root = record['intent'].get('native_runtime_root')
+        if runtime_root is not None and selected_root != str(Path(runtime_root).absolute()):
+            raise DistributedRebirthError('distributed_peer_native_root_rejected')
         if record["state"] == "completed" and isinstance(record["result"], dict):
             return record["result"]
         if record["state"] != "runtime-applied":
             raise DistributedRebirthError("distributed_peer_restart_not_ready")
-        bundle = _read_json(matrix_root(state, embodiment_id) / "runtime.json")
+        root = _peer_root(state, embodiment_id, selected_root)
+        bundle = _read_json(root / "runtime.json")
         origin = bundle.get("local_origin")
-        client = matrix_client(state, embodiment_id)
-        status = _response(client.runtime_status, "distributed_peer_status_rejected")
-        me = _response(client.scope_me, "distributed_peer_me_rejected")
-        we = _response(client.scope_we, "distributed_peer_we_rejected")
+        native_proof = None
+        if selected_root is not None:
+            status, me, we, native_proof = _native_peer_observation(root, bundle)
+        else:
+            client = matrix_client(state, embodiment_id)
+            status = _response(client.runtime_status, "distributed_peer_status_rejected")
+            me = _response(client.scope_me, "distributed_peer_me_rejected")
+            we = _response(client.scope_we, "distributed_peer_we_rejected")
         active_values: list[str] = []
         for item in we.get("embodiments", []):
             if isinstance(item, dict) and item.get("manifest_status") == "active":
@@ -476,7 +555,7 @@ def acknowledge_peer_rollout(
             or status.get("manifest_hash") != rollout["successor_manifest_hash"]
             or status.get("local_origin") != origin
             or me.get("origin") != origin
-            or me.get("body", {}).get("state") != "running"
+            or native_proof is None and me.get("body", {}).get("state") != "running"
             or active != expected_active
         ):
             raise DistributedRebirthError("distributed_peer_readiness_mismatch")
@@ -487,6 +566,8 @@ def acknowledge_peer_rollout(
             "active_embodiment_ids": active,
             "runtime_sha256": _sha(bundle),
         }
+        if native_proof is not None:
+            observation['native_receiving'] = native_proof
         record = journal.advance(
             record["operation_id"], "logical-committed", logical_observation=observation
         )

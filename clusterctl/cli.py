@@ -267,6 +267,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_peer_apply.add_argument("--rollout", required=True)
     p_peer_apply.add_argument("--embodiment-id", required=True)
+    p_peer_apply.add_argument("--runtime-root", help="owner-selected existing native runtime; never copied")
     p_peer_apply.add_argument("--json", action="store_true", help="emit JSON")
 
     p_peer_ack = sub.add_parser(
@@ -275,6 +276,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_peer_ack.add_argument("--rollout", required=True)
     p_peer_ack.add_argument("--embodiment-id", required=True)
+    p_peer_ack.add_argument("--runtime-root", help="must match the retained native predecessor binding")
     p_peer_ack.add_argument("--json", action="store_true", help="emit JSON")
 
     p_target = sub.add_parser(
@@ -579,6 +581,7 @@ def run(argv=None, adapter=None) -> int:
                 args.rollout,
                 args.embodiment_id,
                 actor=args.actor,
+                runtime_root=args.runtime_root,
             )
             print(
                 json.dumps(result, indent=2)
@@ -593,6 +596,7 @@ def run(argv=None, adapter=None) -> int:
                 args.rollout,
                 args.embodiment_id,
                 actor=args.actor,
+                runtime_root=args.runtime_root,
             )
             print(
                 json.dumps(result, indent=2)

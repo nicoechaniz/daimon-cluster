@@ -159,6 +159,15 @@ with the same UUID.
 Visit each predecessor host independently. A host applies only to the local
 embodiment root named in the rollout:
 
+For an existing native predecessor outside Cluster's managed directory, pass
+`--runtime-root` to peer apply/ack with its actual owner-selected runtime path.
+Stop only that Matrix service before apply: the native writer lock refuses a
+live daemon. Its physical path stays in the private operation intent; it is not
+copied, moved or taken from the public rollout. ACK reuses the existing native
+status capability and verifies the responding process, exact loaded bundle and
+current signed identity. It does not fabricate a Cluster lifecycle card or claim
+that a model/harness was started. The managed predecessor profile is unchanged.
+
 ```sh
 clusterctl --state-dir PEER_STATE rebirth-peer-apply \
   --rollout ROLLOUT.json \

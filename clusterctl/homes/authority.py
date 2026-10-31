@@ -85,6 +85,9 @@ class NativeAuthority:
         return results
 
     def actors(self):
+        # An actor pin alone can be a valid historical Root. Actor-based owner
+        # and browser checks must also agree with the selected current source.
+        self.authorities()
         result = {}
         for row in self.bindings():
             if not row["enabled"]:

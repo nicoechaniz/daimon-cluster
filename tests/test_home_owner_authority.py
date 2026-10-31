@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from clusterctl.homes.host import accept_owner_authority
+from clusterctl.homes.authority import NativeAuthority
 from clusterctl.homes.policy import Actor
 from clusterctl.homes.provision import sha
 from clusterctl.homes.service import Application
@@ -94,3 +95,13 @@ def test_acceptance_cannot_rebind_home_actor_base_revision_or_revoked_key(tmp_pa
         db.execute('UPDATE owner_credentials SET revoked=1')
     assert not s.owner('owner',home='one',subject=Actor('being-one','being','99','Owner'),binding_revision='a')
     with pytest.raises(ValueError):s.accept_owner_authority('owner',home='one',subject=owner,binding_revision='a')
+
+
+def test_actor_lookup_refuses_a_historical_pin_against_current_source(monkeypatch,tmp_path):
+    authority=NativeAuthority(tmp_path/'bindings',tmp_path/'relationships',{},
+                              authority_source=tmp_path/'current-native-authority')
+    def current():raise ValueError('home_actor_authority_source_stale')
+    monkeypatch.setattr(authority,'authorities',current)
+    # Every actor consumer, not only a later tribe read, must fail closed.
+    with pytest.raises(ValueError,match='home_actor_authority_source_stale'):
+        authority.actor('being-one')

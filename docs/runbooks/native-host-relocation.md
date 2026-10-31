@@ -207,6 +207,29 @@ operator-only directory the receiving user cannot traverse.
 
 ## Matrix, shared services and receiving activation
 
+A phased move can make a shared service authoritative on the receiving host
+before the native primary or remaining applications move. Release only that
+service's Source writer, transfer its coherent current state, and preserve its
+actors, grants, credentials and browser origins. The old edge can forward to the
+same receiving writer during DNS cache convergence. After public receiving
+admission, recovery uses current receiving data; restarting an independent old
+authority or restoring its old session database would lose accepted work.
+
+Record those adopted stores and receiving units in the existing migration
+checkpoint. Exclude them from subsequent Source home deltas and preserve their
+receiving configuration during bulk unit selection. Earlier whole-host scripts
+that assume no receiving writers are now historical preparations, not a safe
+continuation. Retain their evidence, revise only the affected remaining actions,
+and keep already adopted services running.
+
+For shared home/login authority, validate its consumed public identity
+projections against the currently served signed Root, not only the runtime
+bundle. A cached public actor authority can remain stale after an otherwise
+successful Matrix rollout. Refresh only that verified descendant projection;
+preserve identity, owner credentials, grants and session ancestry. Read the
+actual gateway's authorities, actors and tribe view before selecting it. A
+public page returning HTTP200 does not establish coherent authorization.
+
 Preserve the existing membership group and deliberately directed lanes. No new
 per-pair enrollment is required. Keep common services with their established
 owners, preserving application authorization and scoped file grants. Keep live

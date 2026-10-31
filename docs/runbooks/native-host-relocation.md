@@ -176,6 +176,31 @@ and observe the actual service/native continuation before calling recovery
 complete. An attachment-queued receipt alone proves neither model continuation
 nor delivery to the human.
 
+Disabling Telegram or the bridge's goal-recovery loop does not make a retained
+native goal store inert. Resuming a native thread can continue its active goal.
+Resolve the single coordinator before admitting the original native home; use
+the separate preview for preparation without loading the original goal store.
+If a receiving goal has already continued, preserve that live branch and attach
+its existing turn rather than activating another copy or overwriting its state.
+
+Keep divergent native branches attributed and complete. Freeze and retain the
+final Source rollouts, native SQLite/WAL state and recorded counters separately
+from the live receiver. Preserve the same goal identity and creation time; retain
+the shared-base counters and each branch's later counters so their aggregate
+does not count the base twice. Do not manufacture usage or merge native stores
+with ad-hoc SQL. A resumed conversation may have appended thread-settings
+metadata: prove the exact common conversation prefix, inspect every later record
+and preserve both full files. Equivalent settings with different timestamps are
+not missing dialogue; new human/model records require actual reconciliation.
+
+Migrate companion receipts with their consumer. Some activity/title receipts bind
+the database path, device and inode, which change during a coherent move. After
+proving the same original journal and bot/human binding, explicitly adopt the
+receipts for the receiving physical file using the owning adapter. Preserve their
+items, uncertainty and preimage; resetting them can repeat an ambiguous external
+effect. Probe the effective unit, including dropins, and observe its real heartbeat.
+`Type=simple` startup alone does not establish socket or HTTP readiness.
+
 Use one finite startup deadline through admission launch, all composed views and
 SDK reader restoration. A selected SDK that supports `startup_deadline_ns` receives
 the remaining shared envelope; legacy SDKs retain their existing API and limits.

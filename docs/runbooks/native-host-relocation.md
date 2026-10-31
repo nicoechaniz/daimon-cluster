@@ -60,6 +60,17 @@ original metadata. Never replace account databases, globally chown staging, or
 assume `--numeric-ids` alone establishes correct receiving access. This mapping
 is for host services; retain each body's independently verified UID/ACL mapping.
 
+Include private executable directories in that same mapping. An old numeric
+Cluster group can now name the receiving web-service account: unchanged code
+then fails before startup with a working-directory permission error. Verify the
+actual service identity can traverse its selected working directory, read its
+pre-start helper and load the selected interpreter/config with the unit's
+environment and supplementary groups before fencing Source. Translate only
+selected metadata; keep original metadata and code bytes, rather than making
+private releases world-readable. Use the installed CLI entrypoint and explicit
+receiving config for probes; a root-only import or an unrelated historical
+credential does not qualify the consuming service.
+
 Translate explicit local UID references in selected configuration together with
 their service-owned stores. For example, `consent_uid` names the receiving intake
 service account; copying its old numeric value after mapping the seed store to

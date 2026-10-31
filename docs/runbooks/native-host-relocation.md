@@ -85,6 +85,26 @@ remote route. Use `NativeBody.load` and the config's canonical placement digest;
 a JSON file's byte hash is a different representation. Preserve both provenance
 and the receiving binding, without re-enrollment or duplicate activation.
 
+When the canonical admission authority moves, update its actual consumers too.
+A healthy authority endpoint does not prove a running native Matrix holder can
+renew through its configured route. Prefer the existing authenticated local
+endpoint for a co-located holder, preserving the pinned authority, holder key,
+identity and history. Write admission configuration through the owning canonical
+JSON format; an equivalent pretty-printed document is deliberately refused.
+After the handoff, verify the affected holder's real lease renewal and selected
+runtime, then one genuine signed receiving journey. Reuse earlier unchanged
+qualification. Preserve failed attempts and current journals; do not recreate
+identity, replay messages or revive Source to clear a refusal.
+
+Relocate health observation with the runtime. Keep old observation history and
+use distinct placement target IDs when the physical resource changes; do not
+report new-host health as recovery of an old-host failure. Verify the actual
+finite probe and next timer trigger on the receiving manager. An enabled timer
+can be elapsed without a next trigger after restoring old scheduling state;
+starting the existing finite probe once while its timer is active can restore
+its configured cadence without adding another scheduler. Check the resulting
+scheduled execution rather than treating enablement as coverage.
+
 Initial direct copies from a running source are staging, not a coherent final
 snapshot. Keep them private and outside active service paths. Bound transfer
 runtime, retained partials/logs and destination headroom; retain exact jobs and

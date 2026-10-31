@@ -11,9 +11,12 @@ when the requested result is host administration. Scope any shutdown to the
 moving body; migration never authorizes global Stop or interruption of its peers.
 Inspect existing persistent transfers before starting another. Transfer directly
 from the stopped source, preserving all files, metadata, hardlinks and explicit
-UID/GID mappings. Retain complete source system files separately from the native
-host OS. Do not silently exclude state outside home or create a large intermediate
-archive on a pressured source filesystem.
+UID/GID mappings. Preserve the files needed by the living receiving bodies and
+services, including required state outside home, in their usable receiving paths.
+Keep the receiving OS authoritative. A whole retired-machine archive or a new full
+backup/restore drill is not a migration acceptance gate unless the human selects
+it. Reuse ordinary existing memory protection; do not invent another archive or
+create a large intermediate copy on a pressured source filesystem.
 
 Reuse successful transfer checksums and compare the complete tree. Independently
 verify critical native/memory databases with their WAL companions and behavior
@@ -413,12 +416,22 @@ qualification does not establish that integration or receiving acceptance.
 ## Physical ownership and maintenance frontier
 
 Update the resource catalog, receiving capability maps and consumed agent context.
-Retain old placement as history and rollback, never as a live local container.
+Retain the old placement's attributed record, never as a live update target.
+Retired environments remain available only under the human's selected retention
+policy; metadata/history does not require keeping the machine or container.
+Remove retired copies only under actual deletion authority, and do not recreate
+copies explicitly rejected or deleted by the human. Preserve continuity in the
+living bodies: native histories, memory, identity, goals/accounting, skills,
+configuration, working files and required dependencies.
 Observe the actual native application slice rather than the old container limit.
 Preserve incident/outbox revisions when explicitly reconciling monitor placement;
 do not delete journals to clear its binding guard. Local monitoring, off-host
-availability observation, consistent backups and tested restore routes are
-separate receiving responsibilities.
+availability observation and the existing ordinary backup/restore policy are
+separate receiving responsibilities; they do not silently add an environment
+archive or a new backup drill to the migration. A human instruction to keep the
+old host online supersedes earlier shutdown plans: no timer, host-off drill,
+cleanup or deletion may bypass that restriction. Stop only selected services
+whose receiving operation is already confirmed.
 
 Host configuration may select a protected `native_by_name` placement locator for
 an existing approved plan. Each row pins `placement` and `placement_digest`, so

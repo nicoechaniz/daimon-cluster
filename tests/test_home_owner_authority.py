@@ -1,5 +1,6 @@
 """Explicit same-owner authority continuity without key or browser-session reset."""
 import json
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -49,7 +50,7 @@ def test_real_owner_operation_needs_explicit_host_acceptance_preserves_credentia
     original=p.read_bytes();app=Application(cfg,Authority(),Sessions(Path(cfg['state'])))
     human=Actor('human-one','human','stable-human','Human')
     browser=app.sessions.issue(home='one',origin='https://one.example',subject=human)
-    with app.sessions.connect() as db:credentials=[tuple(r) for r in db.execute('SELECT * FROM owner_credentials')]
+    with closing(app.sessions.connect()) as db:credentials=[tuple(r) for r in db.execute('SELECT * FROM owner_credentials')]
     Authority.revision='b'*64
     with pytest.raises(ValueError,match='home_owner_binding_unavailable'):
         app.owner('one','owner','targets',{})
@@ -61,7 +62,7 @@ def test_real_owner_operation_needs_explicit_host_acceptance_preserves_credentia
     assert app.owner('one','owner','targets',{})['actors'][0]['ref']=='being-one'
     assert p.read_bytes()==original and Path(cfg['homes']['one']['owner_token_file']).read_text()=='owner'
     assert app.sessions.resolve(browser,home='one',origin='https://one.example')['actor']==human.ref
-    with app.sessions.connect() as db:assert [tuple(r) for r in db.execute('SELECT * FROM owner_credentials')]==credentials
+    with closing(app.sessions.connect()) as db:assert [tuple(r) for r in db.execute('SELECT * FROM owner_credentials')]==credentials
     # No public/owner-local operation can grant this trusted host acceptance.
     with pytest.raises(ValueError):app.owner('one','owner','accept-owner-authority',{})
     Authority.revision='c'*64
@@ -90,7 +91,7 @@ def test_acceptance_cannot_rebind_home_actor_base_revision_or_revoked_key(tmp_pa
     # Default API stays exact-revision; acceptance is explicit in the app path.
     assert not s.owner('owner',home='one',subject=owner)
     for i in range(100):s.accept_owner_authority('owner',home='one',subject=Actor('being-one','being',str(i),'Owner'),binding_revision='a')
-    with s.connect() as db:
+    with closing(s.connect()) as db:
         assert db.execute('SELECT count(*) FROM owner_authority_acceptance').fetchone()[0]==1
         db.execute('UPDATE owner_credentials SET revoked=1')
     assert not s.owner('owner',home='one',subject=Actor('being-one','being','99','Owner'),binding_revision='a')

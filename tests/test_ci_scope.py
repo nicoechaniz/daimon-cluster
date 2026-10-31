@@ -1168,3 +1168,15 @@ def test_vm_os_transport_keeps_native_maintenance_and_refuses_unrelated_deltas(t
     assert select([*changed,'tools/build_receiving_maintenance.py','tools/check_rc_types.py'],ROOT)[0]=='peer'
     for extra in ('clusterctl/onboarding_host.py','clusterctl/onboarding_custody.py','requirements.txt'):
         assert select([*changed,extra],ROOT)==('full',['tests'])
+
+
+def test_home_owner_continuity_keeps_home_login_scope_with_relocation_guide():
+    from tools.ci_scope import HOME_TESTS
+    changed=['clusterctl/homes/host.py','clusterctl/homes/service.py',
+             'clusterctl/homes/sessions.py','tests/test_home_owner_authority.py',
+             'docs/runbooks/native-host-relocation.md','tools/ci_scope.py','tests/test_ci_scope.py']
+    assert select(changed,ROOT)==('homes',list(HOME_TESTS))
+    assert 'tests/test_home_owner_authority.py' in HOME_TESTS
+    for extra in ['clusterd/auth.py','clusterctl/onboarding_sdk.py','requirements-weave.txt',
+                  'clusterctl/homes/unknown.py']:
+        assert select([*changed,extra],ROOT)==('full',['tests'])

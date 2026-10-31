@@ -417,8 +417,9 @@ HOME_FILES = {'clusterctl/homes/applications.py', 'clusterctl/homes/__init__.py'
     'clusterctl/homes/assets/home.css', 'docs/design/artifact-homes.md',
     'clusterd/assets/fonts/space-grotesk-latin.woff2',
     'clusterd/assets/fonts/OFL.txt', 'clusterd/assets/fonts/PROVENANCE.json',
-    'tests/test_home_access.py', 'tests/test_home_gateway.py', 'tests/test_home_host.py'}
-HOME_TESTS = ('tests/test_home_launcher.py', 'tests/test_home_access.py', 'tests/test_home_gateway.py', 'tests/test_home_host.py',
+    'tests/test_home_access.py', 'tests/test_home_gateway.py', 'tests/test_home_host.py',
+    'tests/test_home_owner_authority.py'}
+HOME_TESTS = ('tests/test_home_owner_authority.py', 'tests/test_home_launcher.py', 'tests/test_home_access.py', 'tests/test_home_gateway.py', 'tests/test_home_host.py',
               'tests/test_home_passkeys.py', 'tests/test_home_client.py', 'tests/test_home_styles.py', 'tests/test_home_login.py', 'tests/test_home_homemaker.py',
               'tests/test_auth.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 
@@ -896,7 +897,7 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
             and set(changed) <= HOME_PROVISION_FILES | CI_FILES
             and all((root/path).is_file() for path in HOME_PROVISION_TESTS)):
         return 'homes', list(HOME_PROVISION_TESTS)
-    if (set(changed) & HOME_FILES and set(changed) <= HOME_FILES | CI_FILES
+    if (set(changed) & HOME_FILES and set(changed) <= HOME_FILES | CI_FILES | RUNBOOK_DOCS
             and all((root / path).is_file() for path in HOME_TESTS)):
         # Home-only read authority retains auth and workflow contracts. Native
         # custody, dependencies, admission and provisioning changes stay full.

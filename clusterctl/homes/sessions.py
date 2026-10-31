@@ -66,6 +66,8 @@ class Sessions:
               revision TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS session_parents(
               child TEXT PRIMARY KEY, parent TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS owner_authority_acceptance(
+              digest TEXT PRIMARY KEY, revision TEXT NOT NULL);
             """)
 
     def connect(self):
@@ -180,16 +182,57 @@ class Sessions:
                 db.rollback()
                 raise
 
-    def owner(self, token, *, home, subject):
+    def accept_owner_authority(self, token, *, home, subject, binding_revision):
+        """Trusted host accepts current authority for the same immutable owner key.
+
+        The caller verifies the currently selected native authority and config.
+        This is not a browser/owner API. One current row per credential bounds
+        growth; the original credential/home/actor/revision remains unchanged.
+        """
+        if not subject.enabled or subject.kind != "being":
+            raise ValueError("current_home_identity_binding_required")
         with closing(self.connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                digest = hash_token(token)
+                row = db.execute(
+                    "SELECT * FROM owner_credentials WHERE digest=?", (digest,)
+                ).fetchone()
+                if (
+                    not row or row["revoked"] or row["home"] != home
+                    or row["actor"] != subject.ref
+                    or row["revision"] != binding_revision
+                ):
+                    raise ValueError("home_owner_binding_unavailable")
+                db.execute(
+                    "INSERT INTO owner_authority_acceptance VALUES(?,?) "
+                    "ON CONFLICT(digest) DO UPDATE SET revision=excluded.revision",
+                    (digest, subject.revision),
+                )
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+
+    def owner(self, token, *, home, subject, binding_revision=None):
+        with closing(self.connect()) as db:
+            digest = hash_token(token)
             row = db.execute(
-                "SELECT * FROM owner_credentials WHERE digest=?", (hash_token(token),)
+                "SELECT * FROM owner_credentials WHERE digest=?", (digest,)
             ).fetchone()
+            revision = subject.revision if binding_revision is None else binding_revision
+            accepted = False
+            if binding_revision is not None and binding_revision != subject.revision:
+                accepted = db.execute(
+                    "SELECT 1 FROM owner_authority_acceptance WHERE digest=? AND revision=?",
+                    (digest, subject.revision),
+                ).fetchone() is not None
             return bool(
                 row
                 and not row["revoked"]
                 and row["home"] == home
-                and (row["actor"], row["revision"]) == (subject.ref, subject.revision)
+                and (row["actor"], row["revision"]) == (subject.ref, revision)
+                and (revision == subject.revision or accepted)
             )
 
     def revoke(self, *, home, actor=None, token=None):

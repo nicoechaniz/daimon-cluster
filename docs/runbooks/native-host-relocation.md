@@ -415,3 +415,25 @@ Disable retained forwarding before reusing old listeners. Reverse only the movin
 body's DNS records. Never start both copies or restore a stale zone/database over
 newer accepted work. Keep private bindings, keys, addresses and raw evidence in
 the receiving operator record rather than this runbook.
+
+### Retain owner credentials across a current authority update
+
+A registered home owner credential retains its original home, being and binding
+revision. Advancing the being's current authority must not silently rebind that
+key or require a new browser login. After the shared gateway's current public
+projections are verified, the trusted host operator can accept the current
+revision for that existing home:
+
+```sh
+python -m clusterctl.homes.host accept-owner-authority \
+  --config CONFIG --reference HOME --previous-digest CURRENT_CONFIG_SHA256
+```
+
+Use the actual gateway owner's interpreter and protected configuration. This
+operation validates the selected native authority and exact config, keeps the
+original key/owner binding and accepts only the same existing owner/home. It
+changes no browser session, scope, actor or key. There is one current acceptance
+row per credential, rather than another entry on every update. It is a host
+provisioning command, never an owner-local or browser operation. A later authority
+revision is denied until the authorized rollout accepts that current revision;
+revoked credentials remain denied. Verify an actual owner-local read afterward.

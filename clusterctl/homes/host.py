@@ -119,15 +119,54 @@ def register(config_path, reference, home, *, previous_digest, withdraw=False):
     return {"status": "withdrawn" if withdraw else "registered", "digest": sha(raw)}
 
 
+def accept_owner_authority(config_path, reference, *, previous_digest):
+    """Explicit host operation; retain key bytes, actor, home and base revision."""
+    from .authority import NativeAuthority
+    from .service import private_text
+
+    original = regular(config_path)
+    if Path(config_path).stat().st_mode & 0o077 or sha(original) != previous_digest:
+        raise ValueError("concurrent_gateway_configuration_preserved")
+    config = validate_config(json.loads(original))
+    home = config["homes"][reference]
+    authority = NativeAuthority(
+        Path(config["binding_source"]), Path(config["relationship_store"]),
+        config["homes"], authority_source=Path(config["authority_source"]),
+    )
+    # Includes current signed-history validation and all consumed public pins.
+    authority.authorities()
+    actor = authority.actor(home["owner_being_ref"])
+    if not actor or actor.kind != "being" or not actor.enabled:
+        raise ValueError("current_home_identity_binding_required")
+    if regular(config_path) != original:
+        raise ValueError("concurrent_gateway_configuration_preserved")
+    Sessions(Path(config["state"])).accept_owner_authority(
+        private_text(home["owner_token_file"]), home=reference, subject=actor,
+        binding_revision=home["owner_revision"],
+    )
+    return {"status": "authority-accepted", "home": reference,
+            "actor": actor.ref, "revision": actor.revision,
+            "config_digest": sha(original)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("register", "withdraw"))
+    parser.add_argument("operation", choices=("register", "withdraw", "accept-owner-authority"))
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--reference", required=True)
-    parser.add_argument("--row", type=Path, required=True)
+    parser.add_argument("--row", type=Path)
     parser.add_argument("--previous-digest", required=True)
     args = parser.parse_args()
     try:
+        if args.operation == "accept-owner-authority":
+            if args.row is not None:
+                raise ValueError("owner_authority_uses_existing_home")
+            print(json.dumps(accept_owner_authority(
+                args.config, args.reference, previous_digest=args.previous_digest,
+            )))
+            return
+        if args.row is None:
+            raise ValueError("home_row_required")
         home = json.loads(regular(args.row))
         result = register(
             args.config,

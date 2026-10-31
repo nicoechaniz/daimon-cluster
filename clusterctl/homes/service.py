@@ -310,8 +310,10 @@ class Application:
             not owner
             or owner.kind != "being"
             or not owner.enabled
-            or receiving.get("owner_revision") != owner.revision
-            or not self.sessions.owner(token, home=home, subject=owner)
+            or not self.sessions.owner(
+                token, home=home, subject=owner,
+                binding_revision=receiving.get("owner_revision"),
+            )
         ):
             raise ValueError("home_owner_binding_unavailable")
         if operation in ('style-baseline', 'style-default', 'style-selection', 'style-select', 'style-recipe'):

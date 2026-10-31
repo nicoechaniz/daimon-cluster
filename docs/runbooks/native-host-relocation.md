@@ -159,6 +159,23 @@ Incus source behavior and device contracts:
 
 ## Runtime capability and startup
 
+When the migrating native turn is itself executing the cutover, do not ask its
+daemon to drain and then wait for that same turn to finish. The operator cannot
+finish while it is waiting, and the draining daemon refuses recovery admissions.
+Finish the operator turn before a graceful stop, or use the explicitly authorized
+body-scoped process boundary with an independently managed coordinator and return
+timer. Inspect the actual daemon cgroup; a TUI-owned daemon is not supervised by
+an unrelated service merely because that service adopted its control socket.
+Retain native files and WAL companions, and never use this body operation as a
+global Stop or replay an interrupted input.
+
+Correlate return evidence to the current arm time and operation. A previous
+partial return file is historical while the newly armed timer has not fired;
+it must not terminate observation of the current return. Preserve both outcomes
+and observe the actual service/native continuation before calling recovery
+complete. An attachment-queued receipt alone proves neither model continuation
+nor delivery to the human.
+
 Use one finite startup deadline through admission launch, all composed views and
 SDK reader restoration. A selected SDK that supports `startup_deadline_ns` receives
 the remaining shared envelope; legacy SDKs retain their existing API and limits.

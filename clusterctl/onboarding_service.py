@@ -456,9 +456,31 @@ class GuestServiceBootstrap:
             validate_process(successor[key])
         with selection_lock(self.manager.unit):
             self._budget(deadline_ns)
-            root, previous, candidate = self._request(recovery['bootstrap'])
-            started, selected = self._retained(root, 'started'), self._retained(root, 'selected')
-            if (started is None or selected is None or self._retained(root, 'quiesced') is None
+            bootstrap = recovery['bootstrap']
+            initial = bootstrap.get('schema') == 'cluster-guest-service-initial/v1'
+            if initial:
+                # Validate the original first-service request and exact selected
+                # unit without starting it or relabeling it as a replacement.
+                self._initial('validate', bootstrap, deadline_ns=deadline_ns)
+                selection = self.manager.unit.parent / ('.' + self.manager.unit.name + '.selection')
+                root = private_directory(selection / 'operations' / bootstrap['operation_id'])
+                candidate = unit_content(bootstrap['argv'])
+                started = self._retained(root, 'initial-started')
+                prepared = self._retained(root, 'initial-prepared')
+                launch = self._retained(root, 'initial-start-intent')
+                previous_service = (None if launch is None else
+                    launch.get('launch_precondition', {}).get('service'))
+                if (prepared is None or previous_service is None
+                        or started is None or started.get('initial_service') != prepared['initial_service']):
+                    raise OnboardingError('receiving_guest_start_recovery_conflict')
+            else:
+                root, previous, candidate = self._request(bootstrap)
+                started = self._retained(root, 'started')
+                previous_service = previous['service']
+                if self._retained(root, 'quiesced') is None:
+                    raise OnboardingError('receiving_guest_start_recovery_conflict')
+            selected = self._retained(root, 'selected')
+            if (started is None or selected is None
                     or digest(started) != recovery['started_sha256']
                     or selected['selected_sha256'] != hashlib.sha256(candidate).hexdigest()):
                 raise OnboardingError('receiving_guest_start_recovery_conflict')
@@ -470,12 +492,13 @@ class GuestServiceBootstrap:
                 raise OnboardingError('receiving_guest_start_predecessor_not_exited')
             with ParentProcessPresence(successor['process']) as presence:
                 current = self.manager.inspect(deadline_ns=deadline_ns)
-                values, original = current['manager'], started['manager']
+                values = current['manager']
+                original = started['service']['manager'] if initial else started['manager']
                 stable = set(original) - {'MainPID', 'InvocationID', 'Result'}
                 if (presence.process != successor['admission_parent']
                         or current != successor['service']
                         or current['unit_sha256'] != selected['selected_sha256']
-                        or current.get('dropins', {}) != previous['service'].get('dropins', {})
+                        or current.get('dropins', {}) != previous_service.get('dropins', {})
                         or values['ActiveState'] != 'active' or values['SubState'] != 'running'
                         or set(values) != set(original)
                         or any(values[key] != original[key] for key in stable)

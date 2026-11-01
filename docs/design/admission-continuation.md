@@ -542,3 +542,15 @@ visibility selection make a lost preparation reply exactly recoverable without
 new identity, installation, send or start. A previously failed initial service
 invocation remains historical; catalog repair alone does not authorize replaying
 its first-start request or claim lifecycle recovery.
+
+### Initial-service successor observation
+
+The existing `recover_start` observation accepts an original initial-service
+request as well as a replacement-service request. It retains the immutable
+first-start intent, process and receipt, verifies predecessor exit, unchanged
+unit/drop-ins, a distinct invocation and authenticated child/parent association,
+and records the exact successor proof without a StartUnit/StopUnit operation.
+Exact retry reobserves the successor; changed invocation, reused PID, expiry or
+an observation race is rejected. An observation does not silently replace the
+original initial-start record. Managed/cohort adoption and the steady handoff
+must explicitly consume the proved successor; that integration is still pending.

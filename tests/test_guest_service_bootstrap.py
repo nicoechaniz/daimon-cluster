@@ -1058,11 +1058,15 @@ def test_root_validates_actual_candidate_before_any_lifecycle_effect(fixture):
     assert manager.stops == manager.starts == 0
 
 
-@pytest.fixture
-def managed_successor(fixture, monkeypatch):
+@pytest.fixture(params=[False, True], ids=['replacement', 'initial'])
+def managed_successor(request, monkeypatch):
     from clusterctl.onboarding import digest
-    controller, manager, bootstrap = fixture
-    controller.execute('quiesce', bootstrap, deadline_ns=deadline())
+    is_initial = request.param
+    controller, manager, bootstrap = request.getfixturevalue('initial' if is_initial else 'fixture')
+    if is_initial:
+        controller.execute('validate', bootstrap, deadline_ns=deadline())
+    else:
+        controller.execute('quiesce', bootstrap, deadline_ns=deadline())
     controller.execute('select', bootstrap, deadline_ns=deadline())
     started = controller.execute('start', bootstrap, deadline_ns=deadline())
     original_inspect = manager.inspect
@@ -1097,15 +1101,22 @@ def managed_successor(fixture, monkeypatch):
 
 def test_managed_start_recovery_retains_original_and_rechecks_exact_retry(managed_successor):
     controller, manager, request, started = managed_successor
-    root = controller._request(request['bootstrap'])[0]
+    initial = request['bootstrap']['schema'] == 'cluster-guest-service-initial/v1'
+    root = root_for(manager, request['bootstrap'])
+    prefix = 'initial-' if initial else ''
     originals = {name: (root / name).read_bytes() for name in
-        ('started.json', 'start-intent.json', 'pending-parent.json')}
+        (prefix + 'started.json', prefix + 'start-intent.json', prefix + 'pending-parent.json')}
     result = controller.recover_start(request, deadline_ns=deadline())
     assert result['predecessor_exited'] is True
     assert result['scope']['admission_parent'] == request['successor']['admission_parent']
     assert controller.recover_start(request, deadline_ns=deadline()) == result
-    assert controller._retained(root, 'started') == started
+    assert controller._retained(root, prefix + 'started') == started
     assert all((root / name).read_bytes() == raw for name, raw in originals.items())
+    if initial:
+        # An observational receipt does not silently replace the original
+        # first-start result; cohort adoption must consume it explicitly.
+        with pytest.raises(OnboardingError, match='started_process_changed'):
+            controller.execute('start', request['bootstrap'], deadline_ns=deadline())
     manager.invocation = 'another-successor'
     with pytest.raises(OnboardingError, match='successor_changed'):
         controller.recover_start(request, deadline_ns=deadline())

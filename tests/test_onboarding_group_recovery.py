@@ -829,6 +829,14 @@ def test_remaining_started_frontier_preserves_completed_publication_and_first_st
         parent['runtime_observation']['group_publication']['result'])
     assert set(grant['children']) == {'founder'}
     assert recovery.remaining_require_effect(journal, current, selected, 'initial-start', now_ms=clock[0]) == grant
+    prior = recovery.attached(journal, current)
+    historical = recovery.lifecycle(journal, current, 'founder', fresh=False)
+    if preparation:
+        assert historical is None
+    else:
+        assert historical['continuation_sha256'] == digest(prior)
+        assert historical['not_after_ms'] == prior['expires_at_ms']
+    assert recovery.lifecycle(journal, current, 'founder')['not_after_ms'] == grant['expires_at_ms']
     assert all(current[key] == original[key] for key in ('intent','intent_hash','expected_precondition','intended_transition'))
     observed = copy.deepcopy(current['runtime_observation'])
     observed['initial_managed']['entrant']['start_recovery_request'] = {'new': 'separate retained observation'}

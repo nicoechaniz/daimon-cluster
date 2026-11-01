@@ -471,6 +471,13 @@ def lifecycle(journal, parent: dict, name: str, *, fresh: bool = True) -> dict |
     grant = execution(journal, parent, effect='old-selection-start', historical=not fresh)
     if grant is None:
         return None
+    if (not fresh and grant['schema'] == REMAINING_SCHEMA
+            and name in grant.get('started_frontier', {}).get('sender_replacements', {})):
+        # The completed replacement predates this approval. A new permission
+        # horizon cannot relabel the continuation that actually started it.
+        grant = attached(journal, parent)
+        if grant is None:
+            raise OnboardingError('onboarding_group_continuation_lifecycle_required')
     if grant['schema'] == PREPARATION_SCHEMA:
         # These children are first prepared under this approval's fixed horizon,
         # not renewed preserved children. The ordinary cohort binder verifies

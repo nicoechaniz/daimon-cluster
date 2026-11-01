@@ -7,6 +7,7 @@ dependency generations never overwrite an existing receiving environment.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -199,8 +200,15 @@ def selection(code: Path | None, fingerprint: str | None, base: Path, base_finge
 
 def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, ...], output: Path,
           *, sdk: Path | None = None, telegram: Path | None = None,
-          matrix_commit: str | None = None, matrix_wheel_sha256: str | None = None) -> dict:
-    """Capture a code-only successor; never read receiving home or custody."""
+          matrix_commit: str | None = None, matrix_wheel_sha256: str | None = None,
+          current: Path | None = None, current_fingerprint: str | None = None) -> dict:
+    """Capture qualified software, preserving an optional verified selection.
+
+    Target launchers retain their original approved baseline. A pinned current
+    selection supplies the already qualified patches/context to keep while its
+    SDK changes; it does not replace that baseline or prove live adoption.
+    Never read receiving home, custody or private provider configuration.
+    """
     from . import being_seed
     from tools.build_onboarding_code import copy_code, capture_peer_tool, capture_chat_tool
     original = onboarding_release.verify(base, base_fingerprint, uid=os.geteuid())
@@ -208,6 +216,19 @@ def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, .
     if qualified_sdk and (sdk is None or matrix_commit is None
                           or matrix_wheel_sha256 is None):
         raise OnboardingError('qualified_onboarding_sdk_selection_required')
+    if (current is None) != (current_fingerprint is None):
+        raise OnboardingError('qualified_selected_runtime_required')
+    preserved, copy_from = original, base
+    retained_marker = {}
+    if current is not None:
+        if sdk is None or not qualified_sdk:
+            raise OnboardingError('qualified_selected_sdk_successor_required')
+        assert current_fingerprint is not None
+        if current.absolute() != base.absolute() or current_fingerprint != base_fingerprint:
+            preserved = verify(current, current_fingerprint, base, base_fingerprint,
+                               uid=os.geteuid())
+            retained_marker = json.loads(onboarding_release.regular(current / MARKER, uid=os.geteuid()))
+        copy_from = current
     marker = dict(schema=SCHEMA, base_release_digest=base_fingerprint)
     if sdk is not None:
         from . import onboarding_sdk
@@ -219,11 +240,18 @@ def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, .
             parameters = dict(matrix_commit=matrix_commit, matrix_wheel_sha256=matrix_wheel_sha256)
         else:
             parameters = {}
-        current = onboarding_sdk.verify(sdk.parent, uid=os.geteuid(), **parameters)
+        candidate_sdk = onboarding_sdk.verify(sdk.parent, uid=os.geteuid(), **parameters)
+        selected_sdk = (previous if current is None else
+            json.loads(onboarding_release.regular(current / 'sdk/sdk.json', uid=os.geteuid())))
+        if not modules and telegram is None and selected_sdk == candidate_sdk:
+            raise OnboardingError('onboarding_sdk_successor_unchanged')
         marker = dict(schema=SDK_SCHEMA, base_release_digest=base_fingerprint,
-            previous_sdk_digest=digest(previous), sdk_digest=digest(current))
+            previous_sdk_digest=digest(previous), sdk_digest=digest(candidate_sdk))
         if qualified_sdk:
             marker.update(schema=QUALIFIED_SDK_SCHEMA, **parameters)
+        if telegram is None and 'telegram_digest' in retained_marker:
+            marker.update(previous_telegram_digest=retained_marker['previous_telegram_digest'],
+                          telegram_digest=retained_marker['telegram_digest'])
     if telegram is not None:
         from . import onboarding_telegram
         # Validate before creating output; no receiving home or token is read.
@@ -237,9 +265,10 @@ def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, .
                       telegram_digest=digest(current_telegram))
     being_seed._path(output)
     if (output.exists() or output.is_symlink() or output.is_relative_to(base)
-            or base.is_relative_to(output)):
+            or base.is_relative_to(output) or output.is_relative_to(copy_from)
+            or copy_from.is_relative_to(output)):
         raise OnboardingError('receiving_code_destination_exists')
-    if (not modules or len(set(modules)) != len(modules)
+    if ((not modules and sdk is None) or len(set(modules)) != len(modules)
             or any(re.fullmatch(r'(?:__init__|[a-z][a-z0-9_]*)\.py', name) is None for name in modules)):
         raise OnboardingError('qualified_onboarding_runtime_required')
     output.mkdir(mode=0o755)
@@ -251,10 +280,13 @@ def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, .
         replaced.add('clusterctl/onboarding_peer_native.py')
     if 'onboarding_owner_client.py' in modules:
         replaced.add('clusterctl/onboarding_chat_native.py')
-    for row in original['files']:
+    for row in preserved['files']:
         if (row['path'] not in replaced and row['path'] != MARKER
                 and not (sdk is not None and row['path'].startswith('sdk/'))):
-            copy_code(base / row['path'], output / row['path'])
+            target = output / row['path']
+            copy_code(copy_from / row['path'], target)
+            if current is not None and hashlib.sha256(target.read_bytes()).hexdigest() != row['sha256']:
+                raise OnboardingError('selected_onboarding_code_changed')
     for name in modules:
         copy_code(source / name, output / 'clusterctl' / name)
     if 'onboarding_peer.py' in modules:
@@ -275,4 +307,8 @@ def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, .
             directory.chmod(0o755)
     fingerprint = onboarding_release.seal(output, original['profile'])
     verify(output, fingerprint, base, base_fingerprint, uid=os.geteuid())
-    return dict(runtime_digest=fingerprint, base_release_digest=base_fingerprint)
+    result = dict(runtime_digest=fingerprint, base_release_digest=base_fingerprint)
+    if current is not None:
+        assert current_fingerprint is not None
+        result['selected_release_digest'] = current_fingerprint
+    return result

@@ -38,6 +38,29 @@ restoring the old one-intent supervisor cannot interpret the new startup chain.
 Preserve unresolved startup records and recover their exact selection rather
 than changing profiles beneath an uncertain start.
 
+## SDK updates on an already selected admitted target
+
+An admitted target keeps its original approved `--code` baseline while
+`--runtime-code` selects its qualified software. Do not replace the original
+plan or construct a marker against a different baseline to force an update.
+The SDK compositor accepts `current` and `current_fingerprint` in
+`onboarding_code_successor.build`: resolve them from the actual selected
+receiving code, retain the original baseline arguments, and supply the exact
+qualified SDK revision and wheel hash. It verifies that current selection
+against the original baseline and preserves its module, helper, binary and
+context bytes except for explicitly requested software replacements. Empty
+modules select an SDK-only update. Any already qualified Telegram selection
+is preserved; SDK-only composition does not update Codex or the bot.
+
+The returned `selected_release_digest` records the prepared predecessor, not
+live acceptance. Retain the actual unit/predecessor and conditional maintenance
+operation, use the existing target `sdk-prepare` action (installation plus
+closed imports), then perform scoped Matrix selection and verify authenticated
+loaded startup/identity and real group/direct receiving evidence. Do not replay
+an uncertain start or speech, reenroll a body, reset credentials or use retired
+Source containers. One prepared candidate plus actual current rollback is
+sufficient; discard replaced disposable preparation after its cohort completes.
+
 ## Local authority changes and the group selector
 
 After an authorized same-being enrollment or retirement, republish the current

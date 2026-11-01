@@ -659,3 +659,128 @@ def test_host_reconciles_missing_sdk_before_reading_existing_body(tmp_path, monk
     ready.append(True)
     backend.observe(plan, 'matrix', 'same-operation')
     assert actions == ['sdk-observe', 'sdk-observe', 'matrix-observe']
+
+
+def selected_sdk_fixture(tmp_path):
+    from clusterctl import onboarding_sdk
+    from tools.build_onboarding_sdk import seal
+    base, original, source, profile, sdk, home = sdk_generations(tmp_path)
+    (source / 'retained_feature.py').write_bytes(b'Receiving-local qualified feature.\n')
+    seal(sdk, matrix_commit='1' * 40)
+    wheel_hash = onboarding_sdk.wheel(next((sdk / 'wheels').iterdir()), uid=os.geteuid())['sha256']
+    current = tmp_path / 'selected'
+    result = build(base, original, source, ('onboarding_target.py', 'retained_feature.py'),
+                   current, sdk=sdk, matrix_commit='1' * 40, matrix_wheel_sha256=wheel_hash)
+    return base, original, source, profile, sdk, home, current, result['runtime_digest'], wheel_hash
+
+
+def test_sdk_only_update_keeps_selected_patches_and_original_target_baseline(tmp_path):
+    from tools.build_onboarding_sdk import seal
+    base, original, source, _, sdk, _, current, current_digest, wheel_hash = selected_sdk_fixture(tmp_path)
+    before = {p.relative_to(current).as_posix(): p.read_bytes() for p in current.rglob('*') if p.is_file()}
+    seal(sdk, matrix_commit='2' * 40)
+    output = tmp_path / 'sdk-only'
+    result = build(base, original, source, (), output, current=current,
+                   current_fingerprint=current_digest, sdk=sdk,
+                   matrix_commit='2' * 40, matrix_wheel_sha256=wheel_hash)
+    assert result['selected_release_digest'] == current_digest
+    assert selected(output, result['runtime_digest'], base, original, uid=os.geteuid()) == output
+    assert (output / 'clusterctl/onboarding_target.py').read_bytes() == b'Updated runtime.'
+    assert (output / 'clusterctl/retained_feature.py').read_bytes() == b'Receiving-local qualified feature.\n'
+    for name, raw in before.items():
+        if name not in {'release.json', 'runtime-successor.json'} and not name.startswith('sdk/'):
+            assert (output / name).read_bytes() == raw
+    assert before == {p.relative_to(current).as_posix(): p.read_bytes() for p in current.rglob('*') if p.is_file()}
+    assert (base / 'clusterctl/onboarding_target.py').read_bytes() == b'Original runtime.'
+
+
+@pytest.mark.parametrize('invalid', ['missing-digest', 'missing-current', 'wrong-digest',
+                                   'unqualified-sdk', 'changed-context', 'nested-output', 'noop'])
+def test_selected_sdk_update_rejects_invalid_inputs_before_output(tmp_path, invalid):
+    from tools.build_onboarding_sdk import seal
+    base, original, source, profile, sdk, _, current, current_digest, wheel_hash = selected_sdk_fixture(tmp_path)
+    output = current / 'nested' if invalid == 'nested-output' else tmp_path / 'refused'
+    if invalid != 'noop':
+        seal(sdk, matrix_commit='2' * 40)
+    kwargs = dict(current=current, current_fingerprint=current_digest, sdk=sdk,
+                  matrix_commit=('1' if invalid == 'noop' else '2') * 40,
+                  matrix_wheel_sha256=wheel_hash)
+    if invalid == 'missing-digest':
+        kwargs['current_fingerprint'] = None
+    if invalid == 'missing-current':
+        kwargs['current'] = None
+    if invalid == 'wrong-digest':
+        kwargs['current_fingerprint'] = '0' * 64
+    if invalid == 'unqualified-sdk':
+        kwargs.update(matrix_commit=None, matrix_wheel_sha256=None)
+    if invalid == 'changed-context':
+        (current / 'inheritance.md').write_bytes(b'Unapproved context.')
+        (current / 'release.json').unlink()
+        kwargs['current_fingerprint'] = onboarding_release.seal(current, profile)
+    with pytest.raises(OnboardingError):
+        build(base, original, source, (), output, **kwargs)
+    assert not output.exists()
+
+
+def test_selected_sdk_keeps_other_patches_when_one_module_is_explicitly_updated(tmp_path):
+    from tools.build_onboarding_sdk import seal
+    base, original, source, _, sdk, _, current, current_digest, wheel_hash = selected_sdk_fixture(tmp_path)
+    (source / 'onboarding_target.py').write_bytes(b'Explicitly selected next target code.')
+    seal(sdk, matrix_commit='2' * 40)
+    output = tmp_path / 'next'
+    result = build(base, original, source, ('onboarding_target.py',), output, sdk=sdk,
+                   matrix_commit='2' * 40, matrix_wheel_sha256=wheel_hash,
+                   current=current, current_fingerprint=current_digest)
+    assert selected(output, result['runtime_digest'], base, original, uid=os.geteuid()) == output
+    assert (output / 'clusterctl/onboarding_target.py').read_bytes() == b'Explicitly selected next target code.'
+    assert (output / 'clusterctl/retained_feature.py').read_bytes() == (current / 'clusterctl/retained_feature.py').read_bytes()
+
+
+def test_selected_sdk_refuses_a_current_module_changed_during_capture(tmp_path, monkeypatch):
+    from tools import build_onboarding_code
+    from tools.build_onboarding_sdk import seal
+    base, original, source, _, sdk, _, current, current_digest, wheel_hash = selected_sdk_fixture(tmp_path)
+    seal(sdk, matrix_commit='2' * 40)
+    copy = build_onboarding_code.copy_code
+    def race(incoming, outgoing):
+        if incoming == current / 'clusterctl/retained_feature.py':
+            incoming.write_bytes(b'Changed after selection verification.')
+        return copy(incoming, outgoing)
+    monkeypatch.setattr(build_onboarding_code, 'copy_code', race)
+    output = tmp_path / 'refused-race'
+    with pytest.raises(OnboardingError, match='selected_onboarding_code_changed'):
+        build(base, original, source, (), output, sdk=sdk,
+              matrix_commit='2' * 40, matrix_wheel_sha256=wheel_hash,
+              current=current, current_fingerprint=current_digest)
+    assert not (output / 'release.json').exists()
+
+
+def test_selected_sdk_preserves_an_already_qualified_telegram_binary(tmp_path, monkeypatch):
+    import shutil
+    from clusterctl import onboarding_sdk
+    from tools.build_onboarding_sdk import seal
+    base, _, source, profile, sdk, _ = sdk_generations(tmp_path)
+    teleg_root = tmp_path / 'teleg'
+    teleg_root.mkdir()
+    teleg_base, _, _, _, teleg_candidate = telegram_fixture(teleg_root, monkeypatch)
+    for name in ('telecodex', 'artifact.json'):
+        shutil.copyfile(teleg_base / 'telegram' / name, base / 'telegram' / name)
+        (base / 'telegram' / name).chmod(0o755 if name == 'telecodex' else 0o644)
+    (base / 'release.json').unlink()
+    original = onboarding_release.seal(base, profile)
+    seal(sdk, matrix_commit='1' * 40)
+    wheel_hash = onboarding_sdk.wheel(next((sdk / 'wheels').iterdir()), uid=os.geteuid())['sha256']
+    current = tmp_path / 'with-telegram'
+    first = build(base, original, source, ('onboarding_target.py',), current, sdk=sdk,
+                  matrix_commit='1' * 40, matrix_wheel_sha256=wheel_hash, telegram=teleg_candidate)
+    seal(sdk, matrix_commit='2' * 40)
+    output = tmp_path / 'sdk-only'
+    result = build(base, original, source, (), output, sdk=sdk,
+                   matrix_commit='2' * 40, matrix_wheel_sha256=wheel_hash,
+                   current=current, current_fingerprint=first['runtime_digest'])
+    assert selected(output, result['runtime_digest'], base, original, uid=os.geteuid()) == output
+    for name in ('telecodex', 'artifact.json'):
+        assert (output / 'telegram' / name).read_bytes() == (current / 'telegram' / name).read_bytes()
+    before = json.loads((current / 'runtime-successor.json').read_bytes())
+    after = json.loads((output / 'runtime-successor.json').read_bytes())
+    assert {k: before[k] for k in ('previous_telegram_digest', 'telegram_digest')} == {k: after[k] for k in ('previous_telegram_digest', 'telegram_digest')}

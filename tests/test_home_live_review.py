@@ -5,6 +5,47 @@ import subprocess
 import pytest
 
 
+def test_trusted_application_pinned_mount_is_bounded_and_disposable():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required')
+    source = Path(__file__).resolve().parents[1] / 'clusterctl/homes/assets/work-live-review.js'
+    fixture = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+function target(){const listeners=new Map();return {listeners,
+ addEventListener(type,fn){if(!listeners.has(type))listeners.set(type,new Set());listeners.get(type).add(fn)},
+ removeEventListener(type,fn){listeners.get(type)?.delete(fn)},
+ emit(type,event){for(const fn of listeners.get(type)||[])fn(event)},
+ count(){return [...listeners.values()].reduce((n,set)=>n+set.size,0)}}}
+const host=target(),doc={...target(),hidden:false},messages=[],frame={...target(),dataset:{},
+ contentWindow:{postMessage:message=>messages.push(message)},setAttribute(name,value){this[name]=value},removeAttribute(name){delete this[name]}};
+let requests=0;
+const context={window:host,document:doc,URL,TextEncoder,AbortController,Uint8Array,TextDecoder,
+ setTimeout,clearTimeout,fetch:async()=>{requests++;throw Error('No automatic fetch expected')}};
+vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
+const descriptor={schema:'dm.home-review-source/v1',resource:'a'.repeat(32),version:'b'.repeat(64),
+ content_origin:'https://content.example',frame:{src:'https://content.example/r/'+'t'.repeat(43)+'/index.html',sandbox:'allow-scripts'},
+ hydration:{manifest:'review-live.json',gallery:'gallery.json'},adapter_handshake:'required'};
+const api=context.DaimonHomeReview,mount=api.mountPinned(frame,descriptor);
+assert.equal(frame.sandbox,'allow-scripts');assert.equal(frame.dataset.liveReview,'pinned');
+descriptor.resource='f'.repeat(32);frame.emit('load',{});
+assert.equal(messages.at(-1).resource,'a'.repeat(32),'caller mutation cannot change the pinned context');
+assert.equal(messages.at(-1).reviewContext,true);assert.equal(messages.at(-1).liveReview,false);
+host.emit('message',{source:frame.contentWindow,origin:'null',data:{type:'home-artifact:review-select',resource:'f'.repeat(32)}});
+host.emit('message',{source:frame.contentWindow,origin:'null',data:{type:'home-artifact:live-review',enabled:true}});
+assert.equal(requests,0,'pinned mode cannot switch resource or start current-version polling');
+assert.throws(()=>api.mountPinned(frame,descriptor),/already mounted/);
+mount.dispose();mount.dispose();assert.equal(host.count()+doc.count()+frame.count(),0);assert.equal(frame.src,undefined);
+for(const mutate of [s=>s.version='current',s=>s.frame.sandbox='allow-scripts allow-same-origin',
+ s=>s.frame.src='https://other.example/r/'+'t'.repeat(43)+'/index.html',s=>s.hydration.gallery='../other.json']){
+ const invalid=JSON.parse(JSON.stringify(descriptor));mutate(invalid);
+ assert.throws(()=>api.mountPinned(frame,invalid));assert.equal(host.count()+doc.count()+frame.count(),0);
+}
+const again=api.mountPinned(frame,descriptor);again.dispose();assert.equal(host.count()+doc.count()+frame.count(),0);
+'''
+    subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)
+
+
 def test_live_review_same_resource_version_bounds_and_lifecycle():
     node = shutil.which('node')
     if not node:

@@ -78,7 +78,15 @@ function installLiveReview(frame) {
   const current = frame.dataset.liveReview === 'current';
   let resource = match[1], target = null, catalog = new Map(), catalogPending = null, acknowledgment = null, serial = 0;
   let version = match[2], wanted = false, timer = null, pending = null, requestTimeout = null, delay = 10000, immediate = false;
-  const post = data => frame.contentWindow.postMessage(data, '*');
+  let disposed = false;
+  const listeners = [];
+  const listen = (target, type, callback) => { target.addEventListener(type, callback); listeners.push([target,type,callback]); };
+  const post = data => { if (!disposed) frame.contentWindow.postMessage(data, '*'); };
+  function dispose() {
+    if (disposed) return;
+    disposed = true; wanted = false; cancel(); if (catalogPending) catalogPending.abort();
+    for (const [target,type,callback] of listeners.splice(0)) target.removeEventListener(type,callback);
+  }
   async function list() {
     if (document.hidden || catalogPending) return;
     const controller = new AbortController(); catalogPending = controller;
@@ -148,14 +156,14 @@ function installLiveReview(frame) {
       } catch (error) { if (!controller.signal.aborted) post({type:'home-artifact:review-error'}); }
       finally { clearTimeout(deadline); pending = null; }
     }
-    window.addEventListener('message',event=>{
+    listen(window, 'message',event=>{
       if (event.source !== frame.contentWindow || event.origin !== 'null') return;
       if(event.data?.type==='home-artifact:review-applied' && acknowledgment && event.data.requestId===acknowledgment.requestId && event.data.resource===resource && event.data.version===version){const resolve=acknowledgment.resolve;acknowledgment=null;resolve(event.data.accepted===true);return;}
       if (event.data?.type === 'home-artifact:review-load-pinned' && Object.keys(event.data).length === 1) hydrate();
     });
-    document.addEventListener('visibilitychange',()=>{if(document.hidden) cancel()});
-    window.addEventListener('pagehide',()=>{cancel()});
-    return;
+    listen(document, 'visibilitychange',()=>{if(document.hidden) cancel()});
+    listen(window, 'pagehide',()=>{cancel()});
+    return {dispose};
   }
   async function poll() {
     if (!wanted || document.hidden || pending) return;
@@ -196,7 +204,7 @@ function installLiveReview(frame) {
       if (wanted && !document.hidden) timer = setTimeout(poll, immediate ? 0 : delay);
     }
   }
-  window.addEventListener('message', event => {
+  listen(window, 'message', event => {
     if (event.source !== frame.contentWindow || event.origin !== 'null') return;
     const message = event.data;
     if (message?.type === 'home-artifact:review-catalog') { list(); return; }
@@ -216,7 +224,51 @@ function installLiveReview(frame) {
     wanted = event.data.enabled; immediate = wanted; cancel();
     if (wanted && !document.hidden && !pending) poll();
   });
-  document.addEventListener('visibilitychange', () => { if (document.hidden && catalogPending) catalogPending.abort(); immediate = !document.hidden; cancel(); if (wanted && !document.hidden && !pending) poll(); });
-  window.addEventListener('pagehide', () => { cancel(); if (catalogPending) catalogPending.abort(); });
-  window.addEventListener('pageshow', () => { if (wanted && !document.hidden && !pending) poll(); });
+  listen(document, 'visibilitychange', () => { if (document.hidden && catalogPending) catalogPending.abort(); immediate = !document.hidden; cancel(); if (wanted && !document.hidden && !pending) poll(); });
+  listen(window, 'pagehide', () => { cancel(); if (catalogPending) catalogPending.abort(); });
+  listen(window, 'pageshow', () => { if (wanted && !document.hidden && !pending) poll(); });
+  return {dispose};
 }
+
+// Trusted applications reuse the pinned hydrator and the same opaque child.
+// Descriptors come from the home gateway, never artifact postMessage data.
+const pinnedReviewMounts = new WeakMap();
+globalThis.DaimonHomeReview = Object.freeze({
+  schema: 'dm.home-review-parent/v1',
+  mountPinned(frame, selectedSource) {
+    if (pinnedReviewMounts.has(frame)) throw Error('Pinned source already mounted');
+    const serialized = JSON.stringify(selectedSource);
+    if (!serialized || new TextEncoder().encode(serialized).length > 8192) throw Error('Invalid pinned source');
+    const source = JSON.parse(serialized);
+    if (source?.schema !== 'dm.home-review-source/v1'
+        || !/^[a-f0-9]{32}$/.test(source.resource || '')
+        || !/^[a-f0-9]{64}$/.test(source.version || '')
+        || source.frame?.sandbox !== 'allow-scripts'
+        || source.hydration?.manifest !== 'review-live.json'
+        || source.hydration?.gallery !== 'gallery.json'
+        || source.adapter_handshake !== 'required') throw Error('Invalid pinned source');
+    const origin = new URL(source.content_origin), src = new URL(source.frame.src);
+    if (origin.protocol !== 'https:' || origin.origin !== source.content_origin
+        || src.origin !== origin.origin || src.username || src.password || src.search || src.hash
+        || !/^\/r\/[A-Za-z0-9_-]{43}\//.test(src.pathname)) throw Error('Invalid isolated context');
+    frame.setAttribute('sandbox', 'allow-scripts');
+    frame.dataset.downloadRoot = '/works/' + source.resource + '/' + source.version + '/';
+    frame.dataset.liveReview = 'pinned';
+    const hydration = installLiveReview(frame);
+    const loaded = () => frame.contentWindow.postMessage({
+      type:'home-artifact:capabilities', downloads:false, reviewPacked:true,
+      reviewPinned:true, liveReview:false, reviewCatalog:false, reviewContext:true,
+      resource:source.resource,
+    }, '*');
+    frame.addEventListener('load', loaded);
+    pinnedReviewMounts.set(frame, true);
+    frame.src = src.href;
+    let disposed = false;
+    return {dispose() {
+      if (disposed) return;
+      disposed = true; frame.removeEventListener('load', loaded); hydration.dispose();
+      pinnedReviewMounts.delete(frame);
+      frame.removeAttribute('src');
+    }};
+  },
+});

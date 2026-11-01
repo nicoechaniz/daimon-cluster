@@ -519,16 +519,11 @@ def render(home, works, subject, vpn, *, signed_out=False, passkeys=False, key_r
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(home["name"])} · Home</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script>{script}</head><body><main><nav><span>DAIMON MATRIX</span>{auth}</nav>{notice}<p id="passkey-status" role="status" aria-live="polite"></p><header><svg viewBox="0 0 88 48" aria-hidden="true"><ellipse cx="44" cy="24" rx="41" ry="17"/><ellipse cx="44" cy="24" rx="22" ry="22"/><circle cx="44" cy="24" r="4"/></svg><small>{esc(scope)}</small><h1>{esc(home["name"])}</h1><p>A shared starting place for ideas, experiments and things we make.</p><a href="{esc(home["vpn_url"], quote=True)}">Dedicated VPN space ↗</a></header><section class="works">{cards or "<p>Room for what comes next. Selected work will appear here as it is shared.</p>"}</section><nav class="ring" aria-label="Tribe web-ring">{rings}</nav><footer>Only work selected for your current access is shown. This page does not indicate current daimon activity.</footer></main></body></html>'''.encode()
 
 
-def preview(app, home, reference, version, subject, vpn, *, origin, parent_token, display_mode="details"):
-    if display_mode not in ("details", "work"):
-        raise ValueError("invalid_display_mode")
+def artifact_context(app, home, reference, version, subject, vpn, *, origin, parent_token):
+    """Existing isolated reader context, shared by preview and trusted apps."""
     selected = app.selected(home, reference, version, subject, vpn)
     if not selected or selected["kind"] != "artifact":
         raise ValueError("preview_denied")
-    current = next(
-        e for e in app.entries(home, subject, vpn) if e["artifact_ref"] == reference
-    )
-    esc = html.escape
     content_origin = app.config[
         "content_vpn_url" if vpn else "content_public_url"
     ].rstrip("/")
@@ -543,6 +538,38 @@ def preview(app, home, reference, version, subject, vpn, *, origin, parent_token
     )
     prefix = content_origin + "/r/" + child + "/"
     source = prefix + quote(selected["entrypoint"])
+    return selected, content_origin, prefix, source
+
+
+def review_source(app, home, reference, version, subject, vpn, *, origin, parent_token):
+    """Ephemeral pinned renderer descriptor; never an additional access grant."""
+    if not re.fullmatch('[a-f0-9]{32}', reference) or not re.fullmatch('[a-f0-9]{64}', version):
+        raise ValueError('immutable_review_source_required')
+    # Check eligibility before minting a child context. The ordinary policy
+    # checks current and historical audiences for this exact visitor/version.
+    selected = app.selected(home, reference, version, subject, vpn)
+    if (not selected or selected['kind'] != 'artifact'
+            or not selected['entrypoint'].endswith('.html')
+            or not {'review-live.json', 'gallery.json'}.issubset(selected['files'])):
+        raise ValueError('review_source_unavailable')
+    selected, content_origin, _, source = artifact_context(
+        app, home, reference, version, subject, vpn, origin=origin, parent_token=parent_token)
+    return {'schema': 'dm.home-review-source/v1', 'resource': reference,
+            'version': selected['version_ref'], 'content_origin': content_origin,
+            'frame': {'src': source, 'sandbox': 'allow-scripts'},
+            'hydration': {'manifest': 'review-live.json', 'gallery': 'gallery.json'},
+            'adapter_handshake': 'required'}
+
+
+def preview(app, home, reference, version, subject, vpn, *, origin, parent_token, display_mode="details"):
+    if display_mode not in ("details", "work"):
+        raise ValueError("invalid_display_mode")
+    selected, content_origin, prefix, source = artifact_context(
+        app, home, reference, version, subject, vpn, origin=origin, parent_token=parent_token)
+    current = next(
+        e for e in app.entries(home, subject, vpn) if e["artifact_ref"] == reference
+    )
+    esc = html.escape
     mime = mimetypes.guess_type(selected["entrypoint"])[0] or "application/octet-stream"
     if mime.startswith("image/") and mime != "image/svg+xml":
         display = (
@@ -860,6 +887,13 @@ def handler(app, *, owner=False):
                             ],
                         },
                     )
+                elif path.startswith('/access/review-source/'):
+                    parts = path.removeprefix('/access/review-source/').split('/')
+                    if len(parts) != 2 or urlsplit(self.path).query:
+                        raise ValueError('invalid_review_source_route')
+                    self.respond(200, review_source(
+                        app, home, parts[0], parts[1], subject, vpn,
+                        origin=origin, parent_token=parent_token))
                 elif path.startswith("/view/"):
                     reference = path.removeprefix("/view/")
                     if not re.fullmatch("[a-f0-9]{32}", reference):

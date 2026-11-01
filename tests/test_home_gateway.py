@@ -386,6 +386,28 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
             assert get(view + "?display=unknown")[0] == 404
             assert get(view + "?display=work&display=details")[0] == 404
             assert get(view + "?display=work&version=" + "0" * 64)[0] == 404
+            # Trusted application descriptors reuse this exact visitor's grant
+            # and immutable version, while leaving active content isolated.
+            review = '/access/review-source/' + 'd' * 32 + '/' + entries[3]['version_ref']
+            assert get(review)[0] == 404
+            assert get(review, token)[0] == 404
+            code, payload, headers = get(review, other)
+            descriptor = json.loads(payload)
+            assert code == 200 and headers['Cache-Control'] == 'no-store'
+            assert descriptor['schema'] == 'dm.home-review-source/v1'
+            assert descriptor['version'] == entries[3]['version_ref']
+            assert descriptor['frame']['sandbox'] == 'allow-scripts'
+            assert descriptor['frame']['src'].startswith('https://content.example/r/')
+            assert descriptor['adapter_handshake'] == 'required'
+            assert 'recipients' not in descriptor and 'title' not in descriptor
+            assert get(review.replace(entries[3]['version_ref'], 'current'), other)[0] == 404
+            assert get(review + '?url=https://other.example', other)[0] == 404
+            assert get('/access/review-source/' + 'a' * 32 + '/' + entries[0]['version_ref'])[0] == 404
+            # Expiring the parent reader also prevents minting a new renderer
+            # context; the table/application cannot substitute its own identity.
+            assert get('/access/logout', other, method='POST', extra={
+                'Origin': home['public_url'], 'Content-Length': '0'})[0] == 200
+            assert get(review, other)[0] == 404
             assert get("/work-view.js")[2]["Content-Type"].startswith("text/javascript")
             assert get("/work-live-review.js")[2]["Content-Type"].startswith("text/javascript")
             # Trusted pages preserve same-origin browser form proofs without

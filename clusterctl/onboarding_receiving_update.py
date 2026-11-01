@@ -3602,6 +3602,10 @@ class CohortController:
             raise OnboardingError('receiving_sender_vector_invalid')
         return row
 
+    def _senders(self, row: dict) -> list[dict]:
+        from . import onboarding_group_recovery as recovery
+        return recovery.senders(self.journal, row)
+
     def _admission(self, row: dict) -> dict | None:
         """Validate the frozen physical after-set, independently of late effects."""
         transition = row['intended_transition']
@@ -3616,7 +3620,7 @@ class CohortController:
                 or not isinstance(value['receivers'], dict) or not 1 <= len(value['receivers']) <= 256
                 or sorted(value['receivers']) != sorted(self.owners)):
             raise OnboardingError('receiving_cohort_admission_required')
-        before = {item['name']: item for item in row['expected_precondition']['senders']}
+        before = {item['name']: item for item in self._senders(row)}
         added = set(self.owners) - set(before)
         if (not added or not isinstance(row['expected_precondition'].get('receiver_selections'), dict)
                 or sorted(row['expected_precondition']['receiver_selections']) != sorted(self.owners)):
@@ -3690,7 +3694,7 @@ class CohortController:
                 row = self.journal.advance(self.operation_id, 'runtime-dispatching')
             release = row['intent']['runtime_call']['manifest_digest']
             control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'receiving-control:' + self.operation_id))
-            for sender in row['expected_precondition']['senders']:
+            for sender in self._senders(row):
                 name = sender['name']
                 if name in (row['runtime_observation'] or {}).get('sender_revocations', {}):
                     continue
@@ -3718,7 +3722,7 @@ class CohortController:
             with self.journal.mutation_lock(self.operation_id):
                 return self._admission_revocation_barrier(self._row())
         revocations = (row['runtime_observation'] or {}).get('sender_revocations', {})
-        for sender in row['expected_precondition']['senders']:
+        for sender in self._senders(row):
             retained = revocations.get(sender['name'])
             if not isinstance(retained, dict):
                 raise OnboardingError('receiving_sender_barrier_incomplete')
@@ -3792,7 +3796,7 @@ class CohortController:
         frozen = row['expected_precondition'].get('receiver_selections')
         if not isinstance(frozen, dict) or sorted(frozen) != sorted(self.owners):
             raise OnboardingError('receiving_cohort_predecessor_required')
-        senders = row['expected_precondition']['senders']
+        senders = self._senders(row)
         if any(not isinstance(item.get('being_ref'), str) for item in senders):
             raise OnboardingError('receiving_cohort_predecessor_required')
         expected = ({(item['being_ref'], item['server']['embodiment_id']) for item in senders}
@@ -4018,7 +4022,7 @@ class CohortController:
             raise OnboardingError('receiving_cohort_admission_required')
         effects = {} if lifecycle_row is None else lifecycle_row['runtime_observation'] or {}
         if (admission is not None and lifecycle_row is not None
-                and name not in {item['name'] for item in cohort_row['expected_precondition']['senders']}):
+                and name not in {item['name'] for item in self._senders(cohort_row)}):
             lifecycle = self._initial_lifecycle(lifecycle_row, name, recipe)['controlled_loaded']
         else:
             lifecycle = controlled_load(effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
@@ -4110,7 +4114,7 @@ class CohortController:
     def _lifecycle(self, name: str, recipe: dict, *, require_group: bool = True) -> dict | None:
         cohort = self._row()
         admission = self._admission(cohort)
-        if admission is not None and name not in {item['name'] for item in cohort['expected_precondition']['senders']}:
+        if admission is not None and name not in {item['name'] for item in self._senders(cohort)}:
             self._initial_lifecycle(cohort, name, recipe)
             return cohort
         owner = self.owners[name]
@@ -4143,7 +4147,7 @@ class CohortController:
         """A valid local load cannot stand in for a different admission intent."""
         try:
             approved = admission['receivers'][name]
-            sender = next(item for item in cohort['expected_precondition']['senders'] if item['name'] == name)
+            sender = next(item for item in self._senders(cohort) if item['name'] == name)
             if recipe['profile'] == 'source':
                 previous = lifecycle['expected_precondition']['source_bootstrap']['predecessor']
                 server = previous['server']
@@ -4182,7 +4186,7 @@ class CohortController:
         with self.journal.mutation_lock(self.operation_id):
             row = self._row()
             admission = self._admission(row)
-            if (admission is None or name not in {item['name'] for item in row['expected_precondition']['senders']}
+            if (admission is None or name not in {item['name'] for item in self._senders(row)}
                     or not isinstance(operation_id, str) or not operation_id):
                 raise OnboardingError('receiving_admission_lifecycle_binding_required')
             recipe = {**admission['receivers'][name]['recipe'], 'lifecycle_operation_id': operation_id}
@@ -4236,7 +4240,7 @@ class CohortController:
         control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'receiving-control:' + self.operation_id))
         revocations = (row['runtime_observation'] or {}).get('sender_revocations', {})
         proofs = {}
-        for sender in row['expected_precondition']['senders']:
+        for sender in self._senders(row):
             name, owner = sender['name'], self.owners[sender['name']]
             old = revocations.get(name)
             if not isinstance(old, dict):
@@ -4322,7 +4326,7 @@ class CohortController:
         from . import onboarding_group_recovery as recovery
         try:
             admission = self._admission(row)
-            if (admission is None or name in {item['name'] for item in row['expected_precondition']['senders']}
+            if (admission is None or name in {item['name'] for item in self._senders(row)}
                     or recipe['profile'] != 'guest' or recipe['lifecycle_operation_id'] != self.operation_id):
                 raise ValueError
             effect = row['runtime_observation']['initial_managed'][name]
@@ -4681,7 +4685,7 @@ class CohortController:
         """
         release = row['intent']['runtime_call']['manifest_digest']
         control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'receiving-control:' + self.operation_id))
-        for sender in row['expected_precondition']['senders']:
+        for sender in self._senders(row):
             name = sender['name']
             observations = dict(row['runtime_observation'] or {})
             old = observations.get('sender_revocations', {}).get(name)
@@ -4711,7 +4715,7 @@ class CohortController:
             row = self._revoke_replacement(row, sender, current, recipe, exited)
         admission = self._admission(row)
         if admission is not None:
-            before = {item['name'] for item in row['expected_precondition']['senders']}
+            before = {item['name'] for item in self._senders(row)}
             for name in sorted(set(self.owners) - before):
                 recipe = plan['receivers'][name]
                 initial = self._initial_lifecycle(row, name, recipe)
@@ -4797,7 +4801,7 @@ class CohortController:
 
     def _sender_revocation(self, row: dict, name: str) -> dict | None:
         observations = row['runtime_observation'] or {}
-        before = {item['name'] for item in row['expected_precondition']['senders']}
+        before = {item['name'] for item in self._senders(row)}
         if name not in before:
             if name in observations.get('sender_replacements', {}) or name in observations.get('sender_revocations', {}):
                 raise OnboardingError('receiving_initial_sender_changed')

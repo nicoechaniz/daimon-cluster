@@ -688,3 +688,100 @@ def test_pre_native_approval_requires_reconciled_original_frontier(tmp_path, mon
     request['frontier_sha256'] = digest(parent['runtime_observation'])
     with pytest.raises(OnboardingError):
         recovery.authorization(parent, request, now_ms=now)
+
+
+def process_rebind_fixture(tmp_path, monkeypatch):
+    _journal, parent, request, now = preparation_fixture(tmp_path, monkeypatch)
+    before = copy.deepcopy(parent['expected_precondition'])
+    original = before['senders'][0]
+    process = dict(uid=os.geteuid(), pid=100, start_ticks=3, boot_id=str(uuid.uuid4()))
+    instance = str(uuid.uuid4())
+    gate = dict(schema='dm.receiving.reader-selection/v2',channel_id='tribe',context_sha256='a'*64,
+        controlled=True,phase='unselected',readers=[],operation_id=None,release_digest=None,request_sha256=None,
+        process_id=100,process_instance_id=instance,head=digest([instance,'tribe','a'*64,True]))
+    original.update(process=process,gate=gate,root='/owner/root',socket='/owner/root/tribe.sock',
+        server={'embodiment_id':'embodiment:original'})
+    before['receiver_selections'] = {'founder':{'receiving_code':'a'*64},'entrant':None}
+    journal = OperationJournal(tmp_path/'rebind-journal')
+    row = plan_update(journal,manifest_digest='a'*64,target=parent['target'],expected_precondition=before,
+        intended_transition=parent['intended_transition'],audit_identity={'actor':'synthetic-host'})
+    observed = copy.deepcopy(parent['runtime_observation'])
+    observed['portal_admission']['native_intent']['cohort_intent_sha256'] = row['intent_hash']
+    row = journal.advance(row['operation_id'],'planned',runtime_observation=observed)
+    current = copy.deepcopy(original)
+    current['process'].update(pid=101,start_ticks=4)
+    current['gate'].update(process_id=101,process_instance_id=str(uuid.uuid4()))
+    g = current['gate']
+    g['head'] = digest([g['process_instance_id'],g['channel_id'],g['context_sha256'],g['controlled']])
+    request.update(parent_operation_id=row['operation_id'],parent_intent_sha256=row['intent_hash'],
+        frontier_sha256=digest(observed),sender_rebind=dict(senders=[current],
+            receiver_selections={'founder':copy.deepcopy(before['receiver_selections']['founder'])}))
+    return journal, row, request, now
+
+
+def test_explicit_preparation_process_rebind_preserves_original_identity_and_vectors(tmp_path, monkeypatch):
+    journal, parent, request, now = process_rebind_fixture(tmp_path, monkeypatch)
+    original = copy.deepcopy(parent)
+    assert recovery.senders(journal,parent) == parent['expected_precondition']['senders']
+    approved = recovery.plan(journal,request,audit_identity={'actor':'synthetic-host'})
+    recovery.attach(journal,parent['operation_id'],recovery.reference(approved))
+    current = journal.get(parent['operation_id'])
+    assert recovery.senders(journal,current) == request['sender_rebind']['senders']
+    assert current['expected_precondition'] == original['expected_precondition']
+    assert current['intent'] == original['intent']
+    assert recovery.plan(journal,request,audit_identity={'actor':'synthetic-host'}) == journal.get(approved['operation_id'])
+
+
+@pytest.mark.parametrize('field',['identity','server','root','socket','code','context','selected','head','pid','uid'])
+def test_process_rebind_refuses_identity_software_gate_or_process_substitution(tmp_path, monkeypatch, field):
+    journal, parent, request, now = process_rebind_fixture(tmp_path, monkeypatch)
+    row = request['sender_rebind']['senders'][0]
+    if field == 'identity':
+        row['being_ref'] = 'other'
+    elif field == 'server':
+        row['server']['embodiment_id'] = 'other'
+    elif field in {'root','socket'}:
+        row[field] = '/other'
+    elif field == 'code':
+        request['sender_rebind']['receiver_selections']['founder']['receiving_code'] = 'b'*64
+    elif field == 'context':
+        row['gate']['context_sha256'] = 'b'*64
+    elif field == 'selected':
+        row['gate']['phase'] = 'select'
+    elif field == 'head':
+        row['gate']['head'] = 'b'*64
+    elif field == 'uid':
+        row['process']['uid'] += 1
+    else:
+        row['gate']['process_id'] = 999
+    with pytest.raises(OnboardingError,match='preparation_predecessor_required'):
+        recovery.authorization(parent,request,now_ms=now)
+
+
+@pytest.mark.parametrize('original_child', [False, True])
+def test_lifecycle_association_uses_explicit_rebind_without_changing_parent(tmp_path, monkeypatch, original_child):
+    from clusterctl.onboarding_receiving_update import CohortController
+    journal, parent, request, now = process_rebind_fixture(tmp_path, monkeypatch)
+    approved = recovery.plan(journal,request,audit_identity={'actor':'synthetic-host'})
+    recovery.attach(journal,parent['operation_id'],recovery.reference(approved))
+    current = journal.get(parent['operation_id'])
+    selected = (parent['expected_precondition']['senders'][0] if original_child
+        else request['sender_rebind']['senders'][0])
+    admission = copy.deepcopy(parent['intended_transition']['cohort_admission'])
+    receiver = admission['receivers']['founder']
+    receiver.update(embodiment_id='embodiment:original',recipe={'profile':'guest'})
+    recipe = {'profile':'guest'}
+    lifecycle = {'expected_precondition':{'guest_bootstraps':{'founder':{'owner':{
+        'predecessor':{'process':selected['process']},'origin':selected['server']}}}}}
+    proof = dict(schema='cluster-admission-lifecycle-projection/v1',cohort_operation_id=parent['operation_id'],
+        cohort_intent_sha256=digest(parent['intent']),tribe_ref=admission['tribe_ref'],
+        owner={'being_ref':receiver['being_ref'],'embodiment_id':receiver['embodiment_id']},
+        link_sha256='b'*64,manifest_digest=parent['intent']['runtime_call']['manifest_digest'],
+        snapshot_request_sha256='c'*64,owner_context_sha256='d'*64,publication_operation_id='retained-publication',derived=None)
+    controller = CohortController(journal,parent['operation_id'],{})
+    if original_child:
+        with pytest.raises(OnboardingError,match='association_changed'):
+            controller._admission_lifecycle_association(current,admission,'founder',recipe,lifecycle,proof,require_group=False)
+    else:
+        controller._admission_lifecycle_association(current,admission,'founder',recipe,lifecycle,proof,require_group=False)
+    assert journal.get(parent['operation_id'])['expected_precondition'] == parent['expected_precondition']

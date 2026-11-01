@@ -7,6 +7,7 @@ the original parent lock, validate current owners and record its provenance.
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import re
 import stat
@@ -116,6 +117,52 @@ def _preparation_frontier(row: dict) -> tuple[dict, dict, dict, dict]:
         raise OnboardingError('onboarding_group_continuation_frontier_required') from None
 
 
+def _preparation_senders(parent: dict, evidence: dict) -> list[dict]:
+    """Explicitly rebind only pristine controlled readers after a restart."""
+    from .owner_process import validate_process
+    from daimon_matrix.canonical import canonical_bytes
+    try:
+        old = parent['expected_precondition']['senders']
+        selections = parent['expected_precondition']['receiver_selections']
+        if (not isinstance(evidence, dict) or set(evidence) != {'senders', 'receiver_selections'}
+                or not isinstance(evidence['senders'], list)
+                or [row['name'] for row in evidence['senders']] != [row['name'] for row in old]
+                or set(evidence['receiver_selections']) != {row['name'] for row in old}):
+            raise ValueError
+        changing = {'process_id', 'process_instance_id', 'head'}
+        for previous, current in zip(old, evidence['senders'], strict=True):
+            if (set(current) != set(previous)
+                    or any(current[key] != value for key, value in previous.items() if key not in {'process', 'gate'})
+                    or evidence['receiver_selections'][current['name']] != selections[current['name']]):
+                raise ValueError
+            validate_process(current['process'])
+            if current['process']['uid'] != previous['process']['uid']:
+                raise ValueError
+            before_gate, gate = previous['gate'], current['gate']
+            if (set(gate) != set(before_gate)
+                    or any(gate[key] != value for key, value in before_gate.items() if key not in changing)):
+                raise ValueError
+            for item, process in ((before_gate, previous['process']), (gate, current['process'])):
+                if (item['controlled'] is not True or item['phase'] != 'unselected' or item['readers'] != []
+                        or any(item[key] is not None for key in ('operation_id', 'release_digest', 'request_sha256'))
+                        or item['process_id'] != process['pid'] or not _sha(item['context_sha256'])
+                        or str(uuid.UUID(item['process_instance_id'])) != item['process_instance_id']
+                        or item['head'] != hashlib.sha256(canonical_bytes([item['process_instance_id'], item['channel_id'],
+                            item['context_sha256'], item['controlled']])).hexdigest()):
+                    raise ValueError
+        return copy.deepcopy(evidence['senders'])
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise OnboardingError('onboarding_group_preparation_predecessor_required') from None
+
+
+def senders(journal, parent: dict) -> list[dict]:
+    """Resolve approved process bindings without rewriting original vectors."""
+    grant = attached(journal, parent)
+    if grant is not None and grant['schema'] == PREPARATION_SCHEMA and 'sender_rebind' in grant:
+        return _preparation_senders(parent, grant['sender_rebind'])
+    return copy.deepcopy(parent['expected_precondition']['senders'])
+
+
 def authorization(parent: dict, request: dict, *, now_ms: int) -> dict:
     """Validate a closed operator request against the unchanged original intent.
 
@@ -129,6 +176,8 @@ def authorization(parent: dict, request: dict, *, now_ms: int) -> dict:
         preparation = request.get('schema') == PREPARATION_REQUEST_SCHEMA
         if preparation:
             fields.add('native_readiness')
+            if 'sender_rebind' in request:
+                fields.add('sender_rebind')
         if (not isinstance(request, dict) or set(request) != fields
                 or request['schema'] not in {REQUEST_SCHEMA, PREPARATION_REQUEST_SCHEMA}
                 or str(uuid.UUID(request['authorization_id'])) != request['authorization_id']
@@ -140,6 +189,8 @@ def authorization(parent: dict, request: dict, *, now_ms: int) -> dict:
             raise ValueError
         admission, social, original, children = (_preparation_frontier(parent) if preparation else _frontier(parent))
         if preparation:
+            if 'sender_rebind' in request:
+                _preparation_senders(parent, request['sender_rebind'])
             readiness = request['native_readiness']
             if not isinstance(readiness, dict) or set(readiness) != set(admission['receivers']):
                 raise ValueError
@@ -194,7 +245,9 @@ def authorization(parent: dict, request: dict, *, now_ms: int) -> dict:
                 raise ValueError
         return dict(schema=PREPARATION_SCHEMA if preparation else SCHEMA, authorization_id=request['authorization_id'],
             **(dict(preparations_sha256=digest(parent['intended_transition']['admission_preparations']),
-                native_readiness=copy.deepcopy(request['native_readiness'])) if preparation else {}),
+                native_readiness=copy.deepcopy(request['native_readiness']),
+                **({'sender_rebind':copy.deepcopy(request['sender_rebind'])} if 'sender_rebind' in request else {}))
+                if preparation else {}),
             parent_operation_id=parent['operation_id'], parent_intent_sha256=parent['intent_hash'],
             original_vectors_sha256=digest(dict(before=parent['expected_precondition'], after=parent['intended_transition'])),
             frontier_sha256=request['frontier_sha256'], children=copy.deepcopy(children),
@@ -265,6 +318,8 @@ def resolve(journal, parent: dict, selected: dict) -> dict:
                 or row['expected_precondition'] != dict(parent_operation_id=parent['operation_id'],
                     parent_intent_sha256=parent['intent_hash'], frontier_sha256=grant['frontier_sha256'])):
             raise ValueError
+        if grant['schema'] == PREPARATION_SCHEMA and 'sender_rebind' in grant:
+            _preparation_senders(parent, grant['sender_rebind'])
         for name, binding in grant['children'].items():
             observed = parent['runtime_observation']
             if (observed['admission_lifecycles'][name] != binding['child']

@@ -1028,7 +1028,7 @@ class GroupCoordinator:
         if preparations is None:
             return False
         social = row['intended_transition']['portal_admission']['social']
-        before = {item['name']: item for item in row['expected_precondition']['senders']}
+        before = {item['name']: item for item in recovery.senders(journal, row)}
         for name in sorted(preparations):
             if time.monotonic_ns() >= deadline_ns:
                 raise OnboardingError('receiving_host_deadline_expired')

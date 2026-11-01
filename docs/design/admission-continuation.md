@@ -39,7 +39,19 @@ observation avoids installing or starting a daemon already active after repair.
 Lifecycle children first created under this approval already carry its fixed
 bound. They are verified by the ordinary parent/child association and owner
 controls; they are not described as pre-existing preserved children and receive
-no synthetic lifecycle-renewal projection. The older post-preservation continuation
+no synthetic lifecycle-renewal projection. An explicit optional predecessor rebind may also pin freshly authenticated
+sender observations and their unchanged frozen software selections in this
+preparation approval. Names, beings, signed server coordinates, owner UID,
+root/socket and gate context stay identical. Both old and new gates must be
+pristine controlled/unselected gates without readers or a retained control
+request. Only the process tuple and its gate PID, instance UUID and corresponding
+verified initial-head hash may change. No selected/revoked gate or changed software
+can use this route. The coordinator and cohort consume that same approved vector
+for lifecycle requests, association, revocations and barriers; original intent
+hashing and history always retain the original vector. A later lifecycle/control
+request or another restart cannot acquire a silently refreshed process binding.
+
+The older post-preservation continuation
 keeps its original strict frontier. Preparation retains parent and approval kernel
 lock custody through the absolute receiving invocation deadline, including
 coordinator loss. Bootstrap calls carry that deadline through the existing

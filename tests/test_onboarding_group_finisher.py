@@ -357,8 +357,8 @@ def test_unconfirmed_echo_waits_then_uses_only_delivery_inspection(full):
     assert x.calls.count('activation') == 1
 
 
-@pytest.mark.parametrize('permitted,support', [(True, True), (False, True), (True, False)])
-def test_remaining_communication_uses_current_approval_and_fixed_owner_custody(full, monkeypatch, permitted, support):
+@pytest.mark.parametrize('permitted,support,linked', [(True, True, True), (False, True, True), (True, False, True), (True, True, False)])
+def test_remaining_communication_uses_current_approval_and_fixed_owner_custody(full, monkeypatch, permitted, support, linked):
     """Real finisher/owner route and journal fences; grant resolution is a seam."""
     from pathlib import Path
     from clusterctl import onboarding_group_recovery as recovery
@@ -370,7 +370,8 @@ def test_remaining_communication_uses_current_approval_and_fixed_owner_custody(f
     row = x.journal.get(x.row['operation_id'])
     approval = str(uuid.uuid4())
     observed = copy.deepcopy(row['runtime_observation'])
-    observed['admission_remaining_effects'] = {'reference': {'operation_id': approval}}
+    if linked:
+        observed['admission_remaining_effects'] = {'reference': {'operation_id': approval}}
     x.journal.advance(row['operation_id'], row['state'], runtime_observation=observed)
     grant = dict(schema=recovery.REMAINING_SCHEMA, expires_at_ms=time.time_ns() // 1_000_000 + 8_000)
     def execution(journal, parent, **options):
@@ -378,8 +379,15 @@ def test_remaining_communication_uses_current_approval_and_fixed_owner_custody(f
             assert options['effect'] == 'communication'
             if not permitted:
                 raise OnboardingError('onboarding_group_remaining_effect_not_authorized')
-        return grant
+        return grant if linked else None
     monkeypatch.setattr(recovery, 'execution', execution)
+    duplicated = []
+    duplicate = x.journal.duplicate_mutation_lock
+    def retain(operation):
+        result = duplicate(operation)
+        duplicated.append(operation)
+        return result
+    monkeypatch.setattr(x.journal, 'duplicate_mutation_lock', retain)
     bounded = []
     for owner in x.f.owners.values():
         status = owner.status
@@ -398,18 +406,20 @@ def test_remaining_communication_uses_current_approval_and_fixed_owner_custody(f
             if method == 'messaging_delivery':
                 return original(method, parameters, **options)
             historical = options['effect_not_after_ms'] <= module.time.time_ns() // 1_000_000
-            assert 0 < owner.deadline_ns - time.monotonic_ns() <= (30_000_000_000 if historical else 8_000_000_000)
+            assert 0 < owner.deadline_ns - time.monotonic_ns() <= (30_000_000_000 if historical or not linked else 8_000_000_000)
             if historical:
                 assert 'authoring_expires_at_ms' not in options
                 assert parameters['send_id'] in x.messages
             else:
-                assert options['authoring_expires_at_ms'] <= grant['expires_at_ms']
+                if linked:
+                    assert options['authoring_expires_at_ms'] <= grant['expires_at_ms']
                 assert options['effect_not_after_ms'] == options['authoring_expires_at_ms']
+                assert row['operation_id'] in duplicated, 'bounded dispatch never retained actual parent custody'
             current = x.journal.get(row['operation_id'])['runtime_observation']['portal_admission']
             assert any(value.get('effect_not_after_ms') == options['effect_not_after_ms']
                 for key, value in current.items() if key.startswith('communication-authoring-'))
             competitor = OperationJournal.existing(Path(x.journal.path).parent)
-            for operation in ((row['operation_id'],) if historical else (row['operation_id'], approval)):
+            for operation in ((row['operation_id'],) if historical or not linked else (row['operation_id'], approval)):
                 with pytest.raises(JournalConflict):
                     with competitor.mutation_lock(operation):
                         pass

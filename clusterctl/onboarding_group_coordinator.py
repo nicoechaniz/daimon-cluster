@@ -11,7 +11,7 @@ import math
 import re
 import time
 import uuid
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 
 from . import being_seed
@@ -762,9 +762,12 @@ class GroupCoordinator:
                         if retained['effect_not_after_ms'] > options['authoring_expires_at_ms']:
                             raise OnboardingError('receiving_communication_original_bound_outlives_custody')
                         options['authoring_expires_at_ms'] = retained['effect_not_after_ms']
-                    with recovery.effect_scope(journal, current, 'communication', deadline_ns=deadline):
-                        with cohort._owner_deadline(owner, deadline):
-                            return owner.messaging(method, public, binding=binding, **options)
+                    with recovery.execution_scope(journal, current, 'communication'):
+                        custody = (recovery.retain_execution_locks(journal, current, deadline_ns=deadline)
+                            if bounded else nullcontext())
+                        with custody:
+                            with cohort._owner_deadline(owner, deadline):
+                                return owner.messaging(method, public, binding=binding, **options)
             response = None
             dispatched = False
             def historical_authoring():

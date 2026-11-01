@@ -287,14 +287,19 @@ def loaded_selection(loaded: dict) -> dict:
 
 
 def configuration(path: Path) -> dict:
-    """Read only a host-owner-controlled, closed map; never intake or labels."""
+    """Read the host-owned group policy, never intake or labels.
+
+    An empty map declares group-only onboarding before any member is authorized.
+    It admits no operation and cannot fall back to legacy pair provisioning.
+    """
     value = being_seed._read(path, limit=being_seed.MAX_SELECTION)
     try:
         if (set(value) - {'continuations'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
                 or value['schema'] != SCHEMA or not _path(value['journal'])
                 or not isinstance(value['tribe_ref'], str) or not value['tribe_ref']
-                or not isinstance(value['owners'], dict) or not 1 <= len(value['owners']) <= 256
-                or not isinstance(value['admissions'], dict) or len(value['admissions']) > 256):
+                or not isinstance(value['owners'], dict) or len(value['owners']) > 256
+                or not isinstance(value['admissions'], dict) or len(value['admissions']) > 256
+                or not value['owners'] and value['admissions']):
             raise ValueError
         for name, owner in value['owners'].items():
             if not isinstance(name, str) or not being_seed.NAME.fullmatch(name) or not isinstance(owner, dict):

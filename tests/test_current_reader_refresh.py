@@ -94,3 +94,18 @@ def test_invalid_observation_horizon_never_queries_owner(offset):
     with pytest.raises(OnboardingError,match='horizon_expired'):
         observe_current_reader(owner,expected_selection=selection,expires_at_ms=time.time_ns()//1_000_000+offset)
     assert calls == []
+
+
+def test_current_reader_option_reads_native_catalog_through_same_qualified_owner():
+    owner, _data, selection, calls = fixture()
+    base = owner.qualified_identity
+    native = dict(recipe={'profile':'codex'}, accepted={'status':'configured'})
+    receipt = dict(status='configured', model_turns_started=0)
+    def observe(**options):
+        return {**base(**options), 'native_tooling': receipt}
+    owner.qualified_identity = observe
+    horizon = time.time_ns()//1_000_000+30_000
+    result = observe_current_reader(owner, expected_selection=selection, expires_at_ms=horizon,
+        native_tooling=native)
+    assert calls == [dict(expires_at_ms=horizon, require_admitted=True, native_tooling=native)]
+    assert result['native_tooling'] == receipt

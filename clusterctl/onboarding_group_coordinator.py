@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 import re
 import time
 import uuid
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import being_seed
@@ -164,7 +166,8 @@ def communication_followup(request: dict, row: dict, admission: dict, previous_r
                             'previous_step', 'expires_at_ms'}
                 or request['schema'] != 'cluster-admission-communication-followup-request/v1'
                 or str(uuid.UUID(request['qualification_id'])) != request['qualification_id']
-                or row['operation'] != 'receiving-update' or row['state'] != 'runtime-dispatching'
+                or row['operation'] != 'receiving-update'
+                or row['state'] not in ({'runtime-dispatching', 'completed'} if historical else {'runtime-dispatching'})
                 or row['intent_hash'] != digest(row['intent'])
                 or row['target'] != 'receiving:'+admission['tribe_ref']
                 or row['intended_transition']['cohort_admission'] != admission
@@ -517,6 +520,194 @@ class GroupCoordinator:
         return journal.advance(row['operation_id'], current['state'], runtime_observation=observations,
             expected_runtime_observation=current['runtime_observation'])
 
+    @staticmethod
+    def _followup_entry(row: dict, admission: dict) -> dict:
+        try:
+            entry = row['runtime_observation']['communication_followup']
+            record = entry['record']
+            checked = communication_followup(record['request'], row, admission,
+                record['previous_response'], now_ms=1, historical=True)
+            if record != checked or not isinstance(entry['phases'], dict):
+                raise ValueError
+            return entry
+        except (KeyError, TypeError, ValueError, OnboardingError):
+            raise OnboardingError('onboarding_group_communication_followup_required') from None
+
+    def _retain_followup(self, journal, row: dict, admission: dict, key: str, value: dict,
+                         *, reader_check: bool = False) -> dict:
+        current = journal.get(row['operation_id'])
+        self._followup_entry(current, admission)
+        observed = copy.deepcopy(current['runtime_observation'])
+        entry = observed['communication_followup']
+        retained = entry.setdefault('reader_checks', {}) if reader_check else entry['phases']
+        if key in retained and retained[key] != value:
+            raise JournalConflict('communication follow-up observation changed')
+        retained[key] = value
+        return journal.advance(row['operation_id'], current['state'], runtime_observation=observed,
+            expected_runtime_observation=current['runtime_observation'])
+
+    def begin_communication_followup(self, name: str, request: dict, *, timeout_seconds: float = 30) -> dict:
+        """Retain one explicit operator-selected follow-up; no new send or reader effect."""
+        from . import onboarding_group_recovery as recovery
+        from .onboarding_receiving_update import CohortController
+        if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 60:
+            raise OnboardingError('receiving_host_deadline_required')
+        deadline = time.monotonic_ns()+int(timeout_seconds*1_000_000_000)
+        plan = self.store._load(name)['plan']
+        bound = self._binding(plan)
+        if bound is None:
+            raise OnboardingError('onboarding_group_admission_required')
+        journal, row, admission = bound
+        with journal.mutation_lock(row['operation_id']), self._job_scope(plan):
+            row = journal.get(row['operation_id'])
+            if 'communication_followup' in (row['runtime_observation'] or {}):
+                entry = self._followup_entry(row, admission)
+                if entry['record']['request'] != request:
+                    raise JournalConflict('communication follow-up request changed')
+                return entry['record']
+            # Validate the request shape and finite horizon before any owner IO.
+            required = {'schema','qualification_id','parent_operation_id','parent_intent_sha256',
+                'previous_step','expires_at_ms'}
+            now = time.time_ns()//1_000_000
+            try:
+                canonical_id = str(uuid.UUID(request['qualification_id']))
+            except (KeyError, TypeError, ValueError, AttributeError):
+                raise OnboardingError('onboarding_group_communication_followup_required') from None
+            if (not isinstance(request, dict) or set(request) != required
+                    or request['schema'] != 'cluster-admission-communication-followup-request/v1'
+                    or request['parent_operation_id'] != row['operation_id']
+                    or request['parent_intent_sha256'] != row['intent_hash']
+                    or canonical_id != request['qualification_id']
+                    or row['state'] != 'runtime-dispatching'
+                    or request['previous_step'] not in ('group','direct','reply')
+                    or type(request['expires_at_ms']) is not int
+                    or not now < request['expires_at_ms'] <= now+3_600_000):
+                raise OnboardingError('onboarding_group_communication_followup_required')
+            phases = row['runtime_observation']['portal_admission']
+            intent = phases.get('communication-intent-'+request['previous_step'])
+            if not isinstance(intent, dict):
+                raise OnboardingError('onboarding_group_communication_followup_required')
+            owners = self._owners(admission)
+            software = recovery.execution(journal, row, historical=True)
+            if software is not None:
+                for owner_name, owner in owners.items():
+                    helper = software['maintenance'][owner_name]
+                    owner.maintenance = Path(helper['code']), helper['code_digest']
+            owner_name = intent['sender']['owner']
+            tooling = admission['receivers'][owner_name]['recipe']['tooling']
+            owner = owners[owner_name]
+            with CohortController(journal, row['operation_id'], owners)._owner_deadline(owner, deadline):
+                response = owner.messaging('messaging_delivery', dict(channel_id=tooling['tribe_channel'],
+                    send_id=intent['parameters']['send_id']),
+                    binding=Path(tooling['attachment'])/tooling.get('binding_filename','binding.json'))
+            if time.monotonic_ns() >= deadline:
+                raise OnboardingError('receiving_host_deadline_expired')
+            record = communication_followup(request, row, admission, response, now_ms=time.time_ns()//1_000_000)
+            observed = copy.deepcopy(row['runtime_observation'])
+            observed['communication_followup'] = dict(record=record, phases={}, reader_checks={})
+            journal.advance(row['operation_id'], row['state'], runtime_observation=observed,
+                expected_runtime_observation=row['runtime_observation'])
+            return record
+
+    def _close_followup(self, journal, row: dict, admission: dict) -> None:
+        """Close from retained evidence only, including a lost completion return."""
+        complete = self._completion(row, admission, journal=journal)
+        if row['state'] == 'completed':
+            if row['result'] != complete:
+                raise OnboardingError('onboarding_group_completion_unobserved')
+            return
+        observed = copy.deepcopy(row['runtime_observation'])
+        observed['portal_admission']['completed'] = complete
+        journal.advance(row['operation_id'], 'completed', result=complete, runtime_observation=observed,
+            expected_runtime_observation=row['runtime_observation'])
+
+    def advance_communication_followup(self, name: str, qualification_id: str,
+                                       *, timeout_seconds: float = 60) -> dict:
+        """Continue the retained technical checks; never create a new episode automatically."""
+        from . import onboarding_group_recovery as recovery
+        from .onboarding_receiving_update import CohortController, observe_current_reader
+        if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 300:
+            raise OnboardingError('receiving_host_deadline_required')
+        deadline = time.monotonic_ns()+int(timeout_seconds*1_000_000_000)
+        plan = self.store._load(name)['plan']
+        bound = self._binding(plan)
+        if bound is None:
+            raise OnboardingError('onboarding_group_admission_required')
+        journal, row, admission = bound
+        with journal.mutation_lock(row['operation_id']):
+            with self._job_scope(plan):
+                row = journal.get(row['operation_id'])
+                entry = self._followup_entry(row, admission)
+                record = entry['record']
+                if qualification_id != record['request']['qualification_id']:
+                    raise OnboardingError('onboarding_group_communication_followup_required')
+                if 'result' in entry:
+                    result = communication_followup_result(record, row, admission, entry['phases'])
+                    if result != entry['result']:
+                        raise OnboardingError('onboarding_group_communication_followup_unobserved')
+                    self._close_followup(journal, row, admission)
+                    return result
+                owners = self._owners(admission)
+                software = recovery.execution(journal, row, historical=True)
+                if software is not None:
+                    for owner_name, owner in owners.items():
+                        helper = software['maintenance'][owner_name]
+                        owner.maintenance = Path(helper['code']), helper['code_digest']
+            cohort = CohortController(journal, row['operation_id'], owners)
+            cached: dict = {}
+            def before_authoring(step):
+                now = time.time_ns()//1_000_000
+                if now >= record['request']['expires_at_ms'] or time.monotonic_ns() >= deadline:
+                    raise OnboardingError('receiving_communication_authorization_expired')
+                if not cached or now >= cached['until']:
+                    horizon = min(now+60_000, record['request']['expires_at_ms'])
+                    recipes = row['runtime_observation']['admission_activation_plan']['plan']['receivers']
+                    accepted = row['runtime_observation']['native_tooling']
+                    def observe(owner_name):
+                        recipe = recipes[owner_name]
+                        tooling = recipe['tooling']
+                        native = ({'recipe':tooling, 'accepted':accepted[owner_name]}
+                            if tooling['profile'] == 'codex' else None)
+                        with cohort._owner_deadline(owners[owner_name], deadline):
+                            proof = observe_current_reader(owners[owner_name], expected_selection=recipe['selection'],
+                                expires_at_ms=horizon, require_admitted=recipe['profile']=='guest', native_tooling=native)
+                        if (proof['reader']['being_ref'],proof['reader']['embodiment_id']) != (
+                                admission['receivers'][owner_name]['being_ref'],admission['receivers'][owner_name]['embodiment_id']):
+                            raise OnboardingError('receiving_cohort_identity_changed')
+                        return proof
+                    names = sorted(owners)
+                    with ThreadPoolExecutor(max_workers=min(16,len(names))) as executor:
+                        proofs = dict(zip(names, executor.map(observe,names)))
+                    readers = sorted((item['reader'] for item in proofs.values()),
+                        key=lambda item:(item['being_ref'],item['embodiment_id']))
+                    rosters = {item['roster']['roster_sha256'] for item in proofs.values()}
+                    if len(rosters) != 1 or any(item['gate'].get('phase') != 'select'
+                            or item['gate'].get('readers') != readers for item in proofs.values()):
+                        raise OnboardingError('receiving_current_reader_selection_required')
+                    until = min(item['identity_expires_at_ms'] for item in proofs.values())
+                    if time.time_ns()//1_000_000 >= until:
+                        raise OnboardingError('receiving_cohort_observation_expired')
+                    cached.update(proofs=proofs, until=until)
+                current = journal.get(row['operation_id'])
+                if step not in self._followup_entry(current,admission).get('reader_checks', {}):
+                    self._retain_followup(journal,row,admission,step,dict(proofs=cached['proofs'],
+                        observed_until_ms=cached['until']),reader_check=True)
+            complete = self._communicate(plan,journal,row,admission,cohort,record['scope'],deadline_ns=deadline,
+                before_authoring=before_authoring,qualification=record)
+            current = journal.get(row['operation_id'])
+            entry = self._followup_entry(current,admission)
+            if not complete:
+                return dict(qualification_id=qualification_id, communication_acceptance='unobserved')
+            result = communication_followup_result(record,current,admission,entry['phases'])
+            if set(entry.get('reader_checks',{})) != {'group','direct','reply'}:
+                raise OnboardingError('onboarding_group_communication_followup_unobserved')
+            observed = copy.deepcopy(current['runtime_observation'])
+            observed['communication_followup']['result'] = result
+            current = journal.advance(row['operation_id'],current['state'],runtime_observation=observed,
+                expected_runtime_observation=current['runtime_observation'])
+            self._close_followup(journal, current, admission)
+            return result
+
     def _completion(self, row: dict, admission: dict, *, journal=None) -> dict:
         """Revalidate historical closure without restarting or renewing effects."""
         try:
@@ -575,25 +766,31 @@ class GroupCoordinator:
                             else observations['admission_lifecycles'][name]['lifecycle_operation_id'])
                         or recipe['tooling']['profile'] == 'codex' and name not in observations['native_tooling']):
                     raise ValueError
-            for step in ('group', 'direct', 'reply'):
-                saved = phases['communication-'+step]
-                expected = self._communication_intent(row, scope, step, proofs.get('group'))
-                if saved['intent'] != expected or phases['communication-intent-'+step] != expected:
+            if 'communication_followup' in observations:
+                entry = self._followup_entry(row, admission)
+                result = communication_followup_result(entry['record'], row, admission, entry['phases'])
+                if (entry.get('result') != result or set(entry.get('reader_checks', {})) != {'group','direct','reply'}):
                     raise ValueError
-                proof = communication_result(saved['response'], expected, tribe_ref=admission['tribe_ref'],
-                    parent=proofs.get('group') if step == 'reply' else None)
-                if proof != saved['proof']:
+            else:
+                for step in ('group', 'direct', 'reply'):
+                    saved = phases['communication-'+step]
+                    expected = self._communication_intent(row, scope, step, proofs.get('group'))
+                    if saved['intent'] != expected or phases['communication-intent-'+step] != expected:
+                        raise ValueError
+                    proof = communication_result(saved['response'], expected, tribe_ref=admission['tribe_ref'],
+                        parent=proofs.get('group') if step == 'reply' else None)
+                    if proof != saved['proof']:
+                        raise ValueError
+                    proofs[step] = proof
+                    inbound.update((item['being_ref'],item['embodiment_id']) for item in proof['inbound'])
+                if not {(item['being_ref'],item['embodiment_id']) for item in admission['receivers'].values()} <= inbound:
                     raise ValueError
-                proofs[step] = proof
-                inbound.update((item['being_ref'],item['embodiment_id']) for item in proof['inbound'])
-            if not {(item['being_ref'],item['embodiment_id']) for item in admission['receivers'].values()} <= inbound:
-                raise ValueError
             # Hash the retained producer evidence too: a completed marker alone
             # must not release the target or select a runtime for a later stage.
             keys: tuple[str, ...] = ('membership_admission', 'group_publication', 'admission_lifecycles', 'initial_managed',
                 'admission_activation_plan', 'native_tooling', 'cohort_activation', 'sender_revocations',
                 'sender_replacements', 'sender_initials', 'sender_selections', 'initial_steady')
-            keys += tuple(key for key in ('admission_continuation', 'membership_continuation') if key in observations)
+            keys += tuple(key for key in ('admission_continuation', 'membership_continuation', 'communication_followup') if key in observations)
             retained = {key:value for key,value in phases.items() if key != 'completed'}
             return dict(schema=COMPLETION_SCHEMA, operation_id=row['operation_id'],
                 plan_digest=caller['plan_digest'], manifest_digest=row['intent']['runtime_call']['manifest_digest'],
@@ -825,21 +1022,55 @@ class GroupCoordinator:
         return {**recovery.bounds(cohort.journal, row), 'roster_sha256':rosters.pop(), 'receivers':plans}
 
     def _communicate(self, plan: dict, journal, row: dict, admission: dict, cohort, scope: dict,
-                     *, deadline_ns: int, before_authoring) -> bool:
+                     *, deadline_ns: int, before_authoring, qualification: dict | None = None) -> bool:
         """One finite check per phase on worker cadence; exact IDs never renew."""
         from . import onboarding_group_recovery as recovery
         owners = cohort.owners
-        grant = recovery.execution(journal, row, historical=True)
+        grant = recovery.execution(journal, row, historical=True) if qualification is None else None
+        def phases_for(current):
+            if qualification is None:
+                return (current['runtime_observation'] or {}).get('portal_admission', {})
+            entry = self._followup_entry(current, admission)
+            if entry['record'] != qualification:
+                raise JournalConflict('communication follow-up changed')
+            return entry['phases']
+        def retain(key, value):
+            if qualification is None:
+                return self._retain(journal, row, key, value)
+            return self._retain_followup(journal, row, admission, key, value)
+        @contextmanager
+        def authoring_scope(current, deadline):
+            if qualification is None:
+                with recovery.execution_scope(journal, current, 'communication'):
+                    with recovery.retain_execution_locks(journal, current, deadline_ns=deadline):
+                        yield
+                return
+            from .owner_process import lock_custody
+            phases_for(current)
+            if current['state'] != 'runtime-dispatching' or time.time_ns()//1_000_000 >= authoring_expires:
+                raise OnboardingError('receiving_communication_authorization_expired')
+            descriptor = journal.duplicate_mutation_lock(row['operation_id'])
+            try:
+                with lock_custody((descriptor,), deadline_ns=deadline):
+                    yield
+            finally:
+                os.close(descriptor)
+        def ready(step):
+            if qualification is None:
+                before_authoring()
+            else:
+                before_authoring(step)
         authoring_expires = scope['expires_at_ms'] if grant is None else grant['expires_at_ms']
         proofs = {}
         for step in ('group', 'direct', 'reply'):
-            phases = (journal.get(row['operation_id'])['runtime_observation'] or {}).get('portal_admission', {})
+            phases = phases_for(journal.get(row['operation_id']))
             if 'communication-'+step in phases:
                 proofs[step] = phases['communication-'+step]['proof']
                 continue
-            intent = self._communication_intent(row, scope, step, proofs.get('group'))
+            intent = self._communication_intent(row, scope, step, proofs.get('group'),
+                qualification_id=qualification['request']['qualification_id'] if qualification is not None else None)
             attempted = 'communication-intent-'+step in phases
-            self._retain(journal, row, 'communication-intent-'+step, intent)
+            retain('communication-intent-'+step, intent)
             if time.monotonic_ns() >= deadline_ns:
                 raise OnboardingError('receiving_host_deadline_expired')
             owner = owners[intent['sender']['owner']]
@@ -857,12 +1088,13 @@ class GroupCoordinator:
                         return owner.messaging(method, public, binding=binding, **options)
                 with journal.mutation_lock(row['operation_id']):
                     current = journal.get(row['operation_id'])
-                    retained = (current['runtime_observation'] or {}).get('portal_admission', {}).get(
-                        'communication-authoring-'+step)
+                    retained = phases_for(current).get('communication-authoring-'+step)
                     saved_horizon = retained.get('effect_not_after_ms') if isinstance(retained, dict) else None
                     historical_only = (type(saved_horizon) is int
                         and 0 < saved_horizon <= time.time_ns() // 1_000_000)
                     deadline = (deadline_ns if historical_only else
+                        min(deadline_ns, time.monotonic_ns()+max(0,authoring_expires-time.time_ns()//1_000_000)*1_000_000)
+                        if qualification is not None else
                         recovery.effect_deadline(journal, current, 'communication', deadline_ns))
                     started = time.monotonic_ns()
                     deadline = min(deadline, started + int(
@@ -881,7 +1113,7 @@ class GroupCoordinator:
                     feature = 'messaging-authoring-effect-horizon/v1'
                     capabilities = observed.get('loaded_runtime', {}).get('qualified_startup', {}).get(
                         'reader', {}).get('contract', {}).get('capabilities', [])
-                    bounded = retained is not None or grant is not None or feature in capabilities
+                    bounded = qualification is not None or retained is not None or grant is not None or feature in capabilities
                     if bounded:
                         if (feature not in capabilities
                                 or feature not in observed.get('receiving', {}).get('features', [])):
@@ -890,7 +1122,7 @@ class GroupCoordinator:
                         if retained is None:
                             retained = dict(schema='cluster-native-authoring-bound/v1',
                                 intent_sha256=digest(intent), effect_not_after_ms=options['authoring_expires_at_ms'])
-                            self._retain(journal, row, key, retained)
+                            retain(key, retained)
                         if (set(retained) != {'schema', 'intent_sha256', 'effect_not_after_ms'}
                                 or retained['schema'] != 'cluster-native-authoring-bound/v1'
                                 or retained['intent_sha256'] != digest(intent)
@@ -908,17 +1140,13 @@ class GroupCoordinator:
                         if retained['effect_not_after_ms'] > options['authoring_expires_at_ms']:
                             raise OnboardingError('receiving_communication_original_bound_outlives_custody')
                         options['authoring_expires_at_ms'] = retained['effect_not_after_ms']
-                    with recovery.execution_scope(journal, current, 'communication'):
-                        custody = (recovery.retain_execution_locks(journal, current, deadline_ns=deadline)
-                            if bounded else nullcontext())
-                        with custody:
-                            with cohort._owner_deadline(owner, deadline):
-                                return owner.messaging(method, public, binding=binding, **options)
+                    custody = authoring_scope(current, deadline) if bounded else recovery.execution_scope(journal, current, 'communication')
+                    with custody, cohort._owner_deadline(owner, deadline):
+                        return owner.messaging(method, public, binding=binding, **options)
             response = None
             dispatched = False
             def historical_authoring():
-                retained = (journal.get(row['operation_id'])['runtime_observation'] or {}).get(
-                    'portal_admission', {}).get('communication-authoring-'+step, {})
+                retained = phases_for(journal.get(row['operation_id'])).get('communication-authoring-'+step, {})
                 horizon = retained.get('effect_not_after_ms') if isinstance(retained, dict) else None
                 return type(horizon) is int and 0 < horizon <= time.time_ns() // 1_000_000
             if attempted:
@@ -930,7 +1158,7 @@ class GroupCoordinator:
                 if time.time_ns() // 1_000_000 >= authoring_expires and not historical_authoring():
                     return False
                 if not historical_authoring():
-                    before_authoring()
+                    ready(step)
                 response = call('messaging_reply' if step == 'reply' else 'messaging_send',
                     intent['parameters'], authoring_expires_at_ms=authoring_expires)
                 dispatched = True
@@ -949,7 +1177,7 @@ class GroupCoordinator:
                 # Inspection cannot resume a busy/interrupted native fanout.
                 # Replay the SAME durable request, never another message ID.
                 if not historical_authoring():
-                    before_authoring()
+                    ready(step)
                 response = call('messaging_reply' if step == 'reply' else 'messaging_send',
                     intent['parameters'], authoring_expires_at_ms=authoring_expires)
                 proof = qualify(response)
@@ -957,7 +1185,7 @@ class GroupCoordinator:
                 return False
             if time.monotonic_ns() >= deadline_ns:
                 raise OnboardingError('receiving_host_deadline_expired')
-            self._retain(journal, row, 'communication-'+step, dict(intent=intent, response=response, proof=proof))
+            retain('communication-'+step, dict(intent=intent, response=response, proof=proof))
             proofs[step] = proof
         return True
 
@@ -987,7 +1215,14 @@ class GroupCoordinator:
         if bound is None:
             return None
         journal, row, admission = bound
+        current = journal.get(row['operation_id'])
+        if 'communication_followup' in (current['runtime_observation'] or {}):
+            entry = self._followup_entry(current, admission)
+            return self.advance_communication_followup(name, entry['record']['request']['qualification_id'],
+                timeout_seconds=remaining())
         with journal.mutation_lock(row['operation_id']):
+            if 'communication_followup' in (journal.get(row['operation_id'])['runtime_observation'] or {}):
+                raise JournalConflict('communication follow-up was retained; continue its exact request')
             with self._job_scope(plan) as record:
                 current_binding = self._binding(plan)
                 if current_binding is None:

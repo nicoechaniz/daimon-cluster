@@ -592,3 +592,110 @@ def test_authoring_round_reuse_expires_with_the_original_observation_window(full
     x.worker._tick('newcomer')
     assert x.journal.get(x.row['operation_id'])['state'] == 'completed'
     assert len(observations) == 3
+
+
+@pytest.mark.parametrize('lost,reader_fault', [(False,None),(True,None),(False,'gate'),(False,'identity'),(False,'roster')])
+def test_explicit_followup_finishes_original_parent_without_replaying_old_speech(full, monkeypatch, lost, reader_fault):
+    """Real journal/custody/finisher, synthetic native receipts and reader observation."""
+    x = full
+    x.fault['echo'] = False
+    x.worker._tick('newcomer')
+    coordinator = GroupCoordinator(x.f.backend)
+    current = x.journal.get(x.row['operation_id'])
+    original_phases = copy.deepcopy(current['runtime_observation']['portal_admission'])
+    old_id = original_phases['communication-intent-group']['parameters']['send_id']
+    x.messages[old_id]['result']['carrier'] = {'expired': True}
+    for leg in x.messages[old_id]['result']['semantic']['legs']:
+        leg.update(state='accepted', terminal_receipt_hash=None, terminal_receipt_event_id=None)
+    old_message = copy.deepcopy(x.messages[old_id])
+    request = dict(schema='cluster-admission-communication-followup-request/v1', qualification_id=str(uuid.uuid4()),
+        parent_operation_id=current['operation_id'], parent_intent_sha256=current['intent_hash'],
+        previous_step='group', expires_at_ms=time.time_ns()//1_000_000+50_000)
+    first = coordinator.begin_communication_followup('newcomer', request)
+    assert coordinator.begin_communication_followup('newcomer', request) == first
+    x.fault['echo'] = True
+    if lost:
+        x.fault.update(phase='message', lost=False)
+    # The native adapters enforce fixed horizons; this fake exposes their actual
+    # feature flags and asserts the same options at the invocation boundary.
+    authored = []
+    feature = 'messaging-authoring-effect-horizon/v1'
+    for owner in x.f.owners.values():
+        status, message = owner.status, owner.messaging
+        def supported(*, status=status):
+            value = copy.deepcopy(status())
+            runtime = value['runtime_status']
+            runtime.setdefault('receiving', {}).setdefault('features', []).append(feature)
+            runtime.setdefault('loaded_runtime', {}).setdefault('qualified_startup', {}).setdefault(
+                'reader', {}).setdefault('contract', {}).setdefault('capabilities', []).append(feature)
+            return value
+        def bounded(method, params, *, message=message, **options):
+            if method != 'messaging_delivery':
+                assert params['send_id'] != old_id
+                assert 0 < options['effect_not_after_ms'] <= request['expires_at_ms']
+                assert options['authoring_expires_at_ms'] == options['effect_not_after_ms']
+                authored.append(params['send_id'])
+            return message(method, params, **options)
+        owner.status, owner.messaging = supported, bounded
+    admission = current['intended_transition']['cohort_admission']
+    readers = sorted(({key: body[key] for key in ('being_ref','embodiment_id')}
+        for body in admission['receivers'].values()), key=lambda item:(item['being_ref'],item['embodiment_id']))
+    observed = []
+    def reader(owner, **options):
+        observed.append(owner)
+        proof = dict(reader=next(copy.deepcopy(item) for item in readers if item['being_ref']==owner.being),
+            gate=dict(phase='select',readers=readers), roster=dict(roster_sha256='5'*64),
+            identity_expires_at_ms=options['expires_at_ms'])
+        if reader_fault == 'gate':
+            proof['gate']['readers'] = []
+        elif reader_fault == 'identity':
+            proof['reader']['embodiment_id'] = 'body:unexpected'
+        elif reader_fault == 'roster':
+            proof['roster']['roster_sha256'] = digest(owner.being)
+        return proof
+    monkeypatch.setattr(updates, 'observe_current_reader', reader)
+    if reader_fault:
+        error = 'identity_changed' if reader_fault == 'identity' else 'selection_required'
+        with pytest.raises(OnboardingError, match=error):
+            coordinator.advance_communication_followup('newcomer',request['qualification_id'])
+        assert not authored and len(x.messages) == 1
+        assert x.messages[old_id] == old_message
+        return
+    if lost:
+        with pytest.raises(OSError, match='lost message'):
+            coordinator.advance_communication_followup('newcomer', request['qualification_id'], timeout_seconds=3)
+    result = coordinator.advance('newcomer')
+    assert result['previous_outcome'] == 'retained-unconfirmed'
+    assert len(x.messages) == 4 and len(authored) == 3
+    assert x.messages[old_id] == old_message
+    current = x.journal.get(current['operation_id'])
+    assert current['state'] == 'completed'
+    phases = current['runtime_observation']['portal_admission']
+    assert {key:value for key,value in phases.items() if key != 'completed'} == original_phases
+    assert coordinator.observe(x.f.plans['newcomer']).state == 'complete'
+    assert coordinator.advance_communication_followup('newcomer', request['qualification_id']) == result
+    assert len(authored) == 3
+    assert x.calls.count('activation') == x.calls.count('steady') == 1
+    assert len(observed) == (6 if lost else 3)
+
+
+@pytest.mark.parametrize('bad', ['id', 'scope', 'expired'])
+def test_followup_rejects_invalid_permission_before_owner_query(full, bad):
+    x = full
+    x.fault['echo'] = False
+    x.worker._tick('newcomer')
+    row = x.journal.get(x.row['operation_id'])
+    request = dict(schema='cluster-admission-communication-followup-request/v1', qualification_id=str(uuid.uuid4()),
+        parent_operation_id=row['operation_id'], parent_intent_sha256=row['intent_hash'],
+        previous_step='group', expires_at_ms=time.time_ns()//1_000_000+20_000)
+    if bad == 'id':
+        request['qualification_id'] = 'invalid'
+    elif bad == 'scope':
+        request['extra'] = True
+    else:
+        request['expires_at_ms'] = 1
+    for owner in x.f.owners.values():
+        owner.messaging = lambda *a,**k:pytest.fail('invalid permission reached owner IO')
+    with pytest.raises(OnboardingError, match='followup_required'):
+        GroupCoordinator(x.f.backend).begin_communication_followup('newcomer',request)
+    assert 'communication_followup' not in x.journal.get(row['operation_id'])['runtime_observation']

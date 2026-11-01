@@ -642,11 +642,26 @@ group parent. Its result keeps the prior send/message IDs and reports that prior
 outcome as retained-unconfirmed. A passing follow-up does not retroactively
 confirm or repair that earlier send.
 
-These functions currently validate the source contract only. No follow-up
-transport, receiving selection or original admission completion is installed by
-this change. The next consumer must retain the exact request before dispatch,
-check authority at each actual effect boundary, and reuse `observe_current_reader`
-and the existing reservation/select controls for every living required body.
-Those current-state observations can qualify installed software after a restart
-without fabricating new versions of historical lifecycle/start receipts. Current
-reader availability and signed communication acceptance remain separate facts.
+The existing coordinator exposes `begin_communication_followup` and
+`advance_communication_followup`. Begin queries the original sender's authenticated
+delivery before retaining the exact request under the original admission. Advance
+uses the existing communication path, separately journals the three fixed intents,
+requires receiver-enforced immutable authoring horizons and retains the parent's
+kernel lock through each native invocation, including a lost return. An expired
+bound permits only exact historical native completion; it never renews authoring.
+
+Before fresh speech, advance uses `observe_current_reader` for every required body,
+including its accepted native-tool catalog context. It requires the approved six
+software/application pins, the same actors and current coherent selected reader
+vector. A mismatch stops before authoring. Refresh an unselected vector through
+the existing reservation/select controls first; this path does not restart a
+body, select software or fabricate historical lifecycle/start receipts. Proofs
+are finite and reused only within their actual horizon.
+
+A successful follow-up closes the original parent only after revalidating its
+membership/publication/load/activation/steady evidence and the separate new
+communication result. A lost completion return is reconciled from retained proof.
+The ordinary worker continues an explicitly retained qualification rather than
+retrying its earlier uncertain probe. No qualification is created automatically.
+Current source tests use synthetic native evidence; receiving qualification is
+still required before claiming installed full admission acceptance.

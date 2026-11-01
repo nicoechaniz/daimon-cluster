@@ -112,12 +112,14 @@ def verify_receiving_identity(bundle: dict, observed: dict, *, expires_at_ms: in
 
 
 def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: int,
-                           require_admitted: bool = True) -> dict:
+                           require_admitted: bool = True, native_tooling: dict | None = None) -> dict:
     """Qualify an already installed reader without replaying its lifecycle.
 
     The operator pins the approved current software/application selection.
     This performs no selection, restart, enrollment or native/model dispatch.
     Returned proof is finite; credential validity retains its signed meaning.
+    An explicit native_tooling context additionally reads the current configured
+    native catalog through that same owner; it starts no thread or model.
     Use existing owner controls with the returned process/selection and roster
     CAS after observing every explicitly required receiver.
     """
@@ -126,7 +128,7 @@ def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: in
     if type(expires_at_ms) is not int or not now < expires_at_ms <= now + 60_000:
         raise OnboardingError('receiving_identity_horizon_expired')
     observed = owner.qualified_identity(expires_at_ms=expires_at_ms,
-                                        require_admitted=require_admitted)
+        require_admitted=require_admitted, **({'native_tooling': native_tooling} if native_tooling is not None else {}))
     status, identity = observed['runtime_status'], observed['identity']
     verified = observed['verified_identity']
     loaded, application = status['loaded_runtime'], status['loaded_application']
@@ -186,7 +188,8 @@ def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: in
         raise OnboardingError('receiving_cohort_observation_expired')
     return dict(reader=reader, expected=dict(process=observed['process'], server=observed['server'],
         selection=selection), gate=observed['gate'], roster=roster,
-        observed_at_ms=now, identity_expires_at_ms=verified['expires_at_ms'])
+        observed_at_ms=now, identity_expires_at_ms=verified['expires_at_ms'],
+        **({'native_tooling': observed['native_tooling']} if native_tooling is not None else {}))
 
 
 def _reader_active(reader: dict, now: int) -> bool:

@@ -222,11 +222,12 @@ def test_inactive_grant_cannot_execute_even_before_its_horizon(tmp_path, monkeyp
         recovery.require_effect(journal, current, selected, 'old-selection-start', now_ms=now)
 
 
-def remaining_fixture(tmp_path, monkeypatch):
+def remaining_fixture(tmp_path, monkeypatch, *, preparation=False):
     """Isolate protected journal semantics; native signed reducers are tested separately."""
     from clusterctl import onboarding_group_admission
     from daimon_matrix.messaging_config import APPLICATION_SCHEMA_V3
-    journal, parent, request, now = fixture(tmp_path, monkeypatch)
+    factory = preparation_fixture if preparation else fixture
+    journal, parent, request, now = factory(tmp_path, monkeypatch)
     selected = recovery.reference(recovery.plan(journal, request, audit_identity={}))
     social_grant = recovery.attach(journal, parent['operation_id'], selected)
     # Only the signature-bearing recipe validator is a seam here. Keep the
@@ -244,6 +245,11 @@ def remaining_fixture(tmp_path, monkeypatch):
         snapshots={name:dict(tribe_ref=admission['tribe_ref'], members=members)
             for name in admission['receivers']})
     observed = copy.deepcopy(current['runtime_observation'])
+    if preparation:
+        observed['admission_lifecycles'] = {'founder': dict(
+            lifecycle_operation_id='operation:'+str(uuid.uuid4()), link_sha256='c'*64)}
+        observed['sender_revocations'] = {'founder': {'gate': {'phase': 'revoke', 'readers': []}}}
+        observed['portal_admission']['preserved-founder'] = {'result_sha256': 'b'*64}
     observed[key] = dict(recipe_sha256=digest(social), result=result, result_sha256=digest(result),
         requests={}, **provenance)
     publication = dict(operation_id=social['operation_id'], step='application', action='application',
@@ -252,7 +258,7 @@ def remaining_fixture(tmp_path, monkeypatch):
     observed['group_publication'] = dict(membership_sha256=digest(result),
         recipe_sha256=digest(current['intended_transition']['admission_publications']),
         requests={'entrant': {'application': dict(command=publication, result=None)}}, **provenance)
-    current = journal.advance(parent['operation_id'], parent['state'], runtime_observation=observed,
+    current = journal.advance(parent['operation_id'], 'runtime-dispatching', runtime_observation=observed,
         expected_runtime_observation=current['runtime_observation'])
     now = social_grant['expires_at_ms']+1
     clock = [now]
@@ -785,3 +791,72 @@ def test_lifecycle_association_uses_explicit_rebind_without_changing_parent(tmp_
     else:
         controller._admission_lifecycle_association(current,admission,'founder',recipe,lifecycle,proof,require_group=False)
     assert journal.get(parent['operation_id'])['expected_precondition'] == parent['expected_precondition']
+
+
+
+def remaining_started_fixture(tmp_path, monkeypatch, *, preparation=False):
+    journal, parent, request, clock = remaining_fixture(tmp_path, monkeypatch, preparation=preparation)
+    observed = copy.deepcopy(parent['runtime_observation'])
+    publication = observed['group_publication']
+    command = publication['requests']['entrant']['application']['command']
+    for name in parent['intended_transition']['cohort_admission']['receivers']:
+        publication['requests'][name] = {'application': {'command': copy.deepcopy(command), 'result': {'retained': True}}}
+    identity = {key: value for key, value in publication.items() if key != 'requests'}
+    result = dict(schema='cluster-admission-group-publications/v1', operation_id=command['operation_id'],
+        **identity, snapshots={name:{} for name in publication['requests']}, receiving_readiness='unobserved')
+    publication.update(result=result, result_sha256=digest(result))
+    observed['portal_admission']['loaded-founder'] = {'retained': True}
+    observed['sender_replacements'] = {'founder': {'retained': True}}
+    observed['initial_managed'] = {'entrant': dict(
+        intent=dict(request={'schema': 'cluster-guest-service-initial/v1'}, unit_sha256='f'*64),
+        validated={}, selected={'selected_sha256': 'f'*64},
+        started=dict(schema='cluster-guest-service-initial-start/v1', service={'unit_sha256': 'f'*64}))}
+    parent = journal.advance(parent['operation_id'], parent['state'], runtime_observation=observed,
+        expected_runtime_observation=parent['runtime_observation'])
+    request['frontier_sha256'] = digest(observed)
+    return journal, parent, request, clock
+
+
+@pytest.mark.parametrize('preparation', [False, True])
+def test_remaining_started_frontier_preserves_completed_publication_and_first_start(tmp_path, monkeypatch, preparation):
+    journal, parent, request, clock = remaining_started_fixture(tmp_path, monkeypatch, preparation=preparation)
+    original = copy.deepcopy(parent)
+    approved = recovery.remaining_plan(journal, request, audit_identity={})
+    selected = recovery.remaining_reference(approved)
+    grant = recovery.remaining_attach(journal, parent['operation_id'], selected)
+    current = journal.get(parent['operation_id'])
+    assert grant['started_frontier']['publication_result_sha256'] == digest(
+        parent['runtime_observation']['group_publication']['result'])
+    assert set(grant['children']) == {'founder'}
+    assert recovery.remaining_require_effect(journal, current, selected, 'initial-start', now_ms=clock[0]) == grant
+    assert all(current[key] == original[key] for key in ('intent','intent_hash','expected_precondition','intended_transition'))
+    observed = copy.deepcopy(current['runtime_observation'])
+    observed['initial_managed']['entrant']['start_recovery_request'] = {'new': 'separate retained observation'}
+    journal.advance(parent['operation_id'], parent['state'], runtime_observation=observed)
+    assert recovery.remaining_resolve(journal, journal.get(parent['operation_id']), selected) == grant
+    observed['initial_managed']['entrant']['started']['service']['unit_sha256'] = '0'*64
+    journal.advance(parent['operation_id'], parent['state'], runtime_observation=observed)
+    with pytest.raises(OnboardingError, match='remaining_reference_required'):
+        recovery.remaining_resolve(journal, journal.get(parent['operation_id']), selected)
+
+
+@pytest.mark.parametrize('change', ['publication-hash','pending-request','completed-load','activation','communication','initial-unit'])
+def test_remaining_started_frontier_refuses_unproved_or_later_stage(tmp_path, monkeypatch, change):
+    journal, parent, request, _ = remaining_started_fixture(tmp_path, monkeypatch)
+    observed = copy.deepcopy(parent['runtime_observation'])
+    if change == 'publication-hash':
+        observed['group_publication']['result_sha256'] = '0'*64
+    elif change == 'pending-request':
+        observed['group_publication']['requests']['founder']['application']['result'] = None
+    elif change == 'completed-load':
+        observed['initial_managed']['entrant']['controlled_loaded'] = {}
+    elif change == 'activation':
+        observed['admission_activation_plan'] = {}
+    elif change == 'communication':
+        observed['portal_admission']['communication-intent-send'] = {}
+    else:
+        observed['initial_managed']['entrant']['started']['service']['unit_sha256'] = '0'*64
+    parent = journal.advance(parent['operation_id'], parent['state'], runtime_observation=observed)
+    request['frontier_sha256'] = digest(observed)
+    with pytest.raises(OnboardingError):
+        recovery.remaining_plan(journal, request, audit_identity={})

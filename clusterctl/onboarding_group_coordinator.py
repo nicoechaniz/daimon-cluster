@@ -855,16 +855,22 @@ class GroupCoordinator:
                 if record['stage'] != 'matrix' or row['state'] == 'completed':
                     return None
                 continuation = self._continuation(journal, row)
+                execution_grant = None
                 if continuation is not None:
                     from . import onboarding_group_recovery as recovery
                     recovery.attach(journal, row['operation_id'], self.settings['continuations'][row['operation_id']])
                     row = journal.get(row['operation_id'])
                     recovery.require_execution(journal, row,
                         self.settings['continuations'][row['operation_id']], 'membership')
+                    execution_grant = recovery.execution(journal, row, historical=True)
                 retained = (row['runtime_observation'] or {}).get('portal_admission', {})
                 native_prepared = isinstance(retained.get('native_ready'), dict)
                 finishing = 'execution_intent' in retained
-                horizon = admission['activation']['expires_at_ms'] if continuation is None else continuation['expires_at_ms']
+                # A remaining-effects approval changes execution custody and
+                # helper selection, never the already accepted social recipe.
+                execution_context = execution_grant if finishing else continuation
+                horizon = (admission['activation']['expires_at_ms'] if execution_context is None
+                    else execution_context['expires_at_ms'])
                 expired = time.time_ns() // 1_000_000 >= horizon
                 if expired:
                     request = retained.get('controller_intent')
@@ -898,7 +904,7 @@ class GroupCoordinator:
                 owners = self._owners(admission)
                 if continuation is not None:
                     for owner_name, owner in owners.items():
-                        helper = continuation['maintenance'][owner_name]
+                        helper = (execution_grant or continuation)['maintenance'][owner_name]
                         owner.maintenance = Path(helper['code']), helper['code_digest']
                 from .onboarding_receiving_update import CohortController
                 cohort = CohortController(journal, row['operation_id'], owners)

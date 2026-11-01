@@ -513,7 +513,7 @@ def validate_lifecycle(child: dict, candidate: dict, value: dict, *, preservatio
 
 
 def _remaining_frontier(journal, parent: dict) -> dict:
-    """Pin accepted membership and incomplete publication, never renew social intent."""
+    """Pin accepted membership and the exact remaining publication/start frontier."""
     try:
         observed = parent['runtime_observation']
         admission = parent['intended_transition']['cohort_admission']
@@ -524,6 +524,36 @@ def _remaining_frontier(journal, parent: dict) -> dict:
         publication = observed['group_publication']
         phases = observed['portal_admission']
         old = {item['name'] for item in parent['expected_precondition']['senders']}
+        completed = publication.get('result')
+        late = completed is not None
+        if late:
+            identity = dict(recipe_sha256=publication['recipe_sha256'],
+                membership_sha256=publication['membership_sha256'], **provenance)
+            if (completed.get('schema') != 'cluster-admission-group-publications/v1'
+                    or completed.get('operation_id') != social['operation_id']
+                    or any(completed.get(key) != value for key, value in identity.items())
+                    or completed.get('receiving_readiness') != 'unobserved'
+                    or publication.get('result_sha256') != digest(completed)
+                    or set(completed.get('snapshots', {})) != set(admission['receivers'])
+                    or set(publication['requests']) != set(admission['receivers'])):
+                raise ValueError
+            for name, requests in publication['requests'].items():
+                if (set(requests) != set(parent['intended_transition']['admission_publications']['owners'][name]['steps'])
+                        or any(entry['result'] is None for entry in requests.values())):
+                    raise ValueError
+            initial = observed.get('initial_managed', {})
+            replacements = observed.get('sender_replacements', {})
+            if (not isinstance(initial, dict) or not set(initial) <= set(admission['receivers']) - old
+                    or not isinstance(replacements, dict) or not set(replacements) <= old):
+                raise ValueError
+            for effects in initial.values():
+                # A completed load/activation is a different recovery frontier.
+                if (set(effects) != {'intent', 'validated', 'selected', 'started'}
+                        or effects['intent']['request']['schema'] != 'cluster-guest-service-initial/v1'
+                        or effects['started']['schema'] != 'cluster-guest-service-initial-start/v1'
+                        or effects['selected']['selected_sha256'] != effects['intent']['unit_sha256']
+                        or effects['started']['service']['unit_sha256'] != effects['intent']['unit_sha256']):
+                    raise ValueError
         if (parent['operation'] != 'receiving-update' or parent['state'] != 'runtime-dispatching'
                 or parent['intent_hash'] != digest(parent['intent'])
                 or parent['target'] != 'receiving:'+admission['tribe_ref']
@@ -539,14 +569,14 @@ def _remaining_frontier(journal, parent: dict) -> dict:
                        for key, value in provenance.items())
                 or publication['membership_sha256'] != digest(result)
                 or publication['recipe_sha256'] != digest(parent['intended_transition']['admission_publications'])
-                or publication.get('result') is not None
                 or not publication['requests'] or not set(publication['requests']) <= set(admission['receivers'])
                 or set(observed['admission_lifecycles']) != old
                 or set(observed['sender_revocations']) != old
-                or any(key in observed for key in ('initial_managed', 'admission_activation_plan',
-                    'cohort_activation', 'sender_initials', 'sender_selections', 'sender_replacements', 'initial_steady',
-                    'admission_remaining_effects'))
-                or any(key.startswith(('loaded-', 'communication-', 'communication-intent-')) for key in phases)):
+                or any(key in observed for key in ('admission_activation_plan',
+                    'cohort_activation', 'sender_initials', 'sender_selections', 'initial_steady', 'admission_remaining_effects'))
+                or not late and any(key in observed for key in ('initial_managed', 'sender_replacements'))
+                or any(key.startswith(('communication-', 'communication-intent-')) for key in phases)
+                or not late and any(key.startswith('loaded-') for key in phases)):
             raise ValueError
         expected_refs = {item['being_ref'] for item in admission['receivers'].values()}
         for snapshot in result['snapshots'].values():
@@ -573,8 +603,15 @@ def _remaining_frontier(journal, parent: dict) -> dict:
                     raise ValueError
                 retained_requests.setdefault(name, {})[key] = dict(command_sha256=digest(command),
                     result_sha256=None if entry['result'] is None else digest(entry['result']))
-        for name, child in prior['children'].items():
-            if (observed['admission_lifecycles'][name] != child['child']
+        children = prior['children'] if prior['schema'] != PREPARATION_SCHEMA else {
+            name: dict(child=observed['admission_lifecycles'][name],
+                preservation_sha256=phases['preserved-'+name]['result_sha256']) for name in old}
+        if set(children) != old:
+            raise ValueError
+        for name, child in children.items():
+            if (set(child['child']) != {'lifecycle_operation_id', 'link_sha256'}
+                    or not _sha(child['child']['link_sha256']) or not _sha(child['preservation_sha256'])
+                    or observed['admission_lifecycles'][name] != child['child']
                     or phases['preserved-'+name] != {'result_sha256': child['preservation_sha256']}
                     or observed['sender_revocations'][name]['gate']['phase'] != 'revoke'
                     or observed['sender_revocations'][name]['gate']['readers'] != []):
@@ -583,8 +620,12 @@ def _remaining_frontier(journal, parent: dict) -> dict:
             membership_sha256=digest(joined), publication_sha256=digest(publication),
             publication_identity=dict(recipe_sha256=publication['recipe_sha256'],
                 membership_sha256=publication['membership_sha256'], **provenance),
-            publication_requests=retained_requests,
-            children=copy.deepcopy(prior['children']))
+            publication_requests=retained_requests, children=copy.deepcopy(children),
+            **({'started_frontier': dict(publication_result_sha256=digest(completed),
+                initial_managed={name: {key: digest(value) for key, value in effects.items()}
+                    for name, effects in observed.get('initial_managed', {}).items()},
+                sender_replacements={name: digest(value) for name, value in
+                    observed.get('sender_replacements', {}).items()})} if late else {}))
     except (KeyError, TypeError, ValueError, AttributeError):
         raise OnboardingError('onboarding_group_remaining_frontier_required') from None
 
@@ -683,6 +724,17 @@ def remaining_resolve(journal, parent: dict, selected: dict) -> dict:
                         != {'result_sha256': child['preservation_sha256']}):
                 raise ValueError
         publication = parent['runtime_observation']['group_publication']
+        if 'started_frontier' in grant:
+            progress = grant['started_frontier']
+            if digest(publication.get('result')) != progress['publication_result_sha256']:
+                raise ValueError
+            for name, effects in progress['initial_managed'].items():
+                for key, fingerprint in effects.items():
+                    if digest(parent['runtime_observation']['initial_managed'][name][key]) != fingerprint:
+                        raise ValueError
+            for name, fingerprint in progress['sender_replacements'].items():
+                if digest(parent['runtime_observation']['sender_replacements'][name]) != fingerprint:
+                    raise ValueError
         if any(publication.get(key) != value for key, value in grant['publication_identity'].items()):
             raise ValueError
         for name, requests in grant['publication_requests'].items():

@@ -568,3 +568,20 @@ horizon may authorize the remaining guarded-unit handoff after the original
 bound expires; absent that explicit authority, expired requests stay read-only.
 Source tests do not establish actual receiving adoption. Resume the retained
 operation through its currently authorized frontier, not an expired approval.
+
+### Continue after publication and before first loaded admission
+
+The same remaining-effects approval can pin a completed group publication and
+retained initial-service start, before any entrant controlled-load or activation.
+It requires all publication request results, the exact result digest and audience,
+and the original preservation/child links. For a preparation-only social approval,
+those child links come from the later retained actual lifecycle records; they
+are never retroactively added to the original approval. The new grant pins every
+existing initial-start field and replacement record. Further observations can
+append, but changing any pinned record invalidates the grant.
+
+This does not reopen membership, renew an uncertain send, admit an already loaded
+entrant or resume a completed activation. Existing receiving validators still
+reobserve the actual owner/service before each remaining effect. The coordinator
+uses the current execution grant's finite horizon and maintenance helper while
+retaining the social approval and its original publication recipe.

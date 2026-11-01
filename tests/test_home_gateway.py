@@ -384,6 +384,10 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
             assert get(private_view)[0] == 404
             assert get(private_view, token)[0] == 200
             assert get(view + "?display=unknown")[0] == 404
+            # Project is a navigation candidate, validated later by the reader catalog.
+            assert get(view + "?display=work&project=" + "a" * 32)[0] == 200
+            assert get(view + "?display=work&project=../private")[0] == 404
+            assert get(view + "?display=work&project=" + "a" * 32 + "&project=" + "b" * 32)[0] == 404
             assert get(view + "?display=work&display=details")[0] == 404
             assert get(view + "?display=work&version=" + "0" * 64)[0] == 404
             # Trusted application descriptors reuse this exact visitor's grant

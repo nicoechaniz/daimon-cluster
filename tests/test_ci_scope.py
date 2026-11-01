@@ -1189,8 +1189,8 @@ def test_maintenance_composition_keeps_changed_contracts_and_exact_host_delta(mo
     from tools import ci_scope
     host = 'clusterctl/onboarding_host.py'
     current = (ROOT / host).read_bytes()
-    assert current.count(ci_scope.OWNER_DIAGNOSTIC_ADDITION) == 1
-    previous = current.replace(ci_scope.OWNER_DIAGNOSTIC_ADDITION, b'', 1)
+    assert current.count(ci_scope.OWNER_CLIENT_DIAGNOSTIC_ADDITION) == 1
+    previous = current.replace(ci_scope.OWNER_CLIENT_DIAGNOSTIC_ADDITION, b'', 1)
     monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *_a, **_k:
         subprocess.CompletedProcess([], 0, previous))
     changed = sorted(ci_scope.MAINTENANCE_FILES | {host, 'tests/test_onboarding_host.py',
@@ -1357,3 +1357,19 @@ def test_current_reader_refresh_keeps_existing_maintenance_consumer_coverage(tmp
     assert 'tests/test_current_reader_refresh.py' in MAINTENANCE_TESTS
     assert select(changed, tmp_path) == ('full', ['tests'])
     assert select([*changed, 'clusterctl/onboarding_sdk.py'], ROOT) == ('full', ['tests'])
+
+
+
+def test_owner_client_diagnostic_extension_matches_only_the_exact_covered_delta(monkeypatch):
+    import subprocess
+    from tools import ci_scope
+    host = 'clusterctl/onboarding_host.py'
+    current = (ROOT/host).read_bytes()
+    previous = current.replace(ci_scope.OWNER_CLIENT_DIAGNOSTIC_ADDITION,
+        ci_scope.OWNER_DIAGNOSTIC_ADDITION, 1)
+    assert previous != current
+    monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *a, **kw: subprocess.CompletedProcess([],0,previous))
+    assert ci_scope.owner_diagnostics_only(ROOT, 'a'*40)
+    monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *a, **kw:
+        subprocess.CompletedProcess([],0,previous+b'\n# unrelated host change\n'))
+    assert not ci_scope.owner_diagnostics_only(ROOT, 'a'*40)

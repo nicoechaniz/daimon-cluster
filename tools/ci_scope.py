@@ -693,6 +693,25 @@ OWNER_DIAGNOSTIC_ADDITION = b"""            if argv[0] == 'exec' and 'clusterctl
                         raise OnboardingError(detail['error'])
 """
 
+OWNER_CLIENT_DIAGNOSTIC_ADDITION = b"""            public_errors: frozenset[str] = frozenset()
+            if argv[0] == 'exec' and 'clusterctl.onboarding_owner_control' in argv:
+                from .onboarding_owner_control import PUBLIC_ERRORS
+                public_errors = PUBLIC_ERRORS
+            elif argv[0] == 'exec' and 'clusterctl.onboarding_owner_client' in argv:
+                from .onboarding_owner_client import _PUBLIC_STARTUP_ERRORS
+                public_errors = _PUBLIC_STARTUP_ERRORS | {'native_matrix_tool_startup_refused'}
+            if public_errors:
+                for line in result.stderr.splitlines():
+                    try:
+                        detail = json.loads(line)
+                    except ValueError:
+                        continue
+                    if (isinstance(detail, dict) and set(detail) == {'error'}
+                            and isinstance(detail.get('error'), str)
+                            and detail.get('error') in public_errors):
+                        raise OnboardingError(detail['error'])
+"""
+
 OWNER_TRANSPORT_ORIGINAL = b'''        except (OSError, subprocess.TimeoutExpired):
             raise OnboardingError("onboarding_host_operation_failed") from None
 '''
@@ -706,7 +725,7 @@ OWNER_TRANSPORT_DIAGNOSTIC = b'''        except (OSError, subprocess.TimeoutExpi
 
 
 def owner_diagnostics_only(root: Path, base: str) -> bool:
-    """Accept only the closed owner-control diagnostic addition to HostBackend."""
+    """Recognize exact covered owner diagnostic changes; reject any other Host delta."""
     if not re.fullmatch(r'[0-9a-f]{40}', base):
         return False
     name = 'clusterctl/onboarding_host.py'
@@ -718,8 +737,17 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
     if (current.count(OWNER_TRANSPORT_DIAGNOSTIC) == 1 and
             current.replace(OWNER_TRANSPORT_DIAGNOSTIC, OWNER_TRANSPORT_ORIGINAL, 1) == before.stdout):
         return True
-    return current.count(OWNER_DIAGNOSTIC_ADDITION) == 1 and current.replace(
-        OWNER_DIAGNOSTIC_ADDITION, b'', 1) == before.stdout
+    for addition in (OWNER_DIAGNOSTIC_ADDITION, OWNER_CLIENT_DIAGNOSTIC_ADDITION):
+        if current.count(addition) != 1:
+            continue
+        original = current.replace(addition, b'', 1)
+        if original == before.stdout:
+            return True
+        if (addition == OWNER_CLIENT_DIAGNOSTIC_ADDITION
+                and before.stdout.count(OWNER_DIAGNOSTIC_ADDITION) == 1
+                and before.stdout.replace(OWNER_DIAGNOSTIC_ADDITION, b'', 1) == original):
+            return True
+    return False
 
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:

@@ -220,14 +220,23 @@ effect. Real root/journal/fence regressions cover both interruptions; grant
 resolution and native/manager observations remain explicit fixture seams.
 
 Positive activation has an additional native boundary:
-[Matrix #420](https://github.com/AlterMundi/daimon-matrix/issues/420). The current
-handler assigns its own short processing deadline and does not carry the
-original activation-effect horizon into a separately running daemon. Bounding
-or killing the owner CLI cannot retract an authenticated command already sent.
-Do not enable remaining-effects activation on the strength of CLI lifetime or
-kernel custody alone. The attempted host-only activation change was withheld;
-receiver-side enforcement and an actual-native delayed-handling regression are
-required first.
+[Matrix #420 / PR421](https://github.com/AlterMundi/daimon-matrix/pull/421), merged
+at98ed8414 after installed native qualification. The receiver now enforces the
+authenticated V2 `effect_not_after_ms` after writer admission and before commit.
+This contract is separate from reader credential validity and from a handler's
+fresh processing budget. Exact accepted retries remain historical observations.
+
+The activation consumer requires that feature on every actual receiver and its
+loaded contract before a positive control. Its wire bound is no later than the
+actual observation/owner/execution deadline held by kernel lock custody, using
+conservative clock sampling. The original complete command is retained in the
+existing parent journal before dispatch. A retry never recomputes or renews it;
+a shorter invocation refuses, and an expired retained command can only inspect
+its native accepted result or receive refusal of a fresh effect. Fresh bounded
+controls retain actual parent custody, plus an attached approval's lock. Lost
+responses preserve the existing forward-reassessment policy and original intent.
+Source qualification is not compatible receiving deployment: do not activate
+this consumer against receivers that have not adopted the advertised contract.
 
 Other lifecycle/activation consumers and the complete native admission
 journey still need qualification. Retain the original expired synthetic

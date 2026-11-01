@@ -3838,7 +3838,7 @@ class CohortController:
             if retained is not None and retained != value:
                 raise JournalConflict('admission activation derivation changed')
             if retained is None:
-                recovery.attached(self.journal, row, effect='activation')
+                recovery.execution(self.journal, row, effect='activation')
             observations['admission_activation_plan'] = value
             self._activation({**row, 'runtime_observation': observations})
             if retained is None:
@@ -4424,8 +4424,8 @@ class CohortController:
             self._observation_implementations(retain=True)
             row = self._row()
             if self._admission(row) is not None:
-                from .onboarding_group_recovery import attached
-                attached(self.journal,row,effect='activation')
+                from .onboarding_group_recovery import execution
+                execution(self.journal,row,effect='activation')
             plan, manifest = self._activation(row)
             # Configure/discover before the finite all-reader observation round.
             # Subsequent identity calls reuse their qualified owner process to
@@ -4996,9 +4996,12 @@ class CohortController:
             release = row['intent']['runtime_call']['manifest_digest']
             if set(row['runtime_observation'].get('sender_selections', {})) == set(self.owners):
                 return self._confirmed_selection(row, plan, manifest, activation)
-            if self._admission(row) is not None:
-                from .onboarding_group_recovery import attached
-                attached(self.journal,row,effect='activation')
+            from . import onboarding_group_recovery as recovery
+            admission = self._admission(row)
+            execution_grant = (recovery.execution(self.journal, row, historical=True)
+                if admission is not None else None)
+            bounded_effect = ('reader-selection-effect-horizon/v1' in manifest['contract']['capabilities']
+                or execution_grant is not None and execution_grant['schema'] == recovery.REMAINING_SCHEMA)
             control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'receiving-control:' + self.operation_id))
             # Retain actual Root control code before the fresh observation
             # window and any dispatch. It is distinct from body/adoption code.
@@ -5028,6 +5031,13 @@ class CohortController:
                     current_observations: dict = {}
                     deadline = self._current_activation(row, plan, manifest, activation,
                         observations=current_observations)
+                    if bounded_effect:
+                        feature = 'reader-selection-effect-horizon/v1'
+                        if any(feature not in observation['runtime_status']['receiving'].get('features', [])
+                                or feature not in observation['runtime_status']['loaded_runtime'][
+                                    'qualified_startup']['reader']['contract']['capabilities']
+                                for observation in current_observations.values()):
+                            raise OnboardingError('receiving_selection_effect_horizon_unsupported')
                 except (OnboardingError, OSError):
                     self._fence_partial_activation(activation)
                     raise
@@ -5044,9 +5054,53 @@ class CohortController:
                 if 'credential-bound-reader-validity/v1' in manifest['contract']['capabilities']:
                     command['schema'] = 'dm.runtime.reader-selection/v2'
                 owner = self.owners[name]
+                retained_command = row['runtime_observation'].get('sender_selection_intents', {}).get(name)
+                historical_only = (bounded_effect and isinstance(retained_command, dict)
+                    and type(retained_command.get('effect_not_after_ms')) is int
+                    and retained_command['effect_not_after_ms'] <= time.time_ns() // 1_000_000)
+                if admission is not None and not historical_only:
+                    deadline = recovery.effect_deadline(self.journal, row, 'activation', deadline)
+                owner_deadline = getattr(owner, 'deadline_ns', None)
+                if owner_deadline is not None:
+                    deadline = min(deadline, owner_deadline)
+                if bounded_effect:
+                    if command.get('schema') != 'dm.runtime.reader-selection/v2':
+                        raise OnboardingError('receiving_selection_effect_horizon_unsupported')
+                    # Wall BEFORE monotonic keeps the wire horizon no later
+                    # than actual lock custody, including scheduling gaps.
+                    wall_ms = time.time_ns() // 1_000_000
+                    latest_bound = min(plan['expires_at_ms'],
+                        wall_ms + (deadline - time.monotonic_ns()) // 1_000_000)
+                    intents = dict(row['runtime_observation'].get('sender_selection_intents', {}))
+                    if retained_command is None:
+                        if latest_bound <= wall_ms:
+                            raise OnboardingError('receiving_cohort_observation_expired')
+                        command['effect_not_after_ms'] = latest_bound
+                        intents[name] = command
+                        observations = dict(row['runtime_observation'], sender_selection_intents=intents)
+                        row = self.journal.advance(self.operation_id, row['state'], runtime_observation=observations,
+                            expected_runtime_observation=row['runtime_observation'])
+                    else:
+                        if (not isinstance(retained_command, dict)
+                                or {key: value for key, value in retained_command.items()
+                                    if key != 'effect_not_after_ms'} != command
+                                or type(retained_command.get('effect_not_after_ms')) is not int
+                                or not 0 < retained_command['effect_not_after_ms'] < 2**53):
+                            raise OnboardingError('receiving_control_binding_conflict')
+                        if retained_command['effect_not_after_ms'] > latest_bound:
+                            # Keep the original request. A shorter invocation
+                            # cannot dispatch it outside its protected horizon.
+                            raise OnboardingError('receiving_cohort_observation_expired')
+                        command = retained_command
                 path = owner.root / 'receiving-control' / (control_id + '-select.json')
                 try:
-                    with self._owner_deadline(owner, deadline):
+                    with ExitStack() as controls:
+                        if admission is not None and not historical_only:
+                            controls.enter_context(recovery.execution_scope(self.journal, row, 'activation'))
+                        if bounded_effect and not historical_only:
+                            controls.enter_context(recovery.retain_execution_locks(
+                                self.journal, row, deadline_ns=deadline))
+                        controls.enter_context(self._owner_deadline(owner, deadline))
                         apply_observed = getattr(owner, 'prepare_apply_observed_control', None)
                         if callable(apply_observed):
                             result = apply_observed(command, path, observation=current_observations[name])

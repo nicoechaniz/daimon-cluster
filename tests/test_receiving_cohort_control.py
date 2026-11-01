@@ -716,7 +716,8 @@ def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profi
             result = original()
             result['runtime_status'].update(loaded_runtime=copy.deepcopy(self.loaded),
                 loaded_application=copy.deepcopy(self.application),
-                receiving={'features':['signed-roster-cas/v1'] + (['credential-bound-reader-validity/v1'] if credential_bound else []),
+                receiving={'features':['signed-roster-cas/v1'] + (['credential-bound-reader-validity/v1',
+                    'reader-selection-effect-horizon/v1'] if credential_bound else []),
                     'contracts':['dm.runtime.reader-selection/v1', 'dm.runtime.reader-selection/v2'] if credential_bound else ['dm.runtime.reader-selection/v1'],
                     'rosters':{'tribe':copy.deepcopy(self.roster)}})
             return result
@@ -763,6 +764,7 @@ def activation_fixture(tmp_path, *, replacement=False, exit_observed=True, profi
         authorities={'current':authorities,'candidate':copy.deepcopy(authorities)})
     if not credential_bound:
         manifest['contract']['capabilities'].remove('credential-bound-reader-validity/v1')
+        manifest['contract']['capabilities'].remove('reader-selection-effect-horizon/v1')
         manifest['contract']['capabilities'].remove('explicit-unattempted-carrier-recovery/v1')
         for mode in ('wire_read', 'wire_write'):
             manifest['contract'][mode].remove('dm.tribe.recovery-conversation/v1')
@@ -862,6 +864,8 @@ def test_credential_bound_cohort_keeps_real_validity_and_finite_proof(tmp_path, 
         assert 'dm.tribe.recovery-conversation/v1' in record['reader']['wire_read']
         assert 'expires_at_ms' not in record['reader']
     assert all(owner.gate['schema'] == 'dm.runtime.reader-selection/v2' for owner in owners.values())
+    assert all(0 < next(command for command in owner.requests.values() if command['phase'] == 'select')[
+        'effect_not_after_ms'] <= proof_deadline for owner in owners.values())
     effects = {name: owner.effects for name, owner in owners.items()}
     assert controller.activate() == result
     assert effects == {name: owner.effects for name, owner in owners.items()}
@@ -891,6 +895,84 @@ def test_typed_cohort_requires_actual_owner_v2_support_before_selection(tmp_path
     with pytest.raises(OnboardingError, match='reader_validity_unsupported'):
         controller.activate()
     assert all(owner.gate['readers'] == [] for owner in owners.values())
+
+
+def test_effect_bounded_activation_checks_every_live_receiver_before_any_positive_control(tmp_path):
+    controller, owners, _, _ = activation_fixture(tmp_path, credential_bound=True)
+    original = owners['oliva'].status
+    def missing_live_support():
+        value = original()
+        value['runtime_status']['receiving']['features'].remove('reader-selection-effect-horizon/v1')
+        return value
+    owners['oliva'].status = missing_live_support
+    with pytest.raises(OnboardingError, match='effect_horizon_unsupported'):
+        controller.activate()
+    assert all(owner.gate['readers'] == [] for owner in owners.values())
+    assert all(command['phase'] != 'select' or not command['readers']
+        for owner in owners.values() for command in owner.requests.values())
+
+
+def test_bounded_activation_lost_reply_retains_original_command_for_reassessment(tmp_path, monkeypatch):
+    controller, owners, journal, identifier = activation_fixture(tmp_path, credential_bound=True)
+    original = owners['eko'].prepare_apply_control
+    commands = []
+    def lose_once(command, path):
+        result = original(command, path)
+        if command['phase'] == 'select' and command['readers']:
+            commands.append(copy.deepcopy(command))
+            if len(commands) == 1:
+                raise OSError('synthetic lost bounded activation reply')
+        return result
+    monkeypatch.setattr(owners['eko'], 'prepare_apply_control', lose_once)
+    for owner in owners.values():
+        owner.deadline_ns = time.monotonic_ns() + 2_000_000_000
+    with pytest.raises(OSError, match='lost bounded activation'):
+        controller.activate()
+    for owner in owners.values():
+        owner.deadline_ns = None
+    # Custody survives the lost owner response through the fixed wire horizon.
+    # The existing expired-observation policy then retains forward reassessment;
+    # it must never fabricate a second positive command with another expiry.
+    with pytest.raises(OnboardingError, match='reassessment_required'):
+        controller.activate()
+    assert len(commands) == 1
+    assert commands[0] == journal.get(identifier)['runtime_observation']['sender_selection_intents']['eko']
+    assert commands[0]['effect_not_after_ms'] <= journal.get(identifier)[
+        'intended_transition']['cohort_activation']['expires_at_ms']
+
+
+def test_bounded_control_cannot_outlive_actual_parent_lock_custody(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from clusterctl import owner_process
+    from clusterctl.operation_journal import JournalConflict
+    controller, owners, journal, identifier = activation_fixture(tmp_path, credential_bound=True)
+    custody = owner_process.lock_custody
+    active = []
+    @contextmanager
+    def observe(descriptors, *, deadline_ns):
+        with custody(descriptors, deadline_ns=deadline_ns):
+            wall_ms = time.time_ns() // 1_000_000
+            active.append(wall_ms + (deadline_ns - time.monotonic_ns()) // 1_000_000)
+            try:
+                yield
+            finally:
+                active.pop()
+    monkeypatch.setattr(owner_process, 'lock_custody', observe)
+    seen = []
+    for owner in owners.values():
+        original = owner.prepare_apply_control
+        def apply(command, path, original=original):
+            if command['phase'] == 'select' and command['readers']:
+                assert active and command['effect_not_after_ms'] <= active[-1] + 1
+                competitor = OperationJournal.existing(journal.path.parent)
+                with pytest.raises(JournalConflict):
+                    with competitor.mutation_lock(identifier):
+                        pass
+                seen.append(command['effect_not_after_ms'])
+            return original(command, path)
+        monkeypatch.setattr(owner, 'prepare_apply_control', apply)
+    controller.activate()
+    assert len(seen) == len(owners) and not active
 
 
 @pytest.mark.parametrize('profile',['source','guest'])

@@ -765,15 +765,19 @@ def remaining_reader(journal, parent: dict, effect: str, *, owner_name: str,
 def retain_execution_locks(journal, parent: dict, *, deadline_ns: int):
     """Retain parent/approval serialization until the actual owner horizon.
 
-    Enter inside remaining_reader, after both current locks are acquired.
+    Enter with the current parent and any attached approval locks acquired.
     The helper inherits duplicates only; the owner input remains public proof.
     """
     from .owner_process import lock_custody
     descriptors = []
     try:
         current = journal.get(parent['operation_id'])
-        approval = current['runtime_observation']['admission_remaining_effects']['reference']['operation_id']
-        for operation_id in (parent['operation_id'], approval):
+        observed = current['runtime_observation'] or {}
+        attachment = observed.get('admission_remaining_effects') or observed.get('admission_continuation')
+        operations = [parent['operation_id']]
+        if attachment is not None:
+            operations.append(attachment['reference']['operation_id'])
+        for operation_id in operations:
             descriptors.append(journal.duplicate_mutation_lock(operation_id))
         with lock_custody(tuple(descriptors), deadline_ns=deadline_ns):
             yield

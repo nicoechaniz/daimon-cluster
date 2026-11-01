@@ -15,7 +15,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-ADMISSION_MATRIX_COMMIT = '004e6edf36e573e018c632621b14f3674b445992'
+ADMISSION_MATRIX_COMMIT = '98ed8414c2000e9b93812f25a085d49e08db6d8a'
 TESTS = {'tests/test_onboarding_group_admission.py', 'tests/test_onboarding_group_authorities.py',
          'tests/test_onboarding_group_publication.py', 'tests/test_portal_admission_baseline.py'}
 OWNER_TEST = 'tests/test_guest_owner_bootstrap.py'

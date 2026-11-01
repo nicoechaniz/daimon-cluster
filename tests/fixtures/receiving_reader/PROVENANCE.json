@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/AlterMundi/daimon-matrix",
-  "revision": "e7a131d6506b8f54d20d4ee9249e128649d3e042",
+  "revision": "98ed8414c2000e9b93812f25a085d49e08db6d8a",
   "purpose": "Public synthetic wheel reader fixture; never installed as production code.",
   "files": [
     {
@@ -9,7 +9,7 @@
     },
     {
       "path": "release_compatibility.py",
-      "sha256": "5a883e7e819e3d9418f4dc2422b8348abee7c71f156537beeffec033294f2896"
+      "sha256": "af0c19ad97808574779c30bb26f1ee73763b42fb154d9114acb18f6846cdb08f"
     }
   ]
 }

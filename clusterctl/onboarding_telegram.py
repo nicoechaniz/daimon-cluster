@@ -539,7 +539,8 @@ def main(argv=None) -> int:
         elif args.action == 'native-install':
             if os.geteuid() != 0:
                 raise OnboardingError('qualified_guest_telegram_required')
-            install_native(home, codex, code, budget=budget)
+            # Match native-observe; a Matrix helper does not select a supervisor.
+            install_native(home, codex, args.code, budget=budget)
             value = dict(native_started=True, plan_digest=digest(plan))
         elif args.action == 'probe':
             if os.geteuid() != 1000:

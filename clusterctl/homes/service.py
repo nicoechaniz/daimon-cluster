@@ -918,9 +918,11 @@ def handler(app, *, owner=False):
                         raise ValueError("invalid_resource_reference")
                     query = parse_qs(urlsplit(self.path).query, strict_parsing=True)
                     if (
-                        set(query) - {"version", "display"}
+                        set(query) - {"version", "display", "project"}
                         or len(query.get("version", ["current"])) != 1
                         or len(query.get("display", ["details"])) != 1
+                        or len(query.get("project", ["0" * 32])) != 1
+                        or not re.fullmatch("[a-f0-9]{32}", query.get("project", ["0" * 32])[0])
                     ):
                         raise ValueError("invalid_version_query")
                     version = query.get("version", ["current"])[0]

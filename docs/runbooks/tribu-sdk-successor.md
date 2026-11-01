@@ -77,10 +77,12 @@ and returns credential-bound V2 reader evidence. It does not replay bootstrap,
 enrollment, native/model work or service selection. Observe every selected required
 receiver, retaining unavailable/retired bodies explicitly rather than inventing proof.
 
-Within those proof horizons, apply the resulting reader vector through existing
-owner `runtime.reader-selection` controls / `onboarding_owner_control.execute`, with
-one retained operation, exact process/loaded-selection preimages, current signed
-roster CAS and retained owner-private request files. Preserve an uncertain native
+Within those proof horizons, first revoke the selected sender vector through the
+existing owner controls, even when its current phase is `unselected`: native
+selection requires this operation reservation. Then apply the reader vector through
+`runtime.reader-selection` / `onboarding_owner_control.execute` using the accepted
+revocation head, the SAME operation/release, exact process/loaded-selection preimages,
+current signed roster CAS and separate retained revoke/select request files. Preserve an uncertain native
 control and inspect its exact result; do not mint a replacement operation. A source
 or receiver process/selection/roster change requires a fresh observation, never
 relabeled historical loaded-view hashes. Credential validity remains signed validity;

@@ -983,3 +983,20 @@ def test_bootstrap_host_preserves_shorter_absolute_owner_horizon(tmp_path, monke
     assert int(argv[argv.index('--observation-deadline-ns')+1]) == 3_000_000_000
     assert float(argv[argv.index('--bootstrap-timeout-seconds')+1]) == 2
     assert bounds['timeout_seconds'] <= 2
+
+
+
+@pytest.mark.parametrize('payload,expected', [
+    ('{"error":"native_tooling_catalog_mismatch"}', 'native_tooling_catalog_mismatch'),
+    ('{"error":"native_matrix_tool_startup_refused"}', 'native_matrix_tool_startup_refused'),
+    ('{"error":"/private/credential"}', 'onboarding_host_operation_failed'),
+    ('{"error":"native_tooling_catalog_mismatch","extra":"private"}', 'onboarding_host_operation_failed'),
+    ('{"error":"receiving_control_process_changed"}', 'onboarding_host_operation_failed'),
+])
+def test_owner_client_transport_preserves_only_its_closed_public_diagnostic(monkeypatch, payload, expected):
+    monkeypatch.setattr('clusterctl.onboarding_host.subprocess.run', lambda *args, **kwargs:
+        SimpleNamespace(returncode=1, stdout='', stderr=payload))
+    with pytest.raises(OnboardingError, match='^'+expected+'$'):
+        HostBackend._run(['exec','dm-fixture','--','/approved/python','clusterctl.onboarding_owner_client'],timeout_seconds=1)
+    with pytest.raises(OnboardingError, match='^onboarding_host_operation_failed$'):
+        HostBackend._run(['exec','dm-fixture','--','/unrelated/tool'],timeout_seconds=1)

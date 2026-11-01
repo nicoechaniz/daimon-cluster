@@ -425,8 +425,14 @@ class HostBackend:
                 raise OnboardingError(code) from None
             raise OnboardingError("onboarding_host_operation_failed") from None
         if result.returncode:
+            public_errors: frozenset[str] = frozenset()
             if argv[0] == 'exec' and 'clusterctl.onboarding_owner_control' in argv:
                 from .onboarding_owner_control import PUBLIC_ERRORS
+                public_errors = PUBLIC_ERRORS
+            elif argv[0] == 'exec' and 'clusterctl.onboarding_owner_client' in argv:
+                from .onboarding_owner_client import _PUBLIC_STARTUP_ERRORS
+                public_errors = _PUBLIC_STARTUP_ERRORS | {'native_matrix_tool_startup_refused'}
+            if public_errors:
                 for line in result.stderr.splitlines():
                     try:
                         detail = json.loads(line)
@@ -434,7 +440,7 @@ class HostBackend:
                         continue
                     if (isinstance(detail, dict) and set(detail) == {'error'}
                             and isinstance(detail.get('error'), str)
-                            and detail.get('error') in PUBLIC_ERRORS):
+                            and detail.get('error') in public_errors):
                         raise OnboardingError(detail['error'])
             raise OnboardingError("onboarding_host_operation_failed")
         return result.stdout

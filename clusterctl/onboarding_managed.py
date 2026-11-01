@@ -5,6 +5,8 @@ from contextlib import ExitStack, contextmanager, nullcontext
 import hashlib
 import json
 import math
+import re
+import uuid
 from pathlib import Path
 import time
 
@@ -280,7 +282,8 @@ class ManagedRuntime:
                 raise OnboardingError('receiving_initial_plan_changed')
             yield
 
-    def execute_initial(self, plan: dict, cohort, *, timeout_seconds: float = 30) -> dict:
+    def execute_initial(self, plan: dict, cohort, *, timeout_seconds: float = 30,
+                        start_recovery: tuple[str, tuple[Path, str]] | None = None) -> dict:
         """Retain a first native load in the existing admission operation.
 
         Invoke outside JobStore.tick: operation -> jobs parent -> job locks is
@@ -291,7 +294,7 @@ class ManagedRuntime:
             GuestBootstrapController, _manifest, guest_loaded_observation, preflight,
             preservation_authorization,
         )
-        from .onboarding_service import command, unit_content
+        from .onboarding_service import command, initial_start_projection, unit_content
         from .operation_journal import JournalConflict
         from . import onboarding_group_recovery as recovery
         if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 60:
@@ -433,8 +436,43 @@ class ManagedRuntime:
                 preservation_authorization(intent['owner']['preservation'], bounds['expires_at_ms'])
             # The root primitive observes a retained first invocation after a
             # lost reply. Repeating this exact call never repeats StartUnit.
-            started = record('started', root_call('bootstrap-start', fresh_effect=dispatch_state == 'not-dispatched',
-                request=intent['request']))
+            recovery_request = effects().get('start_recovery_request')
+            if start_recovery is not None:
+                recovery_id, implementation = start_recovery
+                if (not isinstance(recovery_id, str) or str(uuid.UUID(recovery_id)) != recovery_id
+                        or not isinstance(implementation[1], str)
+                        or re.fullmatch('[0-9a-f]{64}', implementation[1]) is None
+                        or 'started' not in effects()
+                        or 'controlled_loaded' in effects() and recovery_request is None
+                        or dispatch_state != 'started-recorded'):
+                    raise OnboardingError('receiving_guest_start_recovery_required')
+                # Retain one exact recovery request before its Root observation.
+                # Retry never substitutes a new process or a new expiry.
+                if recovery_request is None:
+                    actual = self.backend._target_call(plan, 'admitted-running', candidate=vector,
+                        observation_timeout_seconds=remaining(), require_loaded=True)
+                    physical = root_call('bootstrap-inspect', owner_observation={key: actual[key]
+                        for key in ('process', 'admission_parent')})
+                    recovery_request = record('start_recovery_request', dict(
+                        schema='cluster-guest-start-recovery/v1', operation_id=recovery_id,
+                        bootstrap=intent['request'], started_sha256=digest(effects()['started']),
+                        successor={**{key: actual[key] for key in ('process', 'admission_parent')},
+                            'service': physical['service']}, implementation_sha256=implementation[1],
+                        expires_at_ms=bounds['expires_at_ms']))
+                if (recovery_request['operation_id'] != recovery_id
+                        or recovery_request['implementation_sha256'] != implementation[1]):
+                    raise OnboardingError('receiving_guest_start_recovery_conflict')
+                if 'start_recovery_receipt' not in effects():
+                    receipt = root_call('bootstrap-recover-start', request=recovery_request,
+                        implementation=implementation)
+                    initial_start_projection(intent['request'], effects()['started'], recovery_request, receipt)
+                    record('start_recovery_receipt', receipt)
+            if recovery_request is None:
+                started = record('started', root_call('bootstrap-start', fresh_effect=dispatch_state == 'not-dispatched',
+                    request=intent['request']))
+            else:
+                started = initial_start_projection(intent['request'], effects()['started'],
+                    recovery_request, effects().get('start_recovery_receipt'))
             if (started.get('schema') != 'cluster-guest-service-initial-start/v1'
                     or started['service']['unit_sha256'] != intent['unit_sha256']
                     or effects()['selected']['selected_sha256'] != intent['unit_sha256']):
@@ -444,7 +482,8 @@ class ManagedRuntime:
             root = root_call('bootstrap-inspect', owner_observation={key: observed[key]
                 for key in ('process', 'admission_parent')})
             if (root['service'] != started['service']
-                    or observed['admission_parent'] != started['admission_parent']):
+                    or observed['admission_parent'] != started['admission_parent']
+                    or recovery_request is not None and observed['process'] != recovery_request['successor']['process']):
                 raise OnboardingError('receiving_initial_service_changed')
             result = dict(schema='cluster-guest-initial-loaded/v1', **guest_loaded_observation(
                 observed, root, intent['owner'], dict(runtime_digest=vector[1], prepared=prepared),
@@ -561,7 +600,9 @@ class ManagedRuntime:
                     operation_id=intent['request']['operation_id'], plan_digest=digest(plan),
                     initial_request_sha256=digest(intent['request']), cohort_selection_sha256=digest(selection),
                     **owner_observation, not_after_ms=min(intent['request']['not_after_ms'],
-                        observed_at_ms + activation_plan['observation_window_ms'])))
+                        observed_at_ms + activation_plan['observation_window_ms']),
+                    **({'start_recovery_operation_id': initial['start_recovery_request']['operation_id']}
+                        if 'start_recovery_request' in initial else {})))
             elif request['cohort_selection_sha256'] != digest(selection):
                 raise OnboardingError('receiving_cohort_selection_changed')
         elif request is None:

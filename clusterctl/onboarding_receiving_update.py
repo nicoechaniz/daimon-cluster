@@ -4326,7 +4326,7 @@ class CohortController:
 
     def _initial_lifecycle(self, row: dict, name: str, recipe: dict) -> dict:
         """Consume the actual first-load producer, never replacement markers."""
-        from .onboarding_service import initial_context, unit_content
+        from .onboarding_service import initial_context, initial_start_projection, unit_content
         from . import onboarding_group_recovery as recovery
         try:
             admission = self._admission(row)
@@ -4334,11 +4334,18 @@ class CohortController:
                     or recipe['profile'] != 'guest' or recipe['lifecycle_operation_id'] != self.operation_id):
                 raise ValueError
             effect = row['runtime_observation']['initial_managed'][name]
-            if set(effect) != {'intent', 'validated', 'selected', 'started', 'controlled_loaded'}:
+            required = {'intent', 'validated', 'selected', 'started', 'controlled_loaded'}
+            recovery_fields = {'start_recovery_request', 'start_recovery_receipt'}
+            if set(effect) not in (required, required | recovery_fields):
                 raise ValueError
             intent, prepared, selected, started, loaded = (effect[key] for key in (
                 'intent', 'validated', 'selected', 'started', 'controlled_loaded'))
             binding, owner, request = intent['binding'], intent['owner'], intent['request']
+            if 'start_recovery_request' in effect:
+                started = initial_start_projection(request, started,
+                    effect['start_recovery_request'], effect['start_recovery_receipt'])
+                if loaded['process'] != effect['start_recovery_receipt']['scope']['process']:
+                    raise ValueError
             grant = recovery.attached(self.journal, row)
             receiver = admission['receivers'][name]
             group = owner['group']
@@ -4366,7 +4373,9 @@ class CohortController:
                     or request['schema'] != 'cluster-guest-service-initial/v1' or request['predecessor'] is not None
                     or request['operation_id'] != guest_bootstrap_operation_id(self.operation_id)
                     or request['plan_digest'] != binding['plan_digest']
-                    or request['not_after_ms'] != recovery.bounds(self.journal, row)['expires_at_ms']
+                    or request['not_after_ms'] not in {
+                        recovery.bounds(self.journal, row)['expires_at_ms'],
+                        grant['expires_at_ms'] if grant is not None else admission['activation']['expires_at_ms']}
                     or request['argv'].count('--initial-context-json') != 1
                     or context != dict(schema='cluster-initial-start-context/v1', owner_sha256=digest(owner),
                         profile_sha256=binding['profile_sha256'], not_after_ms=request['not_after_ms'])

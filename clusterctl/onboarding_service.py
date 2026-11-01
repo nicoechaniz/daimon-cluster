@@ -20,6 +20,48 @@ from collections.abc import Callable
 from . import being_seed, onboarding_code_successor, onboarding_release
 from .onboarding import OnboardingError, digest, private_directory, refusal_diagnostic, validate_plan
 
+
+def initial_start_projection(bootstrap: dict, started: dict, recovery: dict, receipt: dict) -> dict:
+    """Bind a proved successor without rewriting the original first start."""
+    try:
+        successor = recovery['successor']
+        scope = receipt['scope']
+        old = started['admission_parent']
+        parent = successor['admission_parent']
+        original_manager = started['service']['manager']
+        manager = receipt['manager']
+        stable = set(original_manager) - {'MainPID', 'InvocationID', 'Result'}
+        if (bootstrap['schema'] != 'cluster-guest-service-initial/v1'
+                or bootstrap['predecessor'] is not None
+                or set(manager) != set(original_manager)
+                or any(manager[key] != original_manager[key] for key in stable)
+                or manager['ActiveState'] != 'active' or manager['SubState'] != 'running'
+                or not manager['InvocationID'] or manager['InvocationID'] == original_manager['InvocationID']
+                or started['schema'] != 'cluster-guest-service-initial-start/v1'
+                or recovery['schema'] != 'cluster-guest-start-recovery/v1'
+                or recovery['bootstrap'] != bootstrap
+                or recovery['started_sha256'] != digest(started)
+                or receipt['schema'] != 'cluster-guest-start-successor/v1'
+                or receipt['recovery_operation_id'] != recovery['operation_id']
+                or receipt['recovery_sha256'] != digest(recovery)
+                or receipt['bootstrap_sha256'] != digest(bootstrap)
+                or receipt['started_sha256'] != digest(started)
+                or receipt['implementation_sha256'] != recovery['implementation_sha256']
+                or receipt['predecessor_parent'] != old or receipt['predecessor_exited'] is not True
+                or parent == old or parent['uid'] != old['uid'] or parent['boot_id'] != old['boot_id']
+                or scope['process'] != successor['process'] or scope['admission_parent'] != parent
+                or receipt['manager'] != successor['service']['manager']
+                or scope['invocation_id'] != receipt['manager']['InvocationID']
+                or scope['control_group'] != receipt['manager']['ControlGroup']
+                or receipt['unit_sha256'] != started['service']['unit_sha256']
+                or successor['service'] != {**started['service'], 'manager': receipt['manager']}
+                or receipt['manager']['MainPID'] != str(parent['pid'])):
+            raise ValueError
+        return {**started, 'service': successor['service'], 'admission_parent': parent}
+    except (KeyError, TypeError, ValueError):
+        raise OnboardingError('receiving_guest_start_recovery_conflict') from None
+
+
 UNIT = 'daimon-onboarding-matrix.service'
 _selection_owners = threading.local()
 
@@ -684,7 +726,7 @@ class GuestServiceBootstrap:
         from .owner_process import validate_process
         fields = {'schema', 'operation_id', 'plan_digest', 'initial_request_sha256',
                   'cohort_selection_sha256', 'process', 'admission_parent', 'not_after_ms'}
-        if (set(request) != fields or request['schema'] != 'cluster-guest-service-steady/v1'
+        if (set(request) - {'start_recovery_operation_id'} != fields or request['schema'] != 'cluster-guest-service-steady/v1'
                 or str(uuid.UUID(request['operation_id'])) != request['operation_id']
                 or type(request['not_after_ms']) is not int or not 0 < request['not_after_ms'] < 2**53
                 or any(not isinstance(request[key], str) or re.fullmatch('[0-9a-f]{64}', request[key]) is None
@@ -699,6 +741,20 @@ class GuestServiceBootstrap:
         root = private_directory(selection / 'operations' / request['operation_id'])
         original = self._retained(root, 'request')
         started = self._retained(root, 'initial-started')
+        recovery_id = request.get('start_recovery_operation_id')
+        if recovery_id is not None:
+            if not isinstance(recovery_id, str) or str(uuid.UUID(recovery_id)) != recovery_id:
+                raise OnboardingError('receiving_guest_start_recovery_required')
+            directory = private_directory(root / 'start-recoveries' / recovery_id)
+            recovery_request = self._retained(directory, 'request')
+            recovery_receipt = self._retained(directory, 'observed')
+            if any(value is None for value in (original, started, recovery_request, recovery_receipt)):
+                raise OnboardingError('receiving_guest_start_recovery_required')
+            assert original is not None and started is not None
+            assert recovery_request is not None and recovery_receipt is not None
+            started = initial_start_projection(original, started, recovery_request, recovery_receipt)
+            if process != recovery_receipt['scope']['process']:
+                raise OnboardingError('receiving_guest_start_recovery_conflict')
         if (original is None or started is None or digest(original) != request['initial_request_sha256']
                 or original.get('schema') != 'cluster-guest-service-initial/v1'
                 or original['plan_digest'] != request['plan_digest']
@@ -749,7 +805,7 @@ class GuestServiceBootstrap:
             def before_replace() -> None:
                 self._budget(deadline_ns)
                 observed()
-                if (min(request['not_after_ms'], effect_not_after_ms or request['not_after_ms'])
+                if ((effect_not_after_ms if effect_not_after_ms is not None else request['not_after_ms'])
                         <= time.time_ns() // 1_000_000):
                     raise OnboardingError('receiving_preservation_authorization_expired')
             # Durable private preparation can consume the remaining horizon or

@@ -1165,3 +1165,64 @@ def test_managed_start_recovery_rejects_reused_pid_and_observation_race(managed_
     monkeypatch.setattr(manager, 'inspect', changing)
     with pytest.raises(OnboardingError, match='successor_changed'):
         controller.recover_start(request, deadline_ns=deadline())
+
+
+def test_initial_successor_steady_handoff_uses_explicit_root_proof(initial, monkeypatch):
+    from clusterctl.onboarding import digest
+    controller, manager, request = steady_fixture(initial)
+    root = root_for(manager, request)
+    bootstrap = controller._retained(root, 'request')
+    first = controller._retained(root, 'initial-started')
+    original_bytes = (root / 'initial-started.json').read_bytes()
+    parent = {**first['admission_parent'], 'pid': 322, 'start_ticks': 19}
+    child = {**parent, 'pid': 333, 'start_ticks': 20}
+    manager.exited[first['admission_parent']['pid']] = True
+    manager.invocation = 'managed-successor'
+    inspect = manager.inspect
+    def current(**options):
+        value = inspect(**options)
+        value['manager']['MainPID'] = str(parent['pid'])
+        return value
+    manager.inspect = current
+    monkeypatch.setattr(controller, '_parent', lambda _: dict(parent))
+    class Family:
+        def __init__(self, process):
+            assert process == child
+            self.process = dict(parent)
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            pass
+        def verify(self):
+            pass
+    monkeypatch.setattr(owner_process, 'ParentProcessPresence', Family)
+    recovery = dict(schema='cluster-guest-start-recovery/v1', operation_id=str(uuid.uuid4()),
+        bootstrap=bootstrap, started_sha256=digest(first),
+        successor=dict(process=child, admission_parent=parent, service=manager.inspect()),
+        implementation_sha256='b' * 64, expires_at_ms=request['not_after_ms'])
+    controller.recover_start(recovery, deadline_ns=deadline())
+    actual = {**request, 'process': child, 'admission_parent': parent}
+    with pytest.raises(OnboardingError, match='initial_preparation_required'):
+        controller.execute('steady', actual, deadline_ns=deadline())
+    actual['start_recovery_operation_id'] = recovery['operation_id']
+    with pytest.raises(OnboardingError, match='start_recovery_conflict'):
+        controller.execute('steady', {**actual, 'process': {**child, 'pid': 334}}, deadline_ns=deadline())
+    result = controller.execute('steady', actual, deadline_ns=deadline())
+    assert result['service']['manager']['InvocationID'] == 'managed-successor'
+    assert controller.execute('steady', actual, deadline_ns=deadline()) == result
+    assert '--initial-context-json' not in manager.unit.read_text()
+    assert (root / 'initial-started.json').read_bytes() == original_bytes
+    assert manager.starts == manager.reloads == 1 and manager.stops == 0
+
+
+
+def test_explicit_remaining_steady_authority_preserves_expired_original(initial, monkeypatch):
+    controller, manager, request = steady_fixture(initial)
+    now = request['not_after_ms'] + 1
+    monkeypatch.setattr(time, 'time_ns', lambda: now * 1_000_000)
+    with pytest.raises(OnboardingError, match='authorization_expired'):
+        controller.execute('steady', request, deadline_ns=deadline())
+    result = controller.execute('steady', request, deadline_ns=deadline(), effect_not_after_ms=now + 10000)
+    assert result['request_sha256'] == onboarding_service.digest(request)
+    assert manager.starts == manager.reloads == 1 and manager.stops == 0
+    assert controller.execute('steady', request, deadline_ns=deadline()) == result

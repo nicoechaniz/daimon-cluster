@@ -257,8 +257,11 @@ def initial_managed_fixture(tmp_path, initial, *, complete_origins=False):
         expiry = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
         if action == 'bootstrap-inspect':
             return root_controller.inspect(owner_observation, deadline_ns=expiry)
-        result = root_controller.execute(action.removeprefix('bootstrap-'), request, deadline_ns=expiry,
-            **({'effect_not_after_ms': effect_not_after_ms} if effect_not_after_ms is not None else {}))
+        if action == 'bootstrap-recover-start':
+            result = root_controller.recover_start(request, deadline_ns=expiry)
+        else:
+            result = root_controller.execute(action.removeprefix('bootstrap-'), request, deadline_ns=expiry,
+                **({'effect_not_after_ms': effect_not_after_ms} if effect_not_after_ms is not None else {}))
         if action == 'bootstrap-select' and hasattr(backend, 'after_select'):
             backend.after_select()
         step = action.removeprefix('bootstrap-')
@@ -841,3 +844,89 @@ def test_completed_group_admission_observes_approved_native_pins_without_legacy_
         # generic install path, even if its approved code is not the host default.
         managed.execute(value)
     assert calls == ['admitted-running']*(1 if fault else 2)
+
+
+@pytest.mark.parametrize('lost', [None, 'recover-start', 'load', 'registry'])
+def test_initial_managed_adopts_explicit_successor_without_replaying_start(tmp_path, initial, monkeypatch, lost):
+    import uuid
+    from clusterctl import owner_process
+    managed, plan, cohort, manager, observed, calls, adopted, fault = initial_managed_fixture(
+        tmp_path, initial, complete_origins=True)
+    fault.append('load')
+    with pytest.raises(OSError, match='lost loaded'):
+        managed.execute_initial(plan, cohort)
+    original = copy.deepcopy(cohort._row()['runtime_observation']['initial_managed']['newcomer'])
+    old = original['started']['admission_parent']
+    parent = {**old, 'pid': 322, 'start_ticks': 19}
+    child = {**parent, 'pid': 333, 'start_ticks': 20}
+    manager.exited[old['pid']] = True
+    manager.invocation = 'managed-successor'
+    inspect = manager.inspect
+    def inspect_successor(**options):
+        value = inspect(**options)
+        value['manager']['MainPID'] = str(parent['pid'])
+        return value
+    manager.inspect = inspect_successor
+    class Family:
+        def __init__(self, process):
+            assert process == child
+            self.process = parent
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            pass
+        def verify(self):
+            pass
+    monkeypatch.setattr(owner_process, 'ParentProcessPresence', Family)
+    observed.update(process=child, admission_parent=parent)
+    loaded = observed['runtime_status']['loaded_runtime']
+    loaded['process_id'] = child['pid']
+    loaded['qualified_startup'].update(process_id=child['pid'], startup_instance_id='fixture-successor')
+    observed['group_runtime_status']['receiving']['channels']['tribe']['process_id'] = child['pid']
+    recovery_id = str(uuid.uuid4())
+    approved = cohort._admission(cohort._row())['receivers']['newcomer']
+    implementation = (Path(approved['candidate']['code']), approved['recipe']['prepared']['code_digest'])
+    if lost is not None:
+        fault.append(lost)
+        with pytest.raises(OSError, match='synthetic lost'):
+            managed.execute_initial(plan, cohort, start_recovery=(recovery_id, implementation))
+    result = managed.execute_initial(plan, cohort, start_recovery=(recovery_id, implementation))
+    assert managed.execute_initial(plan, cohort, start_recovery=(recovery_id, implementation)) == result
+    effect = cohort._row()['runtime_observation']['initial_managed']['newcomer']
+    assert effect['started'] == original['started'] and effect['intent'] == original['intent']
+    assert result['process'] == child and result['admission_parent'] == parent
+    assert effect['start_recovery_receipt']['predecessor_exited'] is True
+    assert manager.starts == manager.enables == 1 and manager.stops == 0
+    recipe = {**approved['recipe'], 'lifecycle_operation_id': cohort.operation_id}
+    assert cohort._initial_lifecycle(cohort._row(), 'newcomer', recipe) == effect
+    for mutation in ('scope', 'manager', 'exit', 'start-digest', 'loaded-process'):
+        corrupted = copy.deepcopy(cohort._row())
+        receipt = corrupted['runtime_observation']['initial_managed']['newcomer']['start_recovery_receipt']
+        if mutation == 'scope':
+            receipt['scope']['process']['pid'] += 1
+        elif mutation == 'manager':
+            receipt['manager']['InvocationID'] = 'forged-invocation'
+        elif mutation == 'exit':
+            receipt['predecessor_exited'] = False
+        elif mutation == 'start-digest':
+            receipt['started_sha256'] = '0' * 64
+        else:
+            corrupted['runtime_observation']['initial_managed']['newcomer']['controlled_loaded']['process']['pid'] += 1
+        with pytest.raises(OnboardingError, match='initial_managed_lifecycle_unobserved'):
+            cohort._initial_lifecycle(corrupted, 'newcomer', recipe)
+    # A later explicitly bounded continuation changes future effect permission,
+    # never the immutable original first-start context.
+    from clusterctl import onboarding_group_recovery as recovery
+    original_bounds = recovery.bounds
+    with monkeypatch.context() as patch:
+        patch.setattr(recovery, 'bounds', lambda journal, row: {
+            **original_bounds(journal, row), 'expires_at_ms': effect['intent']['request']['not_after_ms'] + 10000})
+        assert cohort._initial_lifecycle(cohort._row(), 'newcomer', recipe) == effect
+    assert managed.execute_initial(plan, cohort) == result
+    assert manager.starts == 1 and adopted
+    assert calls.count('receiving-bootstrap-freeze') == 2
+    # A later manager invocation cannot inherit the accepted successor proof.
+    manager.invocation = 'unobserved-second-successor'
+    with pytest.raises(OnboardingError, match='initial_service_changed'):
+        managed.execute_initial(plan, cohort)
+    assert manager.starts == 1

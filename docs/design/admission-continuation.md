@@ -552,5 +552,19 @@ unit/drop-ins, a distinct invocation and authenticated child/parent association,
 and records the exact successor proof without a StartUnit/StopUnit operation.
 Exact retry reobserves the successor; changed invocation, reused PID, expiry or
 an observation race is rejected. An observation does not silently replace the
-original initial-start record. Managed/cohort adoption and the steady handoff
-must explicitly consume the proved successor; that integration is still pending.
+original initial-start record. `ManagedRuntime.execute_initial(...,
+start_recovery=(recovery_id, implementation))` explicitly retains the recovery
+request and Root receipt separately, then checks the actual loaded receiver.
+Ordinary subsequent reconciliation consumes that exact proof without repeating
+StartUnit or inventing another request after a lost return. Recovery of an already
+completed first load remains outside this before-first-load path.
+
+Cohort validation projects that proved successor while preserving the original
+first-start context. The steady handoff carries its explicit recovery UUID and
+Root resolves the matching protected receipt; an unqualified process cannot
+inherit it. A later remaining-effects approval changes only future effect
+permission, never the historical request/context. Its explicit Root effect
+horizon may authorize the remaining guarded-unit handoff after the original
+bound expires; absent that explicit authority, expired requests stay read-only.
+Source tests do not establish actual receiving adoption. Resume the retained
+operation through its currently authorized frontier, not an expired approval.

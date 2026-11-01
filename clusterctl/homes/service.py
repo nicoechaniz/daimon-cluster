@@ -285,9 +285,14 @@ class Application:
         ]
 
     def selected(self, home, reference, version, subject, vpn=False):
-        for current in self.entries(home, subject, vpn):
+        # Select the requested resource before evaluating policy. Evaluating
+        # every unrelated publication repeats current-authority verification and
+        # can exhaust a bounded model-admission call without changing its scope.
+        for current in self.publication(home)["entries"]:
             if current["artifact_ref"] != reference:
                 continue
+            if not self.policy.allows(current, home=home, subject=subject, dedicated_vpn=vpn):
+                return None
             if version == "current":
                 return current
             selected = self.registry.version(

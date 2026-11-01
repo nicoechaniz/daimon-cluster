@@ -596,3 +596,22 @@ baseline file as a new production enrollment or weaken reconciliation checks.
 Guest transport preserves only the owner tool's closed public error codes;
 unclassified errors still require source-grounded local observation, never raw
 exception text or a new identity to clear the failed attempt.
+
+
+The isolated echo emulator, Root admission service, native endpoints and member
+services must share the fixture's whole-operation deadline. Set each component's
+remaining lifetime from that deadline when launching it; a one-hour emulator
+inside a two-hour fixture otherwise produces an artificial delivery outage. The
+loopback-only emulator accepts at most two hours, retains its existing request
+and payload bounds, and must still be covered by the owning fixture cleanup.
+Read its actual readiness before a first acceptance probe. A later outage never
+justifies replaying an expired ambiguous probe or calling it delivered.
+
+The current isolated journey reached actual three-owner loaded/native-tooling,
+all-required reader activation and an initial-to-steady handoff. Its first group
+probe is retained as ambiguous: the synthetic echo service had already exhausted
+its independent one-hour timer. Native transport to recipients was correctly
+withheld. This is incomplete communication acceptance, not public Telegram
+qualification or a new production messaging regression. Preserve the original
+probe; a separately attributed follow-up qualification must retain the earlier
+outcome and its original identifiers rather than overwrite them.

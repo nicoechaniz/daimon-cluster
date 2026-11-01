@@ -258,7 +258,7 @@ def main():
     parser.add_argument('--port', type=int, required=True)
     parser.add_argument('--seconds', type=int, required=True)
     args = parser.parse_args()
-    if not 1024 <= args.port <= 65535 or not 1 <= args.seconds <= 3600:
+    if not 1024 <= args.port <= 65535 or not 1 <= args.seconds <= 7200:
         parser.error('a fixed unprivileged port and finite lifetime are required')
     with server(State(args.state), args.port) as listener:
         listener.timeout = 0.2

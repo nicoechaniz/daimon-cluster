@@ -20,6 +20,24 @@ fencing and actual PID/SDK readiness checks still govern startup. The original
 start/audit remains intact; no re-enrollment, key, model or native-session change
 is implied. Published code and prepared SDKs are not receiving acceptance.
 
+Keep the H8 operator closure separate from the minimal onboarding/body code
+bundle. The existing systemd wrapper imports H8 from its qualified operator
+selection; the child profile selects its own code/SDK. Copying H8 modules into
+a minimal body bundle does not supply the operator's transitive dependencies.
+Prepare the exact reviewed operator source through the existing operator route,
+verify its import with the unit's interpreter, and preserve both current
+selections before scoped activation. Native profile metadata uses the H8
+canonical JSON serializer, not ordinary pretty-printed JSON.
+SDK installation alone does not prepare the closed import tree. Use the owning
+`onboarding_sdk.runtime_imports` helper with the same qualified revision/wheel
+parameters before selecting a native profile or executing its runtime command.
+Reuse the retained import receipt and immutable tree when already prepared.
+After a successor startup is retained, a compatible previous SDK is another
+linked startup under the corrected supervisor. Keep that supervisor selected;
+restoring the old one-intent supervisor cannot interpret the new startup chain.
+Preserve unresolved startup records and recover their exact selection rather
+than changing profiles beneath an uncertain start.
+
 ## Local authority changes and the group selector
 
 After an authorized same-being enrollment or retirement, republish the current

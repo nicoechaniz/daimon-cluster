@@ -434,6 +434,56 @@ def test_explicit_sdk_successor_installs_new_generation_without_touching_previou
     assert not list(home.rglob('custody.json'))
 
 
+def test_qualified_sdk_successor_uses_the_actual_already_qualified_base(tmp_path):
+    from clusterctl import onboarding_sdk
+    from clusterctl.onboarding import digest
+    from tools.build_onboarding_sdk import seal
+
+    base, original, source, _, sdk, _ = sdk_generations(tmp_path)
+    seal(sdk, matrix_commit='1' * 40)
+    wheel_hash = onboarding_sdk.wheel(next((sdk / 'wheels').iterdir()), uid=os.geteuid())['sha256']
+    first = tmp_path / 'qualified-first'
+    a = build(base, original, source, ('onboarding_target.py',), first,
+              sdk=sdk, matrix_commit='1' * 40, matrix_wheel_sha256=wheel_hash)
+    first_bytes = {p.relative_to(first).as_posix(): p.read_bytes()
+                   for p in first.rglob('*') if p.is_file()}
+    seal(sdk, matrix_commit='2' * 40)
+    second = tmp_path / 'qualified-second'
+    b = build(first, a['runtime_digest'], source, ('onboarding_target.py',), second,
+              sdk=sdk, matrix_commit='2' * 40, matrix_wheel_sha256=wheel_hash)
+    assert selected(second, b['runtime_digest'], first, a['runtime_digest'], uid=os.geteuid()) == second
+    marker = json.loads((second / 'runtime-successor.json').read_bytes())
+    assert marker['previous_sdk_digest'] == digest(json.loads((first / 'sdk/sdk.json').read_bytes()))
+    assert first_bytes == {p.relative_to(first).as_posix(): p.read_bytes()
+                           for p in first.rglob('*') if p.is_file()}
+
+
+@pytest.mark.parametrize('invalid_base', ['wrong-wheel', 'missing-qualification'])
+def test_chained_sdk_update_keeps_the_base_wheel_qualification_guard(tmp_path, invalid_base):
+    from clusterctl import onboarding_sdk
+    from tools.build_onboarding_sdk import seal
+
+    base, original, source, profile, sdk, _ = sdk_generations(tmp_path)
+    seal(sdk, matrix_commit='1' * 40)
+    wheel_hash = onboarding_sdk.wheel(next((sdk / 'wheels').iterdir()), uid=os.geteuid())['sha256']
+    first = tmp_path / 'qualified-first'
+    build(base, original, source, ('onboarding_target.py',), first,
+          sdk=sdk, matrix_commit='1' * 40, matrix_wheel_sha256=wheel_hash)
+    marker = first / 'runtime-successor.json'
+    if invalid_base == 'wrong-wheel':
+        value = json.loads(marker.read_bytes())
+        value['matrix_wheel_sha256'] = '0' * 64
+        marker.write_text(json.dumps(value))
+    else:
+        marker.unlink()
+    (first / 'release.json').unlink()
+    retained = onboarding_release.seal(first, profile)
+    with pytest.raises(OnboardingError, match='invalid_onboarding_sdk|onboarding_sdk_digest_mismatch'):
+        build(first, retained, source, ('onboarding_target.py',), tmp_path / 'refused',
+              sdk=sdk, matrix_commit='1' * 40, matrix_wheel_sha256=wheel_hash)
+    assert not (tmp_path / 'refused').exists()
+
+
 @pytest.mark.parametrize('asset', ['inheritance.md', 'hmk/scripts/memoryctl.py',
     'telegram/telecodex', 'sdk/sdk.json', 'runtime-successor.json'])
 def test_sdk_successor_rejects_resealed_context_or_marker_changes(tmp_path, asset):

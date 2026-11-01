@@ -43,6 +43,23 @@ def sdk_parameters(code: Path, *, uid: int = 0) -> dict:
                 matrix_wheel_sha256=marker['matrix_wheel_sha256'])
 
 
+def _base_sdk(code: Path, *, uid: int) -> dict:
+    """Read the SDK of an already verified base, not an obsolete default pin.
+
+    Qualified bases retain their exact wheel guard. A plain baseline still has
+    to match the SDK verifier's fixed allowed pins; its label cannot authorize
+    an arbitrary revision without the existing qualified marker.
+    """
+    from . import onboarding_sdk
+    parameters = sdk_parameters(code, uid=uid)
+    if not parameters:
+        value = json.loads(onboarding_release.regular(code / 'sdk/sdk.json', uid=uid))
+        if not isinstance(value, dict) or not isinstance(value.get('matrix_commit'), str):
+            raise OnboardingError('invalid_onboarding_sdk')
+        parameters = dict(matrix_commit=value['matrix_commit'])
+    return onboarding_sdk.verify(code, uid=uid, **parameters)
+
+
 def plan_update(journal, *, manifest_digest: str, target: str,
                 expected_precondition: dict, intended_transition: dict,
                 audit_identity: dict) -> dict:
@@ -100,8 +117,7 @@ def verify(code: Path, fingerprint: str, base: Path, base_fingerprint: str, *, u
     sdk_change = qualified_sdk or marker.get('schema') == SDK_SCHEMA or telegram_change and 'sdk_digest' in marker
     if sdk_change:
         from . import onboarding_sdk
-        previous = onboarding_sdk.verify(base, uid=uid,
-            matrix_commit=onboarding_sdk.PREVIOUS_MATRIX_COMMIT)
+        previous = _base_sdk(base, uid=uid)
         parameters = sdk_parameters(code, uid=uid)
         if not qualified_sdk:
             # An approved V2/V3 generation pins its complete SDK manifest.
@@ -141,7 +157,11 @@ def verify(code: Path, fingerprint: str, base: Path, base_fingerprint: str, *, u
     if (code.absolute() == base.absolute() or fingerprint == base_fingerprint
             or marker != expected or original['profile'] != successor['profile']):
         raise OnboardingError('compatible_onboarding_runtime_successor_required')
-    before = {row['path']: row['sha256'] for row in original['files']}
+    # A successor's marker is its new, fully checked link to this exact base.
+    # The previous marker remains immutable inside the retained base release;
+    # it is not frozen user context to copy over the next generation's marker.
+    before = {row['path']: row['sha256'] for row in original['files']
+              if row['path'] != MARKER}
     after = {row['path']: row['sha256'] for row in successor['files']}
     def module(name: str) -> bool:
         return re.fullmatch(r'clusterctl/(?:__init__|[a-z][a-z0-9_]*)\.py', name) is not None
@@ -193,8 +213,7 @@ def build(base: Path, base_fingerprint: str, source: Path, modules: tuple[str, .
         from . import onboarding_sdk
         if sdk.name != 'sdk':
             raise OnboardingError('onboarding_sdk_directory_required')
-        previous = onboarding_sdk.verify(base, uid=os.geteuid(),
-            matrix_commit=onboarding_sdk.PREVIOUS_MATRIX_COMMIT)
+        previous = _base_sdk(base, uid=os.geteuid())
         if qualified_sdk:
             assert matrix_commit is not None and matrix_wheel_sha256 is not None
             parameters = dict(matrix_commit=matrix_commit, matrix_wheel_sha256=matrix_wheel_sha256)

@@ -885,3 +885,26 @@ def test_audit_retry_reuses_closed_stale_lock_context(tmp_path, monkeypatch, cap
     assert len(events) == 1
     assert events[0]["detail"]["stale_lock_broken"] is True
     assert events[0]["detail"]["previous_holder"]["operation"] == "old-start"
+
+
+@pytest.mark.parametrize("clock_step", [0, -100])
+def test_durable_heads_follow_insertions_with_equal_or_regressing_clocks(tmp_path, monkeypatch, clock_step):
+    import itertools
+    from clusterctl import operation_journal
+
+    clock = itertools.count(1000, clock_step)
+    monkeypatch.setattr(operation_journal, "now_ms", lambda: next(clock))
+    journal = operation_journal.OperationJournal(tmp_path)
+    arguments = dict(operation="fixture", target="target", idempotency_key="key",
+                     intent={"runtime_call": {"operation": "fixture"}},
+                     expected_precondition={}, intended_transition={}, audit_identity={})
+    first = journal.plan(**arguments, operation_id="operation:z")
+    journal.advance(first["operation_id"], "completed", result={"resource": "same"})
+    second = journal.plan(**arguments, operation_id="operation:a", allow_terminal_successor=True)
+    journal = operation_journal.OperationJournal(tmp_path)
+    assert journal.latest_for_target("target") == second
+    assert journal.latest_for_idempotency_key("key") == second
+    assert journal.plan(**arguments)["operation_id"] == second["operation_id"]
+    completed = journal.advance(second["operation_id"], "completed", result={"resource": "same"})
+    assert journal.latest_completed_for_result("fixture", "resource", "same") == completed
+    assert journal.get(first["operation_id"])["created_ms"] == first["created_ms"]

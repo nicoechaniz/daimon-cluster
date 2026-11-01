@@ -333,6 +333,55 @@ def test_continuation_first_initial_request_uses_new_bound_and_retains_original_
     assert manager.starts==1
 
 
+def test_remaining_first_start_keeps_social_provenance_and_holds_both_fences(tmp_path,initial,monkeypatch):
+    """Grant resolution is a seam; initial root primitive and kernel fences run."""
+    import uuid
+    from clusterctl import onboarding_group_recovery as recovery
+    from clusterctl.operation_journal import JournalConflict, OperationJournal
+    managed,plan,cohort,manager,_,_,_,_=initial_managed_fixture(tmp_path,initial)
+    original=cohort._row()
+    approved=original['intended_transition']['cohort_admission']['receivers']['newcomer']
+    social=dict(schema=recovery.SCHEMA,expires_at_ms=time.time_ns()//1_000_000-1)
+    remaining=dict(schema=recovery.REMAINING_SCHEMA,
+        expires_at_ms=time.time_ns()//1_000_000+10_000,
+        maintenance={'newcomer':dict(code=approved['candidate']['code'],
+            code_digest=approved['recipe']['prepared']['code_digest'])})
+    approval=str(uuid.uuid4())
+    observed=copy.deepcopy(original['runtime_observation'] or {})
+    observed['admission_remaining_effects']=dict(reference=dict(operation_id=approval))
+    cohort.journal.advance(cohort.operation_id,original['state'],runtime_observation=observed)
+    def historical(journal,parent,**options):
+        assert options.get('effect') is None, 'expired social grant used for fresh start'
+        return social
+    def execution(journal,parent,**options):
+        assert options.get('effect') in {None,'initial-start'}
+        return remaining
+    monkeypatch.setattr(recovery,'attached',historical)
+    monkeypatch.setattr(recovery,'execution',execution)
+    root_call=managed.backend._guest_service_call
+    fenced=[]
+    def call(plan,action,**options):
+        if action in {'bootstrap-select','bootstrap-start'} and action not in fenced:
+            competitor=OperationJournal.existing(cohort.journal.path.parent)
+            for key in (cohort.operation_id,approval):
+                with pytest.raises(JournalConflict):
+                    with competitor.mutation_lock(key):
+                        pass
+            assert options['owner_deadline_ns'] <= time.monotonic_ns()+10_000_000_000
+            fenced.append(action)
+        return root_call(plan,action,**options)
+    managed.backend._guest_service_call=call
+    result=managed.execute_initial(plan,cohort)
+    current=cohort._row()
+    intent=current['runtime_observation']['initial_managed']['newcomer']['intent']
+    assert intent['binding']['continuation_sha256']==digest(social)
+    assert intent['request']['not_after_ms']==remaining['expires_at_ms']
+    assert fenced==['bootstrap-select','bootstrap-start']
+    assert all(current[key]==original[key] for key in ('intent','intent_hash','expected_precondition','intended_transition'))
+    assert managed.execute_initial(plan,cohort)==result
+    assert manager.starts==1
+
+
 @pytest.mark.parametrize('drift', ['group', 'gate', 'process', 'profile', 'origin'])
 def test_initial_managed_load_refuses_changed_context_without_readiness(tmp_path, initial, drift):
     managed, plan, cohort, manager, observed, calls, adopted, fault = initial_managed_fixture(tmp_path, initial)

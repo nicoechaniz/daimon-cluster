@@ -429,6 +429,29 @@ def test_execution_resolver_selects_remaining_bound_without_changing_social_hist
         recovery.execution(journal, current, effect='activation')
 
 
+def test_initial_effect_scope_uses_real_remaining_approval_and_both_kernel_fences(tmp_path,monkeypatch):
+    journal,parent,request,clock=remaining_fixture(tmp_path,monkeypatch)
+    selected=recovery.remaining_reference(recovery.remaining_plan(journal,request,audit_identity={}))
+    grant=recovery.remaining_attach(journal,parent['operation_id'],selected)
+    current=journal.get(parent['operation_id'])
+    competitor=OperationJournal.existing(journal.path.parent)
+    with recovery.effect_scope(journal,current,'initial-start',
+            deadline_ns=time.monotonic_ns()+1_000_000_000) as actual:
+        assert actual==grant
+        for key in (parent['operation_id'],selected['operation_id']):
+            with pytest.raises(JournalConflict):
+                with competitor.mutation_lock(key):
+                    pass
+    clock[0]=request['expires_at_ms']
+    with pytest.raises(OnboardingError,match='effect_not_authorized'):
+        with recovery.effect_scope(journal,current,'initial-start',
+                deadline_ns=time.monotonic_ns()+1_000_000_000):
+            pytest.fail('expired remaining approval dispatched a first start')
+    for key in (parent['operation_id'],selected['operation_id']):
+        with competitor.mutation_lock(key):
+            pass
+
+
 def test_remaining_projection_keeps_parent_and_approval_kernel_locks_through_dispatch(tmp_path, monkeypatch):
     import fcntl
     import hashlib

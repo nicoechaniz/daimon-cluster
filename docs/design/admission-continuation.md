@@ -197,7 +197,27 @@ verify competing mutations of both parent and approval remain refused, then
 observe release at the horizon. Lost transport, ordinary completion, descriptor
 cleanup and scheduling gaps on both hosts are covered separately. These are
 source qualifications, not installation or complete portal acceptance.
-Remaining lifecycle/activation consumers and the complete native admission
+The initial-start consumer now resolves fresh execution separately from its
+historical social provenance. Newly authored first-unit requests use the active
+remaining bound and qualified helper; actual select/start calls retain both
+kernel fences and propagate the fixed owner deadline. Retained started requests
+remain observation-only: the same request and StartUnit result are reconciled,
+without renewing permission or starting twice. Tests cover the actual root
+primitive, the original provenance digest and both kernel mutation fences;
+authority resolution in that producer fixture remains an explicit seam. A
+separate real remaining-approval test covers scope admission and expired refusal.
+
+Positive activation has an additional native boundary:
+[Matrix #420](https://github.com/AlterMundi/daimon-matrix/issues/420). The current
+handler assigns its own short processing deadline and does not carry the
+original activation-effect horizon into a separately running daemon. Bounding
+or killing the owner CLI cannot retract an authenticated command already sent.
+Do not enable remaining-effects activation on the strength of CLI lifetime or
+kernel custody alone. The attempted host-only activation change was withheld;
+receiver-side enforcement and an actual-native delayed-handling regression are
+required first.
+
+Other lifecycle/activation consumers and the complete native admission
 journey still need qualification. Retain the original expired synthetic
 operation and uncertain publication; do not replay it or enlarge its original
 grant.

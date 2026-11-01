@@ -686,6 +686,22 @@ def execution_scope(journal, parent: dict, effect: str):
 
 
 @contextmanager
+def effect_scope(journal, parent: dict, effect: str, *, deadline_ns: int):
+    """Authorize a fresh effect without replacing its historical provenance.
+
+    Ordinary approvals retain their existing path. A remaining-effects grant
+    keeps its actual parent/approval locks through the bounded owner call.
+    Callers pass the same deadline to the receiving effect primitive.
+    """
+    with execution_scope(journal, parent, effect) as grant:
+        if grant is not None and grant['schema'] == REMAINING_SCHEMA:
+            with retain_execution_locks(journal, parent, deadline_ns=deadline_ns):
+                yield grant
+        else:
+            yield grant
+
+
+@contextmanager
 def remaining_projection(journal, parent: dict, effect: str, *, owner_name: str,
                          command: dict, expected_context_sha256: str):
     """Render public owner-binding evidence under actual execution ownership.

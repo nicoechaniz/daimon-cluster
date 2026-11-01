@@ -1,7 +1,7 @@
 """Worker reconciliation of configured admission, guest service and registry."""
 from __future__ import annotations
 
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 import hashlib
 import json
 import math
@@ -314,6 +314,7 @@ class ManagedRuntime:
             vector = Path(approved['candidate']['code']), approved['recipe']['prepared']['code_digest']
             prepared = approved['recipe']['prepared']
             bounds = recovery.bounds(cohort.journal, row)
+            deadline = recovery.effect_deadline(cohort.journal, row, 'initial-start', deadline)
             _manifest(Path(bounds['manifest_path']), row['intent']['runtime_call']['manifest_digest'],
                 uid=bounds['manifest_uid'])
             checked = preflight(vector[0], vector[1], Path(bounds['manifest_path']),
@@ -355,7 +356,7 @@ class ManagedRuntime:
                 binding['continuation_sha256'] = digest(grant)
             intent = effects().get('intent')
             if intent is None:
-                recovery.attached(cohort.journal, row, effect='initial-start')
+                recovery.execution(cohort.journal, row, effect='initial-start')
                 with ExitStack() as observations:
                     for sender in row['expected_precondition']['senders']:
                         observations.enter_context(cohort._owner_deadline(cohort.owners[sender['name']], deadline))
@@ -396,18 +397,22 @@ class ManagedRuntime:
             def root_call(action, *, fresh_effect=False, **kwargs):
                 budget = remaining()
                 if fresh_effect:
-                    recovery.attached(cohort.journal, row, effect='initial-start')
+                    recovery.execution(cohort.journal, row, effect='initial-start')
                     budget = min(budget, (bounds['expires_at_ms'] - time.time_ns() // 1_000_000) / 1000)
                     if budget <= 0:
                         raise OnboardingError('receiving_preservation_authorization_expired')
                 dispatch=vector
                 extra:dict={}
-                if grant is not None:
-                    helper=grant['maintenance'][name]
+                execution_grant = recovery.execution(cohort.journal, row,
+                    effect='initial-start', historical=True)
+                if execution_grant is not None:
+                    helper=execution_grant['maintenance'][name]
                     dispatch=Path(helper['code']),helper['code_digest']
                     extra['owner_deadline_ns']=deadline
-                return self.backend._guest_service_call(plan, action, candidate=dispatch,
-                    timeout_seconds=budget, **extra,**kwargs)
+                with (recovery.effect_scope(cohort.journal, row, 'initial-start', deadline_ns=deadline)
+                        if fresh_effect else nullcontext()):
+                    return self.backend._guest_service_call(plan, action, candidate=dispatch,
+                        timeout_seconds=budget, **extra,**kwargs)
             validated = root_call('bootstrap-validate', request=intent['request'])
             dispatch_state = validated.get('dispatch_state')
             if dispatch_state not in {'not-dispatched', 'intent-retained', 'started-recorded'}:

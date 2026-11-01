@@ -585,3 +585,14 @@ entrant or resume a completed activation. Existing receiving validators still
 reobserve the actual owner/service before each remaining effect. The coordinator
 uses the current execution grant's finite horizon and maintenance helper while
 retaining the social approval and its original publication recipe.
+
+For an actual-native admission fixture, existing members need their ordinary
+messaging attachment and Codex MCP configuration as well as a running Matrix
+daemon and native endpoint. The reconciliation step updates an existing selected
+client; it is not an initial attachment installer. Prepare omitted fixture-only
+prerequisites through the existing owner attachment installer, preserving the
+retained admission and native processes. Do not reinterpret a missing synthetic
+baseline file as a new production enrollment or weaken reconciliation checks.
+Guest transport preserves only the owner tool's closed public error codes;
+unclassified errors still require source-grounded local observation, never raw
+exception text or a new identity to clear the failed attempt.

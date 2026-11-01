@@ -680,3 +680,20 @@ Use this policy when no new member is currently authorized. Populate the normal
 protected plan/cohort binding when an actual approved onboarding is requested;
 never copy a fixture's actors, journal or authority into production. Configuring
 the policy is not acceptance of a future member or proof of human access.
+
+## Current receiving result — 2026-11-01
+
+The separately attributed native follow-up completed the original current
+admission parent on PR265 source28c2ed7. Group/direct/reply retained2/1/2 actual
+receiving legs and complete confirmed synthetic echoes; all expected event IDs
+were read through the three installed owner-local inbox commands. The normal
+worker completed Matrix and advanced to access/ready. The earlier expired probe
+remains unconfirmed. The exact current test resources were stopped afterward;
+no model turn, public Telegram call or production body restart was involved.
+
+PR382 sourcefefb8053 is installed in the ITACA onboarding worker with the explicit
+group-only empty policy described above. Both existing completed relocated jobs
+and all other host configuration remain intact. The first post-start process
+check observed the exec transition; subsequent stable PID/argv/cwd verification
+confirmed the selected code without another restart. No new member is authorized
+by this policy. Keep real owner/device acceptance distinct from this evidence.

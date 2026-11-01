@@ -357,6 +357,61 @@ def test_unconfirmed_echo_waits_then_uses_only_delivery_inspection(full):
     assert x.calls.count('activation') == 1
 
 
+@pytest.mark.parametrize('permitted', [True, False])
+def test_remaining_communication_uses_current_approval_and_fixed_owner_custody(full, monkeypatch, permitted):
+    """Real finisher/owner route and journal fences; grant resolution is a seam."""
+    from pathlib import Path
+    from clusterctl import onboarding_group_recovery as recovery
+    from clusterctl.operation_journal import JournalConflict
+    x = full
+    x.fault['phase'] = 'steady'
+    assert x.worker._tick('newcomer')['state'] == 'attention-required'
+    assert not x.messages
+    row = x.journal.get(x.row['operation_id'])
+    approval = str(uuid.uuid4())
+    observed = copy.deepcopy(row['runtime_observation'])
+    observed['admission_remaining_effects'] = {'reference': {'operation_id': approval}}
+    x.journal.advance(row['operation_id'], row['state'], runtime_observation=observed)
+    grant = dict(schema=recovery.REMAINING_SCHEMA, expires_at_ms=time.time_ns() // 1_000_000 + 8_000)
+    def execution(journal, parent, **options):
+        if not options.get('historical'):
+            assert options['effect'] == 'communication'
+            if not permitted:
+                raise OnboardingError('onboarding_group_remaining_effect_not_authorized')
+        return grant
+    monkeypatch.setattr(recovery, 'execution', execution)
+    bounded = []
+    for owner in x.f.owners.values():
+        original = owner.messaging
+        def messaging(method, parameters, *, owner=owner, original=original, **options):
+            assert method != 'messaging_delivery'
+            assert 0 < owner.deadline_ns - time.monotonic_ns() <= 8_000_000_000
+            assert options['authoring_expires_at_ms'] <= grant['expires_at_ms']
+            competitor = OperationJournal.existing(Path(x.journal.path).parent)
+            for operation in (row['operation_id'], approval):
+                with pytest.raises(JournalConflict):
+                    with competitor.mutation_lock(operation):
+                        pass
+            bounded.append(parameters['send_id'])
+            return original(method, parameters, **options)
+        owner.messaging = messaging
+    row = x.journal.get(row['operation_id'])
+    transition = row['intended_transition']
+    cohort = updates.CohortController(x.journal, row['operation_id'], x.f.owners)
+    def communicate():
+        return GroupCoordinator(x.f.backend)._communicate(x.f.plans['newcomer'], x.journal, row,
+            transition['cohort_admission'], cohort, transition['admission_communication'],
+            deadline_ns=time.monotonic_ns() + 30_000_000_000, before_authoring=lambda: None)
+    if permitted:
+        assert communicate() is True
+        assert len(set(bounded)) == len(x.messages) == 3
+        assert communicate() is True and len(bounded) == 3, 'completed originals were reauthored'
+    else:
+        with pytest.raises(OnboardingError, match='remaining_effect_not_authorized'):
+            communicate()
+        assert not bounded and not x.messages
+
+
 def test_pending_native_fanout_resumes_same_request_within_original_scope(full):
     x = full
     x.fault['busy'] = True

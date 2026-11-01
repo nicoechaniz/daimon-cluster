@@ -4500,6 +4500,33 @@ class CohortController:
                 expected_runtime_observation=row['runtime_observation'])
 
     @contextmanager
+    def lifecycle_start_scope(self, name: str, *, deadline_ns: int):
+        """Keep current start authority/helper stable through the owner dispatch.
+
+        Expired grants can only reach the existing owner's bounded historical
+        reconciliation: their original continuation horizon is never renewed.
+        """
+        from . import onboarding_group_recovery as recovery
+        with self.journal.mutation_lock(self.operation_id):
+            row = self._row()
+            owner = self.owners[name]
+            grant = recovery.execution(self.journal, row, effect='old-selection-start', historical=True)
+            deadline = recovery.effect_deadline(self.journal, row, 'old-selection-start', deadline_ns)
+            previous = getattr(owner, 'maintenance', None)
+            try:
+                if grant is not None:
+                    helper = grant['maintenance'][name]
+                    setattr(owner, 'maintenance', (Path(helper['code']), helper['code_digest']))
+                with ExitStack() as controls:
+                    if grant is None or time.time_ns() // 1_000_000 < grant['expires_at_ms']:
+                        controls.enter_context(recovery.effect_scope(
+                            self.journal, row, 'old-selection-start', deadline_ns=deadline))
+                    controls.enter_context(self._owner_deadline(owner, deadline))
+                    yield deadline
+            finally:
+                setattr(owner, 'maintenance', previous)
+
+    @contextmanager
     def tooling_scope(self, name: str):
         """Bound a fresh owner attachment/configuration under current execution.
 

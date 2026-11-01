@@ -247,7 +247,25 @@ Retained completed attachments and configured tooling remain historical returns.
 Focused tests cover actual owner argv/CLI parsing with delayed arrival, real
 lock custody, inactive approval refusal and the existing finisher paths.
 
-Other lifecycle/communication consumers and the complete native admission
+Existing-member start dispatch now resolves the current execution helper and
+clips the owner deadline under both operation/approval fences. An expired
+continuation keeps its original expired horizon and can only reconcile the
+owner's retained completed effects; it gains no fresh start permission. The
+existing source/guest primitives remain responsible for checking that horizon
+at their actual fresh start boundary. Focused journal/helper/custody and
+finisher regressions pass, with independent source review.
+
+Technical communication now resolves current execution independently of social
+provenance. Fresh send/reply dispatch holds both fences and passes the same
+bounded horizon to the qualified owner; delivery inspection remains read-only
+and completed originals are reused. This is **not yet native qualification**:
+[Matrix #422](https://github.com/AlterMundi/daimon-matrix/issues/422) records the
+source-confirmed gap where the owner CLI does not transmit that bound into the
+queued native request. Native first-authoring enforcement and exact-bound
+retention must be implemented and adopted before this path is accepted.
+An already-authored message's carrier completion is separate from new authoring.
+
+Native communication enforcement and the complete native admission
 journey still need qualification. Retain the original expired synthetic
 operation and uncertain publication; do not replay it or enlarge its original
 grant.

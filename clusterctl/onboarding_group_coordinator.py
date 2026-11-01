@@ -555,8 +555,9 @@ class GroupCoordinator:
                     if 'derived-'+name not in phases():
                         retain('derived-'+name, dict(result_sha256=digest(owner.lifecycle_action(
                             recipe['lifecycle_operation_id'], 'derive'))))
-                    loaded = owner.lifecycle_action(recipe['lifecycle_operation_id'], 'start',
-                        **({'continuation':continuation} if continuation is not None else {}))
+                    with cohort.lifecycle_start_scope(name, deadline_ns=deadline_ns):
+                        loaded = owner.lifecycle_action(recipe['lifecycle_operation_id'], 'start',
+                            **({'continuation':continuation} if continuation is not None else {}))
                 else:
                     controller = GuestBootstrapController(journal, recipe['lifecycle_operation_id'], self.backend, name)
                     closure = {ref:value for ref,value in caller['social']['authority_closure'].items()
@@ -564,9 +565,10 @@ class GroupCoordinator:
                     if 'derived-'+name not in phases():
                         retain('derived-'+name, dict(result_sha256=digest(controller.retain_admission_group(
                             authority_closure=closure, timeout_seconds=remaining(), deadline_ns=deadline_ns))))
-                    loaded = controller.execute(authority_closure=closure, timeout_seconds=remaining(), deadline_ns=deadline_ns,
-                        **({'continuation':continuation,'maintenance':cohort.owners[name].maintenance}
-                            if continuation is not None else {}))
+                    with cohort.lifecycle_start_scope(name, deadline_ns=deadline_ns) as start_deadline:
+                        loaded = controller.execute(authority_closure=closure, timeout_seconds=remaining(), deadline_ns=start_deadline,
+                            **({'continuation':continuation,'maintenance':cohort.owners[name].maintenance}
+                                if continuation is not None else {}))
                 retain('loaded-'+name, loaded)
             authorized()
             entrant = plan['name']
@@ -614,7 +616,7 @@ class GroupCoordinator:
                     time.monotonic_ns() + (reader_until-time.time_ns()//1_000_000)*1_000_000)
             if time.monotonic_ns() >= authoring_until:
                 raise OnboardingError('receiving_cohort_observation_expired')
-        if not self._communicate(plan, journal, row, admission, cohort.owners, scope,
+        if not self._communicate(plan, journal, row, admission, cohort, scope,
                 deadline_ns=deadline_ns, before_authoring=before_authoring):
             return dict(operation_id=row['operation_id'], receiving_readiness='qualified-local-projection',
                 communication_acceptance='unobserved')
@@ -676,11 +678,12 @@ class GroupCoordinator:
             raise OnboardingError('receiving_cohort_roster_unready')
         return {**recovery.bounds(cohort.journal, row), 'roster_sha256':rosters.pop(), 'receivers':plans}
 
-    def _communicate(self, plan: dict, journal, row: dict, admission: dict, owners: dict, scope: dict,
+    def _communicate(self, plan: dict, journal, row: dict, admission: dict, cohort, scope: dict,
                      *, deadline_ns: int, before_authoring) -> bool:
         """One finite check per phase on worker cadence; exact IDs never renew."""
         from . import onboarding_group_recovery as recovery
-        grant = recovery.attached(journal, row)
+        owners = cohort.owners
+        grant = recovery.execution(journal, row, historical=True)
         authoring_expires = scope['expires_at_ms'] if grant is None else grant['expires_at_ms']
         proofs = {}
         for step in ('group', 'direct', 'reply'):
@@ -697,15 +700,33 @@ class GroupCoordinator:
             tooling = admission['receivers'][intent['sender']['owner']]['recipe']['tooling']
             binding = Path(tooling['attachment'])/tooling.get('binding_filename','binding.json')
             def call(method: str, parameters: dict, **options) -> dict:
-                if method != 'messaging_delivery':
-                    recovery.attached(journal, row, effect='communication')
                 # The frozen intent identifies the native group. A configured
                 # multi-link attachment exposes that same group under its
                 # approved public alias; the SDK normalizes it before journaling.
                 public = {**parameters, 'channel_id':tooling['tribe_channel']}
                 if method == 'messaging_reply':
                     public['received_channel_id'] = tooling['tribe_channel']
-                return owner.messaging(method, public, binding=binding, **options)
+                if method == 'messaging_delivery':
+                    with cohort._owner_deadline(owner, deadline_ns):
+                        return owner.messaging(method, public, binding=binding, **options)
+                with journal.mutation_lock(row['operation_id']):
+                    current = journal.get(row['operation_id'])
+                    deadline = recovery.effect_deadline(journal, current, 'communication', deadline_ns)
+                    started = time.monotonic_ns()
+                    deadline = min(deadline, started + int(
+                        min(getattr(owner, 'timeout_seconds', 30), 60) * 1_000_000_000))
+                    previous = getattr(owner, 'deadline_ns', None)
+                    if previous is not None:
+                        deadline = min(deadline, previous)
+                    # Native authoring may not outlive the custody covering
+                    # this dispatch. Sample wall time before the remaining
+                    # monotonic interval to conservatively bound that horizon.
+                    now_ms = time.time_ns() // 1_000_000
+                    until_ms = now_ms + (deadline - time.monotonic_ns()) // 1_000_000
+                    options['authoring_expires_at_ms'] = min(authoring_expires, until_ms)
+                    with recovery.effect_scope(journal, current, 'communication', deadline_ns=deadline):
+                        with cohort._owner_deadline(owner, deadline):
+                            return owner.messaging(method, public, binding=binding, **options)
             response = None
             dispatched = False
             if attempted:

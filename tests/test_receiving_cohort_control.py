@@ -2058,6 +2058,62 @@ def test_remaining_tooling_uses_current_approval_and_both_real_fences(tmp_path, 
     assert effects == ['authorized owner call']
 
 
+@pytest.mark.parametrize('authority', ['active', 'revoked', 'expired'])
+def test_remaining_lifecycle_start_keeps_current_helper_and_fixed_custody(tmp_path, monkeypatch, authority):
+    """Actual journal/fences; current approval resolution is the explicit seam."""
+    import uuid
+    from clusterctl import onboarding_group_recovery as recovery
+    from clusterctl.operation_journal import JournalConflict
+    controller, owners, journal, row, _ = admission_fixture(tmp_path)
+    name = 'eko'
+    approval = str(uuid.uuid4())
+    journal.advance(row['operation_id'], 'runtime-dispatching', runtime_observation={
+        'admission_remaining_effects': {'reference': {'operation_id': approval}}})
+    expiry = time.time_ns() // 1_000_000 + (10_000 if authority != 'expired' else -1)
+    helper = dict(code='/qualified/current-execution', code_digest='a' * 64)
+    grant = dict(schema=recovery.REMAINING_SCHEMA, expires_at_ms=expiry, maintenance={name: helper})
+    checked = []
+    def execution(journal, parent, **options):
+        assert options.get('effect', 'old-selection-start') == 'old-selection-start'
+        if not options.get('historical'):
+            checked.append('fresh')
+            if authority != 'active':
+                raise OnboardingError('onboarding_group_remaining_effect_not_authorized')
+        return grant
+    monkeypatch.setattr(recovery, 'execution', execution)
+    owner = owners[name]
+    previous = getattr(owner, 'maintenance', None)
+    deadline = time.monotonic_ns() + 30_000_000_000
+    entered = []
+    def inspect():
+        with controller.lifecycle_start_scope(name, deadline_ns=deadline) as selected:
+            entered.append('owner')
+            assert owner.maintenance == (Path(helper['code']), helper['code_digest'])
+            assert owner.deadline_ns == selected
+            competitor = OperationJournal.existing(journal.path.parent)
+            with pytest.raises(JournalConflict):
+                with competitor.mutation_lock(row['operation_id']):
+                    pass
+            if authority == 'active':
+                assert 0 < selected - time.monotonic_ns() <= 10_000_000_000
+                with pytest.raises(JournalConflict):
+                    with competitor.mutation_lock(approval):
+                        pass
+            else:
+                # Expired owner requests retain their old horizon; this scope
+                # permits only the primitive's existing historical recovery.
+                assert selected == deadline and grant['expires_at_ms'] == expiry
+    if authority == 'revoked':
+        with pytest.raises(OnboardingError, match='remaining_effect_not_authorized'):
+            inspect()
+        assert entered == []
+    else:
+        inspect()
+        assert entered == ['owner']
+    assert bool(checked) is (authority != 'expired')
+    assert getattr(owner, 'maintenance', None) == previous and getattr(owner, 'deadline_ns', None) is None
+
+
 def test_codex_configuration_without_catalog_cannot_be_receiving_adoption(tmp_path):
     from types import MethodType
     controller, owners, journal, identifier = activation_fixture(tmp_path, tooling_profile='codex')

@@ -1,8 +1,9 @@
 """Owner-local Source group hosting, observation and retained directed repair.
 
-The caller coordinates the existing daemon lifecycle. These operations acquire
-its real writer lock, use only existing Body custody, never read an inbox, and
-never create Root authority or synthesize participant signatures.
+The caller coordinates the existing daemon lifecycle. Offline operations acquire
+its real writer lock; online relationship requests use its authenticated base
+socket. Both retain existing Body custody, never read an inbox, and never create
+Root authority or synthesize participant signatures.
 """
 from __future__ import annotations
 
@@ -13,7 +14,8 @@ import signal
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from collections.abc import Callable
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -48,6 +50,7 @@ class Source:
         self.code_digest = code_digest
         self.qualified_startup = qualified_startup
         self._tool = None
+        self._writer_state = threading.local()
 
     @property
     def tool(self):
@@ -76,7 +79,7 @@ class Source:
             raise OnboardingError('same_being_source_body_mismatch')
         return operator
 
-    def _load(self, *, signed: bool):
+    def _load(self, *, signed: bool, relationship_authorities: dict | None = None):
         from daimon_matrix import daemon, native_egress, runtime
         def clock():
             return time.time_ns() // 1_000_000
@@ -84,6 +87,9 @@ class Source:
                                   {'egress': native_egress.closed_visibility(clock=clock, catalog_mode='migrate')})
         bundle = being_seed._read(self.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
         authorities = onboarding_peer.approved_group_authorities(self.root, self.outputs / 'tribe', bundle)
+        if relationship_authorities is not None:
+            from .onboarding_group_admission import merge_authorities
+            authorities = merge_authorities(authorities, relationship_authorities)
         if authorities:
             options['relationship_authorities'] = authorities
         operator = self.integration_operator(bundle)
@@ -96,10 +102,17 @@ class Source:
     @contextmanager
     def writer(self):
         from daimon_matrix.daemon import acquire_lock
+        # A finite relationship conversation owns this same writer continuously.
+        # Its fresh quiescence query must not acquire a second conflicting lock.
+        if getattr(self._writer_state, 'held', False):
+            yield
+            return
         descriptor = acquire_lock(self.root)
+        self._writer_state.held = True
         try:
             yield
         finally:
+            self._writer_state.held = False
             os.close(descriptor)
 
     def directory(self, plan_digest: str) -> Path:
@@ -107,6 +120,66 @@ class Source:
         if not isinstance(plan_digest, str) or not re.fullmatch(r'[0-9a-f]{64}', plan_digest):
             raise OnboardingError('approved_onboarding_peer_required')
         return private_directory(self.outputs / plan_digest, create=True)
+
+    def group_relationship(self, value: dict, *, offline: bool = False,
+                           authority_closure: dict | None = None,
+                           expected_context_sha256: str | None = None,
+                           membership_precondition: dict | None = None,
+                           effect_not_after_ms: int | None = None,
+                           deadline_ns: int | None = None) -> dict:
+        """The qualified owner route supplies approval; no peer text grants it."""
+        from .onboarding_group_admission import (
+            check_retained_ledger, command, load_owner_runtime, owner_authorities, relationship_request,
+        )
+        value = command(value)
+        journal = self.outputs / 'group-admission'
+        if not offline:
+            if authority_closure or expected_context_sha256 is not None or membership_precondition is not None or effect_not_after_ms is not None:
+                raise OnboardingError('onboarding_group_relationship_writer_required')
+            return relationship_request(self.root, journal, value, deadline_ns=deadline_ns)
+        with self.writer():
+            check_retained_ledger(self.root, journal, value)
+            authorities = owner_authorities(self.root, self.outputs / 'tribe', journal,
+                value['operation_id'], authority_closure or {}, expected_context_sha256=expected_context_sha256)
+            hosted = load_owner_runtime(self.root, self._reader, authorities=authorities,
+                                        qualified_startup=self.qualified_startup)
+            return relationship_request(self.root, journal, value, offline=hosted, deadline_ns=deadline_ns,
+                membership_precondition=membership_precondition,effect_not_after_ms=effect_not_after_ms)
+
+    def group_publication(self, value: dict, *, authority_closure: dict,
+                          expected_context_sha256: str | None = None,
+                          effect_not_after_ms: int | None = None,
+                          remaining_execution: Callable[[], dict] | None = None,
+                          deadline_ns: int | None = None) -> dict:
+        from .onboarding_receiving_update import source_bootstrap_group
+        from .onboarding_group_admission import (
+            check_snapshot_context, load_owner_runtime, owner_authorities, preview_owner_context,
+            publication_command, publication_request,
+        )
+        value = publication_command(value)
+        journal = self.outputs / 'group-admission'
+        group = self.outputs / 'tribe'
+        if remaining_execution is not None:
+            if value['action'] == 'context-preview':
+                raise OnboardingError('onboarding_group_remaining_owner_context_required')
+            remaining_execution()
+        if value['action'] == 'context-preview':
+            result = preview_owner_context(self.root, group, value['operation_id'], authority_closure,
+                deadline_ns=deadline_ns)
+            if expected_context_sha256 is not None and result['owner_context_sha256'] != expected_context_sha256:
+                raise OnboardingError('onboarding_group_owner_context_conflict')
+            return result
+        with self.writer():
+            check_snapshot_context(journal, value)
+            authorities = owner_authorities(self.root, group, journal, value['operation_id'], authority_closure,
+                expected_context_sha256=expected_context_sha256)
+            hosted = load_owner_runtime(self.root, self._reader, authorities=authorities,
+                                        qualified_startup=self.qualified_startup)
+            return publication_request(hosted, group, journal, value, deadline_ns=deadline_ns,
+                effect_not_after_ms=effect_not_after_ms,
+                remaining_execution=remaining_execution,
+                snapshot=lambda: source_bootstrap_group(self, being_seed._read(
+                    self.root / 'runtime.json', limit=being_seed.MAX_SELECTION)))
 
     def offer(self, plan_digest: str, peer: dict, endpoints: list[str]) -> dict:
         self.tool.verify_identity(peer)
@@ -385,6 +458,7 @@ class Source:
     def receiving_lifecycle(self, journal_path: Path, operation_id: str) -> dict:
         """Project only this Source's retained lifecycle; no service/native RPC."""
         from .operation_journal import OperationJournal
+        from .onboarding_receiving_update import admission_lifecycle_projection
         journal = OperationJournal.existing(being_seed._path(journal_path))
         row = None if journal is None else journal.get(operation_id)
         if row is None or row['operation'] != 'receiving-update':
@@ -428,8 +502,62 @@ class Source:
             # changed bundle. No custody, private intent or arbitrary selector.
             projected['runtime_observation']['source_bootstrap']['capability_expansion'] = dict(
                 before_runtime_sha256=previous, runtime_sha256=current)
+        admission = admission_lifecycle_projection(row, profile='source')
+        if admission is not None:
+            projected['admission'] = admission
         return dict(schema='cluster-receiving-source-lifecycle/v1',
             source_config_sha256=digest(self.settings), lifecycle=projected)
+
+    def prepare_receiving_admission(self, journal_path: Path, request: dict, *, config: Path,
+                                    deadline_ns: int) -> dict:
+        from .onboarding_receiving_update import prepare_source_admission
+        return prepare_source_admission(self, journal_path, request, config=config, deadline_ns=deadline_ns)
+
+    def receiving_lifecycle_action(self, journal_path: Path, operation_id: str, action: str, *, deadline_ns: int,
+                                   social_operation_id: str | None = None, admission_continuation: dict | None = None) -> dict:
+        """Execute only the protected operation through the existing user unit."""
+        from .operation_journal import OperationJournal
+        from .onboarding_service import MatrixUserService
+        from .onboarding_receiving_update import SourceBootstrapController
+        if action not in {'quiesce', 'preserve', 'derive', 'start', 'quiescence'}:
+            raise OnboardingError('receiving_source_lifecycle_conflict')
+        if admission_continuation is not None and action != 'start':
+            raise OnboardingError('onboarding_group_continuation_lifecycle_required')
+        journal = OperationJournal.existing(being_seed._path(journal_path))
+        row = None if journal is None else journal.get(operation_id)
+        if row is None or row['operation'] != 'receiving-update':
+            raise OnboardingError('receiving_source_lifecycle_unobserved')
+        if social_operation_id is not None and (action != 'quiescence'
+                or row['intended_transition'].get('source_bootstrap', {}).get('admission_link', {})
+                    .get('snapshot_request', {}).get('operation_id') != social_operation_id):
+            raise OnboardingError('receiving_source_lifecycle_conflict')
+        frozen = row['expected_precondition'].get('source_bootstrap', {})
+        if frozen.get('settings_sha256') != digest(self.settings) or not isinstance(frozen.get('unit'), str):
+            raise OnboardingError('receiving_source_lifecycle_conflict')
+        controller = SourceBootstrapController(journal, operation_id, self, MatrixUserService(Path(frozen['unit'])))
+        if action != 'quiescence' and (frozen.get('mode') != 'preserve'
+                or 'admission_link' not in row['intended_transition'].get('source_bootstrap', {})):
+            raise OnboardingError('receiving_admission_prepared_controller_required')
+        # Resolve no caller-supplied argv, unit or candidate: the controller
+        # consumes the original journal and revalidates its exact qualification.
+        remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
+        if not 0 < remaining <= 60:
+            raise OnboardingError('onboarding_observation_deadline_expired')
+        if action == 'preserve':
+            result = controller.publish(deadline_ns=deadline_ns)
+        elif action == 'derive':
+            result = controller.retain_admission_group(timeout_seconds=remaining, deadline_ns=deadline_ns)
+        elif action == 'quiesce':
+            result = controller.quiesce(timeout_seconds=remaining, deadline_ns=deadline_ns)
+        elif action == 'start':
+            result = controller.start(timeout_seconds=remaining, deadline_ns=deadline_ns,
+                **({'admission_continuation':admission_continuation} if admission_continuation is not None else {}))
+        else:
+            result = controller.observe_quiescence(timeout_seconds=remaining, deadline_ns=deadline_ns)
+        if time.monotonic_ns() >= deadline_ns:
+            raise OnboardingError('onboarding_observation_deadline_expired')
+        return dict(schema='cluster-receiving-source-lifecycle-effect/v1', source_config_sha256=digest(self.settings),
+            operation_id=operation_id, action=action, result=result)
 
 
 def main(argv=None) -> int:
@@ -452,8 +580,18 @@ def main(argv=None) -> int:
     parser.add_argument('--observation-deadline-ns', type=int)
     parser.add_argument('--expected-config-sha256')
     parser.add_argument('--receiving-lifecycle')
+    parser.add_argument('--prepare-admission-lifecycle', type=Path)
+    parser.add_argument('--lifecycle-action', choices=('quiesce', 'preserve', 'derive', 'start', 'quiescence'))
+    parser.add_argument('--admission-continuation', type=Path)
     parser.add_argument('--operation-journal', type=Path)
+    parser.add_argument('--group-request', type=Path)
+    parser.add_argument('--group-session', action='store_true')
+    parser.add_argument('--remaining-execution-fd', type=int)
+    parser.add_argument('--remaining-execution-sha256')
+    parser.add_argument('--remaining-owner-name')
+    parser.add_argument('--remaining-parent-pid', type=int)
     args = parser.parse_args(argv)
+    probe_scope = ExitStack()
     try:
         from . import onboarding_code_successor, onboarding_sdk
         code = Path(__file__).resolve().parents[1]
@@ -461,25 +599,44 @@ def main(argv=None) -> int:
             raise OnboardingError('qualified_source_code_owner_required')
         controlling = any(path is not None for path in (args.prepare_control, args.apply_control, args.prepare_apply_control))
         lifecycle = args.receiving_lifecycle is not None
+        preparing = args.prepare_admission_lifecycle is not None
+        grouping = args.group_request is not None
+        supplemental = (args.remaining_execution_fd, args.remaining_execution_sha256,
+            args.remaining_owner_name, args.remaining_parent_pid)
+        if any(value is not None for value in supplemental) and (
+                not all(value is not None for value in supplemental) or not grouping or args.group_session
+                or args.remaining_execution_fd < 3):
+            raise OnboardingError('onboarding_group_remaining_owner_input_required')
+        if args.remaining_parent_pid is not None:
+            from .owner_process import require_parent_lifetime
+            require_parent_lifetime(args.remaining_parent_pid)
         if args.native_tooling_json is not None and (not args.qualified_identity
                 or len(args.native_tooling_json.encode()) > 65536):
             raise OnboardingError('receiving_native_tooling_recipe_required')
-        receiving = args.owner_status or args.qualified_identity or controlling or lifecycle
-        if (sum((args.observe, args.owner_status, args.qualified_identity, controlling, lifecycle)) > 1
-                or lifecycle != (args.operation_journal is not None)
-                or lifecycle and (args.ready_fd is not None or args.require_loaded)
+        receiving = args.owner_status or args.qualified_identity or controlling or lifecycle or grouping or preparing
+        if (sum((args.observe, args.owner_status, args.qualified_identity, controlling, lifecycle, grouping, preparing)) > 1
+                or (lifecycle or preparing or args.group_session) != (args.operation_journal is not None)
+                or args.group_session and (not grouping or args.group_request != Path('-'))
+                or args.lifecycle_action is not None and not lifecycle
+                or args.admission_continuation is not None and (
+                    not lifecycle or args.lifecycle_action != 'start' or args.admission_continuation != Path('-'))
+                or (lifecycle or preparing) and (args.ready_fd is not None or args.require_loaded)
                 or args.qualified_identity != (args.identity_expires_at_ms is not None)
                 or args.identity_expires_at_ms is not None and not 0 < args.identity_expires_at_ms < 2**53
-                or (args.owner_status or args.qualified_identity) and (args.ready_fd is not None or args.require_loaded)
+                or (args.owner_status or args.qualified_identity or grouping) and (args.ready_fd is not None or args.require_loaded)
+                or args.expected_config_sha256 is not None and not receiving
                 or args.observation_deadline_ns is not None and not receiving):
             raise OnboardingError('invalid_receiving_control_request')
-        if (args.owner_status or args.qualified_identity or lifecycle) and args.observation_deadline_ns is None:
+        if (args.owner_status or args.qualified_identity or lifecycle or grouping or preparing) and args.observation_deadline_ns is None:
             args.observation_deadline_ns = time.monotonic_ns() + 30_000_000_000
         def accept_deadline():
             if args.observation_deadline_ns is not None and time.monotonic_ns() >= args.observation_deadline_ns:
                 raise OnboardingError('onboarding_observation_deadline_expired')
         if args.observation_deadline_ns is not None and not 0 < args.observation_deadline_ns - time.monotonic_ns() <= 60_000_000_000:
             raise OnboardingError('onboarding_observation_deadline_expired')
+        if grouping:
+            from .onboarding_group_session import hard_deadline
+            probe_scope.enter_context(hard_deadline(args.observation_deadline_ns))
         if (controlling and (args.observe or args.require_loaded or args.ready_fd is not None)
                 or (args.prepare_control is not None or args.prepare_apply_control is not None) != (args.control_command is not None)):
             raise OnboardingError('invalid_receiving_control_request')
@@ -492,6 +649,7 @@ def main(argv=None) -> int:
             if not isinstance(stdin_command, dict):
                 raise OnboardingError('invalid_receiving_control_request')
         accept_deadline()
+        probe_scope.enter_context(onboarding_sdk.probe_budget(args.observation_deadline_ns))
         parameters = onboarding_code_successor.sdk_parameters(code, uid=args.code_owner)
         if receiving and not parameters:
             raise OnboardingError('qualified_onboarding_source_observer_required')
@@ -508,9 +666,74 @@ def main(argv=None) -> int:
         accept_deadline()
         source = Source(settings, code=code, code_uid=args.code_owner, code_digest=args.code_digest,
                         qualified_startup=startup)
+        if preparing:
+            if args.prepare_admission_lifecycle == Path('-'):
+                raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1)
+                if len(raw) > being_seed.MAX_SELECTION:
+                    raise OnboardingError('receiving_source_admission_preparation_required')
+                request = json.loads(raw)
+            else:
+                request = being_seed._read(args.prepare_admission_lifecycle, limit=being_seed.MAX_SELECTION)
+            result = source.prepare_receiving_admission(args.operation_journal, request,
+                config=args.config, deadline_ns=args.observation_deadline_ns)
+            print(json.dumps(result))
+            return 0
+        if grouping:
+            if args.group_session:
+                from .onboarding_group_session import serve
+                serve(source, deadline_ns=args.observation_deadline_ns,
+                    reader=sys.stdin.fileno(), writer=sys.stdout.fileno(),
+                    quiescence=lambda operation, social: source.receiving_lifecycle_action(
+                        args.operation_journal, operation, 'quiescence',
+                        deadline_ns=args.observation_deadline_ns, social_operation_id=social)['result'])
+                return 0
+            from .onboarding_group_admission import request_packet
+            if args.group_request == Path('-'):
+                raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1)
+                if len(raw) > being_seed.MAX_SELECTION:
+                    raise OnboardingError('onboarding_group_relationship_command_required')
+                packet = json.loads(raw)
+            else:
+                packet = being_seed._read(args.group_request, limit=being_seed.MAX_SELECTION)
+            packet = request_packet(packet)
+            context:dict = ({'expected_context_sha256': packet['expected_context_sha256']}
+                       if 'expected_context_sha256' in packet else {})
+            if 'effect_not_after_ms' in packet:
+                context['effect_not_after_ms']=packet['effect_not_after_ms']
+            if 'action' in packet['command']:
+                if args.remaining_execution_fd is not None:
+                    from .onboarding_group_recovery import read_remaining_projection_fd
+                    def read_execution():
+                        return read_remaining_projection_fd(args.remaining_execution_fd,
+                            expected_sha256=args.remaining_execution_sha256, effect='publication',
+                            owner_name=args.remaining_owner_name, command=packet['command'],
+                            expected_context_sha256=packet.get('expected_context_sha256'),
+                            helper_code_digest=source.code_digest, helper_code_uid=source.code_uid,
+                            now_ms=time.time_ns()//1_000_000)
+                    context['remaining_execution'] = read_execution
+                result = source.group_publication(packet['command'], authority_closure=packet['authority_closure'],
+                    deadline_ns=args.observation_deadline_ns, **context)
+            else:
+                if args.remaining_execution_fd is not None:
+                    raise OnboardingError('onboarding_group_remaining_owner_input_required')
+                result = source.group_relationship(packet['command'], offline=packet['offline'],
+                    authority_closure=packet['authority_closure'], deadline_ns=args.observation_deadline_ns,
+                    **({'membership_precondition': packet['membership_precondition']}
+                       if 'membership_precondition' in packet else {}), **context)
+            print(json.dumps(result))
+            return 0
         if lifecycle:
             accept_deadline()
-            result = source.receiving_lifecycle(args.operation_journal, args.receiving_lifecycle)
+            continuation = {}
+            if args.admission_continuation is not None:
+                raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION+1)
+                if len(raw)>being_seed.MAX_SELECTION:
+                    raise OnboardingError('onboarding_group_continuation_lifecycle_required')
+                continuation = {'admission_continuation':json.loads(raw)}
+            result = (source.receiving_lifecycle(args.operation_journal, args.receiving_lifecycle)
+                if args.lifecycle_action is None else source.receiving_lifecycle_action(
+                    args.operation_journal, args.receiving_lifecycle, args.lifecycle_action,
+                    deadline_ns=args.observation_deadline_ns,**continuation))
             accept_deadline()
             print(json.dumps(result))
             return 0
@@ -557,6 +780,8 @@ def main(argv=None) -> int:
         # No paths, custody, token values or raw native errors in service logs.
         print(json.dumps({'error': 'native_onboarding_source_refused'}))
         return 1
+    finally:
+        probe_scope.close()
 
 
 if __name__ == '__main__':

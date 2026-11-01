@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -25,6 +26,7 @@ from pathlib import Path
 
 from . import being_seed, onboarding_release, onboarding_sdk
 from .onboarding import JobStore, OnboardingError, digest, private_directory
+from .onboarding_group_session import OwnerConversation
 from .owner_process import ConnectedProcessObserver
 
 
@@ -483,14 +485,21 @@ class GuestGroupClient:
         self.root, self.socket = root, root / 'tribe.sock'
         self.timeout_seconds = timeout_seconds
         self.deadline_ns: int | None = None
+        self._relationship_stack: ExitStack | None = None
+        self._relationship_process: OwnerConversation | None = None
+        self.maintenance: tuple[Path, str] | None = None
 
-    def _call(self, action: str, **arguments) -> dict:
+    def _call(self, action: str, *, maintenance: bool = False, **arguments) -> dict:
         timeout = self.timeout_seconds
         if self.deadline_ns is not None:
-            timeout = min(timeout, (self.deadline_ns - time.monotonic_ns()) / 1_000_000_000)
+            remaining=(self.deadline_ns-time.monotonic_ns())/1_000_000_000
+            timeout = remaining if maintenance else min(timeout,remaining)
             if timeout <= 0:
                 raise OnboardingError('receiving_owner_deadline_expired')
-        result = self.backend._target_call(self.plan, action, candidate=self.candidate,
+        candidate = (self.maintenance or self.candidate) if maintenance else self.candidate
+        if maintenance and self.maintenance is not None and self.deadline_ns is not None and action.startswith('group-'):
+            arguments['owner_deadline_ns']=self.deadline_ns
+        result = self.backend._target_call(self.plan, action, candidate=candidate,
             observation_timeout_seconds=timeout, **arguments)
         if self.deadline_ns is not None and time.monotonic_ns() >= self.deadline_ns:
             raise OnboardingError('receiving_owner_deadline_expired')
@@ -518,8 +527,9 @@ class GuestGroupClient:
 
     def qualified_identity(self, *, expires_at_ms: int, require_admitted: bool = True,
                            native_tooling: dict | None = None) -> dict:
+        options: dict = {'native_tooling': native_tooling} if native_tooling is not None else {}
         value = self._call('receiving-identity', identity_expires_at_ms=expires_at_ms,
-            **({'native_tooling': native_tooling} if native_tooling is not None else {}))
+            **options)
         if (value.get('responder_association') != 'same-connection'
                 or value.get('plan_digest') != digest(self.plan)
                 or not isinstance(value.get('admission_parent'), dict)
@@ -532,6 +542,47 @@ class GuestGroupClient:
 
     def prepare_control(self, command: dict, path: Path) -> dict:
         return self._call('receiving-control-prepare', control_file=path, control_value=command)
+
+    def group_relationship(self, command: dict, *, authority_closure: dict,
+                           expected_context_sha256: str | None = None,
+                           membership_precondition: dict | None = None,
+                           effect_not_after_ms: int | None = None,
+                           inspect_only: bool = False) -> dict:
+        packet = dict(command=command,
+            offline=True, authority_closure=authority_closure,
+            **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
+            **({'membership_precondition': membership_precondition} if membership_precondition is not None else {}),
+            **({'effect_not_after_ms':effect_not_after_ms} if effect_not_after_ms is not None else {}))
+        stack = getattr(self, '_relationship_stack', None)
+        if type(inspect_only) is not bool or inspect_only and stack is None:
+            raise OnboardingError('onboarding_group_invitation_inspection_required')
+        if stack is None:
+            return self._call('group-relationship', maintenance=True, group_request=packet)
+        if self._relationship_process is None:
+            if self.deadline_ns is None:
+                raise OnboardingError('receiving_host_deadline_required')
+            # One finite invocation has the caller's existing total budget.
+            # The one-shot default is not a second, shorter session horizon.
+            timeout = (self.deadline_ns-time.monotonic_ns())/1_000_000_000
+            self._relationship_process = stack.enter_context(self.backend._target_relationship_session(
+                self.plan, packet, candidate=self.maintenance or self.candidate, timeout_seconds=timeout,
+                deadline_ns=self.deadline_ns))
+        return self._relationship_process.call({'inspect': packet} if inspect_only else packet)
+
+    def group_relationship_scope(self):
+        from .onboarding_group_session import supported_scope
+        code, code_digest = self.maintenance or self.candidate
+        return supported_scope(self, code, uid=os.geteuid(), code_digest=code_digest)
+
+    def group_publication(self, command: dict, *, authority_closure: dict,
+                          expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None,
+                          remaining_execution=None) -> dict:
+        return self._call('group-publication', maintenance=True,
+            **({'remaining_execution':remaining_execution} if remaining_execution is not None else {}),
+            group_request=dict(command=command,
+            offline=True, authority_closure=authority_closure,
+            **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
+            **({'effect_not_after_ms':effect_not_after_ms} if effect_not_after_ms is not None else {})))
 
     def apply_control(self, path: Path) -> dict:
         return self._call('receiving-control-apply', control_file=path)
@@ -548,6 +599,43 @@ class GuestGroupClient:
             candidate=self.candidate, attachment=attachment, codex_home=codex_home, connections=connections,
             native_endpoint=native_endpoint, native_threads=native_threads, binding_filename=binding_filename,
             timeout_seconds=self.timeout_seconds, deadline_ns=self.deadline_ns)
+
+    def preflight_native(self, endpoint: Path) -> dict:
+        from .onboarding_owner_client import OwnerClient
+        return OwnerClient(self.backend).preflight_native(self.plan, candidate=self.candidate,
+            endpoint=endpoint, timeout_seconds=self.timeout_seconds, deadline_ns=self.deadline_ns)
+
+    def prepare_attachment(self, request: dict, *, attachment: Path, codex_home: Path) -> dict:
+        from .onboarding_owner_client import OwnerClient
+        if request.get('runtime_root') != str(self.root):
+            raise OnboardingError('receiving_guest_owner_locator_required')
+        return OwnerClient(self.backend).prepare_attachment(self.plan, request, candidate=self.candidate,
+            attachment=attachment, codex_home=codex_home, timeout_seconds=self.timeout_seconds, deadline_ns=self.deadline_ns)
+
+    def messaging(self, method: str, parameters: dict, *, binding: Path,
+                    authoring_expires_at_ms: int | None = None) -> dict:
+        from .onboarding_owner_client import OwnerClient
+        return OwnerClient(self.backend).messaging(self.plan, method, parameters,
+            candidate=self.candidate, binding=binding, timeout_seconds=self.timeout_seconds,
+            deadline_ns=self.deadline_ns, authoring_expires_at_ms=authoring_expires_at_ms)
+
+
+def _run_owner(argv: list[str], **options):
+    """Bound and reap one technical owner CLI and its probe descendants."""
+    payload, timeout = options.pop('input', None), options.pop('timeout')
+    options.pop('capture_output', None)
+    with subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          start_new_session=True, **options) as process:
+        try:
+            stdout, stderr = process.communicate(payload, timeout=timeout)
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            raise
+        return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
 class SourceGroupClient:
@@ -581,12 +669,16 @@ class SourceGroupClient:
         self.timeout_seconds = timeout_seconds
         self.lifecycle_journal = lifecycle_journal
         self.deadline_ns: int | None = None
+        self._relationship_stack: ExitStack | None = None
+        self._relationship_process: OwnerConversation | None = None
+        self.maintenance: tuple[Path, str] | None = None
 
     def _call(self, arguments: list[str], *, command: dict | None = None,
-              module: str = 'clusterctl.onboarding_source') -> dict:
+              module: str = 'clusterctl.onboarding_source', native_response: bool = False,
+              maintenance: bool = False, inherited_descriptors: tuple[int, ...] = ()) -> dict:
         deadline = time.monotonic_ns() + int(self.timeout_seconds * 1_000_000_000)
         if self.deadline_ns is not None:
-            deadline = min(deadline, self.deadline_ns)
+            deadline = self.deadline_ns if maintenance else min(deadline, self.deadline_ns)
         if deadline <= time.monotonic_ns():
             raise OnboardingError('receiving_owner_deadline_expired')
         info = self.config.lstat()
@@ -598,9 +690,13 @@ class SourceGroupClient:
             raise OnboardingError('invalid_receiving_control_request')
         if module not in {'clusterctl.onboarding_source', 'clusterctl.onboarding_owner_client'}:
             raise OnboardingError('receiving_source_owner_binding_required')
-        argv = onboarding_sdk.runtime_command(self.venv, self.imports, self.code, module, [
+        if inherited_descriptors and (not maintenance or module != 'clusterctl.onboarding_source'
+                or any(type(fd) is not int or fd < 3 for fd in inherited_descriptors)):
+            raise OnboardingError('onboarding_group_remaining_owner_input_required')
+        code, code_digest = (self.maintenance or (self.code, self.code_digest)) if maintenance else (self.code, self.code_digest)
+        argv = onboarding_sdk.runtime_command(self.venv, self.imports, code, module, [
             '--config', str(self.config), '--expected-config-sha256', self.config_sha256,
-            '--code-owner', str(self.code_uid), '--code-digest', self.code_digest,
+            '--code-owner', str(self.code_uid), '--code-digest', code_digest,
             '--observation-deadline-ns', str(deadline), *arguments])
         remaining = (deadline - time.monotonic_ns()) / 1_000_000_000
         if remaining <= 0:
@@ -608,16 +704,21 @@ class SourceGroupClient:
         try:
             # user/group/extra_groups are applied by subprocess BEFORE exec.
             # Do not stat, prepare or import this private interpreter as root.
-            result = subprocess.run(argv, input=payload, text=True, capture_output=True,
+            result = _run_owner(argv, input=payload, text=True, capture_output=True,
                 timeout=remaining,
                 user=self.owner_uid, group=self.owner_gid, extra_groups=(),
+                **({'pass_fds':inherited_descriptors} if inherited_descriptors else {}),
                 env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'})
             if time.monotonic_ns() >= deadline:
                 raise OnboardingError('receiving_owner_deadline_expired')
             if result.returncode or len(result.stdout.encode()) > being_seed.MAX_SELECTION:
                 raise OnboardingError('receiving_source_owner_unavailable')
             value = json.loads(result.stdout)
-            if not isinstance(value, dict) or 'error' in value:
+            if (not isinstance(value, dict)
+                    or (not native_response and 'error' in value)
+                    or native_response and (module != 'clusterctl.onboarding_owner_client'
+                        or value.get('schema') != 'dm.local.response/v1'
+                        or value.get('ok') is not True or value.get('error') is not None)):
                 raise OnboardingError('receiving_source_owner_unavailable')
             after = self.config.lstat()
             if (after.st_dev, after.st_ino, after.st_uid, after.st_gid, after.st_mode) != (
@@ -669,6 +770,79 @@ class SourceGroupClient:
     def prepare_control(self, command: dict, path: Path) -> dict:
         return self._call(['--prepare-control', str(path), '--control-command', '-'], command=command)
 
+    def group_relationship(self, command: dict, *, offline: bool = False,
+                           authority_closure: dict | None = None,
+                           expected_context_sha256: str | None = None,
+                           membership_precondition: dict | None = None,
+                           effect_not_after_ms: int | None = None,
+                           inspect_only: bool = False) -> dict:
+        packet = dict(command=command,
+            offline=offline, authority_closure={} if authority_closure is None else authority_closure,
+            **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
+            **({'membership_precondition': membership_precondition} if membership_precondition is not None else {}),
+            **({'effect_not_after_ms':effect_not_after_ms} if effect_not_after_ms is not None else {}))
+        stack = getattr(self, '_relationship_stack', None)
+        if type(inspect_only) is not bool or inspect_only and stack is None:
+            raise OnboardingError('onboarding_group_invitation_inspection_required')
+        if stack is None:
+            return self._call(['--group-request', '-'], command=packet, maintenance=True)
+        if self._relationship_process is None:
+            self._relationship_process = stack.enter_context(self._relationship_conversation(packet))
+        return self._relationship_process.call({'inspect': packet} if inspect_only else packet)
+
+    def group_relationship_scope(self):
+        from .onboarding_group_session import supported_scope
+        code, code_digest = self.maintenance or (self.code, self.code_digest)
+        return supported_scope(self, code, uid=self.code_uid, code_digest=code_digest)
+
+    def _relationship_conversation(self, packet):
+        from .onboarding_group_session import OwnerConversation
+        deadline = self.deadline_ns if self.deadline_ns is not None else (
+            time.monotonic_ns() + int(self.timeout_seconds*1_000_000_000))
+        if self.lifecycle_journal is None:
+            raise OnboardingError('receiving_source_lifecycle_binding_required')
+        def identity():
+            info = self.config.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077
+                    or (info.st_uid, info.st_gid) != (self.owner_uid, self.owner_gid)):
+                raise OnboardingError('receiving_source_owner_binding_required')
+            return info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode
+        before = identity()
+        def unchanged():
+            if identity() != before:
+                raise OnboardingError('receiving_source_configuration_changed')
+        code, code_digest = self.maintenance or (self.code, self.code_digest)
+        argv = onboarding_sdk.runtime_command(self.venv, self.imports, code, 'clusterctl.onboarding_source', [
+            '--config', str(self.config), '--expected-config-sha256', self.config_sha256,
+            '--code-owner', str(self.code_uid), '--code-digest', code_digest,
+            '--observation-deadline-ns', str(deadline), '--group-request', '-', '--group-session',
+            '--operation-journal', str(self.lifecycle_journal)])
+        return OwnerConversation(argv, packet, deadline_ns=deadline, validate=unchanged,
+            user=self.owner_uid, group=self.owner_gid, extra_groups=(),
+            env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'})
+
+    def group_publication(self, command: dict, *, authority_closure: dict,
+                          expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None,
+                          remaining_execution=None) -> dict:
+        packet = dict(command=command,
+            offline=True, authority_closure=authority_closure,
+            **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
+            **({'effect_not_after_ms':effect_not_after_ms} if effect_not_after_ms is not None else {}))
+        if remaining_execution is None:
+            return self._call(['--group-request', '-'], maintenance=True, command=packet)
+        from .onboarding_group_recovery import sealed_remaining_input
+        with sealed_remaining_input(remaining_execution) as (descriptor, pin):
+            context = remaining_execution()
+            if (context.get('effect') != 'publication' or context.get('command_sha256') != digest(command)
+                    or context.get('owner_context_sha256') != expected_context_sha256
+                    or context.get('helper_code_digest') != (self.maintenance or (self.code,self.code_digest))[1]
+                    or context.get('helper_code_uid') != self.code_uid):
+                raise OnboardingError('onboarding_group_remaining_owner_input_required')
+            return self._call(['--group-request', '-', '--remaining-execution-fd', str(descriptor),
+                '--remaining-execution-sha256', pin, '--remaining-owner-name', context['owner_name'],
+                '--remaining-parent-pid', str(os.getpid())],
+                maintenance=True, command=packet, inherited_descriptors=(descriptor,))
+
     def apply_control(self, path: Path) -> dict:
         return self._call(['--apply-control', str(path)])
 
@@ -691,12 +865,33 @@ class SourceGroupClient:
             raise OnboardingError('receiving_source_owner_observation_conflict')
         return result
 
+    def preflight_native(self, endpoint: Path) -> dict:
+        result = self._call(['--native-preflight', '--native-endpoint', str(endpoint)],
+            module='clusterctl.onboarding_owner_client')
+        if (result.get('schema') != 'cluster-native-endpoint-readiness/v1'
+                or result.get('acceptance') != 'native-endpoint-only'
+                or result.get('model_turns_started') != 0 or result.get('messages_sent') != 0
+                or result.get('qualification', {}).get('code_digest') != self.code_digest):
+            raise OnboardingError('receiving_source_owner_observation_conflict')
+        return result
+
+    def messaging(self, method: str, parameters: dict, *, binding: Path,
+                    authoring_expires_at_ms: int | None = None) -> dict:
+        """Run the same configured messaging-only tools under the actual owner."""
+        if (method not in {'messaging_send', 'messaging_reply', 'messaging_delivery'}
+                or method != 'messaging_delivery' and authoring_expires_at_ms is None):
+            raise OnboardingError('qualified_native_peer_tool_required')
+        return self._call(['--binding', str(binding),
+            *([] if authoring_expires_at_ms is None else ['--authoring-expires-at-ms', str(authoring_expires_at_ms)]),
+            'call', method, '--timeout', str(self.timeout_seconds)], command=parameters,
+            module='clusterctl.onboarding_owner_client', native_response=True)
+
     def lifecycle_operation(self, operation_id: str) -> dict:
         """Read the retained owner journal under that owner, never as root."""
         if self.lifecycle_journal is None:
             raise OnboardingError('receiving_source_lifecycle_binding_required')
         value = self._call(['--receiving-lifecycle', operation_id,
-            '--operation-journal', str(self.lifecycle_journal)])
+            '--operation-journal', str(self.lifecycle_journal)], maintenance=True)
         row = value.get('lifecycle')
         if (set(value) != {'schema', 'source_config_sha256', 'lifecycle'}
                 or value['schema'] != 'cluster-receiving-source-lifecycle/v1'
@@ -705,6 +900,48 @@ class SourceGroupClient:
                 or row.get('operation') != 'receiving-update'):
             raise OnboardingError('receiving_source_lifecycle_conflict')
         return row
+
+    def prepare_admission_lifecycle(self, request: dict) -> dict:
+        """Create/recover this owner's local child; return public pins only."""
+        if self.lifecycle_journal is None:
+            raise OnboardingError('receiving_source_lifecycle_binding_required')
+        result = self._call(['--prepare-admission-lifecycle', '-',
+            '--operation-journal', str(self.lifecycle_journal)], command=request)
+        if (set(result) != {'schema', 'operation_id', 'source_config_sha256', 'code_digest', 'request_sha256',
+                'cohort_operation_id', 'cohort_intent_sha256', 'link_sha256', 'owner_context_sha256', 'receiving_readiness'}
+                or result.get('schema') != 'cluster-source-admission-prepared/v1'
+                or result.get('source_config_sha256') != self.config_sha256
+                or result.get('code_digest') != self.code_digest
+                or result.get('request_sha256') != digest(request)
+                or any(result.get(key) != request.get(key) for key in (
+                    'cohort_operation_id', 'cohort_intent_sha256', 'owner_context_sha256'))
+                or not isinstance(result.get('operation_id'), str) or not result['operation_id']
+                or not isinstance(result.get('link_sha256'), str)
+                or re.fullmatch('[0-9a-f]{64}', result['link_sha256']) is None
+                or result.get('receiving_readiness') != 'unobserved'):
+            raise OnboardingError('receiving_source_lifecycle_conflict')
+        return result
+
+    def lifecycle_action(self, operation_id: str, action: str, *, continuation: dict | None = None) -> dict:
+        """Use the same qualified owner for the frozen Matrix-only lifecycle."""
+        if self.lifecycle_journal is None or action not in {'quiesce', 'preserve', 'derive', 'start', 'quiescence'}:
+            raise OnboardingError('receiving_source_lifecycle_binding_required')
+        if continuation is not None and action != 'start':
+            raise OnboardingError('onboarding_group_continuation_lifecycle_required')
+        session = getattr(self, '_relationship_process', None)
+        if action == 'quiescence' and session is not None:
+            return session.call(dict(quiescence=operation_id))
+        value = self._call(['--receiving-lifecycle', operation_id,
+            '--operation-journal', str(self.lifecycle_journal), '--lifecycle-action', action,
+            *(['--admission-continuation','-'] if continuation is not None else [])],
+            command=continuation, maintenance=True)
+        if (set(value) != {'schema', 'source_config_sha256', 'operation_id', 'action', 'result'}
+                or value['schema'] != 'cluster-receiving-source-lifecycle-effect/v1'
+                or value['source_config_sha256'] != self.config_sha256
+                or value['operation_id'] != operation_id or value['action'] != action
+                or not isinstance(value['result'], dict)):
+            raise OnboardingError('receiving_source_lifecycle_conflict')
+        return value['result']
 
 
 def owner_control(root: Path, group: dict, observed: dict, action: str, path: Path,
@@ -925,11 +1162,190 @@ def bootstrap_effects(observations: dict, *, source: bool, mode: str) -> tuple[s
     return published['runtime_sha256'], None
 
 
-def freeze_source_bootstrap(source, manager) -> dict:
+def admission_lifecycle_link(value: dict, *, being_ref: str, embodiment_id: str) -> dict:
+    """Validate the protected association frozen before any lifecycle effect."""
+    from .onboarding_group_admission import publication_command
+    try:
+        if (not isinstance(value, dict) or set(value) != {'schema', 'cohort_operation_id',
+                'cohort_intent_sha256', 'tribe_ref', 'owner', 'snapshot_request'}
+                or value['schema'] != 'cluster-admission-lifecycle-link/v1'
+                or not isinstance(value['cohort_operation_id'], str) or not value['cohort_operation_id']
+                or len(value['cohort_operation_id']) > 240
+                or not isinstance(value['cohort_intent_sha256'], str)
+                or re.fullmatch('[0-9a-f]{64}', value['cohort_intent_sha256']) is None
+                or not isinstance(value['tribe_ref'], str) or not value['tribe_ref']
+                or value['owner'] != dict(being_ref=being_ref, embodiment_id=embodiment_id)):
+            raise ValueError
+        command = publication_command(value['snapshot_request'])
+        if (command['action'] != 'snapshot' or not isinstance(command['params'].get('expected_preservation'), dict)
+                or not isinstance(command['params'].get('expected_stores'), dict)
+                or 'ledger' not in command['params']['expected_stores']):
+            raise ValueError
+    except (ValueError, TypeError, KeyError):
+        raise OnboardingError('receiving_admission_lifecycle_link_required') from None
+    return json.loads(json.dumps(value))
+
+
+def admission_group_derivation(link: dict, snapshot: dict, *, previous: dict, stores: dict) -> dict:
+    """Bind the owner's observed after-group to the original admission intent.
+
+    Call only with the actual qualified owner's snapshot result. The native
+    route authenticates publications; this layer preserves the frozen physical
+    association and original store identities, never a replacement host pin.
+    """
+    command = link['snapshot_request']
+    if (not isinstance(snapshot, dict) or snapshot.get('schema') != 'cluster-group-publication-result/v1'
+            or any(snapshot.get(key) != command[key] for key in ('operation_id', 'step', 'action'))
+            or snapshot.get('status') != 'recorded' or snapshot.get('receiving_readiness') != 'unobserved'
+            or snapshot.get('owner_context_sha256') != command['params']['owner_context_sha256']
+            or not isinstance(stores, dict) or 'ledger' not in stores or not stores
+            or snapshot.get('stores') != stores
+            or not isinstance(snapshot.get('group'), dict)
+            or snapshot['group'].get('selected') != previous['selected']
+            or snapshot['group']['selected'].get('tribe_ref') != link['tribe_ref']):
+        raise OnboardingError('receiving_admission_group_changed')
+    return dict(schema='cluster-admission-group-derivation/v1', link_sha256=digest(link),
+        cohort_operation_id=link['cohort_operation_id'], cohort_intent_sha256=link['cohort_intent_sha256'],
+        snapshot=snapshot, receiving_readiness='unobserved')
+
+
+def derived_lifecycle_group(candidate: dict, effects: dict, previous: dict, *, required: bool = False) -> dict:
+    """Ordinary updates keep the original group; admissions need retained proof."""
+    link = candidate.get('admission_link')
+    retained = effects.get('admission_group')
+    if link is None:
+        if retained is not None:
+            raise OnboardingError('receiving_admission_lifecycle_link_required')
+        return previous
+    if retained is None:
+        if required:
+            raise OnboardingError('receiving_admission_group_unobserved')
+        return previous
+    if (retained.get('schema') != 'cluster-admission-group-derivation/v1'
+            or retained.get('link_sha256') != digest(link)
+            or retained.get('cohort_operation_id') != link['cohort_operation_id']
+            or retained.get('cohort_intent_sha256') != link['cohort_intent_sha256']
+            or retained.get('receiving_readiness') != 'unobserved'):
+        raise OnboardingError('receiving_admission_group_changed')
+    return retained['snapshot']['group']
+
+
+def admission_store_bindings(root: Path, bundle: dict, original: dict | None) -> dict:
+    """Verify original physical stores read-only, before any runtime can open them."""
+    from daimon_matrix.service import LoadedStoreBinding
+    if not isinstance(original, dict) or 'ledger' not in original or set(original) - {'ledger', 'relationships'}:
+        raise OnboardingError('receiving_admission_store_binding_required')
+    current = {}
+    for role in original:
+        name = bundle['ledger'] if role == 'ledger' else bundle['relationships']['store_filename']
+        if not isinstance(name, str) or name in {'', '.', '..'} or Path(name).name != name:
+            raise OnboardingError('receiving_admission_store_binding_changed')
+        metadata = ({'ledger': 'metadata', 'communication': 'communication_meta'} if role == 'ledger'
+                    else {'relationships': 'metadata'})
+        try:
+            binding = LoadedStoreBinding.capture(root / name, metadata=metadata)
+            binding.verify()
+        except (ValueError, OSError):
+            raise OnboardingError('receiving_admission_store_binding_changed') from None
+        current[role] = json.loads(binding.observation)
+    if current != original:
+        raise OnboardingError('receiving_admission_store_binding_changed')
+    return current
+
+
+def preserved_admission_stores(root: Path, bundle: dict, preservation: dict, original: dict | None) -> dict:
+    if controller_preservation(root, bundle) != preservation:
+        raise OnboardingError('receiving_controller_preservation_changed')
+    return admission_store_bindings(root, bundle, original)
+
+
+def admission_lifecycle_projection(row: dict, *, profile: str, name: str | None = None) -> dict | None:
+    """Export only the retained admission association and public effect hashes.
+
+    The owner validates its full local journal before projecting it. Private
+    snapshot inputs, preservation vectors and custody/client locations stay
+    local. The cohort must still match this association to its own intent.
+    """
+    try:
+        before, after = row['expected_precondition'], row['intended_transition']
+        call = row['intent']['runtime_call']
+        if (row['operation'] != 'receiving-update' or row['intent_hash'] != digest(row['intent'])
+                or call['precondition_digest'] != digest(before)
+                or call['transition_digest'] != digest(after)
+                or re.fullmatch('[0-9a-f]{64}', call['manifest_digest']) is None):
+            raise ValueError
+        if profile == 'source':
+            frozen, candidate = before['source_bootstrap'], after['source_bootstrap']
+            effects = (row['runtime_observation'] or {}).get('source_bootstrap', {})
+        elif profile == 'guest' and name is not None:
+            frozen, candidate = before['guest_bootstraps'][name]['owner'], after['guest_bootstraps'][name]
+            effects = (row['runtime_observation'] or {}).get('guest_bootstraps', {}).get(name, {})
+        else:
+            raise ValueError
+        if 'admission_link' not in candidate:
+            if 'admission_group' in effects:
+                raise ValueError
+            return None
+        if profile == 'source':
+            owner = dict(zip(('being_ref', 'embodiment_id'), _owner_identity(frozen['predecessor'])))
+            group = candidate.get('qualification', {}).get('group')
+            stores = frozen['predecessor']['runtime_status']['loaded_runtime']['stores']
+        else:
+            owner = dict(being_ref=frozen['being_ref'], embodiment_id=frozen['origin']['embodiment_id'])
+            group, stores = frozen.get('group'), frozen.get('store_bindings')
+        link = admission_lifecycle_link(candidate['admission_link'], **owner)
+        if (frozen.get('mode') != 'preserve' or not isinstance(group, dict)
+                or group['selected']['tribe_ref'] != link['tribe_ref']
+                or stores != link['snapshot_request']['params']['expected_stores']
+                or frozen['preservation'] != link['snapshot_request']['params']['expected_preservation']):
+            raise ValueError
+        retained = effects.get('admission_group')
+        derived = None
+        if retained is not None:
+            snapshot = retained['snapshot']
+            if admission_group_derivation(link, snapshot, previous=group, stores=stores) != retained:
+                raise ValueError
+            publications = snapshot['publications']
+            if set(publications) != {'application', 'visibility-publish', 'selection'}:
+                raise ValueError
+            for action, step_key in (('application', 'application_step'), ('visibility-publish', 'visibility_step'),
+                                     ('selection', 'selection_step')):
+                result = publications[action]['result']
+                if (result.get('schema') != 'cluster-group-publication-result/v1'
+                        or result['operation_id'] != snapshot['operation_id'] or result['action'] != action
+                        or result['step'] != link['snapshot_request']['params'][step_key]
+                        or result['status'] != 'recorded' or result['receiving_readiness'] != 'unobserved'
+                        or re.fullmatch('[0-9a-f]{64}', publications[action]['command_sha256']) is None):
+                    raise ValueError
+            derived = dict(derivation_sha256=digest(retained),
+                group={key: snapshot['group'][key] for key in (
+                    'application_sha256', 'publication_sha256', 'installation_sha256')},
+                selection_sha256=snapshot['selection_sha256'],
+                publications={action: dict(command_sha256=receipt['command_sha256'],
+                    result_sha256=digest(receipt['result'])) for action, receipt in publications.items()})
+        continuation = effects.get('start_continuation')
+        if continuation is not None:
+            from .onboarding_group_recovery import validate_lifecycle
+            preserved_sha256 = digest(dict(schema='cluster-source-bootstrap-preservation/v1',
+                operation_id=row['operation_id'],preserved=True,loaded_readiness='unobserved')) if profile == 'source' else digest(effects['owner_preserved'])
+            validate_lifecycle(row,candidate,continuation,preservation_sha256=preserved_sha256)
+        return dict(schema='cluster-admission-lifecycle-projection/v1',
+            **{key: link[key] for key in ('cohort_operation_id', 'cohort_intent_sha256', 'tribe_ref', 'owner')},
+            link_sha256=digest(link), manifest_digest=call['manifest_digest'],
+            snapshot_request_sha256=digest(link['snapshot_request']),
+            owner_context_sha256=link['snapshot_request']['params']['owner_context_sha256'],
+            publication_operation_id=link['snapshot_request']['operation_id'], derived=derived,
+            **({'continuation':continuation} if continuation is not None else {}))
+    except (KeyError, TypeError, ValueError, AttributeError, OnboardingError):
+        raise OnboardingError('receiving_admission_lifecycle_unobserved') from None
+
+
+def freeze_source_bootstrap(source, manager, *, deadline_ns: int | None = None) -> dict:
     """Freeze the Source's existing identity and actual Matrix manager scope."""
-    with OwnerGroupClient(source.root, source.root / 'matrix.sock') as owner:
+    options = {} if deadline_ns is None else {'deadline_ns': deadline_ns}
+    with OwnerGroupClient(source.root, source.root / 'matrix.sock', **options) as owner:
         predecessor = owner.base_status()
-        service = manager.inspect()
+        service = manager.inspect(**options)
         scope = manager.bind_process(predecessor['process'], service)
         bundle = being_seed._read(source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
         if (bundle['local_origin'] != predecessor['runtime_status']['local_origin']
@@ -1001,7 +1417,8 @@ def validate_source_additions(settings: dict, frozen: dict) -> None:
 def prepare_source_bootstrap(source, *, home: Path, code: Path, code_digest: str,
                              config: Path, manifest_path: Path, manifest_digest: str,
                              transaction: Path, expires_at_ms: int, code_uid: int = 0,
-                             manifest_uid: int = 0) -> dict:
+                             manifest_uid: int = 0, admission_link: dict | None = None,
+                             installed_only: bool = False) -> dict:
     """Prepare the exact supported Source command before managed interruption.
 
     Only owner-protected release/configuration inputs select executable code.
@@ -1020,17 +1437,134 @@ def prepare_source_bootstrap(source, *, home: Path, code: Path, code_digest: str
     group = source_bootstrap_group(source, bundle)
     checked = prepare_sdk(home, code, code_digest, manifest_path, manifest_digest,
         being_ref=bundle['manifest']['being_ref'], embodiment_id=bundle['local_origin']['embodiment_id'],
-        code_uid=code_uid, manifest_uid=manifest_uid)
+        code_uid=code_uid, manifest_uid=manifest_uid,
+        **({'installed_only': True} if installed_only else {}))
     parameters = sdk_parameters(code, uid=code_uid)
     if parameters != dict(matrix_commit=checked['matrix_revision'], matrix_wheel_sha256=checked['matrix_wheel_sha256']):
         raise OnboardingError('qualified_onboarding_source_runtime_required')
     venv = onboarding_sdk.observe(home, code, code_uid=code_uid, **parameters)
-    imports = onboarding_sdk.runtime_imports(venv, code, code_uid=code_uid, **parameters)
-    argv = onboarding_sdk.runtime_command(venv, imports, code, 'clusterctl.onboarding_source',
-        ['--config', str(config), '--code-digest', code_digest, '--code-owner', str(code_uid)])
-    return dict(transaction=str(transaction), expires_at_ms=expires_at_ms, argv=argv,
+    with ExitStack() as read_scope:
+        if installed_only:
+            read_scope.enter_context(being_seed._locked(venv.parent, shared=True))
+            private_directory(venv.parent / 'runtime-imports')
+            being_seed._read(venv.parent / 'runtime-imports.json')
+        imports = onboarding_sdk.runtime_imports(venv, code, code_uid=code_uid, **parameters)
+        argv = onboarding_sdk.runtime_command(venv, imports, code, 'clusterctl.onboarding_source',
+            ['--config', str(config), '--code-digest', code_digest, '--code-owner', str(code_uid)])
+    association = ({} if admission_link is None else dict(admission_link=admission_lifecycle_link(
+        admission_link, being_ref=bundle['manifest']['being_ref'],
+        embodiment_id=bundle['local_origin']['embodiment_id'])))
+    return dict(transaction=str(transaction), expires_at_ms=expires_at_ms, argv=argv, **association,
         qualification=dict(home=str(home), code=str(code), code_digest=code_digest, code_uid=code_uid, group=group,
             config=str(config), manifest_path=str(manifest_path), manifest_uid=manifest_uid, prepared=checked))
+
+
+def prepare_source_admission(source, journal_path: Path, request: dict, *, config: Path,
+                             deadline_ns: int) -> dict:
+    """Plan the existing Source's local admission lifecycle without stopping it.
+
+    The qualified owner supplies code/configuration. The protected coordinator
+    supplies the closed preparation recipe; only the resulting public binding
+    leaves this owner's journal. Exact retries never freeze a later process.
+    """
+    from .onboarding_code_successor import plan_update
+    from .onboarding_group_admission import preview_owner_context
+    from .onboarding_service import MatrixUserService
+    from .operation_journal import JournalConflict, OperationJournal
+    fields = {'schema', 'operation_id', 'cohort_operation_id', 'cohort_intent_sha256',
+        'tribe_ref', 'owner', 'predecessor', 'unit', 'home', 'manifest_path', 'manifest_uid',
+        'manifest_digest', 'expires_at_ms', 'authority_closure', 'owner_context_sha256', 'steps'}
+    try:
+        if (not isinstance(request, dict) or set(request) != fields
+                or request['schema'] != 'cluster-source-admission-preparation/v1'
+                or str(uuid.UUID(request['operation_id'])) != request['operation_id']
+                or any(not isinstance(request[key], str) or not 1 <= len(request[key]) <= 240
+                    for key in ('cohort_operation_id', 'tribe_ref'))
+                or any(not isinstance(request[key], str) or re.fullmatch('[0-9a-f]{64}', request[key]) is None
+                    for key in ('cohort_intent_sha256', 'manifest_digest', 'owner_context_sha256'))
+                or any(not isinstance(request[key], str) or not Path(request[key]).is_absolute()
+                    or '..' in Path(request[key]).parts for key in ('unit', 'home', 'manifest_path'))
+                or type(request['manifest_uid']) is not int or request['manifest_uid'] < 0
+                or type(request['expires_at_ms']) is not int or not 0 < request['expires_at_ms'] < 2**53
+                or not isinstance(request['owner'], dict) or set(request['owner']) != {'being_ref', 'embodiment_id'}
+                or any(not isinstance(value, str) or not value for value in request['owner'].values())
+                or not isinstance(request['predecessor'], dict) or set(request['predecessor']) != {'process', 'server'}
+                or not all(isinstance(value, dict) for value in request['predecessor'].values())
+                or not isinstance(request['authority_closure'], dict)
+                or not isinstance(request['steps'], dict)
+                or set(request['steps']) != {'application', 'visibility', 'selection', 'snapshot'}
+                or any(not isinstance(step, str) or re.fullmatch('[a-z][a-z0-9-]{0,79}', step) is None
+                    for step in request['steps'].values()) or len(set(request['steps'].values())) != 4
+                or not isinstance(source.qualified_startup, dict)
+                or not isinstance(source.code_digest, str) or re.fullmatch('[0-9a-f]{64}', source.code_digest) is None):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise OnboardingError('receiving_source_admission_preparation_required') from None
+    def budget(*, fresh: bool = False):
+        if time.monotonic_ns() >= deadline_ns:
+            raise OnboardingError('receiving_owner_deadline_expired')
+        if fresh and time.time_ns() // 1_000_000 >= request['expires_at_ms']:
+            raise OnboardingError('receiving_preservation_authorization_expired')
+    budget()
+    target = 'source-admission:' + request['operation_id']
+    journal = OperationJournal.existing(journal_path)
+    row = None if journal is None else journal.latest_for_target(target)
+    if row is None:
+        budget(fresh=True)
+        preview = preview_owner_context(source.root, source.outputs / 'tribe', request['operation_id'],
+            request['authority_closure'], deadline_ns=deadline_ns)
+        if preview['owner_context_sha256'] != request['owner_context_sha256']:
+            raise OnboardingError('onboarding_group_owner_context_conflict')
+        manager = MatrixUserService(Path(request['unit']))
+        frozen = freeze_source_bootstrap(source, manager, deadline_ns=deadline_ns)
+        if (frozen['mode'] != 'preserve' or frozen['bundle_sha256'] != preview['runtime_bundle_sha256']
+                or request['predecessor'] != {key: frozen['predecessor'][key] for key in ('process', 'server')}
+                or _owner_identity(frozen['predecessor']) != (
+                    request['owner']['being_ref'], request['owner']['embodiment_id'])):
+            raise OnboardingError('receiving_source_admission_predecessor_changed')
+        preservation_authorization(frozen['preservation'], request['expires_at_ms'])
+        stores = (frozen['predecessor']['runtime_status'].get('loaded_runtime') or {}).get('stores')
+        bundle = being_seed._read(source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
+        preserved_admission_stores(source.root, bundle, frozen['preservation'], stores)
+        steps = request['steps']
+        snapshot = dict(operation_id=request['operation_id'], step=steps['snapshot'], action='snapshot', params=dict(
+            application_step=steps['application'], visibility_step=steps['visibility'], selection_step=steps['selection'],
+            owner_context_sha256=request['owner_context_sha256'], expected_stores=stores,
+            expected_preservation=frozen['preservation']))
+        link = admission_lifecycle_link(dict(schema='cluster-admission-lifecycle-link/v1',
+            cohort_operation_id=request['cohort_operation_id'], cohort_intent_sha256=request['cohort_intent_sha256'],
+            tribe_ref=request['tribe_ref'], owner=request['owner'], snapshot_request=snapshot), **request['owner'])
+        with onboarding_sdk.probe_budget(deadline_ns):
+            candidate = prepare_source_bootstrap(source, home=Path(request['home']), code=source.code,
+                code_digest=source.code_digest, config=config, manifest_path=Path(request['manifest_path']),
+                manifest_digest=request['manifest_digest'],
+                transaction=source.root.parent / ('.admission-controller-' + request['operation_id']),
+                expires_at_ms=request['expires_at_ms'], code_uid=source.code_uid, manifest_uid=request['manifest_uid'],
+                admission_link=link, installed_only=True)
+        if candidate['qualification']['group']['selected']['tribe_ref'] != request['tribe_ref']:
+            raise OnboardingError('receiving_admission_tribe_changed')
+        budget(fresh=True)
+        journal = OperationJournal(journal_path)
+        row = plan_update(journal, manifest_digest=request['manifest_digest'], target=target,
+            expected_precondition=dict(source_bootstrap=frozen, source_admission_preparation=request),
+            intended_transition=dict(source_bootstrap=candidate),
+            audit_identity={'actor': 'qualified-source-admission-owner'})
+    if (row['expected_precondition'].get('source_admission_preparation') != request
+            or row['state'] in {'degraded', 'compensated'}
+            or row['intended_transition']['source_bootstrap']['qualification']['code'] != str(source.code)
+            or row['intended_transition']['source_bootstrap']['qualification']['code_digest'] != source.code_digest):
+        raise JournalConflict('source admission preparation changed')
+    # Reuse the supported owner projection for journal/config/intent integrity;
+    # this is historical preparation, never authorization to stop or load.
+    projected = source.receiving_lifecycle(journal_path, row['operation_id'])
+    link = row['intended_transition']['source_bootstrap']['admission_link']
+    if projected['lifecycle'].get('admission', {}).get('link_sha256') != digest(link):
+        raise OnboardingError('receiving_source_lifecycle_conflict')
+    budget()
+    return dict(schema='cluster-source-admission-prepared/v1', operation_id=row['operation_id'],
+        source_config_sha256=digest(source.settings), code_digest=source.code_digest, request_sha256=digest(request),
+        cohort_operation_id=request['cohort_operation_id'], cohort_intent_sha256=request['cohort_intent_sha256'],
+        link_sha256=digest(link), owner_context_sha256=request['owner_context_sha256'], receiving_readiness='unobserved')
 
 
 def source_bootstrap_group(source, bundle: dict) -> dict:
@@ -1045,7 +1579,7 @@ def bootstrap_group(target, bundle: dict, *, socket_root: Path | None = None) ->
     from .onboarding_peer import observed_group
     from daimon_matrix.canonical import unb64url
     from daimon_matrix.operator_rebirth import authority_from_runtime_bundle
-    from daimon_matrix.messaging_config import _public_identity, verify_public_binding, _read_verified_publication
+    from daimon_matrix.messaging_config import config_digest, _public_identity, verify_public_binding, _read_verified_publication
     group = observed_group(target, bundle, socket_root=socket_root)
     if group is None:
         raise OnboardingError('qualified_onboarding_group_required')
@@ -1059,8 +1593,8 @@ def bootstrap_group(target, bundle: dict, *, socket_root: Path | None = None) ->
         publication=Path(group['application']) / 'publication.json',
         application=metadata / 'application.json', binding=metadata / 'binding.json', visibility=Path(group['visibility']))
     visibility = being_seed._read(Path(group['visibility']), limit=being_seed.MAX_SELECTION)
-    return dict(selected=group, application_sha256=digest(application), publication_sha256=digest(publication),
-        installation_sha256=digest(visibility['document']),
+    return dict(selected=group, application_sha256=config_digest(application), publication_sha256=config_digest(publication),
+        installation_sha256=config_digest(visibility['document']),
         hashes={key: hashlib.sha256(onboarding_release.regular(
         path, uid=os.geteuid())).hexdigest() for key, path in paths.items()})
 
@@ -1124,10 +1658,59 @@ def recover_capability_stage(upgrade, *, runtime_root: Path, transaction: Path,
         raise OnboardingError('receiving_bootstrap_attempt_limit')
 
 
-def freeze_guest_bootstrap(target, *, deadline_ns: int) -> dict:
-    """Observe the receiving body before its separately owned unit is stopped."""
+def _freeze_initial_guest_owner(target, *, deadline_ns: int, initial_service: bool) -> dict:
+    """Read initial context while the caller holds the actual native writer.
+
+    Both offline freeze and the initial child's under-lock pre-load assertion
+    use this same validation. Never acquire the daemon lock recursively here.
+    """
     from .onboarding_service import GuestServiceBootstrap
+    prepared = target.observe()
+    if (prepared['phase'] != 'v8'
+            or (prepared.get('group') is not None) != initial_service):
+        raise OnboardingError('receiving_guest_bootstrap_initial_required')
+    bundle = target.document_bundle()
+    preservation = controller_preservation(target.package / 'runtime', bundle)
+    mode = controller_bootstrap_mode(bundle, preservation)
+    group = None
+    if initial_service:
+        # First service start uses the already published optional
+        # controller and signed group. It must not issue/renew authority
+        # after the group's owner context has been frozen.
+        if preservation is None or mode != 'preserve':
+            raise OnboardingError('receiving_initial_controller_required')
+        now = time.time_ns() // 1_000_000
+        if (not preservation['active']
+                or not preservation['not_before_ms'] <= now < preservation['not_after_ms']):
+            raise OnboardingError('receiving_initial_controller_required')
+        group = bootstrap_group(target, bundle)
+        if group['selected'] != prepared['group']:
+            raise OnboardingError('receiving_guest_bootstrap_group_changed')
+    renewal = {}
+    if mode == 'renew':
+        from daimon_matrix import operator_runtime_upgrade as upgrade
+        renewal['renewal_not_after_ms'] = upgrade._controller_grant_expiry(
+            bundle, time.time_ns() // 1_000_000)
     GuestServiceBootstrap._budget(deadline_ns)
+    return dict(plan_digest=digest(target.plan), genesis_digest=digest(target.genesis),
+        code_digest=target.code_digest, runtime_sha256=digest(bundle),
+        group_sha256=digest({'group': None} if group is None else group),
+        mode=mode, preservation=preservation, **renewal,
+        being_ref=bundle['manifest']['being_ref'], origin=bundle['local_origin'], group=group,
+        observer_startup=target.qualified_startup, predecessor=None)
+
+
+def freeze_guest_bootstrap(target, *, deadline_ns: int, initial: bool = False,
+                           initial_service: bool = False) -> dict:
+    """Freeze a predecessor, initial controller or first selected group load."""
+    from .onboarding_service import GuestServiceBootstrap
+    if (type(initial) is not bool or type(initial_service) is not bool
+            or initial and initial_service):
+        raise OnboardingError('invalid_receiving_bootstrap_request')
+    GuestServiceBootstrap._budget(deadline_ns)
+    if initial or initial_service:
+        with being_seed._locked(target.root), target._runtime_writer():
+            return _freeze_initial_guest_owner(target, deadline_ns=deadline_ns, initial_service=initial_service)
     observed = target.running(admitted=True, deadline_ns=deadline_ns, bootstrap_base_only=True)
     bundle = target.document_bundle()
     if (observed['responder_association'] != 'same-connection'
@@ -1152,6 +1735,7 @@ def freeze_guest_bootstrap(target, *, deadline_ns: int) -> dict:
         code_digest=target.code_digest, runtime_sha256=digest(bundle), group_sha256=digest(group),
         mode=mode, preservation=preservation, **renewal,
         being_ref=bundle['manifest']['being_ref'], origin=bundle['local_origin'], group=group,
+        store_bindings=(observed['runtime_status'].get('loaded_runtime') or {}).get('stores'),
         observer_startup=target.qualified_startup,
         predecessor=dict(process=observed['process'], admission_parent=observed['admission_parent']))
 
@@ -1167,15 +1751,19 @@ class GuestOwnerBootstrap:
 
     def __init__(self, target, request: dict):
         from .owner_process import validate_process
+        initial = request.get('schema') == 'cluster-guest-owner-initial/v1'
+        predecessor = request.get('predecessor')
+        valid_predecessor = (predecessor is None and request.get('group_sha256') == digest({'group': None})
+            if initial else isinstance(predecessor, dict) and set(predecessor) == {'process', 'admission_parent'})
         fields = {'schema', 'operation_id', 'plan_digest', 'genesis_digest', 'code_digest',
                   'runtime_sha256', 'group_sha256', 'predecessor', 'expires_at_ms'}
-        if (os.geteuid() != 1000 or set(request) not in (fields, fields | {'mode', 'preservation'})
+        if (os.geteuid() != 1000 or set(request) - {'group_context'} not in (fields, fields | {'mode', 'preservation'})
                 or request.get('mode', 'issue') not in {'issue', 'preserve', 'renew'}
                 or (request.get('mode', 'issue') in {'preserve', 'renew'}) != isinstance(request.get('preservation'), dict)
                 or request.get('mode') in {'preserve', 'renew'} and (
                     request['runtime_sha256'] != request['preservation'].get('runtime_sha256')
                     or request['preservation'].get('origin') != target.document_bundle()['local_origin'])
-                or request['schema'] != 'cluster-guest-owner-bootstrap/v1'
+                or request['schema'] not in {'cluster-guest-owner-bootstrap/v1', 'cluster-guest-owner-initial/v1'}
                 or str(uuid.UUID(request['operation_id'])) != request['operation_id']
                 or any(not isinstance(request[key], str) or re.fullmatch('[0-9a-f]{64}', request[key]) is None
                        for key in fields - {'schema', 'operation_id', 'predecessor', 'expires_at_ms'})
@@ -1183,14 +1771,29 @@ class GuestOwnerBootstrap:
                 or request['plan_digest'] != digest(target.plan)
                 or request['genesis_digest'] != digest(target.genesis)
                 or request['code_digest'] != target.code_digest
-                or set(request['predecessor']) != {'process', 'admission_parent'}):
+                or not valid_predecessor):
             raise OnboardingError('receiving_guest_bootstrap_request_required')
-        child = validate_process(request['predecessor']['process'])
-        parent = validate_process(request['predecessor']['admission_parent'])
-        if (child['uid'] != 1000 or parent['uid'] != 1000 or child['pid'] == parent['pid']
-                or child['boot_id'] != parent['boot_id']):
-            raise OnboardingError('receiving_guest_bootstrap_request_required')
+        context = request.get('group_context')
+        if 'group_context' in request:
+            try:
+                if (not initial or not isinstance(context, dict)
+                        or set(context) != {'operation_id', 'owner_name', 'authority_closure', 'expected_context_sha256'}
+                        or str(uuid.UUID(context['operation_id'])) != context['operation_id']
+                        or context['owner_name'] != target.plan['name']
+                        or not isinstance(context['authority_closure'], dict)
+                        or not isinstance(context['expected_context_sha256'], str)
+                        or re.fullmatch('[0-9a-f]{64}', context['expected_context_sha256']) is None):
+                    raise ValueError
+            except (KeyError, TypeError, ValueError, AttributeError):
+                raise OnboardingError('receiving_guest_bootstrap_context_required') from None
+        if not initial:
+            child = validate_process(request['predecessor']['process'])
+            parent = validate_process(request['predecessor']['admission_parent'])
+            if (child['uid'] != 1000 or parent['uid'] != 1000 or child['pid'] == parent['pid']
+                    or child['boot_id'] != parent['boot_id']):
+                raise OnboardingError('receiving_guest_bootstrap_request_required')
         self.target, self.request = target, request
+        self.initial = initial
         self.runtime = target.package / 'runtime'
         self.operation_id = request['operation_id']
         records_parent = private_directory(target.root / 'receiving-bootstrap', create=True)
@@ -1205,7 +1808,89 @@ class GuestOwnerBootstrap:
         return {path.stem: json.loads(onboarding_release.regular(path, uid=1000))
                 for path in self.records.glob('*.json')}
 
+    def _group_context_before(self, *, deadline_ns: int) -> dict | None:
+        """Retain/check the approved predecessor before native tree exchange."""
+        from .onboarding_group_admission import preview_owner_context
+        from .onboarding_service import GuestServiceBootstrap
+        context = self.request.get('group_context')
+        if context is None:
+            return None
+        before = self._observations().get('group_context_before')
+        with self.target._runtime_writer():
+            original = digest(self.target.document_bundle()) == self.request['runtime_sha256']
+            if original:
+                frozen = self.target.root/'group-admission'/context['operation_id']/'owner/context.json'
+                if self.request.get('mode') != 'preserve' and frozen.exists():
+                    raise OnboardingError('receiving_guest_bootstrap_context_already_frozen')
+                current = preview_owner_context(self.runtime, self.target.root/'tribe',
+                    context['operation_id'], context['authority_closure'], deadline_ns=deadline_ns)
+                if (current['owner_context_sha256'] != context['expected_context_sha256']
+                        or current['runtime_bundle_sha256'] != self.request['runtime_sha256']
+                        or current['predecessor_selection_sha256'] is not None):
+                    raise OnboardingError('receiving_guest_bootstrap_context_changed')
+                if before is None:
+                    before = current
+            if (not isinstance(before, dict)
+                    or before.get('schema') != 'cluster-group-owner-context-preview/v1'
+                    or before.get('operation_id') != context['operation_id']
+                    or before.get('owner_context_sha256') != context['expected_context_sha256']
+                    or before.get('runtime_bundle_sha256') != self.request['runtime_sha256']
+                    or before.get('predecessor_selection_sha256') is not None):
+                raise OnboardingError('receiving_guest_bootstrap_context_changed')
+            # Re-sync original evidence without replacing its historical plan.
+            # A cached-before retry still checks the currently selected original
+            # inode/context; only a verified successor uses historical-before.
+            self._record('group_context_before', before)
+        GuestServiceBootstrap._budget(deadline_ns)
+        return before
+
+    def _group_context_transition(self, upgrade, result: dict, *, deadline_ns: int) -> dict:
+        """Derive the selected context under the caller's actual native writer.
+
+        This does not wrap native stage/publish locks or change their selected
+        tree. All context evidence is outside that tree, preserving exact retry.
+        """
+        from .onboarding_group_admission import owner_authorities, preview_owner_context
+        from .onboarding_service import GuestServiceBootstrap
+        context = self.request.get('group_context')
+        if context is None:
+            return result
+        before = self._observations().get('group_context_before')
+        if not isinstance(before, dict) or before.get('owner_context_sha256') != context['expected_context_sha256']:
+            raise OnboardingError('receiving_guest_bootstrap_context_changed')
+        GuestServiceBootstrap._budget(deadline_ns)
+        if self.request.get('mode') == 'preserve':
+            selected = result['inventory_sha256']
+        else:
+            raw = onboarding_release.regular(self.transaction/'ready.json', uid=1000)
+            ready = json.loads(raw)
+            if (hashlib.sha256(raw).hexdigest() != result['ready_sha256']
+                    or ready['schema'] != 'dm.operator.capability-upgrade/v1'
+                    or ready['source'] != str(self.runtime)
+                    or ready['transaction'] != str(self.transaction)):
+                raise OnboardingError('receiving_guest_bootstrap_context_changed')
+            selected = ready['successor_sha256']
+        if (upgrade.inventory_digest(self.runtime) != selected
+                or digest(self.target.document_bundle()) != result['runtime_sha256']):
+            raise OnboardingError('receiving_guest_bootstrap_context_changed')
+        GuestServiceBootstrap._budget(deadline_ns)
+        owner_authorities(self.runtime, self.target.root/'tribe', self.target.root/'group-admission',
+            context['operation_id'], context['authority_closure'])
+        after = preview_owner_context(self.runtime, self.target.root/'tribe', context['operation_id'],
+            context['authority_closure'], deadline_ns=deadline_ns)
+        transition = dict(schema='cluster-initial-owner-context-transition/v1',
+            controller_operation_id=self.operation_id, controller_request_sha256=digest(self.request),
+            controller_result_sha256=digest(result), before=before, after=after)
+        self._record('group_context_transition', transition)
+        GuestServiceBootstrap._budget(deadline_ns)
+        return {**result, 'owner_context_transition': transition}
+
     def _exits(self) -> None:
+        if self.initial:
+            # No predecessor exists. Cleanup and native stage/publication own
+            # the actual writer; recovery already holds it around this callback.
+            # Never recursively acquire that lock or invent an exit receipt.
+            return
         from .owner_process import observe_process_exit
         retained = self._observations()
         for name, process in self.request['predecessor'].items():
@@ -1218,7 +1903,12 @@ class GuestOwnerBootstrap:
                     raise OnboardingError('receiving_guest_bootstrap_exit_required')
                 self._record(name + '_exited', proof)
 
-    def _group(self) -> dict:
+    def _group(self) -> dict | None:
+        if self.initial:
+            from .onboarding_peer import observed_group
+            if observed_group(self.target, self.target.document_bundle()) is not None:
+                raise OnboardingError('receiving_guest_bootstrap_group_changed')
+            return None
         group = bootstrap_group(self.target, self.target.document_bundle())
         if (digest(group) != self.request['group_sha256']
                 or Path(group['selected']['socket']) != self.runtime / 'tribe.sock'):
@@ -1303,6 +1993,7 @@ class GuestOwnerBootstrap:
             self._record('request', self.request)
             self._exits()
             self._group()
+            self._group_context_before(deadline_ns=deadline_ns)
             if self.request.get('mode', 'issue') == 'preserve':
                 if action != 'stage':
                     raise OnboardingError('receiving_preservation_has_no_publication')
@@ -1319,7 +2010,7 @@ class GuestOwnerBootstrap:
                         preservation_authorization(self.request['preservation'], self.request['expires_at_ms'])
                     self._record('owner_preserved', result)
                     GuestServiceBootstrap._budget(deadline_ns)
-                    return result
+                    return self._group_context_transition(upgrade, result, deadline_ns=deadline_ns)
             with self.target._runtime_writer():
                 # The exact parent/child exits and native writer establish safe
                 # cleanup of ephemeral runtime sockets, never private history.
@@ -1348,7 +2039,10 @@ class GuestOwnerBootstrap:
                 counter_after=publication['counter_after'], receiving_readiness='unobserved')
             self._record('capability_published', result)
             GuestServiceBootstrap._budget(deadline_ns)
-            return result
+            if 'group_context' not in self.request:
+                return result
+            with self.target._runtime_writer():
+                return self._group_context_transition(upgrade, result, deadline_ns=deadline_ns)
 
 
 class SourceBootstrapController:
@@ -1362,6 +2056,16 @@ class SourceBootstrapController:
     def __init__(self, journal, operation_id: str, source, manager):
         self.journal, self.operation_id = journal, operation_id
         self.source, self.manager = source, manager
+
+    @staticmethod
+    def _budget(deadline_ns: int | None) -> None:
+        if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
+            raise OnboardingError('receiving_owner_deadline_expired')
+
+    def _remaining(self, timeout_seconds: float, deadline_ns: int | None) -> float:
+        self._budget(deadline_ns)
+        return timeout_seconds if deadline_ns is None else min(
+            timeout_seconds, (deadline_ns - time.monotonic_ns()) / 1_000_000_000)
 
     def _row(self):
         row = self.journal.get(self.operation_id)
@@ -1384,17 +2088,30 @@ class SourceBootstrapController:
                     'qualification' not in candidate
                     or frozen['preservation'].get('runtime_sha256') != frozen.get('bundle_sha256')
                     or frozen['preservation'].get('origin') != frozen['predecessor'].get('server'))
-                or set(candidate) not in ({'transaction', 'expires_at_ms', 'argv'},
+                or set(candidate) - {'admission_link'} not in ({'transaction', 'expires_at_ms', 'argv'},
                     {'transaction', 'expires_at_ms', 'argv', 'qualification'})):
             raise OnboardingError('receiving_bootstrap_binding_conflict')
         validate_source_additions(self.source.settings, frozen)
+        if 'admission_link' in candidate:
+            if frozen.get('mode') != 'preserve' or 'qualification' not in candidate:
+                raise OnboardingError('receiving_admission_prepared_controller_required')
+            being_ref, embodiment_id = _owner_identity(frozen['predecessor'])
+            link = admission_lifecycle_link(candidate['admission_link'], being_ref=being_ref, embodiment_id=embodiment_id)
+            group = candidate['qualification'].get('group') if isinstance(candidate['qualification'], dict) else None
+            if (not isinstance(group, dict) or not isinstance(group.get('selected'), dict)
+                    or link['tribe_ref'] != group['selected'].get('tribe_ref')):
+                raise OnboardingError('receiving_admission_tribe_changed')
+            stores = (frozen['predecessor']['runtime_status'].get('loaded_runtime') or {}).get('stores')
+            if (not isinstance(stores, dict) or stores != link['snapshot_request']['params']['expected_stores']
+                    or frozen['preservation'] != link['snapshot_request']['params']['expected_preservation']):
+                raise OnboardingError('receiving_admission_store_binding_required')
         transaction = Path(candidate['transaction'])
         if (not transaction.is_absolute() or '..' in transaction.parts
                 or transaction.parent != self.source.root.parent or transaction == self.source.root):
             raise OnboardingError('receiving_bootstrap_binding_conflict')
         return row, frozen, candidate
 
-    def _qualify_candidate(self, row: dict, candidate: dict) -> dict:
+    def _qualify_candidate(self, row: dict, candidate: dict, *, check_group: bool = True) -> dict:
         from .onboarding_code_successor import sdk_parameters
         qualification = candidate['qualification']
         if (not isinstance(qualification, dict) or set(qualification) != {
@@ -1409,7 +2126,9 @@ class SourceBootstrapController:
         code = Path(qualification['code'])
         onboarding_release.regular(code / 'clusterctl/onboarding_source.py', uid=qualification['code_uid'])
         bundle = being_seed._read(self.source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
-        if source_bootstrap_group(self.source, bundle) != qualification['group']:
+        effects = (row['runtime_observation'] or {}).get('source_bootstrap', {})
+        if check_group and source_bootstrap_group(self.source, bundle) != derived_lifecycle_group(
+                candidate, effects, qualification['group']):
             raise OnboardingError('receiving_bootstrap_group_changed')
         prepared = qualification['prepared']
         predecessor = row['expected_precondition']['source_bootstrap']['predecessor']
@@ -1448,6 +2167,64 @@ class SourceBootstrapController:
         self.journal.advance(self.operation_id, row['state'], runtime_observation=observations,
                              expected_runtime_observation=row['runtime_observation'])
 
+    def _admission_preserved(self, frozen: dict) -> dict:
+        """Check immutable owner/store bindings under the native writer.
+
+        The original loaded store observations bind physical identity and
+        schema, not mutable ledger contents. Only the frozen admission branch
+        uses this instead of ordinary full-inventory equality.
+        """
+        bundle = being_seed._read(self.source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
+        original = (frozen['predecessor']['runtime_status'].get('loaded_runtime') or {}).get('stores')
+        return preserved_admission_stores(self.source.root, bundle, frozen['preservation'], original)
+
+    def retain_admission_group(self, *, timeout_seconds: float = 30, deadline_ns: int | None = None) -> dict:
+        """Derive the after-group only from this pre-approved owner's effects."""
+        from .onboarding_service import selection_lock
+        from .owner_process import observe_process_exit
+        if type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 60:
+            raise OnboardingError('receiving_bootstrap_invalid_wait')
+        self._budget(deadline_ns)
+        options = {} if deadline_ns is None else {'deadline_ns': deadline_ns}
+        with self.journal.mutation_lock(self.operation_id), selection_lock(self.manager.unit):
+            row, frozen, candidate = self._row()
+            link = candidate.get('admission_link')
+            if link is None:
+                raise OnboardingError('receiving_admission_lifecycle_link_required')
+            self._qualify_candidate(row, candidate, check_group=False)
+            self._budget(deadline_ns)
+            effects = (row['runtime_observation'] or {}).get('source_bootstrap', {})
+            if ('owner_preserved' not in effects or 'controlled_loaded' in effects
+                    or effects.get('quiesced', {}).get('exit_observed') is not True
+                    or not observe_process_exit(frozen['predecessor']['process'])):
+                raise OnboardingError('receiving_admission_preservation_required')
+            self._stopped(frozen, candidate, **options)
+            with self.source.writer():
+                stores = self._admission_preserved(frozen)
+            request = link['snapshot_request']
+            context = being_seed._read(self.source.outputs / 'group-admission' /
+                request['operation_id'] / 'owner/context.json', limit=being_seed.MAX_SELECTION)
+            if digest(context) != request['params']['owner_context_sha256']:
+                raise OnboardingError('receiving_admission_group_changed')
+            self._budget(deadline_ns)
+            snapshot = self.source.group_publication(request, authority_closure=context['authority_closure'],
+                deadline_ns=min(time.monotonic_ns() + int(timeout_seconds * 1_000_000_000),
+                    2**63 - 1 if deadline_ns is None else deadline_ns))
+            derived = admission_group_derivation(link, snapshot,
+                previous=candidate['qualification']['group'], stores=stores)
+            self._stopped(frozen, candidate, **options)
+            with self.source.writer():
+                if self._admission_preserved(frozen) != stores:
+                    raise OnboardingError('receiving_admission_store_binding_changed')
+                if source_bootstrap_group(self.source, being_seed._read(
+                        self.source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)) != snapshot['group']:
+                    raise OnboardingError('receiving_admission_group_changed')
+                if hashlib.sha256(self._visibility_current(frozen, {})).hexdigest() != frozen['visibility_sha256']:
+                    raise OnboardingError('receiving_bootstrap_visibility_changed')
+            self._budget(deadline_ns)
+            self._record('admission_group', derived)
+            return derived
+
     def _stopped(self, frozen: dict, candidate: dict, *, deadline_ns: int | None = None):
         from .onboarding_service import entrypoint
         inspected = self.manager.inspect() if deadline_ns is None else self.manager.inspect(deadline_ns=deadline_ns)
@@ -1463,13 +2240,41 @@ class SourceBootstrapController:
             raise OnboardingError('receiving_bootstrap_quiescence_required')
         return inspected
 
-    def _writer_quiesced(self) -> None:
+    def _writer_quiesced(self, *, deadline_ns: int | None = None) -> None:
         from daimon_matrix.daemon import _prepare_socket
         with self.source.writer():
+            self._budget(deadline_ns)
             # Supported stale-socket checks are safe only after exact process
             # exit and stopped-manager proof. A forced exit may leave this
             # ephemeral socket, which cannot be copied as a runtime artifact.
             _prepare_socket(self.source.root / 'matrix.sock')
+
+    def observe_quiescence(self, *, timeout_seconds: float = 30, deadline_ns: int | None = None) -> dict:
+        """Fresh stopped-unit and exact-exit evidence; never dispatch StopUnit."""
+        from .onboarding_service import selection_lock
+        from .owner_process import observe_process_exit
+        if type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 60:
+            raise OnboardingError('receiving_bootstrap_invalid_wait')
+        deadline = min(time.monotonic_ns() + int(timeout_seconds * 1_000_000_000),
+            2**63 - 1 if deadline_ns is None else deadline_ns)
+        self._budget(deadline)
+        with self.journal.mutation_lock(self.operation_id), selection_lock(self.manager.unit):
+            row, frozen, candidate = self._row()
+            retained = (row['runtime_observation'] or {}).get('source_bootstrap', {}).get('quiesced')
+            if (not isinstance(retained, dict) or retained.get('process') != frozen['predecessor']['process']
+                    or retained.get('exit_observed') is not True or retained.get('writer_available') is not True
+                    or not observe_process_exit(frozen['predecessor']['process'])):
+                raise OnboardingError('receiving_bootstrap_exit_unobserved')
+            inspected = self._stopped(frozen, candidate, deadline_ns=deadline)
+            with self.source.writer():
+                if time.monotonic_ns() >= deadline:
+                    raise OnboardingError('receiving_owner_deadline_expired')
+                # Acquire only the native writer: observation must not unlink
+                # sockets, load custody or replay a retained stop operation.
+                return dict(schema='cluster-source-bootstrap-quiescence/v1', operation_id=self.operation_id,
+                    process=frozen['predecessor']['process'], server=frozen['predecessor']['server'],
+                    exit_sha256=digest(retained), service=inspected, observed_at_ns=time.monotonic_ns(),
+                    receiving_readiness='unobserved')
 
     def _visibility_current(self, frozen: dict, observations: dict) -> bytes:
         raw = onboarding_release.regular(self.source.visibility, uid=os.geteuid())
@@ -1531,16 +2336,24 @@ class SourceBootstrapController:
             self.source._load(signed=True).egress.validate_registered_catalogs()
         return {key: intended[key] for key in ('installation_sha256', 'runtime_sha256')}
 
-    def quiesce(self, *, timeout_seconds: float = 30) -> dict:
+    def quiesce(self, *, timeout_seconds: float = 30, deadline_ns: int | None = None) -> dict:
         """Retain exact process exit separately from graceful delivery/drain."""
         from .onboarding_service import selection_lock
         from .owner_process import observe_process_exit
         if type(timeout_seconds) not in {int, float} or not 0 <= timeout_seconds <= 60:
             raise OnboardingError('receiving_bootstrap_invalid_wait')
+        self._budget(deadline_ns)
+        options = {} if deadline_ns is None else {'deadline_ns': deadline_ns}
         with self.journal.mutation_lock(self.operation_id), selection_lock(self.manager.unit):
             row, frozen, candidate = self._row()
             if 'qualification' in candidate:
-                self._qualify_candidate(row, candidate)
+                effects = (row['runtime_observation'] or {}).get('source_bootstrap', {})
+                if ('admission_link' in candidate and 'owner_preserved' in effects
+                        and effects.get('quiesced', {}).get('exit_observed') is True):
+                    self._qualify_candidate(row, candidate, check_group=False)
+                else:
+                    self._qualify_candidate(row, candidate)
+            self._budget(deadline_ns)
             if row['state'] == 'planned':
                 self.journal.advance(self.operation_id, 'runtime-dispatching')
             if frozen.get('mode', 'issue') in {'preserve', 'renew', 'expand'}:
@@ -1549,22 +2362,22 @@ class SourceBootstrapController:
                     raise OnboardingError('receiving_controller_preservation_changed')
             previous = (row['runtime_observation'] or {}).get('source_bootstrap', {}).get('quiesced')
             if previous is not None:
-                self._stopped(frozen, candidate)
+                self._stopped(frozen, candidate, **options)
                 if not observe_process_exit(frozen['predecessor']['process']):
                     raise OnboardingError('receiving_bootstrap_exit_unobserved')
                 # The operation retains exit proof, but a new/foreign writer
                 # still prevents another publication or selection effect.
-                self._writer_quiesced()
+                self._writer_quiesced(**options)
                 return previous
             if (frozen.get('mode') in {'preserve', 'renew', 'expand'}
-                    and self.manager.inspect()['manager']['ActiveState'] == 'inactive'):
+                    and self.manager.inspect(**options)['manager']['ActiveState'] == 'inactive'):
                 # The frozen, authenticated predecessor can have been stopped
                 # after preparation. Observe its actual exit/current unit and
                 # writer fence; never restart it just to request another stop.
-                stopped = self._stopped(frozen, candidate)
+                stopped = self._stopped(frozen, candidate, **options)
                 if not observe_process_exit(frozen['predecessor']['process']):
                     raise OnboardingError('receiving_bootstrap_exit_unobserved')
-                self._writer_quiesced()
+                self._writer_quiesced(**options)
                 result = dict(process=frozen['predecessor']['process'], manager=stopped,
                     exit_observed=True, writer_available=True, graceful_delivery='unobserved')
                 self._record('quiesced', result)
@@ -1575,7 +2388,7 @@ class SourceBootstrapController:
                     raise OnboardingError('receiving_bootstrap_binding_conflict')
                 if not observe_process_exit(frozen['predecessor']['process']):
                     from .owner_process import ProcessPresence
-                    current_manager = self.manager.inspect()
+                    current_manager = self.manager.inspect(**options)
                     values = current_manager['manager']
                     if (current_manager['unit_sha256'] != frozen['service']['unit_sha256']
                             or values['ActiveState'] not in {'active', 'deactivating'}
@@ -1590,22 +2403,23 @@ class SourceBootstrapController:
                                 preservation_authorization(frozen['preservation'], candidate['expires_at_ms'])
                             elif frozen.get('mode') == 'renew':
                                 renewal_authorization(bundle, candidate['expires_at_ms'])
+                            self._budget(deadline_ns)
                             try:
-                                self.manager.stop()
+                                self.manager.stop(**options)
                             except (OnboardingError, OSError):
                                 if not process.wait_for_exit(0):
                                     raise
-                        if not process.wait_for_exit(timeout_seconds):
+                        if not process.wait_for_exit(self._remaining(timeout_seconds, deadline_ns)):
                             raise OnboardingError('receiving_bootstrap_exit_unobserved')
-                stopped = self._stopped(frozen, candidate)
-                self._writer_quiesced()
+                stopped = self._stopped(frozen, candidate, **options)
+                self._writer_quiesced(**options)
                 result = dict(process=frozen['predecessor']['process'], manager=stopped,
                     exit_observed=True, writer_available=True, graceful_delivery='unobserved')
                 self._record('quiesced', result)
                 return result
-            with OwnerGroupClient(self.source.root, self.source.root / 'matrix.sock') as owner:
+            with OwnerGroupClient(self.source.root, self.source.root / 'matrix.sock', **options) as owner:
                 observed = owner.base_status()
-                inspected = self.manager.inspect()
+                inspected = self.manager.inspect(**options)
                 scope = self.manager.bind_process(observed['process'], inspected)
                 if (observed['process'] != frozen['predecessor']['process']
                         or observed['server'] != frozen['predecessor']['server']
@@ -1617,49 +2431,62 @@ class SourceBootstrapController:
                     preservation_authorization(frozen['preservation'], candidate['expires_at_ms'])
                 elif frozen.get('mode') == 'renew':
                     renewal_authorization(bundle, candidate['expires_at_ms'])
+                self._budget(deadline_ns)
                 try:
-                    self.manager.stop()
+                    self.manager.stop(**options)
                 except (OnboardingError, OSError):
                     if not owner.wait_for_exit(0):
                         raise
-                if not owner.wait_for_exit(timeout_seconds):
+                if not owner.wait_for_exit(self._remaining(timeout_seconds, deadline_ns)):
                     raise OnboardingError('receiving_bootstrap_exit_unobserved')
-                stopped = self._stopped(frozen, candidate)
-                self._writer_quiesced()
+                stopped = self._stopped(frozen, candidate, **options)
+                self._writer_quiesced(**options)
                 result = dict(process=observed['process'], manager=stopped,
                     exit_observed=True, writer_available=True, graceful_delivery='unobserved')
                 self._record('quiesced', result)
                 return result
 
-    def publish(self) -> dict:
+    def publish(self, *, deadline_ns: int | None = None) -> dict:
         """Recover exact capability/visibility/unit publications while stopped."""
         from daimon_matrix import operator_runtime_upgrade as upgrade
         from .onboarding_service import select_entrypoint, selection_lock
+        self._budget(deadline_ns)
+        options = {} if deadline_ns is None else {'deadline_ns': deadline_ns}
+        selection_options = {} if deadline_ns is None else {'pre_replace': lambda: self._budget(deadline_ns)}
         with self.journal.mutation_lock(self.operation_id), selection_lock(self.manager.unit):
             row, frozen, candidate = self._row()
+            if deadline_ns is not None and frozen.get('mode') != 'preserve':
+                raise OnboardingError('receiving_admission_prepared_controller_required')
             if 'qualification' in candidate:
                 self._qualify_candidate(row, candidate)
+            self._budget(deadline_ns)
             observations = (row['runtime_observation'] or {}).get('source_bootstrap', {})
             if observations.get('quiesced', {}).get('exit_observed') is not True:
                 raise OnboardingError('receiving_bootstrap_quiescence_required')
             from .owner_process import observe_process_exit
             if not observe_process_exit(frozen['predecessor']['process']):
                 raise OnboardingError('receiving_bootstrap_exit_unobserved')
-            self._stopped(frozen, candidate)
+            self._stopped(frozen, candidate, **options)
             self._visibility_current(frozen, observations)
             if frozen.get('mode', 'issue') == 'preserve':
                 from daimon_matrix.daemon import _prepare_socket
                 with upgrade._locks(self.source.root):
+                    self._budget(deadline_ns)
                     _prepare_socket(self.source.root / 'matrix.sock')
                     current_visibility = self._visibility_current(frozen, {})
                     if hashlib.sha256(current_visibility).hexdigest() != frozen['visibility_sha256']:
                         raise OnboardingError('receiving_bootstrap_visibility_changed')
-                    result = preservation_result(upgrade, self.source.root, frozen['preservation'],
-                        password=self.source._reader(), operation_id=self.operation_id,
-                        request_sha256=digest(dict(frozen=frozen, candidate=candidate)),
-                        expires_at_ms=candidate['expires_at_ms'], retained=observations.get('owner_preserved'))
+                    if 'admission_link' in candidate and 'owner_preserved' in observations:
+                        self._admission_preserved(frozen)
+                        result = observations['owner_preserved']
+                    else:
+                        result = preservation_result(upgrade, self.source.root, frozen['preservation'],
+                            password=self.source._reader(), operation_id=self.operation_id,
+                            request_sha256=digest(dict(frozen=frozen, candidate=candidate)),
+                            expires_at_ms=candidate['expires_at_ms'], retained=observations.get('owner_preserved'))
                     if source_bootstrap_group(self.source, being_seed._read(
-                            self.source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)) != candidate['qualification']['group']:
+                            self.source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)) != derived_lifecycle_group(
+                                candidate, observations, candidate['qualification']['group']):
                         raise OnboardingError('receiving_bootstrap_group_changed')
                     if hashlib.sha256(self._visibility_current(frozen, {})).hexdigest() != frozen['visibility_sha256']:
                         raise OnboardingError('receiving_bootstrap_visibility_changed')
@@ -1667,11 +2494,11 @@ class SourceBootstrapController:
                     if 'owner_preserved' not in observations:
                         preservation_authorization(frozen['preservation'], candidate['expires_at_ms'])
                     self._record('owner_preserved', result)
-                    stopped = self._stopped(frozen, candidate)
+                    stopped = self._stopped(frozen, candidate, **options)
                     if stopped['unit_sha256'] == frozen['service']['unit_sha256']:
                         preservation_authorization(frozen['preservation'], candidate['expires_at_ms'])
                     selected = select_entrypoint(self.manager.unit, candidate['argv'],
-                        previous_sha256=frozen['service']['unit_sha256'])
+                        previous_sha256=frozen['service']['unit_sha256'], **selection_options)
                     self._record('unit_selected', selected)
                 return dict(schema='cluster-source-bootstrap-preservation/v1', operation_id=self.operation_id,
                     preserved=True, loaded_readiness='unobserved')
@@ -1706,7 +2533,7 @@ class SourceBootstrapController:
                 elif stage_intent != dict(transaction=str(transaction)):
                     raise OnboardingError('receiving_bootstrap_binding_conflict')
                 self._recover_stage(upgrade, transaction, intent, frozen, candidate)
-                self._stopped(frozen, candidate)
+                self._stopped(frozen, candidate, **options)
                 upgrade.stage_capabilities(source=self.source.root, transaction=transaction,
                     expected_source_sha256=intent['source_sha256'], expected_counter=intent['counter'],
                     expected_control_head=intent['control_head'], expected_being_ref=intent['being_ref'],
@@ -1727,7 +2554,7 @@ class SourceBootstrapController:
                 os.close(descriptor)
             upgrade._sync(transaction)
             self._record('capability_ready', dict(ready_sha256=ready_hash))
-            self._stopped(frozen, candidate)
+            self._stopped(frozen, candidate, **options)
             # After a lost publication ACK the native helper resolves the same
             # atomic exchange. Never restage or restore its old checkpoint.
             published = observations.get('capability_published')
@@ -1740,16 +2567,17 @@ class SourceBootstrapController:
                 self._record('capability_published', published)
             if hashlib.sha256(onboarding_release.regular(self.source.root / 'runtime.json', uid=os.geteuid())).hexdigest() != published['runtime_sha256']:
                 raise OnboardingError('receiving_bootstrap_source_changed')
-            self._stopped(frozen, candidate)
+            self._stopped(frozen, candidate, **options)
             self._record('visibility_published', self._publish_visibility(upgrade, frozen, transaction))
-            self._stopped(frozen, candidate)
+            self._stopped(frozen, candidate, **options)
             selected = select_entrypoint(self.manager.unit, candidate['argv'],
-                previous_sha256=frozen['service']['unit_sha256'])
+                previous_sha256=frozen['service']['unit_sha256'], **selection_options)
             self._record('unit_selected', selected)
             return dict(schema='cluster-source-bootstrap-publication/v1', operation_id=self.operation_id,
                         published=True, loaded_readiness='unobserved')
 
-    def start(self, *, timeout_seconds: float = 30) -> dict:
+    def start(self, *, timeout_seconds: float = 30, deadline_ns: int | None = None,
+              admission_continuation: dict | None = None) -> dict:
         """Start the selected exact command and retain actual controlled load.
 
         Older publication-only operations cannot use this method. The supported
@@ -1761,12 +2589,24 @@ class SourceBootstrapController:
         from .owner_process import observe_process_exit
         if type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 60:
             raise OnboardingError('receiving_bootstrap_invalid_wait')
+        self._budget(deadline_ns)
         with self.journal.mutation_lock(self.operation_id), selection_lock(self.manager.unit):
             row, frozen, candidate = self._row()
             if 'qualification' not in candidate:
                 raise OnboardingError('qualified_bootstrap_candidate_required')
             checked = self._qualify_candidate(row, candidate)
+            self._budget(deadline_ns)
             observations = (row['runtime_observation'] or {}).get('source_bootstrap', {})
+            horizon = candidate['expires_at_ms']
+            if admission_continuation is not None:
+                from .onboarding_group_recovery import validate_lifecycle
+                horizon = validate_lifecycle(row,candidate,admission_continuation,preservation_sha256=digest(dict(
+                    schema='cluster-source-bootstrap-preservation/v1',operation_id=self.operation_id,
+                    preserved=True,loaded_readiness='unobserved')))
+                if 'owner_preserved' not in observations or observations.get('quiesced',{}).get('exit_observed') is not True:
+                    raise OnboardingError('receiving_admission_preservation_required')
+            expected_group = derived_lifecycle_group(candidate, observations, candidate['qualification']['group'],
+                required='admission_link' in candidate)
             selected = observations.get('unit_selected')
             if not isinstance(selected, dict) or selected.get('selected') is not True:
                 raise OnboardingError('receiving_bootstrap_publication_required')
@@ -1774,7 +2614,8 @@ class SourceBootstrapController:
             # Artifact verification precedes the lifecycle budget. Local file
             # hashing/fsync scheduling is not a hard realtime guarantee; check
             # the shared monotonic deadline before dispatch and acceptance.
-            deadline_ns = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
+            if deadline_ns is None:
+                deadline_ns = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
             inspected = self.manager.inspect(deadline_ns=deadline_ns)
             if inspected['unit_sha256'] != selected['selected_sha256']:
                 raise OnboardingError('receiving_bootstrap_candidate_changed')
@@ -1785,14 +2626,21 @@ class SourceBootstrapController:
                 intent = dict(unit_sha256=selected['selected_sha256'], candidate_sha256=digest(candidate))
                 self._record('start_intent', intent)
                 if inspected['manager']['ActiveState'] == 'inactive':
+                    if admission_continuation is not None:
+                        self._record('start_continuation',admission_continuation)
+                        deadline_ns = min(deadline_ns,time.monotonic_ns()+(
+                            horizon-time.time_ns()//1_000_000)*1_000_000)
+                        self._budget(deadline_ns)
                     self._stopped(frozen, candidate, deadline_ns=deadline_ns)
                     with self.source.writer():
                         if frozen.get('mode', 'issue') == 'preserve':
                             from daimon_matrix import operator_runtime_upgrade as upgrade
-                            preservation_authorization(frozen['preservation'], candidate['expires_at_ms'])
+                            preservation_authorization(frozen['preservation'], horizon)
                             bundle = being_seed._read(self.source.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
-                            if (controller_preservation(self.source.root, bundle) != frozen['preservation']
-                                    or upgrade.inventory_digest(self.source.root) != observations['owner_preserved']['inventory_sha256']):
+                            if 'admission_link' in candidate:
+                                self._admission_preserved(frozen)
+                            elif (controller_preservation(self.source.root, bundle) != frozen['preservation']
+                                      or upgrade.inventory_digest(self.source.root) != observations['owner_preserved']['inventory_sha256']):
                                 raise OnboardingError('receiving_controller_preservation_changed')
                         actual_bundle = hashlib.sha256(onboarding_release.regular(
                             self.source.root / 'runtime.json', uid=os.geteuid())).hexdigest()
@@ -1802,7 +2650,7 @@ class SourceBootstrapController:
                                 or actual_visibility != expected_visibility
                                 or source_bootstrap_group(self.source, being_seed._read(
                                     self.source.root / 'runtime.json', limit=being_seed.MAX_SELECTION))
-                                   != candidate['qualification']['group']):
+                                   != expected_group):
                             raise OnboardingError('receiving_bootstrap_publication_changed')
                     # Named-unit scope, including recovery after lost dispatch
                     # confirmation. An active candidate is only observed.
@@ -1834,7 +2682,7 @@ class SourceBootstrapController:
                         expected = dict(code_digest=checked['code_digest'], matrix_commit=checked['matrix_revision'],
                             sdk_digest=checked['sdk_digest'], matrix_wheel_sha256=checked['matrix_wheel_sha256'],
                             reader=checked['reader'])
-                        group = candidate['qualification']['group']
+                        group = expected_group
                         if (any(startup.get(key) != value for key, value in expected.items())
                                 or startup.get('process_id') != actual['process']['pid']
                                 or base.get('runtime_bundle_sha256') != expected_runtime
@@ -1842,6 +2690,9 @@ class SourceBootstrapController:
                                 or not isinstance(gate, dict) or gate.get('controlled') is not True
                                 or gate.get('process_id') != actual['process']['pid']):
                             raise OnboardingError('receiving_bootstrap_loaded_candidate_conflict')
+                        if ('admission_link' in candidate and base.get('stores') !=
+                                (frozen['predecessor']['runtime_status'].get('loaded_runtime') or {}).get('stores')):
+                            raise OnboardingError('receiving_bootstrap_loaded_store_conflict')
                         if (actual.get('group') != group['selected']
                                 or any(application.get(key) != group[key]
                                        for key in ('application_sha256', 'publication_sha256'))
@@ -1868,13 +2719,25 @@ class SourceBootstrapController:
 
 def prepare_guest_bootstrap(backend, plan: dict, *, candidate: tuple[Path, str],
                             manifest_path: Path, manifest_digest: str, expires_at_ms: int,
-                            timeout_seconds: float = 30, manifest_uid: int = 0) -> tuple[dict, dict]:
+                            timeout_seconds: float = 30, manifest_uid: int = 0,
+                            admission_link: dict | None = None, installed_only: bool = False,
+                            deadline_ns: int | None = None) -> tuple[dict, dict]:
     """Prepare one guest without selecting code or interrupting its service.
 
     A receiving operation freezes these vectors before any lifecycle effect.
     Read-only candidate mounts must already be installed by supported preparation.
     """
     from .onboarding_service import command
+    def remaining():
+        if deadline_ns is None:
+            return timeout_seconds
+        if type(deadline_ns) is not int:
+            raise OnboardingError('receiving_owner_deadline_expired')
+        value = min(timeout_seconds, (deadline_ns-time.monotonic_ns())/1_000_000_000)
+        if value <= 0:
+            raise OnboardingError('receiving_owner_deadline_expired')
+        return value
+    remaining()
     if type(expires_at_ms) is not int or expires_at_ms <= time.time_ns() // 1_000_000:
         raise OnboardingError('receiving_guest_bootstrap_authorization_expired')
     manifest = _manifest(manifest_path, manifest_digest, uid=manifest_uid)
@@ -1885,14 +2748,17 @@ def prepare_guest_bootstrap(backend, plan: dict, *, candidate: tuple[Path, str],
     if not any({**manifest['artifacts'], **receiver.get('artifacts', {})}.get('receiving_code') == candidate[1]
             for receiver in manifest['required_receivers']):
         raise OnboardingError('receiving_artifact_selection_mismatch')
-    installed = backend._target_call(plan, 'sdk-prepare', candidate=candidate)
+    installed = backend._target_call(plan, 'sdk-observe' if installed_only else 'sdk-prepare', candidate=candidate,
+        **({'observation_timeout_seconds': remaining()} if deadline_ns is not None else {}))
     if installed.get('ready') is not True:
         raise OnboardingError('qualified_guest_bootstrap_candidate_required')
     owner = backend._target_call(plan, 'receiving-bootstrap-freeze', candidate=candidate,
-        bootstrap_timeout_seconds=timeout_seconds)
-    checked = preflight(candidate[0], candidate[1], manifest_path, manifest_digest,
-        being_ref=owner['being_ref'], embodiment_id=owner['origin']['embodiment_id'],
-        code_uid=os.geteuid(), manifest_uid=manifest_uid)
+        bootstrap_timeout_seconds=remaining())
+    remaining()
+    with onboarding_sdk.probe_budget(deadline_ns):
+        checked = preflight(candidate[0], candidate[1], manifest_path, manifest_digest,
+            being_ref=owner['being_ref'], embodiment_id=owner['origin']['embodiment_id'],
+            code_uid=os.geteuid(), manifest_uid=manifest_uid)
     if installed.get('matrix_commit') != checked['matrix_revision']:
         raise OnboardingError('qualified_guest_bootstrap_candidate_required')
     startup = owner.get('observer_startup')
@@ -1906,7 +2772,7 @@ def prepare_guest_bootstrap(backend, plan: dict, *, candidate: tuple[Path, str],
             or re.fullmatch('[0-9a-f]{64}', startup['interpreter']['executable_sha256']) is None):
         raise OnboardingError('qualified_guest_bootstrap_candidate_required')
     root = backend._guest_service_call(plan, 'bootstrap-inspect', candidate=candidate,
-        timeout_seconds=timeout_seconds, owner_observation=owner['predecessor'])
+        timeout_seconds=remaining(), owner_observation=owner['predecessor'])
     if (root.get('scope') is None or root['scope']['process'] != owner['predecessor']['process']
             or root['scope']['admission_parent'] != owner['predecessor']['admission_parent']):
         raise OnboardingError('receiving_guest_bootstrap_identity_required')
@@ -1922,10 +2788,127 @@ def prepare_guest_bootstrap(backend, plan: dict, *, candidate: tuple[Path, str],
     # subsequently validates against its actual preserved disk unit too.
     from .onboarding_service import entrypoint
     entrypoint(b'[Service]\nExecStart=/prepared\n', argv)
+    association = ({} if admission_link is None else dict(admission_link=admission_lifecycle_link(
+        admission_link, being_ref=owner['being_ref'], embodiment_id=owner['origin']['embodiment_id'])))
+    remaining()
     return dict(plan=plan, owner=owner, root=root), dict(
         runtime_code=str(candidate[0]), runtime_digest=candidate[1], manifest_path=str(manifest_path),
         manifest_uid=manifest_uid, code_uid=os.geteuid(), prepared=checked,
-        argv=argv, expires_at_ms=expires_at_ms)
+        argv=argv, expires_at_ms=expires_at_ms, **association)
+
+
+def prepare_guest_admission(backend, plan: dict, journal, request: dict, *, config: Path,
+                            candidate: tuple[Path, str], deadline_ns: int) -> dict:
+    """Plan an old guest's existing lifecycle before group admission effects.
+
+    Reconcile the stable retained target before observing a later process. The
+    host retains public owner/root preparations, never opens guest custody and
+    never installs SDKs, selects a unit or changes the signed group here.
+    """
+    from .onboarding_code_successor import plan_update
+    from .onboarding_group_admission import publication_command
+    from .onboarding_host import HostConfig
+    from .operation_journal import JournalConflict
+    fields = {'schema', 'operation_id', 'cohort_operation_id', 'cohort_intent_sha256',
+        'tribe_ref', 'owner', 'predecessor', 'root', 'manifest_path', 'manifest_uid',
+        'manifest_digest', 'expires_at_ms', 'authority_closure', 'owner_context_sha256', 'steps'}
+    try:
+        if (not isinstance(request, dict) or set(request) != fields
+                or request['schema'] != 'cluster-guest-admission-preparation/v1'
+                or str(uuid.UUID(request['operation_id'])) != request['operation_id']
+                or any(not isinstance(request[key], str) or not 1 <= len(request[key]) <= 240
+                       for key in ('cohort_operation_id', 'tribe_ref'))
+                or any(not isinstance(request[key], str) or re.fullmatch('[0-9a-f]{64}', request[key]) is None
+                       for key in ('cohort_intent_sha256', 'manifest_digest', 'owner_context_sha256'))
+                or any(not isinstance(request[key], str) or not Path(request[key]).is_absolute()
+                       or '..' in Path(request[key]).parts for key in ('root', 'manifest_path'))
+                or type(request['manifest_uid']) is not int or request['manifest_uid'] < 0
+                or type(request['expires_at_ms']) is not int or not 0 < request['expires_at_ms'] < 2**53
+                or not isinstance(request['owner'], dict) or set(request['owner']) != {'being_ref', 'embodiment_id'}
+                or any(not isinstance(value, str) or not value for value in request['owner'].values())
+                or not isinstance(request['predecessor'], dict) or set(request['predecessor']) != {'process', 'server'}
+                or any(not isinstance(value, dict) for value in request['predecessor'].values())
+                or not isinstance(request['authority_closure'], dict) or not isinstance(request['steps'], dict)
+                or set(request['steps']) != {'application', 'visibility', 'selection', 'snapshot'}
+                or len(set(request['steps'].values())) != 4):
+            raise ValueError
+        steps = request['steps']
+        snapshot = publication_command(dict(operation_id=request['operation_id'], step=steps['snapshot'], action='snapshot',
+            params=dict(application_step=steps['application'], visibility_step=steps['visibility'],
+                selection_step=steps['selection'], owner_context_sha256=request['owner_context_sha256'])))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise OnboardingError('receiving_guest_admission_preparation_required') from None
+
+    def budget(*, fresh: bool = False):
+        if type(deadline_ns) is not int or time.monotonic_ns() >= deadline_ns:
+            raise OnboardingError('receiving_owner_deadline_expired')
+        if fresh and time.time_ns()//1_000_000 >= request['expires_at_ms']:
+            raise OnboardingError('receiving_preservation_authorization_expired')
+    budget()
+    if backend.config != HostConfig.load(config):
+        raise OnboardingError('receiving_guest_bootstrap_binding_conflict')
+    target = 'guest-admission:' + plan['name'] + ':' + request['operation_id']
+    row = journal.latest_for_target(target)
+    if row is None:
+        budget(fresh=True)
+        owner = GuestGroupClient(backend, plan, candidate, root=Path(request['root']))
+        owner.deadline_ns = deadline_ns
+        preview = owner.group_publication(dict(operation_id=request['operation_id'],
+            step='context', action='context-preview', params={}), authority_closure=request['authority_closure'])
+        if preview.get('owner_context_sha256') != request['owner_context_sha256']:
+            raise OnboardingError('onboarding_group_owner_context_conflict')
+        before, prepared = prepare_guest_bootstrap(backend, plan, candidate=candidate,
+            manifest_path=Path(request['manifest_path']), manifest_digest=request['manifest_digest'],
+            expires_at_ms=request['expires_at_ms'], manifest_uid=request['manifest_uid'],
+            installed_only=True, deadline_ns=deadline_ns)
+        frozen = before['owner']
+        if (frozen.get('mode') != 'preserve' or frozen['runtime_sha256'] != preview.get('runtime_bundle_sha256')
+                or request['owner'] != dict(being_ref=frozen['being_ref'], embodiment_id=frozen['origin']['embodiment_id'])
+                or request['predecessor'] != dict(process=frozen['predecessor']['process'], server=frozen['origin'])
+                or frozen['group']['selected']['tribe_ref'] != request['tribe_ref']
+                or frozen['group']['selected']['socket'] != str(owner.socket)
+                or not isinstance(frozen.get('store_bindings'), dict) or 'ledger' not in frozen['store_bindings']):
+            raise OnboardingError('receiving_guest_admission_predecessor_changed')
+        preservation_authorization(frozen['preservation'], request['expires_at_ms'])
+        snapshot['params'].update(expected_stores=frozen['store_bindings'], expected_preservation=frozen['preservation'])
+        link = admission_lifecycle_link(dict(schema='cluster-admission-lifecycle-link/v1',
+            cohort_operation_id=request['cohort_operation_id'], cohort_intent_sha256=request['cohort_intent_sha256'],
+            tribe_ref=request['tribe_ref'], owner=request['owner'], snapshot_request=snapshot), **request['owner'])
+        prepared['admission_link'] = link
+        host = being_seed._read(config)
+        if backend.config != HostConfig.load(config, expected_value=host):
+            raise OnboardingError('receiving_guest_bootstrap_binding_conflict')
+        budget(fresh=True)
+        row = plan_update(journal, manifest_digest=request['manifest_digest'], target=target,
+            expected_precondition=dict(host_config=str(config), host_configuration=host, host_config_sha256=digest(host),
+                guest_bootstraps={plan['name']: before}, guest_admission_preparation=request),
+            intended_transition=dict(guest_bootstraps={plan['name']: prepared}),
+            audit_identity={'actor': 'qualified-guest-admission-owner'})
+    if (row['expected_precondition'].get('guest_admission_preparation') != request
+            or row['expected_precondition'].get('host_config') != str(config)
+            or row['expected_precondition']['guest_bootstraps'][plan['name']]['plan'] != plan
+            or row['state'] in {'degraded', 'compensated'}
+            or row['intended_transition']['guest_bootstraps'][plan['name']]['runtime_code'] != str(candidate[0])
+            or row['intended_transition']['guest_bootstraps'][plan['name']]['runtime_digest'] != candidate[1]):
+        raise JournalConflict('guest admission preparation changed')
+    checked, _before, prepared = GuestBootstrapController(journal, row['operation_id'], backend, plan['name'])._row()
+    link = prepared['admission_link']
+    budget()
+    return dict(schema='cluster-guest-admission-prepared/v1', operation_id=checked['operation_id'],
+        host_config_sha256=checked['expected_precondition']['host_config_sha256'], code_digest=candidate[1],
+        request_sha256=digest(request), cohort_operation_id=request['cohort_operation_id'],
+        cohort_intent_sha256=request['cohort_intent_sha256'], link_sha256=digest(link),
+        owner_context_sha256=request['owner_context_sha256'], receiving_readiness='unobserved')
+
+
+def guest_bootstrap_operation_id(operation_id: str) -> str:
+    """Preserve canonical UUIDs; retain the existing namespaced journal route."""
+    try:
+        if str(uuid.UUID(operation_id)) == operation_id:
+            return operation_id
+    except ValueError:
+        pass
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, 'cluster-guest-bootstrap:' + operation_id))
 
 
 def controlled_load(effects: dict) -> dict | None:
@@ -1990,14 +2973,7 @@ class GuestBootstrapController:
         self.journal, self.operation_id, self.backend, self.name = journal, operation_id, backend, name
 
     def _native_operation_id(self) -> str:
-        # Preserve every previously accepted canonical UUID. Other journal
-        # labels must not alias a differently spelled canonical operation.
-        try:
-            if str(uuid.UUID(self.operation_id)) == self.operation_id:
-                return self.operation_id
-        except ValueError:
-            pass
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, 'cluster-guest-bootstrap:' + self.operation_id))
+        return guest_bootstrap_operation_id(self.operation_id)
 
     def _observation_vector(self, row: dict, body: tuple[Path, str]) -> tuple[Path, str]:
         """Use a frozen newer observer without relabeling the selected body.
@@ -2063,6 +3039,17 @@ class GuestBootstrapController:
             expected_argv[0] = str(native.python)
         if candidate['argv'] != expected_argv:
             raise OnboardingError('receiving_guest_bootstrap_binding_conflict')
+        if 'admission_link' in candidate:
+            owner = frozen['owner']
+            if owner.get('mode') != 'preserve':
+                raise OnboardingError('receiving_admission_prepared_controller_required')
+            link = admission_lifecycle_link(candidate['admission_link'], being_ref=owner['being_ref'],
+                embodiment_id=owner['origin']['embodiment_id'])
+            if link['tribe_ref'] != owner['group']['selected']['tribe_ref']:
+                raise OnboardingError('receiving_admission_tribe_changed')
+            if (owner.get('store_bindings') != link['snapshot_request']['params']['expected_stores']
+                    or owner['preservation'] != link['snapshot_request']['params']['expected_preservation']):
+                raise OnboardingError('receiving_admission_store_binding_required')
         return row, frozen, candidate
 
     def _record(self, name: str, value: dict) -> None:
@@ -2079,10 +3066,77 @@ class GuestBootstrapController:
         self.journal.advance(self.operation_id, row['state'], runtime_observation=observations,
             expected_runtime_observation=row['runtime_observation'])
 
-    def execute(self, *, timeout_seconds: float = 30) -> dict:
+    def execute(self, *, timeout_seconds: float = 30, authority_closure: dict | None = None, deadline_ns: int | None = None,
+                continuation: dict | None = None, maintenance: tuple[Path,str] | None = None) -> dict:
         """Resume exact local effects; never blindly stop a replacement process."""
+        return self._advance(timeout_seconds=timeout_seconds, phase='load', authority_closure=authority_closure,
+            deadline_ns=deadline_ns,continuation=continuation,maintenance=maintenance)
+
+    def quiesce(self, *, timeout_seconds: float = 30, deadline_ns: int | None = None) -> dict:
+        """Retain and recheck predecessor exit without publishing or starting.
+
+        Group admission needs the existing native writer while the predecessor
+        is stopped. This is the same bounded lifecycle operation as execute,
+        not permission to stop a replacement or report receiving readiness.
+        """
+        return self._advance(timeout_seconds=timeout_seconds, phase='quiesce', deadline_ns=deadline_ns)
+
+    def preserve(self, *, timeout_seconds: float = 30, deadline_ns: int | None = None) -> dict:
+        """Finish existing-owner preservation before admission writes."""
+        return self._advance(timeout_seconds=timeout_seconds, phase='preserve', deadline_ns=deadline_ns)
+
+    def retain_admission_group(self, *, authority_closure: dict, timeout_seconds: float = 30, deadline_ns: int | None = None) -> dict:
+        return self._advance(timeout_seconds=timeout_seconds, phase='derive', authority_closure=authority_closure, deadline_ns=deadline_ns)
+
+    def observe_quiescence(self, *, timeout_seconds: float = 30) -> dict:
+        """Read the exact root evidence without reacquiring caller-owned job locks."""
         from .onboarding_host import HostConfig
+        if type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 60:
+            raise OnboardingError('receiving_host_deadline_required')
+        deadline = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
+        row, frozen, candidate = self._row()
+        if self.backend.config != HostConfig.load(Path(row['expected_precondition']['host_config'])):
+            raise OnboardingError('receiving_guest_bootstrap_binding_conflict')
+        retained = (row['runtime_observation'] or {}).get('guest_bootstraps', {}).get(self.name, {}).get('quiesced')
+        if not isinstance(retained, dict):
+            raise OnboardingError('receiving_guest_bootstrap_quiescence_required')
+        request = self._service_request(frozen, candidate)
+        remaining = (deadline - time.monotonic_ns()) / 1_000_000_000
+        if remaining <= 0:
+            raise OnboardingError('receiving_owner_deadline_expired')
+        result = self.backend._guest_service_call(frozen['plan'], 'bootstrap-quiescence',
+            candidate=(Path(candidate['runtime_code']), candidate['runtime_digest']),
+            timeout_seconds=remaining, request=request)
+        if (result.get('schema') != 'cluster-guest-service-quiescence-observation/v1'
+                or result.get('request_sha256') != digest(request) or result.get('exit_sha256') != digest(retained)
+                or time.monotonic_ns() >= deadline):
+            raise OnboardingError('receiving_guest_bootstrap_quiescence_required')
+        return result
+
+    def _service_request(self, frozen: dict, candidate: dict) -> dict:
+        previous = {**frozen['owner']['predecessor'], 'service': frozen['root']['service'], 'scope': frozen['root']['scope']}
+        return dict(schema='cluster-guest-service-bootstrap/v1', operation_id=self._native_operation_id(),
+            plan_digest=digest(frozen['plan']), predecessor=previous, argv=candidate['argv'])
+
+    def _advance(self, *, timeout_seconds: float, phase: str,
+                 authority_closure: dict | None = None, deadline_ns: int | None = None,
+                 continuation: dict | None = None, maintenance: tuple[Path,str] | None = None) -> dict:
+        from .onboarding_host import HostConfig
+        if (type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 60
+                or deadline_ns is not None and (type(deadline_ns) is not int or deadline_ns <= 0)):
+            raise OnboardingError('receiving_host_deadline_required')
+        deadline = min(time.monotonic_ns() + int(timeout_seconds * 1_000_000_000),
+            deadline_ns if deadline_ns is not None else 2**63 - 1)
+        def remaining():
+            value = (deadline - time.monotonic_ns()) / 1_000_000_000
+            if value <= 0:
+                raise OnboardingError('receiving_owner_deadline_expired')
+            return value
+        def record(key, value):
+            self._record(key, value)
+            remaining()
         with ExitStack() as locks:
+            locks.enter_context(onboarding_sdk.probe_budget(deadline))
             locks.enter_context(self.journal.mutation_lock(self.operation_id))
             row, frozen, candidate = self._row()
             jobs = private_directory(self.backend.config.jobs)
@@ -2093,21 +3147,23 @@ class GuestBootstrapController:
             row, frozen, candidate = self._row()
             if self.backend.config != HostConfig.load(Path(row['expected_precondition']['host_config'])):
                 raise OnboardingError('receiving_guest_bootstrap_binding_conflict')
+            if phase not in {'load', 'quiesce', 'preserve', 'derive'}:
+                raise OnboardingError('receiving_guest_bootstrap_phase_required')
+            if phase == 'preserve' and frozen['owner'].get('mode') != 'preserve':
+                raise OnboardingError('receiving_admission_prepared_controller_required')
             vector = (Path(candidate['runtime_code']), candidate['runtime_digest'])
             checked = preflight(vector[0], vector[1], Path(candidate['manifest_path']),
                 row['intent']['runtime_call']['manifest_digest'], being_ref=frozen['owner']['being_ref'],
                 embodiment_id=frozen['owner']['origin']['embodiment_id'],
                 code_uid=candidate['code_uid'], manifest_uid=candidate['manifest_uid'])
+            remaining()
             if checked != candidate['prepared']:
                 raise OnboardingError('receiving_guest_bootstrap_candidate_changed')
-            root_previous = {**frozen['owner']['predecessor'],
-                'service': frozen['root']['service'], 'scope': frozen['root']['scope']}
             # OperationJournal normally uses operation:UUID identifiers, while
             # both receiving CLIs require canonical UUIDs. Preserve previously
             # accepted UUID requests; derive one stable UUID for journal refs.
             request_id = self._native_operation_id()
-            root_request = dict(schema='cluster-guest-service-bootstrap/v1', operation_id=request_id,
-                plan_digest=digest(frozen['plan']), predecessor=root_previous, argv=candidate['argv'])
+            root_request = self._service_request(frozen, candidate)
             owner_request = {key: frozen['owner'][key] for key in (
                 'plan_digest', 'genesis_digest', 'code_digest', 'runtime_sha256', 'group_sha256', 'predecessor')}
             owner_request.update(schema='cluster-guest-owner-bootstrap/v1', operation_id=request_id,
@@ -2115,23 +3171,39 @@ class GuestBootstrapController:
             if 'mode' in frozen['owner']:
                 owner_request.update(mode=frozen['owner']['mode'], preservation=frozen['owner']['preservation'])
             effects = (row['runtime_observation'] or {}).get('guest_bootstraps', {}).get(self.name, {})
+            link = candidate.get('admission_link')
+            horizon = candidate['expires_at_ms']
+            if continuation is not None:
+                from .onboarding_group_recovery import validate_lifecycle
+                if phase != 'load' or link is None or 'owner_preserved' not in effects or 'quiesced' not in effects:
+                    raise OnboardingError('receiving_admission_preservation_required')
+                horizon = validate_lifecycle(row,candidate,continuation,preservation_sha256=digest(effects['owner_preserved']))
+                record('start_continuation',continuation)
+            if phase == 'derive' and (link is None or 'owner_preserved' not in effects or 'quiesced' not in effects):
+                raise OnboardingError('receiving_admission_preservation_required')
+            if phase == 'load' and link is not None:
+                derived_lifecycle_group(candidate, effects, frozen['owner']['group'], required=True)
+            if phase != 'load' and ('started' in effects or 'controlled_loaded' in effects):
+                raise OnboardingError('receiving_guest_bootstrap_already_started')
             if row['state'] == 'planned':
                 self.journal.advance(self.operation_id, 'runtime-dispatching')
             def root_call(action):
-                return self.backend._guest_service_call(frozen['plan'], action, candidate=vector,
-                    timeout_seconds=timeout_seconds, request=root_request)
+                return self.backend._guest_service_call(frozen['plan'], action, candidate=maintenance or vector,
+                    timeout_seconds=remaining(), request=root_request,
+                    **({'owner_deadline_ns':deadline,**({'effect_not_after_ms':horizon}
+                        if action in {'bootstrap-select','bootstrap-start'} else {})} if continuation is not None else {}))
             def owner_call(action, **kwargs):
                 return self.backend._target_call(frozen['plan'], action, candidate=vector,
-                    bootstrap_timeout_seconds=timeout_seconds, bootstrap_request=owner_request, **kwargs)
+                    bootstrap_timeout_seconds=remaining(), bootstrap_request=owner_request, **kwargs)
             if 'candidate_validated' not in effects:
-                self._record('candidate_validated', root_call('bootstrap-validate'))
+                record('candidate_validated', root_call('bootstrap-validate'))
             if 'controlled_loaded' in effects:
-                return self._loaded(frozen, candidate, vector, timeout_seconds)
+                return self._loaded(frozen, candidate, vector, remaining(), deadline_ns=deadline)
             if any(key.startswith('start_recovery_request:') for key in effects):
                 raise OnboardingError('receiving_guest_bootstrap_start_recovery_required')
             if 'quiesced' not in effects:
                 current = self.backend._guest_service_call(frozen['plan'], 'bootstrap-inspect', candidate=vector,
-                    timeout_seconds=timeout_seconds)
+                    timeout_seconds=remaining())
                 if current['service']['manager']['ActiveState'] == 'active':
                     if frozen['owner'].get('mode', 'issue') == 'preserve':
                         preservation_authorization(frozen['owner']['preservation'], candidate['expires_at_ms'])
@@ -2139,7 +3211,7 @@ class GuestBootstrapController:
                             or candidate['expires_at_ms'] <= time.time_ns() // 1_000_000):
                         raise OnboardingError('receiving_guest_bootstrap_predecessor_or_expiry_changed')
                     fresh = self.backend._target_call(frozen['plan'], 'receiving-bootstrap-freeze', candidate=vector,
-                        bootstrap_timeout_seconds=timeout_seconds)
+                        bootstrap_timeout_seconds=remaining())
                     if any(fresh.get(key) != value for key, value in frozen['owner'].items()
                            if key != 'observer_startup'):
                         raise OnboardingError('receiving_guest_bootstrap_predecessor_changed')
@@ -2157,42 +3229,74 @@ class GuestBootstrapController:
                         raise OnboardingError('qualified_guest_bootstrap_candidate_required')
                     if candidate['expires_at_ms'] <= time.time_ns() // 1_000_000:
                         raise OnboardingError('receiving_guest_bootstrap_authorization_expired')
-                self._record('quiesced', root_call('bootstrap-quiesce'))
+                record('quiesced', root_call('bootstrap-quiesce'))
+            if phase == 'quiesce':
+                # A retained exit is historical evidence. The owning root
+                # route rechecks the current unit and exact predecessor exits
+                # before returning, and refuses to stop a replacement.
+                if 'quiesced' in effects:
+                    result = root_call('bootstrap-quiesce')
+                    record('quiesced', result)
+                    remaining()
+                    return result
+                result = self._row()[0]['runtime_observation']['guest_bootstraps'][self.name]['quiesced']
+                remaining()
+                return result
             # Root rechecks current quiescence before every owner mutation; its
             # retained independent exits do not imply the unit stayed stopped.
             if owner_request.get('mode', 'issue') == 'preserve':
                 current = self.backend._guest_service_call(frozen['plan'], 'bootstrap-inspect', candidate=vector,
-                    timeout_seconds=timeout_seconds)
-                if 'owner_preserved' not in effects or current['service']['manager']['ActiveState'] == 'inactive':
+                    timeout_seconds=remaining())
+                if ('owner_preserved' not in effects or link is None
+                        and current['service']['manager']['ActiveState'] == 'inactive'):
                     root_call('bootstrap-quiesce')
                     preserved = owner_call('receiving-bootstrap-stage')
                     if (preserved.get('mode') != 'preserve'
                             or preserved.get('preservation') != owner_request['preservation']
                             or preserved.get('request_sha256') != digest(owner_request)):
                         raise OnboardingError('receiving_controller_preservation_changed')
-                    self._record('owner_preserved', preserved)
+                    record('owner_preserved', preserved)
             else:
                 if 'owner_ready' not in effects:
                     root_call('bootstrap-quiesce')
                     ready = owner_call('receiving-bootstrap-stage')
-                    self._record('owner_ready', ready)
+                    record('owner_ready', ready)
                 else:
                     ready = effects['owner_ready']
                 if 'owner_published' not in effects:
                     root_call('bootstrap-quiesce')
                     published = owner_call('receiving-bootstrap-publish', bootstrap_ready_sha256=ready['ready_sha256'])
-                    self._record('owner_published', published)
+                    record('owner_published', published)
+            if phase == 'preserve':
+                root_call('bootstrap-quiesce')
+                result = self._row()[0]['runtime_observation']['guest_bootstraps'][self.name]['owner_preserved']
+                remaining()
+                return result
+            if phase == 'derive' and current['service']['manager']['ActiveState'] != 'inactive':
+                raise OnboardingError('receiving_guest_bootstrap_quiescence_required')
+            if link is not None and current['service']['manager']['ActiveState'] == 'inactive':
+                if not isinstance(authority_closure, dict):
+                    raise OnboardingError('receiving_admission_owner_context_required')
+                root_call('bootstrap-quiesce')
+                snapshot = self.backend._target_call(frozen['plan'], 'group-publication', candidate=vector,
+                    observation_timeout_seconds=remaining(), group_request=dict(
+                        command=link['snapshot_request'], offline=True, authority_closure=authority_closure))
+                derived = admission_group_derivation(link, snapshot,
+                    previous=frozen['owner']['group'], stores=frozen['owner']['store_bindings'])
+                record('admission_group', derived)
+                if phase == 'derive':
+                    return derived
             if 'unit_selected' not in effects:
                 if owner_request.get('mode') == 'preserve' and current['service']['unit_sha256'] == frozen['root']['service']['unit_sha256']:
-                    preservation_authorization(owner_request['preservation'], candidate['expires_at_ms'])
-                self._record('unit_selected', root_call('bootstrap-select'))
+                    preservation_authorization(owner_request['preservation'], horizon)
+                record('unit_selected', root_call('bootstrap-select'))
             # Reconcile the retained start, rather than reissuing it after a
             # lost ACK. Actual owner load/admission is checked independently.
             if owner_request.get('mode') == 'preserve' and current['service']['manager']['ActiveState'] == 'inactive':
-                preservation_authorization(owner_request['preservation'], candidate['expires_at_ms'])
-            self._record('started', root_call('bootstrap-start'))
-            loaded = self._loaded(frozen, candidate, vector, timeout_seconds)
-            self._record('controlled_loaded', loaded)
+                preservation_authorization(owner_request['preservation'], horizon)
+            record('started', root_call('bootstrap-start'))
+            loaded = self._loaded(frozen, candidate, vector, remaining(), deadline_ns=deadline)
+            record('controlled_loaded', loaded)
             return loaded
 
     def recover_start(self, recovery_id: str, *, implementation: tuple[Path, str],
@@ -2315,13 +3419,20 @@ class GuestBootstrapController:
 
     def _loaded(self, frozen: dict, candidate: dict, vector: tuple[Path, str], timeout_seconds: float,
                 *, observed: dict | None = None, start_recovery_id: str | None = None,
-                previous_load: dict | None = None) -> dict:
+                previous_load: dict | None = None, deadline_ns: int | None = None) -> dict:
+        if deadline_ns is None:
+            deadline_ns = time.monotonic_ns()+int(timeout_seconds*1_000_000_000)
+        def remaining():
+            value = min(timeout_seconds, (deadline_ns-time.monotonic_ns())/1_000_000_000)
+            if value <= 0:
+                raise OnboardingError('receiving_owner_deadline_expired')
+            return value
         if observed is None:
             row = self._row()[0]
             observed = self.backend._target_call(frozen['plan'], 'admitted-running', candidate=self._observation_vector(row, vector),
-                observation_timeout_seconds=timeout_seconds, require_loaded=True, current_native=True)
+                observation_timeout_seconds=remaining(), require_loaded=True, current_native=True)
         root = self.backend._guest_service_call(frozen['plan'], 'bootstrap-inspect', candidate=vector,
-            timeout_seconds=timeout_seconds, owner_observation={key: observed[key]
+            timeout_seconds=remaining(), owner_observation={key: observed[key]
                 for key in ('process', 'admission_parent')})
         effects = self._row()[0]['runtime_observation']['guest_bootstraps'][self.name]
         retained_load = controlled_load(effects)
@@ -2339,6 +3450,12 @@ class GuestBootstrapController:
                 raise OnboardingError('receiving_guest_start_recovery_conflict')
             manager = receipt['manager']
         expected_runtime, _ = bootstrap_effects(effects, source=False, mode=frozen['owner'].get('mode', 'issue'))
+        owner = frozen['owner']
+        if 'admission_link' in candidate:
+            group = derived_lifecycle_group(candidate, effects, owner['group'], required=True)
+            if observed['runtime_status']['loaded_runtime'].get('stores') != owner['store_bindings']:
+                raise OnboardingError('receiving_bootstrap_loaded_store_conflict')
+            owner = {**owner, 'group': group, 'group_sha256': digest(group)}
         loaded = observed['runtime_status']['loaded_runtime']
         startup = loaded['qualified_startup']
         application = observed['group_runtime_status']['loaded_application']
@@ -2356,11 +3473,11 @@ class GuestBootstrapController:
                 or loaded['runtime_bundle_sha256'] != expected_runtime
                 or observed['runtime_sha256'] != expected_runtime
                 or observed.get('responder_association') != 'same-connection'
-                or observed['origin'] != frozen['owner']['origin']
-                or observed['group'] != frozen['owner']['group']['selected']
-                or application['application_sha256'] != frozen['owner']['group']['application_sha256']
-                or application['publication_sha256'] != frozen['owner']['group']['publication_sha256']
-                or application['visibility']['installation_sha256'] != frozen['owner']['group']['installation_sha256']
+                or observed['origin'] != owner['origin']
+                or observed['group'] != owner['group']['selected']
+                or application['application_sha256'] != owner['group']['application_sha256']
+                or application['publication_sha256'] != owner['group']['publication_sha256']
+                or application['visibility']['installation_sha256'] != owner['group']['installation_sha256']
                 or gate['controlled'] is not True or gate['process_id'] != observed['process']['pid']
                 or retained_load is None and (gate['phase'] != 'unselected' or gate['readers'])
                 or previous_load is not None and (retained_load != previous_load
@@ -2371,12 +3488,51 @@ class GuestBootstrapController:
             code_digest=startup['code_digest'], matrix_revision=startup['matrix_commit'],
             startup_instance_id=startup['startup_instance_id'],
             loaded_runtime=loaded, loaded_application={key: value for key, value in application.items() if key != 'reader_gates'},
-            group_sha256=frozen['owner']['group_sha256'], receiving_readiness='unobserved')
+            group_sha256=owner['group_sha256'], receiving_readiness='unobserved')
         if start_recovery_id is not None:
             result['start_recovery_operation_id'] = start_recovery_id
         if retained_load is not None and retained_load != result and previous_load is None:
             raise OnboardingError('receiving_guest_bootstrap_loaded_conflict')
+        remaining()
         return result
+
+
+def guest_loaded_observation(observed: dict, root: dict, owner: dict, candidate: dict, *,
+                             expected_runtime: str, unit_sha256: str, manager: dict,
+                             dropins: dict, initial_observation: bool) -> dict:
+    """Bind the qualified native child/load to its independent manager observation."""
+    loaded = observed['runtime_status']['loaded_runtime']
+    startup = loaded['qualified_startup']
+    application = observed['group_runtime_status']['loaded_application']
+    gate = observed['group_runtime_status']['receiving']['channels']['tribe']
+    if (root['scope']['process'] != observed['process']
+            or root['scope']['admission_parent'] != observed['admission_parent']
+            or root['service']['unit_sha256'] != unit_sha256
+            or root['service'].get('dropins', {}) != dropins
+            or root['service']['manager'] != manager
+            or any(startup.get(key) != value for key, value in dict(
+                code_digest=candidate['runtime_digest'], matrix_commit=candidate['prepared']['matrix_revision'],
+                sdk_digest=candidate['prepared']['sdk_digest'], reader=candidate['prepared']['reader'],
+                matrix_wheel_sha256=candidate['prepared']['matrix_wheel_sha256']).items())
+            or startup['process_id'] != observed['process']['pid']
+            or loaded['runtime_bundle_sha256'] != expected_runtime
+            or observed['runtime_sha256'] != expected_runtime
+            or observed.get('responder_association') != 'same-connection'
+            or observed['origin'] != owner['origin']
+            or observed['group'] != owner['group']['selected']
+            or application['application_sha256'] != owner['group']['application_sha256']
+            or application['publication_sha256'] != owner['group']['publication_sha256']
+            or application['visibility']['installation_sha256'] != owner['group']['installation_sha256']
+            or gate['controlled'] is not True or gate['process_id'] != observed['process']['pid']
+            or initial_observation and (gate['phase'] != 'unselected' or gate['readers'])):
+        raise OnboardingError('receiving_guest_bootstrap_loaded_conflict')
+    result = dict(process=observed['process'],
+        admission_parent=observed['admission_parent'], runtime_sha256=observed['runtime_sha256'],
+        code_digest=startup['code_digest'], matrix_revision=startup['matrix_commit'],
+        startup_instance_id=startup['startup_instance_id'],
+        loaded_runtime=loaded, loaded_application={key: value for key, value in application.items() if key != 'reader_gates'},
+        group_sha256=owner['group_sha256'], receiving_readiness='unobserved')
+    return result
 
 
 class CohortController:
@@ -2426,7 +3582,9 @@ class CohortController:
         senders = before.get('senders')
         if (not isinstance(senders, list) or not 1 <= len(senders) <= 256
                 or any(not isinstance(item, dict) for item in senders)
-                or [item.get('name') for item in senders] != sorted(self.owners)):
+                or any(not isinstance(item.get('name'), str) for item in senders)
+                or [item['name'] for item in senders] != sorted({item['name'] for item in senders})
+                or not {item['name'] for item in senders} <= set(self.owners)):
             raise OnboardingError('receiving_sender_vector_invalid')
         for item in senders:
             if set(item) - {'being_ref'} != {'name', 'root', 'socket', 'server', 'process', 'gate'}:
@@ -2434,7 +3592,78 @@ class CohortController:
             owner = self.owners[item['name']]
             if (str(owner.root), str(owner.socket)) != (item['root'], item['socket']):
                 raise OnboardingError('receiving_sender_vector_invalid')
+        admission = self._admission(row)
+        if admission is None and [item['name'] for item in senders] != sorted(self.owners):
+            raise OnboardingError('receiving_sender_vector_invalid')
         return row
+
+    def _admission(self, row: dict) -> dict | None:
+        """Validate the frozen physical after-set, independently of late effects."""
+        transition = row['intended_transition']
+        if 'cohort_admission' not in transition:
+            return None
+        value = transition['cohort_admission']
+        if (not isinstance(value, dict) or set(value) != {'schema', 'tribe_ref', 'entrant', 'receivers', 'activation'}
+                or value['schema'] != 'cluster-receiving-admission/v1' or 'cohort_activation' in transition
+                or not isinstance(value['tribe_ref'], str) or not value['tribe_ref']
+                or row['target'] != 'receiving:' + value['tribe_ref']
+                or row['expected_precondition'].get('tribe_ref') != value['tribe_ref']
+                or not isinstance(value['receivers'], dict) or not 1 <= len(value['receivers']) <= 256
+                or sorted(value['receivers']) != sorted(self.owners)):
+            raise OnboardingError('receiving_cohort_admission_required')
+        before = {item['name']: item for item in row['expected_precondition']['senders']}
+        added = set(self.owners) - set(before)
+        if (not added or not isinstance(row['expected_precondition'].get('receiver_selections'), dict)
+                or sorted(row['expected_precondition']['receiver_selections']) != sorted(self.owners)):
+            raise OnboardingError('receiving_cohort_admission_required')
+        identities = set()
+        for name, receiver in value['receivers'].items():
+            if (not isinstance(receiver, dict) or set(receiver) != {
+                    'being_ref', 'embodiment_id', 'root', 'socket', 'candidate', 'recipe'}
+                    or any(not isinstance(receiver[key], str) or not receiver[key]
+                           for key in ('being_ref', 'embodiment_id', 'root', 'socket'))
+                    or (receiver['root'], receiver['socket']) != (str(self.owners[name].root), str(self.owners[name].socket))):
+                raise OnboardingError('receiving_cohort_admission_receiver_changed')
+            identity = receiver['being_ref'], receiver['embodiment_id']
+            if identity in identities:
+                raise OnboardingError('receiving_cohort_admission_receiver_changed')
+            identities.add(identity)
+            if name in before and (before[name].get('being_ref'), before[name]['server'].get('embodiment_id')) != identity:
+                raise OnboardingError('receiving_cohort_admission_receiver_changed')
+            candidate, recipe = receiver['candidate'], receiver['recipe']
+            if (not isinstance(candidate, dict) or set(candidate) != {'code', 'code_uid'}
+                    or not isinstance(candidate['code'], str) or not Path(candidate['code']).is_absolute()
+                    or '..' in Path(candidate['code']).parts
+                    or type(candidate['code_uid']) is not int or candidate['code_uid'] < 0
+                    or not isinstance(recipe, dict) or set(recipe) != {'profile', 'prepared', 'tooling'}
+                    or recipe['profile'] not in {'source', 'guest'} or name in added and recipe['profile'] != 'guest'
+                    or not isinstance(recipe['prepared'], dict)
+                    or any(recipe['prepared'].get(key) != receiver[key] for key in ('being_ref', 'embodiment_id'))
+                    or any(not isinstance(recipe['prepared'].get(key), str)
+                        or re.fullmatch('[0-9a-f]{64}', recipe['prepared'][key]) is None
+                        for key in ('code_digest', 'matrix_wheel_sha256'))):
+                raise OnboardingError('receiving_cohort_admission_candidate_changed')
+            from .onboarding_owner_client import validate_tooling_recipe
+            validate_tooling_recipe(recipe['tooling'])
+        entrant = value['entrant']
+        if (not isinstance(entrant, dict) or set(entrant) != {'being_ref', 'embodiment_ids'}
+                or not isinstance(entrant['being_ref'], str) or not entrant['being_ref']
+                or not isinstance(entrant['embodiment_ids'], list)
+                or any(not isinstance(body, str) or not body for body in entrant['embodiment_ids'])
+                or entrant['embodiment_ids'] != sorted(set(entrant['embodiment_ids']))
+                or {(value['receivers'][name]['being_ref'], value['receivers'][name]['embodiment_id']) for name in added}
+                    != {(entrant['being_ref'], body) for body in entrant['embodiment_ids']}):
+            raise OnboardingError('receiving_cohort_admission_entrant_changed')
+        bounds = value['activation']
+        if (not isinstance(bounds, dict) or set(bounds) != {
+                'manifest_path', 'manifest_uid', 'expires_at_ms', 'observation_window_ms'}
+                or not isinstance(bounds['manifest_path'], str) or not Path(bounds['manifest_path']).is_absolute()
+                or '..' in Path(bounds['manifest_path']).parts
+                or type(bounds['manifest_uid']) is not int or bounds['manifest_uid'] < 0
+                or type(bounds['expires_at_ms']) is not int or not 0 < bounds['expires_at_ms'] < 2**53
+                or type(bounds['observation_window_ms']) is not int or not 0 < bounds['observation_window_ms'] <= 60000):
+            raise OnboardingError('receiving_cohort_admission_required')
+        return value
 
     def _record(self, row: dict, key: str, value: dict) -> dict:
         from .operation_journal import JournalConflict
@@ -2480,6 +3709,9 @@ class CohortController:
     def require_revocation_barrier(self) -> dict:
         """A durable old ACK alone cannot authorize a current receiver effect."""
         row = self._row()
+        if self._admission(row) is not None:
+            with self.journal.mutation_lock(self.operation_id):
+                return self._admission_revocation_barrier(self._row())
         revocations = (row['runtime_observation'] or {}).get('sender_revocations', {})
         for sender in row['expected_precondition']['senders']:
             retained = revocations.get(sender['name'])
@@ -2508,9 +3740,40 @@ class CohortController:
             return apply_host_selection(self.journal, self.operation_id, config_path,
                                         _cohort_control=self)
 
+    def admit_membership(self, *, deadline_ns: int) -> dict:
+        """Run the approved native social phase with all original bodies stopped."""
+        from .onboarding_group_admission import admit_membership
+        with self.journal.mutation_lock(self.operation_id), self._observation_scope():
+            return admit_membership(self, deadline_ns=deadline_ns)
+
+    def publish_admission_group(self, *, deadline_ns: int) -> dict:
+        """Publish only the protected post-membership offline group phase."""
+        from .onboarding_group_admission import publish_admission_group
+        with self.journal.mutation_lock(self.operation_id), self._observation_scope():
+            return publish_admission_group(self, deadline_ns=deadline_ns)
+
     def _activation(self, row: dict) -> tuple[dict, dict]:
-        """Resolve the immutable approved activation, never a fresh retry vector."""
-        value = row['intended_transition'].get('cohort_activation')
+        """Resolve fixed activation or the admission's retained late derivation."""
+        admission = self._admission(row)
+        if admission is None:
+            value = row['intended_transition'].get('cohort_activation')
+        else:
+            from . import onboarding_group_recovery as recovery
+            grant = recovery.attached(self.journal, row)
+            retained = (row['runtime_observation'] or {}).get('admission_activation_plan')
+            if (not isinstance(retained, dict) or set(retained) - {'continuation_sha256'} != {
+                    'schema', 'admission_sha256', 'plan_sha256', 'plan', 'receiving_readiness'}
+                    or retained['schema'] != 'cluster-admission-activation-plan/v1'
+                    or retained['admission_sha256'] != digest(admission)
+                    or not isinstance(retained['plan'], dict)
+                    or retained['plan_sha256'] != digest(retained['plan'])
+                    or retained['receiving_readiness'] != 'unobserved'
+                    or (grant is None) != ('continuation_sha256' not in retained)
+                    or grant is not None and retained['continuation_sha256'] != digest(grant)):
+                raise OnboardingError('receiving_admission_activation_unobserved')
+            value = retained['plan']
+            if any(value.get(key) != item for key, item in recovery.bounds(self.journal, row).items()):
+                raise OnboardingError('receiving_admission_activation_changed')
         if (not isinstance(value, dict) or set(value) != {'manifest_path', 'manifest_uid',
                 'roster_sha256', 'expires_at_ms', 'observation_window_ms', 'receivers'}
                 or not isinstance(value['receivers'], dict)
@@ -2527,10 +3790,57 @@ class CohortController:
         senders = row['expected_precondition']['senders']
         if any(not isinstance(item.get('being_ref'), str) for item in senders):
             raise OnboardingError('receiving_cohort_predecessor_required')
-        expected = {(item['being_ref'], item['server']['embodiment_id']) for item in senders}
+        expected = ({(item['being_ref'], item['server']['embodiment_id']) for item in senders}
+            if admission is None else {(item['being_ref'], item['embodiment_id']) for item in admission['receivers'].values()})
         if {(item['being_ref'], item['embodiment_id']) for item in manifest['required_receivers']} != expected:
             raise OnboardingError('receiving_required_cohort_changed')
+        if admission is not None:
+            for name, approved in admission['receivers'].items():
+                recipe = value['receivers'][name]
+                if (not isinstance(recipe, dict) or set(recipe) != {
+                        'profile', 'prepared', 'tooling', 'selection', 'lifecycle_operation_id'}
+                        or any(recipe.get(key) != item for key, item in approved['recipe'].items())
+                        or not isinstance(recipe['lifecycle_operation_id'], str) or not recipe['lifecycle_operation_id']
+                        or not isinstance(recipe['selection'], dict)
+                        or recipe['selection'].get('receiving_code') != approved['recipe']['prepared']['code_digest']
+                        or recipe['selection'].get('matrix_sdk') != approved['recipe']['prepared']['matrix_wheel_sha256']):
+                    raise OnboardingError('receiving_admission_activation_changed')
+                required = next(item for item in manifest['required_receivers'] if
+                    (item['being_ref'], item['embodiment_id']) == (approved['being_ref'], approved['embodiment_id']))
+                if required['expected_selection_sha256'] != digest(frozen[name]):
+                    raise OnboardingError('receiving_cohort_predecessor_required')
         return value, manifest
+
+    def retain_admission_activation(self, plan: dict) -> dict:
+        """Bind later publication/lifecycle selections without rewriting intent.
+
+        This is not adoption or permission to enable a sender. Actual native
+        observation and lifecycle qualification remain the activation path.
+        """
+        from .operation_journal import JournalConflict
+        from . import onboarding_group_recovery as recovery
+        with self.journal.mutation_lock(self.operation_id):
+            row = self._row()
+            admission = self._admission(row)
+            if admission is None or row['state'] == 'planned' or not isinstance(plan, dict):
+                raise OnboardingError('receiving_cohort_admission_required')
+            value = dict(schema='cluster-admission-activation-plan/v1', admission_sha256=digest(admission),
+                plan_sha256=digest(plan), plan=plan, receiving_readiness='unobserved')
+            grant = recovery.attached(self.journal, row)
+            if grant is not None:
+                value['continuation_sha256'] = digest(grant)
+            observations = dict(row['runtime_observation'] or {})
+            retained = observations.get('admission_activation_plan')
+            if retained is not None and retained != value:
+                raise JournalConflict('admission activation derivation changed')
+            if retained is None:
+                recovery.attached(self.journal, row, effect='activation')
+            observations['admission_activation_plan'] = value
+            self._activation({**row, 'runtime_observation': observations})
+            if retained is None:
+                self.journal.advance(self.operation_id, row['state'], runtime_observation=observations,
+                    expected_runtime_observation=row['runtime_observation'])
+            return value
 
     def _adoption_context(self, name: str, plan: dict, manifest: dict) -> tuple[dict, dict, dict | None, dict]:
         """Resolve immutable inputs and caches on the coordinator thread."""
@@ -2603,6 +3913,10 @@ class CohortController:
         loaded, application = status.get('loaded_runtime'), status.get('loaded_application')
         if not isinstance(loaded, dict) or not isinstance(application, dict):
             raise OnboardingError('receiving_cohort_loaded_required')
+        cohort_row = self._row()
+        admission = self._admission(cohort_row)
+        if admission is not None and application.get('tribe', {}).get('policy', {}).get('tribe_ref') != admission['tribe_ref']:
+            raise OnboardingError('receiving_cohort_admission_group_changed')
         startup = loaded.get('qualified_startup')
         if (not isinstance(startup, dict) or any(startup.get(key) != prepared.get(field) for key, field in (
                 ('code_digest', 'code_digest'), ('matrix_commit', 'matrix_revision'),
@@ -2698,8 +4012,12 @@ class CohortController:
         if recipe['profile'] == 'guest' and not isinstance(current.get('admission_parent'), dict):
             raise OnboardingError('receiving_cohort_admission_required')
         effects = {} if lifecycle_row is None else lifecycle_row['runtime_observation'] or {}
-        lifecycle = controlled_load(effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
-                    else effects.get('guest_bootstraps', {}).get(name, {}))
+        if (admission is not None and lifecycle_row is not None
+                and name not in {item['name'] for item in cohort_row['expected_precondition']['senders']}):
+            lifecycle = self._initial_lifecycle(lifecycle_row, name, recipe)['controlled_loaded']
+        else:
+            lifecycle = controlled_load(effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
+                        else effects.get('guest_bootstraps', {}).get(name, {}))
         if (not isinstance(lifecycle, dict) or lifecycle.get('process') != current['process']
                 or lifecycle.get('loaded_runtime') != loaded
                 or lifecycle.get('loaded_application') != {key: val for key, val in application.items() if key != 'reader_gates'}
@@ -2784,7 +4102,12 @@ class CohortController:
         return {name: self._adoption(name, plan, manifest, observations=observations,
             context=contexts[name], observed=queried[name]) for name in names}
 
-    def _lifecycle(self, name: str, recipe: dict) -> dict | None:
+    def _lifecycle(self, name: str, recipe: dict, *, require_group: bool = True) -> dict | None:
+        cohort = self._row()
+        admission = self._admission(cohort)
+        if admission is not None and name not in {item['name'] for item in cohort['expected_precondition']['senders']}:
+            self._initial_lifecycle(cohort, name, recipe)
+            return cohort
         owner = self.owners[name]
         inspect = getattr(owner, 'lifecycle_operation', None)
         if recipe['profile'] == 'source' and inspect is not None:
@@ -2802,7 +4125,258 @@ class CohortController:
             row = self.journal.get(recipe['lifecycle_operation_id'])
         if row is not None and row.get('operation_id') != recipe['lifecycle_operation_id']:
             raise OnboardingError('receiving_cohort_lifecycle_unobserved')
+        if admission is not None and row is not None:
+            proof = (row.get('admission') if recipe['profile'] == 'source' and inspect is not None
+                else admission_lifecycle_projection(row, profile=recipe['profile'], name=name))
+            self._admission_lifecycle_association(cohort, admission, name, recipe, row, proof,
+                require_group=require_group)
         return row
+
+    def _admission_lifecycle_association(self, cohort: dict, admission: dict, name: str,
+                                         recipe: dict, lifecycle: dict, proof: dict | None,
+                                         *, require_group: bool = True) -> None:
+        """A valid local load cannot stand in for a different admission intent."""
+        try:
+            approved = admission['receivers'][name]
+            sender = next(item for item in cohort['expected_precondition']['senders'] if item['name'] == name)
+            if recipe['profile'] == 'source':
+                previous = lifecycle['expected_precondition']['source_bootstrap']['predecessor']
+                server = previous['server']
+            else:
+                frozen = lifecycle['expected_precondition']['guest_bootstraps'][name]['owner']
+                previous, server = frozen['predecessor'], frozen['origin']
+            from . import onboarding_group_recovery as recovery
+            continuation = recovery.lifecycle(self.journal,cohort,name,fresh=False)
+            if (not isinstance(proof, dict) or set(proof) - {'continuation'} != {'schema', 'cohort_operation_id',
+                    'cohort_intent_sha256', 'tribe_ref', 'owner', 'link_sha256', 'manifest_digest',
+                    'snapshot_request_sha256', 'owner_context_sha256', 'publication_operation_id', 'derived'}
+                    or proof['schema'] != 'cluster-admission-lifecycle-projection/v1'
+                    or 'continuation' in proof and proof['continuation'] != continuation
+                    or require_group and continuation is not None and proof.get('continuation') != continuation
+                    or proof['cohort_operation_id'] != self.operation_id
+                    or proof['cohort_intent_sha256'] != digest(cohort['intent'])
+                    or proof['tribe_ref'] != admission['tribe_ref']
+                    or proof['owner'] != {key: approved[key] for key in ('being_ref', 'embodiment_id')}
+                    or proof['manifest_digest'] != cohort['intent']['runtime_call']['manifest_digest']
+                    or any(recipe.get(key) != value for key, value in approved['recipe'].items())
+                    or previous['process'] != sender['process'] or server != sender['server']
+                    or any(not isinstance(proof[key], str) or re.fullmatch('[0-9a-f]{64}', proof[key]) is None
+                           for key in ('link_sha256', 'snapshot_request_sha256', 'owner_context_sha256'))
+                    or not isinstance(proof['publication_operation_id'], str) or not proof['publication_operation_id']
+                    or require_group and (not isinstance(proof['derived'], dict)
+                    or proof['derived']['group'] != dict(application_sha256=recipe['selection']['application_sha256'],
+                        publication_sha256=recipe['selection']['publication_sha256'],
+                        installation_sha256=recipe['selection']['visibility_installation_sha256']))):
+                raise ValueError
+        except (KeyError, TypeError, ValueError, StopIteration):
+            raise OnboardingError('receiving_admission_lifecycle_association_changed') from None
+
+    def bind_admission_lifecycle(self, name: str, operation_id: str) -> dict:
+        """Retain an approved child's association before it can stop a sender."""
+        from .operation_journal import JournalConflict
+        with self.journal.mutation_lock(self.operation_id):
+            row = self._row()
+            admission = self._admission(row)
+            if (admission is None or name not in {item['name'] for item in row['expected_precondition']['senders']}
+                    or not isinstance(operation_id, str) or not operation_id):
+                raise OnboardingError('receiving_admission_lifecycle_binding_required')
+            recipe = {**admission['receivers'][name]['recipe'], 'lifecycle_operation_id': operation_id}
+            lifecycle = self._lifecycle(name, recipe, require_group=False)
+            if lifecycle is None:
+                raise OnboardingError('receiving_cohort_lifecycle_unobserved')
+            proof = (lifecycle.get('admission') if recipe['profile'] == 'source'
+                and hasattr(self.owners[name], 'lifecycle_operation') else admission_lifecycle_projection(
+                    lifecycle, profile=recipe['profile'], name=name))
+            if not isinstance(proof, dict):
+                raise OnboardingError('receiving_admission_lifecycle_association_changed')
+            value = dict(lifecycle_operation_id=operation_id, link_sha256=proof['link_sha256'])
+            observations = dict(row['runtime_observation'] or {})
+            bindings = dict(observations.get('admission_lifecycles', {}))
+            if name in bindings:
+                if bindings[name] != value:
+                    raise JournalConflict('admission lifecycle binding changed')
+                return value
+            effects = ((lifecycle['runtime_observation'] or {}).get('source_bootstrap', {})
+                if recipe['profile'] == 'source' else
+                (lifecycle['runtime_observation'] or {}).get('guest_bootstraps', {}).get(name, {}))
+            if any(key in effects for key in ('quiesced', 'controlled_loaded')):
+                raise OnboardingError('receiving_admission_lifecycle_binding_too_late')
+            bindings[name] = value
+            observations['admission_lifecycles'] = bindings
+            self.journal.advance(self.operation_id, row['state'], runtime_observation=observations,
+                expected_runtime_observation=row['runtime_observation'])
+            return value
+
+    def _bound_admission_lifecycle(self, row: dict, name: str) -> tuple[dict, dict]:
+        admission = self._admission(row)
+        binding = (row['runtime_observation'] or {}).get('admission_lifecycles', {}).get(name)
+        if (admission is None or not isinstance(binding, dict)
+                or set(binding) != {'lifecycle_operation_id', 'link_sha256'}):
+            raise OnboardingError('receiving_admission_lifecycle_binding_required')
+        recipe = {**admission['receivers'][name]['recipe'], 'lifecycle_operation_id': binding['lifecycle_operation_id']}
+        lifecycle = self._lifecycle(name, recipe, require_group=False)
+        if lifecycle is None:
+            raise OnboardingError('receiving_cohort_lifecycle_unobserved')
+        proof = (lifecycle.get('admission') if recipe['profile'] == 'source'
+            and hasattr(self.owners[name], 'lifecycle_operation') else admission_lifecycle_projection(
+                lifecycle, profile=recipe['profile'], name=name))
+        if not isinstance(proof, dict) or proof['link_sha256'] != binding['link_sha256']:
+            raise OnboardingError('receiving_admission_lifecycle_association_changed')
+        return recipe, lifecycle
+
+    def _admission_revocation_barrier(self, row: dict) -> dict:
+        """Observe revoked originals, stopped units, or freshly fenced loads."""
+        deadline = min([time.monotonic_ns() + 30_000_000_000, *[
+            getattr(owner, 'deadline_ns', None) or 2**63 - 1 for owner in self.owners.values()]])
+        control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'receiving-control:' + self.operation_id))
+        revocations = (row['runtime_observation'] or {}).get('sender_revocations', {})
+        proofs = {}
+        for sender in row['expected_precondition']['senders']:
+            name, owner = sender['name'], self.owners[sender['name']]
+            old = revocations.get(name)
+            if not isinstance(old, dict):
+                raise OnboardingError('receiving_sender_barrier_incomplete')
+            if (old.get('process') != sender['process'] or old.get('server') != sender['server']
+                    or old.get('gate', {}).get('phase') != 'revoke' or old['gate'].get('readers') != []
+                    or old['gate'].get('operation_id') != control_id
+                    or old['gate'].get('release_digest') != row['intent']['runtime_call']['manifest_digest']
+                    or old['gate'].get('request_sha256') != old.get('request_sha256')):
+                raise OnboardingError('receiving_sender_barrier_changed')
+            with self._owner_deadline(owner, deadline):
+                recipe = lifecycle = None
+                lifecycle_effects = {}
+                if name in (row['runtime_observation'] or {}).get('admission_lifecycles', {}):
+                    recipe, lifecycle = self._bound_admission_lifecycle(row, name)
+                    effects = lifecycle['runtime_observation'] or {}
+                    lifecycle_effects = (effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
+                        else effects.get('guest_bootstraps', {}).get(name, {}))
+                # A stopped predecessor has no daemon to answer. Query its
+                # current root service proof below instead of exhausting this
+                # barrier on a known-stopped socket. A retained exit alone is
+                # never sufficient; restarted or loaded writers still require
+                # the actual service/process/gate checks.
+                stopped = 'quiesced' in lifecycle_effects and 'controlled_loaded' not in lifecycle_effects
+                current = None
+                if not stopped:
+                    try:
+                        current = owner.status()
+                    except (OnboardingError, OSError):
+                        current = None
+                if current is not None and current['process'] == old['process'] and current['server'] == old['server']:
+                    if current['gate'] != old['gate']:
+                        raise OnboardingError('receiving_sender_barrier_changed')
+                    proofs[name] = dict(state='revoked-original', process=current['process'])
+                    continue
+                if recipe is None or lifecycle is None:
+                    recipe, lifecycle = self._bound_admission_lifecycle(row, name)
+                exited = self._replacement_exit(sender, recipe, lifecycle)
+                if current is None:
+                    begun = time.monotonic_ns()
+                    if recipe['profile'] == 'source':
+                        action = getattr(owner, 'lifecycle_action', None)
+                        if not callable(action):
+                            raise OnboardingError('receiving_source_lifecycle_binding_required')
+                        observed = action(recipe['lifecycle_operation_id'], 'quiescence')
+                        schema = 'cluster-source-bootstrap-quiescence/v1'
+                    else:
+                        backend = getattr(owner, 'backend', None)
+                        if backend is None:
+                            raise OnboardingError('receiving_guest_owner_locator_required')
+                        observed = GuestBootstrapController(self.journal, recipe['lifecycle_operation_id'],
+                            backend, name).observe_quiescence(timeout_seconds=(deadline - begun) / 1_000_000_000)
+                        schema = 'cluster-guest-service-quiescence-observation/v1'
+                    service = observed.get('service', {}).get('manager', {})
+                    if (observed.get('schema') != schema or observed.get('process') != sender['process']
+                            or observed.get('exit_sha256') != digest(exited)
+                            or service.get('ActiveState') != 'inactive' or service.get('SubState') != 'dead'
+                            or service.get('MainPID') != '0'):
+                        raise OnboardingError('receiving_sender_quiescence_unobserved')
+                    proofs[name] = dict(state='stopped', observation=observed)
+                else:
+                    effects = lifecycle['runtime_observation'] or {}
+                    loaded = ((effects.get('source_bootstrap', {}) if recipe['profile'] == 'source'
+                        else effects.get('guest_bootstraps', {}).get(name, {}))).get('controlled_loaded')
+                    status = current['runtime_status']
+                    application = {key: value for key, value in status['loaded_application'].items() if key != 'reader_gates'}
+                    if (not isinstance(loaded, dict) or loaded.get('process') != current['process']
+                            or loaded.get('loaded_runtime') != status.get('loaded_runtime')
+                            or loaded.get('loaded_application') != application
+                            or recipe['profile'] == 'guest' and loaded.get('admission_parent') != current.get('admission_parent')):
+                        raise OnboardingError('receiving_sender_replacement_unobserved')
+                    row = self._revoke_replacement(row, sender, current, recipe, exited)
+                    proofs[name] = dict(state='revoked-replacement',
+                        accepted=row['runtime_observation']['sender_replacements'][name]['accepted'])
+        self._accept_activation_deadline(deadline)
+        return dict(schema='cluster-receiving-admission-barrier/v1', operation_id=self.operation_id,
+            manifest_digest=row['intent']['runtime_call']['manifest_digest'], sender_revocations=revocations,
+            current_senders=proofs, receiving_readiness='unobserved')
+
+    def _initial_lifecycle(self, row: dict, name: str, recipe: dict) -> dict:
+        """Consume the actual first-load producer, never replacement markers."""
+        from .onboarding_service import initial_context, unit_content
+        from . import onboarding_group_recovery as recovery
+        try:
+            admission = self._admission(row)
+            if (admission is None or name in {item['name'] for item in row['expected_precondition']['senders']}
+                    or recipe['profile'] != 'guest' or recipe['lifecycle_operation_id'] != self.operation_id):
+                raise ValueError
+            effect = row['runtime_observation']['initial_managed'][name]
+            if set(effect) != {'intent', 'validated', 'selected', 'started', 'controlled_loaded'}:
+                raise ValueError
+            intent, prepared, selected, started, loaded = (effect[key] for key in (
+                'intent', 'validated', 'selected', 'started', 'controlled_loaded'))
+            binding, owner, request = intent['binding'], intent['owner'], intent['request']
+            grant = recovery.attached(self.journal, row)
+            receiver = admission['receivers'][name]
+            group = owner['group']
+            expected_origin = {key: binding['origin'][key] for key in ('body_ref', 'embodiment_id', 'incarnation_id')}
+            context = initial_context(json.loads(request['argv'][request['argv'].index('--initial-context-json') + 1]))
+            fingerprint = hashlib.sha256(unit_content(request['argv'])).hexdigest()
+            if (set(intent) != {'binding', 'owner', 'request', 'unit_sha256'}
+                    or set(binding) - {'continuation_sha256'} != {'schema', 'plan_digest', 'admission_sha256', 'profile_sha256', 'receiver', 'origin'}
+                    or (grant is None) != ('continuation_sha256' not in binding)
+                    or grant is not None and binding['continuation_sha256'] != digest(grant)
+                    or binding['schema'] != 'cluster-managed-initial-binding/v1'
+                    or binding['admission_sha256'] != digest(admission) or binding['receiver'] != receiver
+                    or any(re.fullmatch('[0-9a-f]{64}', binding[key]) is None for key in ('profile_sha256', 'plan_digest'))
+                    or owner['plan_digest'] != binding['plan_digest'] or owner['predecessor'] is not None
+                    or owner['being_ref'] != receiver['being_ref']
+                    or any(owner['origin'].get(key) != value for key,value in expected_origin.items())
+                    or owner['origin']['embodiment_id'] != receiver['embodiment_id']
+                    or owner['mode'] != 'preserve' or owner['group_sha256'] != digest(group)
+                    or owner['preservation']['schema'] != 'cluster-receiving-controller-preservation/v1'
+                    or owner['preservation']['active'] is not True
+                    or owner['preservation']['runtime_sha256'] != owner['runtime_sha256']
+                    or owner['preservation']['origin'] != owner['origin']
+                    or group['selected']['tribe_ref'] != admission['tribe_ref']
+                    or group['selected']['socket'] != receiver['socket']
+                    or request['schema'] != 'cluster-guest-service-initial/v1' or request['predecessor'] is not None
+                    or request['operation_id'] != guest_bootstrap_operation_id(self.operation_id)
+                    or request['plan_digest'] != binding['plan_digest']
+                    or request['not_after_ms'] != recovery.bounds(self.journal, row)['expires_at_ms']
+                    or request['argv'].count('--initial-context-json') != 1
+                    or context != dict(schema='cluster-initial-start-context/v1', owner_sha256=digest(owner),
+                        profile_sha256=binding['profile_sha256'], not_after_ms=request['not_after_ms'])
+                    or intent['unit_sha256'] != fingerprint or selected['selected_sha256'] != fingerprint
+                    or prepared['schema'] != 'cluster-guest-service-initial-candidate/v1'
+                    or prepared['candidate_sha256'] != fingerprint
+                    or started['schema'] != 'cluster-guest-service-initial-start/v1'
+                    or started['initial_service'] != prepared['initial_service']
+                    or started['service']['unit_sha256'] != fingerprint
+                    or started['service']['manager']['MainPID'] != str(started['admission_parent']['pid'])
+                    or loaded['schema'] != 'cluster-guest-initial-loaded/v1'
+                    or loaded['admission_parent'] != started['admission_parent']
+                    or loaded['runtime_sha256'] != owner['runtime_sha256']
+                    or loaded['loaded_runtime']['runtime_bundle_sha256'] != owner['runtime_sha256']
+                    or loaded['group_sha256'] != owner['group_sha256']
+                    or loaded['loaded_application']['application_sha256'] != group['application_sha256']
+                    or loaded['loaded_application']['publication_sha256'] != group['publication_sha256']
+                    or loaded['loaded_application']['visibility']['installation_sha256'] != group['installation_sha256']
+                    or loaded['receiving_readiness'] != 'unobserved'):
+                raise ValueError
+            return effect
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError, OnboardingError):
+            raise OnboardingError('receiving_initial_managed_lifecycle_unobserved') from None
 
     def _qualified_preflight(self, name: str, recipe: dict, plan: dict, manifest: dict, lifecycle: dict | None) -> dict:
         """Reuse the maintained isolated reader against this exact release.
@@ -2813,10 +4387,16 @@ class CohortController:
         """
         if lifecycle is None or lifecycle['operation'] != 'receiving-update':
             raise OnboardingError('receiving_cohort_lifecycle_unobserved')
-        candidate = (lifecycle['intended_transition'].get('source_bootstrap', {}).get('qualification', {})
+        admission = self._admission(lifecycle)
+        if admission is not None and name not in {item['name'] for item in lifecycle['expected_precondition']['senders']}:
+            self._initial_lifecycle(lifecycle, name, recipe)
+            candidate = admission['receivers'][name]['candidate']
+            code, uid = candidate['code'], candidate['code_uid']
+        else:
+            candidate = (lifecycle['intended_transition'].get('source_bootstrap', {}).get('qualification', {})
             if recipe['profile'] == 'source' else lifecycle['intended_transition'].get('guest_bootstraps', {}).get(name, {}))
-        code = candidate.get('code' if recipe['profile'] == 'source' else 'runtime_code')
-        uid = candidate.get('code_uid')
+            code = candidate.get('code' if recipe['profile'] == 'source' else 'runtime_code')
+            uid = candidate.get('code_uid')
         if not isinstance(code, str) or not Path(code).is_absolute() or '..' in Path(code).parts or type(uid) is not int or uid < 0:
             raise OnboardingError('receiving_cohort_preflight_unobserved')
         cache_key = digest(dict(code=code, uid=uid, prepared=recipe['prepared'], manifest=manifest))
@@ -2839,6 +4419,9 @@ class CohortController:
         with self.journal.mutation_lock(self.operation_id):
             self._observation_implementations(retain=True)
             row = self._row()
+            if self._admission(row) is not None:
+                from .onboarding_group_recovery import attached
+                attached(self.journal,row,effect='activation')
             plan, manifest = self._activation(row)
             # Configure/discover before the finite all-reader observation round.
             # Subsequent identity calls reuse their qualified owner process to
@@ -2942,6 +4525,87 @@ class CohortController:
                     expected_runtime_observation=row['runtime_observation'])
             return (row['runtime_observation'] or {}).get('native_tooling', {})
 
+    @staticmethod
+    def _replacement_exit(sender: dict, recipe: dict, lifecycle: dict) -> dict:
+        effects = lifecycle['runtime_observation'] or {}
+        name = sender['name']
+        if recipe['profile'] == 'source':
+            previous = lifecycle['expected_precondition'].get('source_bootstrap', {}).get('predecessor', {})
+            previous_server = previous.get('server')
+            exited = effects.get('source_bootstrap', {}).get('quiesced', {})
+            closed = exited.get('exit_observed') is True and exited.get('writer_available') is True
+        else:
+            frozen_owner = lifecycle['expected_precondition'].get('guest_bootstraps', {}).get(name, {}).get('owner', {})
+            previous = frozen_owner.get('predecessor', {})
+            previous_server = frozen_owner.get('origin')
+            exited = effects.get('guest_bootstraps', {}).get(name, {}).get('quiesced', {})
+            closed = (exited.get('schema') == 'cluster-guest-service-quiescence/v1'
+                and exited.get('exits') == {'process': True, 'admission_parent': True}
+                and exited.get('admission_parent') == previous.get('admission_parent'))
+        if (not closed or previous.get('process') != sender['process']
+                or previous_server != sender['server'] or exited.get('process') != sender['process']):
+            raise OnboardingError('receiving_sender_replacement_unobserved')
+        return exited
+
+    def _revoke_replacement(self, row: dict, sender: dict, current: dict, recipe: dict, exited: dict) -> dict:
+        """Retain a replacement's own exact revoke, shared by both barriers."""
+        name = sender['name']
+        owner = self.owners[name]
+        release = row['intent']['runtime_call']['manifest_digest']
+        control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'receiving-control:' + self.operation_id))
+        observations = dict(row['runtime_observation'] or {})
+        replacements = dict(observations.get('sender_replacements', {}))
+        if current['process'] == sender['process']:
+            raise OnboardingError('receiving_sender_replacement_unobserved')
+        if name not in replacements:
+            gate = current['gate']
+            if gate.get('phase') != 'unselected' or gate.get('readers') != []:
+                raise OnboardingError('receiving_sender_replacement_unfenced')
+            command = dict(process_instance_id=gate['process_instance_id'], channel_id='tribe',
+                expected_head=gate['head'], operation_id=control_id, release_digest=release, phase='revoke', readers=[])
+            replacements[name] = dict(process=current['process'], server=current['server'], command=command,
+                lifecycle_operation_id=recipe['lifecycle_operation_id'], exit_sha256=digest(exited))
+            observations['sender_replacements'] = replacements
+            row = self.journal.advance(self.operation_id, row['state'], runtime_observation=observations,
+                expected_runtime_observation=row['runtime_observation'])
+        replacement = replacements[name]
+        if (replacement['process'] != current['process'] or replacement['server'] != current['server']
+                or replacement['lifecycle_operation_id'] != recipe['lifecycle_operation_id']
+                or replacement['exit_sha256'] != digest(exited)):
+            raise OnboardingError('receiving_sender_replacement_changed')
+        if 'accepted' in replacement:
+            accepted = replacement['accepted']
+            command = replacement['command']
+            if (not isinstance(accepted, dict) or not isinstance(command, dict)
+                    or any(accepted.get(key) != current[key] for key in ('process', 'server', 'gate'))
+                    or accepted.get('command_sha256') != digest(command)
+                    or current['gate'].get('request_sha256') != accepted.get('request_sha256')
+                    or command.get('process_instance_id') != current['gate'].get('process_instance_id')
+                    or command.get('channel_id') != 'tribe' or command.get('operation_id') != control_id
+                    or command.get('release_digest') != release or command.get('phase') != 'revoke'
+                    or command.get('readers') != [] or current['gate'].get('phase') != 'revoke'
+                    or current['gate'].get('readers') != [] or current['gate'].get('operation_id') != control_id
+                    or current['gate'].get('release_digest') != release):
+                raise OnboardingError('receiving_sender_replacement_changed')
+            # This fresh adoption round already proves the exact retained
+            # ACK. Do not spend its finite freshness repeating owner RPCs
+            # and durable writes. An unacknowledged request still retries.
+            return row
+        path = owner.root / 'receiving-control' / (control_id + '-replacement-revoke.json')
+        result = owner.prepare_apply_control(replacement['command'], path)
+        accepted = {key: result[key] for key in ('server', 'process', 'gate', 'request_sha256', 'command_sha256')}
+        if (accepted['process'] != replacement['process'] or accepted['server'] != replacement['server']
+                or accepted['gate'].get('phase') != 'revoke' or accepted['gate'].get('readers') != []
+                or accepted['gate'].get('operation_id') != control_id or accepted['gate'].get('release_digest') != release
+                or accepted['gate'].get('request_sha256') != accepted['request_sha256']):
+            raise OnboardingError('receiving_sender_replacement_uncertain')
+        if replacement.get('accepted', accepted) != accepted:
+            raise OnboardingError('receiving_sender_replacement_changed')
+        replacements[name] = {**replacement, 'accepted': accepted}
+        observations['sender_replacements'] = replacements
+        return self.journal.advance(self.operation_id, row['state'], runtime_observation=observations,
+            expected_runtime_observation=row['runtime_observation'])
+
     def _activation_barrier(self, row: dict, plan: dict, records: dict, current_observations: dict) -> dict:
         """Preserve old revocations and qualify an explicitly replaced sender.
 
@@ -2961,7 +4625,6 @@ class CohortController:
                     or old['gate'].get('release_digest') != release
                     or old['gate'].get('request_sha256') != old.get('request_sha256')):
                 raise OnboardingError('receiving_sender_barrier_changed')
-            owner = self.owners[name]
             # Adoption already authenticated this exact process/gate in the
             # current bounded round. Another cold owner CLI spends freshness
             # without adding proof; native preparation/selection still CASes
@@ -2970,7 +4633,6 @@ class CohortController:
             record = records[name]
             if current['process'] != record['process'] or current['server'] != record['server']:
                 raise OnboardingError('receiving_sender_barrier_changed')
-            replacements = dict(observations.get('sender_replacements', {}))
             if current['process'] == old['process'] and current['server'] == old['server']:
                 if current['gate'] != old['gate']:
                     raise OnboardingError('receiving_sender_barrier_changed')
@@ -2979,73 +4641,56 @@ class CohortController:
             lifecycle = self._lifecycle(name, recipe)
             if lifecycle is None:
                 raise OnboardingError('receiving_cohort_lifecycle_unobserved')
-            effects = lifecycle['runtime_observation'] or {}
-            if recipe['profile'] == 'source':
-                previous = lifecycle['expected_precondition'].get('source_bootstrap', {}).get('predecessor', {})
-                previous_server = previous.get('server')
-                exited = effects.get('source_bootstrap', {}).get('quiesced', {})
-                closed = exited.get('exit_observed') is True and exited.get('writer_available') is True
-            else:
-                frozen_owner = lifecycle['expected_precondition'].get('guest_bootstraps', {}).get(name, {}).get('owner', {})
-                previous = frozen_owner.get('predecessor', {})
-                previous_server = frozen_owner.get('origin')
-                exited = effects.get('guest_bootstraps', {}).get(name, {}).get('quiesced', {})
-                closed = (exited.get('schema') == 'cluster-guest-service-quiescence/v1'
-                    and exited.get('exits') == {'process': True, 'admission_parent': True}
-                    and exited.get('admission_parent') == previous.get('admission_parent'))
-            if (not closed or previous.get('process') != old['process']
-                    or previous_server != old['server'] or exited.get('process') != old['process']
-                    or current['process'] == old['process']):
-                raise OnboardingError('receiving_sender_replacement_unobserved')
-            if name not in replacements:
-                gate = current['gate']
-                if gate.get('phase') != 'unselected' or gate.get('readers') != []:
-                    raise OnboardingError('receiving_sender_replacement_unfenced')
-                command = dict(process_instance_id=gate['process_instance_id'], channel_id='tribe',
-                    expected_head=gate['head'], operation_id=control_id, release_digest=release, phase='revoke', readers=[])
-                replacements[name] = dict(process=current['process'], server=current['server'], command=command,
-                    lifecycle_operation_id=recipe['lifecycle_operation_id'], exit_sha256=digest(exited))
-                observations['sender_replacements'] = replacements
+            exited = self._replacement_exit(sender, recipe, lifecycle)
+            row = self._revoke_replacement(row, sender, current, recipe, exited)
+        admission = self._admission(row)
+        if admission is not None:
+            before = {item['name'] for item in row['expected_precondition']['senders']}
+            for name in sorted(set(self.owners) - before):
+                recipe = plan['receivers'][name]
+                initial = self._initial_lifecycle(row, name, recipe)
+                current, proof = current_observations[name], records[name]
+                if (current['process'] != proof['process'] or current['server'] != proof['server']
+                        or proof['process'] != initial['controlled_loaded']['process']):
+                    raise OnboardingError('receiving_initial_sender_changed')
+                observations = dict(row['runtime_observation'] or {})
+                senders = dict(observations.get('sender_initials', {}))
+                if name not in senders:
+                    gate = current['gate']
+                    if gate.get('phase') != 'unselected' or gate.get('readers') != []:
+                        raise OnboardingError('receiving_initial_sender_unfenced')
+                    command = dict(process_instance_id=gate['process_instance_id'], channel_id='tribe',
+                        expected_head=gate['head'], operation_id=control_id, release_digest=release,
+                        phase='revoke', readers=[])
+                    senders[name] = dict(process=current['process'], server=current['server'], command=command,
+                        lifecycle_operation_id=self.operation_id, initial_sha256=digest(initial['controlled_loaded']))
+                    observations['sender_initials'] = senders
+                    row = self.journal.advance(self.operation_id, row['state'], runtime_observation=observations,
+                        expected_runtime_observation=row['runtime_observation'])
+                sender = senders[name]
+                if (sender['process'] != current['process'] or sender['server'] != current['server']
+                        or sender['lifecycle_operation_id'] != self.operation_id
+                        or sender['initial_sha256'] != digest(initial['controlled_loaded'])):
+                    raise OnboardingError('receiving_initial_sender_changed')
+                now = time.time_ns() // 1_000_000
+                deadline = min(proof['observed_at_ns'] + plan['observation_window_ms'] * 1_000_000,
+                    time.monotonic_ns() + (min(plan['expires_at_ms'], _reader_proof_expiry(proof)) - now) * 1_000_000)
+                with self._owner_deadline(self.owners[name], deadline):
+                    result = self.owners[name].prepare_apply_control(sender['command'],
+                        self.owners[name].root / 'receiving-control' / (control_id + '-initial-revoke.json'))
+                accepted = {key: result[key] for key in ('server', 'process', 'gate', 'request_sha256', 'command_sha256')}
+                if (accepted['process'] != sender['process'] or accepted['server'] != sender['server']
+                        or accepted['gate'].get('phase') != 'revoke' or accepted['gate'].get('readers') != []
+                        or accepted['gate'].get('operation_id') != control_id
+                        or accepted['gate'].get('release_digest') != release
+                        or accepted['gate'].get('request_sha256') != accepted['request_sha256']):
+                    raise OnboardingError('receiving_initial_sender_uncertain')
+                if sender.get('accepted', accepted) != accepted:
+                    raise OnboardingError('receiving_initial_sender_changed')
+                senders[name] = {**sender, 'accepted': accepted}
+                observations['sender_initials'] = senders
                 row = self.journal.advance(self.operation_id, row['state'], runtime_observation=observations,
                     expected_runtime_observation=row['runtime_observation'])
-            replacement = replacements[name]
-            if (replacement['process'] != current['process'] or replacement['server'] != current['server']
-                    or replacement['lifecycle_operation_id'] != recipe['lifecycle_operation_id']
-                    or replacement['exit_sha256'] != digest(exited)):
-                raise OnboardingError('receiving_sender_replacement_changed')
-            if 'accepted' in replacement:
-                accepted = replacement['accepted']
-                command = replacement['command']
-                if (not isinstance(accepted, dict) or not isinstance(command, dict)
-                        or any(accepted.get(key) != current[key] for key in ('process', 'server', 'gate'))
-                        or accepted.get('command_sha256') != digest(command)
-                        or current['gate'].get('request_sha256') != accepted.get('request_sha256')
-                        or command.get('process_instance_id') != current['gate'].get('process_instance_id')
-                        or command.get('channel_id') != 'tribe' or command.get('operation_id') != control_id
-                        or command.get('release_digest') != release or command.get('phase') != 'revoke'
-                        or command.get('readers') != [] or current['gate'].get('phase') != 'revoke'
-                        or current['gate'].get('readers') != [] or current['gate'].get('operation_id') != control_id
-                        or current['gate'].get('release_digest') != release):
-                    raise OnboardingError('receiving_sender_replacement_changed')
-                # This fresh adoption round already proves the exact retained
-                # ACK. Do not spend its finite freshness repeating owner RPCs
-                # and durable writes. An unacknowledged request still retries.
-                continue
-            path = owner.root / 'receiving-control' / (control_id + '-replacement-revoke.json')
-            result = owner.prepare_apply_control(replacement['command'], path)
-            accepted = {key: result[key] for key in ('server', 'process', 'gate', 'request_sha256', 'command_sha256')}
-            if (accepted['process'] != replacement['process'] or accepted['server'] != replacement['server']
-                    or accepted['gate'].get('phase') != 'revoke' or accepted['gate'].get('readers') != []
-                    or accepted['gate'].get('operation_id') != control_id
-                    or accepted['gate'].get('release_digest') != release
-                    or accepted['gate'].get('request_sha256') != accepted['request_sha256']):
-                raise OnboardingError('receiving_sender_replacement_uncertain')
-            if replacement.get('accepted', accepted) != accepted:
-                raise OnboardingError('receiving_sender_replacement_changed')
-            replacements[name] = {**replacement, 'accepted': accepted}
-            observations['sender_replacements'] = replacements
-            row = self.journal.advance(self.operation_id, row['state'], runtime_observation=observations,
-                expected_runtime_observation=row['runtime_observation'])
         return row
 
     def _current_activation(self, row: dict, plan: dict, manifest: dict, activation: dict,
@@ -3083,6 +4728,32 @@ class CohortController:
             self._accept_activation_deadline(owner.deadline_ns)
         finally:
             owner.deadline_ns = previous
+
+    def _sender_revocation(self, row: dict, name: str) -> dict | None:
+        observations = row['runtime_observation'] or {}
+        before = {item['name'] for item in row['expected_precondition']['senders']}
+        if name not in before:
+            if name in observations.get('sender_replacements', {}) or name in observations.get('sender_revocations', {}):
+                raise OnboardingError('receiving_initial_sender_changed')
+            return observations.get('sender_initials', {}).get(name, {}).get('accepted')
+        if name in observations.get('sender_initials', {}):
+            raise OnboardingError('receiving_sender_barrier_changed')
+        replacement = observations.get('sender_replacements', {}).get(name)
+        return (replacement.get('accepted') if replacement is not None else
+            observations.get('sender_revocations', {}).get(name))
+
+    def _require_all_revocations(self, row: dict, activation: dict) -> None:
+        control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'receiving-control:' + self.operation_id))
+        release = row['intent']['runtime_call']['manifest_digest']
+        for name in self.owners:
+            revoked = self._sender_revocation(row, name)
+            if (not isinstance(revoked, dict) or revoked['process'] != activation['records'][name]['process']
+                    or revoked['server'] != activation['records'][name]['server']
+                    or revoked['gate'].get('phase') != 'revoke' or revoked['gate'].get('readers') != []
+                    or revoked['gate'].get('operation_id') != control_id
+                    or revoked['gate'].get('release_digest') != release
+                    or revoked['gate'].get('request_sha256') != revoked.get('request_sha256')):
+                raise OnboardingError('receiving_sender_barrier_changed')
 
     def _fence_partial_activation(self, activation: dict) -> None:
         """Retain a finite forward repair before revoking known positive grants."""
@@ -3133,10 +4804,19 @@ class CohortController:
                 command = dict(process_instance_id=gate['process_instance_id'], channel_id='tribe',
                     expected_head=gate['head'], operation_id=repair_id, release_digest=release, phase='revoke', readers=[])
                 if gate['phase'] == 'revoke':
-                    original = observations.get('sender_revocations', {}).get(name)
-                    replacement = observations.get('sender_replacements', {}).get(name)
-                    if replacement is not None:
-                        original = replacement.get('accepted')
+                    try:
+                        original = self._sender_revocation(row, name)
+                    except OnboardingError:
+                        repairs[name] = {'state': 'uncertain'}
+                        continue
+                    pending = observations.get('sender_initials', {}).get(name)
+                    if original is None and pending is not None:
+                        try:
+                            original = owner.prepare_apply_control(pending['command'], owner.root /
+                                'receiving-control' / (old_id + '-initial-revoke.json'))
+                        except (OnboardingError, OSError):
+                            repairs[name] = {'state': 'uncertain'}
+                            continue
                     if (not isinstance(original, dict) or any(current[key] != original[key]
                             for key in ('process', 'server', 'gate'))):
                         repairs[name] = {'state': 'uncertain'}
@@ -3207,6 +4887,8 @@ class CohortController:
             records = dict((row['runtime_observation'] or {}).get('sender_revocations', {}))
             for name, value in (row['runtime_observation'] or {}).get('sender_replacements', {}).items():
                 # An unacknowledged replacement never inherits old proof.
+                records[name] = value.get('accepted', value)
+            for name, value in (row['runtime_observation'] or {}).get('sender_initials', {}).items():
                 records[name] = value.get('accepted', value)
             activation = {'records': records}
         elif 'cohort_reassessment' not in row['runtime_observation']:
@@ -3310,6 +4992,9 @@ class CohortController:
             release = row['intent']['runtime_call']['manifest_digest']
             if set(row['runtime_observation'].get('sender_selections', {})) == set(self.owners):
                 return self._confirmed_selection(row, plan, manifest, activation)
+            if self._admission(row) is not None:
+                from .onboarding_group_recovery import attached
+                attached(self.journal,row,effect='activation')
             control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'receiving-control:' + self.operation_id))
             # Retain actual Root control code before the fresh observation
             # window and any dispatch. It is distinct from body/adoption code.
@@ -3327,6 +5012,11 @@ class CohortController:
                 observed = dict(row['runtime_observation'], control_implementations=implementations)
                 row = self.journal.advance(self.operation_id, row['state'], runtime_observation=observed,
                     expected_runtime_observation=row['runtime_observation'])
+            try:
+                self._require_all_revocations(row, activation)
+            except (OnboardingError, OSError):
+                self._fence_partial_activation(activation)
+                raise
             for name in sorted(self.owners):
                 # Refresh all required observers before each positive step. A
                 # local roster CAS remains enforced by each actual sender.
@@ -3337,10 +5027,7 @@ class CohortController:
                 except (OnboardingError, OSError):
                     self._fence_partial_activation(activation)
                     raise
-                revoked = (row['runtime_observation'] or {}).get('sender_revocations', {}).get(name)
-                replacement = row['runtime_observation'].get('sender_replacements', {}).get(name)
-                if replacement is not None:
-                    revoked = replacement.get('accepted')
+                revoked = self._sender_revocation(row, name)
                 if (not isinstance(revoked, dict) or revoked['process'] != activation['records'][name]['process']
                         or revoked['server'] != activation['records'][name]['server']
                         or revoked['gate'].get('phase') != 'revoke'
@@ -3462,9 +5149,10 @@ print(json.dumps(dict(reader=reader, assessment=assessment, artifacts=artifacts)
             process = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', launcher, str(root)],
                 input=json.dumps(dict(manifest=manifest, digest=manifest_digest,
                     being_ref=being_ref, embodiment_id=embodiment_id)).encode(),
-                capture_output=True, timeout=30, check=False, umask=0o077,
+                capture_output=True, timeout=onboarding_sdk.probe_timeout(30), check=False, umask=0o077,
                 env={'PATH': os.defpath, 'LANG': 'C.UTF-8',
                      'LD_LIBRARY_PATH': str(Path(sys.base_prefix) / 'lib')})
+            onboarding_sdk.probe_timeout(30)
             if process.returncode or len(process.stdout) > 2 * 1024**2:
                 raise OnboardingError('qualified_receiving_reader_required')
             result = json.loads(process.stdout)
@@ -3517,12 +5205,14 @@ def preflight(code: Path, code_digest: str, manifest_path: Path, manifest_digest
 
 def prepare_sdk(home: Path, code: Path, code_digest: str, manifest_path: Path,
                 manifest_digest: str, *, being_ref: str, embodiment_id: str,
-                code_uid: int = 0, manifest_uid: int = 0) -> dict:
+                code_uid: int = 0, manifest_uid: int = 0, installed_only: bool = False) -> dict:
     """Install/observe the approved offline SDK without selecting a live runtime."""
     checked = preflight(code, code_digest, manifest_path, manifest_digest,
         being_ref=being_ref, embodiment_id=embodiment_id, code_uid=code_uid, manifest_uid=manifest_uid)
-    venv = onboarding_sdk.install(home, code, code_digest, code_uid=code_uid,
-        matrix_commit=checked['matrix_revision'], matrix_wheel_sha256=checked['matrix_wheel_sha256'])
+    options = dict(code_uid=code_uid, matrix_commit=checked['matrix_revision'],
+        matrix_wheel_sha256=checked['matrix_wheel_sha256'])
+    venv = (onboarding_sdk.observe(home, code, **options) if installed_only else
+        onboarding_sdk.install(home, code, code_digest, **options))
     interpreter = onboarding_sdk.interpreter(venv)
     if interpreter != checked['reader']['contract']['interpreter']:
         raise OnboardingError('incompatible_receiving_interpreter')

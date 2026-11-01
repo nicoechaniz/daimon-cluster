@@ -51,6 +51,104 @@ def test_chat_successor_uses_closed_startup_and_qualifies_before_adapter(tmp_pat
     assert len(calls) == 2, 'failed qualification must never start the adapter'
 
 
+def technical_adapter(monkeypatch, parameters, calls, *, prepare=lambda: None, send=lambda: None):
+    """Keep native argument validation; replace only private binding and I/O."""
+    import io
+    from daimon_matrix import agent_chat
+    from daimon_matrix.client import LocalClient
+    selected = dict(schema='dm.agent-chat/v1', incoming_channels=['tribe'], outgoing_channels=['tribe'])
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(parameters).encode())))
+    monkeypatch.setattr(agent_chat, 'load_binding', lambda path: selected)
+    private_config = SimpleNamespace()
+    def emit(client, request):
+        assert client.config is private_config
+        calls.append(('sent', request, client.deadline_ns))
+        send()
+        return dict(schema='dm.local.response/v1', ok=True, error=None, result={'retained':True},
+            auth={'private':'must-not-cross-owner-boundary'})
+    monkeypatch.setattr(LocalClient, 'send', emit)
+    def request(method, value, operation_id):
+        prepared = dict(method=method, params=value, operation_id=operation_id)
+        calls.append(('prepared', prepared))
+        prepare()
+        return prepared
+    adapter = SimpleNamespace(_prepare_operation=request)
+    def bridge(value, *, timeout):
+        adapter.client = LocalClient(Path('/synthetic/tribe.sock'), private_config, timeout)
+        return adapter
+    monkeypatch.setattr(agent_chat, 'bridge', bridge)
+    return adapter
+
+
+@pytest.mark.parametrize('expired_at', [None, 'startup', 'durability'])
+@pytest.mark.parametrize('method', ['messaging_send', 'messaging_reply'])
+def test_technical_authoring_expiry_is_checked_at_emission(tmp_path, monkeypatch, capsys, expired_at, method):
+    from clusterctl import onboarding_owner_client as owner, onboarding_code_successor
+    calls = []
+    clock = [1_000_000_000]
+    monkeypatch.setattr(owner, 'time', SimpleNamespace(time_ns=lambda: clock[0], monotonic_ns=lambda: 0))
+    monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {'matrix_commit':'b'*40})
+    def startup(*args, **kwargs):
+        calls.append('qualified')
+        if expired_at == 'startup':
+            clock[0] = 3_000_000_000
+        return {}
+    def prepare():
+        if expired_at == 'durability':
+            clock[0] = 3_000_000_000
+    monkeypatch.setattr(owner.onboarding_sdk, 'qualified_startup', startup)
+    parameters = dict(channel_id='tribe', send_id='f396883c-66eb-4f96-a49a-d2c0469b0b80', text='Technical check')
+    if method == 'messaging_reply':
+        parameters.update(received_channel_id='tribe', message_id='ae98c945-5440-44b1-bc91-74b2b5e18e8a')
+    else:
+        parameters['thread_id'] = 'ae98c945-5440-44b1-bc91-74b2b5e18e8a'
+    technical_adapter(monkeypatch, parameters, calls, prepare=prepare)
+    arguments = ['--code-digest', 'a'*64, '--binding', str(tmp_path/'binding.json'),
+        '--authoring-expires-at-ms', '2000', 'call', method]
+    if expired_at:
+        with pytest.raises(OnboardingError, match='communication_authorization_expired'):
+            owner.main(arguments)
+        assert not any(isinstance(call, tuple) and call[0] == 'sent' for call in calls)
+        assert len(calls) == (1 if expired_at == 'startup' else 2)
+    else:
+        assert owner.main(arguments) == 0
+        prepared, sent = calls[1:]
+        assert sent[1] is prepared[1]
+        assert sent[1]['operation_id'] == parameters['send_id']
+        assert sent[2] == 1_000_000_000
+        public = json.loads(capsys.readouterr().out)
+        assert public['ok'] and 'auth' not in public
+
+
+@pytest.mark.parametrize('expired_at', [None, 'durability', 'response', 'tiny-budget'])
+def test_qualified_technical_tool_preserves_original_owner_deadline(tmp_path, monkeypatch, expired_at):
+    from clusterctl import onboarding_owner_client as owner
+    calls = []
+    clock = [1_000_000_000]
+    monkeypatch.setattr(owner, 'time', SimpleNamespace(monotonic_ns=lambda: clock[0]))
+    def prepare():
+        clock[0] = (3_000_000_000 if expired_at == 'durability' else
+            1_005_000_000 if expired_at == 'tiny-budget' else 2_000_000_000)
+    def send():
+        if expired_at == 'response':
+            clock[0] = 3_000_000_000
+    parameters = dict(channel_id='tribe', send_id='f396883c-66eb-4f96-a49a-d2c0469b0b80')
+    adapter = technical_adapter(monkeypatch, parameters, calls, prepare=prepare, send=send)
+    options = dict(startup={}, binding=tmp_path/'binding.json', code=tmp_path, code_uid=0)
+    if expired_at in {'durability', 'response'}:
+        with pytest.raises(OnboardingError, match='owner_deadline_expired'):
+            owner._serve_chat(['call','messaging_delivery','--timeout','45'], deadline_ns=3_000_000_000, **options)
+        assert len(calls) == (1 if expired_at == 'durability' else 2)
+    else:
+        deadline = 1_010_000_000 if expired_at == 'tiny-budget' else 3_000_000_000
+        assert owner._serve_chat(['call','messaging_delivery','--timeout','45'], deadline_ns=deadline, **options) == 0
+        assert calls[-1][2] == adapter.client.deadline_ns == deadline
+    count = len(calls)
+    with pytest.raises(OnboardingError, match='owner_deadline_expired'):
+        owner._serve_chat(['call','messaging_delivery'], deadline_ns=1_000_000_000, **options)
+    assert len(calls) == count
+
+
 def test_tooling_owner_entry_requires_explicit_native_home_after_qualification(tmp_path, monkeypatch, capsys):
     from clusterctl import onboarding_owner_client as owner, onboarding_code_successor
     monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {'matrix_commit': 'b'*40})
@@ -71,6 +169,132 @@ def test_tooling_owner_entry_requires_explicit_native_home_after_qualification(t
     assert owner.main([*arguments, '--codex-home', str(tmp_path/'private-codex')]) == 0
     assert json.loads(capsys.readouterr().out)['catalog_acceptance'] == 'unobserved'
     assert calls == [(tmp_path/'attachment', 'operation:fixture')]
+
+
+@pytest.mark.parametrize('invalid', [None, 'no-deadline', 'reconcile'])
+def test_group_attachment_cli_qualifies_before_preparation(tmp_path, monkeypatch, capsys, invalid):
+    from clusterctl import onboarding_owner_client as owner, onboarding_code_successor
+    calls = []
+    startup = {'selected': True}
+    monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {'matrix_commit': 'b'*40})
+    def qualify(*args, **kwargs):
+        calls.append('qualified')
+        return startup
+    monkeypatch.setattr(owner.onboarding_sdk, 'qualified_startup', qualify)
+    def prepare(attachment, request, **kwargs):
+        assert calls == ['qualified'] and kwargs['startup'] is startup
+        assert attachment == tmp_path/'attachment' and request == {'fixture': True}
+        assert kwargs['codex_home'] == tmp_path/'codex' and kwargs['deadline_ns'] > 0
+        calls.append('prepared')
+        return {'receiving_readiness': 'unobserved'}
+    monkeypatch.setattr(owner, 'prepare_group_chat_attachment', prepare)
+    arguments = ['--code-digest', 'a'*64, '--binding', str(tmp_path/'attachment/binding.json'),
+        '--prepare-group-attachment', '{"fixture":true}', '--codex-home', str(tmp_path/'codex')]
+    if invalid != 'no-deadline':
+        arguments += ['--observation-timeout-seconds', '2']
+    if invalid == 'reconcile':
+        arguments += ['--reconcile-tooling', 'operation']
+    if invalid:
+        with pytest.raises(OnboardingError, match='qualified_native_peer_tool_required'):
+            owner.main(arguments)
+        assert calls == []
+    else:
+        assert owner.main(arguments) == 0
+        assert json.loads(capsys.readouterr().out) == {'receiving_readiness': 'unobserved'}
+        assert calls == ['qualified', 'prepared']
+
+
+@pytest.mark.parametrize('fault', [None, 'unobserved', 'principal', 'command', 'pending'])
+def test_group_acceptance_preserves_approved_tooling_without_legacy_peer(tmp_path, monkeypatch, fault):
+    import hashlib
+    import uuid
+    from daimon_matrix.canonical import canonical_bytes
+    from clusterctl import onboarding_owner_client as owner, onboarding_code_successor, onboarding_group_coordinator
+    from clusterctl.onboarding import digest
+    from tests.test_onboarding import plan
+    value = plan()
+    approved_source, guest_code = tmp_path/'approved', Path('/guest/approved')
+    attachment = '/home/agent/group-chat'
+    sdk = dict(matrix_commit='b'*40, wheels=[dict(distribution='daimon-matrix', sha256='c'*64)])
+    origin = dict(body_ref='codex:test:eko', embodiment_id='embodiment:test',
+        incarnation_id='incarnation:test', principal_id='principal:test')
+    operation = str(uuid.uuid4())
+    venv = Path('/home/agent/.local/share/daimon-matrix/sdk')/digest(sdk)/'venv'
+    command = owner.chat_command(venv, venv.parent/'runtime-imports', guest_code,
+        code_digest='a'*64, binding=Path(attachment)/'binding.json', code_uid=0)
+    selected = dict(channel_id='tribe', socket='/guest/runtime/tribe.sock',
+        application='/guest/group/application', tribe_ref='tribe:test')
+    approved = dict(candidate=dict(code=str(approved_source), code_uid=0), socket=selected['socket'],
+        recipe=dict(prepared=dict(code_digest='a'*64, matrix_wheel_sha256='c'*64),
+            tooling=dict(profile='codex', attachment=attachment, codex_home='/home/agent/.codex',
+                connections=[], native_endpoint='/home/agent/native.sock', native_threads=[], tribe_channel='tribe')))
+    accepted = dict(schema='cluster-native-chat-tooling/v1', status='configured', server=dict(origin),
+        operation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, 'native-tooling:'+operation+':eko')),
+        code_digest='a'*64, sdk_digest=digest(sdk), matrix_commit=sdk['matrix_commit'],
+        matrix_wheel_sha256='c'*64, command_sha256=hashlib.sha256(canonical_bytes(command)).hexdigest())
+    effects = dict(group_publication=dict(result=dict(snapshots=dict(eko=dict(group=dict(selected=selected))))),
+        initial_managed=dict(eko=dict(intent=dict(owner=dict(origin=origin)))), native_tooling=dict(eko=accepted))
+    row = dict(state='completed', operation_id=operation, expected_precondition=dict(tribe_ref='tribe:test'),
+        runtime_observation=effects)
+    if fault == 'unobserved':
+        effects['native_tooling'].clear()
+    elif fault == 'principal':
+        accepted['server']['principal_id'] = 'principal:other'
+    elif fault == 'command':
+        accepted['command_sha256'] = '0'*64
+    elif fault == 'pending':
+        row['state'] = 'prepared'
+    def completed_selection(value):
+        # This case isolates later tooling acceptance. The coordinator's full
+        # retained completion is qualified by its orchestration tests.
+        if row['state'] != 'completed':
+            raise OnboardingError('onboarding_group_admission_pending')
+        return row, approved, selected
+    monkeypatch.setattr(onboarding_group_coordinator, 'GroupCoordinator',
+        lambda host: SimpleNamespace(selection=completed_selection))
+    observed = []
+    def verify(source, **kwargs):
+        assert source == approved_source and kwargs['uid'] == 0
+        observed.append('approved-sdk')
+        return sdk
+    monkeypatch.setattr(owner.onboarding_sdk, 'verify', verify)
+    monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {})
+    raw = (Path(owner.__file__).parent/owner.TOOLING_INSTALLER_MODULE).read_bytes()
+    def read(path, **kwargs):
+        assert path == approved_source/'clusterctl'/owner.TOOLING_INSTALLER_MODULE
+        return raw
+    monkeypatch.setattr(owner.onboarding_release, 'regular', read)
+    def paths(*args, **kwargs):
+        assert kwargs['candidate'] == (approved_source, 'a'*64)
+        return guest_code, [], {}
+    def target(p, action, **kwargs):
+        assert action == 'sdk-observe' and kwargs['candidate'] == (approved_source, 'a'*64)
+        observed.append('approved-runtime')
+        return dict(ready=True)
+    expected = dict(being_ref='being:eko', **origin)
+    def dispatch(p, arguments):
+        payload = json.loads(arguments[-1])
+        assert payload['chat']['qualified_tooling']['command'] == command
+        assert payload['chat']['socket'] == selected['socket']
+        assert payload['chat']['incoming_channels'] == payload['chat']['outgoing_channels'] == ['tribe']
+        assert payload['chat']['qualified_tooling']['accepted']['server'] == origin
+        observed.append('qualified-acceptance')
+        return json.dumps(dict(installed=True, plan_digest=digest(value), being_ref=expected['being_ref'],
+            origin={key:origin[key] for key in ('body_ref', 'embodiment_id', 'incarnation_id')}))
+    host = SimpleNamespace(authorize=lambda *a: True, config=SimpleNamespace(group_admission={}, peer=None,
+        runtime_code=tmp_path/'wrong-default', code=tmp_path/'wrong-base'),
+        _receiving_base=lambda p: tmp_path/'base', _runtime_paths=paths,
+        _target_call=target, instance=lambda p: 'dm-eko', _dispatch=dispatch)
+    client = owner.OwnerClient(host)
+    if fault:
+        error = ('onboarding_group_admission_pending' if fault == 'pending'
+            else 'receiving_native_tooling_changed' if fault == 'command' else 'receiving_native_tooling_unobserved')
+        with pytest.raises(OnboardingError, match=error):
+            client.execute(value, expected)
+        assert 'approved-runtime' not in observed and 'qualified-acceptance' not in observed
+    else:
+        client.execute(value, expected)
+        assert observed == ['approved-sdk', 'approved-runtime', 'qualified-acceptance']
 
 
 @pytest.mark.parametrize("binding_filename", ["binding.json", "owner-binding.json"])
@@ -110,6 +334,43 @@ def test_host_tooling_reconciliation_uses_owner_cli_without_private_sdk_reads(tm
     result['code_digest'] = 'c'*64
     with pytest.raises(OnboardingError, match='verification_failed'):
         client.reconcile(plan(), operation_id, **arguments)
+
+
+@pytest.mark.parametrize('method', ['messaging_delivery', 'messaging_send'])
+def test_guest_technical_messaging_preserves_qualified_uid_and_public_stdin(tmp_path, monkeypatch, method):
+    from clusterctl import onboarding_owner_client as owner, onboarding_code_successor
+    from tests.test_onboarding import plan
+    sdk = {'matrix_commit':'b'*40, 'wheels':[]}
+    result = dict(schema='dm.local.response/v1', ok=True, error=None, result={'retained':True})
+    parameters = dict(channel_id='tribe', send_id='f396883c-66eb-4f96-a49a-d2c0469b0b80')
+    calls = []
+    def dispatch(value, command, **options):
+        assert json.loads(options['input_data']) == parameters
+        assert 'exec' not in command and options['home'] is True
+        assert 'clusterctl.onboarding_owner_client' in command
+        assert command[-4:-2] == ['call', method]
+        assert options['timeout_seconds'] > 0 and options['deadline_ns'] > 0
+        if method == 'messaging_send':
+            assert command[command.index('--authoring-expires-at-ms')+1] == '2000'
+        else:
+            assert '--authoring-expires-at-ms' not in command
+        calls.append(command)
+        return json.dumps(result)
+    def paths(value, base, *, candidate):
+        assert candidate == (tmp_path/'candidate','a'*64)
+        return Path('/public/selected'), [], {}
+    host = SimpleNamespace(authorize=lambda *a: True, _receiving_base=lambda p: Path('/public/base'),
+        _runtime_paths=paths, runtime_available=lambda *a, **k: True, execute_body=dispatch)
+    monkeypatch.setattr(owner.onboarding_sdk, 'verify', lambda *a, **k:sdk)
+    monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k:{})
+    client = OwnerClient(host)
+    options = dict(candidate=(tmp_path/'candidate','a'*64), binding=Path('/home/agent/group/binding.json'),
+        **({'authoring_expires_at_ms':2000} if method == 'messaging_send' else {}))
+    assert client.messaging(plan(), method, parameters, **options) == result
+    result['schema'] = 'not-native'
+    with pytest.raises(OnboardingError, match='communication_unobserved'):
+        client.messaging(plan(), method, parameters, **options)
+    assert len(calls) == 2
 
 
 @pytest.fixture
@@ -1054,3 +1315,149 @@ def test_tooling_recipe_explicit_binding_filename_never_discovers_another_path(f
     else:
         with pytest.raises(OnboardingError, match='receiving_native_tooling_recipe_required'):
             validate_tooling_recipe(recipe)
+
+
+@pytest.mark.parametrize('fault', [None, 'alias', 'alias-drift', 'unsafe-mode', 'refused', 'stall', 'expired',
+    'empty-response', 'relative-home'])
+def test_native_preflight_uses_exact_endpoint_without_binding_or_model(tmp_path, fault):
+    import threading
+    import time
+    from websockets.sync.server import unix_serve
+    from clusterctl import onboarding_owner_client as owner
+    with tempfile.TemporaryDirectory(prefix='dm-preflight-') as short:
+        endpoint = Path(short) / 'native.sock'
+        selected = Path(short) / 'selected.sock'
+        selected.symlink_to(endpoint.name)
+        requests, release = [], threading.Event()
+        def respond(connection):
+            for message in connection:
+                request = json.loads(message)
+                requests.append(request['method'])
+                assert request['method'] in {'initialize', 'initialized'}
+                if request['method'] == 'initialized':
+                    continue
+                if fault == 'stall':
+                    release.wait(2)
+                    return
+                if fault == 'alias-drift':
+                    replacement = selected.with_suffix('.next')
+                    replacement.symlink_to(endpoint.name)
+                    os.replace(replacement, selected)
+                response = {'id': request['id'], 'result': dict(userAgent='codex/test',
+                    codexHome='/owner/.codex', platformFamily='unix', platformOs='linux')}
+                if fault == 'empty-response':
+                    response['result'] = {}
+                if fault == 'relative-home':
+                    response['result']['codexHome'] = 'relative/.codex'
+                if fault == 'refused':
+                    response = {'id': request['id'], 'error': {'message': 'private server detail'}}
+                connection.send(json.dumps(response))
+        with unix_serve(respond, str(endpoint), close_timeout=.1) as server:
+            endpoint.chmod(0o622 if fault == 'unsafe-mode' else 0o600)
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            try:
+                deadline = time.monotonic_ns() + int((-.1 if fault == 'expired' else .1 if fault == 'stall' else 3)*1e9)
+                def observe():
+                    return owner.native_endpoint_readiness(
+                        selected if fault in {'alias', 'alias-drift'} else endpoint, deadline_ns=deadline)
+                if fault in {None, 'alias'}:
+                    result = observe()
+                    assert result['acceptance'] == 'native-endpoint-only'
+                    assert result['native_process']['pid'] == os.getpid()
+                    assert result['model_turns_started'] == result['messages_sent'] == 0
+                    assert len(result['endpoint_sha256']) == 64
+                else:
+                    with pytest.raises((OnboardingError, TimeoutError)) as caught:
+                        observe()
+                    assert 'private server detail' not in str(caught.value)
+                if fault in {'expired', 'unsafe-mode'}:
+                    assert requests == []
+            finally:
+                release.set()
+                server.shutdown()
+                thread.join(3)
+                assert not thread.is_alive()
+
+
+@pytest.mark.parametrize('invalid', [None, 'binding', 'reconcile', 'thread', 'no-deadline', 'no-endpoint'])
+def test_native_preflight_cli_qualifies_before_handshake_and_requires_closed_mode(tmp_path, monkeypatch, capsys, invalid):
+    from clusterctl import onboarding_owner_client as owner, onboarding_code_successor
+    calls = []
+    startup = dict(code_digest='a'*64, sdk_digest='b'*64, matrix_commit='c'*40, matrix_wheel_sha256='d'*64)
+    monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {'matrix_commit': 'c'*40})
+    def qualify(*args, **options):
+        calls.append('qualified')
+        return startup
+    monkeypatch.setattr(owner.onboarding_sdk, 'qualified_startup', qualify)
+    def handshake(endpoint, *, deadline_ns):
+        assert calls == ['qualified']
+        assert endpoint == tmp_path/'native.sock' and deadline_ns > 0
+        calls.append('handshake')
+        return dict(schema='cluster-native-endpoint-readiness/v1', acceptance='native-endpoint-only')
+    monkeypatch.setattr(owner, 'native_endpoint_readiness', handshake)
+    arguments = ['--code-digest', 'a'*64, '--native-preflight']
+    if invalid != 'no-endpoint':
+        arguments += ['--native-endpoint', str(tmp_path/'native.sock')]
+    if invalid != 'no-deadline':
+        arguments += ['--observation-timeout-seconds', '2']
+    arguments += {'binding': ['--binding', str(tmp_path/'binding.json')],
+                  'reconcile': ['--reconcile-tooling', 'operation'],
+                  'thread': ['--native-thread', '00000000-0000-0000-0000-000000000001']}.get(invalid, [])
+    if invalid:
+        with pytest.raises(OnboardingError, match='qualified_native_peer_tool_required'):
+            owner.main(arguments)
+        assert calls == []
+    else:
+        assert owner.main(arguments) == 0
+        assert json.loads(capsys.readouterr().out)['qualification'] == startup
+        assert calls == ['qualified', 'handshake']
+        calls.clear()
+        def refuse(*args, **kwargs):
+            raise OnboardingError('qualified_runtime_context_required')
+        monkeypatch.setattr(owner.onboarding_sdk, 'qualified_startup', refuse)
+        with pytest.raises(OnboardingError, match='qualified_runtime_context_required'):
+            owner.main(arguments)
+        assert calls == []
+
+
+def test_guest_native_preflight_uses_same_qualified_owner_route(tmp_path, monkeypatch):
+    from clusterctl import onboarding_owner_client as owner, onboarding_code_successor
+    from clusterctl.onboarding import digest
+    from tests.test_onboarding import plan
+    sdk = dict(schema=owner.onboarding_sdk.SCHEMA, matrix_commit='b'*40,
+        wheels=[dict(distribution='daimon-matrix', sha256='c'*64,
+            filename='daimon_matrix-1-py3-none-any.whl', version='1')])
+    result = dict(schema='cluster-native-endpoint-readiness/v1', acceptance='native-endpoint-only',
+        qualification=dict(code_digest='a'*64, sdk_digest=digest(sdk), matrix_commit=sdk['matrix_commit'],
+            matrix_wheel_sha256='c'*64), model_turns_started=0, messages_sent=0)
+    calls = []
+    def dispatch(value, command, **options):
+        calls.append((command, options))
+        assert 0 < options['timeout_seconds'] <= 2
+        return json.dumps(result)
+    host = SimpleNamespace(authorize=lambda *a: True, _receiving_base=lambda p: Path('/public/base'),
+        _runtime_paths=lambda *a, **k: (Path('/public/selected'), [], {}),
+        runtime_available=lambda *a, **k: True, execute_body=dispatch)
+    monkeypatch.setattr(owner.onboarding_sdk, 'verify', lambda *a, **k: sdk)
+    monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {})
+    client = owner.OwnerClient(host)
+    options = dict(candidate=(tmp_path/'candidate', 'a'*64), endpoint=Path('/home/agent/native.sock'), timeout_seconds=2)
+    assert client.preflight_native(plan(), **options) == result
+    command = calls[-1][0]
+    assert 'exec' not in command and calls[-1][1]['home'] is True
+    assert command[command.index('--native-endpoint')+1] == '/home/agent/native.sock'
+    assert '--native-preflight' in command and '--binding' not in command
+    result['qualification']['sdk_digest'] = 'd'*64
+    with pytest.raises(OnboardingError, match='verification_failed'):
+        client.preflight_native(plan(), **options)
+    result['qualification']['sdk_digest'] = digest(sdk)
+    clock = [0]
+    decode = json.loads
+    def late_decode(raw):
+        clock[0] = 3_000_000_000
+        return decode(raw)
+    monkeypatch.setattr(owner.time, 'monotonic_ns', lambda: clock[0])
+    monkeypatch.setattr(owner.json, 'loads', late_decode)
+    with pytest.raises(OnboardingError, match='receiving_owner_deadline_expired'):
+        client.preflight_native(plan(), **options)

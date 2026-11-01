@@ -171,4 +171,119 @@ def test_guest_owner_contract_uses_kernel_uid_mapping_and_is_not_run_twice() -> 
     assert "needs.scope.outputs.profile == 'full'" in step
     assert 'sudo env LD_LIBRARY_PATH=' in step and 'tools/ci_guest_owner.py' in step
     assert '--uid="$(id -u)" --gid="$(id -g)"' in step
+    assert '"$RUNNER_TEMP/admission-candidate-sdk/bin/python"' in step
+    assert '--sdk-commit="$admission_commit" --identity-python="$onboarding_python"' in step
+    assert workflow.index('Prepare the explicit native admission SDK once') < workflow.index('Test the guest owner under its actual UID contract')
     assert workflow.count('--deselect=tests/test_guest_owner_bootstrap.py') == 1
+
+
+@pytest.mark.parametrize(('profile', 'selection', 'expected'), [
+    ('admission', 'tests/test_receiving_cohort_control.py', ['tests/test_onboarding_group_admission.py']),
+    ('admission', 'tests/test_onboarding_group_publication.py::test_scope tests/test_onboarding_group_admission.py',
+        ['tests/test_onboarding_group_admission.py','tests/test_onboarding_group_publication.py::test_scope']),
+    ('full', 'tests', ['tests/test_onboarding_group_admission.py', 'tests/test_onboarding_group_authorities.py',
+        'tests/test_onboarding_group_publication.py', 'tests/test_portal_admission_baseline.py']),
+    ('ci', 'tests/test_portal_admission_baseline.py::test_scope tests/test_ci_scope.py',
+        ['tests/test_portal_admission_baseline.py::test_scope']),
+    ('peer', 'tests/test_onboarding_group_authorities.py::test_scope tests/test_ci_scope.py',
+        ['tests/test_onboarding_group_authorities.py::test_scope']),
+])
+def test_candidate_admission_ci_keeps_default_producer_and_only_selected_consumers(monkeypatch, tmp_path,
+        profile, selection, expected):
+    import subprocess
+    import sys
+    raw = (Path(__file__).parents[1]/'.github/workflows/tests.yml').read_text()
+    start = raw.index('      - name: Qualify selected native admission consumers')
+    marker = "          python - <<'PY'\n"
+    begin = raw.index(marker, start) + len(marker)
+    end = raw.index('          PY\n', begin)
+    source = '\n'.join(line.removeprefix('          ') for line in raw[begin:end].splitlines())
+    monkeypatch.setenv('TEST_PROFILE', profile)
+    monkeypatch.setenv('TEST_ARGUMENTS', selection)
+    monkeypatch.setenv('RUNNER_TEMP', str(tmp_path))
+    commands = []
+    monkeypatch.setattr(subprocess, 'run', lambda argv, **kw: commands.append((argv, kw)))
+    exec(compile(source, '<candidate-admission-ci>', 'exec'), {})
+    candidate = str(tmp_path/'admission-candidate-sdk/bin/python')
+    assert len(commands) == 1
+    command = commands[0][0]
+    assert command[:2] == ['sudo', 'env']
+    assert candidate in command and 'tools/ci_guest_owner.py' in command
+    assert command[command.index('--uid') + 1] == str(__import__('os').getuid())
+    assert command[command.index('--gid') + 1] == str(__import__('os').getgid())
+    assert command[command.index('--identity-python') + 1] == sys.executable
+    assert command[command.index('--identity-python') + 2:] == expected
+    assert all(options == {'check': True} for _, options in commands)
+
+
+def test_native_candidate_preparation_is_shared_with_kernel_owner_lane(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+    raw = (Path(__file__).parents[1]/'.github/workflows/tests.yml').read_text()
+    start = raw.index('      - name: Prepare the explicit native admission SDK once')
+    marker = "          python - <<'PY'\n"
+    begin = raw.index(marker, start) + len(marker)
+    end = raw.index('          PY\n', begin)
+    source = '\n'.join(line.removeprefix('          ') for line in raw[begin:end].splitlines())
+    assert 'tests/test_guest_owner_bootstrap.py' in raw[start:begin]
+    monkeypatch.setenv('RUNNER_TEMP', str(tmp_path))
+    commands = []
+    monkeypatch.setattr(subprocess, 'run', lambda argv, **kw: commands.append((argv, kw)))
+    exec(compile(source, '<candidate-sdk-preparation>', 'exec'), {})
+    assert len(commands) == 2
+    assert commands[0][0] == [sys.executable, '-m', 'venv', '--system-site-packages', str(tmp_path/'admission-candidate-sdk')]
+    assert commands[1][0][0] == str(tmp_path/'admission-candidate-sdk/bin/python')
+    assert '--no-deps' in commands[1][0] and '--ignore-installed' in commands[1][0]
+    assert all(options == {'check': True} for _, options in commands)
+
+
+def test_kernel_owner_lane_forwards_candidate_without_replacing_identity_producer(monkeypatch):
+    import sys
+    from tools import ci_guest_owner
+    captured = []
+    monkeypatch.setattr(ci_guest_owner, 'run', lambda command, uid, gid: captured.append((command, uid, gid)) or 0)
+    assert ci_guest_owner.main(['--uid', '1001', '--gid', '1002', '--sdk-commit', 'a'*40,
+        '--identity-python', '/unchanged/base-python']) == 0
+    assert captured == [([sys.executable, '-B', 'tools/qualify_candidate_admission.py',
+        '--sdk-commit', 'a'*40, '--identity-python', '/unchanged/base-python',
+        'tests/test_guest_owner_bootstrap.py'], 1001, 1002)]
+    captured.clear()
+    selected = 'tests/test_onboarding_group_publication.py::test_cohort_publication_derives_native_acceptance_and_recovers_lost_results[recover]'
+    assert ci_guest_owner.main(['--uid', '1001', '--gid', '1002', '--sdk-commit', 'a'*40,
+        '--identity-python', '/unchanged/base-python', selected]) == 0
+    assert captured[0][0][-1] == selected
+    assert 'tests/test_guest_owner_bootstrap.py' not in captured[0][0]
+    captured.clear()
+    with pytest.raises(SystemExit):
+        ci_guest_owner.main(['--uid', '1001', '--gid', '1002', '--sdk-commit', 'a'*40])
+    assert captured == []
+
+
+def test_kernel_owner_isolates_pytest_without_lengthening_native_socket_homes(tmp_path, monkeypatch):
+    import shlex
+    import subprocess
+    import sys
+    from tools.ci_guest_owner import _owner_environment
+    monkeypatch.delenv('TMPDIR', raising=False)
+    monkeypatch.setenv('PYTEST_ADDOPTS', '-W "error::ResourceWarning"')
+    temporary = str(tmp_path / 'pytest owner')
+    environment = _owner_environment(temporary)
+    options = shlex.split(environment['PYTEST_ADDOPTS'])
+    assert options == ['-W', 'error::ResourceWarning', '--basetemp', temporary + '/pytest']
+    # Exercise an actual native-size Unix address, not a string-length assertion.
+    program = '''import socket,tempfile
+from pathlib import Path
+with tempfile.TemporaryDirectory(prefix='dm-owner-') as name:
+ path=Path(name)/'.local/state/daimon-onboarding/eko-codex/matrix/package/runtime/.s-abcdefgh'
+ path.parent.mkdir(parents=True)
+ with socket.socket(socket.AF_UNIX) as listener:listener.bind(str(path))
+'''
+    subprocess.run([sys.executable, '-I', '-c', program], env=environment, check=True)
+
+
+def test_candidate_consumers_are_excluded_once_from_default_sdk_lane():
+    from tools.qualify_candidate_admission import TESTS
+    workflow = (Path(__file__).parents[1]/'.github/workflows/tests.yml').read_text()
+    for case in TESTS:
+        assert workflow.count('--deselect='+case) == 1
+        assert "contains(needs.scope.outputs.pytest_args, '"+case+"')" in workflow

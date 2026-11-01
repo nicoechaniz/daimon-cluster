@@ -21,6 +21,7 @@ SCHEMA = "cluster-onboarding-job/v1"
 PLAN_SCHEMA = "cluster-onboarding-plan/v1"
 STAGES = ("environment", "context", "memory", "matrix", "access", "telegram", "welcome", "acceptance")
 REASONS = frozenset({
+    'group_admission_required', 'group_admission_pending',
     "host_authorization_required", "capacity_required", "connection_data_required",
     "identity_authorization_required", "account_authorization_required",
     "human_contact_required", "uncertain_external_effect", "observed_state_conflict",
@@ -83,6 +84,11 @@ _DIAGNOSTIC_CODES = frozenset({
     'receiving_preservation_authorization_expired', 'receiving_matrix_deadline_expired',
     'onboarding_runtime_channel_closed',
     'onboarding_runtime_observation_unavailable', 'receiving_guest_bootstrap_identity_required',
+    'onboarding_group_remaining_owner_input_required', 'onboarding_group_remaining_owner_context_required',
+    'onboarding_group_remaining_execution_scope_required', 'onboarding_group_remaining_effect_not_authorized',
+    'onboarding_group_remaining_frontier_required', 'onboarding_group_remaining_authorization_required',
+    'onboarding_group_remaining_reference_required', 'onboarding_group_remaining_frontier_changed',
+    'onboarding_group_continuation_fresh_effect_required',
 })
 
 

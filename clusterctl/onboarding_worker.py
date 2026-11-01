@@ -25,7 +25,8 @@ class Worker:
                  plans: Callable[[], list[dict]] | None = None,
                  homes: Callable[[dict], dict] | None = None,
                  runtime_health: Callable[[dict], dict] | None = None,
-                 relocated: Callable[[str], dict | None] | None = None):
+                 relocated: Callable[[str], dict | None] | None = None,
+                 advance_group_admission: Callable[[str], object] | None = None):
         if type(concurrency) is not int or not 1 <= concurrency <= 8:
             raise OnboardingError("invalid_worker_concurrency")
         self.store, self.backend = store, backend
@@ -35,6 +36,7 @@ class Worker:
         self.homes = homes
         self.runtime_health = runtime_health
         self.relocated = relocated
+        self.advance_group_admission = advance_group_admission
 
     def _enqueue(self) -> None:
         if self.plans:
@@ -57,6 +59,10 @@ class Worker:
             reconcile = getattr(self.homes, 'reconcile_committed', None)
             if reconcile:
                 reconcile(name)
+            if self.advance_group_admission:
+                self.advance_group_admission(name)
+            # Resolve again inside the job lock: a concurrent receiving
+            # selection can change runtime pins while the coordinator runs.
             result = self.store.tick(name, self.backend)
             if self.publish:
                 self.publish(result)
@@ -145,7 +151,9 @@ def main(argv: list[str] | None = None) -> int:
                         publish=progress.publish if progress else None,
                         plans=lambda: selections.current().approved_plans(), homes=homes,
                         runtime_health=lambda result: enroll_health(registry, store, backend(), result),
-                        relocated=relocated)
+                        relocated=relocated,
+                        advance_group_admission=(lambda name: backend().advance_group_admission(name))
+                            if config.group_admission is not None else None)
         if args.once:
             print(json.dumps(worker.once()))
             return 0

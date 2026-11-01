@@ -24,6 +24,30 @@ UNIT = 'daimon-onboarding-matrix.service'
 _selection_owners = threading.local()
 
 
+def guest_service_dropins(paths: str, *, uid: int, reference_unit: Path | None = None) -> dict:
+    """Validate exact maintained additions shared by native guest services."""
+    expected = {
+        Path('/run/systemd/system/service.d/zzz-lxc-service.conf'): (
+            b'[Service]\nProcSubset=all\nProtectProc=default\nProtectControlGroups=no\n'
+            b'ProtectKernelTunables=no\nNoNewPrivileges=no\nLoadCredential=\n'
+            b'PrivateNetwork=no\nImportCredential=\n'),
+    }
+    if reference_unit is not None:
+        expected[reference_unit.with_name(reference_unit.name + '.d') / 'tribu-reference-cache.conf'] = (
+            b'[Service]\nEnvironment=DM_TRIBU_REFERENCE_DIRECTORY='
+            b'/home/agent/.local/state/tribu-reference-cache\n')
+    selected = [Path(path) for path in paths.split()]
+    if len(set(selected)) != len(selected) or any(path not in expected for path in selected):
+        raise OnboardingError('receiving_matrix_service_scope_required')
+    result = {}
+    for path in selected:
+        raw = onboarding_release.regular(path, uid=uid)
+        if raw != expected[path]:
+            raise OnboardingError('receiving_matrix_service_scope_required')
+        result[str(path)] = hashlib.sha256(raw).hexdigest()
+    return result
+
+
 @contextmanager
 def selection_lock(unit: Path):
     """Shared ownership for first installation and subsequent Matrix selection."""
@@ -118,25 +142,7 @@ class MatrixUserService:
 
     def _guest_dropins(self, paths: str) -> dict:
         """Freeze exact maintained guest additions, never executable overrides."""
-        expected = {
-            Path('/run/systemd/system/service.d/zzz-lxc-service.conf'): (
-                b'[Service]\nProcSubset=all\nProtectProc=default\nProtectControlGroups=no\n'
-                b'ProtectKernelTunables=no\nNoNewPrivileges=no\nLoadCredential=\n'
-                b'PrivateNetwork=no\nImportCredential=\n'),
-            self.unit.with_name(self.unit.name + '.d') / 'tribu-reference-cache.conf': (
-                b'[Service]\nEnvironment=DM_TRIBU_REFERENCE_DIRECTORY='
-                b'/home/agent/.local/state/tribu-reference-cache\n'),
-        }
-        selected = [Path(path) for path in paths.split()]
-        if len(set(selected)) != len(selected) or any(path not in expected for path in selected):
-            raise OnboardingError('receiving_matrix_service_scope_required')
-        result = {}
-        for path in selected:
-            raw = onboarding_release.regular(path, uid=self._unit_uid)
-            if raw != expected[path]:
-                raise OnboardingError('receiving_matrix_service_scope_required')
-            result[str(path)] = hashlib.sha256(raw).hexdigest()
-        return result
+        return guest_service_dropins(paths, uid=self._unit_uid, reference_unit=self.unit)
 
     def stop(self, *, deadline_ns: int | None = None) -> None:
         # Do not wait for the CLI to imply drain. The controller observes the
@@ -178,6 +184,12 @@ class MatrixGuestService(MatrixUserService):
         self._unit_uid = 0
         self._required_execution = dict(User='agent', Group='agent')
 
+    def enable(self, *, deadline_ns: int) -> None:
+        self._execute([*self._manager_prefix, '--no-reload', 'enable', self.unit.name], deadline_ns)
+
+    def reload(self, *, deadline_ns: int) -> None:
+        self._execute([*self._manager_prefix, 'daemon-reload'], deadline_ns)
+
     def start(self, *, deadline_ns: int | None = None,
               pre_start: Callable[[], None] | None = None) -> None:
         self._execute([*self._manager_prefix, 'daemon-reload'], deadline_ns)
@@ -186,6 +198,24 @@ class MatrixGuestService(MatrixUserService):
         if pre_start is not None:
             pre_start()
         self._execute([*self._manager_prefix, '--no-block', 'start', self.unit.name], deadline_ns)
+
+    def initial_state(self, *, deadline_ns: int) -> dict:
+        """Observe an actual absent/inactive unit without inventing a process."""
+        content = (onboarding_release.regular(self.unit, uid=self._unit_uid)
+                   if self.unit.exists() or self.unit.is_symlink() else None)
+        raw = self._execute([*self._manager_prefix, 'list-units', '--all', '--no-pager',
+            '--output=json', '--', self.unit.name], deadline_ns)
+        loaded = json.loads(raw)
+        if (not isinstance(loaded, list) or len(loaded) > 1
+                or loaded and (not isinstance(loaded[0], dict) or loaded[0].get('unit') != self.unit.name)):
+            raise OnboardingError('receiving_matrix_service_scope_required')
+        service = None
+        if loaded:
+            if content is None or loaded[0].get('load') != 'loaded':
+                raise OnboardingError('receiving_matrix_service_scope_required')
+            service = self.inspect(deadline_ns=deadline_ns)
+        return dict(unit_sha256=None if content is None else hashlib.sha256(content).hexdigest(),
+                    service=service)
 
     def bind_admitted_process(self, observed: dict, inspected: dict) -> dict:
         """Associate the manager's parent with the authenticated native child.
@@ -277,7 +307,7 @@ class GuestServiceBootstrap:
         if time.monotonic_ns() >= deadline_ns:
             raise OnboardingError('receiving_matrix_deadline_expired')
 
-    def _request(self, request: dict) -> tuple[Path, dict, bytes]:
+    def _request(self, request: dict, *, existing: bool = False) -> tuple[Path, dict, bytes]:
         from .owner_process import validate_process
         if (set(request) != {'schema', 'operation_id', 'plan_digest', 'predecessor', 'argv'}
                 or request['schema'] != 'cluster-guest-service-bootstrap/v1'
@@ -321,9 +351,16 @@ class GuestServiceBootstrap:
         if current not in (original, candidate):
             raise OnboardingError('receiving_guest_service_request_conflict')
         directory = private_directory(self.manager.unit.parent / ('.'+self.manager.unit.name+'.selection'))
-        operations = private_directory(directory/'operations', create=True)
-        root = private_directory(operations/request['operation_id'], create=True)
-        self._record(root/'request.json', request)
+        try:
+            operations = private_directory(directory/'operations', create=not existing)
+            root = private_directory(operations/request['operation_id'], create=not existing)
+        except FileNotFoundError:
+            raise OnboardingError('receiving_guest_service_quiescence_required') from None
+        if existing:
+            if self._retained(root, 'request') != request:
+                raise OnboardingError('receiving_guest_service_request_conflict')
+        else:
+            self._record(root/'request.json', request)
         return root, previous, candidate
 
     @staticmethod
@@ -471,15 +508,273 @@ class GuestServiceBootstrap:
                 self._budget(deadline_ns)
                 return result
 
-    def execute(self, action: str, request: dict, *, deadline_ns: int) -> dict:
+    def _initial(self, action: str, request: dict, *, deadline_ns: int) -> dict:
+        """Retain a genuine first unit/start, with no predecessor exit receipt."""
+        from .owner_process import PresenceError
+        if (set(request) - {'not_after_ms'} != {'schema', 'operation_id', 'plan_digest', 'predecessor', 'argv'}
+                or request['schema'] != 'cluster-guest-service-initial/v1'
+                or 'not_after_ms' in request and (type(request['not_after_ms']) is not int
+                    or not 0 < request['not_after_ms'] < 2**53)
+                or request['predecessor'] is not None or action in {'quiesce', 'quiescence'}
+                or str(uuid.UUID(request['operation_id'])) != request['operation_id']
+                or re.fullmatch('[0-9a-f]{64}', request['plan_digest']) is None):
+            raise OnboardingError('receiving_guest_service_request_required')
+        candidate = unit_content(request['argv'])
+        fingerprint = hashlib.sha256(candidate).hexdigest()
+        selection = private_directory(self.manager.unit.parent / ('.' + self.manager.unit.name + '.selection'))
+        operations = private_directory(selection / 'operations', create=True)
+        root = private_directory(operations / request['operation_id'], create=True)
+        self._record(root / 'request.json', request)
+
+        def owned() -> None:
+            if (not self.manager.unit.exists() or
+                    onboarding_release.regular(self.manager.unit, uid=self.manager._unit_uid) != candidate):
+                raise OnboardingError('receiving_guest_service_candidate_changed')
+
+        def authorized_effect() -> None:
+            if request.get('not_after_ms', 2**53 - 1) <= time.time_ns() // 1_000_000:
+                raise OnboardingError('receiving_preservation_authorization_expired')
+
+        def inactive(*, require_loaded: bool = False) -> dict:
+            if require_loaded:
+                service = self.manager.inspect(deadline_ns=deadline_ns)
+                state = dict(unit_sha256=service['unit_sha256'], service=service)
+            else:
+                state = self.manager.initial_state(deadline_ns=deadline_ns)
+            if state['unit_sha256'] not in {None, fingerprint}:
+                raise OnboardingError('receiving_guest_service_candidate_changed')
+            service = state['service']
+            if service is not None:
+                values = service['manager']
+                if (values['ActiveState'] != 'inactive' or values['SubState'] != 'dead'
+                        or values['MainPID'] != '0' or values['InvocationID']):
+                    raise OnboardingError('receiving_guest_service_initial_inactive_required')
+            return state
+
+        prepared = self._retained(root, 'initial-prepared')
+        if action == 'validate':
+            if prepared is None:
+                prepared = self._record(root / 'initial-prepared.json', dict(
+                    schema='cluster-guest-service-initial-candidate/v1', candidate_sha256=fingerprint,
+                    initial_service=inactive(), receiving_readiness='unobserved'))
+            elif self._retained(root, 'selected') is not None:
+                owned()
+            else:
+                inactive()
+            self._budget(deadline_ns)
+            # Preparation stays immutable. Dispatch classification is a fresh
+            # observation used to distinguish a possible first effect from
+            # observation-only recovery of an uncertain/recorded invocation.
+            dispatch = ('started-recorded' if self._retained(root, 'initial-started') is not None else
+                'intent-retained' if self._retained(root, 'initial-start-intent') is not None else 'not-dispatched')
+            self._budget(deadline_ns)
+            return {**prepared, 'dispatch_state': dispatch}
+        if prepared is None or prepared['candidate_sha256'] != fingerprint:
+            raise OnboardingError('receiving_guest_service_initial_preparation_required')
+        if action == 'select':
+            retained = self._retained(root, 'selected')
+            if retained is not None:
+                owned()
+            else:
+                inactive()
+                authorized_effect()
+                def before_publish():
+                    self._budget(deadline_ns)
+                    authorized_effect()
+                publish(self.manager.unit, candidate,pre_publish=before_publish)
+                authorized_effect()
+                self.manager.enable(deadline_ns=deadline_ns)
+                retained = self._record(root / 'selected.json', dict(
+                    selected_sha256=fingerprint, receiving_readiness='unobserved'))
+            self._budget(deadline_ns)
+            return retained
+        selected = self._retained(root, 'selected')
+        if selected is None or selected['selected_sha256'] != fingerprint:
+            raise OnboardingError('receiving_guest_service_selection_required')
+        owned()
+        started = self._retained(root, 'initial-started')
+        if started is not None:
+            current = self.manager.inspect(deadline_ns=deadline_ns)
+            if (current != started['service'] or current['manager']['ActiveState'] != 'active'
+                    or self._parent(current['manager']) != started['admission_parent']):
+                raise OnboardingError('receiving_guest_service_started_process_changed')
+            self._budget(deadline_ns)
+            return started
+        intent = self._retained(root, 'initial-start-intent')
+        if intent is None:
+            authorized_effect()
+            inactive()
+            def before_start() -> None:
+                owned()
+                observed = inactive(require_loaded=True)
+                authorized_effect()
+                self._record(root / 'initial-start-intent.json', dict(
+                    selected_sha256=fingerprint, launch_precondition=observed))
+                self._budget(deadline_ns)
+                authorized_effect()
+            self.manager.start(deadline_ns=deadline_ns, pre_start=before_start)
+            intent = self._retained(root, 'initial-start-intent')
+        precondition = None if intent is None else intent.get('launch_precondition')
+        launch = precondition.get('service') if isinstance(precondition, dict) else None
+        if (intent is None or intent.get('selected_sha256') != fingerprint
+                or not isinstance(launch, dict) or launch.get('unit_sha256') != fingerprint):
+            raise OnboardingError('receiving_guest_service_initial_start_uncertain')
+        pending = self._retained(root, 'initial-pending-parent')
+        while True:
+            self._budget(deadline_ns)
+            owned()
+            current = self.manager.inspect(deadline_ns=deadline_ns)
+            if (current['unit_sha256'] != launch['unit_sha256']
+                    or current.get('dropins', {}) != launch.get('dropins', {})):
+                raise OnboardingError('receiving_guest_service_candidate_changed')
+            values = current['manager']
+            if values['ActiveState'] == 'active':
+                association = {key: values[key] for key in ('MainPID', 'InvocationID', 'ControlGroup')}
+                if pending is not None and association != pending:
+                    raise OnboardingError('receiving_guest_service_started_process_changed')
+                pending = self._record(root / 'initial-pending-parent.json', association)
+                try:
+                    parent = self._parent(values)
+                except PresenceError:
+                    pass  # Observe this same Type=simple invocation's UID switch.
+                else:
+                    result = self._record(root / 'initial-started.json', dict(
+                        schema='cluster-guest-service-initial-start/v1', service=current,
+                        initial_service=prepared['initial_service'],
+                        admission_parent=parent, receiving_readiness='unobserved'))
+                    self._budget(deadline_ns)
+                    return result
+            elif values['ActiveState'] != 'activating' or pending is not None:
+                # An intent alone does not prove StartUnit absent. Never repeat
+                # it after a dead/failed/unknown first invocation to clear doubt.
+                raise OnboardingError('receiving_guest_service_initial_start_uncertain')
+            time.sleep(min(0.05, max(0, (deadline_ns - time.monotonic_ns()) / 1_000_000_000)))
+
+    def _steady(self, request: dict, *, deadline_ns: int) -> dict:
+        """Remove only the first-start guard, preserving the actual invocation.
+
+        The privileged host confirms the complete receiving cohort before this
+        request. Root binds that intent to its original first-service records;
+        it does not infer receiving acceptance from a unit-file selection.
+        """
+        from .owner_process import validate_process
+        fields = {'schema', 'operation_id', 'plan_digest', 'initial_request_sha256',
+                  'cohort_selection_sha256', 'process', 'admission_parent', 'not_after_ms'}
+        if (set(request) != fields or request['schema'] != 'cluster-guest-service-steady/v1'
+                or str(uuid.UUID(request['operation_id'])) != request['operation_id']
+                or type(request['not_after_ms']) is not int or not 0 < request['not_after_ms'] < 2**53
+                or any(not isinstance(request[key], str) or re.fullmatch('[0-9a-f]{64}', request[key]) is None
+                    for key in ('plan_digest', 'initial_request_sha256', 'cohort_selection_sha256'))):
+            raise OnboardingError('receiving_guest_service_request_required')
+        process = validate_process(request['process'])
+        parent = validate_process(request['admission_parent'])
+        if (process['uid'] != 1000 or parent['uid'] != 1000 or process['pid'] == parent['pid']
+                or process['boot_id'] != parent['boot_id']):
+            raise OnboardingError('receiving_guest_service_request_required')
+        selection = private_directory(self.manager.unit.parent / ('.' + self.manager.unit.name + '.selection'))
+        root = private_directory(selection / 'operations' / request['operation_id'])
+        original = self._retained(root, 'request')
+        started = self._retained(root, 'initial-started')
+        if (original is None or started is None or digest(original) != request['initial_request_sha256']
+                or original.get('schema') != 'cluster-guest-service-initial/v1'
+                or original['plan_digest'] != request['plan_digest']
+                or started['admission_parent'] != parent):
+            raise OnboardingError('receiving_guest_service_initial_preparation_required')
+        argv = original['argv']
+        if argv.count('--initial-context-json') != 1:
+            raise OnboardingError('receiving_initial_context_required')
+        index = argv.index('--initial-context-json')
+        context = initial_context(json.loads(argv[index + 1]))
+        if (context['not_after_ms'] != original.get('not_after_ms')
+                or request['not_after_ms'] > context['not_after_ms']):
+            raise OnboardingError('receiving_initial_context_required')
+        ordinary = argv[:index] + argv[index + 2:]
+        initial_sha256 = hashlib.sha256(unit_content(argv)).hexdigest()
+        steady_sha256 = hashlib.sha256(unit_content(ordinary)).hexdigest()
+        if initial_sha256 != started['service']['unit_sha256']:
+            raise OnboardingError('receiving_guest_service_candidate_changed')
+        retained = self._retained(root, 'steady-request')
+
+        def observed() -> dict:
+            current = self.manager.inspect(deadline_ns=deadline_ns)
+            if (current['unit_sha256'] not in {initial_sha256, steady_sha256}
+                    or {**current, 'unit_sha256': initial_sha256} != started['service']
+                    or current['manager']['ActiveState'] != 'active'
+                    or self._parent(current['manager']) != parent
+                    or retained is None and current['unit_sha256'] != initial_sha256):
+                raise OnboardingError('receiving_guest_service_started_process_changed')
+            scope = self.manager.bind_admitted_process(request, current)
+            if scope != dict(process=process, admission_parent=parent,
+                    control_group=current['manager']['ControlGroup'],
+                    invocation_id=current['manager']['InvocationID']):
+                raise OnboardingError('receiving_guest_service_started_process_changed')
+            self._budget(deadline_ns)
+            return current
+
+        observed()
+        retained = self._record(root / 'steady-request.json', request)
+        completed = self._retained(root, 'steady')
+        if completed is None:
+            def before_replace() -> None:
+                self._budget(deadline_ns)
+                observed()
+                if request['not_after_ms'] <= time.time_ns() // 1_000_000:
+                    raise OnboardingError('receiving_preservation_authorization_expired')
+            # Durable private preparation can consume the remaining horizon or
+            # outlive this invocation. Check at the actual file-selection edge.
+            selected = select_entrypoint(self.manager.unit, ordinary, previous_sha256=initial_sha256,
+                pre_replace=before_replace)
+            self._budget(deadline_ns)
+            # Reload changes future restart policy, not the current execution.
+            self.manager.reload(deadline_ns=deadline_ns)
+            current = observed()
+            if current['unit_sha256'] != steady_sha256:
+                raise OnboardingError('receiving_guest_service_candidate_changed')
+            completed = self._record(root / 'steady.json', dict(
+                schema='cluster-guest-service-steady-selection/v1', request_sha256=digest(request),
+                selected=selected, service=current, process=process, admission_parent=parent,
+                loaded_readiness='unobserved'))
+        elif (completed['request_sha256'] != digest(request) or observed() != completed['service']
+                or completed['service']['unit_sha256'] != steady_sha256):
+            raise OnboardingError('receiving_guest_service_started_process_changed')
+        self._budget(deadline_ns)
+        return completed
+
+    def execute(self, action: str, request: dict, *, deadline_ns: int, effect_not_after_ms: int | None = None) -> dict:
         from .owner_process import PresenceError, ProcessPresence, observe_process_exit
         from contextlib import ExitStack
-        if action not in {'validate', 'quiesce', 'select', 'start'}:
+        if action not in {'validate', 'quiesce', 'quiescence', 'select', 'start', 'steady'}:
             raise OnboardingError('receiving_guest_service_request_required')
+        if effect_not_after_ms is not None and (action not in {'select','start'}
+                or type(effect_not_after_ms) is not int or not 0 < effect_not_after_ms < 2**53):
+            raise OnboardingError('receiving_guest_service_request_required')
+        def fresh_effect():
+            self._budget(deadline_ns)
+            if effect_not_after_ms is not None and time.time_ns()//1_000_000 >= effect_not_after_ms:
+                raise OnboardingError('receiving_preservation_authorization_expired')
         self._budget(deadline_ns)
         with selection_lock(self.manager.unit):
-            root, previous, candidate = self._request(request)
+            if action == 'steady':
+                return self._steady(request, deadline_ns=deadline_ns)
+            if request.get('schema') == 'cluster-guest-service-initial/v1':
+                return self._initial(action, request, deadline_ns=deadline_ns)
+            root, previous, candidate = self._request(request, existing=action == 'quiescence')
             self._budget(deadline_ns)
+            if action == 'quiescence':
+                retained = self._retained(root, 'quiesced')
+                if (not isinstance(retained, dict)
+                        or retained.get('schema') != 'cluster-guest-service-quiescence/v1'
+                        or retained.get('process') != previous['process']
+                        or retained.get('admission_parent') != previous['admission_parent']
+                        or retained.get('exits') != {'process': True, 'admission_parent': True}
+                        or not all(observe_process_exit(previous[key]) for key in ('process', 'admission_parent'))):
+                    raise OnboardingError('receiving_guest_service_quiescence_required')
+                inspected = self._stopped(previous, candidate, deadline_ns=deadline_ns)
+                self._budget(deadline_ns)
+                return dict(schema='cluster-guest-service-quiescence-observation/v1',
+                    request_sha256=digest(request), exit_sha256=digest(retained), service=inspected,
+                    process=previous['process'], admission_parent=previous['admission_parent'],
+                    observed_at_ns=time.monotonic_ns(), receiving_readiness='unobserved')
             if action == 'validate':
                 current = self.manager.inspect(deadline_ns=deadline_ns)
                 if (current != previous['service'] or self.manager.bind_admitted_process(previous, current)
@@ -552,7 +847,7 @@ class GuestServiceBootstrap:
                 self._stopped(previous, candidate, deadline_ns=deadline_ns)
                 self._budget(deadline_ns)
                 result = select_entrypoint(self.manager.unit, request['argv'],
-                    previous_sha256=previous['service']['unit_sha256'])
+                    previous_sha256=previous['service']['unit_sha256'],pre_replace=fresh_effect)
                 result = self._record(root/'selected.json', result)
                 self._budget(deadline_ns)
                 return result
@@ -585,6 +880,7 @@ class GuestServiceBootstrap:
                     reloaded = self._stopped(previous, candidate, deadline_ns=deadline_ns)
                     if reloaded['unit_sha256'] != selected['selected_sha256']:
                         raise OnboardingError('receiving_guest_service_candidate_changed')
+                    fresh_effect()
                 self.manager.start(deadline_ns=deadline_ns, pre_start=before_start)
             elif current['manager']['ActiveState'] not in {'active', 'activating'} or intent is None:
                 raise OnboardingError('receiving_guest_service_started_process_changed')
@@ -680,7 +976,8 @@ def entrypoint(original: bytes, argv: list[str]) -> bytes:
                       for line in original.split(b'\n'))
 
 
-def select_entrypoint(unit: Path, argv: list[str], *, previous_sha256: str) -> dict:
+def select_entrypoint(unit: Path, argv: list[str], *, previous_sha256: str,
+                      pre_replace: Callable[[], None] | None = None) -> dict:
     """CAS an approved Matrix unit under a persistent kernel selection lock.
 
     Called only with the protected operation's exact unit, predecessor and
@@ -721,6 +1018,8 @@ def select_entrypoint(unit: Path, argv: list[str], *, previous_sha256: str) -> d
         temporary = directory / ('.onboarding-selection-' + uuid.uuid4().hex)
         try:
             publish(temporary, candidate, mode=mode)
+            if pre_replace is not None:
+                pre_replace()
             if onboarding_release.regular(unit, uid=os.geteuid()) != original:
                 raise OnboardingError('existing_onboarding_service_preserved')
             os.replace(temporary, unit)
@@ -734,9 +1033,20 @@ def select_entrypoint(unit: Path, argv: list[str], *, previous_sha256: str) -> d
         return result
 
 
+def initial_context(value: dict) -> dict:
+    """Closed public pins for an initial child's native pre-load assertion."""
+    if (not isinstance(value, dict) or set(value) != {'schema', 'owner_sha256', 'profile_sha256', 'not_after_ms'}
+            or value['schema'] != 'cluster-initial-start-context/v1'
+            or type(value['not_after_ms']) is not int or not 0 < value['not_after_ms'] < 2**53
+            or any(not isinstance(value[key], str) or re.fullmatch('[0-9a-f]{64}', value[key]) is None
+                for key in ('owner_sha256', 'profile_sha256'))):
+        raise OnboardingError('receiving_initial_context_required')
+    return dict(value)
+
+
 def command(code: Path, *, receive_only: bool, visibility: Path | None = None,
             runtime_code: Path | None = None, runtime_digest: str | None = None,
-            messaging_application: Path | None = None) -> list[str]:
+            messaging_application: Path | None = None, expected_initial_context: dict | None = None) -> list[str]:
     if receive_only == (visibility is not None):
         raise OnboardingError('onboarding_visibility_selection_required')
     if messaging_application is not None and receive_only:
@@ -752,7 +1062,22 @@ def command(code: Path, *, receive_only: bool, visibility: Path | None = None,
             '--genesis', public + 'genesis.json', '--admission-profile', public + 'admission.json',
             *(['--messaging-application', str(messaging_application)] if messaging_application is not None else [])]
     arguments += (['--receive-only'] if receive_only else ['--visibility-installation', str(visibility)])
+    if expected_initial_context is not None:
+        if receive_only:
+            raise OnboardingError('receiving_initial_context_required')
+        arguments += ['--initial-context-json', json.dumps(initial_context(expected_initial_context),
+            sort_keys=True, separators=(',', ':'))]
     return code_command(Path('/usr/bin/python3'), runtime_code or code, 'clusterctl.onboarding_target', arguments)
+
+
+def unit_content(argv: list[str]) -> bytes:
+    """Render the maintained guest unit for both initial and legacy install."""
+    template = ('[Unit]\nDescription=Admitted native onboarding body\nAfter=network-online.target\n'
+           'Wants=network-online.target\n[Service]\nType=simple\nUser=agent\nGroup=agent\n'
+           'Environment=HOME=/home/agent\nUMask=0077\nRestart=on-failure\nRestartSec=5\n'
+           'KillMode=control-group\nTimeoutStopSec=30\nExecStart=/prepared\n'
+           '[Install]\nWantedBy=multi-user.target\n').encode()
+    return entrypoint(template, argv)
 
 
 def install(code: Path, *, receive_only: bool, visibility: Path | None = None,
@@ -766,13 +1091,7 @@ def install(code: Path, *, receive_only: bool, visibility: Path | None = None,
         raise OnboardingError('onboarding_service_directory_rejected')
     argv = command(code, receive_only=receive_only, visibility=visibility,
                    runtime_code=runtime_code, runtime_digest=runtime_digest, messaging_application=messaging_application)
-    # systemd's ExecStart syntax, not a shell command. Escape substitutions.
-    encoded = ' '.join(json.dumps(arg.replace('%', '%%').replace('$', '$$')) for arg in argv)
-    raw = ('[Unit]\nDescription=Admitted native onboarding body\nAfter=network-online.target\n'
-           'Wants=network-online.target\n[Service]\nType=simple\nUser=agent\nGroup=agent\n'
-           'Environment=HOME=/home/agent\nUMask=0077\nRestart=on-failure\nRestartSec=5\n'
-           'KillMode=control-group\nTimeoutStopSec=30\nExecStart=' + encoded +
-           '\n[Install]\nWantedBy=multi-user.target\n').encode()
+    raw = unit_content(argv)
     with selection_lock(directory / UNIT):
         publish(directory / UNIT, raw)
         execute = run or _run
@@ -780,7 +1099,7 @@ def install(code: Path, *, receive_only: bool, visibility: Path | None = None,
         execute(['systemctl', 'enable', '--now', UNIT])
 
 
-def publish(path: Path, raw: bytes, *, mode: int = 0o600) -> None:
+def publish(path: Path, raw: bytes, *, mode: int = 0o600, pre_publish: Callable[[],None] | None = None) -> None:
     """Atomic owned publication, refusing replacement of an existing candidate."""
     directory = path.parent
     being_seed._path(directory)
@@ -800,6 +1119,8 @@ def publish(path: Path, raw: bytes, *, mode: int = 0o600) -> None:
                 output.write(raw)
                 output.flush()
                 os.fsync(output.fileno())
+            if pre_publish is not None:
+                pre_publish()
             os.link(temporary, path, follow_symlinks=False)
             parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
@@ -831,16 +1152,29 @@ def main(argv=None) -> int:
     parser.add_argument('--messaging-application', type=Path)
     parser.add_argument('--native-host', action='store_true', help='use the native named-unit maintenance profile')
     parser.add_argument('--action', choices=('install', 'bootstrap-inspect', 'bootstrap-validate', 'bootstrap-quiesce',
-        'bootstrap-select', 'bootstrap-start', 'bootstrap-recover-start'), default='install')
+        'bootstrap-select', 'bootstrap-start', 'bootstrap-recover-start', 'bootstrap-quiescence', 'bootstrap-steady'), default='install')
     parser.add_argument('--bootstrap-request-json')
     parser.add_argument('--owner-observation-json')
     parser.add_argument('--timeout-seconds', type=float, default=30)
+    parser.add_argument('--observation-deadline-ns',type=int)
+    parser.add_argument('--effect-not-after-ms',type=int)
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument('--receive-only', action='store_true')
     selection.add_argument('--visibility-installation', type=Path)
     args = parser.parse_args(argv)
     stage = 'public-release'
     try:
+        deadline_ns=None
+        if args.action!='install':
+            if (not math.isfinite(args.timeout_seconds) or not 0 < args.timeout_seconds <= 60
+                    or args.observation_deadline_ns is not None and not 0 < args.observation_deadline_ns-time.monotonic_ns() <= 60_000_000_000
+                    or args.effect_not_after_ms is not None and (args.action not in {'bootstrap-select','bootstrap-start'}
+                        or not 0 < args.effect_not_after_ms < 2**53)):
+                raise OnboardingError('receiving_guest_service_request_required')
+            deadline_ns=min(time.monotonic_ns()+int(args.timeout_seconds*1_000_000_000),
+                args.observation_deadline_ns or 2**63-1)
+        elif args.observation_deadline_ns is not None or args.effect_not_after_ms is not None:
+            raise OnboardingError('receiving_guest_service_request_required')
         plan = validate_plan(json.loads(onboarding_release.regular(args.plan, uid=1000)))
         onboarding_code_successor.selection(args.runtime_code, args.runtime_digest, args.code,
                                              plan['release_digest'], uid=0)
@@ -860,10 +1194,12 @@ def main(argv=None) -> int:
             raise OnboardingError('qualified_guest_service_implementation_required')
         if args.action != 'install':
             stage = args.action
+            assert deadline_ns is not None
             if (not math.isfinite(args.timeout_seconds) or not 0 < args.timeout_seconds <= 60
                     or args.receive_only or args.visibility_installation is not None or args.messaging_application is not None):
                 raise OnboardingError('receiving_guest_service_request_required')
-            deadline_ns = time.monotonic_ns()+int(args.timeout_seconds*1_000_000_000)
+            if time.monotonic_ns()>=deadline_ns:
+                raise OnboardingError('receiving_guest_service_deadline_expired')
             manager = MatrixNativeService if args.native_host else MatrixGuestService
             controller = GuestServiceBootstrap(manager(Path('/etc/systemd/system')/UNIT))
             if args.action == 'bootstrap-inspect':
@@ -885,7 +1221,8 @@ def main(argv=None) -> int:
                         raise OnboardingError('qualified_guest_service_implementation_required')
                     result = controller.recover_start(request, deadline_ns=deadline_ns)
                 else:
-                    result = controller.execute(args.action.removeprefix('bootstrap-'), request, deadline_ns=deadline_ns)
+                    result = controller.execute(args.action.removeprefix('bootstrap-'), request, deadline_ns=deadline_ns,
+                        **({'effect_not_after_ms':args.effect_not_after_ms} if args.effect_not_after_ms is not None else {}))
             print(json.dumps(result))
             return 0
         if args.bootstrap_request_json is not None or args.owner_observation_json is not None:

@@ -33,6 +33,40 @@ def test_guest_bootstrap_consumer_keeps_all_receiving_contracts_without_full_app
         assert select([*changed, extra], ROOT) == ('full', ['tests'])
 
 
+def test_native_incus_dropin_scope_requires_exact_service_delta(monkeypatch,tmp_path):
+    from tools.ci_scope import NATIVE_DROPIN_HASHES
+    name='clusterctl/onboarding_service.py'
+    # The existing shared-helper cases qualify the exact Git/byte comparison.
+    # This case qualifies its closed composition without requiring Git history
+    # in the ordinary shallow-checkout test job.
+    monkeypatch.setattr('tools.ci_scope.receiving_support_only',
+        lambda root,base,names,hashes=None:
+            root==ROOT and base=='a'*40 and names=={name} and hashes==NATIVE_DROPIN_HASHES)
+    changed=[name,'clusterctl/onboarding_telegram.py','tests/test_onboarding_telegram.py',
+        'tools/ci_scope.py','tests/test_ci_scope.py','RESUME.md']
+    expected=('ci',['tests/test_onboarding_service.py','tests/test_onboarding_telegram.py',
+        'tests/test_ci_scope.py','tests/test_ci_workflow.py'])
+    assert select(changed,ROOT,base='a'*40)==expected
+    assert select(changed,ROOT)==('full',['tests'])
+    assert select(changed,tmp_path,base='a'*40)==('full',['tests'])
+    assert select([*changed,'clusterctl/onboarding_custody.py'],ROOT,base='a'*40)==('full',['tests'])
+    monkeypatch.setattr('tools.ci_scope.receiving_support_only',lambda *_a,**_kw:False)
+    assert select(changed,ROOT,base='a'*40)==('full',['tests'])
+
+
+def test_synthetic_api_fixture_has_closed_test_only_scope(tmp_path):
+    changed = ['tests/integration/portal_admission_echo.py',
+               'tests/test_portal_admission_echo.py', 'tools/ci_scope.py',
+               'tests/test_ci_scope.py', 'docs/runbooks/tribu-sdk-successor.md']
+    expected = ('ci', ['tests/test_portal_admission_echo.py',
+                       'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'])
+    assert select(changed, ROOT) == expected
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for extra in ('clusterctl/onboarding_sdk.py', 'clusterctl/onboarding_custody.py',
+                  'requirements-weave.txt', 'unknown.py'):
+        assert select([*changed, extra], ROOT) == ('full', ['tests'])
+
+
 def test_native_receiving_carrier_keeps_mixed_host_owner_and_worker_contracts(tmp_path):
     from tools.ci_scope import NATIVE_RECEIVING_FILES, NATIVE_RECEIVING_TESTS
     changed = sorted(NATIVE_RECEIVING_FILES | {'tools/ci_scope.py', 'tests/test_ci_scope.py',
@@ -944,6 +978,139 @@ def test_existing_native_attachment_update_composes_complete_receiving_coverage(
     assert set(LOADED_STARTUP_TESTS) | set(OWNER_CLIENT_TESTS) <= set(tests)
     for extra in ('clusterctl/onboarding_custody.py', 'requirements-dev.txt', 'unknown.py'):
         assert select([*changed, extra], ROOT)[0] == 'full'
+
+
+def test_portal_coordinator_only_checks_journal_and_worker_contracts():
+    changed = ['clusterctl/onboarding_group_coordinator.py',
+               'tests/test_onboarding_group_coordinator.py',
+               'docs/runbooks/tribu-sdk-successor.md']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'ci'
+    assert {'tests/test_onboarding_group_coordinator.py',
+            'tests/test_onboarding_group_finisher.py',
+            'tests/test_receiving_update_journal.py',
+            'tests/test_onboarding_worker_install.py'} <= set(tests)
+    for extra in ('clusterctl/onboarding_custody.py', 'clusterctl/onboarding_service.py',
+                  'requirements-weave.txt', 'unknown.py'):
+        assert select(changed + [extra], ROOT)[0] == 'full'
+
+
+def test_portal_progress_host_delta_requires_exact_reviewed_hashes(monkeypatch):
+    from tools import ci_scope
+    changed = ['clusterctl/onboarding_host.py', 'tests/test_onboarding_host.py',
+               'clusterctl/onboarding_group_coordinator.py',
+               'tests/test_onboarding_group_coordinator.py', 'tools/ci_scope.py']
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda root, base, names, hashes=None:
+        root == ROOT and base == 'a'*40 and names == {'clusterctl/onboarding_host.py'}
+        and hashes == ci_scope.ADMISSION_PROGRESS_HASHES)
+    profile, tests = ci_scope.select(changed, ROOT, base='a'*40)
+    assert profile == 'ci' and 'tests/test_onboarding_host.py' in tests
+    assert 'tests/test_onboarding_group_finisher.py' in tests
+    assert ci_scope.select(changed, ROOT)[0] != 'ci'
+    assert ci_scope.select(changed + ['clusterctl/onboarding_service.py'], ROOT, base='a'*40)[0] != 'ci'
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda *a, **k: False)
+    assert ci_scope.select(changed, ROOT, base='a'*40)[0] != 'ci'
+
+
+def test_stopped_barrier_delta_keeps_only_exact_receiving_coverage(monkeypatch):
+    from tools import ci_scope
+    changed = ['clusterctl/onboarding_receiving_update.py', 'tests/test_receiving_cohort_control.py',
+               'docs/runbooks/tribu-sdk-successor.md', 'tools/ci_scope.py', 'tests/test_ci_scope.py']
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda root, base, names, hashes=None:
+        root == ROOT and base == 'a'*40 and names == {'clusterctl/onboarding_receiving_update.py'}
+        and hashes == ci_scope.ADMISSION_BARRIER_HASHES)
+    profile, tests = ci_scope.select(changed, ROOT, base='a'*40)
+    assert profile == 'ci' and 'tests/test_receiving_cohort_control.py' in tests
+    assert 'tests/test_onboarding_group_finisher.py' in tests
+    assert ci_scope.select(changed, ROOT)[0] != 'ci'
+    assert ci_scope.select(changed + ['clusterctl/onboarding_service.py'], ROOT, base='a'*40)[0] != 'ci'
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda *a, **k: False)
+    assert ci_scope.select(changed, ROOT, base='a'*40)[0] != 'ci'
+
+
+def test_social_admission_delta_requires_exact_source_and_explicit_sdk_profile(monkeypatch):
+    from tools import ci_scope
+    changed = sorted(ci_scope.ADMISSION_SOCIAL_HASHES) + [
+        'tests/test_onboarding_group_admission.py', 'tests/test_receiving_cohort_control.py',
+        'tools/qualify_candidate_admission.py', '.github/workflows/tests.yml']
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda root, base, names, hashes=None:
+        root == ROOT and base == 'a'*40 and names == set(ci_scope.ADMISSION_SOCIAL_HASHES)
+        and hashes == ci_scope.ADMISSION_SOCIAL_HASHES)
+    profile, tests = ci_scope.select(changed, ROOT, base='a'*40)
+    assert profile == 'admission' and 'tests/test_receiving_cohort_control.py' in tests
+    assert ci_scope.select(changed, ROOT)[0] != 'admission'
+    assert ci_scope.select(changed + ['clusterctl/onboarding_custody.py'], ROOT, base='a'*40)[0] != 'admission'
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda *a, **k: False)
+    assert ci_scope.select(changed, ROOT, base='a'*40)[0] != 'admission'
+
+
+def test_owner_session_delta_selects_only_reviewed_contracts(monkeypatch):
+    from tools import ci_scope
+    changed = sorted(ci_scope.ADMISSION_SESSION_HASHES) + [
+        'tests/test_onboarding_group_session.py', 'tests/test_onboarding_host.py',
+        'tests/test_onboarding_group_admission.py', 'docs/design/admission-continuation.md']
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda root, base, names, hashes=None:
+        base == 'a'*40 and names == set(ci_scope.ADMISSION_SESSION_HASHES)
+        and hashes == ci_scope.ADMISSION_SESSION_HASHES)
+    profile, selected = ci_scope.select(changed, ROOT, base='a'*40)
+    assert profile == 'admission'
+    assert 'tests/test_onboarding_group_session.py' in selected and 'tests/test_onboarding_host.py' in selected
+    assert ci_scope.select(changed, ROOT)[0] != 'admission'
+    assert ci_scope.select(changed+['clusterctl/onboarding_custody.py'], ROOT, base='a'*40)[0] != 'admission'
+
+
+def test_reviewed_added_module_requires_real_absence_in_valid_git_tree(tmp_path):
+    import hashlib
+    import subprocess
+    from tools import ci_scope
+    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+    subprocess.run(['git', '-C', str(tmp_path), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+        'commit', '--allow-empty', '-qm', 'baseline'], check=True)
+    base = subprocess.check_output(['git', '-C', str(tmp_path), 'rev-parse', 'HEAD'], text=True).strip()
+    (tmp_path/'new.py').write_bytes(b'new reviewed module\n')
+    hashes = {'new.py': (None, hashlib.sha256((tmp_path/'new.py').read_bytes()).hexdigest())}
+    assert ci_scope.receiving_support_only(tmp_path, base, {'new.py'}, hashes=hashes)
+    assert not ci_scope.receiving_support_only(tmp_path, 'f'*40, {'new.py'}, hashes=hashes)
+    subprocess.run(['git', '-C', str(tmp_path), 'add', 'new.py'], check=True)
+    subprocess.run(['git', '-C', str(tmp_path), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+        'commit', '-qm', 'already present'], check=True)
+    existing = subprocess.check_output(['git', '-C', str(tmp_path), 'rev-parse', 'HEAD'], text=True).strip()
+    assert not ci_scope.receiving_support_only(tmp_path, existing, {'new.py'}, hashes=hashes)
+
+
+def test_recovery_planner_and_native_inspection_select_exact_affected_contracts(monkeypatch):
+    from tools import ci_scope
+    changed = sorted(ci_scope.ADMISSION_RECOVERY_HASHES) + [
+        'tests/test_onboarding_group_recovery.py', 'tests/test_onboarding_group_session.py',
+        'tests/test_onboarding_group_admission.py', 'docs/design/admission-continuation.md']
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda root, base, names, hashes=None:
+        base == 'a'*40 and names == set(ci_scope.ADMISSION_RECOVERY_HASHES)
+        and hashes == ci_scope.ADMISSION_RECOVERY_HASHES)
+    profile, selected = ci_scope.select(changed, ROOT, base='a'*40)
+    assert profile == 'admission'
+    assert 'tests/test_onboarding_group_recovery.py' in selected
+    assert 'tests/test_receiving_update_journal.py' in selected
+    assert ci_scope.select(changed, ROOT)[0] != 'admission'
+    assert ci_scope.select(changed+['clusterctl/onboarding_runtime.py'], ROOT, base='a'*40)[0] != 'admission'
+    monkeypatch.setattr(ci_scope, 'receiving_support_only', lambda *a, **k: False)
+    assert ci_scope.select(changed, ROOT, base='a'*40)[0] != 'admission'
+
+
+def test_continuation_execution_selects_affected_roots_and_native_publication_once(monkeypatch):
+    from tools import ci_scope
+    changed=sorted(ci_scope.ADMISSION_EXECUTION_HASHES)+['tests/test_onboarding_group_publication.py',
+        'tests/test_guest_service_bootstrap.py','.github/workflows/tests.yml','tools/ci_scope.py']
+    monkeypatch.setattr(ci_scope,'receiving_support_only',lambda root,base,names,hashes=None:
+        base=='a'*40 and names==set(ci_scope.ADMISSION_EXECUTION_HASHES) and hashes==ci_scope.ADMISSION_EXECUTION_HASHES)
+    profile,selected=ci_scope.select(changed,ROOT,base='a'*40)
+    assert profile=='admission' and 'tests/test_guest_service_bootstrap.py' in selected
+    native=[item for item in selected if item.startswith('tests/test_onboarding_group_publication.py::')]
+    assert len(native)==len(set(native))==3
+    assert any('continuation-late-ack' in item for item in native)
+    assert ci_scope.select(changed,ROOT)[0]!='admission'
+    assert ci_scope.select(changed+['clusterctl/being_seed.py'],ROOT,base='a'*40)[0]!='admission'
+    monkeypatch.setattr(ci_scope,'receiving_support_only',lambda *a,**k:False)
+    assert ci_scope.select(changed,ROOT,base='a'*40)[0]!='admission'
 
 
 def test_short_owner_control_keeps_affected_receiving_contracts_only(tmp_path):

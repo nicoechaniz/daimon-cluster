@@ -9,6 +9,25 @@ from clusterctl.onboarding_target import Target
 from tests.test_onboarding_custody import fixture
 
 
+@pytest.mark.parametrize('action,extra', [
+    ('group-publication', ['--group-request','-','--remaining-execution','/home/agent/.onboarding-matrix/execution.json']),
+    ('group-publication', ['--group-request','-','--remaining-execution','/tmp/execution.json',
+        '--remaining-execution-sha256','a'*64]),
+    ('group-relationship', ['--group-request','-','--remaining-execution','/home/agent/.onboarding-matrix/execution.json',
+        '--remaining-execution-sha256','a'*64]),
+])
+def test_remaining_cli_input_refuses_unpaired_foreign_or_social_arguments_before_loading(monkeypatch, capsys, action, extra):
+    from clusterctl import onboarding_target
+    def forbidden(*_args, **_kwargs):
+        pytest.fail('invalid execution input reached body files')
+    monkeypatch.setattr(onboarding_target.being_seed, '_read', forbidden)
+    result = onboarding_target.main([action, '--home','/home/agent','--code','/unopened/code',
+        '--plan','/unopened/plan','--genesis','/unopened/genesis','--diagnostics', *extra])
+    assert result == 1
+    captured = capsys.readouterr()
+    assert 'onboarding_group_remaining_owner_input_required' in captured.err
+
+
 def provision_receiving_controller(target):
     """Publish through the actual native upgrade; only synthetic caller custody."""
     import importlib.metadata

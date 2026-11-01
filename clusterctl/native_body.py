@@ -33,10 +33,14 @@ remaining=min(request['remaining_seconds'],request['expires_at_ms']/1000-time.ti
 if remaining<=0:raise SystemExit('receiving_host_deadline_expired')
 argv=request['argv']
 if request['owner_clock']:
-    if argv.count('--deadline-ns')!=1 or argv.count('--time-namespace')!=1:
+    deadline=str(time.monotonic_ns()+int(min(remaining,60)*1e9))
+    if argv.count('--observation-deadline-ns')==1 and '--deadline-ns' not in argv and '--time-namespace' not in argv:
+        argv[argv.index('--observation-deadline-ns')+1]=deadline
+    elif '--observation-deadline-ns' not in argv and argv.count('--deadline-ns')==1 and argv.count('--time-namespace')==1:
+        argv[argv.index('--deadline-ns')+1]=deadline
+        argv[argv.index('--time-namespace')+1]=os.readlink('/proc/self/ns/time')
+    else:
         raise SystemExit('receiving_owner_deadline_binding_required')
-    argv[argv.index('--deadline-ns')+1]=str(time.monotonic_ns()+int(min(remaining,60)*1e9))
-    argv[argv.index('--time-namespace')+1]=os.readlink('/proc/self/ns/time')
 os.setgroups([])
 os.setgid(request['gid']);os.setuid(request['uid'])
 os.chdir(request['home'])

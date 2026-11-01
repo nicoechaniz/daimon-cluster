@@ -54,6 +54,7 @@ def fixture(tmp_path, monkeypatch):
             self.lose = None
             self.dropins = {}
             self.reload_dropins = None
+            self.reloads = 0
 
         def inspect(self, **_):
             running = self.state in {"active", "activating", "deactivating"}
@@ -100,6 +101,14 @@ def fixture(tmp_path, monkeypatch):
             if self.lose == "start":
                 raise OSError("synthetic lost start return")
 
+        def reload(self, **_):
+            self.reloads += 1
+            if self.reload_dropins is not None:
+                self.dropins = self.reload_dropins
+            if self.lose == 'reload':
+                self.lose = None
+                raise OSError('synthetic lost reload return')
+
     manager = Manager()
     previous = dict(service=manager.inspect(), process=process, admission_parent=parent)
     previous["scope"] = manager.bind_admitted_process(previous, previous["service"])
@@ -136,6 +145,369 @@ def fixture(tmp_path, monkeypatch):
         staticmethod(lambda _values: {**parent, "pid": 222, "start_ticks": 9}),
     )
     return GuestServiceBootstrap(manager), manager, request
+
+
+@pytest.fixture
+def initial(fixture):
+    controller, manager, request = fixture
+    manager.unit.unlink()
+    manager.state = 'inactive'
+    manager.invocation = ''
+    manager.loaded = False
+    manager.enables = 0
+    inspect = manager.inspect
+    def inspect_loaded(**options):
+        if not manager.loaded:
+            raise OnboardingError('receiving_matrix_service_scope_required')
+        return inspect(**options)
+    manager.inspect = inspect_loaded
+    def initial_state(**_):
+        return dict(unit_sha256=(hashlib.sha256(manager.unit.read_bytes()).hexdigest()
+                                if manager.unit.exists() else None),
+                    service=manager.inspect() if manager.loaded else None)
+    def enable(**_):
+        manager.enables += 1
+    start = manager.start
+    def start_loaded(**options):
+        manager.loaded = True  # The actual start reloads before its callback.
+        return start(**options)
+    manager.initial_state = initial_state
+    manager.enable = enable
+    manager.start = start_loaded
+    return controller, manager, {**request, 'schema': 'cluster-guest-service-initial/v1', 'predecessor': None}
+
+
+def test_initial_service_recovers_lost_start_reply_without_fake_exit_or_second_start(initial):
+    controller, manager, request = initial
+    prepared = controller.execute('validate', request, deadline_ns=deadline())
+    assert prepared['dispatch_state'] == 'not-dispatched'
+    assert prepared['initial_service'] == dict(unit_sha256=None, service=None)
+    controller.execute('select', request, deadline_ns=deadline())
+    assert manager.enables == 1 and manager.starts == manager.stops == 0
+    manager.lose = 'start'
+    with pytest.raises(OSError, match='lost start'):
+        controller.execute('start', request, deadline_ns=deadline())
+    result = controller.execute('start', request, deadline_ns=deadline())
+    assert result['schema'] == 'cluster-guest-service-initial-start/v1'
+    assert result['initial_service'] == prepared['initial_service']
+    assert not {'exits', 'exit_observed', 'quiesced', 'predecessor'} & set(result)
+    assert result['admission_parent']['pid'] == 222
+    observed = controller.execute('validate', request, deadline_ns=deadline())
+    assert observed == {**prepared, 'dispatch_state': 'started-recorded'}
+    controller.execute('select', request, deadline_ns=deadline())
+    assert controller.execute('start', request, deadline_ns=deadline()) == result
+    assert manager.enables == manager.starts == 1 and manager.stops == 0
+
+
+def steady_fixture(initial):
+    from clusterctl.onboarding import digest
+    import json
+    controller, manager, original = initial
+    expiry = time.time_ns() // 1_000_000 + 10000
+    original = {**original, 'not_after_ms': expiry, 'argv': [*original['argv'], '--initial-context-json',
+        json.dumps(dict(schema='cluster-initial-start-context/v1', owner_sha256='1' * 64,
+            profile_sha256='2' * 64, not_after_ms=expiry))]}
+    for action in ('validate', 'select', 'start'):
+        controller.execute(action, original, deadline_ns=deadline())
+    parent = controller._parent({})
+    request = dict(schema='cluster-guest-service-steady/v1', operation_id=original['operation_id'],
+        plan_digest=original['plan_digest'], initial_request_sha256=digest(original),
+        cohort_selection_sha256='3' * 64, process={**parent, 'pid': 223, 'start_ticks': 10},
+        admission_parent=parent, not_after_ms=expiry)
+    return controller, manager, request
+
+
+def test_steady_unit_removes_only_initial_guard_without_restarting(initial):
+    controller, manager, request = steady_fixture(initial)
+    original = manager.unit.read_bytes()
+    result = controller.execute('steady', request, deadline_ns=deadline())
+    assert '--initial-context-json' not in manager.unit.read_text()
+    assert result['selected']['previous_sha256'] == hashlib.sha256(original).hexdigest()
+    assert result['service']['manager']['InvocationID'] == 'candidate-invocation'
+    assert manager.reloads == manager.starts == manager.enables == 1 and manager.stops == 0
+    assert controller.execute('steady', request, deadline_ns=deadline()) == result
+    assert manager.reloads == manager.starts == 1
+
+
+def test_lost_steady_reload_recovers_exact_selection_after_expiry(initial, monkeypatch):
+    controller, manager, request = steady_fixture(initial)
+    manager.lose = 'reload'
+    with pytest.raises(OSError, match='lost reload'):
+        controller.execute('steady', request, deadline_ns=deadline())
+    selected = manager.unit.read_bytes()
+    monkeypatch.setattr(time, 'time_ns', lambda: (request['not_after_ms'] + 1) * 1_000_000)
+    result = controller.execute('steady', request, deadline_ns=deadline())
+    assert manager.unit.read_bytes() == selected
+    assert result['service']['unit_sha256'] == hashlib.sha256(selected).hexdigest()
+    assert manager.reloads == 2 and manager.starts == 1 and manager.stops == 0
+
+
+def test_expired_steady_request_cannot_remove_a_guard_that_is_still_selected(initial, monkeypatch):
+    controller, manager, request = steady_fixture(initial)
+    original = manager.unit.read_bytes()
+    monkeypatch.setattr(time, 'time_ns', lambda: request['not_after_ms'] * 1_000_000)
+    with pytest.raises(OnboardingError, match='authorization_expired'):
+        controller.execute('steady', request, deadline_ns=deadline())
+    assert manager.unit.read_bytes() == original and manager.reloads == 0
+
+
+@pytest.mark.parametrize('drift', ['invocation', 'dropin', 'unit', 'parent', 'child'])
+def test_steady_refuses_changed_first_execution_without_a_unit_effect(initial, drift):
+    controller, manager, request = steady_fixture(initial)
+    if drift == 'invocation':
+        manager.invocation = 'foreign-invocation'
+    elif drift == 'dropin':
+        manager.dropins = {'/new.conf': '4' * 64}
+    elif drift == 'unit':
+        manager.unit.write_bytes(manager.unit.read_bytes() + b'# foreign\n')
+    elif drift == 'parent':
+        request['admission_parent'] = {**request['admission_parent'], 'start_ticks': 99}
+    else:
+        bind = manager.bind_admitted_process
+        manager.bind_admitted_process = lambda value, inspected: {
+            **bind(value, inspected), 'process': {**value['process'], 'start_ticks': 99}}
+    original = manager.unit.read_bytes()
+    with pytest.raises(OnboardingError, match='started_process_changed|initial_preparation_required'):
+        controller.execute('steady', request, deadline_ns=deadline())
+    assert manager.unit.read_bytes() == original and manager.reloads == 0
+
+
+def test_changed_dropin_after_steady_reload_stays_unqualified(initial):
+    controller, manager, request = steady_fixture(initial)
+    manager.reload_dropins = {'/new.conf': '4' * 64}
+    with pytest.raises(OnboardingError, match='started_process_changed'):
+        controller.execute('steady', request, deadline_ns=deadline())
+    root = root_for(manager, request)
+    assert (root / 'steady-request.json').exists() and not (root / 'steady.json').exists()
+    assert '--initial-context-json' not in manager.unit.read_text()
+    assert manager.reloads == manager.starts == 1 and manager.stops == 0
+
+
+@pytest.mark.parametrize('change', ['expiry', 'invocation'])
+def test_steady_rechecks_after_private_candidate_durability(initial, monkeypatch, change):
+    controller, manager, request = steady_fixture(initial)
+    original = manager.unit.read_bytes()
+    publish = onboarding_service.publish
+    def after_publish(path, content, **options):
+        result = publish(path, content, **options)
+        if path.name.startswith('.onboarding-selection-'):
+            if change == 'expiry':
+                monkeypatch.setattr(time, 'time_ns', lambda: request['not_after_ms'] * 1_000_000)
+            else:
+                manager.invocation = 'changed-during-preparation'
+        return result
+    monkeypatch.setattr(onboarding_service, 'publish', after_publish)
+    with pytest.raises(OnboardingError, match='authorization_expired|started_process_changed'):
+        controller.execute('steady', request, deadline_ns=deadline())
+    assert manager.unit.read_bytes() == original and manager.reloads == 0
+    records = list(manager.unit.parent.glob('.*.selection/operations/*/*.json'))
+    assert not any(path.stem in {'quiesced', 'process-exited', 'admission_parent-exited'} for path in records)
+
+
+def test_initial_root_rechecks_fixed_expiry_after_guest_startup_work(initial, monkeypatch):
+    controller, manager, request = initial
+    wall = [time.time_ns()]
+    request = {**request, 'not_after_ms': wall[0] // 1_000_000 + 60000}
+    controller.execute('validate', request, deadline_ns=deadline())
+    controller.execute('select', request, deadline_ns=deadline())
+    start = manager.start
+    def delayed(**options):
+        wall[0] = request['not_after_ms'] * 1_000_000
+        return start(**options)
+    manager.start = delayed
+    monkeypatch.setattr(onboarding_service.time, 'time_ns', lambda: wall[0])
+    with pytest.raises(OnboardingError, match='authorization_expired'):
+        controller.execute('start', request, deadline_ns=deadline())
+    assert manager.starts == 0
+
+
+def test_initial_root_expiry_does_not_replay_or_hide_recorded_start(initial, monkeypatch):
+    controller, manager, request = initial
+    request = {**request, 'not_after_ms': time.time_ns() // 1_000_000 + 60000}
+    controller.execute('validate', request, deadline_ns=deadline())
+    selected = controller.execute('select', request, deadline_ns=deadline())
+    started = controller.execute('start', request, deadline_ns=deadline())
+    monkeypatch.setattr(onboarding_service.time, 'time_ns', lambda: (request['not_after_ms'] + 1) * 1_000_000)
+    assert controller.execute('select', request, deadline_ns=deadline()) == selected
+    assert controller.execute('start', request, deadline_ns=deadline()) == started
+    assert manager.starts == manager.enables == 1
+
+
+@pytest.mark.parametrize('boundary',['selection','start'])
+def test_linked_root_bound_reaches_actual_cas_and_start_after_slow_work(fixture,monkeypatch,boundary):
+    """Actual file CAS and final manager callback, with an explicit fake manager."""
+    from types import SimpleNamespace
+    controller,manager,request=fixture[:3]
+    controller.execute('quiesce',request,deadline_ns=deadline())
+    original=manager.unit.read_bytes()
+    now=time.time_ns()//1_000_000
+    bound=now+1000
+    monkeypatch.setattr(onboarding_service,'time',SimpleNamespace(time_ns=lambda:now*1_000_000,
+        monotonic_ns=time.monotonic_ns,sleep=time.sleep))
+    if boundary=='selection':
+        publish=onboarding_service.publish
+        def slow(path,raw,**options):
+            nonlocal now
+            publish(path,raw,**options)
+            if path.name.startswith('.onboarding-selection-'):
+                now=bound
+        monkeypatch.setattr(onboarding_service,'publish',slow)
+        with pytest.raises(OnboardingError,match='authorization_expired'):
+            controller.execute('select',request,deadline_ns=deadline(),effect_not_after_ms=bound)
+        assert manager.unit.read_bytes()==original
+    else:
+        selected=controller.execute('select',request,deadline_ns=deadline(),effect_not_after_ms=bound)
+        start=manager.start
+        def slow(**options):
+            nonlocal now
+            now=bound
+            return start(**options)
+        monkeypatch.setattr(manager,'start',slow)
+        with pytest.raises(OnboardingError,match='authorization_expired'):
+            controller.execute('start',request,deadline_ns=deadline(),effect_not_after_ms=bound)
+        assert controller.execute('select',request,deadline_ns=deadline(),effect_not_after_ms=bound)==selected
+    assert manager.starts==0
+
+
+def test_initial_selection_rechecks_bound_at_actual_link_after_candidate_fsync(initial,monkeypatch):
+    from types import SimpleNamespace
+    controller,manager,request=initial
+    now=time.time_ns()//1_000_000
+    request={**request,'not_after_ms':now+1000}
+    controller.execute('validate',request,deadline_ns=deadline())
+    monkeypatch.setattr(onboarding_service,'time',SimpleNamespace(time_ns=lambda:now*1_000_000,
+        monotonic_ns=time.monotonic_ns,sleep=time.sleep))
+    fsync=os.fsync
+    def delayed(descriptor):
+        nonlocal now
+        fsync(descriptor)
+        path=Path(os.readlink('/proc/self/fd/'+str(descriptor)))
+        if path.parent==manager.unit.parent and path.name.startswith('.onboarding-service-'):
+            now=request['not_after_ms']
+    monkeypatch.setattr(onboarding_service.os,'fsync',delayed)
+    with pytest.raises(OnboardingError,match='authorization_expired'):
+        controller.execute('select',request,deadline_ns=deadline())
+    assert not manager.unit.exists() and manager.starts==manager.enables==0
+
+
+def test_root_public_qualification_does_not_restart_absolute_invocation_budget(monkeypatch,capsys):
+    import json
+    from types import SimpleNamespace
+    from tests.test_onboarding import plan
+    selected=plan()
+    now=time.monotonic_ns()
+    bound=now+1_000_000_000
+    monkeypatch.setattr(onboarding_service,'time',SimpleNamespace(monotonic_ns=lambda:now))
+    monkeypatch.setattr(onboarding_service.os,'geteuid',lambda:0)
+    monkeypatch.setattr(onboarding_service.onboarding_release,'regular',lambda *a,**k:json.dumps(selected).encode())
+    def slow(*a,**k):
+        nonlocal now
+        now=bound
+    monkeypatch.setattr(onboarding_service.onboarding_code_successor,'selection',slow)
+    monkeypatch.setattr(onboarding_service,'GuestServiceBootstrap',lambda *a:pytest.fail('expired public verification reached controller'))
+    result=onboarding_service.main(['--code','/opt/daimon-onboarding/'+selected['release_digest'],
+        '--plan','/home/agent/.onboarding-input/plan.json','--action','bootstrap-start',
+        '--bootstrap-request-json','{}','--observation-deadline-ns',str(bound)])
+    assert result==1 and json.loads(capsys.readouterr().out)['installed'] is False
+
+
+def test_initial_root_refuses_expired_first_selection_without_publishing(initial, monkeypatch):
+    controller, manager, request = initial
+    request = {**request, 'not_after_ms': time.time_ns() // 1_000_000 + 60000}
+    controller.execute('validate', request, deadline_ns=deadline())
+    monkeypatch.setattr(onboarding_service.time, 'time_ns', lambda: request['not_after_ms'] * 1_000_000)
+    with pytest.raises(OnboardingError, match='authorization_expired'):
+        controller.execute('select', request, deadline_ns=deadline())
+    assert not manager.unit.exists() and manager.starts == manager.enables == 0
+
+
+@pytest.mark.parametrize('evidence', ['unseen-stopped', 'pending', 'started'])
+def test_initial_start_never_replays_a_dead_or_replaced_invocation(initial, monkeypatch, evidence):
+    controller, manager, request = initial
+    controller.execute('validate', request, deadline_ns=deadline())
+    controller.execute('select', request, deadline_ns=deadline())
+    if evidence == 'unseen-stopped':
+        manager.lose = 'start'
+        with pytest.raises(OSError):
+            controller.execute('start', request, deadline_ns=deadline())
+        manager.state = 'inactive'
+        manager.invocation = ''
+        error = 'initial_start_uncertain'
+    elif evidence == 'pending':
+        def lost(_values):
+            raise OSError('synthetic lost parent observation')
+        monkeypatch.setattr(controller, '_parent', lost)
+        with pytest.raises(OSError, match='parent observation'):
+            controller.execute('start', request, deadline_ns=deadline())
+        manager.invocation = 'replacement'
+        error = 'started_process_changed'
+    else:
+        controller.execute('start', request, deadline_ns=deadline())
+        manager.invocation = 'replacement'
+        error = 'started_process_changed'
+    with pytest.raises(OnboardingError, match=error):
+        controller.execute('start', request, deadline_ns=deadline())
+    assert manager.starts == manager.enables == 1 and manager.stops == 0
+
+
+def test_initial_service_preserves_foreign_unit_and_rechecks_reload_before_dispatch(initial):
+    controller, manager, request = initial
+    foreign = b'[Service]\nUser=agent\nGroup=agent\nExecStart=/foreign\n'
+    manager.unit.write_bytes(foreign)
+    manager.unit.chmod(0o600)
+    with pytest.raises(OnboardingError, match='candidate_changed'):
+        controller.execute('validate', request, deadline_ns=deadline())
+    assert manager.unit.read_bytes() == foreign and manager.starts == manager.enables == 0
+    manager.unit.unlink()
+    controller.execute('validate', request, deadline_ns=deadline())
+    controller.execute('select', request, deadline_ns=deadline())
+    candidate = manager.unit.read_bytes()
+    start = manager.start
+    def changed_reload(**options):
+        manager.unit.write_bytes(foreign)
+        return start(**options)
+    manager.start = changed_reload
+    with pytest.raises(OnboardingError, match='candidate_changed'):
+        controller.execute('start', request, deadline_ns=deadline())
+    assert manager.starts == manager.stops == 0
+    manager.unit.write_bytes(candidate)
+    manager.start = start
+    controller.execute('start', request, deadline_ns=deadline())
+    assert manager.starts == 1
+    with pytest.raises(OnboardingError, match='request_required'):
+        controller.execute('quiesce', request, deadline_ns=deadline())
+    assert manager.stops == 0
+
+
+def test_initial_start_requires_effective_unit_inspection_before_dispatch(initial):
+    controller, manager, request = initial
+    controller.execute('validate', request, deadline_ns=deadline())
+    controller.execute('select', request, deadline_ns=deadline())
+    # Model daemon-reload returning without an inspectable effective unit. The
+    # absent view is valid before installation, never a start precondition.
+    manager.start = lambda **options: type(manager).start(manager, **options)
+    with pytest.raises(OnboardingError, match='service_scope_required'):
+        controller.execute('start', request, deadline_ns=deadline())
+    assert manager.starts == manager.stops == 0
+    assert not list(manager.unit.parent.glob('.*.selection/operations/*/initial-start-intent.json'))
+
+
+def test_initial_start_retains_allowed_dropins_across_lost_reply(initial):
+    controller, manager, request = initial
+    controller.execute('validate', request, deadline_ns=deadline())
+    controller.execute('select', request, deadline_ns=deadline())
+    # This path is a supported guest addition, so normal inspect() alone does
+    # not reject its removal. Pin the exact effective vector before StartUnit.
+    manager.reload_dropins = {'/run/systemd/system/service.d/zzz-lxc-service.conf': 'a' * 64}
+    manager.lose = 'start'
+    with pytest.raises(OSError, match='lost start'):
+        controller.execute('start', request, deadline_ns=deadline())
+    manager.dropins = {}
+    with pytest.raises(OnboardingError, match='candidate_changed'):
+        controller.execute('start', request, deadline_ns=deadline())
+    assert manager.starts == manager.enables == 1 and manager.stops == 0
+    assert manager.dropins == {}
+    assert not list(manager.unit.parent.glob('.*.selection/operations/*/initial-started.json'))
 
 
 def test_reload_exposes_changed_dropin_before_actual_start(fixture):
@@ -440,9 +812,36 @@ def test_expired_budget_creates_no_effect_or_operation_state(fixture):
     )
 
 
+def test_quiescence_query_does_not_create_an_operation_or_stop_a_replacement(fixture):
+    from clusterctl.onboarding import digest
+    controller, manager, request = fixture
+    with pytest.raises(OnboardingError):
+        controller.execute('quiescence', request, deadline_ns=deadline())
+    assert not root_for(manager, request).exists() and manager.stops == 0
+    exited = controller.execute('quiesce', request, deadline_ns=deadline())
+    observed = controller.execute('quiescence', request, deadline_ns=deadline())
+    assert observed['exit_sha256'] == digest(exited)
+    assert observed['request_sha256'] == digest(request) and manager.stops == 1
+    manager.exited[123] = False
+    with pytest.raises(OnboardingError, match='quiescence_required'):
+        controller.execute('quiescence', request, deadline_ns=deadline())
+    manager.exited[123] = True
+    manager.state, manager.invocation = 'active', 'unrelated-replacement'
+    with pytest.raises(OnboardingError, match='quiescence_required'):
+        controller.execute('quiescence', request, deadline_ns=deadline())
+    assert manager.stops == 1 and manager.starts == 0
+
+
+def test_initial_service_cannot_treat_quiescence_query_as_start(initial):
+    controller, manager, request = initial
+    with pytest.raises(OnboardingError, match='request_required'):
+        controller.execute('quiescence', request, deadline_ns=deadline())
+    assert not manager.unit.exists() and manager.starts == manager.enables == 0
+
+
 @pytest.mark.parametrize(
     "action",
-    ["bootstrap-inspect", "bootstrap-quiesce", "bootstrap-select", "bootstrap-start", "bootstrap-recover-start"],
+    ["bootstrap-inspect", "bootstrap-quiesce", "bootstrap-select", "bootstrap-start", "bootstrap-recover-start", "bootstrap-quiescence"],
 )
 def test_closed_root_cli_never_calls_install_or_owner_sdk(monkeypatch, capsys, action):
     import json

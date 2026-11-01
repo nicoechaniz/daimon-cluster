@@ -98,6 +98,7 @@ class HostConfig:
     telegram_digest: str | None = None
     browser_artifact: dict[str, str] | None = None
     native_by_name: dict[str, tuple[Path, str]] | None = None
+    group_admission: Path | None = None
 
     @classmethod
     def load(cls, path: Path, *, expected_value: dict | None = None) -> HostConfig:
@@ -108,7 +109,7 @@ class HostConfig:
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
         telegram_keys = {"telegram_code", "telegram_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -271,10 +272,19 @@ class HostConfig:
             for locator, fingerprint in native_by_name.values():
                 if digest(being_seed._read(locator)) != fingerprint:
                     raise OnboardingError('native_receiving_placement_changed')
+        group_admission = None
+        if 'group_admission' in value:
+            from .onboarding_group_coordinator import configuration
+            if (custody is None or custody_grants is None or admission is None or consent_state is None
+                    or not isinstance(value['group_admission'], str)
+                    or not Path(value['group_admission']).is_absolute()):
+                raise OnboardingError('invalid_onboarding_host_configuration')
+            group_admission = Path(value['group_admission'])
+            configuration(group_admission)
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -324,7 +334,7 @@ class HostBackend:
             return native.execute(argv, uid=uid, gid=gid,
                 env={'HOME': '/home/agent'} if home else None, input_data=input_data,
                 timeout_seconds=60 if timeout_seconds is None else timeout_seconds,
-                deadline_ns=deadline_ns, owner_clock=owner_clock)
+                deadline_ns=deadline_ns, owner_clock=owner_clock or '--observation-deadline-ns' in argv)
         command = ['exec', self.instance(plan), '--user', str(uid), '--group', str(gid),
                    *(['--env', 'HOME=/home/agent'] if home else []), '--', *argv]
         return self._dispatch(plan, command, input_data=input_data,
@@ -343,6 +353,50 @@ class HostBackend:
                 return native.prepare_code(candidate[0], candidate[1], deadline_ns=deadline_ns) == code
             return native.code_available(code, candidate[1], deadline_ns=deadline_ns)
         return self._mounted(plan, mounts, deadline_ns=deadline_ns)
+    def advance_group_admission(self, name: str) -> dict | None:
+        if self.config.group_admission is None:
+            return None
+        from .onboarding_group_coordinator import GroupCoordinator
+        return GroupCoordinator(self).advance(name)
+
+    def prepare_group_target(self, plan: dict, candidate: tuple[Path, str], *, deadline_ns: int,
+                             completed_steps: frozenset[str] = frozenset(),
+                             record_step: Callable[[str], None] | None = None) -> bool:
+        """Finish ordinary V8 first, then prepare the approved SDK without selecting it."""
+        if self.config.code is None or self.config.views is None:
+            return False
+        _, base, mounts = self._guest_paths(plan)
+        mounts.update(self._runtime_paths(plan, base)[2])
+        mounts['onboarding-matrix-public'] = self._matrix_mount(plan)
+        if not self._mounted(plan, mounts, deadline_ns=deadline_ns):
+            return False
+        def query(action, **options):
+            remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
+            if remaining <= 0:
+                raise OnboardingError('receiving_host_deadline_expired')
+            return self._target_call(plan, action, observation_timeout_seconds=remaining, **options)
+        def recorded(step):
+            if record_step is not None:
+                record_step(step)
+        if 'sdk' not in completed_steps:
+            if self._sdk_successor(plan) and query('sdk-observe').get('ready') is not True:
+                return False
+            recorded('sdk')
+        if 'v8' not in completed_steps:
+            if query('observe').get('phase') != 'v8':
+                return False
+            recorded('v8')
+        _, _, candidate_mounts = self._runtime_paths(plan, base, candidate=candidate)
+        for name, mount in candidate_mounts.items():
+            if not self._mounted(plan, {name: mount}, deadline_ns=deadline_ns):
+                self._dispatch(plan, ['config', 'device', 'add', self.instance(plan), name, 'disk',
+                    *[key + '=' + value for key, value in mount.items() if key != 'type']], deadline_ns=deadline_ns)
+        if 'candidate-sdk' not in completed_steps:
+            if (query('sdk-observe', candidate=candidate).get('ready') is not True
+                    and query('sdk-prepare', candidate=candidate).get('ready') is not True):
+                return False
+            recorded('candidate-sdk')
+        return True
 
     @staticmethod
     def _run(argv: list[str], *, timeout_seconds: float | None = None,
@@ -410,25 +464,33 @@ class HostBackend:
         # This namespace cannot name an existing administrative account/body.
         return "dm-" + plan["name"]
 
-    def _inventory(self) -> tuple[list, list]:
-        instances = json.loads(self.run(["list", "--format=json"]))
-        volumes = json.loads(self.run(["storage", "volume", "list", self.config.pool, "--format=json"]))
+    def _inventory(self, *, plan: dict | None = None, deadline_ns: int | None = None) -> tuple[list, list]:
+        def call(argv):
+            if deadline_ns is None:
+                return self.run(argv)
+            if plan is None:
+                raise OnboardingError('receiving_host_deadline_required')
+            return self._dispatch(plan, argv, deadline_ns=deadline_ns)
+        instances = json.loads(call(["list", "--format=json"]))
+        volumes = json.loads(call(["storage", "volume", "list", self.config.pool, "--format=json"]))
         if not isinstance(instances, list) or not isinstance(volumes, list):
             raise OnboardingError("invalid_onboarding_environment_observation")
         return instances, volumes
 
-    def _environment(self, plan: dict) -> Observation:
+    def _environment(self, plan: dict, *, deadline_ns: int | None = None) -> Observation:
         if self.native_body(plan) is not None:
             raise OnboardingError('native_receiving_initial_enrollment_unsupported')
-        instances, volumes = self._inventory()
+        instances, volumes = (self._inventory() if deadline_ns is None
+            else self._inventory(plan=plan, deadline_ns=deadline_ns))
         name, fingerprint = self.instance(plan), digest(plan)
         rows = [row for row in instances if row.get("name") == name]
         homes = [row for row in volumes if row.get("name") == name + "-home" and row.get("type") == "custom"]
         if len(rows) > 1 or len(homes) > 1:
             return Observation("conflict", reason="observed_state_conflict")
         if homes:
-            home = json.loads(self.run(["query", "/1.0/storage-pools/" + self.config.pool
-                                        + "/volumes/custom/" + name + "-home"]))
+            command = ["query", "/1.0/storage-pools/" + self.config.pool + "/volumes/custom/" + name + "-home"]
+            home = json.loads(self.run(command) if deadline_ns is None
+                else self._dispatch(plan, command, deadline_ns=deadline_ns))
             if (home.get("config", {}).get("user.dm.onboarding-plan") != fingerprint
                     or home.get("config", {}).get("size") != "22GiB"):
                 return Observation("conflict", reason="observed_state_conflict")
@@ -457,6 +519,11 @@ class HostBackend:
     def observe(self, plan: dict, stage: str, operation_id: str) -> Observation:
         if not self.authorize(plan, digest(plan)):
             return Observation("waiting", reason="host_authorization_required")
+        if stage == 'acceptance' and self.config.group_admission is not None:
+            from .onboarding_group_coordinator import GroupCoordinator
+            receiving = GroupCoordinator(self).observe(plan)
+            if receiving.state != 'complete':
+                return receiving
         if stage == "environment":
             return self._environment(plan)
         if stage not in {'context', 'environment'} and plan['browser'] and self.config.browser_artifact is not None:
@@ -559,6 +626,11 @@ class HostBackend:
                 target = self._matrix_command(plan, "observe")
                 if target["phase"] in {"absent", "prepared", "v7", "credential-pending", "v8-published", "peer-published"}:
                     return Observation("absent", safe_to_execute=True)
+                if self.config.group_admission is not None:
+                    from .onboarding_group_coordinator import GroupCoordinator
+                    receiving = GroupCoordinator(self).observe(plan)
+                    if receiving.state != 'complete':
+                        return receiving
                 if self.config.peer is not None:
                     from .onboarding_peer_host import PeerHost
                     if PeerHost(self).application(plan) is None:
@@ -577,6 +649,10 @@ class HostBackend:
     def execute(self, plan: dict, stage: str, operation_id: str) -> None:
         if not self.authorize(plan, digest(plan)):
             raise OnboardingError("host_authorization_required")
+        if stage == 'acceptance' and self.config.group_admission is not None:
+            from .onboarding_group_coordinator import GroupCoordinator
+            if GroupCoordinator(self).observe(plan).state != 'complete':
+                return
         if stage not in {'context', 'environment'} and plan['browser'] and self.config.browser_artifact is not None:
             from .onboarding_browser import Browser
             selected = Browser(self)
@@ -651,6 +727,10 @@ class HostBackend:
                 ceremony.prepare(plan, identity_mode=decision["matrix_identity_mode"])
             if self.config.code and self.config.views and (self.config.code / "sdk/sdk.json").exists():
                 if not self._matrix_execute(plan, ceremony):
+                    return
+                if self.config.group_admission is not None:
+                    # The worker advances the protected receiving operation
+                    # outside this job lock, starting on its next cadence.
                     return
                 if self.config.peer is not None:
                     from .onboarding_peer_host import PeerHost
@@ -760,22 +840,47 @@ class HostBackend:
         return dict(type='disk', source=str(self.config.views / digest(plan) / 'connections'),
                     path='/home/agent/.onboarding-connections', readonly='true', shift='true')
 
-    def _telegram_command(self, plan: dict, action: str) -> dict:
-        if self._environment(plan).state != 'complete':
+    def _telegram_command(self, plan: dict, action: str, *, deadline_ns: int | None = None,
+                          authorization_expires_at_ms: int | None = None) -> dict:
+        budget: dict = {} if deadline_ns is None else {'deadline_ns': deadline_ns}
+        if self._environment(plan, **budget).state != 'complete':
             raise OnboardingError('qualified_guest_environment_required')
         _, base, mounts = self._guest_paths(plan)
         code, software_args, software_mounts = self._telegram_paths(plan, base)
+        if (action in {'native-install', 'native-observe', 'probe'}
+                and self.config.telegram_code is None
+                and self._runtime_selection(plan) != (None, None)):
+            # Native preparation follows the qualified receiving helper, not
+            # the frozen context's older CLI. This does not select a new bot
+            # binary or change an explicit Telegram successor.
+            code, software_args, software_mounts = self._runtime_paths(plan, base)
         mounts.update(software_mounts)
-        mounts['onboarding-connections'] = self._telegram_mount(plan)
-        if not self._mounted(plan, mounts):
+        # Preparing/probing the native harness precedes Matrix admission and
+        # needs no bot data. Keep the private mount mandatory for bot verbs.
+        if action not in {'native-install', 'native-observe', 'probe'}:
+            mounts['onboarding-connections'] = self._telegram_mount(plan)
+        if not self._mounted(plan, mounts, **budget):
             raise OnboardingError('qualified_guest_environment_required')
         launcher = ('import sys;sys.path.insert(0,sys.argv.pop(1));'
                     'from clusterctl.onboarding_telegram import main;raise SystemExit(main())')
-        identity = [] if action in {'install', 'observe', 'native-install', 'upgrade'} else ['--user', '1000', '--group', '1000', '--env', 'HOME=/home/agent']
+        native_budget = []
+        if deadline_ns is not None:
+            remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
+            if (remaining <= 0 or action not in {'native-install', 'native-observe', 'probe'}
+                    or type(authorization_expires_at_ms) is not int
+                    or not time.time_ns() // 1_000_000 < authorization_expires_at_ms < 2**53):
+                raise OnboardingError('receiving_host_deadline_expired')
+            native_budget = ['--operation-timeout-seconds', str(min(60, remaining)),
+                '--authorization-expires-at-ms', str(authorization_expires_at_ms)]
+        elif authorization_expires_at_ms is not None:
+            raise OnboardingError('receiving_host_deadline_required')
+        identity = [] if action in {'install', 'observe', 'native-install', 'native-observe', 'upgrade'} else ['--user', '1000', '--group', '1000', '--env', 'HOME=/home/agent']
         value = json.loads(self._dispatch(plan, ['exec', self.instance(plan), *identity, '--', 'python3', '-B', '-I',
-            '-c', launcher, str(code), action, '--code', str(base), *software_args, '--plan', '/home/agent/.onboarding-input/plan.json']))
+            '-c', launcher, str(code), action, '--code', str(base), *software_args, '--plan', '/home/agent/.onboarding-input/plan.json', *native_budget], **budget))
         if (not isinstance(value, dict) or action != 'probe' and value.get('plan_digest') != digest(plan)):
             raise OnboardingError('invalid_onboarding_observation')
+        if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
+            raise OnboardingError('receiving_host_deadline_expired')
         return value
 
     def _telegram_paths(self, plan: dict, base: Path) -> tuple[Path, list[str], dict]:
@@ -791,13 +896,14 @@ class HostBackend:
         return code, ['--runtime-code', str(code), '--runtime-digest', fingerprint], {
             'telegram-' + fingerprint[:54]: mount}
 
-    def _attach_telegram(self, plan: dict) -> None:
+    def _attach_telegram(self, plan: dict, *, deadline_ns: int | None = None) -> None:
+        budget: dict = {} if deadline_ns is None else {'deadline_ns': deadline_ns}
         _, base, _ = self._guest_paths(plan)
         _, _, mounts = self._telegram_paths(plan, base)
-        if not self._mounted(plan, mounts):
+        if not self._mounted(plan, mounts, **budget):
             for name, mount in mounts.items():
                 self._dispatch(plan, ['config', 'device', 'add', self.instance(plan), name, 'disk',
-                    *[key + '=' + value for key, value in mount.items() if key != 'type']])
+                    *[key + '=' + value for key, value in mount.items() if key != 'type']], **budget)
 
     def _telegram_observation(self, plan: dict) -> Observation:
         _, base, _ = self._guest_paths(plan)
@@ -819,9 +925,11 @@ class HostBackend:
         self._telegram_probe(plan)
         return self._telegram_command(plan, 'upgrade')
 
-    def _telegram_probe(self, plan: dict) -> None:
+    def _telegram_probe(self, plan: dict, *, deadline_ns: int | None = None,
+                        authorization_expires_at_ms: int | None = None) -> None:
         from .onboarding_release import verify
-        value = self._telegram_command(plan, 'probe').get('native_probe')
+        value = self._telegram_command(plan, 'probe', **({} if deadline_ns is None else {
+            'deadline_ns': deadline_ns, 'authorization_expires_at_ms': authorization_expires_at_ms})).get('native_probe')
         if self.config.code is None:
             raise OnboardingError('receiving_code_configuration_required')
         expected = verify(self.config.code, plan['release_digest'], uid=os.geteuid())['profile']['skills']
@@ -1026,7 +1134,38 @@ class HostBackend:
         return dict(type="disk", source=str(self.config.views / digest(plan) / "matrix-public"),
                     path="/home/agent/.onboarding-matrix", readonly="true", shift="true")
 
-    def _target_call(self, plan: dict, action: str, *, profile: dict | None = None,
+    def _target_call(self, plan: dict, action: str, **arguments) -> dict:
+        command, deadline_ns, input_data = self._target_invocation(plan, action, **arguments)
+        dispatch: dict = {} if input_data is None else {'input_data': input_data}
+        if deadline_ns is not None:
+            remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
+            if remaining <= 0:
+                raise OnboardingError('receiving_host_deadline_expired')
+            dispatch.update(timeout_seconds=remaining, deadline_ns=deadline_ns)
+        result = self.execute_body(plan, command, home=True, **dispatch)
+        value = json.loads(result)
+        if not isinstance(value, dict):
+            raise OnboardingError('invalid_onboarding_observation')
+        if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
+            raise OnboardingError('receiving_host_deadline_expired')
+        return value
+
+    def _target_relationship_session(self, plan: dict, packet: dict, *, candidate,
+                                     timeout_seconds: float, deadline_ns: int):
+        from .onboarding_group_session import OwnerConversation
+        if self.native_body(plan) is not None:
+            raise OnboardingError('native_receiving_session_unsupported')
+        command, deadline, _payload = self._target_invocation(plan, 'group-session',
+            candidate=candidate, group_request=packet, observation_timeout_seconds=timeout_seconds,
+            owner_deadline_ns=deadline_ns)
+        def authorized():
+            if not self.authorize(plan, digest(plan)):
+                raise OnboardingError('host_authorization_required')
+        return OwnerConversation(['incus', 'exec', self.instance(plan), '--user', '1000', '--group', '1000',
+            '--env', 'HOME=/home/agent', '--', *command], packet, deadline_ns=deadline,
+            validate=authorized, env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'})
+
+    def _target_invocation(self, plan: dict, action: str, *, profile: dict | None = None,
                      peer_packet: dict | None = None, peer_being_ref: str | None = None,
                      candidate: tuple[Path, str] | None = None,
                      observation_timeout_seconds: float | None = None,
@@ -1035,10 +1174,15 @@ class HostBackend:
                      bootstrap_request: dict | None = None,
                      bootstrap_ready_sha256: str | None = None,
                      bootstrap_timeout_seconds: float | None = None,
+                     bootstrap_initial: bool = False,
+                     bootstrap_initial_service: bool = False,
                      control_file: Path | None = None, control_command: Path | None = None,
                      control_value: dict | None = None, identity_expires_at_ms: int | None = None,
-                     native_tooling: dict | None = None) -> dict:
-        """Probe prepared receiving code without changing active selectors.
+                     native_tooling: dict | None = None, group_request: dict | None = None,
+                     remaining_execution: Callable[[], dict] | None = None,
+                     authorization_expires_at_ms: int | None = None,
+                     owner_deadline_ns: int | None = None) -> tuple[list[str], int | None, str | None]:
+        """Invoke the qualified receiving owner within its finite host budget.
 
         Candidate calls require the already verified public read-only mount.
         The receiving owner still verifies its exact code/SDK independently.
@@ -1048,8 +1192,33 @@ class HostBackend:
         if current_native and (action != 'admitted-running' or not require_loaded
                 or candidate is None or observation_timeout_seconds is None):
             raise OnboardingError('qualified_onboarding_target_observer_required')
+        if owner_deadline_ns is not None and (action not in {'group-session','group-relationship','group-publication'}
+                or type(owner_deadline_ns) is not int
+                or not 0 < owner_deadline_ns-time.monotonic_ns() <= 60_000_000_000):
+            raise OnboardingError('receiving_host_deadline_required')
+        admitting = action in {'admission-prepare', 'admission-check', 'admission-enroll'}
+        if ((authorization_expires_at_ms is not None and (not admitting
+                    or type(authorization_expires_at_ms) is not int or not 0 < authorization_expires_at_ms < 2**53))
+                or admitting and ((observation_timeout_seconds is None) != (authorization_expires_at_ms is None))
+                or admitting and candidate is not None and observation_timeout_seconds is None):
+            raise OnboardingError('receiving_host_deadline_required')
         bootstrapping = action in {'receiving-bootstrap-freeze', 'receiving-bootstrap-stage', 'receiving-bootstrap-publish'}
+        if (type(bootstrap_initial) is not bool or type(bootstrap_initial_service) is not bool
+                or bootstrap_initial and bootstrap_initial_service
+                or (bootstrap_initial or bootstrap_initial_service) and action != 'receiving-bootstrap-freeze'):
+            raise OnboardingError('invalid_receiving_bootstrap_request')
         controlling = action in {'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply'}
+        if (action in {'group-relationship', 'group-publication', 'group-session'}) != (group_request is not None):
+            raise OnboardingError('onboarding_group_relationship_command_required')
+        if group_request is not None:
+            from .onboarding_group_admission import request_packet
+            group_request = request_packet(group_request)
+            if (candidate is None or not group_request['offline'] or observation_timeout_seconds is None
+                    or (action == 'group-publication') != ('action' in group_request['command'])):
+                raise OnboardingError('onboarding_group_relationship_writer_required')
+        if remaining_execution is not None and (action != 'group-publication' or not callable(remaining_execution)
+                or self.config.views is None or group_request is None):
+            raise OnboardingError('onboarding_group_remaining_owner_input_required')
         if native_tooling is not None and (action != 'receiving-identity' or not isinstance(native_tooling, dict)):
             raise OnboardingError('receiving_native_tooling_recipe_required')
         if (action == 'receiving-identity') != (identity_expires_at_ms is not None):
@@ -1076,11 +1245,16 @@ class HostBackend:
         elif control_file is not None or control_command is not None or control_value is not None:
             raise OnboardingError('invalid_receiving_control_request')
         if observation_timeout_seconds is not None:
-            if (action not in {'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply'}
+            if (action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
                     or not math.isfinite(observation_timeout_seconds)
                     or not 0 < observation_timeout_seconds <= 60):
                 raise OnboardingError('receiving_host_deadline_required')
             deadline_ns = time.monotonic_ns() + int(observation_timeout_seconds * 1_000_000_000)
+            if owner_deadline_ns is not None:
+                deadline_ns = min(deadline_ns, owner_deadline_ns)
+            if authorization_expires_at_ms is not None:
+                deadline_ns = min(deadline_ns, time.monotonic_ns() +
+                    (authorization_expires_at_ms - time.time_ns() // 1_000_000) * 1_000_000)
         if action == 'receiving-identity' and observation_timeout_seconds is None:
             raise OnboardingError('receiving_host_deadline_required')
         if require_loaded and action not in {'running', 'admitted-running'}:
@@ -1098,8 +1272,10 @@ class HostBackend:
         if candidate is not None:
             if (action not in {'sdk-observe', 'sdk-prepare', 'observe', 'running', 'admitted-running',
                     'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'receiving-bootstrap-freeze',
-                    'receiving-bootstrap-stage', 'receiving-bootstrap-publish', 'receiving-identity'}
-                    or profile is not None or peer_packet is not None or peer_being_ref is not None
+                    'receiving-bootstrap-stage', 'receiving-bootstrap-publish', 'receiving-identity', 'group-relationship', 'group-publication', 'group-session',
+                    'admission-prepare', 'admission-check', 'admission-enroll'}
+                    or profile is not None and action not in {'admission-check', 'admission-enroll'}
+                    or peer_packet is not None or peer_being_ref is not None
                     or not onboarding_code_successor.sdk_parameters(candidate[0], uid=os.geteuid())
                     or not self.runtime_available(plan, candidate, deadline_ns=deadline_ns)):
                 raise OnboardingError('qualified_onboarding_candidate_mount_required')
@@ -1139,8 +1315,33 @@ class HostBackend:
             if len(input_data.encode()) > being_seed.MAX_SELECTION:
                 raise OnboardingError('invalid_receiving_control_request')
             arguments += ['--control-command', '-']
+        if group_request is not None:
+            input_data = json.dumps(group_request, sort_keys=True, separators=(',', ':'))
+            if len(input_data.encode()) > being_seed.MAX_SELECTION:
+                raise OnboardingError('onboarding_group_relationship_command_required')
+            arguments += ['--group-request', '-']
+        if remaining_execution is not None:
+            if group_request is None or self.config.views is None:
+                raise OnboardingError('onboarding_group_remaining_owner_input_required')
+            context = remaining_execution()
+            if (context.get('schema') != 'cluster-admission-execution-context/v1'
+                    or context.get('effect') != 'publication'
+                    or context.get('owner_name') != plan['name']
+                    or context.get('command_sha256') != digest(group_request['command'])
+                    or context.get('owner_context_sha256') != group_request.get('expected_context_sha256')
+                    or candidate is None or context.get('helper_code_digest') != candidate[1]
+                    or context.get('helper_code_uid') != 0):
+                raise OnboardingError('onboarding_group_remaining_owner_input_required')
+            filename = 'execution-'+digest(context)+'.json'
+            onboarding_mounts.prepare_matrix_public(self.config.views, plan, {filename: context})
+            if remaining_execution() != context:
+                raise OnboardingError('onboarding_group_remaining_owner_input_required')
+            arguments += ['--remaining-execution', public+'/'+filename,
+                '--remaining-execution-sha256', digest(context)]
         if identity_expires_at_ms is not None:
             arguments += ['--identity-expires-at-ms', str(identity_expires_at_ms)]
+        if authorization_expires_at_ms is not None:
+            arguments += ['--authorization-expires-at-ms', str(authorization_expires_at_ms)]
         if native_tooling is not None:
             encoded = json.dumps(native_tooling, separators=(',', ':'))
             if len(encoded.encode()) > 65536:
@@ -1155,9 +1356,14 @@ class HostBackend:
             if not sha(bootstrap_ready_sha256):
                 raise OnboardingError('invalid_receiving_bootstrap_request')
             arguments += ['--bootstrap-ready-sha256', bootstrap_ready_sha256]
+        if bootstrap_initial:
+            arguments += ['--bootstrap-initial']
+        if bootstrap_initial_service:
+            arguments += ['--bootstrap-initial-service']
         prepared_venv = None
         if candidate is not None and (bootstrapping or action in {'running', 'admitted-running', 'receiving-identity',
-                'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply'}):
+                'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session',
+                'admission-prepare', 'admission-check', 'admission-enroll'}):
             # _runtime_paths verified the entire public candidate and its SDK.
             # Enter the already prepared owner generation directly; Target still
             # checks the installed SDK, startup context and actual receiving state.
@@ -1170,6 +1376,8 @@ class HostBackend:
             if remaining <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
             arguments += ['--bootstrap-timeout-seconds' if bootstrapping else '--observation-timeout-seconds', str(remaining)]
+            if action == 'group-session' or owner_deadline_ns is not None:
+                arguments += ['--observation-deadline-ns', str(deadline_ns)]
         if prepared_venv is None:
             owner_command = code_command(self.body_python(plan), runtime_code,
                 'clusterctl.onboarding_target', arguments)
@@ -1177,32 +1385,33 @@ class HostBackend:
             from .onboarding_sdk import runtime_command
             owner_command = runtime_command(prepared_venv, prepared_venv.parent / 'runtime-imports',
                 runtime_code, 'clusterctl.onboarding_target', arguments)
-        dispatch: dict = {} if input_data is None else {'input_data': input_data}
-        result = self.execute_body(plan, owner_command, home=True, timeout_seconds=remaining,
-            deadline_ns=deadline_ns, **dispatch)
-        value = json.loads(result)
-        if not isinstance(value, dict):
-            raise OnboardingError('invalid_onboarding_observation')
-        if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
-            raise OnboardingError('receiving_host_deadline_expired')
-        return value
+        return owner_command, deadline_ns, input_data
 
     def _guest_service_call(self, plan: dict, action: str, *, candidate: tuple[Path, str],
                             timeout_seconds: float, request: dict | None = None,
                             owner_observation: dict | None = None,
-                            implementation: tuple[Path, str] | None = None) -> dict:
+                            implementation: tuple[Path, str] | None = None,
+                            owner_deadline_ns: int | None = None, effect_not_after_ms: int | None = None) -> dict:
         """Named-unit root effects execute public Cluster code, never owner SDK.
 
         The caller holds the host operation/job locks and records uncertainty.
         This method does not create mounts or authorize a live interruption.
         """
-        if (action not in {'bootstrap-inspect', 'bootstrap-validate', 'bootstrap-quiesce', 'bootstrap-select', 'bootstrap-start', 'bootstrap-recover-start'}
+        if (action not in {'bootstrap-inspect', 'bootstrap-validate', 'bootstrap-quiesce', 'bootstrap-quiescence',
+                          'bootstrap-select', 'bootstrap-start', 'bootstrap-recover-start', 'bootstrap-steady'}
                 or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 60
                 or (action == 'bootstrap-inspect') != (request is None)
                 or action != 'bootstrap-inspect' and owner_observation is not None
                 or (action == 'bootstrap-recover-start') != (implementation is not None)):
             raise OnboardingError('receiving_guest_service_request_required')
         deadline_ns = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
+        if (owner_deadline_ns is not None and (type(owner_deadline_ns) is not int
+                    or not 0 < owner_deadline_ns-time.monotonic_ns() <= 60_000_000_000)
+                or effect_not_after_ms is not None and (action not in {'bootstrap-select','bootstrap-start'}
+                    or type(effect_not_after_ms) is not int or not 0 < effect_not_after_ms < 2**53)):
+            raise OnboardingError('receiving_host_deadline_required')
+        if owner_deadline_ns is not None:
+            deadline_ns=min(deadline_ns,owner_deadline_ns)
         if not self._ceremony(plan).authorize(plan):
             raise OnboardingError('identity_authorization_required')
         base = self._receiving_base(plan)
@@ -1236,6 +1445,10 @@ class HostBackend:
         if remaining <= 0:
             raise OnboardingError('receiving_host_deadline_expired')
         arguments += ['--timeout-seconds', str(remaining)]
+        if owner_deadline_ns is not None:
+            arguments += ['--observation-deadline-ns',str(deadline_ns)]
+        if effect_not_after_ms is not None:
+            arguments += ['--effect-not-after-ms',str(effect_not_after_ms)]
         from .onboarding_service import code_command
         command = code_command(self.body_python(plan), code, 'clusterctl.onboarding_service', arguments)
         raw = self.execute_body(plan, command, uid=0, gid=0,

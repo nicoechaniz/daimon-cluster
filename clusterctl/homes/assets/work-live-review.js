@@ -78,6 +78,24 @@ function installLiveReview(frame) {
   const current = frame.dataset.liveReview === 'current';
   let resource = match[1], target = null, catalog = new Map(), catalogPending = null, acknowledgment = null, serial = 0;
   let version = match[2], wanted = false, timer = null, pending = null, requestTimeout = null, delay = 10000, immediate = false;
+  // A URL selects only a candidate. The authenticated reader catalog must admit
+  // it before any model request; pinned views ignore both URL and saved choice.
+  const preferenceKey = 'dm.review-project:' + match[1];
+  let initialProject = null, initialResolved = true;
+  if (current) {
+    try {
+      const query = new URL(window.location.href).searchParams.get('project');
+      const candidate = query || window.localStorage?.getItem(preferenceKey);
+      if (/^[a-f0-9]{32}$/.test(candidate || '')) {initialProject = candidate; initialResolved = false;}
+    } catch (_) { /* Storage is optional; ordinary model loading still works. */ }
+  }
+  function rememberProject() {
+    try {window.localStorage?.setItem(preferenceKey, resource);} catch (_) {}
+    try {
+      const url = new URL(window.location.href); url.searchParams.set('project', resource);
+      window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+    } catch (_) {}
+  }
   let disposed = false;
   const listeners = [];
   const listen = (target, type, callback) => { target.addEventListener(type, callback); listeners.push([target,type,callback]); };
@@ -101,8 +119,23 @@ function installLiveReview(frame) {
         .map(e => ({resource:e.resource_ref.slice(15), title:e.title}));
       if (controller.signal.aborted || document.hidden) return;
       catalog = new Map(entries.map(e => [e.resource,e]));
+      const resumeInitial = !initialResolved;
+      if (resumeInitial) {
+        initialResolved = true;
+        if (catalog.has(initialProject)) target = {resource:initialProject, initial:true};
+        initialProject = null;
+      }
       post({type:'home-artifact:review-catalog', entries, resource});
-    } catch (error) { if (!controller.signal.aborted) post({type:'home-artifact:review-catalog-error'}); }
+      if (resumeInitial && wanted && !pending) poll();
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        post({type:'home-artifact:review-catalog-error'});
+        // No candidate fetch on failed authorization discovery. Preserve the
+        // ordinary resource route and let a later explicit selector retry.
+        initialResolved = true; initialProject = null;
+        if (wanted && !pending) poll();
+      }
+    }
     finally { clearTimeout(deadline); if (catalogPending === controller) catalogPending = null; }
   }
   function cancel() {
@@ -167,6 +200,7 @@ function installLiveReview(frame) {
   }
   async function poll() {
     if (!wanted || document.hidden || pending) return;
+    if (!initialResolved) {list(); return;}
     const controller = new AbortController(); pending = controller; immediate = false;
     requestTimeout = setTimeout(() => { controller.abort(); if (acknowledgment) { post({type:'home-artifact:review-cancel',requestId:acknowledgment.requestId}); acknowledgment.resolve(false); acknowledgment = null; } }, 20000);
     const requested = target, candidateResource = requested?.resource || resource;
@@ -188,7 +222,7 @@ function installLiveReview(frame) {
           const accepted = new Promise(resolve => { acknowledgment = {requestId, resource:candidateResource, version:next, resolve}; });
           post({type:'home-artifact:review-update',version:next,resource:candidateResource,gallery,requestId,switching:true});
           if (!await accepted || controller.signal.aborted) throw Error('Review not accepted');
-          resource = candidateResource;
+          resource = candidateResource; rememberProject();
           post({type:'home-artifact:review-commit',requestId,resource,version:next});
           if (target === requested) target = null;
         } else post({type:'home-artifact:review-update',version:next,resource,gallery});
@@ -217,6 +251,8 @@ function installLiveReview(frame) {
     }
     if (message?.type === 'home-artifact:review-select') {
       if (document.hidden || !catalog.has(message.resource)) return;
+      if (target?.initial && message.resource === resource) return; // Ignore child bootstrap hydration while the explicit target loads.
+      initialResolved = true; initialProject = null;
       cancel(); target = {resource:message.resource}; wanted = true; immediate = true;
       if (!pending) poll(); return;
     }

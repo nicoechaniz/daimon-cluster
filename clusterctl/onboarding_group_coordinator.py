@@ -65,8 +65,9 @@ def communication_recipe(value: dict, row: dict, admission: dict) -> dict:
     return copy.deepcopy(value)
 
 
-def communication_result(response: dict, intent: dict, *, tribe_ref: str, parent: dict | None = None) -> dict:
-    """Qualify authenticated projections; author retention is never uptake."""
+def _communication_projection(response: dict, intent: dict, *, tribe_ref: str,
+                              parent: dict | None, confirmed_echo: bool) -> dict:
+    """Validate exact native correlation, keeping observation and acceptance separate."""
     try:
         result = response['result']
         parameters = intent['parameters']
@@ -92,9 +93,12 @@ def communication_result(response: dict, intent: dict, *, tribe_ref: str, parent
                 sender_being_ref=parent['author']['being_ref'], sender_embodiment_id=parent['author']['embodiment_id'])):
             raise ValueError
         visibility = result['visibility']
-        if (not isinstance(visibility, dict) or visibility.get('echo_state') != 'confirmed'
+        if (not isinstance(visibility, dict)
                 or type(visibility.get('part_count')) is not int or visibility['part_count'] <= 0
-                or visibility.get('confirmed_parts') != visibility['part_count']):
+                or type(visibility.get('confirmed_parts')) is not int
+                or not 0 <= visibility['confirmed_parts'] <= visibility['part_count']
+                or confirmed_echo and (visibility.get('echo_state') != 'confirmed'
+                    or visibility['confirmed_parts'] != visibility['part_count'])):
             raise ValueError
         if direct:
             target = parameters['destination']
@@ -125,6 +129,142 @@ def communication_result(response: dict, intent: dict, *, tribe_ref: str, parent
             visibility=visibility, inbound=inbound, response_sha256=digest(response))
     except (KeyError, TypeError, ValueError, AttributeError):
         raise OnboardingError('receiving_communication_unobserved') from None
+
+
+
+
+def communication_result(response: dict, intent: dict, *, tribe_ref: str, parent: dict | None = None) -> dict:
+    """Qualify authenticated projections; author retention is never uptake."""
+    return _communication_projection(response, intent, tribe_ref=tribe_ref, parent=parent, confirmed_echo=True)
+
+
+def communication_recipients(intent: dict, admission: dict) -> set[tuple[str, str]]:
+    """The required uptake excludes author retention and preserves direct scope."""
+    required = {(item['being_ref'], item['embodiment_id']) for item in admission['receivers'].values()
+        if (item['being_ref'], item['embodiment_id']) !=
+            (intent['sender']['being_ref'], intent['sender']['embodiment_id'])}
+    if intent['step'] == 'direct':
+        target = intent['parameters']['destination']
+        required = {item for item in required if item[0] == target['being_ref']
+            and (target['kind'] != 'body' or item[1] == target['embodiment_id'])}
+    return required
+
+
+def communication_followup(request: dict, row: dict, admission: dict, previous_response: dict,
+                           *, now_ms: int, historical: bool = False) -> dict:
+    """Validate one explicit technical follow-up, never replay an uncertain send.
+
+    This is a pure operator contract: no approval, read, message, model or native
+    control effect occurs here. The receiving caller must obtain previous_response
+    from the original sender's authenticated delivery query, retain this exact
+    record and qualify all current installed readers before any new authoring.
+    """
+    try:
+        if (set(request) != {'schema', 'qualification_id', 'parent_operation_id', 'parent_intent_sha256',
+                            'previous_step', 'expires_at_ms'}
+                or request['schema'] != 'cluster-admission-communication-followup-request/v1'
+                or str(uuid.UUID(request['qualification_id'])) != request['qualification_id']
+                or row['operation'] != 'receiving-update' or row['state'] != 'runtime-dispatching'
+                or row['intent_hash'] != digest(row['intent'])
+                or row['target'] != 'receiving:'+admission['tribe_ref']
+                or row['intended_transition']['cohort_admission'] != admission
+                or row['intent']['runtime_call']['precondition_digest'] != digest(row['expected_precondition'])
+                or row['intent']['runtime_call']['transition_digest'] != digest(row['intended_transition'])
+                or request['parent_operation_id'] != row['operation_id']
+                or request['parent_intent_sha256'] != row['intent_hash']
+                or type(request['expires_at_ms']) is not int or not 0 < request['expires_at_ms'] < 2**53
+                or type(now_ms) is not int or not 0 < now_ms
+                or not historical and not now_ms < request['expires_at_ms'] <= now_ms + 3_600_000):
+            raise ValueError
+        observations = row['runtime_observation']
+        phases = observations['portal_admission']
+        original = communication_recipe(row['intended_transition']['admission_communication'], row, admission)
+        selection, steady = phases['activation_ready'], phases['steady_ready']
+        if (selection['schema'] != 'cluster-receiving-cohort-selection/v1'
+                or selection['operation_id'] != row['operation_id']
+                or steady['schema'] != 'cluster-managed-initial-steady/v1'
+                or steady['cohort_selection_sha256'] != digest(selection)):
+            raise ValueError
+        steps = ('group', 'direct', 'reply')
+        pending = next(step for step in steps if 'communication-'+step not in phases)
+        if request['previous_step'] != pending:
+            raise ValueError
+        intent = phases['communication-intent-'+pending]
+        parent = phases['communication-group']['proof'] if pending == 'reply' else None
+        if intent != GroupCoordinator._communication_intent(row, original, pending, parent):
+            raise ValueError
+        result = previous_response['result']
+        if (previous_response.get('schema') != 'dm.local.response/v1'
+                or previous_response.get('ok') is not True or previous_response.get('error') is not None
+                or result['send_id'] != intent['parameters']['send_id']
+                or result['author'] != {key: intent['sender'][key] for key in ('being_ref', 'embodiment_id')}
+                or result['tribe_ref'] != admission['tribe_ref']
+                or result.get('carrier', {}).get('expired') is not True
+                or str(uuid.UUID(result['message_id'])) != result['message_id']
+                or re.fullmatch('[0-9a-f]{64}', result['message_hash']) is None):
+            raise ValueError
+        # Correlation is checked against the unchanged native observation.
+        # Only communication_result can qualify confirmed delivery acceptance.
+        _communication_projection(previous_response, intent, tribe_ref=admission['tribe_ref'],
+            parent=parent, confirmed_echo=False)
+        try:
+            prior = communication_result(previous_response, intent, tribe_ref=admission['tribe_ref'], parent=parent)
+        except OnboardingError:
+            pass
+        else:
+            if communication_recipients(intent, admission) <= {
+                    (item['being_ref'], item['embodiment_id']) for item in prior['inbound']}:
+                raise ValueError  # Reconcile an accepted result instead of authoring another probe.
+        scope = copy.deepcopy(original)
+        scope['expires_at_ms'] = request['expires_at_ms']
+        label = ('Technical qualification follow-up '+request['qualification_id']+
+                 '; earlier probe '+result['message_id']+' remains unconfirmed. ')
+        checks = dict(group='Check current Tribe group delivery.',
+            direct='Check current directed delivery.', reply='Check reply to this follow-up group message.')
+        for step in steps:
+            scope[step]['text'] = label + checks[step]
+        scope = communication_recipe(scope, row, {**admission,
+            'activation': {**admission['activation'], 'expires_at_ms': request['expires_at_ms']}})
+        return dict(schema='cluster-admission-communication-followup/v1', request=copy.deepcopy(request),
+            original_scope_sha256=digest(original), previous_intent_sha256=digest(intent),
+            previous_response=copy.deepcopy(previous_response), previous_response_sha256=digest(previous_response),
+            activation_sha256=digest(selection), steady_sha256=digest(steady), scope=scope)
+    except (KeyError, TypeError, ValueError, AttributeError, StopIteration):
+        raise OnboardingError('onboarding_group_communication_followup_required') from None
+
+
+def communication_followup_result(record: dict, row: dict, admission: dict, phases: dict) -> dict:
+    """Check all three new journeys and keep their earlier uncertainty explicit."""
+    try:
+        checked = communication_followup(record['request'], row, admission, record['previous_response'],
+            now_ms=1, historical=True)
+        if checked != record:
+            raise ValueError
+        proofs: dict[str, dict] = {}
+        inbound: set[tuple[str, str]] = set()
+        for step in ('group', 'direct', 'reply'):
+            intent = GroupCoordinator._communication_intent(row, record['scope'], step, proofs.get('group'),
+                qualification_id=record['request']['qualification_id'])
+            saved = phases['communication-'+step]
+            if saved['intent'] != intent or phases['communication-intent-'+step] != intent:
+                raise ValueError
+            proof = communication_result(saved['response'], intent, tribe_ref=admission['tribe_ref'],
+                parent=proofs.get('group') if step == 'reply' else None)
+            received = {(item['being_ref'], item['embodiment_id']) for item in proof['inbound']}
+            if saved['proof'] != proof or not communication_recipients(intent, admission) <= received:
+                raise ValueError
+            inbound.update(received)
+            proofs[step] = proof
+        if not {(item['being_ref'], item['embodiment_id']) for item in admission['receivers'].values()} <= inbound:
+            raise ValueError
+        return dict(schema='cluster-admission-communication-followup-result/v1',
+            qualification_id=record['request']['qualification_id'], parent_operation_id=row['operation_id'],
+            record_sha256=digest(record), phases_sha256=digest(phases),
+            previous_send_id=record['previous_response']['result']['send_id'],
+            previous_message_id=record['previous_response']['result']['message_id'],
+            previous_outcome='retained-unconfirmed', communication_acceptance='signed-intake-and-confirmed-echo')
+    except (KeyError, TypeError, ValueError, AttributeError, OnboardingError):
+        raise OnboardingError('onboarding_group_communication_followup_unobserved') from None
 
 
 def loaded_selection(loaded: dict) -> dict:
@@ -463,8 +603,14 @@ class GroupCoordinator:
             raise OnboardingError('onboarding_group_completion_unobserved') from None
 
     @staticmethod
-    def _communication_intent(row: dict, scope: dict, step: str, parent: dict | None) -> dict:
-        send_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'portal-communication:'+row['operation_id']+':'+step))
+    def _communication_intent(row: dict, scope: dict, step: str, parent: dict | None,
+                              *, qualification_id: str | None = None) -> dict:
+        namespace = row['operation_id']
+        if qualification_id is not None:
+            if str(uuid.UUID(qualification_id)) != qualification_id:
+                raise OnboardingError('onboarding_group_communication_followup_required')
+            namespace += ':followup:'+qualification_id
+        send_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'portal-communication:'+namespace+':'+step))
         item = scope[step]
         parameters = dict(channel_id='tribe', send_id=send_id, text=item['text'])
         if step == 'reply':
@@ -473,7 +619,7 @@ class GroupCoordinator:
             parameters.update(received_channel_id='tribe', message_id=parent['message_id'])
         else:
             parameters['thread_id'] = str(uuid.uuid5(uuid.NAMESPACE_URL,
-                'portal-communication-thread:'+row['operation_id']+':'+step))
+                'portal-communication-thread:'+namespace+':'+step))
             if step == 'direct':
                 parameters['destination'] = item['destination']
         return dict(step=step, sender=item['sender'], parameters=parameters)
@@ -788,12 +934,7 @@ class GroupCoordinator:
                 response = call('messaging_reply' if step == 'reply' else 'messaging_send',
                     intent['parameters'], authoring_expires_at_ms=authoring_expires)
                 dispatched = True
-            required = {(item['being_ref'],item['embodiment_id']) for item in admission['receivers'].values()
-                if (item['being_ref'],item['embodiment_id']) != (intent['sender']['being_ref'],intent['sender']['embodiment_id'])}
-            if step == 'direct':
-                target = intent['parameters']['destination']
-                required = {item for item in required if item[0] == target['being_ref']
-                    and (target['kind'] != 'body' or item[1] == target['embodiment_id'])}
+            required = communication_recipients(intent, admission)
             def qualify(value):
                 try:
                     proof = communication_result(value, intent, tribe_ref=admission['tribe_ref'],

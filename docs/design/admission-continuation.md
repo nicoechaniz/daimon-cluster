@@ -615,3 +615,38 @@ withheld. This is incomplete communication acceptance, not public Telegram
 qualification or a new production messaging regression. Preserve the original
 probe; a separately attributed follow-up qualification must retain the earlier
 outcome and its original identifiers rather than overwrite them.
+
+## Explicit communication follow-up contract
+
+A joined, activated and steady body is not re-enrolled because an acceptance
+probe expired with uncertain delivery. Preserve the original intent, authored
+message and authenticated native delivery outcome. The source contract
+`communication_followup` requires an explicitly selected qualification UUID,
+parent intent, first unfinished probe and a new fixed horizon of at most one
+hour. The caller must obtain the prior delivery response from that original
+sender; an arbitrary supplied JSON file is not receiving evidence. A live
+carrier or already accepted prior journey cannot enter this path.
+
+The follow-up contains exactly group, direct and correlated reply checks with
+the same approved actors/destination. Each text identifies the earlier uncertain
+message and the follow-up UUID and uses a fixed technical check; it does not
+copy or replay the earlier message text. Its separate deterministic send/thread IDs do
+not replace the originals. Each message remains bounded to2048 characters. There
+is no model, task replay, automatic renewal or implicit retry episode. Exact
+historical validation preserves the fixed request after expiry and grants no
+fresh authoring permission.
+
+`communication_followup_result` requires confirmed complete echoes and actual
+receiving legs for all three journeys, including a reply bound to the new signed
+group parent. Its result keeps the prior send/message IDs and reports that prior
+outcome as retained-unconfirmed. A passing follow-up does not retroactively
+confirm or repair that earlier send.
+
+These functions currently validate the source contract only. No follow-up
+transport, receiving selection or original admission completion is installed by
+this change. The next consumer must retain the exact request before dispatch,
+check authority at each actual effect boundary, and reuse `observe_current_reader`
+and the existing reservation/select controls for every living required body.
+Those current-state observations can qualify installed software after a restart
+without fabricating new versions of historical lifecycle/start receipts. Current
+reader availability and signed communication acceptance remain separate facts.

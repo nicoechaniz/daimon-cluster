@@ -29,11 +29,12 @@ REMOTE_LAUNCH = '''import hashlib,json,os,sys,time
 request=json.loads(sys.argv[1])
 if hashlib.sha256(open('/etc/machine-id','rb').read().strip()).hexdigest()!=request['machine_id_sha256']:
     raise SystemExit('native_receiving_host_changed')
+started_ns=time.monotonic_ns()
 remaining=min(request['remaining_seconds'],request['expires_at_ms']/1000-time.time())
 if remaining<=0:raise SystemExit('receiving_host_deadline_expired')
 argv=request['argv']
 if request['owner_clock']:
-    deadline=str(time.monotonic_ns()+int(min(remaining,60)*1e9))
+    deadline=str(started_ns+int(min(remaining,60)*1e9))
     if argv.count('--observation-deadline-ns')==1 and '--deadline-ns' not in argv and '--time-namespace' not in argv:
         argv[argv.index('--observation-deadline-ns')+1]=deadline
     elif '--observation-deadline-ns' not in argv and argv.count('--deadline-ns')==1 and argv.count('--time-namespace')==1:
@@ -230,6 +231,10 @@ if result!=0 and ctypes.get_errno()!=errno.EEXIST:raise OSError(ctypes.get_errno
                 or input_data is not None and (not isinstance(input_data, str)
                     or len(input_data.encode()) > being_seed.MAX_SELECTION)):
             raise OnboardingError('invalid_native_receiving_request')
+        # Sample wall time BEFORE the monotonic budget. Preemption between
+        # samples may shorten the receiving horizon, never extend it beyond
+        # the coordinator's fixed lock custody. VMBody uses this same launcher.
+        wall_started_ms = time.time_ns() // 1_000_000
         remaining = timeout_seconds
         if deadline_ns is not None:
             remaining = min(remaining, (deadline_ns - time.monotonic_ns()) / 1e9)
@@ -237,7 +242,7 @@ if result!=0 and ctypes.get_errno()!=errno.EEXIST:raise OSError(ctypes.get_errno
             raise OnboardingError('receiving_host_deadline_expired')
         request = dict(argv=argv, uid=uid, gid=gid, env=env or {'HOME': self.value['home']},
                        home=self.value['home'], machine_id_sha256=self.value['machine_id_sha256'],
-                       remaining_seconds=remaining, expires_at_ms=time.time_ns() // 1_000_000 + int(remaining * 1000),
+                       remaining_seconds=remaining, expires_at_ms=wall_started_ms + int(remaining * 1000),
                        owner_clock=owner_clock)
         command = [str(self.python), '-B', '-I', '-c', REMOTE_LAUNCH, json.dumps(request)]
         try:

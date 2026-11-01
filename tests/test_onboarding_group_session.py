@@ -222,6 +222,22 @@ def test_invitation_inspection_requires_explicit_owner_scope(monkeypatch):
             owner.group_relationship({'operation_id': 'same'}, authority_closure={}, inspect_only=True)
 
 
+def test_supplemental_guest_dispatch_requires_and_preserves_fixed_owner_deadline():
+    from clusterctl.onboarding_receiving_update import GuestGroupClient
+    calls = []
+    owner = object.__new__(GuestGroupClient)
+    owner.backend = SimpleNamespace(_target_call=lambda *args,**kwargs: calls.append(kwargs) or {})
+    owner.plan, owner.candidate = {}, (Path('/selected-public-code'),'c'*64)
+    owner.maintenance, owner.timeout_seconds, owner.deadline_ns = None, 5, None
+    with pytest.raises(OnboardingError,match='deadline_required'):
+        owner.group_publication({},authority_closure={},remaining_execution=lambda:{})
+    assert not calls
+    owner.deadline_ns = time.monotonic_ns()+2_000_000_000
+    owner.group_publication({},authority_closure={},remaining_execution=lambda:{})
+    assert calls[0]['owner_deadline_ns'] == owner.deadline_ns
+    assert calls[0]['candidate'] == owner.candidate
+
+
 @pytest.mark.parametrize('stage', ['loading', 'handling'])
 def test_kernel_deadline_releases_writer_even_when_native_execution_blocks(tmp_path, stage):
     import fcntl

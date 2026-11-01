@@ -548,6 +548,8 @@ def _dispatch_publication(cohort, row: dict, name: str, command: dict, *,
             reader = scope.enter_context(recovery.remaining_reader(cohort.journal, row,
                 'publication', owner_name=name, command=command,
                 expected_context_sha256=context_sha256))
+            scope.enter_context(recovery.retain_execution_locks(cohort.journal, row,
+                deadline_ns=cohort.owners[name].deadline_ns))
             options['remaining_execution'] = reader
         result = cohort.owners[name].group_publication(command,
             expected_context_sha256=context_sha256, authority_closure=authorities, **options)

@@ -497,8 +497,12 @@ class GuestGroupClient:
             if timeout <= 0:
                 raise OnboardingError('receiving_owner_deadline_expired')
         candidate = (self.maintenance or self.candidate) if maintenance else self.candidate
-        if maintenance and self.maintenance is not None and self.deadline_ns is not None and action.startswith('group-'):
-            arguments['owner_deadline_ns']=self.deadline_ns
+        if maintenance and action.startswith('group-'):
+            if arguments.get('remaining_execution') is not None and self.deadline_ns is None:
+                raise OnboardingError('receiving_host_deadline_required')
+            if self.deadline_ns is not None and (self.maintenance is not None
+                    or arguments.get('remaining_execution') is not None):
+                arguments['owner_deadline_ns']=self.deadline_ns
         result = self.backend._target_call(self.plan, action, candidate=candidate,
             observation_timeout_seconds=timeout, **arguments)
         if self.deadline_ns is not None and time.monotonic_ns() >= self.deadline_ns:

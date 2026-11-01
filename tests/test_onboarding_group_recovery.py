@@ -556,7 +556,8 @@ def test_publication_dispatch_carries_remaining_scope_without_rewriting_original
         captured['reader'] = reader
         return {'status': 'recorded'}
     cohort = SimpleNamespace(journal=journal,
-        owners={owner_name: SimpleNamespace(group_publication=publication)})
+        owners={owner_name: SimpleNamespace(group_publication=publication,
+            deadline_ns=time.monotonic_ns()+500_000_000)})
     assert _dispatch_publication(cohort, current, owner_name, command,
         context_sha256='a'*64, authorities={}, social=social,
         provenance=provenance) == {'status': 'recorded'}
@@ -583,7 +584,8 @@ def test_publication_dispatch_does_not_accept_result_after_remaining_expiry(tmp_
         clock[0] = request['expires_at_ms']
         return {'status': 'recorded'}
     cohort = SimpleNamespace(journal=journal,
-        owners={'entrant': SimpleNamespace(group_publication=publication)})
+        owners={'entrant': SimpleNamespace(group_publication=publication,
+            deadline_ns=time.monotonic_ns()+500_000_000)})
     with pytest.raises(OnboardingError, match='effect_not_authorized'):
         _dispatch_publication(cohort, current, 'entrant', command,
             context_sha256='a'*64, authorities={}, social=social, provenance=provenance)

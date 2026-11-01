@@ -1217,7 +1217,7 @@ class HostBackend:
                     or (action == 'group-publication') != ('action' in group_request['command'])):
                 raise OnboardingError('onboarding_group_relationship_writer_required')
         if remaining_execution is not None and (action != 'group-publication' or not callable(remaining_execution)
-                or self.config.views is None or group_request is None):
+                or self.config.views is None or group_request is None or owner_deadline_ns is None):
             raise OnboardingError('onboarding_group_remaining_owner_input_required')
         if native_tooling is not None and (action != 'receiving-identity' or not isinstance(native_tooling, dict)):
             raise OnboardingError('receiving_native_tooling_recipe_required')

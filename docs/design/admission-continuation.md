@@ -182,13 +182,33 @@ opening another instance and resolving execution bounds attempts to reacquire
 the same kernel mutation lock and prevents a successful journey from closing.
 Historical inspection opens its own journal only when no held instance exists.
 
-Remote publication lifetime remains incomplete: a read-only approval projection
-alone does not keep the coordinator's protected execution scope alive during an
-in-flight remote effect. The Source parent-death guard does not prove that
-property across SSH/Incus. Remaining lifecycle/activation consumers and the
-complete native admission journey also need qualification before this extension
-can be selected operationally. Retain the original expired synthetic operation
-and uncertain publication; do not replay it or enlarge its original grant.
+Publication dispatch now retains duplicates of the actual parent/approval kernel
+locks in one trusted local process before invoking an owner. Normal owner return
+releases custody; transport uncertainty or coordinator death retains it until
+the exact receiver-enforced horizon. The process is limited to sixty seconds,
+creates no files or recurring jobs, and never passes lock descriptors to the
+receiving UID or guest. A read-only approval projection alone is not custody.
+Same-kernel targets use the original absolute monotonic deadline; native/KVM
+clock conversion samples conservatively on both hosts and retains the fixed
+sender wall expiry, so delayed starts cannot restart the interval.
+
+Kernel tests kill the coordinator during a blocked independently bounded owner,
+verify competing mutations of both parent and approval remain refused, then
+observe release at the horizon. Lost transport, ordinary completion, descriptor
+cleanup and scheduling gaps on both hosts are covered separately. These are
+source qualifications, not installation or complete portal acceptance.
+Remaining lifecycle/activation consumers and the complete native admission
+journey still need qualification. Retain the original expired synthetic
+operation and uncertain publication; do not replay it or enlarge its original
+grant.
+
+The root-worker CI lane uses the existing disposable user namespace with root
+mapped to root and canonical owner1000 mapped to the runner's actual UID. It
+also maps the foreign service owner used by the existing tests and permits
+their real supplementary-group/UID drops. This avoids trying to execute a
+runner-private interpreter as an unrelated host UID. No host account, private
+interpreter permissions or administrative access is changed; the ordinary guest
+lane is unchanged.
 
 The journal planner/attachment/resolver is implemented in
 `onboarding_group_recovery.remaining_*`; execution integration and protected owner

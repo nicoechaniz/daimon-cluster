@@ -13,6 +13,73 @@ import uuid
 
 PROCESS_FIELDS = {"uid", "pid", "start_ticks", "boot_id"}
 
+_LOCK_CUSTODY = '''import os,select,signal,sys,time
+deadline=int(sys.argv[1])
+remaining=(deadline-time.monotonic_ns())/1e9
+if not 0<remaining<=60:raise SystemExit(1)
+signal.signal(signal.SIGALRM,signal.SIG_DFL)
+signal.setitimer(signal.ITIMER_REAL,remaining)
+os.write(1,b'R')
+while True:
+    remaining=(deadline-time.monotonic_ns())/1e9
+    if remaining<=0:break
+    if not select.select([0],[],[],remaining)[0]:break
+    value=os.read(0,1)
+    if value==b'D':break
+    # EOF is coordinator loss, not receiving exit. Retain the inherited
+    # locks through the exact owner horizon, including a lost transport.
+    if not value:
+        time.sleep(max(0,(deadline-time.monotonic_ns())/1e9))
+        break
+'''
+
+
+@contextmanager
+def lock_custody(descriptors: tuple[int, ...], *, deadline_ns: int):
+    """Keep held flock ownership through a finite remote owner invocation.
+
+    Normal return acknowledges observed owner completion. An exception or
+    coordinator death retains ownership until the receiver-enforced deadline.
+    No persisted lease, daemon, model, retry or receiving credential is created.
+    """
+    import subprocess
+    import sys
+    import time
+    if (not descriptors or len(set(descriptors)) != len(descriptors)
+            or any(type(fd) is not int or fd < 3 for fd in descriptors)
+            or type(deadline_ns) is not int
+            or not 0 < deadline_ns-time.monotonic_ns() <= 60_000_000_000):
+        raise PresenceError('owner_lock_custody_required')
+    process = subprocess.Popen([sys.executable, '-B', '-I', '-c', _LOCK_CUSTODY, str(deadline_ns)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        pass_fds=descriptors, start_new_session=True)
+    assert process.stdin is not None and process.stdout is not None
+    dispatched = False
+    try:
+        remaining = max(0, (deadline_ns-time.monotonic_ns())/1e9)
+        if not select.select([process.stdout], [], [], remaining)[0] or process.stdout.read(1) != b'R':
+            raise PresenceError('owner_lock_custody_unavailable')
+        dispatched = True
+        yield
+        process.stdin.write(b'D')
+        process.stdin.flush()
+    finally:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass  # A deadline exit must not skip descriptor/process cleanup.
+        if not dispatched and process.poll() is None:
+            process.kill()  # No receiving invocation was allowed to start.
+        try:
+            process.wait(timeout=max(0, (deadline_ns-time.monotonic_ns())/1e9)+1)
+        except subprocess.TimeoutExpired:
+            # The exact receiving horizon has elapsed; no fresh effect remains
+            # authorized. Bound this task-owned helper even if cleanup stalls.
+            process.kill()
+            process.wait()
+        finally:
+            process.stdout.close()
+
 
 def require_parent_lifetime(expected_pid: int) -> None:
     """Bind a technical owner CLI to its dispatching coordinator thread.

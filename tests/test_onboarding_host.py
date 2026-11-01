@@ -730,6 +730,7 @@ def test_group_request_uses_prepared_owner_stdin_without_requiring_running_group
 @pytest.mark.parametrize('lost_scope', [False, True])
 def test_remaining_publication_uses_protected_input_separately_from_original_stdin(tmp_path, monkeypatch, lost_scope):
     import os
+    import time
     import uuid
     from clusterctl import onboarding_mounts
     backend, plan, run, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
@@ -752,19 +753,25 @@ def test_remaining_publication_uses_protected_input_separately_from_original_std
         if lost_scope and len(reads) == 2:
             raise OnboardingError('onboarding_group_remaining_execution_scope_required')
         return context
+    deadline = time.monotonic_ns()+4_000_000_000
+    with pytest.raises(OnboardingError,match='remaining_owner_input_required'):
+        backend._target_call(plan, 'group-publication', candidate=candidate, group_request=packet,
+            observation_timeout_seconds=5, remaining_execution=reader)
+    assert not reads and not calls
     if lost_scope:
         with pytest.raises(OnboardingError, match='execution_scope_required'):
             backend._target_call(plan, 'group-publication', candidate=candidate, group_request=packet,
-                observation_timeout_seconds=5, remaining_execution=reader)
+                observation_timeout_seconds=5, remaining_execution=reader, owner_deadline_ns=deadline)
         assert calls == []
     else:
         backend._target_call(plan, 'group-publication', candidate=candidate, group_request=packet,
-            observation_timeout_seconds=5, remaining_execution=reader)
+            observation_timeout_seconds=5, remaining_execution=reader, owner_deadline_ns=deadline)
         argv, options = calls[0]
         assert json.loads(options['input_data']) == packet
         pin = digest(context)
         assert argv[argv.index('--remaining-execution')+1] == '/home/agent/.onboarding-matrix/execution-'+pin+'.json'
         assert argv[argv.index('--remaining-execution-sha256')+1] == pin
+        assert int(argv[argv.index('--observation-deadline-ns')+1]) == deadline
         assert being_seed._read(Path(mount['source'])/('execution-'+pin+'.json')) == context
 
 

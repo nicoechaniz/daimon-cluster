@@ -482,11 +482,8 @@ jobs:
         run: |
           set -eu
           onboarding_python="$(python -c 'import sys; print(sys.executable)')"
-          sudo env LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" "$onboarding_python" -m pytest -q \
-            tests/test_onboarding_host_ownership.py \
-            tests/test_receiving_process_observation.py::test_owner_cannot_continue_after_coordinator_dies \
-            -k 'root_worker or existing_authority or owner_cannot_continue_after_coordinator_dies' \
-            -W error::ResourceWarning -W error::pytest.PytestUnraisableExceptionWarning
+          sudo env LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" "$onboarding_python" -B tools/ci_guest_owner.py \
+            --uid="$(id -u)" --gid="$(id -g)" --root-worker
       - name: Check out the exact same-being Matrix API candidate
         if: startsWith(needs.scope.outputs.profile, 'integration') || needs.scope.outputs.profile == 'full'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5

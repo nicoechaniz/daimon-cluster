@@ -176,7 +176,7 @@ def test_actual_source_loader_expands_only_required_profiles_and_injects_own_obs
     from clusterctl.onboarding_source import Source
     from clusterctl.same_being_operator import load_operator
 
-    initial_source, target, _peer_authority = request.getfixturevalue('group_source')
+    initial_source, target, _peer_authority, *_ = request.getfixturevalue('group_source')
     root, bundle, PASSWORD = initial_source.root, target.document_bundle(), bytes(target._reader())
     group_paths = sorted((initial_source.outputs / 'tribe').rglob('*.json'))
     group_before = {p: p.read_bytes() for p in group_paths}

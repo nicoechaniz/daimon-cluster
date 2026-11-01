@@ -30,8 +30,17 @@ MAX_FRAME = 4096
 READY_TIMEOUT_S = STARTUP_TIMEOUT_S
 
 
-def serve(target, profile: dict, *, receive_only=False, visibility_installation=None, messaging_application=None, ready_descriptor=None):
+def serve(target, profile: dict, *, receive_only=False, visibility_installation=None, messaging_application=None,
+          ready_descriptor=None, expected_initial_context=None):
     """Run the admitted parent as a service, retaining its ephemeral session."""
+    if expected_initial_context is not None:
+        from .onboarding import digest
+        from .onboarding_service import initial_context
+        expected_initial_context = initial_context(expected_initial_context)
+        if digest(profile) != expected_initial_context['profile_sha256']:
+            raise OnboardingError('receiving_initial_context_changed')
+        if expected_initial_context['not_after_ms'] <= time.time_ns() // 1_000_000:
+            raise OnboardingError('receiving_preservation_authorization_expired')
     holder = ReceivingHolder(target)
     client = holder.configured_client(profile)
     # Persisted authority enrollment survives service/profile expiry. Probe its
@@ -45,7 +54,7 @@ def serve(target, profile: dict, *, receive_only=False, visibility_installation=
     signal.signal(signal.SIGINT,request_stop)
     try:
         owned.start(receive_only=receive_only,visibility_installation=visibility_installation,
-                    messaging_application=messaging_application)
+                    messaging_application=messaging_application, expected_initial_context=expected_initial_context)
         if ready_descriptor is not None:
             os.write(ready_descriptor,b'READY\n')
             os.close(ready_descriptor)
@@ -138,7 +147,8 @@ class AdmittedDaemon:
                     self.supervisor.force_stop("body-observer-unavailable")
                 return
 
-    def start(self, *, receive_only=False, visibility_installation=None, messaging_application=None):
+    def start(self, *, receive_only=False, visibility_installation=None, messaging_application=None,
+              expected_initial_context=None):
         startup_deadline_ns = time.monotonic_ns() + READY_TIMEOUT_S * 1_000_000_000
         if receive_only == (visibility_installation is not None):
             raise OnboardingError("onboarding_visibility_selection_required")
@@ -154,7 +164,8 @@ class AdmittedDaemon:
                     "json.loads(sys.argv[4]),int(sys.argv[5]),int(sys.argv[6]),int(sys.argv[7]),"
                     "sys.argv[8]=='true',Path(sys.argv[9]) if sys.argv[9] else None,"
                     "Path(sys.argv[10]) if sys.argv[10] else None,int(sys.argv[11]),sys.argv[12],"
-                    "startup_deadline_ns=int(sys.argv[13]),diagnostic_fd=int(sys.argv[14])))")
+                    "json.loads(sys.argv[13]) if sys.argv[13] else None,"
+                    "startup_deadline_ns=int(sys.argv[14]),diagnostic_fd=int(sys.argv[15])))")
         def spawn():
             environment = {'PATH':os.defpath, 'LANG':'C.UTF-8', 'HOME':str(self.target.home),
                 'LD_LIBRARY_PATH':str(Path(sys.base_prefix)/'lib')}
@@ -164,7 +175,8 @@ class AdmittedDaemon:
                 json.dumps(self.target.genesis), str(child.fileno()), str(ready_write), str(os.getpid()),
                 'true' if receive_only else 'false', str(visibility_installation) if visibility_installation else '',
                 str(messaging_application) if messaging_application else '', str(self.target.code_uid),
-                self.target.code_digest, str(startup_deadline_ns)]
+                self.target.code_digest, json.dumps(expected_initial_context) if expected_initial_context is not None else '',
+                str(startup_deadline_ns)]
             from . import onboarding_code_successor, onboarding_sdk
             parameters = onboarding_code_successor.sdk_parameters(self.target.code, uid=self.target.code_uid)
             if parameters:
@@ -186,8 +198,8 @@ import json
 raise SystemExit(child_entry(Path(sys.argv[1]), json.loads(sys.argv[2]), json.loads(sys.argv[3]),
     int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]), sys.argv[7]=='true',
     Path(sys.argv[8]) if sys.argv[8] else None, Path(sys.argv[9]) if sys.argv[9] else None,
-    int(sys.argv[10]), sys.argv[11], startup_deadline_ns=int(sys.argv[12]),
-    diagnostic_fd=int(sys.argv[13])))
+    int(sys.argv[10]), sys.argv[11], json.loads(sys.argv[12]) if sys.argv[12] else None,
+    startup_deadline_ns=int(sys.argv[13]), diagnostic_fd=int(sys.argv[14])))
 '''
                 command = [str(venv / 'bin/python'), '-B', '-I', '-S', '-c', child_launcher,
                            str(venv), str(imports), str(self.target.code), *arguments]
@@ -265,7 +277,7 @@ raise SystemExit(child_entry(Path(sys.argv[1]), json.loads(sys.argv[2]), json.lo
 
 def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
                receive_only, visibility_installation, messaging_application=None, code_uid=0,
-               code_digest=None, *, startup_diagnostics=False, diagnostic_fd=None,
+               code_digest=None, expected_initial_context=None, *, startup_diagnostics=False, diagnostic_fd=None,
                startup_deadline_ns=None):
     # The parent checks its own tree, but only this child can attest its boot.
     # Do this before importing Matrix or opening Body custody.
@@ -311,6 +323,17 @@ def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
     monitor.start()
     lock = daemon.acquire_lock(target.package/'runtime')
     try:
+        if expected_initial_context is not None:
+            from .onboarding import digest
+            from .onboarding_service import initial_context
+            from .onboarding_receiving_update import _freeze_initial_guest_owner
+            expected_initial_context = initial_context(expected_initial_context)
+            current = _freeze_initial_guest_owner(target,
+                deadline_ns=time.monotonic_ns() + int(READY_TIMEOUT_S * 1_000_000_000), initial_service=True)
+            if digest({key: value for key, value in current.items() if key != 'observer_startup'}) != expected_initial_context['owner_sha256']:
+                raise OnboardingError('receiving_initial_context_changed')
+            if expected_initial_context['not_after_ms'] <= time.time_ns() // 1_000_000:
+                raise OnboardingError('receiving_preservation_authorization_expired')
         if receive_only == (visibility_installation is not None):
             raise OnboardingError('onboarding_visibility_selection_required')
         def clock():
@@ -329,6 +352,8 @@ def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
             target.document_bundle())
         if authorities:
             options['relationship_authorities'] = authorities
+        if expected_initial_context is not None and expected_initial_context['not_after_ms'] <= time.time_ns() // 1_000_000:
+            raise OnboardingError('receiving_preservation_authorization_expired')
         hosted = runtime.load_runtime(target.package/'runtime', 'runtime.json', target._reader,
             clock=clock, body_reader=body_reader,
             **({} if startup is None else {'qualified_startup': startup}), **options)

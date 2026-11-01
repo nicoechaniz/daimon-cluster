@@ -61,6 +61,321 @@ def files(root):
             if path.is_file() and path.name != 'lock'}
 
 
+def initial_request(target, request):
+    frozen = receiving_update.freeze_guest_bootstrap(target, deadline_ns=deadline(), initial=True)
+    return {**request, **{key: frozen[key] for key in (
+        'plan_digest', 'genesis_digest', 'code_digest', 'runtime_sha256', 'group_sha256', 'predecessor')},
+        'schema': 'cluster-guest-owner-initial/v1', 'mode': frozen['mode'],
+        'preservation': frozen['preservation']}
+
+
+@pytest.mark.parametrize('action', ['group_relationship', 'group_publication'])
+def test_group_owner_routes_take_target_lock_before_native_writer(tmp_path, monkeypatch, action):
+    from contextlib import contextmanager
+    from clusterctl.onboarding_target import Target
+    target = object.__new__(Target)
+    target.root, target.package = tmp_path, tmp_path / 'package'
+    @contextmanager
+    def writer():
+        # A separate descriptor must observe the real root lock as held when
+        # either supported group route reaches the native-writer boundary.
+        with pytest.raises(being_seed.SeedError, match='seed_operation_in_progress'):
+            with being_seed._locked(target.root):
+                pass
+        raise OnboardingError('synthetic_native_entry')
+        yield
+    monkeypatch.setattr(target, '_runtime_writer', writer)
+    value = dict(operation_id=str(uuid.uuid4()), step='synthetic', params={})
+    if action == 'group_relationship':
+        value['method'] = 'tribe.invite'
+    else:
+        value.update(action='selection', params={'expected_selection_sha256': None})
+    with pytest.raises(OnboardingError, match='synthetic_native_entry'):
+        getattr(target, action)(value, authority_closure={})
+
+
+def test_initial_controller_publication_uses_native_writer_without_fake_predecessor(fixture, monkeypatch):
+    from daimon_matrix import operator_runtime_upgrade as upgrade
+    target, request, group, _ = fixture
+    def no_predecessor(*_args, **_kwargs):
+        raise AssertionError('An initial body must not invent a running/exited predecessor')
+    monkeypatch.setattr(target, 'running', no_predecessor)
+    monkeypatch.setattr('clusterctl.owner_process.observe_process_exit', no_predecessor)
+    request = initial_request(target, request)
+    assert request['predecessor'] is None and request['group_sha256'] == digest({'group': None})
+    owner = GuestOwnerBootstrap(target, request)
+    original = target.observe()
+    history = files(target.credential)
+    key = (owner.runtime / 'client.key').read_bytes()
+    counter = target.document_bundle()['keystore']['counter']
+    ready = owner.execute('stage', deadline_ns=deadline())
+    assert owner.execute('stage', deadline_ns=deadline()) == ready
+    actual, calls = upgrade.publish, []
+    def lost(**kwargs):
+        result = actual(**kwargs)
+        calls.append(result)
+        if len(calls) == 1:
+            raise OSError('synthetic lost initial publication reply')
+        return result
+    monkeypatch.setattr(upgrade, 'publish', lost)
+    with pytest.raises(OSError, match='lost initial publication'):
+        owner.execute('publish', deadline_ns=deadline(), ready_sha256=ready['ready_sha256'])
+    ciphertext = (owner.runtime / 'custody.json').read_bytes()
+    result = GuestOwnerBootstrap(target, request).execute('publish', deadline_ns=deadline(),
+        ready_sha256=ready['ready_sha256'])
+    observed = target.observe()
+    assert result['counter_after'] == counter + 1
+    assert observed['receiving_controller']['runtime_sha256'] == result['runtime_sha256']
+    assert observed['receipt'] == original['receipt'] and observed.get('group') is None
+    assert (owner.runtime / 'custody.json').read_bytes() == ciphertext
+    assert (owner.runtime / 'client.key').read_bytes() == key and files(target.credential) == history
+    assert not any(name.endswith('_exited') for name in owner._observations())
+    assert result['receiving_readiness'] == 'unobserved'
+    with pytest.raises(OnboardingError, match='initial_required'):
+        receiving_update.freeze_guest_bootstrap(target, deadline_ns=deadline(), initial_service=True)
+    # Native controller/custody are genuine; the selected group/publication is
+    # an explicit seam here, qualified independently by the group selector tests.
+    monkeypatch.setattr('clusterctl.onboarding_peer.observed_group',
+        lambda *_args, **_kwargs: copy.deepcopy(group['selected']))
+    frozen = receiving_update.freeze_guest_bootstrap(target, deadline_ns=deadline(), initial_service=True)
+    assert frozen['predecessor'] is None and frozen['group'] == group
+    assert frozen['group_sha256'] == digest(group) and frozen['runtime_sha256'] == result['runtime_sha256']
+    assert frozen['mode'] == 'preserve' and frozen['preservation']['active'] is True
+    assert (owner.runtime / 'custody.json').read_bytes() == ciphertext
+    with target._runtime_writer():
+        with pytest.raises(BlockingIOError):
+            receiving_update.freeze_guest_bootstrap(target, deadline_ns=deadline(), initial_service=True)
+    with pytest.raises(OnboardingError, match='invalid_receiving_bootstrap_request'):
+        receiving_update.freeze_guest_bootstrap(target, deadline_ns=deadline(), initial=True, initial_service=True)
+
+
+def test_schema_phase_uses_post_controller_context_and_does_not_republish_it(fixture):
+    from daimon_matrix import operator_communication_migration as migration
+    target, request, _group, _ = fixture
+    initial = initial_request(target, request)
+    identifier = str(uuid.uuid4())
+    preview_request = dict(operation_id=identifier, step='context', action='context-preview', params={})
+    before = target.group_publication(preview_request, authority_closure={})
+    initial['group_context'] = dict(operation_id=identifier, owner_name=target.plan['name'], authority_closure={},
+        expected_context_sha256=before['owner_context_sha256'])
+    owner = GuestOwnerBootstrap(target, initial)
+    ready = owner.execute('stage', deadline_ns=deadline())
+    published = owner.execute('publish', deadline_ns=deadline(), ready_sha256=ready['ready_sha256'])
+    after = target.group_publication(preview_request, authority_closure={})
+    transition = published['owner_context_transition']
+    assert transition['before'] == before and transition['after'] == after
+    assert transition['controller_request_sha256'] == digest(initial)
+    assert transition['controller_result_sha256'] == digest({k:v for k,v in published.items() if k != 'owner_context_transition'})
+    assert before['owner_context_sha256'] != after['owner_context_sha256']
+    request = dict(operation_id=identifier, step='communication-prepare', action='communication-prepare',
+        params=dict(expected_plan_sha256=after['communication_plan']['plan_sha256'],
+            expires_at_ms=initial['expires_at_ms']))
+    options = dict(authority_closure={}, expected_context_sha256=after['owner_context_sha256'])
+    with pytest.raises(OnboardingError, match='owner_context_conflict'):
+        target.group_publication(request, **{**options, 'expected_context_sha256':before['owner_context_sha256']})
+    publication = (owner.records/'capability_published.json').read_bytes()
+    native = {name:(owner.runtime/name).read_bytes() for name in ('runtime.json', 'custody.json')}
+    ledger = owner.runtime/target.document_bundle()['ledger']
+    identity = (ledger.stat().st_dev, ledger.stat().st_ino)
+    result = target.group_publication(request, **options)
+    assert result['migration']['target_version'] == migration.plan(ledger)['source_version'] == 4
+    assert target.group_publication(request, **options) == result
+    assert (ledger.stat().st_dev, ledger.stat().st_ino) == identity
+    assert (owner.records/'capability_published.json').read_bytes() == publication
+    assert all((owner.runtime/name).read_bytes() == raw for name,raw in native.items())
+
+
+@pytest.mark.parametrize('boundary', ['before-stage', 'after-exchange', 'after-context'])
+def test_initial_context_transition_recovers_original_before_after_lost_replies(fixture, monkeypatch, boundary):
+    from daimon_matrix import operator_runtime_upgrade as upgrade
+    target, request, _, _ = fixture
+    request = initial_request(target, request)
+    social = str(uuid.uuid4())
+    preview = target.group_publication(dict(operation_id=social, step='context', action='context-preview', params={}),
+        authority_closure={})
+    request['group_context'] = dict(operation_id=social, owner_name=target.plan['name'], authority_closure={},
+        expected_context_sha256=preview['owner_context_sha256'])
+    owner = GuestOwnerBootstrap(target, request)
+    record, publish = owner._record, upgrade.publish
+    def lost_record(name, value):
+        result = record(name, value)
+        if (boundary == 'before-stage' and name == 'group_context_before'
+                or boundary == 'after-context' and name == 'group_context_transition'):
+            raise OSError('synthetic lost context boundary')
+        return result
+    def lost_publish(**kwargs):
+        publish(**kwargs)
+        raise OSError('synthetic lost context boundary')
+    if boundary == 'before-stage':
+        with monkeypatch.context() as fault:
+            fault.setattr(owner, '_record', lost_record)
+            with pytest.raises(OSError, match='context boundary'):
+                owner.execute('stage', deadline_ns=deadline())
+        assert not owner.transaction.exists()
+    ready = owner.execute('stage', deadline_ns=deadline())
+    before = (owner.records/'group_context_before.json').read_bytes()
+    if boundary != 'before-stage':
+        with monkeypatch.context() as fault:
+            fault.setattr(upgrade, 'publish', lost_publish if boundary == 'after-exchange' else publish)
+            fault.setattr(owner, '_record', lost_record)
+            with pytest.raises(OSError, match='context boundary'):
+                owner.execute('publish', deadline_ns=deadline(), ready_sha256=ready['ready_sha256'])
+    result = GuestOwnerBootstrap(target, request).execute('publish', deadline_ns=deadline(),
+        ready_sha256=ready['ready_sha256'])
+    assert (owner.records/'group_context_before.json').read_bytes() == before
+    assert result['owner_context_transition']['before'] == preview
+    assert result['owner_context_transition']['after']['runtime_bundle_sha256'] == result['runtime_sha256']
+    assert result['owner_context_transition']['after']['owner_context_sha256'] != preview['owner_context_sha256']
+    ciphertext = (owner.runtime/'custody.json').read_bytes()
+    assert GuestOwnerBootstrap(target, request).execute('publish', deadline_ns=deadline(),
+        ready_sha256=ready['ready_sha256']) == result
+    assert (owner.runtime/'custody.json').read_bytes() == ciphertext
+
+
+def test_cached_initial_context_refuses_identical_ledger_replacement_before_stage(fixture, monkeypatch):
+    target, request, _, _ = fixture
+    request = initial_request(target, request)
+    social = str(uuid.uuid4())
+    preview = target.group_publication(dict(operation_id=social, step='context', action='context-preview', params={}),
+        authority_closure={})
+    request['group_context'] = dict(operation_id=social, owner_name=target.plan['name'], authority_closure={},
+        expected_context_sha256=preview['owner_context_sha256'])
+    owner = GuestOwnerBootstrap(target, request)
+    record = owner._record
+    def lost_record(name, value):
+        result = record(name, value)
+        if name == 'group_context_before':
+            raise OSError('synthetic lost original context reply')
+        return result
+    with monkeypatch.context() as fault:
+        fault.setattr(owner, '_record', lost_record)
+        with pytest.raises(OSError, match='lost original context'):
+            owner.execute('stage', deadline_ns=deadline())
+    before = (owner.records/'group_context_before.json').read_bytes()
+    native = {name:(owner.runtime/name).read_bytes() for name in ('runtime.json', 'custody.json')}
+    ledger = owner.runtime/target.document_bundle()['ledger']
+    original = owner.records/'original-ledger.sqlite'
+    with target._runtime_writer():
+        ledger.rename(original)
+        ledger.write_bytes(original.read_bytes())
+        ledger.chmod(0o600)
+    assert ledger.stat().st_ino != original.stat().st_ino
+    assert ledger.read_bytes() == original.read_bytes()
+    with pytest.raises(OnboardingError, match='context_changed'):
+        GuestOwnerBootstrap(target, request).execute('stage', deadline_ns=deadline())
+    assert not owner.transaction.exists()
+    assert (owner.records/'group_context_before.json').read_bytes() == before
+    assert all((owner.runtime/name).read_bytes() == raw for name,raw in native.items())
+    assert ledger.read_bytes() == original.read_bytes()
+
+
+@pytest.mark.parametrize('mode', ['wrong-pin', 'already-frozen'])
+def test_initial_context_conflict_refuses_before_native_authority_effect(fixture, mode):
+    from clusterctl.onboarding_group_admission import owner_authorities
+    target, request, _, _ = fixture
+    request = initial_request(target, request)
+    social = str(uuid.uuid4())
+    preview = target.group_publication(dict(operation_id=social, step='context', action='context-preview', params={}),
+        authority_closure={})
+    request['group_context'] = dict(operation_id=social, owner_name=target.plan['name'], authority_closure={},
+        expected_context_sha256='0'*64 if mode == 'wrong-pin' else preview['owner_context_sha256'])
+    if mode == 'already-frozen':
+        with target._runtime_writer():
+            owner_authorities(target.package/'runtime', target.root/'tribe', target.root/'group-admission',
+                social, {}, expected_context_sha256=preview['owner_context_sha256'])
+    owner = GuestOwnerBootstrap(target, request)
+    before = {name:(owner.runtime/name).read_bytes() for name in ('runtime.json', 'custody.json')}
+    with pytest.raises(OnboardingError, match='context_changed|context_already_frozen'):
+        owner.execute('stage', deadline_ns=deadline())
+    assert not owner.transaction.exists()
+    assert all((owner.runtime/name).read_bytes() == raw for name,raw in before.items())
+
+
+def test_initial_context_preservation_derives_same_pin_without_new_authority(fixture):
+    target, request, _, _ = fixture
+    first = GuestOwnerBootstrap(target, initial_request(target, request))
+    ready = first.execute('stage', deadline_ns=deadline())
+    first.execute('publish', deadline_ns=deadline(), ready_sha256=ready['ready_sha256'])
+    request = initial_request(target, {**request, 'operation_id':str(uuid.uuid4())})
+    assert request['mode'] == 'preserve'
+    social = str(uuid.uuid4())
+    preview = target.group_publication(dict(operation_id=social, step='context', action='context-preview', params={}),
+        authority_closure={})
+    request['group_context'] = dict(operation_id=social, owner_name=target.plan['name'], authority_closure={},
+        expected_context_sha256=preview['owner_context_sha256'])
+    owner = GuestOwnerBootstrap(target, request)
+    before = {name:(owner.runtime/name).read_bytes() for name in ('runtime.json', 'custody.json')}
+    result = owner.execute('stage', deadline_ns=deadline())
+    assert result['owner_context_transition']['before'] == result['owner_context_transition']['after'] == preview
+    assert owner.execute('stage', deadline_ns=deadline()) == result
+    assert all((owner.runtime/name).read_bytes() == raw for name,raw in before.items())
+
+
+@pytest.mark.parametrize('committed', [False, True])
+def test_expired_initial_publication_allows_only_exact_committed_recovery(fixture, monkeypatch, committed):
+    from daimon_matrix import operator_runtime_upgrade as upgrade
+    target, request, _, _ = fixture
+    request = initial_request(target, request)
+    owner = GuestOwnerBootstrap(target, request)
+    ready = owner.execute('stage', deadline_ns=deadline())
+    counter = target.document_bundle()['keystore']['counter']
+    if committed:
+        actual = upgrade.publish
+        def lost(**kwargs):
+            actual(**kwargs)
+            raise OSError('synthetic lost committed initial publication')
+        with monkeypatch.context() as effect:
+            effect.setattr(upgrade, 'publish', lost)
+            with pytest.raises(OSError, match='lost committed'):
+                owner.execute('publish', deadline_ns=deadline(), ready_sha256=ready['ready_sha256'])
+    ciphertext = (owner.runtime / 'custody.json').read_bytes()
+    original_request = (owner.records / 'request.json').read_bytes()
+    monkeypatch.setattr(time, 'time_ns', lambda: (request['expires_at_ms'] + 1) * 1_000_000)
+    if committed:
+        result = owner.execute('publish', deadline_ns=deadline(), ready_sha256=ready['ready_sha256'])
+        assert result['counter_after'] == counter + 1
+    else:
+        with pytest.raises(upgrade.UpgradeError, match='expired|expiry'):
+            owner.execute('publish', deadline_ns=deadline(), ready_sha256=ready['ready_sha256'])
+    assert (owner.runtime / 'custody.json').read_bytes() == ciphertext
+    assert (owner.records / 'request.json').read_bytes() == original_request
+    assert target.document_bundle()['keystore']['counter'] == counter + int(committed)
+
+
+def test_first_service_freeze_requires_a_prepared_native_controller(fixture, monkeypatch):
+    target, _, group, _ = fixture
+    monkeypatch.setattr('clusterctl.onboarding_peer.observed_group',
+        lambda *_args, **_kwargs: copy.deepcopy(group['selected']))
+    before = files(target.package / 'runtime')
+    with pytest.raises(OnboardingError, match='initial_controller_required'):
+        receiving_update.freeze_guest_bootstrap(target, deadline_ns=deadline(), initial_service=True)
+    assert files(target.package / 'runtime') == before
+
+
+def test_initial_controller_refuses_an_existing_writer_or_group(fixture, monkeypatch):
+    target, request, _, _ = fixture
+    request = initial_request(target, request)
+    owner = GuestOwnerBootstrap(target, request)
+    with target._runtime_writer():
+        with pytest.raises(BlockingIOError):
+            receiving_update.freeze_guest_bootstrap(target, deadline_ns=deadline(), initial=True)
+        with pytest.raises(BlockingIOError):
+            owner.execute('stage', deadline_ns=deadline())
+    assert not owner.transaction.exists()
+    # A verified selection appearing after the frozen absence must not become
+    # an initial bootstrap. Its signature validation is owned by observed_group.
+    monkeypatch.setattr('clusterctl.onboarding_peer.observed_group', lambda *_args, **_kwargs: {'channel_id': 'tribe'})
+    with pytest.raises(OnboardingError, match='initial_required'):
+        receiving_update.freeze_guest_bootstrap(target, deadline_ns=deadline(), initial=True)
+    with pytest.raises(OnboardingError, match='group_changed'):
+        owner.execute('stage', deadline_ns=deadline())
+    assert not owner.transaction.exists()
+    with pytest.raises(OnboardingError, match='request_required'):
+        GuestOwnerBootstrap(target, {**request, 'group_sha256': 'f' * 64})
+    with pytest.raises(OnboardingError, match='request_required'):
+        GuestOwnerBootstrap(target, {**request, 'schema': 'cluster-guest-owner-bootstrap/v1'})
+
+
 def test_native_stage_and_publication_retain_identity_history_and_exact_retry(fixture):
     target, request, group, _ = fixture
     old = target.observe()
@@ -551,6 +866,57 @@ def test_existing_controller_is_preserved_without_native_publication(preserved_f
         owner.execute('publish', deadline_ns=deadline(), ready_sha256='a' * 64)
 
 
+def test_admission_preserves_actual_owner_and_store_identity_across_ledger_writes(preserved_fixture):
+    from clusterctl.onboarding_group_admission import check_snapshot_context
+    from clusterctl.onboarding_peer import loaded
+    from clusterctl.onboarding_receiving_update import preserved_admission_stores
+    from daimon_matrix import operator_runtime_upgrade as upgrade
+    target, request, _, _ = preserved_fixture
+    root = target.package / 'runtime'
+    hosted = loaded(target)
+    stores = {role: json.loads(binding.observation) for role, binding in hosted.service.loaded_stores.items()}
+    before = upgrade.inventory_digest(root)
+    hosted.service.ledger.append_local(kind='experience.observed', subject='synthetic admission preservation',
+        payload={'summary': 'authorized new ledger content'}, signer=hosted.service.signer,
+        sensitivity='shareable', occurred_at_ms=time.time_ns() // 1_000_000)
+    assert upgrade.inventory_digest(root) != before
+    assert preserved_admission_stores(root, target.document_bundle(), request['preservation'], stores) == stores
+    operation = str(uuid.uuid4())
+    journal = target.root / 'snapshot-guard'
+    context_directory = journal / operation / 'owner'
+    context_directory.mkdir(mode=0o700, parents=True)
+    context = dict(identity=dict(runtime_root=str(root), runtime_bundle_sha256=digest(target.document_bundle())))
+    being_seed._write(context_directory / 'context.json', context)
+    snapshot = dict(action='snapshot', operation_id=operation, params=dict(owner_context_sha256=digest(context),
+        expected_stores=stores, expected_preservation=request['preservation']))
+    check_snapshot_context(journal, snapshot)
+    for name in ('custody.json', 'host-clients/receiving-controller/client.json'):
+        path = root / name
+        original = path.read_bytes()
+        path.write_bytes(original + b' ')
+        try:
+            with pytest.raises(OnboardingError, match='preservation_changed'):
+                preserved_admission_stores(root, target.document_bundle(), request['preservation'], stores)
+            with pytest.raises(OnboardingError, match='preservation_changed'):
+                check_snapshot_context(journal, snapshot)
+        finally:
+            path.write_bytes(original)
+    ledger = root / target.document_bundle()['ledger']
+    retained = ledger.with_name('retained-original-ledger')
+    ledger.rename(retained)
+    ledger.write_bytes(retained.read_bytes())
+    ledger.chmod(0o600)
+    try:
+        with pytest.raises(OnboardingError, match='store_binding_changed'):
+            preserved_admission_stores(root, target.document_bundle(), request['preservation'], stores)
+        with pytest.raises(OnboardingError, match='store_binding_changed'):
+            check_snapshot_context(journal, snapshot)
+    finally:
+        ledger.unlink()
+        retained.rename(ledger)
+    assert preserved_admission_stores(root, target.document_bundle(), request['preservation'], stores) == stores
+
+
 def test_lost_preservation_reply_reconciles_exact_durable_record(preserved_fixture, monkeypatch):
     target, request, _, _ = preserved_fixture
     owner = GuestOwnerBootstrap(target, request)
@@ -567,6 +933,99 @@ def test_lost_preservation_reply_reconciles_exact_durable_record(preserved_fixtu
     retained = owner._observations()['owner_preserved']
     actual = GuestOwnerBootstrap(target, request).execute('stage', deadline_ns=deadline())
     assert actual == retained and files(owner.runtime) == before
+
+
+def test_source_admission_child_is_prepared_locally_and_recovers_lost_plan_without_refreeze(
+        preserved_fixture, tmp_path, monkeypatch):
+    from clusterctl.onboarding_group_admission import preview_owner_context
+    from clusterctl.onboarding_source import Source
+    from clusterctl.operation_journal import JournalConflict, OperationJournal
+    from tests.test_source_bootstrap import FakeManager
+    from daimon_matrix.service import LoadedStoreBinding
+    target, owner_request, _group, _exited = preserved_fixture
+    root, bundle = target.package / 'runtime', target.document_bundle()
+    settings = dict(schema='cluster-onboarding-source/v1', runtime_root=str(root),
+        password_file=str(tmp_path/'unused.unlock'), native_visibility=str(tmp_path/'visibility.json'),
+        outputs=str(tmp_path/'source-outputs'), applications=[])
+    config = tmp_path/'source.json'
+    being_seed._write(config, settings)
+    source = Source(settings, code=tmp_path/'approved-code', code_uid=os.geteuid(),
+        code_digest='a'*64, qualified_startup={'explicit': 'SDK-startup seam'})
+    monkeypatch.setattr(source, '_reader', lambda: pytest.fail('preparation opened custody'))
+    unit = tmp_path/'daimon-matrix-admission.service'
+    unit.write_bytes(b'[Service]\nExecStart=/existing/loader\nKillMode=control-group\n')
+    unit.chmod(0o600)
+    manager = FakeManager(unit)
+    stores = {}
+    for role, name, metadata in (
+            ('ledger', bundle['ledger'], {'ledger': 'metadata', 'communication': 'communication_meta'}),
+            ('relationships', bundle['relationships']['store_filename'], {'relationships': 'metadata'})):
+        stores[role] = json.loads(LoadedStoreBinding.capture(root/name, metadata=metadata).observation)
+    predecessor = dict(process=owner_request['predecessor']['process'], server=bundle['local_origin'],
+        runtime_status=dict(being_ref=bundle['manifest']['being_ref'], local_origin=bundle['local_origin'],
+            loaded_runtime={'stores': stores}))
+    frozen = dict(mode='preserve', preservation=owner_request['preservation'], settings_sha256=digest(settings),
+        unit=str(unit), service=manager.inspect(), scope={'explicit': 'native-process seam'}, predecessor=predecessor,
+        bundle_sha256=digest(bundle), visibility_sha256='c'*64)
+    identifier = str(uuid.uuid4())
+    preview = preview_owner_context(root, source.outputs/'tribe', identifier, {})
+    request = dict(schema='cluster-source-admission-preparation/v1', operation_id=identifier,
+        cohort_operation_id='operation:synthetic-parent', cohort_intent_sha256='b'*64, tribe_ref='tribe:fixture',
+        owner=dict(being_ref=bundle['manifest']['being_ref'], embodiment_id=bundle['local_origin']['embodiment_id']),
+        predecessor={key: predecessor[key] for key in ('process', 'server')}, unit=str(unit), home=str(tmp_path),
+        manifest_path=str(tmp_path/'manifest.json'), manifest_uid=os.geteuid(), manifest_digest='d'*64,
+        expires_at_ms=owner_request['expires_at_ms'], authority_closure={},
+        owner_context_sha256=preview['owner_context_sha256'],
+        steps=dict(application='application', visibility='visibility', selection='selection', snapshot='snapshot'))
+    calls = []
+    def freeze(selected, selected_manager, *, deadline_ns):
+        assert selected is source and selected_manager.unit == unit and deadline_ns > time.monotonic_ns()
+        calls.append('freeze')
+        return copy.deepcopy(frozen)
+    def candidate(selected, **options):
+        assert selected is source and options['installed_only'] is True
+        assert 0 < receiving_update.onboarding_sdk.probe_timeout(180) <= 10
+        calls.append('candidate')
+        return dict(transaction=str(options['transaction']), expires_at_ms=options['expires_at_ms'],
+            argv=['/qualified/existing/loader'], admission_link=options['admission_link'], qualification=dict(
+                code=str(source.code), code_digest=source.code_digest, code_uid=source.code_uid, config=str(config),
+                group={'selected': {'tribe_ref': request['tribe_ref']}}))
+    monkeypatch.setattr(receiving_update, 'freeze_source_bootstrap', freeze)
+    monkeypatch.setattr(receiving_update, 'prepare_source_bootstrap', candidate)
+    journal_path = tmp_path/'source-journal'
+    before = files(root)
+    for field, value in (('owner_context_sha256', '0'*64), ('expires_at_ms', 1),
+                         ('predecessor', {**request['predecessor'], 'process': {'pid': 999}})):
+        with pytest.raises(OnboardingError):
+            source.prepare_receiving_admission(journal_path, {**request, field: value},
+                config=config, deadline_ns=deadline())
+        assert OperationJournal.existing(journal_path) is None
+    from clusterctl import onboarding_code_successor
+    actual = onboarding_code_successor.plan_update
+    def lost(*args, **options):
+        actual(*args, **options)
+        raise OSError('synthetic lost durable child plan reply')
+    monkeypatch.setattr(onboarding_code_successor, 'plan_update', lost)
+    with pytest.raises(OSError, match='lost durable child'):
+        source.prepare_receiving_admission(journal_path, request, config=config, deadline_ns=deadline())
+    assert receiving_update.onboarding_sdk.probe_timeout(180) == 180
+    row = OperationJournal.existing(journal_path).latest_for_target('source-admission:'+identifier)
+    assert row['state'] == 'planned' and row['runtime_observation'] is None
+    calls.clear()
+    monkeypatch.setattr(receiving_update, 'freeze_source_bootstrap', lambda *a, **k: pytest.fail('retry refroze Source'))
+    monkeypatch.setattr(time, 'time_ns', lambda: (request['expires_at_ms']+1)*1_000_000)
+    result = source.prepare_receiving_admission(journal_path, request, config=config, deadline_ns=deadline())
+    assert result['operation_id'] == row['operation_id'] and result['receiving_readiness'] == 'unobserved'
+    link = row['intended_transition']['source_bootstrap']['admission_link']
+    assert result['link_sha256'] == digest(link)
+    assert link['cohort_intent_sha256'] == request['cohort_intent_sha256']
+    assert source.prepare_receiving_admission(journal_path, request, config=config, deadline_ns=deadline()) == result
+    with pytest.raises(JournalConflict):
+        source.prepare_receiving_admission(journal_path, {**request, 'manifest_digest': 'f'*64},
+            config=config, deadline_ns=deadline())
+    assert calls == [] and manager.stops == 0 and manager.live
+    assert OperationJournal.existing(journal_path).get(row['operation_id']) == row
+    assert files(root) == before
 
 
 @pytest.mark.parametrize('change', ['custody', 'client', 'bundle', 'expired', 'live'])

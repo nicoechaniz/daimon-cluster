@@ -93,6 +93,60 @@ def configured(tmp_path):
     return config, value, run, HostBackend(config, run=run)
 
 
+@pytest.mark.parametrize('action', ['native-install', 'native-observe', 'probe', 'prepare', 'install'])
+def test_native_harness_commands_do_not_require_bot_connections(tmp_path, action):
+    from clusterctl.onboarding import Observation
+    _, value, _, backend = configured(tmp_path)
+    backend._environment = lambda p: Observation('complete')
+    mounts = {'qualified-code': {'source': '/public/code'}}
+    backend._guest_paths = lambda p: (Path('/guest'), Path('/guest/code'), dict(mounts))
+    backend._telegram_paths = lambda p, base: (base, [], {})
+    observed = []
+    backend._mounted = lambda p, selected: observed.append(selected) or True
+    calls = []
+    def dispatch(p, argv):
+        calls.append(argv)
+        return json.dumps({'plan_digest': digest(p)})
+    backend._dispatch = dispatch
+    # No views or private connection data exists for the native-only phase.
+    if action in {'prepare', 'install'}:
+        with pytest.raises(OnboardingError, match='receiving_code_configuration_required'):
+            backend._telegram_command(value, action)
+        assert calls == []
+        return
+    assert backend._telegram_command(value, action) == {'plan_digest': digest(value)}
+    assert observed == [mounts]
+    assert ('--user' in calls[0]) == (action == 'probe')
+
+
+@pytest.mark.parametrize('action', ['native-install', 'native-observe', 'probe'])
+@pytest.mark.parametrize('explicit_telegram', [False, True])
+def test_native_commands_use_receiving_helper_and_preserve_explicit_telegram(tmp_path, action, explicit_telegram):
+    config, value, _, _ = configured(tmp_path)
+    config = replace(config, runtime_code=Path('/approved/runtime'), runtime_digest='a'*64,
+        telegram_code=Path('/approved/telegram') if explicit_telegram else None,
+        telegram_digest='b'*64 if explicit_telegram else None)
+    backend = HostBackend(config)
+    backend._environment = lambda p: SimpleNamespace(state='complete')
+    base, current, telegram = Path('/guest/base'), Path('/guest/runtime'), Path('/guest/telegram')
+    backend._guest_paths = lambda p:(tmp_path, base, {})
+    backend._telegram_paths = lambda p,b:(telegram, ['--runtime-code',str(telegram)], {'telegram':{}}) if explicit_telegram else (b,[],{})
+    backend._runtime_paths = lambda p,b:(current, ['--runtime-code',str(current)], {'runtime':{}})
+    mounted, dispatched = [], []
+    backend._mounted = lambda p,m:mounted.append(m) or True
+    def dispatch(p, argv):
+        dispatched.append(argv)
+        return json.dumps(dict(plan_digest=digest(p)))
+    backend._dispatch = dispatch
+    backend._telegram_command(value, action)
+    command = dispatched[0]
+    selected = telegram if explicit_telegram else current
+    assert command[command.index('-c')+2] == str(selected)
+    assert command[command.index('--runtime-code')+1] == str(selected)
+    assert command[command.index('--code')+1] == str(base)
+    assert mounted == [{'telegram' if explicit_telegram else 'runtime':{}}]
+
+
 def test_receiving_base_keeps_original_release_without_requiring_participant_archive(tmp_path):
     from tests.test_onboarding_code_successor import fixture as code_fixture
     (tmp_path/'code-fixture').mkdir()
@@ -480,10 +534,18 @@ def test_slow_candidate_mount_inspection_never_starts_owner_command(tmp_path, mo
     assert inspections == [5] and not calls
 
 
-@pytest.mark.parametrize('phase', ['freeze', 'stage', 'publish'])
+@pytest.mark.parametrize('phase', ['freeze', 'stage', 'publish', 'initial-freeze', 'initial-service-freeze'])
 def test_host_forwards_owner_bootstrap_only_as_guest_owner(tmp_path, monkeypatch, phase):
     backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
     options = dict(candidate=candidate, bootstrap_timeout_seconds=5)
+    initial = phase == 'initial-freeze'
+    initial_service = phase == 'initial-service-freeze'
+    if initial:
+        phase = 'freeze'
+        options['bootstrap_initial'] = True
+    if initial_service:
+        phase = 'freeze'
+        options['bootstrap_initial_service'] = True
     if phase != 'freeze':
         options['bootstrap_request'] = {'operation_id': 'synthetic', 'plan_digest': digest(value)}
     if phase == 'publish':
@@ -494,6 +556,9 @@ def test_host_forwards_owner_bootstrap_only_as_guest_owner(tmp_path, monkeypatch
     assert argv[argv.index('--') + 1].endswith('/venv/bin/python')
     assert 0 < bounds['timeout_seconds'] <= 5
     assert '--bootstrap-timeout-seconds' in argv and '--observation-timeout-seconds' not in argv
+    assert '--observation-deadline-ns' in argv
+    assert ('--bootstrap-initial' in argv) is initial
+    assert ('--bootstrap-initial-service' in argv) is initial_service
     if phase != 'freeze':
         assert json.loads(argv[argv.index('--bootstrap-request-json') + 1]) == options['bootstrap_request']
     if phase == 'publish':
@@ -501,14 +566,20 @@ def test_host_forwards_owner_bootstrap_only_as_guest_owner(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize('action', ['bootstrap-inspect', 'bootstrap-validate', 'bootstrap-quiesce',
-                                  'bootstrap-select', 'bootstrap-start'])
-def test_host_root_service_route_never_executes_private_sdk_or_installer(tmp_path, monkeypatch, action):
+                                  'bootstrap-select', 'bootstrap-start', 'bootstrap-steady'])
+@pytest.mark.parametrize('bounded',[False,True])
+def test_host_root_service_route_never_executes_private_sdk_or_installer(tmp_path, monkeypatch, action,bounded):
     backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
     options = dict(candidate=candidate, timeout_seconds=5)
     if action == 'bootstrap-inspect':
         options['owner_observation'] = {'process': {'pid': 123}, 'admission_parent': {'pid': 122}}
     else:
         options['request'] = {'plan_digest': digest(value)}
+    if bounded:
+        import time
+        options['owner_deadline_ns']=time.monotonic_ns()+4_000_000_000
+        if action in {'bootstrap-select','bootstrap-start'}:
+            options['effect_not_after_ms']=time.time_ns()//1_000_000+2000
     backend._guest_service_call(value, action, **options)
     argv, bounds = calls[0]
     assert argv[:6] == ['exec', 'dm-eko', '--user', '0', '--group', '0']
@@ -518,6 +589,11 @@ def test_host_root_service_route_never_executes_private_sdk_or_installer(tmp_pat
     assert not any('site-packages' in item or '/venv/' in item for item in argv)
     assert '--receive-only' not in argv and '--visibility-installation' not in argv
     assert 0 < bounds['timeout_seconds'] <= 5
+    if bounded:
+        assert int(argv[argv.index('--observation-deadline-ns')+1])==options['owner_deadline_ns']
+        if action in {'bootstrap-select','bootstrap-start'}:
+            assert int(argv[argv.index('--effect-not-after-ms')+1])==options['effect_not_after_ms']
+            assert json.loads(argv[argv.index('--bootstrap-request-json')+1])==options['request']
 
 
 @pytest.mark.parametrize('change', [None, 'unmounted', 'changed-code', 'missing-implementation'])
@@ -568,6 +644,21 @@ def test_host_bootstrap_rejects_unqualified_or_incomplete_parameters_before_disp
     assert not run.calls
 
 
+@pytest.mark.parametrize('action', ['observe', 'receiving-bootstrap-stage'])
+@pytest.mark.parametrize('flag', ['bootstrap_initial', 'bootstrap_initial_service'])
+def test_initial_freeze_flag_cannot_change_other_owner_actions(action, flag):
+    backend = object.__new__(HostBackend)
+    with pytest.raises(OnboardingError, match='invalid_receiving_bootstrap_request'):
+        backend._target_call({}, action, **{flag: True})
+
+
+def test_initial_freeze_variants_cannot_be_combined():
+    backend = object.__new__(HostBackend)
+    with pytest.raises(OnboardingError, match='invalid_receiving_bootstrap_request'):
+        backend._target_call({}, 'receiving-bootstrap-freeze', bootstrap_initial=True,
+            bootstrap_initial_service=True)
+
+
 def test_host_forwards_control_paths_without_fabricating_a_native_request(tmp_path, monkeypatch):
     from pathlib import Path
     backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
@@ -607,6 +698,105 @@ def test_receiving_identity_uses_prepared_candidate_and_one_finite_owner_budget(
     assert 0 < options['timeout_seconds'] <= 5
 
 
+@pytest.mark.parametrize('publication', [False, True])
+@pytest.mark.parametrize('guarded', [False, True])
+def test_group_request_uses_prepared_owner_stdin_without_requiring_running_group(tmp_path, monkeypatch, publication, guarded):
+    import uuid
+    backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    packet = dict(command=dict(operation_id=str(uuid.uuid4()), step='accept',
+        method='tribe.membership.accept', params={'payload': {}}), offline=True, authority_closure={})
+    action = 'group-publication' if publication else 'group-relationship'
+    if publication:
+        packet['command'] = dict(operation_id=str(uuid.uuid4()), step='select', action='selection',
+                                 params=dict(expected_selection_sha256=None))
+    if guarded:
+        packet['expected_context_sha256'] = 'a'*64
+    backend._target_call(value, action, candidate=candidate,
+        group_request=packet, observation_timeout_seconds=5)
+    argv, options = calls[0]
+    assert argv[:6] == ['exec', 'dm-eko', '--user', '1000', '--group', '1000']
+    assert argv[argv.index('--') + 1].endswith('/venv/bin/python')
+    assert argv[argv.index('--group-request') + 1] == '-'
+    assert json.loads(options['input_data']) == packet
+    assert packet['command']['operation_id'] not in argv
+    assert 0 < options['timeout_seconds'] <= 5
+    with pytest.raises(OnboardingError, match='writer_required'):
+        backend._target_call(value, action, candidate=candidate, group_request=packet)
+    with pytest.raises(OnboardingError, match='writer_required'):
+        backend._target_call(value, 'group-relationship' if publication else 'group-publication',
+            candidate=candidate, group_request=packet, observation_timeout_seconds=5)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('lost_scope', [False, True])
+def test_remaining_publication_uses_protected_input_separately_from_original_stdin(tmp_path, monkeypatch, lost_scope):
+    import os
+    import time
+    import uuid
+    from clusterctl import onboarding_mounts
+    backend, plan, run, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    views = tmp_path/'views'
+    views.mkdir(mode=0o700)
+    backend.config = replace(backend.config, views=views)
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_UID', os.geteuid())
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_GID', os.getegid())
+    mount = backend._matrix_mount(plan)
+    run.instances[0]['expanded_devices']['onboarding-matrix-public'] = mount
+    packet = dict(command=dict(operation_id=str(uuid.uuid4()), step='select', action='selection',
+        params={'expected_selection_sha256': None}), offline=True, authority_closure={},
+        expected_context_sha256='a'*64, effect_not_after_ms=1)
+    context = dict(schema='cluster-admission-execution-context/v1', effect='publication',
+        owner_name=plan['name'], owner_context_sha256='a'*64, command_sha256=digest(packet['command']),
+        helper_code_digest=candidate[1], helper_code_uid=0)
+    reads = []
+    def reader():
+        reads.append(True)
+        if lost_scope and len(reads) == 2:
+            raise OnboardingError('onboarding_group_remaining_execution_scope_required')
+        return context
+    deadline = time.monotonic_ns()+4_000_000_000
+    with pytest.raises(OnboardingError,match='remaining_owner_input_required'):
+        backend._target_call(plan, 'group-publication', candidate=candidate, group_request=packet,
+            observation_timeout_seconds=5, remaining_execution=reader)
+    assert not reads and not calls
+    if lost_scope:
+        with pytest.raises(OnboardingError, match='execution_scope_required'):
+            backend._target_call(plan, 'group-publication', candidate=candidate, group_request=packet,
+                observation_timeout_seconds=5, remaining_execution=reader, owner_deadline_ns=deadline)
+        assert calls == []
+    else:
+        backend._target_call(plan, 'group-publication', candidate=candidate, group_request=packet,
+            observation_timeout_seconds=5, remaining_execution=reader, owner_deadline_ns=deadline)
+        argv, options = calls[0]
+        assert json.loads(options['input_data']) == packet
+        pin = digest(context)
+        assert argv[argv.index('--remaining-execution')+1] == '/home/agent/.onboarding-matrix/execution-'+pin+'.json'
+        assert argv[argv.index('--remaining-execution-sha256')+1] == pin
+        assert int(argv[argv.index('--observation-deadline-ns')+1]) == deadline
+        assert being_seed._read(Path(mount['source'])/('execution-'+pin+'.json')) == context
+
+
+def test_finite_group_owner_reuses_qualified_command_and_rechecks_host_grant(tmp_path, monkeypatch):
+    import uuid
+    backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    packet = dict(command=dict(operation_id=str(uuid.uuid4()), step='observe',
+        method='relationship.snapshot', params={'tribe_ref': 'tribe', 'at_ms': None}),
+        offline=True, authority_closure={})
+    import time
+    deadline = time.monotonic_ns()+4_000_000_000
+    owner = backend._target_relationship_session(value, packet, candidate=candidate,
+        timeout_seconds=5, deadline_ns=deadline)
+    assert calls == []  # Preparing a bounded conversation starts no process.
+    assert owner.argv[:7] == ['incus', 'exec', 'dm-eko', '--user', '1000', '--group', '1000']
+    assert owner.argv[owner.argv.index('--observation-deadline-ns')+1] == str(owner.deadline_ns)
+    assert owner.deadline_ns == deadline
+    assert 'group-session' in owner.argv and '--group-request' in owner.argv
+    owner.validate()
+    monkeypatch.setattr(backend, 'authorize', lambda *_: False)
+    with pytest.raises(OnboardingError, match='host_authorization_required'):
+        owner.validate()
+
+
 def test_incus_stdin_is_bounded_and_never_routed_through_a_shell(monkeypatch):
     from clusterctl import onboarding_host
     calls = []
@@ -638,3 +828,175 @@ def test_owner_control_transport_retains_only_closed_public_diagnostics(monkeypa
                           'clusterctl.onboarding_owner_control'], timeout_seconds=1)
     with pytest.raises(OnboardingError, match='^onboarding_host_operation_failed$'):
         HostBackend._run(['list', '--format=json'], timeout_seconds=1)
+
+
+@pytest.mark.parametrize('action', ['observe', 'sdk-observe', 'sdk-prepare'])
+def test_host_prepared_target_observations_keep_supported_finite_cli_budget(tmp_path, monkeypatch, action):
+    backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    result = backend._target_call(value, action, candidate=candidate, observation_timeout_seconds=2)
+    assert result == {'observed': True}
+    command, options = calls[-1]
+    assert '--observation-timeout-seconds' in command
+    assert 0 < options['timeout_seconds'] <= 2
+
+
+def test_group_target_prepares_approved_candidate_only_after_original_v8(tmp_path, monkeypatch):
+    import time
+    config, value, run, backend = configured(tmp_path)
+    backend.config = replace(config, code=tmp_path/'base', views=tmp_path/'views')
+    backend._guest_paths = lambda p: (tmp_path, Path('/guest/base'), {})
+    candidate = (tmp_path/'candidate', 'a'*64)
+    mount = dict(type='disk', source=str(candidate[0]), path='/guest/candidate', readonly='true')
+    backend._runtime_paths = lambda p, base, **kw: (Path('/guest/code'), [],
+        {'approved-candidate': mount} if kw else {})
+    backend._matrix_mount = lambda p: {}
+    attached, ready, calls = {'value': False}, {'v8': False, 'sdk': False}, []
+    def mounted(p, mounts, **kw):
+        return attached['value'] if 'approved-candidate' in mounts else True
+    backend._mounted = mounted
+    backend._sdk_successor = lambda p: False
+    def target(p, action, **options):
+        calls.append(action)
+        if action == 'observe':
+            return {'phase': 'v8' if ready['v8'] else 'v8-published'}
+        if action == 'sdk-observe':
+            return {'ready': ready['sdk']}
+        assert action == 'sdk-prepare' and attached['value']
+        ready['sdk'] = True
+        return {'ready': True}
+    backend._target_call = target
+    def dispatch(p, command, **options):
+        assert ready['v8'] and command[:3] == ['config', 'device', 'add']
+        attached['value'] = True
+        calls.append('mount')
+        return ''
+    backend._dispatch = dispatch
+    deadline = time.monotonic_ns()+2_000_000_000
+    assert not backend.prepare_group_target(value, candidate, deadline_ns=deadline)
+    assert calls == ['observe']
+    ready['v8'] = True
+    assert backend.prepare_group_target(value, candidate, deadline_ns=deadline)
+    assert calls[-4:] == ['observe', 'mount', 'sdk-observe', 'sdk-prepare']
+    assert backend.prepare_group_target(value, candidate, deadline_ns=deadline)
+    assert calls[-2:] == ['observe', 'sdk-observe']
+
+
+@pytest.mark.parametrize('expired', [False, True])
+@pytest.mark.parametrize('preempted', [False, True])
+def test_host_native_budget_and_frozen_expiry_reach_guest_before_effect(tmp_path, monkeypatch, expired, preempted):
+    import time
+    from clusterctl import onboarding_host
+    _, value, _, backend = configured(tmp_path)
+    clock = [time.monotonic_ns()]
+    initial, wall = clock[0], time.time_ns()
+    def wall_time():
+        if preempted:
+            clock[0] += 1_000_000_000
+        return wall + clock[0]-initial
+    monkeypatch.setattr(onboarding_host, 'time', SimpleNamespace(
+        monotonic_ns=lambda: clock[0], time_ns=wall_time))
+    def environment(p, **options):
+        if expired:
+            clock[0] += 3_000_000_000
+        return SimpleNamespace(state='complete')
+    backend._environment = environment
+    backend._guest_paths = lambda p: (tmp_path, Path('/guest/code'), {})
+    backend._telegram_paths = lambda p, base: (base, [], {})
+    backend._mounted = lambda *a, **k: True
+    calls = []
+    def dispatch(p, command, **options):
+        calls.append(command)
+        return json.dumps({'plan_digest': digest(p)})
+    backend._dispatch = dispatch
+    deadline, expiry = clock[0]+2_000_000_000, wall//1_000_000+10000
+    def invoke():
+        backend._telegram_command(value, 'native-install', deadline_ns=deadline, authorization_expires_at_ms=expiry)
+    if expired:
+        with pytest.raises(OnboardingError, match='deadline_expired'):
+            invoke()
+        assert calls == []
+    else:
+        invoke()
+        command = calls[-1]
+        assert float(command[command.index('--operation-timeout-seconds')+1]) == (1 if preempted else 2)
+        assert int(command[command.index('--authorization-expires-at-ms')+1]) == wall//1_000_000+2000
+
+
+@pytest.mark.parametrize('action', ['admission-prepare', 'admission-check', 'admission-enroll'])
+def test_candidate_physical_admission_retains_budget_and_original_expiry(tmp_path, monkeypatch, action):
+    import time
+    backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    expiry = time.time_ns() // 1_000_000 + 10000
+    options = {} if action == 'admission-prepare' else {'profile': {'synthetic': 'public-only'}}
+    assert backend._target_call(value, action, candidate=candidate, observation_timeout_seconds=2,
+        authorization_expires_at_ms=expiry, **options) == {'observed': True}
+    command, observed = calls[-1]
+    assert command[command.index('--authorization-expires-at-ms')+1] == str(expiry)
+    assert '--observation-timeout-seconds' in command and 0 < observed['timeout_seconds'] <= 2
+    with pytest.raises(OnboardingError, match='deadline_required'):
+        backend._target_call(value, action, candidate=candidate, observation_timeout_seconds=2, **options)
+    with pytest.raises(OnboardingError, match='deadline_expired'):
+        backend._target_call(value, action, candidate=candidate, observation_timeout_seconds=2,
+            authorization_expires_at_ms=1, **options)
+    assert len(calls) == 1, 'expired/missing authorization must never dispatch'
+
+
+def test_group_target_resumes_completed_native_checks_after_lost_progress_reply(tmp_path):
+    import time
+    config, value, _, backend = configured(tmp_path)
+    backend.config = replace(config, code=tmp_path/'base', views=tmp_path/'views')
+    backend._guest_paths = lambda p: (tmp_path, Path('/guest/base'), {})
+    backend._runtime_paths = lambda *a, **k: (Path('/guest/code'), [], {})
+    backend._matrix_mount = lambda p: {}
+    backend._mounted = lambda *a, **k: True
+    backend._sdk_successor = lambda p: True
+    calls, completed = [], set()
+    def target(p, action, **options):
+        calls.append((action, 'candidate' in options))
+        return {'phase': 'v8'} if action == 'observe' else {'ready': True}
+    backend._target_call = target
+    def record(step):
+        completed.add(step)
+        if step == 'sdk':
+            raise OSError('lost reply after durable SDK progress')
+    candidate = (tmp_path/'candidate', 'a'*64)
+    deadline = time.monotonic_ns() + 60_000_000_000
+    with pytest.raises(OSError, match='durable SDK progress'):
+        backend.prepare_group_target(value, candidate, deadline_ns=deadline, record_step=record)
+    assert completed == {'sdk'}
+    assert backend.prepare_group_target(value, candidate, deadline_ns=deadline,
+        completed_steps=frozenset(completed), record_step=completed.add)
+    assert calls == [('sdk-observe', False), ('observe', False), ('sdk-observe', True)]
+    assert completed == {'sdk', 'v8', 'candidate-sdk'}
+    assert backend.prepare_group_target(value, candidate, deadline_ns=deadline,
+        completed_steps=frozenset(completed), record_step=completed.add)
+    assert len(calls) == 3
+
+
+def test_bootstrap_host_preserves_shorter_absolute_owner_horizon(tmp_path, monkeypatch):
+    from clusterctl import onboarding_host
+    backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(onboarding_host.time, 'monotonic_ns', lambda:1_000_000_000)
+    backend._target_call(value, 'receiving-bootstrap-freeze', candidate=candidate,
+        bootstrap_timeout_seconds=5, owner_deadline_ns=3_000_000_000)
+    argv, bounds = calls[0]
+    assert int(argv[argv.index('--observation-deadline-ns')+1]) == 3_000_000_000
+    assert float(argv[argv.index('--bootstrap-timeout-seconds')+1]) == 2
+    assert bounds['timeout_seconds'] <= 2
+
+
+
+@pytest.mark.parametrize('payload,expected', [
+    ('{"error":"native_tooling_catalog_mismatch"}', 'native_tooling_catalog_mismatch'),
+    ('{"error":"native_matrix_tool_startup_refused"}', 'native_matrix_tool_startup_refused'),
+    ('{"error":"/private/credential"}', 'onboarding_host_operation_failed'),
+    ('{"error":"native_tooling_catalog_mismatch","extra":"private"}', 'onboarding_host_operation_failed'),
+    ('{"error":"receiving_control_process_changed"}', 'onboarding_host_operation_failed'),
+])
+def test_owner_client_transport_preserves_only_its_closed_public_diagnostic(monkeypatch, payload, expected):
+    monkeypatch.setattr('clusterctl.onboarding_host.subprocess.run', lambda *args, **kwargs:
+        SimpleNamespace(returncode=1, stdout='', stderr=payload))
+    with pytest.raises(OnboardingError, match='^'+expected+'$'):
+        HostBackend._run(['exec','dm-fixture','--','/approved/python','clusterctl.onboarding_owner_client'],timeout_seconds=1)
+    with pytest.raises(OnboardingError, match='^onboarding_host_operation_failed$'):
+        HostBackend._run(['exec','dm-fixture','--','/unrelated/tool'],timeout_seconds=1)

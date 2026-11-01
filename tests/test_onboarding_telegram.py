@@ -292,3 +292,172 @@ def test_release_preserves_predecessors_and_rejects_mixed_pins(tmp_path, monkeyp
     manifest.chmod(0o644)
     with pytest.raises(OnboardingError, match="qualified_telegram_binary_required"):
         telegram.artifact_directory(tmp_path, uid=os.getuid())
+
+
+@pytest.mark.parametrize('state', ['absent', 'inactive', 'active', 'pending', 'foreign', 'drop-in', 'unlinked-active'])
+def test_native_manager_observation_is_read_only_and_preserves_foreign_units(tmp_path, monkeypatch, state):
+    from types import SimpleNamespace
+    from clusterctl import onboarding_telegram as telegram
+    unit = tmp_path/telegram.NATIVE_UNIT
+    home, codex, code = Path('/home/agent'), Path('/usr/bin/codex'), Path('/opt/qualified')
+    if state not in {'absent', 'unlinked-active'}:
+        unit.write_bytes(b'foreign' if state == 'foreign' else telegram.native_service(home, codex, code))
+        unit.chmod(0o600)
+    regular = telegram.onboarding_release.regular
+    monkeypatch.setattr(telegram.onboarding_release, 'regular', lambda path, **kw: regular(path, uid=os.geteuid()))
+    fields = dict(LoadState='loaded', FragmentPath=str(unit), DropInPaths='',
+        MainPID='41' if state in {'active', 'unlinked-active'} else '0',
+        ActiveState='active' if state in {'active', 'unlinked-active'} else 'activating' if state == 'pending' else 'inactive')
+    if state == 'absent':
+        fields.update(LoadState='not-found', FragmentPath='')
+    if state == 'drop-in':
+        fields['DropInPaths'] = '/foreign/override.conf'
+    calls = []
+    def run(argv, **kwargs):
+        assert argv[:2] == ['systemctl', 'show']
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout='\n'.join(key+'='+value for key, value in fields.items()))
+    if state in {'foreign', 'drop-in', 'unlinked-active'}:
+        with pytest.raises(OnboardingError):
+            telegram.native_observation(home, codex, code, unit_directory=tmp_path, run=run)
+    else:
+        assert telegram.native_observation(home, codex, code, unit_directory=tmp_path, run=run) == {'native_state': state}
+    assert len(calls) == (0 if state == 'foreign' else 1)
+
+
+def test_native_observation_accepts_exact_incus_default_and_preserves_foreign_additions(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from clusterctl import onboarding_telegram as telegram
+    unit = tmp_path/telegram.NATIVE_UNIT
+    home, codex, code = Path('/home/agent'), Path('/usr/bin/codex'), Path('/opt/qualified')
+    unit.write_bytes(telegram.native_service(home, codex, code))
+    incus = Path('/run/systemd/system/service.d/zzz-lxc-service.conf')
+    raw = (b'[Service]\nProcSubset=all\nProtectProc=default\nProtectControlGroups=no\n'
+           b'ProtectKernelTunables=no\nNoNewPrivileges=no\nLoadCredential=\n'
+           b'PrivateNetwork=no\nImportCredential=\n')
+    files = {unit: unit.read_bytes(), incus: raw}
+    reads = []
+    def regular(path, *, uid):
+        assert uid == 0
+        reads.append(path)
+        return files[path]
+    monkeypatch.setattr(telegram.onboarding_release, 'regular', regular)
+    fields = dict(LoadState='loaded', FragmentPath=str(unit), DropInPaths=str(incus),
+        MainPID='41', ActiveState='active')
+    calls = []
+    def run(argv, **options):
+        assert argv[:2] == ['systemctl', 'show']
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout='\n'.join(k+'='+v for k,v in fields.items()))
+    assert telegram.native_observation(home,codex,code,unit_directory=tmp_path,run=run) == {'native_state':'active'}
+    assert reads == [unit, incus] and len(calls) == 1
+    for extra in (b'ExecStart=/foreign\n', b'User=root\n'):
+        files[incus] = raw+extra
+        with pytest.raises(OnboardingError,match='native_codex_daemon_observation_failed'):
+            telegram.native_observation(home,codex,code,unit_directory=tmp_path,run=run)
+    files[incus] = raw
+    for paths in (str(incus)+' '+str(incus), '/foreign/override.conf',
+            str(unit)+'.d/tribu-reference-cache.conf'):
+        fields['DropInPaths'] = paths
+        with pytest.raises(OnboardingError,match='native_codex_daemon_observation_failed'):
+            telegram.native_observation(home,codex,code,unit_directory=tmp_path,run=run)
+
+
+@pytest.mark.parametrize('expire', [None, 'before-publish', 'after-publish', 'after-reload'])
+def test_guest_native_install_keeps_one_budget_through_verification_and_each_effect(tmp_path, monkeypatch, expire):
+    from types import SimpleNamespace
+    from clusterctl import onboarding_telegram as telegram
+    clock = {'mono': 0, 'wall': 100_000_000_000}
+    monkeypatch.setattr(telegram, 'time', SimpleNamespace(
+        monotonic_ns=lambda: clock['mono'], time_ns=lambda: clock['wall']))
+    budget = telegram.native_budget(2, 101_000)
+    published, commands = [], []
+    def publish(path, raw):
+        published.append(raw)
+        if expire == 'after-publish':
+            clock['mono'] = 3_000_000_000
+    monkeypatch.setattr(telegram, 'publish', publish)
+    if expire == 'before-publish':
+        # Verification consumed the original guest budget; do not reset it.
+        clock['mono'] = 3_000_000_000
+    def run(argv, **kwargs):
+        assert 0 < kwargs['timeout'] <= 1
+        commands.append(argv)
+        if expire == 'after-reload':
+            # A wall-clock authorization expiry is independent of monotonic time.
+            clock['wall'] = 102_000_000_000
+        return SimpleNamespace(returncode=0)
+    def install():
+        telegram.install_native(Path('/home/agent'), Path('/usr/bin/codex'), Path('/opt/qualified'),
+            unit_directory=tmp_path, budget=budget, run=run)
+    if expire:
+        with pytest.raises(OnboardingError, match='native_codex_preparation_expired'):
+            install()
+        assert len(commands) == (1 if expire == 'after-reload' else 0)
+        assert len(published) == (0 if expire == 'before-publish' else 1)
+    else:
+        install()
+        assert commands == [['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', telegram.NATIVE_UNIT]]
+
+
+@pytest.mark.parametrize('timeout, expiry', [(None, 1), (1, None), (0, 101000), (61, 101000), (float('nan'), 101000)])
+def test_guest_native_budget_refuses_incomplete_or_invalid_bounds(timeout, expiry):
+    from clusterctl.onboarding_telegram import native_budget
+    with pytest.raises(OnboardingError, match='native_codex_preparation_expired'):
+        native_budget(timeout, expiry)
+
+
+@pytest.mark.parametrize('action', ['native-install', 'native-observe', 'probe', 'prepare', 'install'])
+@pytest.mark.parametrize('qualified', [False, True])
+@pytest.mark.parametrize('base_supervisor', [False, True])
+def test_native_runtime_cli_preserves_frozen_binary_and_rejects_bot_verbs(monkeypatch, action, qualified, base_supervisor):
+    """Actual CLI routing: helper selection grants no bot-binary successor."""
+    import pwd
+    from types import SimpleNamespace
+    from clusterctl import onboarding_code_successor, onboarding_release, onboarding_telegram as telegram
+    value = plan()
+    base = Path('/opt/daimon-onboarding')/value['release_digest']
+    candidate = Path('/opt/daimon-onboarding-runtime')/('a'*64)
+    monkeypatch.setattr(pwd, 'getpwnam', lambda name:SimpleNamespace(pw_uid=1000,pw_gid=1000,pw_dir='/home/agent'))
+    monkeypatch.setattr(onboarding_release, 'regular', lambda *a,**k:json.dumps(value).encode())
+    monkeypatch.setattr(onboarding_release, 'verify', lambda *a,**k:dict(profile=PROFILE))
+    monkeypatch.setattr(onboarding_code_successor, 'selection', lambda *a,**k:candidate)
+    monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a,**k:{'matrix_commit':'b'*40} if qualified else {})
+    monkeypatch.setattr(telegram.os, 'geteuid', lambda:1000 if action=='probe' else 0)
+    monkeypatch.setattr(telegram.shutil, 'which', lambda *a,**k:'/usr/local/bin/codex')
+    monkeypatch.setattr(Path, 'is_file', lambda path: path == candidate/'clusterctl/native_codex_supervisor.py'
+        or base_supervisor and path == base/'clusterctl/native_codex_supervisor.py')
+    binaries, units = [], []
+    monkeypatch.setattr(telegram, 'artifact', lambda path,**k:binaries.append(path))
+    monkeypatch.setattr(telegram, 'native_observation', lambda home,codex,code,**k:units.append(code) or dict(native_state='inactive'))
+    monkeypatch.setattr(telegram, 'install_native', lambda home,codex,code,**k:units.append(code))
+    probes = []
+    def run(argv, **options):
+        probes.append(argv)
+        return SimpleNamespace(returncode=0,stdout='{}')
+    monkeypatch.setattr(telegram.subprocess, 'run', run)
+    result = telegram.main([action, '--code',str(base), '--plan','/home/agent/.onboarding-input/plan.json',
+        '--runtime-code',str(candidate), '--runtime-digest','a'*64])
+    accepted = qualified and action in {'native-install','native-observe','probe'}
+    assert result == (0 if accepted else 1)
+    assert binaries == ([base] if accepted else [])
+    assert units == ([base if base_supervisor else candidate] if accepted and action!='probe' else [])
+    assert probes == ([[str(base/'telegram/telecodex'),'--probe-native','/usr/local/bin/codex','/home/agent/Projects/being']]
+        if accepted and action=='probe' else [])
+
+
+def test_native_supervisor_selection_uses_existing_verified_code(tmp_path):
+    from clusterctl.onboarding_telegram import native_supervisor_code
+    base, selected = tmp_path/'base', tmp_path/'selected'
+    for code in (base, selected):
+        (code/'clusterctl').mkdir(parents=True)
+    with pytest.raises(OnboardingError, match='qualified_native_supervisor_required'):
+        native_supervisor_code(base, selected)
+    helper = selected/'clusterctl/native_codex_supervisor.py'
+    helper.write_text('# qualified successor supervisor\n')
+    assert native_supervisor_code(base, selected) == selected
+    frozen = base/'clusterctl/native_codex_supervisor.py'
+    frozen.write_text('# original supervisor\n')
+    assert native_supervisor_code(base, selected) == base
+    helper.unlink()
+    assert native_supervisor_code(base, selected) == base

@@ -91,25 +91,36 @@ def test_native_timeout_retains_uncertainty_without_relaunch(tmp_path, monkeypat
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize('kind', ['owner', 'observation'])
 @pytest.mark.parametrize('wall,expected_deadline', [(1000, 51_000_000_000), (1004, 47_000_000_000)])
-def test_real_remote_launcher_rebases_owner_clock_and_namespace(monkeypatch, wall, expected_deadline):
+@pytest.mark.parametrize('preempt',[False,True])
+def test_real_remote_launcher_rebases_owner_clock_and_namespace(monkeypatch, wall, expected_deadline, kind, preempt):
     request = dict(machine_id_sha256=hashlib.sha256(b'fixture machine').hexdigest(),
-        argv=['owner', '--deadline-ns', '999999999999999', '--time-namespace', 'sender-kernel'],
+        argv=(['owner', '--deadline-ns', '999999999999999', '--time-namespace', 'sender-kernel']
+            if kind=='owner' else ['owner','--observation-deadline-ns','999999999999999']),
         owner_clock=True, remaining_seconds=5, expires_at_ms=1_005_000,
         uid=1000, gid=1000, home='/home/agent', env={'HOME': '/home/agent'})
     calls = []
     class ExecObserved(Exception):
         pass
     monkeypatch.setattr(sys, 'argv', ['bootstrap', json.dumps(request)])
-    monkeypatch.setattr(time, 'time', lambda: wall)
-    monkeypatch.setattr(time, 'monotonic_ns', lambda: 46_000_000_000)
+    clock = [46_000_000_000]
+    def wall_sample():
+        # Scheduling after the wall sample must not restart its remaining
+        # duration from a later receiver monotonic clock.
+        if preempt:
+            clock[0] += 500_000_000
+        return wall
+    monkeypatch.setattr(time, 'time', wall_sample)
+    monkeypatch.setattr(time, 'monotonic_ns', lambda: clock[0])
     monkeypatch.setattr(os, 'readlink', lambda path: 'receiver-kernel')
     monkeypatch.setattr(os, 'setgroups', lambda groups: calls.append(('groups', groups)))
     monkeypatch.setattr(os, 'setgid', lambda gid: calls.append(('gid', gid)))
     monkeypatch.setattr(os, 'setuid', lambda uid: calls.append(('uid', uid)))
     monkeypatch.setattr(os, 'chdir', lambda path: None)
     def observe(binary, argv, env):
-        assert argv == ['owner', '--deadline-ns', str(expected_deadline), '--time-namespace', 'receiver-kernel']
+        assert argv == (['owner', '--deadline-ns', str(expected_deadline), '--time-namespace', 'receiver-kernel']
+            if kind=='owner' else ['owner','--observation-deadline-ns',str(expected_deadline)])
         assert env['HOME'] == '/home/agent'
         assert env['PATH'] == '/usr/local/bin:' + os.defpath
         assert '/home/agent/.local/bin' not in env['PATH']
@@ -128,6 +139,37 @@ def test_remote_expiry_refuses_before_changing_identity(monkeypatch):
     monkeypatch.setattr(os, 'setgroups', lambda groups: pytest.fail('expired effect'))
     with pytest.raises(SystemExit, match='receiving_host_deadline_expired'):
         exec(native_body.REMOTE_LAUNCH, {'open': lambda *args: io.BytesIO(b'fixture machine')})
+
+
+@pytest.mark.parametrize('placement',['native','vm'])
+def test_remote_horizon_cannot_extend_fixed_lock_custody_during_preemption(monkeypatch,placement):
+    from clusterctl.vm_body import VMBody
+    kind = native_body.NativeBody if placement == 'native' else VMBody
+    body = object.__new__(kind)
+    object.__setattr__(body,'value',dict(bootstrap_python='/usr/bin/python3',home='/home/agent',
+        machine_id_sha256='a'*64))
+    clock = dict(monotonic=10_000_000_000,wall=1_000_000_000_000)
+    deadline = clock['monotonic']+2_000_000_000
+    wall_deadline = (clock['wall']+2_000_000_000)//1_000_000
+    def wall_sample():
+        # A scheduling pause before the wall sample previously extended the
+        # remote expiry by this interval, after fixed local custody expired.
+        clock['monotonic'] += 500_000_000
+        clock['wall'] += 500_000_000
+        return clock['wall']
+    monkeypatch.setattr(time,'time_ns',wall_sample)
+    monkeypatch.setattr(time,'monotonic_ns',lambda:clock['monotonic'])
+    monkeypatch.setattr(time,'monotonic',lambda:clock['monotonic']/1e9)
+    monkeypatch.setattr(kind,'_transport_command',lambda self,command,**options:command)
+    captured = []
+    def run(command,**options):
+        captured.append(json.loads(command[-1]))
+        return SimpleNamespace(returncode=0,stdout='{}')
+    monkeypatch.setattr(subprocess,'run',run)
+    assert body.execute(['owner','--observation-deadline-ns',str(deadline)],
+        deadline_ns=deadline,owner_clock=True) == '{}'
+    assert captured[0]['expires_at_ms'] <= wall_deadline
+    assert captured[0]['remaining_seconds'] == 1.5
 
 
 def test_native_plan_executes_on_native_host_and_never_enters_old_incus(tmp_path, monkeypatch):
@@ -210,3 +252,18 @@ def test_relocated_complete_job_does_not_reconcile_old_home_or_monitor(tmp_path)
         runtime_health=lambda result: pytest.fail('old container observation recreated'),
         relocated=lambda name: retained)
     assert worker.once() == [retained]
+
+
+@pytest.mark.parametrize('flags', [
+    ['--observation-deadline-ns','1','--observation-deadline-ns','2'],
+    ['--observation-deadline-ns','1','--deadline-ns','2','--time-namespace','sender'],
+    ['--observation-deadline-ns','1','--time-namespace','sender'],
+])
+def test_remote_observation_clock_rejects_ambiguous_options_before_uid_admission(monkeypatch, flags):
+    request = dict(machine_id_sha256=hashlib.sha256(b'fixture machine').hexdigest(),
+        argv=['owner',*flags],owner_clock=True,remaining_seconds=5,expires_at_ms=1_005_000)
+    monkeypatch.setattr(sys,'argv',['bootstrap',json.dumps(request)])
+    monkeypatch.setattr(time,'time',lambda:1000)
+    monkeypatch.setattr(os,'setgroups',lambda *_args:pytest.fail('invalid clock reached UID admission'))
+    with pytest.raises(SystemExit,match='receiving_owner_deadline_binding_required'):
+        exec(native_body.REMOTE_LAUNCH,{'open':lambda *_args:io.BytesIO(b'fixture machine')})

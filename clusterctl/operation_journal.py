@@ -408,12 +408,26 @@ class OperationJournal:
                 raise JournalConflict('operation mutation is in progress') from exc
             self._owners.operations = owned | {operation_id}
             self._owners.process_id = process_id
+            descriptors = getattr(self._owners, 'descriptors', {})
+            self._owners.descriptors = {**descriptors, operation_id: descriptor}
             try:
                 yield
             finally:
                 self._owners.operations = owned
+                self._owners.descriptors = descriptors
         finally:
             os.close(descriptor)
+
+    def duplicate_mutation_lock(self, operation_id: str) -> int:
+        """Retain actual kernel ownership in a bounded trusted local process.
+
+        Only the current owning thread/process can duplicate its held lock.
+        The returned descriptor must never enter a receiving owner or guest.
+        """
+        if (getattr(self._owners, 'process_id', None) != os.getpid()
+                or operation_id not in getattr(self._owners, 'operations', set())):
+            raise JournalConflict('operation mutation ownership required')
+        return os.dup(self._owners.descriptors[operation_id])
 
     def advance(self, operation_id: str, state: str, *,
                 runtime_observation: dict[str, Any] | None = None,

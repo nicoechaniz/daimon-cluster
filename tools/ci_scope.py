@@ -20,7 +20,7 @@ CI_FILES = {'.github/workflows/tests.yml', 'README.md', 'tools/ci_scope.py', 'to
 RUNBOOK_DOCS = {'docs/runbooks/native-codex-supervision.md', 'docs/runbooks/native-host-relocation.md', 'docs/runbooks/same-being-integration.md',
     'docs/runbooks/tribu-sdk-successor.md', 'docs/design/shared-home-styles.md',
     'README.md', 'RESUME.md', 'docs/PLAN.md', 'docs/design/matrix-convergence.md',
-    'docs/design/onboarding-jobs.md', 'docs/design/provisioning-flow.md',
+    'docs/design/onboarding-jobs.md', 'docs/design/provisioning-flow.md', 'docs/design/admission-continuation.md',
     'docs/design/tribe-agent-profile-and-volumes.md', 'docs/runbooks/host-restart-drill.md',
     'docs/runbooks/image-update-rolling-refresh.md', 'docs/runbooks/m1-incus-foundation.md',
     'docs/runbooks/release-candidate-freeze.md'}
@@ -541,7 +541,121 @@ RECEIVING_SUPPORT_HASHES = {
 }
 
 
-def receiving_support_only(root: Path, base: str, names: set[str]) -> bool:
+ADMISSION_EXECUTION_HASHES = {
+    'clusterctl/onboarding_group_admission.py': (
+        '85eae49047b5615921ab7ca4a7e577f2622a2ebc3faef41bc0317be9bcff9d40',
+        '46747efdf8f0fdd8d6b6346505f4a62de52da826972616c88dea5599ef702dae'),
+    'clusterctl/onboarding_group_coordinator.py': (
+        '46d3d178394dc4bfd7c952055c7a778b394e103c7ff9be63b514895b1883e5cd',
+        'df9e268b84a017100b4755ae2140dfb472f68e3cff6b66b2541ebee08bf4a2e0'),
+    'clusterctl/onboarding_group_recovery.py': (
+        'd7bf441a0245c29314217c0ca06dff7f19914f57d901fb8491c536e04a735ede',
+        'd8d31d8b5cebe452b4e5d64ba523e4c2e8456f74d402d1bbfaeb6152a3ecd9b4'),
+    'clusterctl/onboarding_group_session.py': (
+        'e3f27c6db5f406dc123ed688783fb831d47b8581eb55302e5cb5290920d2616d',
+        'a59436e827825ea0ae05d88fdaffc535df7be237b165e02830dde61d530df574'),
+    'clusterctl/onboarding_host.py': (
+        '5bd8401f19d11b784f4b893df1f3c326fb3afb425286f9cea57745cba7ac3f30',
+        '9c80e2cb4c5876b5d31b076f4baf944e1b005f1b0ce1331f8deef6748adcfc74'),
+    'clusterctl/onboarding_service.py': (
+        'ffb6dbe5c2ac189e425721bda61934e991e852e30f05d492fcf2289752351a0b',
+        'c33adb00d772b00478a6782ed497d29180cd6b92bcc7bd9f925b4aeb8f2e744d'),
+    'clusterctl/onboarding_managed.py': (
+        '810f6fe3970cefbaa5663bc602365d800b94247d5c8779331b33bba982c8f445',
+        '7e698449b8aae0b3509454cc79677027f29e104198f827256a0585c29cf86460'),
+    'clusterctl/onboarding_source.py': (
+        'ce4205dde4f27075c045001e271432033cec87c52104bbb4c069de02fe3b3576',
+        '9b827c0bcac9326c0adecf100d314a44987eeea06f52dc260a57ac943bdab9dd'),
+    'clusterctl/onboarding_target.py': (
+        '37788e468b89edb197adba1d55ae51d0065c94c90e3368ca1ca904795a33016c',
+        '1702b22854fa53813e4447ff074f13a7655924821b83ecbadb907ecc88c0cf53'),
+    'clusterctl/onboarding_receiving_update.py': (
+        '8f5be18610309fad59c63cb684168d22cef9e3b2e57cc424aab7847c31b1f0cf',
+        '2933125eb5bb45e07c7ea09663a144a93bb7c74f85cd1d4d90598528774effe0'),
+    'tools/qualify_candidate_admission.py': (
+        'a6a1a179866b75ba5cd60a51f3f716d7a2977d45a98b5cb7857706696da7a61f',
+        '3ca13a6c089cfb988c9f2da2471f0cf152cfa8151e0f19e9af354ec456d90548'),
+}
+
+ADMISSION_RECOVERY_HASHES = {
+    'clusterctl/onboarding_group_admission.py': (
+        '69caac1428de643a939346d07ebf412dd5531d02c9846dd0d18a97e4a69252fb',
+        '85eae49047b5615921ab7ca4a7e577f2622a2ebc3faef41bc0317be9bcff9d40'),
+    'clusterctl/onboarding_group_session.py': (
+        'f7f1f8cf751519353d736dbe7eed51f583e55d1d47bb6d74deda8bc42a7db4e5',
+        'e3f27c6db5f406dc123ed688783fb831d47b8581eb55302e5cb5290920d2616d'),
+    'clusterctl/onboarding_group_recovery.py': (
+        None, 'd7bf441a0245c29314217c0ca06dff7f19914f57d901fb8491c536e04a735ede'),
+    'clusterctl/onboarding_receiving_update.py': (
+        'f42a0c069d412a3ee0747a308dba2f0e047cd4848341500008015709433a7f17',
+        '8f5be18610309fad59c63cb684168d22cef9e3b2e57cc424aab7847c31b1f0cf'),
+    'tools/build_onboarding_code.py': (
+        'b96435ac875ae248e622ae79bd228b9b2767283f7cc9c63e7d4a935a0a98853b',
+        '59823fda3e12fee104e37df59b85c6881acae71bb86515bed09e6b2d64cd14bb'),
+    'tools/check_rc_types.py': (
+        'ee15068551964a6ecbe37150a14514b48e6f498456fe71cd23210b4ca60d8f71',
+        '6358073f70f35eb36c776481db64832045dd4158a471133fadb19070f4ea5b41'),
+}
+
+
+ADMISSION_SESSION_HASHES = {
+    'clusterctl/onboarding_group_session.py': (
+        None,
+        'f7f1f8cf751519353d736dbe7eed51f583e55d1d47bb6d74deda8bc42a7db4e5'),
+    'clusterctl/onboarding_group_admission.py': (
+        '5c170305bcb180b87d508daf9f495d9ed5b2e58a0594d020beb1e594469f8365',
+        '69caac1428de643a939346d07ebf412dd5531d02c9846dd0d18a97e4a69252fb'),
+    'clusterctl/onboarding_source.py': (
+        '4b932918af2ed6b3d70437f2a124baa14ee58502d0e9fd8ed0f8e508f99328d1',
+        'ce4205dde4f27075c045001e271432033cec87c52104bbb4c069de02fe3b3576'),
+    'clusterctl/onboarding_target.py': (
+        '906ecf1a71e307798bcc983f21901ef5955949cc38ef22a62f3320aad353fcf8',
+        '37788e468b89edb197adba1d55ae51d0065c94c90e3368ca1ca904795a33016c'),
+    'clusterctl/onboarding_host.py': (
+        'f98114c97e8c5164623cc57895adb8cb7814269dd2a1f8ee7be6ea69d6b03b38',
+        '5bd8401f19d11b784f4b893df1f3c326fb3afb425286f9cea57745cba7ac3f30'),
+    'clusterctl/onboarding_receiving_update.py': (
+        '61394fc4b4b756571b04946f3c8a087d994c23bd9436834fb08285a961f98ada',
+        'f42a0c069d412a3ee0747a308dba2f0e047cd4848341500008015709433a7f17'),
+    'tools/build_onboarding_code.py': (
+        'a5e32fcc064e8254ea49433ec991d81b67ddfffab34c5d85ab741c24a57db999',
+        'b96435ac875ae248e622ae79bd228b9b2767283f7cc9c63e7d4a935a0a98853b'),
+    'tools/check_rc_types.py': (
+        '5f6657b8f3da3e0e1b5cd7a593ff61cdb45d8b553faf4f4159691424c6bdc508',
+        'ee15068551964a6ecbe37150a14514b48e6f498456fe71cd23210b4ca60d8f71'),
+}
+
+
+ADMISSION_SOCIAL_HASHES = {
+    'clusterctl/onboarding_group_coordinator.py': (
+        '4f3bf747fb5bd8dc83a99677217192bf5cce6903b2ea72ee35789befa4b5cdd4',
+        '46d3d178394dc4bfd7c952055c7a778b394e103c7ff9be63b514895b1883e5cd'),
+    'clusterctl/onboarding_group_admission.py': (
+        '4e4f9e76535c5c48143a0ec63f7cdccddd1d7cc48cbebb55b8fb34aa98aa8145',
+        '5c170305bcb180b87d508daf9f495d9ed5b2e58a0594d020beb1e594469f8365'),
+    'clusterctl/onboarding_receiving_update.py': (
+        'ef49165b01dc6a46f9a0f6cb0e35b82a83007a370ee5f9bf8b3f10b7ed53bc45',
+        '61394fc4b4b756571b04946f3c8a087d994c23bd9436834fb08285a961f98ada'),
+}
+
+
+ADMISSION_BARRIER_HASHES = {'clusterctl/onboarding_receiving_update.py': (
+    'c80657d8f9256b1dfb32689d084370e4c0dc3a7c419020a1843ff45c17245eff',
+    'ef49165b01dc6a46f9a0f6cb0e35b82a83007a370ee5f9bf8b3f10b7ed53bc45')}
+
+
+ADMISSION_PROGRESS_HASHES = {'clusterctl/onboarding_host.py': (
+    '6bb8673868561f11fa80ce75899935cc65c4e224e75b8e0c20ea4e2b74958293',
+    'f98114c97e8c5164623cc57895adb8cb7814269dd2a1f8ee7be6ea69d6b03b38')}
+
+
+NATIVE_DROPIN_HASHES = {'clusterctl/onboarding_service.py': (
+    '9048ed4846f33d7f9138b1d9cb68dd44b9aac24ec6537f367fb5c678a6fd427f',
+    'ffb6dbe5c2ac189e425721bda61934e991e852e30f05d492fcf2289752351a0b')}
+
+
+def receiving_support_only(root: Path, base: str, names: set[str], *, hashes: dict | None = None) -> bool:
+    hashes = RECEIVING_SUPPORT_HASHES if hashes is None else hashes
     if not re.fullmatch(r'[0-9a-f]{40}', base):
         return False
     for name in names:
@@ -551,7 +665,17 @@ def receiving_support_only(root: Path, base: str, names: set[str]) -> bool:
                       hashlib.sha256((root/name).read_bytes()).hexdigest())
         except OSError:
             return False
-        if before.returncode or actual != RECEIVING_SUPPORT_HASHES[name]:
+        if hashes[name][0] is None:
+            # A reviewed added module requires actual absence in a valid Git
+            # tree, not merely a failed git-show or an unknown base revision.
+            absent = subprocess.run(['git', 'ls-tree', '--name-only', base, '--', name],
+                cwd=root, capture_output=True, check=False)
+            if absent.returncode or absent.stdout:
+                return False
+            actual = (None, actual[1])
+        elif before.returncode:
+            return False
+        if actual != hashes[name]:
             return False
     return True
 
@@ -569,6 +693,25 @@ OWNER_DIAGNOSTIC_ADDITION = b"""            if argv[0] == 'exec' and 'clusterctl
                         raise OnboardingError(detail['error'])
 """
 
+OWNER_CLIENT_DIAGNOSTIC_ADDITION = b"""            public_errors: frozenset[str] = frozenset()
+            if argv[0] == 'exec' and 'clusterctl.onboarding_owner_control' in argv:
+                from .onboarding_owner_control import PUBLIC_ERRORS
+                public_errors = PUBLIC_ERRORS
+            elif argv[0] == 'exec' and 'clusterctl.onboarding_owner_client' in argv:
+                from .onboarding_owner_client import _PUBLIC_STARTUP_ERRORS
+                public_errors = _PUBLIC_STARTUP_ERRORS | {'native_matrix_tool_startup_refused'}
+            if public_errors:
+                for line in result.stderr.splitlines():
+                    try:
+                        detail = json.loads(line)
+                    except ValueError:
+                        continue
+                    if (isinstance(detail, dict) and set(detail) == {'error'}
+                            and isinstance(detail.get('error'), str)
+                            and detail.get('error') in public_errors):
+                        raise OnboardingError(detail['error'])
+"""
+
 OWNER_TRANSPORT_ORIGINAL = b'''        except (OSError, subprocess.TimeoutExpired):
             raise OnboardingError("onboarding_host_operation_failed") from None
 '''
@@ -582,7 +725,7 @@ OWNER_TRANSPORT_DIAGNOSTIC = b'''        except (OSError, subprocess.TimeoutExpi
 
 
 def owner_diagnostics_only(root: Path, base: str) -> bool:
-    """Accept only the closed owner-control diagnostic addition to HostBackend."""
+    """Recognize exact covered owner diagnostic changes; reject any other Host delta."""
     if not re.fullmatch(r'[0-9a-f]{40}', base):
         return False
     name = 'clusterctl/onboarding_host.py'
@@ -594,11 +737,38 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
     if (current.count(OWNER_TRANSPORT_DIAGNOSTIC) == 1 and
             current.replace(OWNER_TRANSPORT_DIAGNOSTIC, OWNER_TRANSPORT_ORIGINAL, 1) == before.stdout):
         return True
-    return current.count(OWNER_DIAGNOSTIC_ADDITION) == 1 and current.replace(
-        OWNER_DIAGNOSTIC_ADDITION, b'', 1) == before.stdout
+    for addition in (OWNER_DIAGNOSTIC_ADDITION, OWNER_CLIENT_DIAGNOSTIC_ADDITION):
+        if current.count(addition) != 1:
+            continue
+        original = current.replace(addition, b'', 1)
+        if original == before.stdout:
+            return True
+        if (addition == OWNER_CLIENT_DIAGNOSTIC_ADDITION
+                and before.stdout.count(OWNER_DIAGNOSTIC_ADDITION) == 1
+                and before.stdout.replace(OWNER_DIAGNOSTIC_ADDITION, b'', 1) == original):
+            return True
+    return False
 
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
+    coordinator_files = {'clusterctl/onboarding_group_coordinator.py',
+                         'tests/test_onboarding_group_coordinator.py',
+                         'tests/test_onboarding_group_finisher.py'}
+    coordinator_tests = ['tests/test_onboarding_group_coordinator.py',
+                         'tests/test_onboarding_group_finisher.py',
+                         'tests/test_receiving_update_journal.py',
+                         'tests/test_onboarding_progress.py',
+                         'tests/test_onboarding_worker_install.py',
+                         'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    # Exact verified admission deltas precede broader receiving profiles.
+    barrier_files = {'clusterctl/onboarding_receiving_update.py',
+                     'tests/test_receiving_cohort_control.py'}
+    barrier_tests = ['tests/test_receiving_cohort_control.py', *coordinator_tests]
+    if ('clusterctl/onboarding_receiving_update.py' in changed
+            and set(changed) <= barrier_files | coordinator_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / path).is_file() for path in barrier_tests)
+            and receiving_support_only(root, base, set(ADMISSION_BARRIER_HASHES), hashes=ADMISSION_BARRIER_HASHES)):
+        return 'ci', barrier_tests
     native_h8_files = {'clusterctl/rebirth_host.py', 'clusterctl/rebirth_native.py',
         'clusterctl/onboarding_source.py', 'tests/test_rebirth_native.py',
         'docs/runbooks/rebirth-native-profile.md'}
@@ -842,6 +1012,95 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         return 'docs', []
     if set(changed) <= CI_FILES | RUNBOOK_DOCS:
         return 'ci', ['tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    execution_tests = ['tests/test_onboarding_group_recovery.py', 'tests/test_onboarding_group_session.py',
+        'tests/test_onboarding_group_coordinator.py', 'tests/test_onboarding_group_finisher.py',
+        'tests/test_source_bootstrap.py', 'tests/test_guest_bootstrap_controller.py',
+        'tests/test_guest_service_bootstrap.py', 'tests/test_onboarding_managed.py',
+        'tests/test_onboarding_host.py', 'tests/test_receiving_cohort_control.py',
+        'tests/test_onboarding_release.py', 'tests/test_receiving_update_journal.py',
+        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    execution_files = set(ADMISSION_EXECUTION_HASHES) | set(execution_tests) | {
+        'tests/test_onboarding_group_admission.py', 'tests/test_onboarding_group_publication.py'}
+    execution_source = set(changed) & ADMISSION_EXECUTION_HASHES.keys()
+    if (execution_source and set(changed) <= execution_files | CI_FILES | RUNBOOK_DOCS
+            and all((root/path).is_file() for path in execution_tests)
+            and receiving_support_only(root, base, execution_source, hashes=ADMISSION_EXECUTION_HASHES)):
+        # Exact changed effect consumers, with the candidate SDK only where the
+        # real native governance/publication producer needs it. No model/physical
+        # recovery suite or second execution of those native cases is required.
+        publication = 'tests/test_onboarding_group_publication.py::test_cohort_publication_derives_native_acceptance_and_recovers_lost_results'
+        return 'admission', [*execution_tests,
+            *[publication+'['+outcome+']' for outcome in ('recover','continuation','continuation-late-ack')]]
+    recovery_tests = ['tests/test_onboarding_group_recovery.py', 'tests/test_onboarding_group_session.py',
+        'tests/test_onboarding_release.py', 'tests/test_receiving_update_journal.py',
+        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    recovery_files = set(ADMISSION_RECOVERY_HASHES) | set(recovery_tests) | {'tests/test_onboarding_group_admission.py'}
+    recovery_source = set(changed) & ADMISSION_RECOVERY_HASHES.keys()
+    if (recovery_source and set(changed) <= recovery_files | CI_FILES | RUNBOOK_DOCS
+            and all((root/path).is_file() for path in recovery_tests)
+            and receiving_support_only(root, base, recovery_source, hashes=ADMISSION_RECOVERY_HASHES)):
+        # Native inspection uses the candidate consumer once; no runtime, key,
+        # lifecycle or model effect is introduced by the linked journal planner.
+        return 'admission', recovery_tests
+    session_tests = ['tests/test_onboarding_group_session.py', 'tests/test_onboarding_host.py',
+        'tests/test_onboarding_host_ownership.py', 'tests/test_receiving_cohort_control.py',
+        'tests/test_onboarding_group_coordinator.py', 'tests/test_onboarding_group_finisher.py',
+        'tests/test_onboarding_release.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    session_files = set(ADMISSION_SESSION_HASHES) | set(session_tests) | {
+        'tests/test_onboarding_group_admission.py'}
+    session_source = set(changed) & ADMISSION_SESSION_HASHES.keys()
+    if (session_source and set(changed) <= session_files | CI_FILES | RUNBOOK_DOCS
+            and all((root/path).is_file() for path in session_tests)
+            and receiving_support_only(root, base, session_source, hashes=ADMISSION_SESSION_HASHES)):
+        return 'admission', session_tests
+    social_files = set(ADMISSION_SOCIAL_HASHES) | {
+        'tools/qualify_candidate_admission.py', 'tests/test_onboarding_group_admission.py',
+        'tests/test_receiving_cohort_control.py', 'tests/test_onboarding_group_coordinator.py',
+        'tests/test_onboarding_group_finisher.py'}
+    social_tests = ['tests/test_receiving_cohort_control.py', 'tests/test_onboarding_group_coordinator.py',
+                    'tests/test_onboarding_group_finisher.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    social_source = set(changed) & ADMISSION_SOCIAL_HASHES.keys()
+    if (set(changed) & (social_files - {'tests/test_receiving_cohort_control.py'})
+            and set(changed) <= social_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / path).is_file() for path in social_tests)
+            and (not social_source or receiving_support_only(root, base, social_source, hashes=ADMISSION_SOCIAL_HASHES))):
+        # The native social consumer needs its explicit future SDK; identity
+        # creation still uses the unchanged default producer in a separate process.
+        return 'admission', social_tests
+    if ('clusterctl/onboarding_group_coordinator.py' in changed
+            and set(changed) <= coordinator_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / path).is_file() for path in coordinator_tests)):
+        # Orchestration/journal cadence only; changed native SDK, service,
+        # authority or owner adapters retain their broader coverage.
+        return 'ci', coordinator_tests
+    progress_host = {'clusterctl/onboarding_host.py', 'tests/test_onboarding_host.py'}
+    progress_tests = [*coordinator_tests, 'tests/test_onboarding_host.py']
+    if ('clusterctl/onboarding_host.py' in changed
+            and set(changed) <= coordinator_files | progress_host | CI_FILES | RUNBOOK_DOCS
+            and all((root / path).is_file() for path in progress_tests)
+            and receiving_support_only(root, base, set(ADMISSION_PROGRESS_HASHES), hashes=ADMISSION_PROGRESS_HASHES)):
+        return 'ci', progress_tests
+    native_dropins = {'clusterctl/onboarding_service.py', 'clusterctl/onboarding_telegram.py',
+                     'tests/test_onboarding_service.py', 'tests/test_onboarding_telegram.py'}
+    native_tests = ['tests/test_onboarding_service.py', 'tests/test_onboarding_telegram.py',
+                    'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if ('clusterctl/onboarding_service.py' in changed
+            and set(changed) <= native_dropins | CI_FILES | RUNBOOK_DOCS
+            and all((root / path).is_file() for path in native_tests)
+            and receiving_support_only(root, base, set(NATIVE_DROPIN_HASHES), hashes=NATIVE_DROPIN_HASHES)):
+        # Only the exact shared drop-in extraction is narrow. Arbitrary service
+        # bootstrap, execution or selection edits keep broader qualification.
+        return 'ci', native_tests
+    echo_fixture = {'tests/integration/portal_admission_echo.py',
+                    'tests/test_portal_admission_echo.py'}
+    echo_tests = ['tests/test_portal_admission_echo.py',
+                  'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & echo_fixture
+            and set(changed) <= echo_fixture | CI_FILES | RUNBOOK_DOCS
+            and all((root / path).is_file() for path in echo_tests)):
+        # Only the opt-in external API double/composition changed. Any SDK,
+        # receiving, authority or lifecycle implementation keeps its own scope.
+        return 'ci', echo_tests
     if ({'clusterctl/onboarding_code_successor.py', 'tests/test_onboarding_code_successor.py'} <= set(changed)
             and set(changed) <= {'clusterctl/onboarding_code_successor.py',
                 'tests/test_onboarding_code_successor.py'} | CI_FILES | RUNBOOK_DOCS

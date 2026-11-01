@@ -43,6 +43,18 @@ update does not close these requirements. Autonomous Matrix inference remains
 OFF; technical events stay model-free. Preserve uncertain historical admissions
 and paused/blocked goals. No global Stop is authorized by routine maintenance.
 
+The old #227 native-admission/newcomer and mixed-profile fixture instances and
+home/qualification volumes were among the seven Source instances explicitly
+deleted by Nicolas on2026-10-31. Their incomplete original outcome remains
+historical/uncertain, not recovered. Do not recreate them or require an archive
+restore. Qualify the current integrated admission in a distinctly identified,
+bounded new fixture; preserve original evidence and report the two separately.
+See `docs/design/admission-continuation.md` for the current retirement boundary.
+
+For the owning type gate, run `python tools/check_rc_types.py` using the existing
+development environment. It is the exact CI boundary; recursively type-checking
+all packages adds unrelated untyped code and is not this release gate.
+
 ## Historical receiving deployment and maintenance — 2026-10-27
 
 CompAII, Eko on native MEDUSA and Oliva load body/observer `f6b369a9`,

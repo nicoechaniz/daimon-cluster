@@ -88,7 +88,7 @@ def test_guest_observation_deadline_refuses_before_custody_or_unbounded_rpc(monk
         Target.running(target,deadline_ns=time.monotonic_ns()-1)
 
 
-@pytest.mark.parametrize('action,timeout', [('observe','1'),('running','0'),('admitted-running','-1'),
+@pytest.mark.parametrize('action,timeout', [('prepare','1'),('observe','0'),('running','0'),('admitted-running','-1'),
                                          ('running','nan'),('running','inf'),('running','61')])
 def test_guest_cli_rejects_invalid_observation_budget_before_sdk_or_body(capsys, monkeypatch, action, timeout):
     from clusterctl import onboarding_target
@@ -98,6 +98,21 @@ def test_guest_cli_rejects_invalid_observation_budget_before_sdk_or_body(capsys,
         '--genesis','/unused/genesis','--code','/unused/code',
         '--observation-timeout-seconds',timeout])==1
     assert capsys.readouterr().out=='{"error": "native_onboarding_target_refused"}\n'
+
+
+def test_guest_observe_accepts_bounded_metadata_read_before_sdk(monkeypatch):
+    from clusterctl import onboarding_target
+    class PublicPlanReached(BaseException):
+        pass
+    def read_plan(*_args, **_kwargs):
+        raise PublicPlanReached
+    monkeypatch.setattr(onboarding_target.being_seed, '_read', read_plan)
+    # Argument validation admits this supported bounded observation. Stop at
+    # its public plan read, before SDK selection or owner state is opened.
+    with pytest.raises(PublicPlanReached):
+        onboarding_target.main(['observe', '--home', '/unused', '--plan', '/unused/plan',
+            '--genesis', '/unused/genesis', '--code', '/unused/code',
+            '--observation-timeout-seconds', '1'])
 
 
 def child_listener(path, ready):
@@ -439,3 +454,165 @@ def test_current_maintenance_observation_never_reconstructs_birth_or_pair_histor
     finally:
         for listener in listeners:
             listener.close()
+
+
+def test_owner_cannot_continue_after_coordinator_dies(tmp_path):
+    """Actual kernel parent-death signal, before the isolated stand-in effect."""
+    import json
+    import os
+    import select
+    import signal
+    import subprocess
+    import sys
+    effect = tmp_path/'unexpected-effect'
+    child = '''import json,os,sys
+from pathlib import Path
+from clusterctl.owner_process import require_parent_lifetime
+require_parent_lifetime(int(sys.argv[1]))
+print(json.dumps({'pid':os.getpid(),'uid':os.geteuid()}),flush=True)
+if os.read(int(sys.argv[2]),1):Path(sys.argv[3]).write_text('effect')
+'''
+    coordinator = '''import os,subprocess,sys
+admission={'user':1000,'group':1000,'extra_groups':()} if os.geteuid()==0 else {}
+child=subprocess.Popen([sys.executable,'-B','-c',sys.argv[1],str(os.getpid()),sys.argv[2],sys.argv[3]],
+ pass_fds=(int(sys.argv[2]),),stdout=subprocess.PIPE,text=True,start_new_session=True,**admission)
+print(child.stdout.readline().strip(),flush=True)
+sys.stdin.read(1)
+'''
+    reader, writer = os.pipe()
+    process = subprocess.Popen([sys.executable,'-B','-c',coordinator,child,str(reader),str(effect)],
+        pass_fds=(reader,),stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+    os.close(reader)
+    descriptor = -1
+    try:
+        assert select.select([process.stdout],[],[],5)[0], 'owner did not register'
+        owner = json.loads(process.stdout.readline())
+        assert owner['uid'] == (1000 if os.geteuid()==0 else os.geteuid())
+        descriptor = os.pidfd_open(owner['pid'])
+        os.kill(process.pid,signal.SIGKILL)
+        process.wait(timeout=5)
+        assert select.select([descriptor],[],[],5)[0], 'owner outlived coordinator'
+        with pytest.raises(BrokenPipeError):
+            os.write(writer,b'1')
+        assert not effect.exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        process.stdin.close()
+        process.stdout.close()
+        os.close(writer)
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def test_owner_parent_guard_rejects_lost_parent_before_registration():
+    import subprocess
+    import sys
+    program = '''from clusterctl.owner_process import require_parent_lifetime,PresenceError
+try:require_parent_lifetime(1)
+except PresenceError:pass
+else:raise AssertionError('orphaned owner accepted')
+'''
+    subprocess.run([sys.executable,'-B','-c',program],check=True,timeout=5)
+def test_remote_dispatch_keeps_both_kernel_locks_after_coordinator_death(tmp_path):
+    """Actual orphaned owner and lock custody, with no daemon or model calls."""
+    import json
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+    from clusterctl.operation_journal import JournalConflict, OperationJournal
+
+    program = '''
+import json,os,subprocess,sys,time
+from clusterctl.operation_journal import OperationJournal
+from clusterctl.owner_process import lock_custody
+journal=OperationJournal(sys.argv[1])
+with journal.mutation_lock('parent'),journal.mutation_lock('approval'):
+    descriptors=tuple(journal.duplicate_mutation_lock(key) for key in ('parent','approval'))
+    deadline=time.monotonic_ns()+1_500_000_000
+    with lock_custody(descriptors,deadline_ns=deadline):
+        owner_program="from clusterctl.onboarding_group_session import hard_deadline; import os,sys,time; scope=hard_deadline(int(sys.argv[1])); scope.__enter__(); os.write(1,b'R'); time.sleep(60)"
+        owner=subprocess.Popen([sys.executable,'-B','-c',owner_program,str(deadline)],stdout=subprocess.PIPE,start_new_session=True)
+        assert owner.stdout.read(1)==b'R'
+        print(json.dumps(dict(deadline=deadline,owner_pid=owner.pid)),flush=True)
+        time.sleep(60)
+'''
+    coordinator = subprocess.Popen([sys.executable, '-B', '-c', program, str(tmp_path/'journal')],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    owner_pidfd = None
+    deadline = None
+    try:
+        raw = coordinator.stdout.readline()
+        assert raw, coordinator.stderr.read().decode()
+        ready = json.loads(raw)
+        deadline = ready['deadline']
+        owner_pidfd = os.pidfd_open(ready['owner_pid'])
+        journal = OperationJournal.existing(tmp_path/'journal')
+        coordinator.kill()
+        coordinator.wait(timeout=3)
+        for key in ('parent','approval'):
+            with pytest.raises(JournalConflict):
+                with journal.mutation_lock(key):
+                    pytest.fail('coordinator loss released an in-flight owner fence')
+        # Both the receiving owner and custody have this exact kernel horizon.
+        time.sleep(max(0,(deadline-time.monotonic_ns())/1e9)+.1)
+        import select
+        assert select.select([owner_pidfd],[],[],1)[0]
+        for key in ('parent','approval'):
+            with journal.mutation_lock(key):
+                pass
+    finally:
+        if coordinator.poll() is None:
+            coordinator.kill()
+            coordinator.wait()
+        if owner_pidfd is not None:
+            try:
+                signal.pidfd_send_signal(owner_pidfd,signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.close(owner_pidfd)
+        if deadline is not None:
+            time.sleep(max(0,(deadline-time.monotonic_ns())/1e9)+.02)
+        coordinator.stdout.close()
+        coordinator.stderr.close()
+
+
+@pytest.mark.parametrize('lost_transport',[False,True])
+def test_lock_custody_releases_on_completion_or_exact_horizon(tmp_path,lost_transport):
+    import os
+    import time
+    from clusterctl.operation_journal import JournalConflict, OperationJournal
+    from clusterctl.owner_process import lock_custody
+    journal = OperationJournal(tmp_path)
+    competitor = OperationJournal.existing(tmp_path)
+    with pytest.raises(JournalConflict):
+        journal.duplicate_mutation_lock('parent')
+    descriptors = []
+    started = time.monotonic()
+    try:
+        with journal.mutation_lock('parent'):
+            descriptors.append(journal.duplicate_mutation_lock('parent'))
+            # A complete cohort may outlive one bounded owner RPC. Normal
+            # completion must still release its longer keeper immediately.
+            deadline=time.monotonic_ns()+(200_000_000 if lost_transport else 75_000_000_000)
+            try:
+                with lock_custody(tuple(descriptors),deadline_ns=deadline):
+                    with pytest.raises(JournalConflict):
+                        with competitor.mutation_lock('parent'):
+                            pass
+                    if lost_transport:
+                        raise OSError('lost receiving transport; owner exit unknown')
+            except OSError:
+                assert lost_transport and time.monotonic_ns() >= deadline
+    finally:
+        for fd in descriptors:
+            os.close(fd)
+            with pytest.raises(OSError):
+                os.fstat(fd)
+    with competitor.mutation_lock('parent'):
+        pass
+    if not lost_transport:
+        assert time.monotonic()-started < 3

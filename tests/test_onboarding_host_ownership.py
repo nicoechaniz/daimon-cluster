@@ -20,6 +20,58 @@ from tests.test_admission import _key, _client, _coordinates, _enroll
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.skipif(os.geteuid() != 0, reason='root-created execution input requires actual UID separation')
+def test_root_worker_passes_sealed_execution_input_without_host_journal_access(tmp_path, monkeypatch):
+    import fcntl
+    from clusterctl import onboarding_group_recovery as recovery
+    from tests.test_onboarding_group_recovery import remaining_fixture
+    journal, parent, request, clock = remaining_fixture(tmp_path, monkeypatch)
+    selected = recovery.remaining_reference(recovery.remaining_plan(journal, request, audit_identity={}))
+    recovery.remaining_attach(journal, parent['operation_id'], selected)
+    parent = journal.get(parent['operation_id'])
+    command = parent['runtime_observation']['group_publication']['requests']['entrant']['application']['command']
+    bindings = dict(effect='publication', owner_name='entrant', command=command,
+        expected_context_sha256='a'*64, helper_code_digest='e'*64, helper_code_uid=0, now_ms=clock[0])
+    program = '''import fcntl,json,os,sys
+from clusterctl.onboarding_group_recovery import read_remaining_projection_fd
+from clusterctl.onboarding import OnboardingError
+fd,unsealed=int(sys.argv[1]),int(sys.argv[2])
+bindings=json.loads(sys.argv[3])
+assert os.geteuid()==1000
+assert not os.access(sys.argv[4],os.R_OK)
+value=read_remaining_projection_fd(fd,**bindings)
+try:os.write(fd,b'changed')
+except PermissionError:pass
+else:raise AssertionError('owner changed root-sealed public input')
+forged=os.memfd_create('owner-forged',os.MFD_ALLOW_SEALING)
+os.write(forged,json.dumps(value).encode())
+os.fchmod(forged,0o400)
+fcntl.fcntl(forged,fcntl.F_ADD_SEALS,fcntl.F_SEAL_WRITE|fcntl.F_SEAL_GROW|fcntl.F_SEAL_SHRINK|fcntl.F_SEAL_SEAL)
+for bad in (forged,unsealed):
+ try:read_remaining_projection_fd(bad,**bindings)
+ except OnboardingError:pass
+ else:raise AssertionError('untrusted mutable or owner-forged input accepted')
+os.close(forged)
+print(json.dumps(value))
+'''
+    unsealed = os.memfd_create('unsealed-root-context', os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+    try:
+        with recovery.remaining_reader(journal, parent, 'publication', owner_name='entrant', command=command,
+                expected_context_sha256='a'*64) as reader, recovery.sealed_remaining_input(reader) as (descriptor, pin):
+            bindings['expected_sha256'] = pin
+            os.write(unsealed, json.dumps(reader()).encode())
+            os.fchmod(unsealed, 0o400)
+            result = subprocess.run([sys.executable, '-B', '-c', program, str(descriptor), str(unsealed),
+                json.dumps(bindings), str(journal.path)], pass_fds=(descriptor,unsealed),
+                user=1000, group=1000, extra_groups=(), cwd=ROOT, capture_output=True, text=True,
+                env={'PATH':os.defpath,'LANG':'C.UTF-8'}, timeout=15)
+            assert result.returncode == 0, result.stderr
+            assert json.loads(result.stdout) == reader()
+            assert fcntl.fcntl(descriptor, fcntl.F_GET_SEALS) & fcntl.F_SEAL_WRITE
+    finally:
+        os.close(unsealed)
+
+
 def test_registry_replay_preserves_other_bodies_and_rejects_changed_owner(tmp_path):
     registry = tmp_path / 'registry'
     registry.mkdir(mode=0o700)

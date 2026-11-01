@@ -34,6 +34,13 @@ do not edit the immutable package, native history, authentication or memory.
 Adopt only under the receiving maintenance authorization. A selected service
 restart does not authorize global Stop or replay of uncertain human input.
 
+During new-body preparation, native-install and native-observe must resolve the
+same supervisor code. Keep the verified frozen base when it contains the module;
+otherwise use the verified qualified receiving helper. Refuse if neither has it.
+This does not select a replacement Telecodex binary: native probing retains the
+frozen binary. A stopped unit that points to a missing module is failed preparation,
+not native readiness; preserve its retained operation and diagnose before recovery.
+
 To adopt only a supervisor correction while preserving the current daemon, first
 qualify this existing systemd seam on a disposable child process. Install the
 content-addressed supervisor and permanent ExecStart override. Temporarily clear

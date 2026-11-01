@@ -1,20 +1,39 @@
 """Managed reconciliation uses native admission and preserves uncertain effects."""
+import copy
 import json
 import tempfile
+import time
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
 from clusterctl import being_seed
 from clusterctl.admission import AdmissionAuthority, AdmissionEndpoint, AdmissionTCPServer, serve_in_thread
-from clusterctl.onboarding import digest
+from clusterctl.onboarding import OnboardingError, digest
 from clusterctl.onboarding_admission import ReceivingHolder
 from clusterctl.onboarding_managed import ManagedRuntime
 from clusterctl.onboarding_runtime import AdmittedDaemon
 from clusterctl.onboarding_target import Target
 from tests.test_admission import _key
 from tests.test_onboarding_target import receiving
+from tests import test_guest_service_bootstrap as service_fixtures
+
+fixture = service_fixtures.fixture
+initial = service_fixtures.initial
+
+
+def test_initial_proxy_observation_uses_the_existing_bounded_inventory_route():
+    managed = object.__new__(ManagedRuntime)
+    managed.settings = dict(host_port=1234, guest_port=5678)
+    calls = []
+    def dispatch(plan, argv, **options):
+        calls.append((argv, options))
+        return json.dumps([dict(name='dm-newcomer', expanded_devices={
+            'onboarding-admission': managed._proxy()})])
+    managed.backend = SimpleNamespace(_dispatch=dispatch, instance=lambda _: 'dm-newcomer')
+    assert managed._check_proxy({}, deadline_ns=12345)
+    assert calls == [(['list', '--format=json'], {'deadline_ns': 12345})]
 
 
 def test_each_receiving_body_selects_its_verified_peer_application(monkeypatch):
@@ -38,7 +57,8 @@ def test_each_receiving_body_selects_its_verified_peer_application(monkeypatch):
     assert not managed._ready({'name': 'waiting'})
 
 
-def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp_path, monkeypatch):
+@pytest.mark.parametrize('bounded', [False, True])
+def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp_path, monkeypatch, bounded):
     ceremony, plan, blank = receiving(tmp_path)
     ceremony.prepare(plan, identity_mode='first')
     registrar = _key(tmp_path / 'host/registrar.pem', 'registrar')
@@ -68,19 +88,32 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
         active = []
         failures = ['enroll', 'registry']
         calls = []
-        def target_call(_plan, action, *, profile=None):
+        deadline = time.monotonic_ns() + 60_000_000_000
+        expiry = time.time_ns() // 1_000_000 + 60000
+        bounds = dict(candidate=(Path('/opt/approved-candidate'), 'a'*64), deadline_ns=deadline,
+            authorization_expires_at_ms=expiry) if bounded else {}
+        def target_call(_plan, action, *, profile=None, **options):
             calls.append(action)
+            if options:
+                assert options['candidate'] == bounds['candidate']
+                assert 0 < options['observation_timeout_seconds'] <= 60
+                assert options['authorization_expires_at_ms'] == expiry
             if action == 'admission-prepare':
-                return holder.request()
+                return holder.request(**({'deadline_ns': deadline} if options else {}))
             if action in {'admission-check', 'admission-enroll'}:
-                result = dict(registered=holder.ensure_enrolled(profile, enroll=action == 'admission-enroll'))
+                result = dict(registered=holder.ensure_enrolled(profile, enroll=action == 'admission-enroll',
+                    **({'deadline_ns': deadline} if options else {})))
                 if action == 'admission-enroll' and 'enroll' in failures:
                     failures.remove('enroll')
                     raise OSError('lost ACK after authority registration')
                 return result
             assert action == 'admitted-running'
             return target.running(admitted=True)
-        def dispatch(_plan, argv):
+        def dispatch(_plan, argv, **options):
+            if options:
+                assert options['deadline_ns'] == deadline
+            if argv == ['list', '--format=json']:
+                return json.dumps(instances)
             if argv[:3] == ['config', 'device', 'add']:
                 instances[0]['expanded_devices'][argv[4]] = dict(type=argv[5],
                     **dict(item.split('=', 1) for item in argv[6:]))
@@ -115,9 +148,21 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
         try:
             assert managed.observe(plan).state == 'absent'
             with pytest.raises(OSError, match='authority registration'):
-                managed.execute(plan)
+                managed.prepare_admission(plan, **bounds)
             preserved_key = holder.key.read_bytes()
             proposal = being_seed._read(tmp_path / 'service-state' / digest(plan) / 'candidate.json')
+            # A shared-group owner context must be frozen after native profile
+            # preparation, while no application/service has been selected yet.
+            # The real authority has already accepted the lost enrollment ACK.
+            ready = managed._ready
+            managed._ready = lambda _plan: False
+            with pytest.raises(OnboardingError, match='visibility_selection_required'):
+                managed.execute(plan)
+            assert managed.prepare_admission(plan, **bounds) == proposal
+            assert managed.prepare_admission(plan, **bounds) == proposal
+            assert active == []
+            assert not managed._registered(managed._expected(plan))
+            managed._ready = ready
             with pytest.raises(OSError, match='registry publication'):
                 managed.execute(plan)
             pid = active[0].process.pid
@@ -142,3 +187,746 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+
+def initial_managed_fixture(tmp_path, initial, *, complete_origins=False):
+    """Real journal/job/reader/root orchestration, fake manager and native RPC.
+
+    This does not qualify an actual guest, signed application, native process
+    or canonical registry adoption. Native authority is tested separately above.
+    """
+    from clusterctl.onboarding import JobStore
+    from tests.test_onboarding import plan as make_plan
+    from tests.test_receiving_cohort_control import admission_fixture
+    cohort, owners, journal, row, _ = admission_fixture(tmp_path, complete_origins=complete_origins)
+    plan = make_plan('newcomer')
+    jobs = tmp_path / 'jobs'
+    jobs.mkdir(mode=0o700)
+    backend = SimpleNamespace(config=SimpleNamespace(jobs=jobs), authorize=lambda *_: True)
+    JobStore(jobs).submit(plan, backend)
+    cohort.revoke_senders()
+    barrier = cohort.require_revocation_barrier
+    def bounded_barrier():
+        assert all(getattr(cohort.owners[sender['name']], 'deadline_ns', 0) > time.monotonic_ns()
+            for sender in row['expected_precondition']['senders'])
+        return barrier()
+    cohort.require_revocation_barrier = bounded_barrier
+    approved = row['intended_transition']['cohort_admission']['receivers']['newcomer']
+    prepared = approved['recipe']['prepared']
+    root_controller, manager, _ = initial
+    parent = root_controller._parent({})
+    process = {**parent, 'pid': 223, 'start_ticks': 10}
+    expected = dict(body_ref='codex:fixture:newcomer', embodiment_id=approved['embodiment_id'],
+        incarnation_id=owners['newcomer'].server.get('incarnation_id', 'incarnation:fixture'))
+    native_origin = dict(expected, principal_id='principal:fixture')
+    selected = dict(tribe_ref='tribe:fixture', socket=str(owners['newcomer'].socket),
+        application='/home/agent/synthetic/application', visibility='/home/agent/synthetic/visibility.json')
+    group = dict(selected=selected, application_sha256='a' * 64,
+        publication_sha256='b' * 64, installation_sha256='c' * 64)
+    startup = dict(code_digest=prepared['code_digest'], matrix_commit=prepared['matrix_revision'],
+        sdk_digest=prepared['sdk_digest'], matrix_wheel_sha256=prepared['matrix_wheel_sha256'],
+        reader=prepared['reader'], process_id=process['pid'], startup_instance_id='fixture-first-start')
+    owner = dict(plan_digest=digest(plan), genesis_digest='d' * 64, origin=dict(native_origin),
+        being_ref=approved['being_ref'], runtime_sha256='e' * 64, group=group,
+        group_sha256=digest(group), predecessor=None, observer_startup=startup, mode='preserve',
+        preservation=dict(schema='cluster-receiving-controller-preservation/v1', runtime_sha256='e' * 64,
+            origin=dict(native_origin), active=True, not_before_ms=0, not_after_ms=time.time_ns() // 1_000_000 + 600000))
+    gate = dict(controlled=True, process_id=process['pid'], phase='unselected', readers=[])
+    observed = dict(origin=native_origin, process=process, admission_parent=parent, group=selected,
+        runtime_sha256=owner['runtime_sha256'], responder_association='same-connection',
+        runtime_status={'loaded_runtime': dict(qualified_startup=startup,
+            runtime_bundle_sha256=owner['runtime_sha256'], process_id=process['pid'])},
+        group_runtime_status=dict(loaded_application=dict(application_sha256=group['application_sha256'],
+            publication_sha256=group['publication_sha256'], visibility={'installation_sha256': group['installation_sha256']},
+            reader_gates={'tribe': gate}), receiving={'channels': {'tribe': gate}}))
+    calls, adopted = [], []
+    fault = []
+    def target_call(_plan, action, **options):
+        calls.append(action)
+        if action == 'receiving-bootstrap-freeze':
+            assert options['bootstrap_initial_service'] is True
+            return copy.deepcopy(owner)
+        assert action == 'admitted-running' and options['require_loaded'] is True
+        if 'load' in fault:
+            fault.remove('load')
+            raise OSError('synthetic lost loaded observation')
+        return copy.deepcopy(observed)
+    def root_call(_plan, action, *, timeout_seconds, request=None, owner_observation=None,
+                  effect_not_after_ms=None, **_):
+        backend.root_budgets.append((action, timeout_seconds))
+        expiry = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
+        if action == 'bootstrap-inspect':
+            return root_controller.inspect(owner_observation, deadline_ns=expiry)
+        if action == 'bootstrap-recover-start':
+            result = root_controller.recover_start(request, deadline_ns=expiry)
+        else:
+            result = root_controller.execute(action.removeprefix('bootstrap-'), request, deadline_ns=expiry,
+                **({'effect_not_after_ms': effect_not_after_ms} if effect_not_after_ms is not None else {}))
+        if action == 'bootstrap-select' and hasattr(backend, 'after_select'):
+            backend.after_select()
+        step = action.removeprefix('bootstrap-')
+        if step in fault:
+            fault.remove(step)
+            raise OSError('synthetic lost ' + step + ' return')
+        return result
+    def adopt(**origin):
+        adopted.append(origin)
+        if 'registry' in fault:
+            fault.remove('registry')
+            raise OSError('synthetic lost registry adoption return')
+    backend._target_call, backend._guest_service_call = target_call, root_call
+    backend.frozen_owner = owner
+    backend.root_budgets = []
+    backend._receiving_base = lambda _: Path('/opt/frozen-base')
+    backend._runtime_paths = lambda _plan, _base, candidate: (
+        Path('/opt/daimon-onboarding-runtime') / candidate[1], [], {})
+    managed = object.__new__(ManagedRuntime)
+    managed.backend, managed.registry = backend, SimpleNamespace(adopt_running=adopt)
+    managed._profile = lambda _: {'synthetic': 'already prepared profile'}
+    managed._expected = lambda _: copy.deepcopy(expected)
+    managed._registered = lambda _: False
+    managed._check_proxy = lambda _, **_options: True
+    return managed, plan, cohort, manager, observed, calls, adopted, fault
+
+
+@pytest.mark.parametrize('lost', ['start', 'load', 'registry'])
+def test_initial_managed_load_resumes_same_operation_without_second_start(tmp_path, initial, lost):
+    managed, plan, cohort, manager, observed, calls, adopted, fault = initial_managed_fixture(tmp_path, initial)
+    fault.append(lost)
+    with pytest.raises(OSError, match='synthetic lost'):
+        managed.execute_initial(plan, cohort)
+    row = cohort._row()
+    intent = copy.deepcopy(row['runtime_observation']['initial_managed']['newcomer']['intent'])
+    loaded = managed.execute_initial(plan, cohort)
+    assert loaded == managed.execute_initial(plan, cohort)
+    assert loaded['process'] == observed['process'] and loaded['admission_parent'] == observed['admission_parent']
+    assert loaded['schema'] == 'cluster-guest-initial-loaded/v1' and loaded['receiving_readiness'] == 'unobserved'
+    assert calls.count('receiving-bootstrap-freeze') == 2
+    assert manager.starts == manager.enables == 1
+    assert cohort._row()['runtime_observation']['initial_managed']['newcomer']['intent'] == intent
+    assert all(owner.gate['phase'] == 'revoke' for name, owner in cohort.owners.items() if name != 'newcomer')
+    assert observed['group_runtime_status']['receiving']['channels']['tribe']['readers'] == []
+    assert adopted and all(origin == {key:observed['origin'][key]
+        for key in ('body_ref', 'embodiment_id', 'incarnation_id')} for origin in adopted)
+    assert intent['owner']['origin'] == observed['origin'], 'retain the complete authenticated native origin'
+    manager.invocation = 'unexpected replacement'
+    with pytest.raises(OnboardingError, match='started_process_changed'):
+        managed.execute_initial(plan, cohort)
+    assert manager.starts == 1
+
+
+def test_continuation_first_initial_request_uses_new_bound_and_retains_original_admission(tmp_path,initial,monkeypatch):
+    """Authorization resolution is a seam; actual initial root/journal path runs."""
+    from clusterctl import onboarding_group_recovery as recovery
+    managed,plan,cohort,manager,_,_,_,_=initial_managed_fixture(tmp_path,initial)
+    original=cohort._row()
+    approved=original['intended_transition']['cohort_admission']['receivers']['newcomer']
+    grant={'schema':recovery.SCHEMA,'expires_at_ms':original['intended_transition']['cohort_admission']['activation']['expires_at_ms']+5000,
+        'maintenance':{'newcomer':dict(code=approved['candidate']['code'],code_digest=approved['recipe']['prepared']['code_digest'])}}
+    def authorized(journal,parent,**options):
+        assert journal is cohort.journal and parent['operation_id']==cohort.operation_id
+        assert options.get('effect') in {None,'initial-start'}
+        return grant
+    monkeypatch.setattr(recovery,'attached',authorized)
+    managed.execute_initial(plan,cohort)
+    current=cohort._row()
+    intent=current['runtime_observation']['initial_managed']['newcomer']['intent']
+    assert intent['request']['not_after_ms']==grant['expires_at_ms']
+    assert intent['binding']['continuation_sha256']==digest(grant)
+    assert all(current[key]==original[key] for key in ('intent','intent_hash','expected_precondition','intended_transition'))
+    assert managed.execute_initial(plan,cohort)==current['runtime_observation']['initial_managed']['newcomer']['controlled_loaded']
+    assert manager.starts==1
+
+
+def test_remaining_first_start_keeps_social_provenance_and_holds_both_fences(tmp_path,initial,monkeypatch):
+    """Grant resolution is a seam; initial root primitive and kernel fences run."""
+    import uuid
+    from clusterctl import onboarding_group_recovery as recovery
+    from clusterctl.operation_journal import JournalConflict, OperationJournal
+    managed,plan,cohort,manager,_,_,_,_=initial_managed_fixture(tmp_path,initial)
+    original=cohort._row()
+    approved=original['intended_transition']['cohort_admission']['receivers']['newcomer']
+    social=dict(schema=recovery.SCHEMA,expires_at_ms=time.time_ns()//1_000_000-1)
+    remaining=dict(schema=recovery.REMAINING_SCHEMA,
+        expires_at_ms=time.time_ns()//1_000_000+10_000,
+        maintenance={'newcomer':dict(code=approved['candidate']['code'],
+            code_digest=approved['recipe']['prepared']['code_digest'])})
+    approval=str(uuid.uuid4())
+    observed=copy.deepcopy(original['runtime_observation'] or {})
+    observed['admission_remaining_effects']=dict(reference=dict(operation_id=approval))
+    cohort.journal.advance(cohort.operation_id,original['state'],runtime_observation=observed)
+    def historical(journal,parent,**options):
+        assert options.get('effect') is None, 'expired social grant used for fresh start'
+        return social
+    def execution(journal,parent,**options):
+        assert options.get('effect') in {None,'initial-start'}
+        return remaining
+    monkeypatch.setattr(recovery,'attached',historical)
+    monkeypatch.setattr(recovery,'execution',execution)
+    root_call=managed.backend._guest_service_call
+    fenced=[]
+    def call(plan,action,**options):
+        if action in {'bootstrap-select','bootstrap-start'} and action not in fenced:
+            competitor=OperationJournal.existing(cohort.journal.path.parent)
+            for key in (cohort.operation_id,approval):
+                with pytest.raises(JournalConflict):
+                    with competitor.mutation_lock(key):
+                        pass
+            assert options['owner_deadline_ns'] <= time.monotonic_ns()+10_000_000_000
+            fenced.append(action)
+        return root_call(plan,action,**options)
+    managed.backend._guest_service_call=call
+    result=managed.execute_initial(plan,cohort)
+    current=cohort._row()
+    intent=current['runtime_observation']['initial_managed']['newcomer']['intent']
+    assert intent['binding']['continuation_sha256']==digest(social)
+    assert intent['request']['not_after_ms']==remaining['expires_at_ms']
+    assert fenced==['bootstrap-select','bootstrap-start']
+    assert all(current[key]==original[key] for key in ('intent','intent_hash','expected_precondition','intended_transition'))
+    assert managed.execute_initial(plan,cohort)==result
+    assert manager.starts==1
+
+
+@pytest.mark.parametrize('drift', ['group', 'gate', 'process', 'profile', 'origin'])
+def test_initial_managed_load_refuses_changed_context_without_readiness(tmp_path, initial, drift):
+    managed, plan, cohort, manager, observed, calls, adopted, fault = initial_managed_fixture(tmp_path, initial)
+    if drift == 'profile':
+        fault.append('start')
+        with pytest.raises(OSError):
+            managed.execute_initial(plan, cohort)
+        managed._profile = lambda _: {'synthetic': 'unexpected replacement profile'}
+    elif drift == 'group':
+        observed['group_runtime_status']['loaded_application']['publication_sha256'] = 'f' * 64
+    elif drift == 'gate':
+        observed['group_runtime_status']['receiving']['channels']['tribe']['phase'] = 'select'
+    elif drift == 'origin':
+        observed['origin']['principal_id'] = 'principal:other'
+    else:
+        observed['runtime_status']['loaded_runtime']['qualified_startup']['process_id'] += 1
+    with pytest.raises(OnboardingError, match='loaded_conflict|binding_changed'):
+        managed.execute_initial(plan, cohort)
+    assert manager.starts == 1 and not adopted
+    assert 'controlled_loaded' not in cohort._row()['runtime_observation']['initial_managed']['newcomer']
+
+
+def test_changed_owner_after_lost_selection_is_refused_before_first_start(tmp_path, initial):
+    managed, plan, cohort, manager, _, _, adopted, fault = initial_managed_fixture(tmp_path, initial)
+    fault.append('select')
+    with pytest.raises(OSError, match='lost select'):
+        managed.execute_initial(plan, cohort)
+    assert manager.starts == 0
+    managed.backend.frozen_owner['runtime_sha256'] = 'f' * 64
+    with pytest.raises(OnboardingError, match='initial_owner_changed'):
+        managed.execute_initial(plan, cohort)
+    assert manager.starts == 0 and not adopted
+
+
+def test_expired_horizon_does_not_block_retained_start_observation(tmp_path, initial, monkeypatch):
+    managed, plan, cohort, manager, _, _, _, fault = initial_managed_fixture(tmp_path, initial)
+    fault.append('start')
+    with pytest.raises(OSError, match='lost start'):
+        managed.execute_initial(plan, cohort)
+    expiry = cohort._row()['intended_transition']['cohort_admission']['activation']['expires_at_ms']
+    monkeypatch.setattr('clusterctl.onboarding_managed.time.time_ns', lambda: (expiry + 1) * 1_000_000)
+    assert managed.execute_initial(plan, cohort)['receiving_readiness'] == 'unobserved'
+    assert manager.starts == 1
+
+
+def test_expiry_during_selection_cannot_authorize_a_first_start(tmp_path, initial, monkeypatch):
+    managed, plan, cohort, manager, _, _, adopted, _ = initial_managed_fixture(tmp_path, initial)
+    expiry = cohort._row()['intended_transition']['cohort_admission']['activation']['expires_at_ms']
+    managed.backend.after_select = lambda: monkeypatch.setattr(
+        'clusterctl.onboarding_managed.time.time_ns', lambda: (expiry + 1) * 1_000_000)
+    with pytest.raises(OnboardingError, match='authorization_expired'):
+        managed.execute_initial(plan, cohort)
+    assert manager.starts == 0 and not adopted
+
+
+def test_fresh_root_effects_share_the_fixed_authorization_remainder(tmp_path, initial, monkeypatch):
+    managed, plan, cohort, _, _, _, _, _ = initial_managed_fixture(tmp_path, initial)
+    expiry = cohort._row()['intended_transition']['cohort_admission']['activation']['expires_at_ms']
+    monkeypatch.setattr('clusterctl.onboarding_managed.time.time_ns', lambda: (expiry - 700) * 1_000_000)
+    managed.execute_initial(plan, cohort)
+    assert all(0 < budget <= .7 for action, budget in managed.backend.root_budgets
+        if action in {'bootstrap-start', 'bootstrap-select'})
+
+
+def admission_activation_fixture(tmp_path, initial):
+    """Connect the real first-load journal producer to fake qualified peers.
+
+    The SDK reader, job, root state machine and controls use real protected
+    records. Native/group/manager/identity/registry seams remain explicit fakes;
+    this does not claim installed or genuine three-being receiving acceptance.
+    """
+    from tests.test_receiving_cohort_control import admission_child_fixture
+    managed, plan, cohort, manager, observed, _, _, _ = initial_managed_fixture(
+        tmp_path, initial, complete_origins=True)
+    row = cohort._row()
+    admission = row['intended_transition']['cohort_admission']
+    epoch = '1' * 64
+    application = observed['group_runtime_status']['loaded_application']
+    application.update(loaded_view_sha256='9' * 64, tribe={'policy': {'tribe_ref': admission['tribe_ref']}},
+        shared_relationships=True, communication_store_role='ledger',
+        shared_stores={'ledger': {'schema_versions': {'communication': 4}}},
+        authorities={owner.being: dict(accepted_manifest_hashes=[epoch], active_manifest_hash=epoch,
+            active_control_head='control:fixture') for owner in cohort.owners.values()})
+    application['visibility'].update(catalog_mode='validate', catalog_validation='validated',
+        release_enabled=True, catalog_schema_version=1)
+    observed['runtime_status']['loaded_runtime'].update(authority_epoch={'accepted_manifest_hashes': [epoch]},
+        runtime_id='runtime:newcomer')
+    newcomer = cohort.owners['newcomer']
+    observed['group_runtime_status']['receiving']['channels']['tribe'].update({key: value for key, value
+        in newcomer.gate.items() if key not in {'controlled', 'process_id', 'phase', 'readers'}})
+    observed['group_runtime_status']['receiving']['channels']['tribe']['process_instance_id'] = 'newcomer:first'
+    managed.execute_initial(plan, cohort)
+    recipes = {}
+    for name, owner in cohort.owners.items():
+        if name == 'newcomer':
+            owner.process, owner.parent = observed['process'], observed['admission_parent']
+            owner.gate = copy.deepcopy(observed['group_runtime_status']['receiving']['channels']['tribe'])
+        else:
+            owner.parent = dict(uid=1, pid=1, start_ticks=2, boot_id='fixture')
+        owner.loaded = copy.deepcopy(observed['runtime_status']['loaded_runtime'])
+        owner.loaded.update(process_id=owner.process['pid'], runtime_id='runtime:' + name)
+        owner.loaded['qualified_startup'].update(process_id=owner.process['pid'], startup_instance_id=(
+            'fixture-first-start' if name == 'newcomer' else name))
+        owner.application = {key: copy.deepcopy(value) for key, value in application.items() if key != 'reader_gates'}
+        owner.identity = dict(being_ref=owner.being, manifest_hash=epoch, credential_ref='credential:' + name)
+        original = owner.status
+        def status(self, original=original):
+            result = original()
+            result['runtime_status'].update(loaded_runtime=copy.deepcopy(self.loaded),
+                loaded_application=copy.deepcopy(self.application), receiving=dict(features=['signed-roster-cas/v1'],
+                    rosters={'tribe': dict(schema='dm.runtime.tribe-roster/v1', roster_sha256='5' * 64,
+                        required_authority_epochs=[epoch])}))
+            return result
+        owner.status = MethodType(status, owner)
+        def qualified(self, *, expires_at_ms, require_admitted, **_):
+            assert require_admitted
+            return {**self.status(), 'admission_parent': copy.deepcopy(self.parent), 'identity': self.identity,
+                'verified_identity': dict(identity=self.identity, runtime_bundle_sha256=self.loaded['runtime_bundle_sha256'],
+                    authority_control_head='control:fixture', expires_at_ms=expires_at_ms)}
+        owner.qualified_identity = MethodType(qualified, owner)
+        startup = owner.loaded['qualified_startup']
+        recipes[name] = {**admission['receivers'][name]['recipe'], 'lifecycle_operation_id': cohort.operation_id,
+            'selection': dict(receiving_code=startup['code_digest'], matrix_sdk=startup['matrix_wheel_sha256'],
+                runtime_bundle_sha256=owner.loaded['runtime_bundle_sha256'],
+                application_sha256=application['application_sha256'], publication_sha256=application['publication_sha256'],
+                visibility_installation_sha256=application['visibility']['installation_sha256'])}
+        if name != 'newcomer':
+            # Retain a real child association before the simulated old exit;
+            # these process/native seams are not operational load evidence.
+            _, _, _, _, child_recipe, _, effects = admission_child_fixture(tmp_path,
+                profile='guest', with_group=False, with_exit=False, name=name,
+                setup=(cohort, cohort.owners, cohort.journal, row, {'receivers': recipes}))
+            cohort.bind_admission_lifecycle(name, child_recipe['lifecycle_operation_id'])
+            owner.process = {**owner.process, 'start_ticks': owner.process['start_ticks'] + 1}
+            owner.parent = {**owner.parent, 'start_ticks': owner.parent['start_ticks'] + 1}
+            owner.gate = {**owner.gate, 'process_instance_id': name + ':replacement', 'phase': 'unselected',
+                'request_sha256': None, 'operation_id': None, 'release_digest': None}
+            effects['controlled_loaded'] = dict(process=owner.process, admission_parent=owner.parent,
+                loaded_runtime=owner.loaded, loaded_application=owner.application)
+            cohort.journal.advance(child_recipe['lifecycle_operation_id'], 'runtime-dispatching',
+                runtime_observation={'guest_bootstraps': {name: effects}})
+            recipes[name] = child_recipe
+    cohort.retain_admission_activation({**admission['activation'], 'roster_sha256': '5' * 64, 'receivers': recipes})
+    return cohort, manager, managed, plan
+
+
+def test_first_load_is_consumed_by_the_same_cohort_and_all_senders_activate(tmp_path, initial):
+    cohort, manager, _, _ = admission_activation_fixture(tmp_path, initial)
+    before = copy.deepcopy(cohort._row()['runtime_observation']['sender_revocations'])
+    prepared = cohort.prepare_activation()
+    row = cohort._row()
+    assert row['runtime_observation']['sender_revocations'] == before
+    assert set(row['runtime_observation']['sender_initials']) == {'newcomer'}
+    assert all(owner.gate['phase'] == 'revoke' and owner.gate['readers'] == [] for owner in cohort.owners.values())
+    result = cohort.activate()
+    assert len(result['readers']) == 3 and result['readers'] == prepared['readers']
+    assert all(owner.gate['readers'] == result['readers'] for owner in cohort.owners.values())
+    counts = [owner.effects for owner in cohort.owners.values()]
+    assert cohort.activate() == result and [owner.effects for owner in cohort.owners.values()] == counts
+    assert manager.starts == 1
+
+
+def test_lost_initial_revoke_is_recoverable_before_any_activation_vector(tmp_path, initial, monkeypatch):
+    cohort, _, _, _ = admission_activation_fixture(tmp_path, initial)
+    owner = cohort.owners['newcomer']
+    actual = owner.prepare_apply_control
+    def lost(*args):
+        actual(*args)
+        raise OSError('synthetic lost initial revoke return')
+    monkeypatch.setattr(owner, 'prepare_apply_control', lost)
+    with pytest.raises(OSError, match='lost initial revoke'):
+        cohort.prepare_activation()
+    row = cohort._row()
+    assert 'cohort_activation' not in row['runtime_observation']
+    assert 'accepted' not in row['runtime_observation']['sender_initials']['newcomer']
+    assert all(peer.gate['readers'] == [] for peer in cohort.owners.values())
+    monkeypatch.setattr(owner, 'prepare_apply_control', actual)
+    repairs = cohort.reconcile_reassessment()
+    assert set(repairs) == set(cohort.owners) and all(value['state'] == 'disabled' for value in repairs.values())
+    assert all(peer.gate['phase'] == 'select' and peer.gate['readers'] == [] for peer in cohort.owners.values())
+
+
+def test_missing_initial_revoke_cannot_enable_an_old_sender(tmp_path, initial):
+    cohort, _, _, _ = admission_activation_fixture(tmp_path, initial)
+    cohort.prepare_activation()
+    row = cohort._row()
+    changed = copy.deepcopy(row['runtime_observation'])
+    del changed['sender_initials']['newcomer']['accepted']
+    cohort.journal.advance(cohort.operation_id, row['state'], runtime_observation=changed,
+        expected_runtime_observation=row['runtime_observation'])
+    with pytest.raises(OnboardingError, match='sender_barrier_changed'):
+        cohort.activate()
+    assert all(peer.gate['readers'] == [] for peer in cohort.owners.values())
+
+
+def test_initial_context_marker_cannot_replace_the_produced_load(tmp_path, initial):
+    cohort, _, _, _ = admission_activation_fixture(tmp_path, initial)
+    row = cohort._row()
+    changed = copy.deepcopy(row['runtime_observation'])
+    changed['initial_managed']['newcomer']['intent']['request']['not_after_ms'] += 1
+    cohort.journal.advance(cohort.operation_id, row['state'], runtime_observation=changed,
+        expected_runtime_observation=row['runtime_observation'])
+    with pytest.raises(OnboardingError, match='initial_managed_lifecycle_unobserved'):
+        cohort.prepare_activation()
+    assert all(peer.gate['readers'] == [] for peer in cohort.owners.values())
+
+
+def test_initial_steady_requires_selected_cohort_and_keeps_same_running_body(tmp_path, initial):
+    cohort, manager, managed, plan = admission_activation_fixture(tmp_path, initial)
+    initial_record = copy.deepcopy(cohort._row()['runtime_observation']['initial_managed'])
+    with pytest.raises(OnboardingError, match='cohort_selection_required'):
+        managed.complete_initial(plan, cohort)
+    assert manager.reloads == 0 and '--initial-context-json' in manager.unit.read_text()
+    cohort.activate()
+    result = managed.complete_initial(plan, cohort)
+    assert result['receiving_readiness'] == 'qualified-local-projection'
+    assert result['communication_acceptance'] == 'unobserved'
+    assert '--initial-context-json' not in manager.unit.read_text()
+    assert cohort._row()['runtime_observation']['initial_managed'] == initial_record
+    assert managed.complete_initial(plan, cohort) == result
+    assert managed.execute_initial(plan, cohort) == initial_record['newcomer']['controlled_loaded']
+    assert manager.starts == manager.reloads == manager.enables == 1 and manager.stops == 0
+
+
+def test_lost_steady_host_reply_does_not_repeat_the_first_start(tmp_path, initial, monkeypatch):
+    cohort, manager, managed, plan = admission_activation_fixture(tmp_path, initial)
+    cohort.activate()
+    actual = managed.backend._guest_service_call
+    lost = []
+    def root_call(*args, **options):
+        result = actual(*args, **options)
+        if args[1] == 'bootstrap-steady' and not lost:
+            lost.append(True)
+            raise OSError('synthetic lost steady return')
+        return result
+    monkeypatch.setattr(managed.backend, '_guest_service_call', root_call)
+    with pytest.raises(OSError, match='lost steady'):
+        managed.complete_initial(plan, cohort)
+    assert 'selected' not in cohort._row()['runtime_observation']['initial_steady']['newcomer']
+    assert '--initial-context-json' not in manager.unit.read_text()
+    managed.execute_initial(plan, cohort)
+    assert 'completed' in cohort._row()['runtime_observation']['initial_steady']['newcomer']
+    assert manager.reloads == manager.starts == 1 and manager.stops == 0
+
+
+@pytest.mark.parametrize('interruption', ['reply', 'before-reload'])
+def test_remaining_steady_handoff_fences_dispatch_and_recovers_without_new_permission(tmp_path, initial, monkeypatch, interruption):
+    """Resolve the grant at a seam; use real journals, locks and root primitive."""
+    import uuid
+    from clusterctl import onboarding_group_recovery as recovery
+    from clusterctl.operation_journal import JournalConflict, OperationJournal
+    cohort, manager, managed, plan = admission_activation_fixture(tmp_path, initial)
+    cohort.activate()
+    original = cohort._row()
+    approved = original['intended_transition']['cohort_admission']['receivers']['newcomer']
+    grant = dict(schema=recovery.REMAINING_SCHEMA,
+        expires_at_ms=original['intended_transition']['cohort_admission']['activation']['expires_at_ms'],
+        maintenance={'newcomer': dict(code=approved['candidate']['code'],
+            code_digest=approved['recipe']['prepared']['code_digest'])})
+    approval = str(uuid.uuid4())
+    observed = copy.deepcopy(original['runtime_observation'])
+    observed['admission_remaining_effects'] = dict(reference=dict(operation_id=approval))
+    cohort.journal.advance(cohort.operation_id, original['state'], runtime_observation=observed)
+    completed = []
+    interrupted = []
+    fresh = []
+    def execution(journal, parent, **options):
+        if options.get('effect') == 'old-selection-start':
+            # This fixture's already-completed old lifecycles predate the
+            # handoff seam and keep their original no-continuation provenance.
+            assert options.get('historical') is True
+            return None
+        if not options.get('historical', False):
+            assert options['effect'] == 'steady-handoff'
+            assert not completed, 'accepted physical handoff must be observation-only'
+            fresh.append(options['effect'])
+        return grant
+    monkeypatch.setattr(recovery, 'execution', execution)
+    actual = managed.backend._guest_service_call
+    def assert_fenced():
+        competitor = OperationJournal.existing(cohort.journal.path.parent)
+        for key in (cohort.operation_id, approval):
+            with pytest.raises(JournalConflict):
+                with competitor.mutation_lock(key):
+                    pass
+    reload = manager.reload
+    def reload_with_loss(**options):
+        assert_fenced()
+        if interruption == 'before-reload' and not interrupted:
+            interrupted.append(True)
+            raise OSError('synthetic lost remaining steady return')
+        return reload(**options)
+    manager.reload = reload_with_loss
+    def root_call(plan, action, **options):
+        if action == 'bootstrap-steady' and not interrupted:
+            assert_fenced()
+            assert options['candidate'] == (Path(approved['candidate']['code']),
+                approved['recipe']['prepared']['code_digest'])
+            assert 0 < options['owner_deadline_ns'] - time.monotonic_ns() <= 60_000_000_000
+            result = actual(plan, action, **options)
+            completed.append(result)
+            interrupted.append(True)
+            raise OSError('synthetic lost remaining steady return')
+        return actual(plan, action, **options)
+    managed.backend._guest_service_call = root_call
+    with pytest.raises(OSError, match='lost remaining steady'):
+        managed.complete_initial(plan, cohort, timeout_seconds=2)
+    requests = copy.deepcopy(cohort._row()['runtime_observation']['initial_steady'])
+    assert fresh and interrupted
+    assert bool(completed) == (interruption == 'reply')
+    result = managed.complete_initial(plan, cohort)
+    assert result['receiving_readiness'] == 'qualified-local-projection'
+    current = cohort._row()
+    assert current['runtime_observation']['initial_steady']['newcomer']['intent'] == requests['newcomer']['intent']
+    assert all(current[key] == original[key] for key in
+        ('intent', 'intent_hash', 'expected_precondition', 'intended_transition'))
+    assert manager.reloads == manager.starts == 1 and manager.stops == 0
+
+
+def test_post_steady_qualification_failure_keeps_the_physical_selection(tmp_path, initial, monkeypatch):
+    cohort, manager, managed, plan = admission_activation_fixture(tmp_path, initial)
+    cohort.activate()
+    actual = cohort._confirmed_selection
+    confirmed = []
+    def observe(*args):
+        confirmed.append(True)
+        if len(confirmed) > 1:
+            raise OnboardingError('synthetic expired post-handoff observation')
+        return actual(*args)
+    monkeypatch.setattr(cohort, '_confirmed_selection', observe)
+    with pytest.raises(OnboardingError, match='expired post-handoff'):
+        managed.complete_initial(plan, cohort)
+    row = cohort._row()
+    assert 'selected' in row['runtime_observation']['initial_steady']['newcomer']
+    assert 'completed' not in row['runtime_observation']['initial_steady']['newcomer']
+    assert '--initial-context-json' not in manager.unit.read_text()
+    with pytest.raises(OnboardingError, match='cohort_reassessment_required'):
+        managed.execute_initial(plan, cohort)
+    assert manager.reloads == manager.starts == 1 and manager.stops == 0
+    assert 'cohort_reassessment' in cohort._row()['runtime_observation']
+    assert all(owner.gate['readers'] == [] for owner in cohort.owners.values())
+
+
+def test_post_steady_gate_drift_uses_existing_forward_repair(tmp_path, initial, monkeypatch):
+    cohort, manager, managed, plan = admission_activation_fixture(tmp_path, initial)
+    cohort.activate()
+    actual = managed.backend._guest_service_call
+    drifted = []
+    def root_call(*args, **options):
+        result = actual(*args, **options)
+        if args[1] == 'bootstrap-steady' and not drifted:
+            drifted.append(True)
+            cohort.owners['eko'].gate['head'] = '0' * 64
+        return result
+    monkeypatch.setattr(managed.backend, '_guest_service_call', root_call)
+    with pytest.raises(OnboardingError, match='cohort_selection_changed'):
+        managed.complete_initial(plan, cohort)
+    row = cohort._row()
+    assert 'selected' in row['runtime_observation']['initial_steady']['newcomer']
+    assert 'completed' not in row['runtime_observation']['initial_steady']['newcomer']
+    assert all(owner.gate['readers'] == [] for owner in cohort.owners.values())
+    assert '--initial-context-json' not in manager.unit.read_text()
+    with pytest.raises(OnboardingError, match='cohort_reassessment_required'):
+        managed.execute_initial(plan, cohort)
+    assert manager.reloads == manager.starts == 1 and manager.stops == 0
+
+
+def test_unavailable_native_load_after_steady_selection_retains_and_repairs(tmp_path, initial, monkeypatch):
+    cohort, manager, managed, plan = admission_activation_fixture(tmp_path, initial)
+    cohort.activate()
+    def unavailable(*_args, **_options):
+        raise OSError('synthetic unavailable loaded owner')
+    monkeypatch.setattr(managed.backend, '_target_call', unavailable)
+    with pytest.raises(OSError, match='unavailable loaded owner'):
+        managed.complete_initial(plan, cohort)
+    row = cohort._row()
+    assert 'selected' in row['runtime_observation']['initial_steady']['newcomer']
+    assert 'completed' not in row['runtime_observation']['initial_steady']['newcomer']
+    assert 'cohort_reassessment' in row['runtime_observation']
+    assert all(owner.gate['readers'] == [] for owner in cohort.owners.values())
+    assert manager.starts == manager.reloads == 1 and manager.stops == 0
+
+
+def test_expired_post_steady_budget_retains_repair_without_more_owner_calls(tmp_path, initial, monkeypatch):
+    cohort, manager, managed, plan = admission_activation_fixture(tmp_path, initial)
+    cohort.activate()
+    effects = {name: owner.effects for name, owner in cohort.owners.items()}
+    actual = managed.backend._guest_service_call
+    monotonic_ns = time.monotonic_ns
+    expired = []
+    def root_call(*args, **options):
+        result = actual(*args, **options)
+        if args[1] == 'bootstrap-steady':
+            expired.append(True)
+        return result
+    monkeypatch.setattr(managed.backend, '_guest_service_call', root_call)
+    monkeypatch.setattr(time, 'monotonic_ns', lambda: monotonic_ns() + (10**12 if expired else 0))
+    with pytest.raises(OnboardingError, match='host_deadline_expired'):
+        managed.complete_initial(plan, cohort)
+    row = cohort._row()
+    assert 'selected' in row['runtime_observation']['initial_steady']['newcomer']
+    assert row['runtime_observation']['cohort_reassessment'] == {}
+    assert {name: owner.effects for name, owner in cohort.owners.items()} == effects
+    assert '--initial-context-json' not in manager.unit.read_text()
+    assert manager.starts == manager.reloads == 1 and manager.stops == 0
+    expired.clear()
+    assert all(value['state'] == 'disabled' for value in cohort.reconcile_reassessment().values())
+
+
+@pytest.mark.parametrize('fault',[None,'selection','group','principal'])
+def test_completed_group_admission_observes_approved_native_pins_without_legacy_fallback(monkeypatch,fault):
+    from clusterctl.onboarding import Observation
+    from clusterctl import onboarding_group_coordinator as group
+    value = {'name':'newcomer'}
+    origin = dict(body_ref='codex:fixture:newcomer',embodiment_id='body:newcomer',incarnation_id='incarnation:newcomer',principal_id='principal:newcomer')
+    selected = dict(application='/home/agent/group/application',visibility='/home/agent/group/visibility',tribe_ref='tribe:fixture')
+    actual = dict(loaded_runtime=dict(runtime_bundle_sha256='a'*64,
+        qualified_startup=dict(code_digest='b'*64,matrix_wheel_sha256='c'*64)),
+        loaded_application=dict(application_sha256='d'*64,publication_sha256='e'*64,visibility=dict(installation_sha256='f'*64)))
+    selection = group.loaded_selection(actual)
+    row = dict(runtime_observation=dict(admission_activation_plan=dict(plan=dict(receivers=dict(newcomer=dict(selection=selection)))),
+        initial_managed=dict(newcomer=dict(intent=dict(owner=dict(origin=copy.deepcopy(origin)))))))
+    approved = dict(candidate=dict(code='/approved/code'),recipe=dict(prepared=dict(code_digest='b'*64)))
+    monkeypatch.setattr(group,'GroupCoordinator',lambda backend:SimpleNamespace(selection=lambda plan:(row,approved,selected)))
+    presence = dict(schema='cluster-onboarding-runtime-presence/v1',plan_digest=digest(value),origin=copy.deepcopy(origin),
+        process=dict(pid=2),group=copy.deepcopy(selected),runtime_status=dict(loaded_runtime=actual['loaded_runtime']),
+        group_runtime_status=dict(loaded_application=actual['loaded_application']))
+    if fault == 'selection':
+        actual['loaded_application']['visibility']['installation_sha256'] = '0'*64
+    elif fault == 'group':
+        presence['group']['application'] = '/home/agent/wrong/application'
+    elif fault == 'principal':
+        presence['origin']['principal_id'] = 'principal:another'
+    calls = []
+    def target(plan,action,**options):
+        assert options == dict(candidate=(Path('/approved/code'),'b'*64),require_loaded=True)
+        calls.append(action)
+        return presence
+    managed = object.__new__(ManagedRuntime)
+    managed.settings = dict(messaging_application='/wrong/default/application',visibility_installation='/wrong/default/visibility')
+    managed.backend = SimpleNamespace(config=SimpleNamespace(group_admission=Path('/protected/map'),peer=None,qualification=False),
+        _target_call=target,instance=lambda plan:'dm-newcomer',
+        _dispatch=lambda *args:'ActiveState=active\nMainPID=1\n')
+    managed._expected = lambda plan:dict(being_ref='being:newcomer',**origin)
+    managed._registered = lambda expected:True
+    managed._profile = lambda plan:{'registered':True}
+    managed._check_proxy = lambda plan:True
+    assert managed._selection(value) == (selected['application'],selected['visibility'])
+    if fault:
+        with pytest.raises(OnboardingError,match='managed_presence_rejected'):
+            managed.observe(value)
+    else:
+        assert managed.observe(value) == Observation('complete',dict(verified=True,identity_verified=True))
+        # A completed qualified unit is observed, never overwritten with the
+        # generic install path, even if its approved code is not the host default.
+        managed.execute(value)
+    assert calls == ['admitted-running']*(1 if fault else 2)
+
+
+@pytest.mark.parametrize('lost', [None, 'recover-start', 'load', 'registry'])
+def test_initial_managed_adopts_explicit_successor_without_replaying_start(tmp_path, initial, monkeypatch, lost):
+    import uuid
+    from clusterctl import owner_process
+    managed, plan, cohort, manager, observed, calls, adopted, fault = initial_managed_fixture(
+        tmp_path, initial, complete_origins=True)
+    fault.append('load')
+    with pytest.raises(OSError, match='lost loaded'):
+        managed.execute_initial(plan, cohort)
+    original = copy.deepcopy(cohort._row()['runtime_observation']['initial_managed']['newcomer'])
+    old = original['started']['admission_parent']
+    parent = {**old, 'pid': 322, 'start_ticks': 19}
+    child = {**parent, 'pid': 333, 'start_ticks': 20}
+    manager.exited[old['pid']] = True
+    manager.invocation = 'managed-successor'
+    inspect = manager.inspect
+    def inspect_successor(**options):
+        value = inspect(**options)
+        value['manager']['MainPID'] = str(parent['pid'])
+        return value
+    manager.inspect = inspect_successor
+    class Family:
+        def __init__(self, process):
+            assert process == child
+            self.process = parent
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            pass
+        def verify(self):
+            pass
+    monkeypatch.setattr(owner_process, 'ParentProcessPresence', Family)
+    observed.update(process=child, admission_parent=parent)
+    loaded = observed['runtime_status']['loaded_runtime']
+    loaded['process_id'] = child['pid']
+    loaded['qualified_startup'].update(process_id=child['pid'], startup_instance_id='fixture-successor')
+    observed['group_runtime_status']['receiving']['channels']['tribe']['process_id'] = child['pid']
+    recovery_id = str(uuid.uuid4())
+    approved = cohort._admission(cohort._row())['receivers']['newcomer']
+    implementation = (Path(approved['candidate']['code']), approved['recipe']['prepared']['code_digest'])
+    if lost is not None:
+        fault.append(lost)
+        with pytest.raises(OSError, match='synthetic lost'):
+            managed.execute_initial(plan, cohort, start_recovery=(recovery_id, implementation))
+    result = managed.execute_initial(plan, cohort, start_recovery=(recovery_id, implementation))
+    assert managed.execute_initial(plan, cohort, start_recovery=(recovery_id, implementation)) == result
+    effect = cohort._row()['runtime_observation']['initial_managed']['newcomer']
+    assert effect['started'] == original['started'] and effect['intent'] == original['intent']
+    assert result['process'] == child and result['admission_parent'] == parent
+    assert effect['start_recovery_receipt']['predecessor_exited'] is True
+    assert manager.starts == manager.enables == 1 and manager.stops == 0
+    recipe = {**approved['recipe'], 'lifecycle_operation_id': cohort.operation_id}
+    assert cohort._initial_lifecycle(cohort._row(), 'newcomer', recipe) == effect
+    for mutation in ('scope', 'manager', 'exit', 'start-digest', 'loaded-process'):
+        corrupted = copy.deepcopy(cohort._row())
+        receipt = corrupted['runtime_observation']['initial_managed']['newcomer']['start_recovery_receipt']
+        if mutation == 'scope':
+            receipt['scope']['process']['pid'] += 1
+        elif mutation == 'manager':
+            receipt['manager']['InvocationID'] = 'forged-invocation'
+        elif mutation == 'exit':
+            receipt['predecessor_exited'] = False
+        elif mutation == 'start-digest':
+            receipt['started_sha256'] = '0' * 64
+        else:
+            corrupted['runtime_observation']['initial_managed']['newcomer']['controlled_loaded']['process']['pid'] += 1
+        with pytest.raises(OnboardingError, match='initial_managed_lifecycle_unobserved'):
+            cohort._initial_lifecycle(corrupted, 'newcomer', recipe)
+    # A later explicitly bounded continuation changes future effect permission,
+    # never the immutable original first-start context.
+    from clusterctl import onboarding_group_recovery as recovery
+    original_bounds = recovery.bounds
+    with monkeypatch.context() as patch:
+        patch.setattr(recovery, 'bounds', lambda journal, row: {
+            **original_bounds(journal, row), 'expires_at_ms': effect['intent']['request']['not_after_ms'] + 10000})
+        assert cohort._initial_lifecycle(cohort._row(), 'newcomer', recipe) == effect
+    assert managed.execute_initial(plan, cohort) == result
+    assert manager.starts == 1 and adopted
+    assert calls.count('receiving-bootstrap-freeze') == 2
+    # A later manager invocation cannot inherit the accepted successor proof.
+    manager.invocation = 'unobserved-second-successor'
+    with pytest.raises(OnboardingError, match='initial_service_changed'):
+        managed.execute_initial(plan, cohort)
+    assert manager.starts == 1

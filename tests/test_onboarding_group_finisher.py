@@ -1,0 +1,701 @@
+"""Actual worker/job/journal/cohort join with explicit native/manager seams.
+
+Existing native social, publication, first-load and activation suites qualify
+those producers. These cases qualify caller recovery, not installed admission.
+"""
+import copy
+import time
+import uuid
+from types import SimpleNamespace
+
+import pytest
+
+from clusterctl import being_seed, onboarding_group_coordinator as module, onboarding_receiving_update as updates
+from clusterctl.onboarding import OnboardingError, digest
+from clusterctl.onboarding_code_successor import plan_update
+from clusterctl.onboarding_group_coordinator import GroupCoordinator
+from clusterctl.onboarding_worker import Worker
+from clusterctl.operation_journal import OperationJournal
+from tests.test_onboarding_group_coordinator import fixture  # noqa: F401
+from tests.test_receiving_cohort_control import admission_child_fixture
+
+
+@pytest.fixture
+def full(fixture, monkeypatch, request):  # noqa: F811 - imported shared pytest fixture
+    f = fixture
+    before, transition = copy.deepcopy(f.row['expected_precondition']), copy.deepcopy(f.row['intended_transition'])
+    admission = transition['cohort_admission']
+    old = {item['name'] for item in before['senders']}
+    settings = getattr(request,'param',{})
+    selected = copy.deepcopy(f.selected)
+    profiles = {name:'guest' for name in old}
+    if settings.get('source'):
+        profiles['eko'] = 'source'
+        admission['receivers']['eko']['recipe']['profile'] = 'source'
+        f.activation['receivers']['eko']['profile'] = 'source'
+        owner = f.owners['eko']
+        candidate = admission['receivers']['eko']['candidate']
+        selected['owners']['eko'] = dict(profile='source',config=str(owner.root/'source.json'),
+            config_sha256='a'*64,owner_uid=1000,owner_gid=1000,code=candidate['code'],
+            code_digest=admission['receivers']['eko']['recipe']['prepared']['code_digest'],code_uid=0,
+            venv=str(owner.root/'sdk/venv'),imports=str(owner.root/'sdk/imports'),root=str(owner.root),
+            socket_path=str(owner.socket),lifecycle_journal=str(owner.root/'journal'))
+    if 'window_ms' in settings:
+        admission['activation']['observation_window_ms'] = settings['window_ms']
+    if 'channel' in settings:
+        for item in admission['receivers'].values():
+            item['recipe']['tooling']['tribe_channel'] = settings['channel']
+    social = dict(operation_id=str(uuid.uuid4()), founder_owner='eko', entrant_owner='newcomer',
+        authority_closure={owner.being:{} for owner in f.owners.values()}, owner_contexts={name:'4'*64 for name in f.owners})
+    transition['portal_admission'].update(schema=module.SOCIAL_CALLER_SCHEMA, social=social,owners_sha256=digest(selected['owners']))
+    transition['admission_preparations'] = {name:dict(profile=profiles[name], steps=dict(
+        application='application', visibility='visibility', selection='selection', snapshot='child-snapshot'),
+        **(dict(home=str(f.owners[name].root),unit=str(f.owners[name].root/'matrix.service')) if profiles[name] == 'source' else {})) for name in old}
+    transition['admission_publications'] = {'synthetic':'fixed-approved-native-recipe'}
+    def sender(name):
+        return dict(owner=name, **{key:admission['receivers'][name][key] for key in ('being_ref','embodiment_id')})
+    scope = dict(schema=module.COMMUNICATION_SCHEMA, expires_at_ms=admission['activation']['expires_at_ms'],
+        group=dict(sender=sender('eko'), text='Group check'),
+        direct=dict(sender=sender('newcomer'), text='Directed check', destination=dict(kind='being', being_ref=f.owners['eko'].being)),
+        reply=dict(sender=sender('newcomer'), text='Connected reply', parent='group'))
+    transition['admission_communication'] = scope
+    before['host_config'] = str(f.store.root.parent/'host.json')
+    journal = OperationJournal(f.store.root.parent/'full-caller')
+    row = plan_update(journal, manifest_digest=f.row['intent']['runtime_call']['manifest_digest'], target=f.row['target'],
+        expected_precondition=before, intended_transition=transition, audit_identity={'actor':'synthetic-host'})
+    selected.update(journal=str(journal.path.parent), admissions={digest(f.plans['newcomer']):row['operation_id']})
+    being_seed._write(f.path, selected)
+    # Governance validation/native issuance are explicit seams already covered
+    # by native membership/publication suites; this fixture has no signing keys.
+    monkeypatch.setattr('clusterctl.onboarding_group_admission.membership_recipe', lambda value,*a:copy.deepcopy(value))
+    monkeypatch.setattr('clusterctl.onboarding_group_admission.publication_recipe', lambda value,*a:copy.deepcopy(value))
+    monkeypatch.setattr(module, 'communication_recipe', lambda value,*a:copy.deepcopy(value))
+    calls, children, snapshots, messages = [], {}, {}, {}
+    active_journal = [journal]
+    fault = dict(phase=None, lost=False, echo=True, busy=False, restarted=False, reply_echo=True)
+    def lose(phase):
+        if fault['phase'] == phase and not fault['lost']:
+            fault['lost'] = True
+            raise OSError('synthetic lost '+phase+' response')
+    def retain(key, value):
+        selected_journal = active_journal[0]
+        current = selected_journal.get(row['operation_id'])
+        observations = copy.deepcopy(current['runtime_observation'] or {})
+        observations[key] = value
+        selected_journal.advance(row['operation_id'], current['state'], runtime_observation=observations,
+            expected_runtime_observation=current['runtime_observation'])
+    def child_effect(name, key, value):
+        child_id = children[name]['recipe']['lifecycle_operation_id']
+        current = active_journal[0].get(child_id)
+        observations = copy.deepcopy(current['runtime_observation'])
+        if profiles[name] == 'source':
+            observations['source_bootstrap'][key] = value
+        else:
+            observations['guest_bootstraps'][name][key] = value
+        active_journal[0].advance(child_id, current['state'], runtime_observation=observations)
+    def loaded(name):
+        approved = admission['receivers'][name]
+        prepared = approved['recipe']['prepared']
+        return dict(process=copy.deepcopy(f.owners[name].process),
+            admission_parent=dict(uid=1,pid=1,start_ticks=2,boot_id='fixture'), loaded_runtime=dict(
+            runtime_bundle_sha256='a'*64, qualified_startup=dict(code_digest=prepared['code_digest'],
+                matrix_wheel_sha256=prepared['matrix_wheel_sha256'])),
+            loaded_application=dict(application_sha256='b'*64, publication_sha256='c'*64,
+                visibility=dict(installation_sha256='d'*64)))
+    for name,owner in f.owners.items():
+        owner.backend = f.backend
+        state = dict(stopped=False, loaded=None)
+        owner.test_state = state
+        original = owner.status
+        def status(*, owner=owner, original=original, state=state):
+            if state['stopped']:
+                raise OnboardingError('synthetic_stopped')
+            result = original()
+            if state['loaded']:
+                result['runtime_status'].update(loaded_runtime=copy.deepcopy(state['loaded']['loaded_runtime']),
+                    loaded_application=copy.deepcopy(state['loaded']['loaded_application']),
+                    receiving=dict(rosters=dict(tribe=dict(schema='dm.runtime.tribe-roster/v1', roster_sha256='5'*64))))
+                result['admission_parent'] = dict(uid=1,pid=1,start_ticks=2,boot_id='fixture')
+            return result
+        owner.status = status
+    def prepare(_backend, value, selected_journal, request, **options):
+        active_journal[0] = selected_journal
+        name = value['name']
+        if name not in children:
+            cohort = updates.CohortController(selected_journal, row['operation_id'], f.owners)
+            result = admission_child_fixture(f.store.root.parent, profile=profiles[name], name=name, with_group=False, with_exit=False,
+                setup=(cohort,f.owners,selected_journal,row,f.activation))
+            children[name] = dict(recipe=result[4], effects=result[6])
+        return dict(schema='cluster-'+profiles[name]+'-admission-prepared/v1', operation_id=children[name]['recipe']['lifecycle_operation_id'],
+            request_sha256=digest(request), cohort_operation_id=row['operation_id'], cohort_intent_sha256=digest(row['intent']),
+            receiving_readiness='unobserved')
+    monkeypatch.setattr(updates, 'prepare_guest_admission', prepare)
+    if settings.get('source'):
+        f.owners['eko'].prepare_admission_lifecycle = lambda request:prepare(f.backend,f.plans['eko'],active_journal[0],request)
+    def schema(request, **options):
+        if request['action'] == 'context-preview':
+            return dict(owner_context_sha256='6'*64, predecessor_selection_sha256=None,
+                communication_plan=dict(target_version=4, plan_sha256='8'*64))
+        return dict(schema='cluster-group-publication-result/v1', **{key:request[key] for key in ('operation_id','step','action')},
+            status='recorded', receiving_readiness='unobserved', migration=dict(target_version=4, source_plan_sha256='8'*64))
+    f.owners['newcomer'].group_publication = schema
+    class Controller:
+        def __init__(self, _journal, operation, backend, name):
+            active_journal[0] = _journal
+            assert operation == children[name]['recipe']['lifecycle_operation_id']
+            self.name = name
+        def quiesce(self, **options):
+            calls.append('quiesce-'+self.name)
+            f.owners[self.name].test_state['stopped'] = True
+            result = children[self.name]['effects']['quiesced']
+            child_effect(self.name, 'quiesced', result)
+            return result
+        def preserve(self, **options):
+            calls.append('preserve-'+self.name)
+            return {'preserved':True}
+        def retain_admission_group(self, **options):
+            calls.append('derive-'+self.name)
+            value = children[self.name]['effects']['admission_group']
+            child_effect(self.name, 'admission_group', value)
+            return value
+        def execute(self, **options):
+            name, owner = self.name, f.owners[self.name]
+            if owner.test_state['loaded'] is None:
+                calls.append('load-'+name)
+                owner.process = {**owner.process, 'start_ticks':owner.process['start_ticks']+1}
+                owner.gate = {**owner.gate, 'phase':'unselected', 'process_instance_id':name+':replacement', 'readers':[]}
+                owner.test_state.update(stopped=False, loaded=loaded(name))
+                child_effect(name, 'controlled_loaded', owner.test_state['loaded'])
+            lose('load-'+name)
+            return owner.test_state['loaded']
+        def observe_quiescence(self, **options):
+            exited = children[self.name]['effects']['quiesced']
+            return dict(schema=('cluster-source-bootstrap-quiescence/v1' if profiles[self.name] == 'source'
+                    else 'cluster-guest-service-quiescence-observation/v1'), process=exited['process'],
+                exit_sha256=digest(exited), service=dict(manager=dict(ActiveState='inactive',SubState='dead',MainPID='0')))
+    monkeypatch.setattr(updates, 'GuestBootstrapController', Controller)
+    if settings.get('source'):
+        def source_action(operation,action):
+            controller = Controller(active_journal[0],operation,f.backend,'eko')
+            return {'quiesce':controller.quiesce,'preserve':controller.preserve,
+                'derive':controller.retain_admission_group,'start':controller.execute,
+                'quiescence':controller.observe_quiescence}[action]()
+        f.owners['eko'].lifecycle_action = source_action
+    def membership(cohort, **options):
+        active_journal[0] = cohort.journal
+        current = journal.get(row['operation_id'])
+        if 'membership_admission' not in (current['runtime_observation'] or {}):
+            cohort.require_revocation_barrier()
+            calls.append('membership')
+            result = {'schema':'cluster-native-membership-admission/v1'}
+            retain('membership_admission', dict(recipe_sha256=digest(social),result=result,result_sha256=digest(result)))
+        return journal.get(row['operation_id'])['runtime_observation']['membership_admission']['result']
+    monkeypatch.setattr(updates.CohortController, 'admit_membership', membership)
+    def publish(cohort, **options):
+        active_journal[0] = cohort.journal
+        current = journal.get(row['operation_id'])
+        if 'group_publication' in (current['runtime_observation'] or {}):
+            return current['runtime_observation']['group_publication']['result']
+        cohort.require_revocation_barrier()
+        calls.append('publication')
+        requests = {}
+        for name,owner in f.owners.items():
+            group = dict(selected=dict(channel_id='tribe',tribe_ref='tribe:fixture',socket=str(owner.socket),
+                application=str(owner.root/'application'),visibility=str(owner.root/'visibility')),
+                application_sha256='b'*64,publication_sha256='c'*64,installation_sha256='d'*64)
+            snapshots[name] = dict(group=group)
+            if name in children:
+                requests[name] = {}
+                publications = children[name]['effects']['admission_group']['snapshot']['publications']
+                for action,key in (('application','application'),('visibility-publish','visibility'),('selection','selection')):
+                    command = {'action':action,'owner':name}
+                    publications[action]['command_sha256'] = digest(command)
+                    requests[name][key] = dict(command=command,result=publications[action]['result'])
+        result = dict(schema='cluster-admission-group-publications/v1',snapshots=snapshots)
+        membership = current['runtime_observation']['membership_admission']
+        retain('group_publication',dict(result=result,result_sha256=digest(result),requests=requests,
+            recipe_sha256=digest(transition['admission_publications']),membership_sha256=membership['result_sha256']))
+        lose('publication')
+        return result
+    monkeypatch.setattr(updates.CohortController, 'publish_admission_group', publish)
+    def initial(self, value, cohort, **options):
+        active_journal[0] = cohort.journal
+        name = value['name']
+        owner = f.owners[name]
+        if owner.test_state['loaded'] is None:
+            calls.append('initial-load')
+            owner.test_state['loaded'] = loaded(name)
+            retain('initial_managed',{name:dict(intent=dict(owner=dict(origin=owner.server)),controlled_loaded=owner.test_state['loaded'])})
+        lose('initial-load')
+        return owner.test_state['loaded']
+    monkeypatch.setattr(type(f.managed),'execute_initial',initial)
+    f.owners['newcomer'].prepare_attachment = lambda request,**options: calls.append('attachment') or {'prepared':True}
+    def activate(cohort):
+        active_journal[0] = cohort.journal
+        current = journal.get(row['operation_id'])['runtime_observation']
+        if 'sender_selections' in current:
+            if fault['restarted']:
+                raise OnboardingError('receiving_cohort_selection_changed')
+            return current['portal_admission']['activation_ready']
+        calls.append('activation')
+        readers = [{'being_ref':owner.being,'embodiment_id':owner.server['embodiment_id'],
+            'expires_at_ms':admission['activation']['expires_at_ms']} for owner in f.owners.values()]
+        records = {name:dict(observed=name, reader=reader,
+            identity_expires_at_ms=admission['activation']['expires_at_ms'])
+            for name,reader in zip(f.owners,readers,strict=True)}
+        retain('cohort_activation',dict(records=records,readers=readers,evidence_sha256=digest(records)))
+        selections = {name:{'selected':name} for name in f.owners}
+        retain('sender_selections',selections)
+        retain('native_tooling',{name:{'configured':True} for name in f.owners})
+        return dict(schema='cluster-receiving-cohort-selection/v1',operation_id=row['operation_id'],
+            sender_selections=selections,readers=readers,evidence_sha256=digest(records))
+    monkeypatch.setattr(updates.CohortController,'activate',activate)
+    def steady(self,value,cohort,**options):
+        active_journal[0] = cohort.journal
+        phases = journal.get(row['operation_id'])['runtime_observation']['portal_admission']
+        result = dict(schema='cluster-managed-initial-steady/v1', initial_sha256=digest(f.owners['newcomer'].test_state['loaded']),
+            cohort_selection_sha256=digest(phases['activation_ready']))
+        if 'initial_steady' not in journal.get(row['operation_id'])['runtime_observation']:
+            calls.append('steady')
+            retain('initial_steady',{'newcomer':{'completed':result}})
+        lose('steady')
+        return result
+    monkeypatch.setattr(type(f.managed),'complete_initial',steady)
+    for name,owner in f.owners.items():
+        def messaging(method,parameters,*,name=name,owner=owner,**options):
+            send_id = parameters['send_id']
+            if method == 'messaging_delivery':
+                if send_id not in messages:
+                    raise OnboardingError('receiving_communication_unobserved')
+                response = copy.deepcopy(messages[send_id])
+                echo = fault['echo'] and (fault['reply_echo'] or response['result']['response_context'] is None)
+                response['result']['visibility'].update(echo_state='confirmed' if echo else 'pending')
+                return response
+            if send_id in messages:
+                calls.append('resume-'+method)
+                if fault['busy']:
+                    for leg in messages[send_id]['result']['semantic']['legs']:
+                        leg['state'] = 'delivered'
+                    fault['busy'] = False
+                return copy.deepcopy(messages[send_id])
+            assert send_id not in messages, 'an uncertain send must be inspected, never reauthored'
+            calls.append(method)
+            author = dict(being_ref=owner.being,embodiment_id=owner.server['embodiment_id'])
+            parent = next((response['result'] for response in messages.values()
+                if response['result']['message_id'] == parameters.get('message_id')),None)
+            target = parameters.get('destination')
+            audience = [dict(membership_ref='membership:'+other,being_ref=who.being,embodiment_id=who.server['embodiment_id'])
+                for other,who in f.owners.items() if target is None or who.being == target['being_ref']]
+            result = dict(schema='dm.tribe.direct-delivery/v1' if target else 'dm.tribe.delivery/v1',
+                send_id=send_id,message_id=str(uuid.uuid4()),message_hash=digest(parameters),tribe_ref='tribe:fixture',author=author,
+                thread_id=parent['thread_id'] if parent else parameters['thread_id'],
+                response_context=(dict(message_id=parent['message_id'],message_hash=parent['message_hash'],
+                    sender_being_ref=parent['author']['being_ref'],sender_embodiment_id=parent['author']['embodiment_id']) if parent else None),
+                visibility=dict(echo_state='confirmed' if fault['echo'] else 'pending',part_count=2,confirmed_parts=2),audience=audience,
+                semantic=dict(legs=[]))
+            if target:
+                result['destination'] = target
+            for item in audience:
+                result['semantic']['legs'].append(dict(recipient_id=item['membership_ref'],receipt_origin_embodiment_id=item['embodiment_id'],
+                    message_id=result['message_id'],thread_id=result['thread_id'],state='delivered',
+                    terminal_receipt_event_id=str(uuid.uuid4()),terminal_receipt_hash='a'*64))
+            if fault['busy']:
+                for leg in result['semantic']['legs']:
+                    leg['state'] = 'pending'
+            if parent is not None and not fault['reply_echo']:
+                result['visibility']['echo_state'] = 'pending'
+            messages[send_id] = dict(schema='dm.local.response/v1',ok=True,error=None,result=result)
+            lose('message')
+            return copy.deepcopy(messages[send_id])
+        owner.messaging = messaging
+    observe = f.stages.observe
+    f.stages.observe = lambda value,stage,operation: (GroupCoordinator(f.backend).observe(value) if stage == 'matrix'
+        else observe(value,stage,operation))
+    worker = Worker(f.store,lambda:f.stages,advance_group_admission=lambda name:GroupCoordinator(f.backend).advance(name))
+    return SimpleNamespace(f=f,journal=journal,row=row,calls=calls,fault=fault,messages=messages,worker=worker)
+
+
+@pytest.mark.parametrize('lost_phase',[None,'publication','load-eko','initial-load','steady','message'])
+def test_full_worker_join_resumes_exact_effects_and_releases_only_complete_admission(full,lost_phase):
+    x = full
+    x.fault['phase'] = lost_phase
+    first = x.worker._tick('newcomer')
+    if lost_phase is None:
+        assert first['state'] != 'attention-required', first
+    if lost_phase:
+        assert first['state'] == 'attention-required'
+        assert x.journal.get(x.row['operation_id'])['state'] != 'completed'
+        retry = x.worker._tick('newcomer')
+        assert retry['state'] != 'attention-required'
+    current = x.journal.get(x.row['operation_id'])
+    assert current['state'] == 'completed'
+    assert GroupCoordinator(x.f.backend).observe(x.f.plans['newcomer']).state == 'complete'
+    assert len(x.messages) == 3
+    for phase in ('membership','publication','load-eko','load-oliva','initial-load','attachment','activation','steady'):
+        assert x.calls.count(phase) == 1
+    count = len(x.calls)
+    assert GroupCoordinator(x.f.backend).advance('newcomer') is None
+    assert len(x.calls) == count
+    # A forged completed marker without the closure must not release the job.
+    changed = copy.deepcopy(current['runtime_observation'])
+    changed['portal_admission'].pop('communication-reply')
+    x.journal.advance(current['operation_id'],'completed',runtime_observation=changed)
+    with pytest.raises(OnboardingError,match='completion_unobserved'):
+        GroupCoordinator(x.f.backend).observe(x.f.plans['newcomer'])
+
+
+def test_unconfirmed_echo_waits_then_uses_only_delivery_inspection(full):
+    x = full
+    x.fault['echo'] = False
+    x.worker._tick('newcomer')
+    assert x.journal.get(x.row['operation_id'])['state'] != 'completed'
+    assert len(x.messages) == 1
+    x.fault['echo'] = True
+    x.worker._tick('newcomer')
+    assert x.journal.get(x.row['operation_id'])['state'] == 'completed'
+    assert len(x.messages) == 3
+    assert x.calls.count('activation') == 1
+
+
+@pytest.mark.parametrize('permitted,support,linked', [(True, True, True), (False, True, True), (True, False, True), (True, True, False)])
+def test_remaining_communication_uses_current_approval_and_fixed_owner_custody(full, monkeypatch, permitted, support, linked):
+    """Real finisher/owner route and journal fences; grant resolution is a seam."""
+    from pathlib import Path
+    from clusterctl import onboarding_group_recovery as recovery
+    from clusterctl.operation_journal import JournalConflict
+    x = full
+    x.fault['phase'] = 'steady'
+    assert x.worker._tick('newcomer')['state'] == 'attention-required'
+    assert not x.messages
+    row = x.journal.get(x.row['operation_id'])
+    approval = str(uuid.uuid4())
+    observed = copy.deepcopy(row['runtime_observation'])
+    if linked:
+        observed['admission_remaining_effects'] = {'reference': {'operation_id': approval}}
+    x.journal.advance(row['operation_id'], row['state'], runtime_observation=observed)
+    grant = dict(schema=recovery.REMAINING_SCHEMA, expires_at_ms=time.time_ns() // 1_000_000 + 8_000)
+    def execution(journal, parent, **options):
+        if not options.get('historical'):
+            assert options['effect'] == 'communication'
+            if not permitted:
+                raise OnboardingError('onboarding_group_remaining_effect_not_authorized')
+        return grant if linked else None
+    monkeypatch.setattr(recovery, 'execution', execution)
+    duplicated = []
+    duplicate = x.journal.duplicate_mutation_lock
+    def retain(operation):
+        result = duplicate(operation)
+        duplicated.append(operation)
+        return result
+    monkeypatch.setattr(x.journal, 'duplicate_mutation_lock', retain)
+    bounded = []
+    for owner in x.f.owners.values():
+        status = owner.status
+        def supported(*, status=status):
+            value = copy.deepcopy(status())
+            runtime = value['runtime_status']
+            feature = 'messaging-authoring-effect-horizon/v1'
+            runtime.setdefault('receiving', {}).setdefault('features', []).append(feature)
+            runtime.setdefault('loaded_runtime', {}).setdefault('qualified_startup', {}).setdefault(
+                'reader', {}).setdefault('contract', {}).setdefault('capabilities', []).append(feature)
+            return value
+        if support:
+            owner.status = supported
+        original = owner.messaging
+        def messaging(method, parameters, *, owner=owner, original=original, **options):
+            if method == 'messaging_delivery':
+                return original(method, parameters, **options)
+            historical = options['effect_not_after_ms'] <= module.time.time_ns() // 1_000_000
+            assert 0 < owner.deadline_ns - time.monotonic_ns() <= (30_000_000_000 if historical or not linked else 8_000_000_000)
+            if historical:
+                assert 'authoring_expires_at_ms' not in options
+                assert parameters['send_id'] in x.messages
+            else:
+                if linked:
+                    assert options['authoring_expires_at_ms'] <= grant['expires_at_ms']
+                assert options['effect_not_after_ms'] == options['authoring_expires_at_ms']
+                assert row['operation_id'] in duplicated, 'bounded dispatch never retained actual parent custody'
+            current = x.journal.get(row['operation_id'])['runtime_observation']['portal_admission']
+            assert any(value.get('effect_not_after_ms') == options['effect_not_after_ms']
+                for key, value in current.items() if key.startswith('communication-authoring-'))
+            competitor = OperationJournal.existing(Path(x.journal.path).parent)
+            for operation in ((row['operation_id'],) if historical or not linked else (row['operation_id'], approval)):
+                with pytest.raises(JournalConflict):
+                    with competitor.mutation_lock(operation):
+                        pass
+            bounded.append(parameters['send_id'])
+            return original(method, parameters, **options)
+        owner.messaging = messaging
+    row = x.journal.get(row['operation_id'])
+    transition = row['intended_transition']
+    cohort = updates.CohortController(x.journal, row['operation_id'], x.f.owners)
+    def communicate():
+        return GroupCoordinator(x.f.backend)._communicate(x.f.plans['newcomer'], x.journal, row,
+            transition['cohort_admission'], cohort, transition['admission_communication'],
+            deadline_ns=time.monotonic_ns() + 30_000_000_000, before_authoring=lambda: None)
+    if permitted and support:
+        assert communicate() is True
+        assert len(set(bounded)) == len(x.messages) == 3
+        assert communicate() is True and len(bounded) == 3, 'completed originals were reauthored'
+        # A lost final delivery proof may resume only the exact already-authored
+        # native message after expiry/revocation, without another authoring grant.
+        current = x.journal.get(row['operation_id'])
+        observed = copy.deepcopy(current['runtime_observation'])
+        phases = observed['portal_admission']
+        original = phases.pop('communication-group')
+        send_id = original['intent']['parameters']['send_id']
+        saved = copy.deepcopy(phases['communication-authoring-group'])
+        for leg in x.messages[send_id]['result']['semantic']['legs']:
+            leg['state'] = 'pending'
+        x.fault['busy'] = True
+        x.journal.advance(row['operation_id'], current['state'], runtime_observation=observed)
+        permitted = False
+        with monkeypatch.context() as expired:
+            expired.setattr(module, 'time', SimpleNamespace(monotonic_ns=time.monotonic_ns,
+                time_ns=lambda: (saved['effect_not_after_ms'] + 1) * 1_000_000))
+            assert communicate() is True
+        phases = x.journal.get(row['operation_id'])['runtime_observation']['portal_admission']
+        assert phases['communication-authoring-group'] == saved
+        assert bounded == [*bounded[:3], send_id] and len(x.messages) == 3
+    else:
+        error = 'remaining_effect_not_authorized' if not permitted else 'effect_horizon_unsupported'
+        with pytest.raises(OnboardingError, match=error):
+            communicate()
+        assert not bounded and not x.messages
+
+
+def test_retained_expired_bound_never_falls_back_when_receiver_loses_support(full):
+    x = full
+    x.fault['phase'] = 'steady'
+    assert x.worker._tick('newcomer')['state'] == 'attention-required'
+    row = x.journal.get(x.row['operation_id'])
+    transition = row['intended_transition']
+    coordinator = GroupCoordinator(x.f.backend)
+    intent = coordinator._communication_intent(row, transition['admission_communication'], 'group', None)
+    observed = copy.deepcopy(row['runtime_observation'])
+    observed['portal_admission']['communication-authoring-group'] = dict(
+        schema='cluster-native-authoring-bound/v1', intent_sha256=digest(intent),
+        effect_not_after_ms=time.time_ns() // 1_000_000 - 1)
+    x.journal.advance(row['operation_id'], row['state'], runtime_observation=observed)
+    cohort = updates.CohortController(x.journal, row['operation_id'], x.f.owners)
+    with pytest.raises(OnboardingError, match='effect_horizon_unsupported'):
+        coordinator._communicate(x.f.plans['newcomer'], x.journal, row,
+            transition['cohort_admission'], cohort, transition['admission_communication'],
+            deadline_ns=time.monotonic_ns() + 30_000_000_000,
+            before_authoring=lambda: pytest.fail('retained expired bound requested fresh authority'))
+    assert not x.messages
+
+
+def test_pending_native_fanout_resumes_same_request_within_original_scope(full):
+    x = full
+    x.fault['busy'] = True
+    x.worker._tick('newcomer')
+    assert len(x.messages) == 1
+    assert x.journal.get(x.row['operation_id'])['state'] != 'completed'
+    original_id = next(iter(x.messages))
+    x.worker._tick('newcomer')
+    assert x.journal.get(x.row['operation_id'])['state'] == 'completed'
+    assert original_id in x.messages and len(x.messages) == 3
+    assert x.calls.count('resume-messaging_send') == 1
+    assert x.calls.count('messaging_send') == 2
+
+
+@pytest.mark.parametrize('full', [dict(channel='membership/tribe')], indirect=True)
+def test_full_caller_routes_technical_checks_through_the_approved_public_alias(full):
+    """Use the real SDK alias validator/normalizer at the owner boundary."""
+    from daimon_matrix.agent_chat import MULTI_SCHEMA, checked_arguments, _link_arguments
+    x = full
+    binding = dict(schema=MULTI_SCHEMA, incoming_channels=['membership/tribe'],
+        outgoing_channels=['membership/tribe'])
+    routed = []
+    for owner in x.f.owners.values():
+        original = owner.messaging
+        def messaging(method, parameters, *, original=original, **options):
+            checked = checked_arguments(binding, method, parameters)
+            alias, normalized = _link_arguments(method, checked)
+            assert alias == 'membership'
+            routed.append((method, copy.deepcopy(parameters)))
+            return original(method, normalized, **options)
+        owner.messaging = messaging
+    x.fault['echo'] = False
+    x.worker._tick('newcomer')
+    x.fault['echo'] = True
+    x.worker._tick('newcomer')
+    current = x.journal.get(x.row['operation_id'])
+    assert current['state'] == 'completed'
+    assert len(x.messages) == 3
+    assert {'messaging_send', 'messaging_delivery', 'messaging_reply'} <= {method for method, _ in routed}
+    assert all(params['channel_id'] == 'membership/tribe' for _, params in routed)
+    assert next(params for method, params in routed if method == 'messaging_reply')['received_channel_id'] == 'membership/tribe'
+    # Alias selection is presentation/routing. The retained native request IDs
+    # and reply context stay on the same canonical group.
+    phases = current['runtime_observation']['portal_admission']
+    assert all(phases['communication-intent-'+step]['parameters']['channel_id'] == 'tribe'
+        for step in ('group', 'direct', 'reply'))
+
+
+def test_restarted_receiver_cannot_borrow_an_old_selection_for_new_speech(full):
+    x = full
+    x.fault['echo'] = False
+    x.worker._tick('newcomer')
+    assert len(x.messages) == 1
+    x.fault.update(echo=True,restarted=True)
+    assert x.worker._tick('newcomer')['state'] == 'attention-required'
+    assert len(x.messages) == 1
+    assert x.journal.get(x.row['operation_id'])['state'] != 'completed'
+    x.fault['restarted'] = False
+    x.worker._tick('newcomer')
+    assert x.journal.get(x.row['operation_id'])['state'] == 'completed'
+
+
+def test_late_final_proof_completes_without_renewing_or_reauthoring(full,monkeypatch):
+    x = full
+    x.fault['reply_echo'] = False
+    x.worker._tick('newcomer')
+    assert len(x.messages) == 3
+    assert x.journal.get(x.row['operation_id'])['state'] != 'completed'
+    count = len(x.calls)
+    expiry = x.row['intended_transition']['cohort_admission']['activation']['expires_at_ms']
+    monkeypatch.setattr(module,'time',SimpleNamespace(monotonic_ns=time.monotonic_ns,time_ns=lambda:(expiry+1)*1_000_000))
+    x.fault.update(reply_echo=True,restarted=True)
+    x.worker._tick('newcomer')
+    assert x.journal.get(x.row['operation_id'])['state'] == 'completed'
+    assert len(x.calls) == count and len(x.messages) == 3
+
+
+@pytest.mark.parametrize('full',[{'source':True}],indirect=True)
+@pytest.mark.parametrize('lost_phase',[None,'load-eko'])
+def test_source_owner_lifecycle_joins_the_same_worker_group_operation(full,lost_phase):
+    test_full_worker_join_resumes_exact_effects_and_releases_only_complete_admission(full,lost_phase)
+
+
+@pytest.mark.parametrize('full',[{'window_ms':5}],indirect=True)
+def test_authoring_round_reuse_expires_with_the_original_observation_window(full,monkeypatch):
+    x = full
+    clock = [time.monotonic_ns()]
+    monkeypatch.setattr(module,'time',SimpleNamespace(monotonic_ns=lambda:clock[0],time_ns=time.time_ns))
+    observations = []
+    activate = updates.CohortController.activate
+    def observed(cohort):
+        if 'sender_selections' in (cohort._row()['runtime_observation'] or {}):
+            observations.append(clock[0])
+        return activate(cohort)
+    monkeypatch.setattr(updates.CohortController,'activate',observed)
+    for owner in x.f.owners.values():
+        original = owner.messaging
+        def delayed(method,parameters,*,original=original,**options):
+            result = original(method,parameters,**options)
+            if method != 'messaging_delivery':
+                clock[0] += 6_000_000
+            return result
+        owner.messaging = delayed
+    x.worker._tick('newcomer')
+    assert x.journal.get(x.row['operation_id'])['state'] == 'completed'
+    assert len(observations) == 3
+
+
+@pytest.mark.parametrize('lost,reader_fault', [(False,None),(True,None),(False,'gate'),(False,'identity'),(False,'roster')])
+def test_explicit_followup_finishes_original_parent_without_replaying_old_speech(full, monkeypatch, lost, reader_fault):
+    """Real journal/custody/finisher, synthetic native receipts and reader observation."""
+    x = full
+    x.fault['echo'] = False
+    x.worker._tick('newcomer')
+    coordinator = GroupCoordinator(x.f.backend)
+    current = x.journal.get(x.row['operation_id'])
+    original_phases = copy.deepcopy(current['runtime_observation']['portal_admission'])
+    old_id = original_phases['communication-intent-group']['parameters']['send_id']
+    x.messages[old_id]['result']['carrier'] = {'expired': True}
+    for leg in x.messages[old_id]['result']['semantic']['legs']:
+        leg.update(state='accepted', terminal_receipt_hash=None, terminal_receipt_event_id=None)
+    old_message = copy.deepcopy(x.messages[old_id])
+    request = dict(schema='cluster-admission-communication-followup-request/v1', qualification_id=str(uuid.uuid4()),
+        parent_operation_id=current['operation_id'], parent_intent_sha256=current['intent_hash'],
+        previous_step='group', expires_at_ms=time.time_ns()//1_000_000+50_000)
+    first = coordinator.begin_communication_followup('newcomer', request)
+    assert coordinator.begin_communication_followup('newcomer', request) == first
+    x.fault['echo'] = True
+    if lost:
+        x.fault.update(phase='message', lost=False)
+    # The native adapters enforce fixed horizons; this fake exposes their actual
+    # feature flags and asserts the same options at the invocation boundary.
+    authored = []
+    feature = 'messaging-authoring-effect-horizon/v1'
+    for owner in x.f.owners.values():
+        status, message = owner.status, owner.messaging
+        def supported(*, status=status):
+            value = copy.deepcopy(status())
+            runtime = value['runtime_status']
+            runtime.setdefault('receiving', {}).setdefault('features', []).append(feature)
+            runtime.setdefault('loaded_runtime', {}).setdefault('qualified_startup', {}).setdefault(
+                'reader', {}).setdefault('contract', {}).setdefault('capabilities', []).append(feature)
+            return value
+        def bounded(method, params, *, message=message, **options):
+            if method != 'messaging_delivery':
+                assert params['send_id'] != old_id
+                assert 0 < options['effect_not_after_ms'] <= request['expires_at_ms']
+                assert options['authoring_expires_at_ms'] == options['effect_not_after_ms']
+                authored.append(params['send_id'])
+            return message(method, params, **options)
+        owner.status, owner.messaging = supported, bounded
+    admission = current['intended_transition']['cohort_admission']
+    readers = sorted(({key: body[key] for key in ('being_ref','embodiment_id')}
+        for body in admission['receivers'].values()), key=lambda item:(item['being_ref'],item['embodiment_id']))
+    observed = []
+    def reader(owner, **options):
+        observed.append(owner)
+        proof = dict(reader=next(copy.deepcopy(item) for item in readers if item['being_ref']==owner.being),
+            gate=dict(phase='select',readers=readers), roster=dict(roster_sha256='5'*64),
+            identity_expires_at_ms=options['expires_at_ms'])
+        if reader_fault == 'gate':
+            proof['gate']['readers'] = []
+        elif reader_fault == 'identity':
+            proof['reader']['embodiment_id'] = 'body:unexpected'
+        elif reader_fault == 'roster':
+            proof['roster']['roster_sha256'] = digest(owner.being)
+        return proof
+    monkeypatch.setattr(updates, 'observe_current_reader', reader)
+    if reader_fault:
+        error = 'identity_changed' if reader_fault == 'identity' else 'selection_required'
+        with pytest.raises(OnboardingError, match=error):
+            coordinator.advance_communication_followup('newcomer',request['qualification_id'])
+        assert not authored and len(x.messages) == 1
+        assert x.messages[old_id] == old_message
+        return
+    if lost:
+        with pytest.raises(OSError, match='lost message'):
+            coordinator.advance_communication_followup('newcomer', request['qualification_id'], timeout_seconds=3)
+    result = coordinator.advance('newcomer')
+    assert result['previous_outcome'] == 'retained-unconfirmed'
+    assert len(x.messages) == 4 and len(authored) == 3
+    assert x.messages[old_id] == old_message
+    current = x.journal.get(current['operation_id'])
+    assert current['state'] == 'completed'
+    phases = current['runtime_observation']['portal_admission']
+    assert {key:value for key,value in phases.items() if key != 'completed'} == original_phases
+    assert coordinator.observe(x.f.plans['newcomer']).state == 'complete'
+    assert coordinator.advance_communication_followup('newcomer', request['qualification_id']) == result
+    assert len(authored) == 3
+    assert x.calls.count('activation') == x.calls.count('steady') == 1
+    assert len(observed) == (6 if lost else 3)
+
+
+@pytest.mark.parametrize('bad', ['id', 'scope', 'expired'])
+def test_followup_rejects_invalid_permission_before_owner_query(full, bad):
+    x = full
+    x.fault['echo'] = False
+    x.worker._tick('newcomer')
+    row = x.journal.get(x.row['operation_id'])
+    request = dict(schema='cluster-admission-communication-followup-request/v1', qualification_id=str(uuid.uuid4()),
+        parent_operation_id=row['operation_id'], parent_intent_sha256=row['intent_hash'],
+        previous_step='group', expires_at_ms=time.time_ns()//1_000_000+20_000)
+    if bad == 'id':
+        request['qualification_id'] = 'invalid'
+    elif bad == 'scope':
+        request['extra'] = True
+    else:
+        request['expires_at_ms'] = 1
+    for owner in x.f.owners.values():
+        owner.messaging = lambda *a,**k:pytest.fail('invalid permission reached owner IO')
+    with pytest.raises(OnboardingError, match='followup_required'):
+        GroupCoordinator(x.f.backend).begin_communication_followup('newcomer',request)
+    assert 'communication_followup' not in x.journal.get(row['operation_id'])['runtime_observation']

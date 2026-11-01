@@ -556,6 +556,7 @@ def test_host_forwards_owner_bootstrap_only_as_guest_owner(tmp_path, monkeypatch
     assert argv[argv.index('--') + 1].endswith('/venv/bin/python')
     assert 0 < bounds['timeout_seconds'] <= 5
     assert '--bootstrap-timeout-seconds' in argv and '--observation-timeout-seconds' not in argv
+    assert '--observation-deadline-ns' in argv
     assert ('--bootstrap-initial' in argv) is initial
     assert ('--bootstrap-initial-service' in argv) is initial_service
     if phase != 'freeze':
@@ -881,13 +882,19 @@ def test_group_target_prepares_approved_candidate_only_after_original_v8(tmp_pat
 
 
 @pytest.mark.parametrize('expired', [False, True])
-def test_host_native_budget_and_frozen_expiry_reach_guest_before_effect(tmp_path, monkeypatch, expired):
+@pytest.mark.parametrize('preempted', [False, True])
+def test_host_native_budget_and_frozen_expiry_reach_guest_before_effect(tmp_path, monkeypatch, expired, preempted):
     import time
     from clusterctl import onboarding_host
     _, value, _, backend = configured(tmp_path)
     clock = [time.monotonic_ns()]
+    initial, wall = clock[0], time.time_ns()
+    def wall_time():
+        if preempted:
+            clock[0] += 1_000_000_000
+        return wall + clock[0]-initial
     monkeypatch.setattr(onboarding_host, 'time', SimpleNamespace(
-        monotonic_ns=lambda: clock[0], time_ns=time.time_ns))
+        monotonic_ns=lambda: clock[0], time_ns=wall_time))
     def environment(p, **options):
         if expired:
             clock[0] += 3_000_000_000
@@ -901,7 +908,7 @@ def test_host_native_budget_and_frozen_expiry_reach_guest_before_effect(tmp_path
         calls.append(command)
         return json.dumps({'plan_digest': digest(p)})
     backend._dispatch = dispatch
-    deadline, expiry = clock[0]+2_000_000_000, time.time_ns()//1_000_000+10000
+    deadline, expiry = clock[0]+2_000_000_000, wall//1_000_000+10000
     def invoke():
         backend._telegram_command(value, 'native-install', deadline_ns=deadline, authorization_expires_at_ms=expiry)
     if expired:
@@ -911,8 +918,8 @@ def test_host_native_budget_and_frozen_expiry_reach_guest_before_effect(tmp_path
     else:
         invoke()
         command = calls[-1]
-        assert float(command[command.index('--operation-timeout-seconds')+1]) == 2
-        assert command[command.index('--authorization-expires-at-ms')+1] == str(expiry)
+        assert float(command[command.index('--operation-timeout-seconds')+1]) == (1 if preempted else 2)
+        assert int(command[command.index('--authorization-expires-at-ms')+1]) == wall//1_000_000+2000
 
 
 @pytest.mark.parametrize('action', ['admission-prepare', 'admission-check', 'admission-enroll'])
@@ -964,3 +971,15 @@ def test_group_target_resumes_completed_native_checks_after_lost_progress_reply(
     assert backend.prepare_group_target(value, candidate, deadline_ns=deadline,
         completed_steps=frozenset(completed), record_step=completed.add)
     assert len(calls) == 3
+
+
+def test_bootstrap_host_preserves_shorter_absolute_owner_horizon(tmp_path, monkeypatch):
+    from clusterctl import onboarding_host
+    backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(onboarding_host.time, 'monotonic_ns', lambda:1_000_000_000)
+    backend._target_call(value, 'receiving-bootstrap-freeze', candidate=candidate,
+        bootstrap_timeout_seconds=5, owner_deadline_ns=3_000_000_000)
+    argv, bounds = calls[0]
+    assert int(argv[argv.index('--observation-deadline-ns')+1]) == 3_000_000_000
+    assert float(argv[argv.index('--bootstrap-timeout-seconds')+1]) == 2
+    assert bounds['timeout_seconds'] <= 2

@@ -865,13 +865,15 @@ class HostBackend:
                     'from clusterctl.onboarding_telegram import main;raise SystemExit(main())')
         native_budget = []
         if deadline_ns is not None:
+            wall_ms = time.time_ns() // 1_000_000
             remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
             if (remaining <= 0 or action not in {'native-install', 'native-observe', 'probe'}
                     or type(authorization_expires_at_ms) is not int
-                    or not time.time_ns() // 1_000_000 < authorization_expires_at_ms < 2**53):
+                    or not wall_ms < authorization_expires_at_ms < 2**53):
                 raise OnboardingError('receiving_host_deadline_expired')
             native_budget = ['--operation-timeout-seconds', str(min(60, remaining)),
-                '--authorization-expires-at-ms', str(authorization_expires_at_ms)]
+                '--authorization-expires-at-ms', str(min(authorization_expires_at_ms,
+                    wall_ms + int(remaining*1000)))]
         elif authorization_expires_at_ms is not None:
             raise OnboardingError('receiving_host_deadline_required')
         identity = [] if action in {'install', 'observe', 'native-install', 'native-observe', 'upgrade'} else ['--user', '1000', '--group', '1000', '--env', 'HOME=/home/agent']
@@ -1192,7 +1194,8 @@ class HostBackend:
         if current_native and (action != 'admitted-running' or not require_loaded
                 or candidate is None or observation_timeout_seconds is None):
             raise OnboardingError('qualified_onboarding_target_observer_required')
-        if owner_deadline_ns is not None and (action not in {'group-session','group-relationship','group-publication'}
+        if owner_deadline_ns is not None and (action not in {'group-session','group-relationship','group-publication',
+                    'receiving-bootstrap-freeze','receiving-bootstrap-stage','receiving-bootstrap-publish'}
                 or type(owner_deadline_ns) is not int
                 or not 0 < owner_deadline_ns-time.monotonic_ns() <= 60_000_000_000):
             raise OnboardingError('receiving_host_deadline_required')
@@ -1234,6 +1237,8 @@ class HostBackend:
                     or (action == 'receiving-bootstrap-publish') != (bootstrap_ready_sha256 is not None)):
                 raise OnboardingError('invalid_receiving_bootstrap_request')
             deadline_ns = time.monotonic_ns() + int(bootstrap_timeout_seconds * 1_000_000_000)
+            if owner_deadline_ns is not None:
+                deadline_ns = min(deadline_ns, owner_deadline_ns)
         elif any(item is not None for item in (bootstrap_request, bootstrap_ready_sha256, bootstrap_timeout_seconds)):
             raise OnboardingError('invalid_receiving_bootstrap_request')
         if controlling:
@@ -1376,7 +1381,7 @@ class HostBackend:
             if remaining <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
             arguments += ['--bootstrap-timeout-seconds' if bootstrapping else '--observation-timeout-seconds', str(remaining)]
-            if action == 'group-session' or owner_deadline_ns is not None:
+            if bootstrapping or action == 'group-session' or owner_deadline_ns is not None:
                 arguments += ['--observation-deadline-ns', str(deadline_ns)]
         if prepared_venv is None:
             owner_command = code_command(self.body_python(plan), runtime_code,

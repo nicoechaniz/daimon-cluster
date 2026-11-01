@@ -20,6 +20,8 @@ from .onboarding import OnboardingError, digest
 
 SCHEMA = 'cluster-admission-continuation/v1'
 REQUEST_SCHEMA = 'cluster-admission-continuation-request/v1'
+PREPARATION_SCHEMA = 'cluster-admission-preparation-continuation/v1'
+PREPARATION_REQUEST_SCHEMA = 'cluster-admission-preparation-continuation-request/v1'
 REFERENCE_SCHEMA = 'cluster-admission-continuation-reference/v1'
 EFFECTS = ['membership', 'publication', 'old-selection-start', 'initial-start', 'activation', 'communication']
 REMAINING_SCHEMA = 'cluster-admission-remaining-effects/v1'
@@ -80,6 +82,40 @@ def _frontier(row: dict) -> tuple[dict, dict, dict, dict]:
         raise OnboardingError('onboarding_group_continuation_frontier_required') from None
 
 
+def _preparation_frontier(row: dict) -> tuple[dict, dict, dict, dict]:
+    """Recognize preparation before any social or existing-member dispatch."""
+    from .onboarding_group_admission import command
+    try:
+        before, after, observed = row['expected_precondition'], row['intended_transition'], row['runtime_observation']
+        admission, social = after['cohort_admission'], after['portal_admission']['social']
+        phases = observed['portal_admission']
+        allowed = {'target_prepared-sdk', 'target_prepared-v8', 'target_prepared-candidate-sdk',
+            'target_ready', 'native_intent', 'native_dispatch', 'native_ready'}
+        allowed.update('native_ready-'+name for name in admission['receivers'])
+        old = {item['name'] for item in before['senders']}
+        if (row['operation'] != 'receiving-update' or row['state'] != 'planned'
+                or row['target'] != 'receiving:'+admission['tribe_ref']
+                or row['intent_hash'] != digest(row['intent'])
+                or row['intent']['runtime_call']['precondition_digest'] != digest(before)
+                or row['intent']['runtime_call']['transition_digest'] != digest(after)
+                or after['portal_admission']['schema'] != 'cluster-portal-group-admission/v2'
+                or set(observed) != {'portal_admission'} or not isinstance(phases, dict)
+                or not set(phases) <= allowed
+                or phases.get('native_intent') != dict(
+                    plan_digest=after['portal_admission']['plan_digest'],
+                    cohort_intent_sha256=row['intent_hash'],
+                    owners_sha256=after['portal_admission']['owners_sha256'])
+                or 'native_dispatch' in phases and phases['native_dispatch'] != dict(
+                    plan_digest=after['portal_admission']['plan_digest'])
+                or not old or set(after['admission_preparations']) != old):
+            raise ValueError
+        original = command(dict(operation_id=social['operation_id'], step='membership-invite',
+            method='tribe.invite', params={'payload':social['invitation']}))
+        return admission, social, original, {}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise OnboardingError('onboarding_group_continuation_frontier_required') from None
+
+
 def authorization(parent: dict, request: dict, *, now_ms: int) -> dict:
     """Validate a closed operator request against the unchanged original intent.
 
@@ -90,7 +126,11 @@ def authorization(parent: dict, request: dict, *, now_ms: int) -> dict:
     try:
         fields = {'schema', 'authorization_id', 'parent_operation_id', 'parent_intent_sha256',
             'frontier_sha256', 'expires_at_ms', 'invitation', 'inspection', 'maintenance'}
-        if (not isinstance(request, dict) or set(request) != fields or request['schema'] != REQUEST_SCHEMA
+        preparation = request.get('schema') == PREPARATION_REQUEST_SCHEMA
+        if preparation:
+            fields.add('native_readiness')
+        if (not isinstance(request, dict) or set(request) != fields
+                or request['schema'] not in {REQUEST_SCHEMA, PREPARATION_REQUEST_SCHEMA}
                 or str(uuid.UUID(request['authorization_id'])) != request['authorization_id']
                 or request['parent_operation_id'] != parent['operation_id']
                 or request['parent_intent_sha256'] != parent['intent_hash']
@@ -98,7 +138,18 @@ def authorization(parent: dict, request: dict, *, now_ms: int) -> dict:
                 or type(now_ms) is not int or type(request['expires_at_ms']) is not int
                 or not 0 < now_ms < request['expires_at_ms'] < 2**53):
             raise ValueError
-        admission, social, original, children = _frontier(parent)
+        admission, social, original, children = (_preparation_frontier(parent) if preparation else _frontier(parent))
+        if preparation:
+            readiness = request['native_readiness']
+            if not isinstance(readiness, dict) or set(readiness) != set(admission['receivers']):
+                raise ValueError
+            for value in readiness.values():
+                if (not isinstance(value, dict) or value.get('schema') != 'cluster-native-endpoint-readiness/v1'
+                        or value.get('acceptance') != 'native-endpoint-only'
+                        or value.get('model_turns_started') != 0 or value.get('messages_sent') != 0
+                        or not isinstance(value.get('native_process'), dict)
+                        or not _sha(value.get('endpoint_sha256'))):
+                    raise ValueError
         if now_ms < admission['activation']['expires_at_ms']:
             raise ValueError
         replacement = validate_relationship_event_payload('matrix/tribe-invitation', request['invitation'],
@@ -141,14 +192,16 @@ def authorization(parent: dict, request: dict, *, now_ms: int) -> dict:
                     or not _sha(helper['code_digest']) or type(helper['code_uid']) is not int
                     or helper['code_uid'] != admission['receivers'][name]['candidate']['code_uid']):
                 raise ValueError
-        return dict(schema=SCHEMA, authorization_id=request['authorization_id'],
+        return dict(schema=PREPARATION_SCHEMA if preparation else SCHEMA, authorization_id=request['authorization_id'],
+            **(dict(preparations_sha256=digest(parent['intended_transition']['admission_preparations']),
+                native_readiness=copy.deepcopy(request['native_readiness'])) if preparation else {}),
             parent_operation_id=parent['operation_id'], parent_intent_sha256=parent['intent_hash'],
             original_vectors_sha256=digest(dict(before=parent['expected_precondition'], after=parent['intended_transition'])),
             frontier_sha256=request['frontier_sha256'], children=copy.deepcopy(children),
             manifest_digest=parent['intent']['runtime_call']['manifest_digest'],
             original_recipe_sha256=digest(social), original_invitation_command_sha256=digest(original),
             expires_at_ms=request['expires_at_ms'], invitation=copy.deepcopy(replacement),
-            inspection=copy.deepcopy(inspection), maintenance=copy.deepcopy(helpers), effects=EFFECTS.copy())
+            inspection=copy.deepcopy(inspection), maintenance=copy.deepcopy(helpers), effects=EFFECTS.copy()+(['preparation'] if preparation else []))
     except OnboardingError:
         raise
     except (KeyError, TypeError, ValueError, AttributeError):
@@ -200,8 +253,11 @@ def resolve(journal, parent: dict, selected: dict) -> dict:
                 or row['intent']['runtime_call'] != dict(parent_intent_sha256=parent['intent_hash'],
                     authorization_sha256=digest(grant), request_sha256=row['intent']['runtime_call'].get('request_sha256'))
                 or not _sha(row['intent']['runtime_call']['request_sha256'])
-                or grant['schema'] != SCHEMA or grant['parent_operation_id'] != parent['operation_id']
-                or grant['parent_intent_sha256'] != parent['intent_hash'] or grant['effects'] != EFFECTS
+                or grant['schema'] not in {SCHEMA, PREPARATION_SCHEMA} or grant['parent_operation_id'] != parent['operation_id']
+                or grant['parent_intent_sha256'] != parent['intent_hash']
+                or grant['effects'] != EFFECTS+(['preparation'] if grant['schema'] == PREPARATION_SCHEMA else [])
+                or grant['schema'] == PREPARATION_SCHEMA and (grant['children'] != {}
+                    or grant['preparations_sha256'] != digest(parent['intended_transition']['admission_preparations']))
                 or grant['original_vectors_sha256'] != digest(dict(before=parent['expected_precondition'],
                     after=parent['intended_transition']))
                 or grant['manifest_digest'] != parent['intent']['runtime_call']['manifest_digest']
@@ -237,7 +293,7 @@ def attach(journal, parent_operation_id: str, selected: dict) -> dict:
             if previous != retained:
                 raise OnboardingError('onboarding_group_continuation_reference_required')
         else:
-            _frontier(parent)
+            (_preparation_frontier(parent) if grant['schema'] == PREPARATION_SCHEMA else _frontier(parent))
             if (digest(observations) != grant['frontier_sha256']
                     or time.time_ns()//1_000_000 >= grant['expires_at_ms']):
                 raise OnboardingError('onboarding_group_continuation_frontier_changed')
@@ -264,7 +320,7 @@ def require_execution(journal, parent: dict, selected: dict, effect: str) -> dic
         current = journal.get(parent['operation_id'])
         try:
             if (current is None or current['operation'] != 'receiving-update'
-                    or current['state'] != 'runtime-dispatching'
+                    or current['state'] not in {'planned', 'runtime-dispatching'}
                     or any(current[key] != parent[key] for key in
                         ('intent', 'intent_hash', 'expected_precondition', 'intended_transition'))
                     or current['intent_hash'] != digest(current['intent'])
@@ -272,6 +328,8 @@ def require_execution(journal, parent: dict, selected: dict, effect: str) -> dic
                     or current['intent']['runtime_call']['transition_digest'] != digest(current['intended_transition'])):
                 raise ValueError
             grant = resolve(journal, current, selected)
+            if current['state'] == 'planned' and grant['schema'] != PREPARATION_SCHEMA:
+                raise ValueError
             expected = dict(schema='cluster-admission-continuation-attachment/v1', reference=selected,
                 authorization_sha256=digest(grant), frontier_sha256=grant['frontier_sha256'])
             approved = journal.get(selected['operation_id'])
@@ -357,6 +415,11 @@ def lifecycle(journal, parent: dict, name: str, *, fresh: bool = True) -> dict |
     """Project only the approved remaining start to the existing owner CLI."""
     grant = execution(journal, parent, effect='old-selection-start', historical=not fresh)
     if grant is None:
+        return None
+    if grant['schema'] == PREPARATION_SCHEMA:
+        # These children are first prepared under this approval's fixed horizon,
+        # not renewed preserved children. The ordinary cohort binder verifies
+        # their original-parent links and actual owner operation before use.
         return None
     try:
         child = grant['children'][name]

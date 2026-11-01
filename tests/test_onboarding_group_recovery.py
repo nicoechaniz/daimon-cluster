@@ -613,3 +613,78 @@ def test_publication_dispatch_does_not_accept_result_after_remaining_expiry(tmp_
         _dispatch_publication(cohort, current, 'entrant', command,
             context_sha256='a'*64, authorities={}, social=social, provenance=provenance)
     assert journal.get(parent['operation_id'])['runtime_observation']['group_publication']['requests']['entrant']['application']['result'] is None
+
+
+def preparation_fixture(tmp_path, monkeypatch):
+    _journal, original, request, now = fixture(tmp_path, monkeypatch)
+    after = copy.deepcopy(original['intended_transition'])
+    after['portal_admission'].update(plan_digest='1'*64, owners_sha256='2'*64)
+    journal = OperationJournal(tmp_path/'preparation-journal')
+    parent = plan_update(journal, manifest_digest='a'*64, target=original['target'],
+        expected_precondition=original['expected_precondition'], intended_transition=after,
+        audit_identity={'actor':'synthetic-test'})
+    phases = dict(native_intent=dict(plan_digest='1'*64, cohort_intent_sha256=parent['intent_hash'],
+        owners_sha256='2'*64), native_dispatch={'plan_digest':'1'*64}, target_ready={})
+    parent = journal.advance(parent['operation_id'], 'planned', runtime_observation={'portal_admission':phases})
+    request.update(schema=recovery.PREPARATION_REQUEST_SCHEMA, parent_operation_id=parent['operation_id'],
+        parent_intent_sha256=parent['intent_hash'], frontier_sha256=digest(parent['runtime_observation']),
+        native_readiness={name:dict(schema='cluster-native-endpoint-readiness/v1', native_process={'pid':123},
+            endpoint_sha256='3'*64, acceptance='native-endpoint-only', model_turns_started=0, messages_sent=0)
+            for name in after['cohort_admission']['receivers']})
+    return journal, parent, request, now
+
+
+def test_pre_native_grant_keeps_original_parent_and_first_preparation_bound(tmp_path, monkeypatch):
+    journal, parent, request, now = preparation_fixture(tmp_path, monkeypatch)
+    original = copy.deepcopy(parent)
+    approved = recovery.plan(journal, request, audit_identity={'actor':'synthetic-test'})
+    assert journal.get(parent['operation_id']) == original
+    reference = recovery.reference(approved)
+    grant = recovery.attach(journal, parent['operation_id'], reference)
+    assert grant['schema'] == recovery.PREPARATION_SCHEMA and grant['children'] == {}
+    assert grant['preparations_sha256'] == digest(parent['intended_transition']['admission_preparations'])
+    assert recovery.attach(journal, parent['operation_id'], reference) == grant
+    current = journal.get(parent['operation_id'])
+    assert recovery.require_effect(journal, current, reference, 'preparation', now_ms=now) == grant
+    # Exercise the real keeper with both actual journal locks held.
+    with recovery.execution_scope(journal, current, 'preparation'):
+        with recovery.retain_execution_locks(journal, current, deadline_ns=time.monotonic_ns()+1_000_000_000):
+            assert recovery.execution(journal, current, effect='preparation') == grant
+    assert recovery.bounds(journal, current)['expires_at_ms'] == request['expires_at_ms']
+    # No pre-existing child is falsely presented as preserved or renewed.
+    assert recovery.lifecycle(journal, current, 'founder', fresh=False) is None
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.require_effect(journal, current, reference, 'preparation', now_ms=request['expires_at_ms'])
+    assert journal.get(parent['operation_id'])['intended_transition'] == original['intended_transition']
+
+
+@pytest.mark.parametrize('key', ['execution_intent','physical_intent','controller_intent','communication_intent',
+    'lifecycle_intent-founder','preserved-founder','loaded-founder'])
+def test_pre_native_approval_refuses_later_or_uncertain_preparation(tmp_path, monkeypatch, key):
+    journal, parent, request, now = preparation_fixture(tmp_path, monkeypatch)
+    observed = copy.deepcopy(parent['runtime_observation'])
+    observed['portal_admission'][key] = {}
+    parent = journal.advance(parent['operation_id'], 'planned', runtime_observation=observed)
+    request['frontier_sha256'] = digest(observed)
+    with pytest.raises(OnboardingError, match='frontier_required'):
+        recovery.authorization(parent, request, now_ms=now)
+
+
+@pytest.mark.parametrize('change', ['membership','children','unresolved_native','missing_native','changed_plan','dispatched_social'])
+def test_pre_native_approval_requires_reconciled_original_frontier(tmp_path, monkeypatch, change):
+    journal, parent, request, now = preparation_fixture(tmp_path, monkeypatch)
+    if change == 'membership':
+        parent['runtime_observation']['membership_admission'] = {}
+    elif change == 'children':
+        parent['runtime_observation']['admission_lifecycles'] = {}
+    elif change == 'unresolved_native':
+        request['native_readiness']['entrant']['model_turns_started'] = 1
+    elif change == 'missing_native':
+        del request['native_readiness']['entrant']
+    elif change == 'changed_plan':
+        parent['runtime_observation']['portal_admission']['native_dispatch']['plan_digest'] = '4'*64
+    else:
+        request['inspection'].update(rpc_state='pending',requests_dispatched=1)
+    request['frontier_sha256'] = digest(parent['runtime_observation'])
+    with pytest.raises(OnboardingError):
+        recovery.authorization(parent, request, now_ms=now)

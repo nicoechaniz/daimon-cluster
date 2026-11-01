@@ -154,7 +154,8 @@ def fixture(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('lost_phase', ['communication', 'child'])
-def test_worker_prepares_and_binds_every_old_child_without_stopping_members(fixture, monkeypatch, lost_phase):
+@pytest.mark.parametrize('linked_bound', [False, True])
+def test_worker_prepares_and_binds_every_old_child_without_stopping_members(fixture, monkeypatch, lost_phase, linked_bound):
     """Real worker/journal/binder; native governance/child producer are seams."""
     import uuid
     from clusterctl import onboarding_receiving_update as updates
@@ -178,6 +179,10 @@ def test_worker_prepares_and_binds_every_old_child_without_stopping_members(fixt
     configured.update(journal=str(journal.path.parent), admissions={digest(f.plans['newcomer']): row['operation_id']})
     being_seed._write(f.path, configured)
     monkeypatch.setattr('clusterctl.onboarding_group_admission.membership_recipe', lambda value, *a: copy.deepcopy(value))
+    effective = transition['cohort_admission']['activation']['expires_at_ms'] + (60_000 if linked_bound else 0)
+    if linked_bound:
+        monkeypatch.setattr('clusterctl.onboarding_group_recovery.bounds', lambda journal,row:{
+            **row['intended_transition']['cohort_admission']['activation'], 'expires_at_ms':effective})
     children, requests, lose = {}, [], [True]
     communication, schema_calls = {}, []
     def prepare_communication(request, **options):
@@ -189,7 +194,7 @@ def test_worker_prepares_and_binds_every_old_child_without_stopping_members(fixt
             return dict(owner_context_sha256='6'*64,
                 predecessor_selection_sha256=None, communication_plan=dict(target_version=4, plan_sha256='8'*64))
         assert request['params']['expected_plan_sha256'] == '8'*64
-        assert request['params']['expires_at_ms'] == transition['cohort_admission']['activation']['expires_at_ms']
+        assert request['params']['expires_at_ms'] == effective
         communication['result'] = dict(schema='cluster-group-publication-result/v1',
             **{k:request[k] for k in ('operation_id', 'step', 'action')}, status='recorded',
             receiving_readiness='unobserved', migration=dict(target_version=4, source_plan_sha256='8'*64))
@@ -201,6 +206,7 @@ def test_worker_prepares_and_binds_every_old_child_without_stopping_members(fixt
     def prepare(backend, plan, selected_journal, request, **options):
         assert communication.get('result'), 'schema preparation must precede old-member preparation'
         assert backend is f.backend and selected_journal.path == journal.path
+        assert request['expires_at_ms'] == effective
         assert request['cohort_intent_sha256'] == digest(row['intent'])
         assert request['operation_id'] == social['operation_id']
         assert request['owner_context_sha256'] == social['owner_contexts'][plan['name']]
@@ -242,6 +248,9 @@ def test_worker_prepares_and_binds_every_old_child_without_stopping_members(fixt
     current = journal.get(row['operation_id'])
     assert admission_owner_contexts(current, social) == {**social['owner_contexts'], 'newcomer':'6'*64}
     assert current['intended_transition']['portal_admission']['social'] == social
+    for request in requests:
+        name = next(name for name, owner in f.owners.items() if owner.being == request['owner']['being_ref'])
+        assert current['runtime_observation']['portal_admission']['lifecycle_intent-'+name] == request
     for mutate in (
         lambda value: value['controller_intent'].update(plan_digest='0'*64),
         lambda value: value['controller_intent']['group_context'].update(owner_name=old[0]),
@@ -662,3 +671,59 @@ def test_native_preparation_retains_completed_owners_across_deadline(fixture, mo
     assert len(targets) == 1
     assert all(f.calls.count('preflight-' + name) == 1 for name in names)
     assert all(owner.effects == 0 for owner in f.owners.values())
+
+
+def test_linked_preparation_bound_reaches_native_and_first_bootstrap_requests(fixture, monkeypatch):
+    """Consumer wiring; real approval/attachment policy is tested in recovery."""
+    import time
+    from contextlib import nullcontext
+    from clusterctl import onboarding_group_coordinator as caller, onboarding_group_recovery as recovery
+    f = fixture
+    original = f.row['intended_transition']['cohort_admission']['activation']['expires_at_ms']
+    now = original + 1
+    linked = now + 60_000
+    grant = dict(schema=recovery.PREPARATION_SCHEMA, expires_at_ms=linked,
+        maintenance={name:dict(code='/qualified/maintenance',code_digest='e'*64) for name in f.owners})
+    monkeypatch.setattr(GroupCoordinator, '_continuation', lambda *args:grant)
+    monkeypatch.setattr(recovery, 'attach', lambda *args:grant)
+    monkeypatch.setattr(recovery, 'require_execution', lambda *args:grant)
+    monkeypatch.setattr(recovery, 'execution_scope', lambda *args:nullcontext(grant))
+    custody = []
+    monkeypatch.setattr(recovery, 'retain_execution_locks', lambda journal,row,**options:
+        custody.append(options['deadline_ns']) or nullcontext())
+    monkeypatch.setattr(recovery, 'bounds', lambda journal,row:{
+        **row['intended_transition']['cohort_admission']['activation'], 'expires_at_ms':linked})
+    monkeypatch.setattr(caller, 'time', SimpleNamespace(monotonic_ns=time.monotonic_ns,time_ns=lambda:now*1_000_000))
+    selected = copy.deepcopy(f.selected)
+    selected['continuations'] = {f.row['operation_id']: dict(schema=recovery.REFERENCE_SCHEMA,
+        operation_id='operation:fixture-approval', intent_sha256='a'*64)}
+    being_seed._write(f.path, selected)
+    # The approval is a seam here; recovery tests exercise the real journal.
+    native_command = f.backend._telegram_command
+    observed = []
+    def command(plan, action, **options):
+        observed.append(options['authorization_expires_at_ms'])
+        return native_command(plan, action, **options)
+    f.backend._telegram_command = command
+    f.native['state'] = 'active'
+    result = GroupCoordinator(f.backend).advance('newcomer')
+    assert result['controller_prepared']
+    assert observed == [linked] and 'native-install' not in f.calls
+    assert len(custody) == 1 and custody[0] > time.monotonic_ns()
+    row = f.journal.get(f.row['operation_id'])
+    assert row['runtime_observation']['portal_admission']['controller_intent']['expires_at_ms'] == linked
+    assert row['intended_transition']['cohort_admission']['activation']['expires_at_ms'] == original
+
+
+@pytest.mark.parametrize('arrival, accepted', [(1_000_000_000, True), (2_500_000_000, False)])
+def test_bootstrap_absolute_deadline_cannot_restart_on_delayed_guest_arrival(tmp_path, monkeypatch, arrival, accepted):
+    target, args, calls = qualified_target_cli(tmp_path, monkeypatch)
+    monkeypatch.setattr(target, 'time', SimpleNamespace(monotonic_ns=lambda:arrival))
+    def freeze(target, *, deadline_ns, initial, initial_service):
+        calls.append(deadline_ns)
+        return {'synthetic':'context'}
+    monkeypatch.setattr('clusterctl.onboarding_receiving_update.freeze_guest_bootstrap', freeze)
+    result = target.main(['receiving-bootstrap-freeze', *args, '--bootstrap-initial',
+        '--bootstrap-timeout-seconds', '2', '--observation-deadline-ns', '2000000000'])
+    assert result == (0 if accepted else 1)
+    assert calls == ([2_000_000_000] if accepted else [])

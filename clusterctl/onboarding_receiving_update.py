@@ -2758,7 +2758,7 @@ def prepare_guest_bootstrap(backend, plan: dict, *, candidate: tuple[Path, str],
     if installed.get('ready') is not True:
         raise OnboardingError('qualified_guest_bootstrap_candidate_required')
     owner = backend._target_call(plan, 'receiving-bootstrap-freeze', candidate=candidate,
-        bootstrap_timeout_seconds=remaining())
+        bootstrap_timeout_seconds=remaining(), **({'owner_deadline_ns':deadline_ns} if deadline_ns is not None else {}))
     remaining()
     with onboarding_sdk.probe_budget(deadline_ns):
         checked = preflight(candidate[0], candidate[1], manifest_path, manifest_digest,

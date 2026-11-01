@@ -18,6 +18,43 @@ as recovery of the retired original. The history below and the continuation
 contracts remain useful for genuinely retained living operations, without making
 an explicitly deleted machine environment a prerequisite of the current roadmap.
 
+## Expiry during native preparation
+
+A distinct linked preparation approval retains the same parent when it is still
+`planned`, with only target/native prerequisite observations and no execution
+intent, existing-member lifecycle, reader revocation, physical/bootstrap request,
+social authoring, publication or activation. Its explicit request also requires
+current native endpoint observations for every owner and the ordinary native
+inspection proving the original invitation was not dispatched or accepted.
+Readiness observations do not themselves authorize a fresh effect.
+
+The approval binds the original vectors, identities and preparation recipes,
+verified maintenance helpers, replacement invitation and one fixed horizon.
+Original requests and deadlines remain immutable. Native observation/install/probe,
+first physical/bootstrap preparation, schema preparation and first lifecycle
+requests use that linked bound. Every lifecycle intent is retained before dispatch;
+an uncertain request is recovered byte-for-byte, never extended. The first native
+observation avoids installing or starting a daemon already active after repair.
+
+Lifecycle children first created under this approval already carry its fixed
+bound. They are verified by the ordinary parent/child association and owner
+controls; they are not described as pre-existing preserved children and receive
+no synthetic lifecycle-renewal projection. The older post-preservation continuation
+keeps its original strict frontier. Preparation retains parent and approval kernel
+lock custody through the absolute receiving invocation deadline, including
+coordinator loss. Bootstrap calls carry that deadline through the existing
+native/KVM clock conversion; a relative timeout cannot restart on guest arrival.
+Native preparation clips its existing wall expiry to the invocation horizon,
+sampling wall time before monotonic remaining time to avoid extension under
+preemption. A longer linked approval does not extend an in-flight invocation.
+Source publication and complete receiving qualification remain separate from
+this implementation contract.
+
+Local native fixtures can conflict with an already running body on the fixed
+loopback port in their signed profile. Run such a fixture in a disposable network
+namespace with loopback enabled; preserve the profile and existing body. Do not
+change signed inputs or stop the unrelated listener to make the test pass.
+
 ## Historical retired synthetic frontier
 
 Status: the bounded Astra-reviewed execution is connected in source. The

@@ -509,7 +509,7 @@ class GroupCoordinator:
         if 'admission_activation_plan' not in (current()['runtime_observation'] or {}):
             authorized()
             if ('execution_intent' not in phases()
-                    and time.time_ns() // 1_000_000 >= admission['activation']['expires_at_ms']):
+                    and time.time_ns() // 1_000_000 >= recovery.bounds(journal, current())['expires_at_ms']):
                 raise OnboardingError('receiving_preservation_authorization_expired')
             # Fresh exact endpoint checks precede the first interruption, even
             # if the earlier preparation was retained by another worker turn.
@@ -906,6 +906,9 @@ class GroupCoordinator:
             # Public owner/bootstrap helpers can take their own job scopes.
             # Never call them under JobStore.tick or the job locks above.
             with ExitStack() as scopes:
+                if continuation is not None and continuation['schema'] == recovery.PREPARATION_SCHEMA and not expired:
+                    scopes.enter_context(recovery.execution_scope(journal, row, 'preparation'))
+                    scopes.enter_context(recovery.retain_execution_locks(journal, row, deadline_ns=deadline))
                 for owner in owners.values():
                     scopes.enter_context(cohort._owner_deadline(owner, deadline))
                 if finishing:
@@ -930,7 +933,7 @@ class GroupCoordinator:
                                 self._binding(plan)
                                 self.backend._attach_telegram(plan, deadline_ns=deadline)
                                 budget = dict(deadline_ns=deadline,
-                                    authorization_expires_at_ms=admission['activation']['expires_at_ms'])
+                                    authorization_expires_at_ms=horizon)
                                 native = self.backend._telegram_command(plan, 'native-observe', **budget)
                                 if native.get('native_state') not in {'absent', 'inactive', 'active'}:
                                     return dict(operation_id=row['operation_id'], native_prepared=False,
@@ -980,6 +983,7 @@ class GroupCoordinator:
         if time.monotonic_ns() >= deadline_ns:
             raise OnboardingError('receiving_host_deadline_expired')
         social = caller['social']
+        from . import onboarding_group_recovery as recovery
         from .onboarding_group_admission import admission_owner_contexts
         context = admission_owner_contexts(journal.get(row['operation_id']), social)[plan['name']]
         authorities = {ref: value for ref, value in social['authority_closure'].items()
@@ -997,7 +1001,7 @@ class GroupCoordinator:
                 raise OnboardingError('onboarding_group_initial_schema_required')
             request = dict(operation_id=social['operation_id'], step='communication-prepare',
                 action='communication-prepare', params=dict(expected_plan_sha256=native['plan_sha256'],
-                    expires_at_ms=admission['activation']['expires_at_ms']))
+                    expires_at_ms=recovery.bounds(journal, journal.get(row['operation_id']))['expires_at_ms']))
             self._retain(journal, row, 'communication_intent', request)
         if time.monotonic_ns() >= deadline_ns:
             raise OnboardingError('receiving_host_deadline_expired')
@@ -1019,6 +1023,7 @@ class GroupCoordinator:
     def _prepare_lifecycles(self, plan, journal, row, admission, cohort, *, deadline_ns: int) -> bool:
         """Prepare/bind old lifecycles only; never stop without a full finisher."""
         from .onboarding_receiving_update import prepare_guest_admission
+        from . import onboarding_group_recovery as recovery
         preparations = row['intended_transition'].get('admission_preparations')
         if preparations is None:
             return False
@@ -1037,7 +1042,8 @@ class GroupCoordinator:
                 cohort_intent_sha256=digest(row['intent']), tribe_ref=admission['tribe_ref'],
                 owner={key: identity[key] for key in ('being_ref', 'embodiment_id')},
                 predecessor={key: before[name][key] for key in ('process', 'server')},
-                **{key: value for key, value in admission['activation'].items() if key != 'observation_window_ms'},
+                **{key: value for key, value in recovery.bounds(journal, journal.get(row['operation_id'])).items()
+                    if key != 'observation_window_ms'},
                 manifest_digest=row['intent']['runtime_call']['manifest_digest'],
                 authority_closure={ref: value for ref, value in social['authority_closure'].items()
                     if ref != identity['being_ref']}, owner_context_sha256=social['owner_contexts'][name],
@@ -1050,6 +1056,11 @@ class GroupCoordinator:
             current = journal.get(row['operation_id'])
             retained = (current['runtime_observation'] or {}).get('portal_admission', {}).get(key)
             if retained is None:
+                intent_key = 'lifecycle_intent-' + name
+                existing = (current['runtime_observation'] or {}).get('portal_admission', {}).get(intent_key)
+                if existing is not None and existing != request:
+                    raise OnboardingError('onboarding_group_admission_binding_changed')
+                self._retain(journal, row, intent_key, request)
                 if selected['profile'] == 'source':
                     result = owner.prepare_admission_lifecycle(request)
                 else:
@@ -1082,6 +1093,7 @@ class GroupCoordinator:
         members are untouched. Later managed first-load owns a separate scope.
         """
         from .onboarding_managed import ManagedRuntime
+        from . import onboarding_group_recovery as recovery
         def remaining():
             value = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
             if value <= 0:
@@ -1104,7 +1116,7 @@ class GroupCoordinator:
                 if historical_only:
                     raise OnboardingError('receiving_preservation_authorization_expired')
                 profile = managed.prepare_admission(plan, candidate=candidate, deadline_ns=deadline_ns,
-                    authorization_expires_at_ms=admission['activation']['expires_at_ms'])
+                    authorization_expires_at_ms=recovery.bounds(journal, journal.get(row['operation_id']))['expires_at_ms'])
                 self._retain(journal, row, 'physical_ready', dict(profile_sha256=digest(profile)))
             else:
                 existing_profile = managed._profile(plan)
@@ -1119,7 +1131,7 @@ class GroupCoordinator:
                 if historical_only:
                     raise OnboardingError('receiving_preservation_authorization_expired')
                 frozen = self.backend._target_call(plan, 'receiving-bootstrap-freeze', candidate=candidate,
-                    bootstrap_timeout_seconds=remaining(), bootstrap_initial=True)
+                    bootstrap_timeout_seconds=remaining(), owner_deadline_ns=deadline_ns, bootstrap_initial=True)
                 expected = profile['enrollment']
                 approved = admission['receivers'][plan['name']]
                 if (frozen['plan_digest'] != digest(plan) or frozen['code_digest'] != candidate[1]
@@ -1132,7 +1144,7 @@ class GroupCoordinator:
                         or frozen['group_sha256'] != digest({'group': None})
                         or frozen['mode'] not in {'issue', 'preserve', 'renew'}):
                     raise OnboardingError('receiving_guest_bootstrap_initial_required')
-                expires = admission['activation']['expires_at_ms']
+                expires = recovery.bounds(journal, journal.get(row['operation_id']))['expires_at_ms']
                 if frozen['mode'] == 'preserve':
                     expires = min(expires, frozen['preservation']['not_after_ms'])
                 elif frozen['mode'] == 'renew':
@@ -1157,7 +1169,7 @@ class GroupCoordinator:
                 if historical_only and request['mode'] != 'preserve':
                     raise OnboardingError('receiving_preservation_authorization_expired')
                 staged = self.backend._target_call(plan, 'receiving-bootstrap-stage', candidate=candidate,
-                    bootstrap_timeout_seconds=remaining(), bootstrap_request=request)
+                    bootstrap_timeout_seconds=remaining(), owner_deadline_ns=deadline_ns, bootstrap_request=request)
                 if (staged.get('operation_id') != request['operation_id']
                         or staged.get('schema') != ('cluster-receiving-owner-preserved/v1'
                             if request['mode'] == 'preserve' else 'cluster-guest-owner-bootstrap-ready/v1')
@@ -1167,7 +1179,7 @@ class GroupCoordinator:
             result = staged
             if request['mode'] != 'preserve':
                 result = self.backend._target_call(plan, 'receiving-bootstrap-publish', candidate=candidate,
-                    bootstrap_timeout_seconds=remaining(), bootstrap_request=request,
+                    bootstrap_timeout_seconds=remaining(), owner_deadline_ns=deadline_ns, bootstrap_request=request,
                     bootstrap_ready_sha256=staged['ready_sha256'])
                 if (result.get('schema') != 'cluster-guest-owner-bootstrap-publication/v1'
                         or result.get('operation_id') != request['operation_id']

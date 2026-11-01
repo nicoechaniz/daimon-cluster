@@ -475,6 +475,7 @@ class ManagedRuntime:
         from .onboarding_service import unit_content
         from .onboarding_receiving_update import guest_loaded_observation
         from .operation_journal import JournalConflict
+        from . import onboarding_group_recovery as recovery
         name = plan['name']
         def remaining():
             seconds = (deadline - time.monotonic_ns()) / 1_000_000_000
@@ -483,6 +484,11 @@ class ManagedRuntime:
             return seconds
 
         row = cohort._row()
+        execution_grant = recovery.execution(cohort.journal, row, historical=True)
+        # The original continuation covers this final activation step. The
+        # post-membership approval names the remaining handoff separately.
+        handoff_effect = ('steady-handoff' if execution_grant is not None
+            and execution_grant['schema'] == recovery.REMAINING_SCHEMA else 'activation')
         activation_plan, manifest = cohort._activation(row)
         activation = (row['runtime_observation'] or {}).get('cohort_activation')
         if (activation is None or set(row['runtime_observation'].get('sender_selections', {})) != set(cohort.owners)):
@@ -495,9 +501,22 @@ class ManagedRuntime:
         index = argv.index('--initial-context-json')
         steady_sha256 = hashlib.sha256(unit_content(argv[:index] + argv[index + 2:])).hexdigest()
 
-        def root_call(action, **options):
-            return self.backend._guest_service_call(plan, action, candidate=vector,
-                timeout_seconds=remaining(), **options)
+        def root_call(action, *, fresh_effect=False, **options):
+            nonlocal deadline
+            if fresh_effect:
+                deadline = recovery.effect_deadline(cohort.journal, row, handoff_effect, deadline)
+            dispatch = vector
+            extra = {}
+            if execution_grant is not None:
+                helper = execution_grant['maintenance'][name]
+                dispatch = Path(helper['code']), helper['code_digest']
+                extra['owner_deadline_ns'] = deadline
+                if fresh_effect:
+                    extra['effect_not_after_ms'] = execution_grant['expires_at_ms']
+            with (recovery.effect_scope(cohort.journal, row, handoff_effect, deadline_ns=deadline)
+                    if fresh_effect else nullcontext()):
+                return self.backend._guest_service_call(plan, action, candidate=dispatch,
+                    timeout_seconds=remaining(), **extra, **options)
 
         def effect():
             return (cohort._row()['runtime_observation'] or {}).get('initial_steady', {}).get(name, {})
@@ -552,9 +571,22 @@ class ManagedRuntime:
                 or request['plan_digest'] != digest(plan)
                 or any(request[key] != value for key, value in owner_observation.items())):
             raise OnboardingError('receiving_initial_binding_changed')
-        # Root observes an already selected exact steady unit after expiry. A
-        # still-guarded unit requires its original finite request horizon.
-        selected = root_call('bootstrap-steady', request=request)
+        # A retained completion is historical after expiry. File-only partial
+        # progress still requires authority for the remaining reload.
+        if selected_sha256 == intent['unit_sha256']:
+            selected = root_call('bootstrap-steady', fresh_effect=True, request=request)
+        else:
+            # Validate reads the root's retained completion without changing
+            # files or reloading. Selected bytes alone are only partial progress.
+            observed = root_call('bootstrap-validate', request=request)
+            if (observed.get('schema') != 'cluster-guest-service-steady-observation/v1'
+                    or observed.get('request_sha256') != digest(request)
+                    or observed.get('state') not in {'pending', 'completed'}):
+                raise OnboardingError('receiving_initial_service_changed')
+            if observed['state'] == 'pending':
+                selected = root_call('bootstrap-steady', fresh_effect=True, request=request)
+            else:
+                selected = observed['result']
         if (selected.get('schema') != 'cluster-guest-service-steady-selection/v1'
                 or selected['request_sha256'] != digest(request)
                 or selected['service']['unit_sha256'] != steady_sha256

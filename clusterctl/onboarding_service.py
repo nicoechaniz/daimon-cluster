@@ -650,7 +650,8 @@ class GuestServiceBootstrap:
                 raise OnboardingError('receiving_guest_service_initial_start_uncertain')
             time.sleep(min(0.05, max(0, (deadline_ns - time.monotonic_ns()) / 1_000_000_000)))
 
-    def _steady(self, request: dict, *, deadline_ns: int) -> dict:
+    def _steady(self, request: dict, *, deadline_ns: int, effect_not_after_ms: int | None = None,
+                observe_only: bool = False) -> dict:
         """Remove only the first-start guard, preserving the actual invocation.
 
         The privileged host confirms the complete receiving cohort before this
@@ -712,19 +713,29 @@ class GuestServiceBootstrap:
             return current
 
         observed()
-        retained = self._record(root / 'steady-request.json', request)
+        if observe_only:
+            if retained is not None and retained != request:
+                raise OnboardingError('receiving_guest_service_request_changed')
+        else:
+            retained = self._record(root / 'steady-request.json', request)
         completed = self._retained(root, 'steady')
+        if observe_only and completed is None:
+            return dict(schema='cluster-guest-service-steady-observation/v1',
+                request_sha256=digest(request), state='pending')
         if completed is None:
             def before_replace() -> None:
                 self._budget(deadline_ns)
                 observed()
-                if request['not_after_ms'] <= time.time_ns() // 1_000_000:
+                if (min(request['not_after_ms'], effect_not_after_ms or request['not_after_ms'])
+                        <= time.time_ns() // 1_000_000):
                     raise OnboardingError('receiving_preservation_authorization_expired')
             # Durable private preparation can consume the remaining horizon or
             # outlive this invocation. Check at the actual file-selection edge.
             selected = select_entrypoint(self.manager.unit, ordinary, previous_sha256=initial_sha256,
                 pre_replace=before_replace)
-            self._budget(deadline_ns)
+            # File replacement can survive a crash before reload/completion.
+            # A cached file CAS is not permission for that remaining effect.
+            before_replace()
             # Reload changes future restart policy, not the current execution.
             self.manager.reload(deadline_ns=deadline_ns)
             current = observed()
@@ -738,6 +749,9 @@ class GuestServiceBootstrap:
                 or completed['service']['unit_sha256'] != steady_sha256):
             raise OnboardingError('receiving_guest_service_started_process_changed')
         self._budget(deadline_ns)
+        if observe_only:
+            return dict(schema='cluster-guest-service-steady-observation/v1',
+                request_sha256=digest(request), state='completed', result=completed)
         return completed
 
     def execute(self, action: str, request: dict, *, deadline_ns: int, effect_not_after_ms: int | None = None) -> dict:
@@ -745,7 +759,7 @@ class GuestServiceBootstrap:
         from contextlib import ExitStack
         if action not in {'validate', 'quiesce', 'quiescence', 'select', 'start', 'steady'}:
             raise OnboardingError('receiving_guest_service_request_required')
-        if effect_not_after_ms is not None and (action not in {'select','start'}
+        if effect_not_after_ms is not None and (action not in {'select','start','steady'}
                 or type(effect_not_after_ms) is not int or not 0 < effect_not_after_ms < 2**53):
             raise OnboardingError('receiving_guest_service_request_required')
         def fresh_effect():
@@ -754,8 +768,10 @@ class GuestServiceBootstrap:
                 raise OnboardingError('receiving_preservation_authorization_expired')
         self._budget(deadline_ns)
         with selection_lock(self.manager.unit):
-            if action == 'steady':
-                return self._steady(request, deadline_ns=deadline_ns)
+            if action == 'steady' or (action == 'validate'
+                    and request.get('schema') == 'cluster-guest-service-steady/v1'):
+                return self._steady(request, deadline_ns=deadline_ns,
+                    effect_not_after_ms=effect_not_after_ms, observe_only=action == 'validate')
             if request.get('schema') == 'cluster-guest-service-initial/v1':
                 return self._initial(action, request, deadline_ns=deadline_ns)
             root, previous, candidate = self._request(request, existing=action == 'quiescence')
@@ -1168,7 +1184,7 @@ def main(argv=None) -> int:
         if args.action!='install':
             if (not math.isfinite(args.timeout_seconds) or not 0 < args.timeout_seconds <= 60
                     or args.observation_deadline_ns is not None and not 0 < args.observation_deadline_ns-time.monotonic_ns() <= 60_000_000_000
-                    or args.effect_not_after_ms is not None and (args.action not in {'bootstrap-select','bootstrap-start'}
+                    or args.effect_not_after_ms is not None and (args.action not in {'bootstrap-select','bootstrap-start','bootstrap-steady'}
                         or not 0 < args.effect_not_after_ms < 2**53)):
                 raise OnboardingError('receiving_guest_service_request_required')
             deadline_ns=min(time.monotonic_ns()+int(args.timeout_seconds*1_000_000_000),

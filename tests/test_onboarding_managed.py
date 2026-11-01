@@ -251,12 +251,14 @@ def initial_managed_fixture(tmp_path, initial, *, complete_origins=False):
             fault.remove('load')
             raise OSError('synthetic lost loaded observation')
         return copy.deepcopy(observed)
-    def root_call(_plan, action, *, timeout_seconds, request=None, owner_observation=None, **_):
+    def root_call(_plan, action, *, timeout_seconds, request=None, owner_observation=None,
+                  effect_not_after_ms=None, **_):
         backend.root_budgets.append((action, timeout_seconds))
         expiry = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
         if action == 'bootstrap-inspect':
             return root_controller.inspect(owner_observation, deadline_ns=expiry)
-        result = root_controller.execute(action.removeprefix('bootstrap-'), request, deadline_ns=expiry)
+        result = root_controller.execute(action.removeprefix('bootstrap-'), request, deadline_ns=expiry,
+            **({'effect_not_after_ms': effect_not_after_ms} if effect_not_after_ms is not None else {}))
         if action == 'bootstrap-select' and hasattr(backend, 'after_select'):
             backend.after_select()
         step = action.removeprefix('bootstrap-')
@@ -624,6 +626,80 @@ def test_lost_steady_host_reply_does_not_repeat_the_first_start(tmp_path, initia
     assert '--initial-context-json' not in manager.unit.read_text()
     managed.execute_initial(plan, cohort)
     assert 'completed' in cohort._row()['runtime_observation']['initial_steady']['newcomer']
+    assert manager.reloads == manager.starts == 1 and manager.stops == 0
+
+
+@pytest.mark.parametrize('interruption', ['reply', 'before-reload'])
+def test_remaining_steady_handoff_fences_dispatch_and_recovers_without_new_permission(tmp_path, initial, monkeypatch, interruption):
+    """Resolve the grant at a seam; use real journals, locks and root primitive."""
+    import uuid
+    from clusterctl import onboarding_group_recovery as recovery
+    from clusterctl.operation_journal import JournalConflict, OperationJournal
+    cohort, manager, managed, plan = admission_activation_fixture(tmp_path, initial)
+    cohort.activate()
+    original = cohort._row()
+    approved = original['intended_transition']['cohort_admission']['receivers']['newcomer']
+    grant = dict(schema=recovery.REMAINING_SCHEMA,
+        expires_at_ms=original['intended_transition']['cohort_admission']['activation']['expires_at_ms'],
+        maintenance={'newcomer': dict(code=approved['candidate']['code'],
+            code_digest=approved['recipe']['prepared']['code_digest'])})
+    approval = str(uuid.uuid4())
+    observed = copy.deepcopy(original['runtime_observation'])
+    observed['admission_remaining_effects'] = dict(reference=dict(operation_id=approval))
+    cohort.journal.advance(cohort.operation_id, original['state'], runtime_observation=observed)
+    completed = []
+    interrupted = []
+    fresh = []
+    def execution(journal, parent, **options):
+        if options.get('effect') == 'old-selection-start':
+            # This fixture's already-completed old lifecycles predate the
+            # handoff seam and keep their original no-continuation provenance.
+            assert options.get('historical') is True
+            return None
+        if not options.get('historical', False):
+            assert options['effect'] == 'steady-handoff'
+            assert not completed, 'accepted physical handoff must be observation-only'
+            fresh.append(options['effect'])
+        return grant
+    monkeypatch.setattr(recovery, 'execution', execution)
+    actual = managed.backend._guest_service_call
+    def assert_fenced():
+        competitor = OperationJournal.existing(cohort.journal.path.parent)
+        for key in (cohort.operation_id, approval):
+            with pytest.raises(JournalConflict):
+                with competitor.mutation_lock(key):
+                    pass
+    reload = manager.reload
+    def reload_with_loss(**options):
+        assert_fenced()
+        if interruption == 'before-reload' and not interrupted:
+            interrupted.append(True)
+            raise OSError('synthetic lost remaining steady return')
+        return reload(**options)
+    manager.reload = reload_with_loss
+    def root_call(plan, action, **options):
+        if action == 'bootstrap-steady' and not interrupted:
+            assert_fenced()
+            assert options['candidate'] == (Path(approved['candidate']['code']),
+                approved['recipe']['prepared']['code_digest'])
+            assert 0 < options['owner_deadline_ns'] - time.monotonic_ns() <= 60_000_000_000
+            result = actual(plan, action, **options)
+            completed.append(result)
+            interrupted.append(True)
+            raise OSError('synthetic lost remaining steady return')
+        return actual(plan, action, **options)
+    managed.backend._guest_service_call = root_call
+    with pytest.raises(OSError, match='lost remaining steady'):
+        managed.complete_initial(plan, cohort, timeout_seconds=2)
+    requests = copy.deepcopy(cohort._row()['runtime_observation']['initial_steady'])
+    assert fresh and interrupted
+    assert bool(completed) == (interruption == 'reply')
+    result = managed.complete_initial(plan, cohort)
+    assert result['receiving_readiness'] == 'qualified-local-projection'
+    current = cohort._row()
+    assert current['runtime_observation']['initial_steady']['newcomer']['intent'] == requests['newcomer']['intent']
+    assert all(current[key] == original[key] for key in
+        ('intent', 'intent_hash', 'expected_precondition', 'intended_transition'))
     assert manager.reloads == manager.starts == 1 and manager.stops == 0
 
 

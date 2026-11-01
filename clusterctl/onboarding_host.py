@@ -1407,7 +1407,7 @@ class HostBackend:
         deadline_ns = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
         if (owner_deadline_ns is not None and (type(owner_deadline_ns) is not int
                     or not 0 < owner_deadline_ns-time.monotonic_ns() <= 60_000_000_000)
-                or effect_not_after_ms is not None and (action not in {'bootstrap-select','bootstrap-start'}
+                or effect_not_after_ms is not None and (action not in {'bootstrap-select','bootstrap-start','bootstrap-steady'}
                     or type(effect_not_after_ms) is not int or not 0 < effect_not_after_ms < 2**53)):
             raise OnboardingError('receiving_host_deadline_required')
         if owner_deadline_ns is not None:

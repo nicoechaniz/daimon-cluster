@@ -207,6 +207,18 @@ primitive, the original provenance digest and both kernel mutation fences;
 authority resolution in that producer fixture remains an explicit seam. A
 separate real remaining-approval test covers scope admission and expired refusal.
 
+Steady handoff uses the selected execution helper and its fixed deadline, with
+both parent/approval kernel fences around a fresh root effect. The original
+initial request and social provenance remain unchanged. Root checks original
+and supplemental expiry immediately before reload, even when file replacement
+already succeeded. Steady file bytes alone do not prove completion: the existing
+`bootstrap-validate` action accepts the exact steady request as a read-only
+pending/completed observation. Only a retained completed receipt bypasses fresh
+authorization. Lost completed replies recover without another reload; a crash
+between file replacement and reload requires current authority for the remaining
+effect. Real root/journal/fence regressions cover both interruptions; grant
+resolution and native/manager observations remain explicit fixture seams.
+
 Positive activation has an additional native boundary:
 [Matrix #420](https://github.com/AlterMundi/daimon-matrix/issues/420). The current
 handler assigns its own short processing deadline and does not carry the

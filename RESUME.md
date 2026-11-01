@@ -43,6 +43,10 @@ update does not close these requirements. Autonomous Matrix inference remains
 OFF; technical events stay model-free. Preserve uncertain historical admissions
 and paused/blocked goals. No global Stop is authorized by routine maintenance.
 
+For the owning type gate, run `python tools/check_rc_types.py` using the existing
+development environment. It is the exact CI boundary; recursively type-checking
+all packages adds unrelated untyped code and is not this release gate.
+
 ## Historical receiving deployment and maintenance — 2026-10-27
 
 CompAII, Eko on native MEDUSA and Oliva load body/observer `f6b369a9`,

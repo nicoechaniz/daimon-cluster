@@ -229,17 +229,46 @@ def test_steady_unit_removes_only_initial_guard_without_restarting(initial):
     assert manager.reloads == manager.starts == 1
 
 
-def test_lost_steady_reload_recovers_exact_selection_after_expiry(initial, monkeypatch):
+def test_lost_steady_reload_preserves_uncertainty_without_late_reload(initial, monkeypatch):
     controller, manager, request = steady_fixture(initial)
     manager.lose = 'reload'
     with pytest.raises(OSError, match='lost reload'):
         controller.execute('steady', request, deadline_ns=deadline())
     selected = manager.unit.read_bytes()
     monkeypatch.setattr(time, 'time_ns', lambda: (request['not_after_ms'] + 1) * 1_000_000)
-    result = controller.execute('steady', request, deadline_ns=deadline())
+    with pytest.raises(OnboardingError, match='authorization_expired'):
+        controller.execute('steady', request, deadline_ns=deadline())
     assert manager.unit.read_bytes() == selected
-    assert result['service']['unit_sha256'] == hashlib.sha256(selected).hexdigest()
-    assert manager.reloads == 2 and manager.starts == 1 and manager.stops == 0
+    assert manager.reloads == manager.starts == 1 and manager.stops == 0
+
+
+def test_file_only_steady_progress_requires_effect_authority_before_reload(initial, monkeypatch):
+    controller, manager, request = steady_fixture(initial)
+    select = onboarding_service.select_entrypoint
+    def interrupted(*args, **options):
+        select(*args, **options)
+        raise OSError('synthetic crash after steady file replacement')
+    monkeypatch.setattr(onboarding_service, 'select_entrypoint', interrupted)
+    with pytest.raises(OSError, match='after steady file'):
+        controller.execute('steady', request, deadline_ns=deadline())
+    selected = manager.unit.read_bytes()
+    assert '--initial-context-json' not in manager.unit.read_text() and manager.reloads == 0
+    monkeypatch.setattr(onboarding_service, 'select_entrypoint', select)
+    before = {path: path.read_bytes() for path in manager.unit.parent.rglob('*') if path.is_file()}
+    pending = controller.execute('validate', request, deadline_ns=deadline())
+    assert pending['state'] == 'pending' and manager.reloads == 0
+    assert all(path.read_bytes() == raw for path, raw in before.items())
+    assert set(before) == {path for path in manager.unit.parent.rglob('*') if path.is_file()}
+    with pytest.raises(OnboardingError, match='authorization_expired'):
+        controller.execute('steady', request, deadline_ns=deadline(), effect_not_after_ms=1)
+    assert manager.unit.read_bytes() == selected and manager.reloads == 0
+    result = controller.execute('steady', request, deadline_ns=deadline())
+    assert manager.reloads == manager.starts == 1 and manager.stops == 0
+    assert controller.execute('steady', request, deadline_ns=deadline(), effect_not_after_ms=1) == result
+    assert controller.execute('validate', request, deadline_ns=deadline()) == dict(
+        schema='cluster-guest-service-steady-observation/v1',
+        request_sha256=onboarding_service.digest(request), state='completed', result=result)
+    assert manager.reloads == 1
 
 
 def test_expired_steady_request_cannot_remove_a_guard_that_is_still_selected(initial, monkeypatch):

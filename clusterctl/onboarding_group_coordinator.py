@@ -915,7 +915,8 @@ class GroupCoordinator:
             # Public owner/bootstrap helpers can take their own job scopes.
             # Never call them under JobStore.tick or the job locks above.
             with ExitStack() as scopes:
-                if continuation is not None and continuation['schema'] == recovery.PREPARATION_SCHEMA and not expired:
+                if (not finishing and continuation is not None
+                        and continuation['schema'] == recovery.PREPARATION_SCHEMA and not expired):
                     scopes.enter_context(recovery.execution_scope(journal, row, 'preparation'))
                     scopes.enter_context(recovery.retain_execution_locks(journal, row, deadline_ns=deadline))
                 for owner in owners.values():

@@ -752,3 +752,34 @@ def test_bootstrap_absolute_deadline_cannot_restart_on_delayed_guest_arrival(tmp
         '--bootstrap-timeout-seconds', '2', '--observation-deadline-ns', '2000000000'])
     assert result == (0 if accepted else 1)
     assert calls == ([2_000_000_000] if accepted else [])
+
+
+
+def test_remaining_finish_does_not_reenter_preparation_authority(fixture, monkeypatch):
+    """Expired social preparation cannot relabel a current remaining-effects grant."""
+    import time
+    from clusterctl import onboarding_group_recovery as recovery
+    f = fixture
+    social = dict(schema=recovery.PREPARATION_SCHEMA, expires_at_ms=1,
+        maintenance={name:dict(code='/old/helper', code_digest='a'*64) for name in f.owners})
+    remaining = dict(schema=recovery.REMAINING_SCHEMA, expires_at_ms=time.time_ns()//1_000_000+60000,
+        maintenance={name:dict(code='/current/helper', code_digest='b'*64) for name in f.owners})
+    monkeypatch.setattr(GroupCoordinator, '_continuation', lambda *args:social)
+    monkeypatch.setattr(recovery, 'attach', lambda *args:social)
+    monkeypatch.setattr(recovery, 'require_execution', lambda *args:social)
+    monkeypatch.setattr(recovery, 'execution', lambda *args, **kwargs:remaining)
+    monkeypatch.setattr(recovery, 'execution_scope', lambda *args, **kwargs:
+        pytest.fail('remaining finish tried to enter old preparation authority'))
+    selected = copy.deepcopy(f.selected)
+    selected['continuations'] = {f.row['operation_id']: dict(schema=recovery.REFERENCE_SCHEMA, operation_id='operation:fixture-approval', intent_sha256='a'*64)}
+    being_seed._write(f.path, selected)
+    row = f.journal.get(f.row['operation_id'])
+    observed = copy.deepcopy(row['runtime_observation'] or {})
+    observed.setdefault('portal_admission', {}).update(execution_intent={}, native_ready={})
+    f.journal.advance(row['operation_id'], 'runtime-dispatching', runtime_observation=observed)
+    def finish(self, plan, journal, row, admission, cohort, *, deadline_ns):
+        assert 0 < deadline_ns-time.monotonic_ns() <= 60_000_000_000
+        assert all(owner.maintenance == (Path('/current/helper'), 'b'*64) for owner in cohort.owners.values())
+        return {'continued':'remaining effects'}
+    monkeypatch.setattr(GroupCoordinator, '_finish', finish)
+    assert GroupCoordinator(f.backend).advance('newcomer') == {'continued':'remaining effects'}

@@ -409,7 +409,8 @@ def test_guest_native_budget_refuses_incomplete_or_invalid_bounds(timeout, expir
 
 @pytest.mark.parametrize('action', ['native-install', 'native-observe', 'probe', 'prepare', 'install'])
 @pytest.mark.parametrize('qualified', [False, True])
-def test_native_runtime_cli_preserves_frozen_binary_and_rejects_bot_verbs(monkeypatch, action, qualified):
+@pytest.mark.parametrize('base_supervisor', [False, True])
+def test_native_runtime_cli_preserves_frozen_binary_and_rejects_bot_verbs(monkeypatch, action, qualified, base_supervisor):
     """Actual CLI routing: helper selection grants no bot-binary successor."""
     import pwd
     from types import SimpleNamespace
@@ -424,6 +425,8 @@ def test_native_runtime_cli_preserves_frozen_binary_and_rejects_bot_verbs(monkey
     monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a,**k:{'matrix_commit':'b'*40} if qualified else {})
     monkeypatch.setattr(telegram.os, 'geteuid', lambda:1000 if action=='probe' else 0)
     monkeypatch.setattr(telegram.shutil, 'which', lambda *a,**k:'/usr/local/bin/codex')
+    monkeypatch.setattr(Path, 'is_file', lambda path: path == candidate/'clusterctl/native_codex_supervisor.py'
+        or base_supervisor and path == base/'clusterctl/native_codex_supervisor.py')
     binaries, units = [], []
     monkeypatch.setattr(telegram, 'artifact', lambda path,**k:binaries.append(path))
     monkeypatch.setattr(telegram, 'native_observation', lambda home,codex,code,**k:units.append(code) or dict(native_state='inactive'))
@@ -438,6 +441,23 @@ def test_native_runtime_cli_preserves_frozen_binary_and_rejects_bot_verbs(monkey
     accepted = qualified and action in {'native-install','native-observe','probe'}
     assert result == (0 if accepted else 1)
     assert binaries == ([base] if accepted else [])
-    assert units == ([base] if accepted and action!='probe' else [])
+    assert units == ([base if base_supervisor else candidate] if accepted and action!='probe' else [])
     assert probes == ([[str(base/'telegram/telecodex'),'--probe-native','/usr/local/bin/codex','/home/agent/Projects/being']]
         if accepted and action=='probe' else [])
+
+
+def test_native_supervisor_selection_uses_existing_verified_code(tmp_path):
+    from clusterctl.onboarding_telegram import native_supervisor_code
+    base, selected = tmp_path/'base', tmp_path/'selected'
+    for code in (base, selected):
+        (code/'clusterctl').mkdir(parents=True)
+    with pytest.raises(OnboardingError, match='qualified_native_supervisor_required'):
+        native_supervisor_code(base, selected)
+    helper = selected/'clusterctl/native_codex_supervisor.py'
+    helper.write_text('# qualified successor supervisor\n')
+    assert native_supervisor_code(base, selected) == selected
+    frozen = base/'clusterctl/native_codex_supervisor.py'
+    frozen.write_text('# original supervisor\n')
+    assert native_supervisor_code(base, selected) == base
+    helper.unlink()
+    assert native_supervisor_code(base, selected) == base

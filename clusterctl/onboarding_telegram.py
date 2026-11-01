@@ -429,6 +429,14 @@ def native_budget(timeout_seconds: float | None, expires_at_ms: int | None):
     return remaining
 
 
+def native_supervisor_code(base: Path, selected: Path) -> Path:
+    """Keep an available frozen supervisor; older bases need the qualified helper."""
+    for code in dict.fromkeys((base, selected)):
+        if (code / 'clusterctl/native_codex_supervisor.py').is_file():
+            return code
+    raise OnboardingError('qualified_native_supervisor_required')
+
+
 def install_native(home: Path, codex: Path, code: Path, *, budget,
                    unit_directory: Path = Path('/etc/systemd/system'), run=subprocess.run) -> None:
     budget(180)
@@ -534,13 +542,13 @@ def main(argv=None) -> int:
         elif args.action == 'native-observe':
             if os.geteuid() != 0:
                 raise OnboardingError('qualified_guest_telegram_required')
-            value = dict(native_observation(home, codex, args.code, timeout_seconds=budget(30)), plan_digest=digest(plan))
+            supervisor = native_supervisor_code(args.code, code)
+            value = dict(native_observation(home, codex, supervisor, timeout_seconds=budget(30)), plan_digest=digest(plan))
             budget(30)
         elif args.action == 'native-install':
             if os.geteuid() != 0:
                 raise OnboardingError('qualified_guest_telegram_required')
-            # Match native-observe; a Matrix helper does not select a supervisor.
-            install_native(home, codex, args.code, budget=budget)
+            install_native(home, codex, native_supervisor_code(args.code, code), budget=budget)
             value = dict(native_started=True, plan_digest=digest(plan))
         elif args.action == 'probe':
             if os.geteuid() != 1000:

@@ -288,6 +288,77 @@ def test_context_preview_refuses_expiry_or_concurrent_identity_drift(group_sourc
 
 
 @pytest.mark.parametrize('profile', ['source', 'target'])
+def test_supplemental_publication_preserves_expired_intent_and_exact_native_retry(group_source, monkeypatch, profile):
+    """Native owner SPI; the protected host-reader adapter is an explicit seam."""
+    from types import SimpleNamespace
+    from clusterctl import onboarding_group_admission as admission
+    from daimon_matrix.messaging_config import read_publication
+    owner, group, journal, request, _base = initial_publication(group_source, profile)
+    original_bound = time.time_ns()//1_000_000+60_000
+    clock = [original_bound-1]
+    monkeypatch.setattr(admission, 'time', SimpleNamespace(time_ns=lambda:clock[0]*1_000_000,
+        monotonic_ns=time.monotonic_ns))
+    effect = admission._publication_effect
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(admission, '_publication_effect',
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError('pending original publication')))
+        with pytest.raises(OSError, match='pending original publication'):
+            owner.group_publication(request, authority_closure={}, effect_not_after_ms=original_bound)
+    path = journal/request['operation_id']/'publications/application.json'
+    original = path.read_bytes()
+    intent = json.loads(original)
+    clock[0] = original_bound+1
+    with pytest.raises(OnboardingError, match='fresh_effect_required'):
+        owner.group_publication(request, authority_closure={}, effect_not_after_ms=original_bound)
+    projection = dict(schema='cluster-admission-execution-context/v1', effect='publication',
+        social_operation_id=request['operation_id'], owner_context_sha256=intent['owner_context_sha256'],
+        command_sha256=digest(request), not_after_ms=clock[0]+60_000)
+    for field, changed in (('command_sha256','f'*64), ('owner_context_sha256','f'*64),
+            ('not_after_ms',clock[0])):
+        with pytest.raises(OnboardingError, match='owner_context_required'):
+            owner.group_publication(request, authority_closure={}, effect_not_after_ms=original_bound,
+                remaining_execution=lambda:{**projection, field:changed})
+        assert path.read_bytes() == original and not (group/'application').exists()
+    def lost(*args, **kwargs):
+        effect(*args, **kwargs)
+        raise OSError('lost supplemental native publication result')
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(admission, '_publication_effect', lost)
+        with pytest.raises(OSError, match='lost supplemental native publication'):
+            owner.group_publication(request, authority_closure={}, effect_not_after_ms=original_bound,
+                remaining_execution=lambda:projection)
+    assert path.read_bytes() == original
+    published, _ = read_publication(owner._load(signed=False) if profile == 'source' else
+        admission.load_owner_runtime(owner.package/'runtime', owner._reader, authorities={}), group/'application')
+    client = published['client']
+    original_remaining_bound = projection['not_after_ms']
+    def changed_after_native(*args, **kwargs):
+        value = effect(*args, **kwargs)
+        projection['not_after_ms'] += 1
+        return value
+    with monkeypatch.context() as changed:
+        changed.setattr(admission, '_publication_effect', changed_after_native)
+        with pytest.raises(OnboardingError, match='owner_context_required'):
+            owner.group_publication(request, authority_closure={}, effect_not_after_ms=original_bound,
+                remaining_execution=lambda:projection)
+    assert path.read_bytes() == original
+    projection['not_after_ms'] = original_remaining_bound
+    result = owner.group_publication(request, authority_closure={}, effect_not_after_ms=original_bound,
+        remaining_execution=lambda:projection)
+    assert owner.group_publication(request, authority_closure={}, effect_not_after_ms=original_bound,
+        remaining_execution=lambda:projection) == result
+    recorded = being_seed._read(path)
+    assert {key:value for key,value in recorded.items() if key != 'result'} == {
+        key:value for key,value in intent.items() if key != 'result'}
+    supplemental = list((journal/request['operation_id']/'execution').glob('*.json'))
+    assert len(supplemental) == 1
+    assert being_seed._read(supplemental[0]) == dict(schema='cluster-group-publication-execution/v1',
+        original_intent_sha256=digest({key:value for key,value in intent.items() if key != 'result'}),
+        context=projection)
+    assert being_seed._read(group/'application/application.json')['client'] == client
+
+
+@pytest.mark.parametrize('profile', ['source', 'target'])
 def test_native_first_publication_signatures_and_selector_recover_exact_lost_replies(unicode_group_source, monkeypatch, profile):
     from daimon_matrix import operator_messaging
     from daimon_matrix.messaging_config import read_publication, verify_binding

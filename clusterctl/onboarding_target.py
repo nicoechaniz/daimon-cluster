@@ -16,6 +16,7 @@ import socket
 import struct
 import sys
 import time
+from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -161,6 +162,7 @@ class Target:
     def group_publication(self, value: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None,
                           effect_not_after_ms: int | None = None,
+                          remaining_execution: Callable[[], dict] | None = None,
                           deadline_ns: int | None = None) -> dict:
         from .onboarding_receiving_update import bootstrap_group
         from .onboarding_group_admission import (
@@ -171,6 +173,10 @@ class Target:
         root = self.package / 'runtime'
         group = self.root / 'tribe'
         journal = self.root / 'group-admission'
+        if remaining_execution is not None:
+            if value['action'] == 'context-preview':
+                raise OnboardingError('onboarding_group_remaining_owner_context_required')
+            remaining_execution()
         if value['action'] == 'context-preview':
             result = preview_owner_context(root, group, value['operation_id'], authority_closure,
                 deadline_ns=deadline_ns)
@@ -187,6 +193,7 @@ class Target:
                                         qualified_startup=self.qualified_startup)
             return publication_request(hosted, group, journal, value, deadline_ns=deadline_ns,
                 effect_not_after_ms=effect_not_after_ms,
+                remaining_execution=remaining_execution,
                 snapshot=lambda: bootstrap_group(self, self.document_bundle()))
 
     def prepare(self) -> dict:
@@ -810,6 +817,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--bootstrap-initial-service', action='store_true')
     parser.add_argument('--initial-context-json')
     parser.add_argument('--group-request', type=Path)
+    parser.add_argument('--remaining-execution', type=Path)
+    parser.add_argument('--remaining-execution-sha256')
     args = parser.parse_args(argv)
     stage = 'arguments'
     probe_scope = ExitStack()
@@ -823,6 +832,10 @@ def main(argv: list[str] | None = None) -> int:
         controlling = args.action in {'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply'}
         identity_query = args.action == 'receiving-identity'
         grouping = args.action in {'group-relationship', 'group-publication', 'group-session'}
+        if ((args.remaining_execution is None) != (args.remaining_execution_sha256 is None)
+                or args.remaining_execution is not None and (args.action != 'group-publication'
+                    or args.remaining_execution.parent != args.home/'.onboarding-matrix')):
+            raise OnboardingError('onboarding_group_remaining_owner_input_required')
         if grouping != (args.group_request is not None) or grouping and args.ready_fd is not None:
             raise OnboardingError('onboarding_group_relationship_command_required')
         if args.native_tooling_json is not None and (not identity_query
@@ -1023,8 +1036,20 @@ def main(argv: list[str] | None = None) -> int:
                     or (args.action == 'group-publication') != ('action' in packet['command'])):
                 raise OnboardingError('onboarding_group_relationship_writer_required')
             method = target.group_publication if args.action == 'group-publication' else target.group_relationship
+            remaining: dict = {}
+            if args.remaining_execution is not None:
+                from .onboarding_group_recovery import read_remaining_projection
+                def read_execution():
+                    return read_remaining_projection(args.remaining_execution,
+                        input_root=target.home/'.onboarding-matrix', expected_sha256=args.remaining_execution_sha256,
+                        effect='publication', owner_name=target.plan['name'], command=packet['command'],
+                        expected_context_sha256=packet.get('expected_context_sha256'),
+                        helper_code_digest=target.code_digest, helper_code_uid=target.code_uid,
+                        now_ms=time.time_ns()//1_000_000)
+                remaining['remaining_execution'] = read_execution
             print(json.dumps(method(packet['command'],
                 authority_closure=packet['authority_closure'], deadline_ns=observation_deadline_ns,
+                **remaining,
                 **({'expected_context_sha256': packet['expected_context_sha256']}
                    if 'expected_context_sha256' in packet else {}),
                 **({'membership_precondition': packet['membership_precondition']}

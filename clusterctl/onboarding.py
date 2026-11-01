@@ -84,6 +84,11 @@ _DIAGNOSTIC_CODES = frozenset({
     'receiving_preservation_authorization_expired', 'receiving_matrix_deadline_expired',
     'onboarding_runtime_channel_closed',
     'onboarding_runtime_observation_unavailable', 'receiving_guest_bootstrap_identity_required',
+    'onboarding_group_remaining_owner_input_required', 'onboarding_group_remaining_owner_context_required',
+    'onboarding_group_remaining_execution_scope_required', 'onboarding_group_remaining_effect_not_authorized',
+    'onboarding_group_remaining_frontier_required', 'onboarding_group_remaining_authorization_required',
+    'onboarding_group_remaining_reference_required', 'onboarding_group_remaining_frontier_changed',
+    'onboarding_group_continuation_fresh_effect_required',
 })
 
 

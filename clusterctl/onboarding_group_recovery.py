@@ -10,6 +10,7 @@ import copy
 import os
 import re
 import stat
+import threading
 import time
 import uuid
 from contextlib import contextmanager, nullcontext
@@ -720,6 +721,30 @@ def remaining_projection(journal, parent: dict, effect: str, *, owner_name: str,
         yield value
 
 
+@contextmanager
+def remaining_reader(journal, parent: dict, effect: str, *, owner_name: str,
+                     command: dict, expected_context_sha256: str):
+    """Supply current evidence only within this host's actual dispatch scope.
+
+    Host adapters call this reader immediately before publishing protected
+    input/dispatching. Retaining its return value never retains its permission.
+    """
+    with remaining_projection(journal, parent, effect, owner_name=owner_name,
+            command=command, expected_context_sha256=expected_context_sha256) as projection:
+        active, process_id, thread_id = True, os.getpid(), threading.get_ident()
+        def read():
+            if not active or (os.getpid(), threading.get_ident()) != (process_id, thread_id):
+                raise OnboardingError('onboarding_group_remaining_execution_scope_required')
+            grant = execution(journal, parent, effect=effect)
+            if grant is None or digest(grant) != projection['authorization_sha256']:
+                raise OnboardingError('onboarding_group_remaining_execution_scope_required')
+            return copy.deepcopy(projection)
+        try:
+            yield read
+        finally:
+            active = False
+
+
 def read_remaining_projection(path: Path, *, input_root: Path, expected_sha256: str,
                               effect: str, owner_name: str, command: dict,
                               expected_context_sha256: str, helper_code_digest: str,
@@ -731,7 +756,6 @@ def read_remaining_projection(path: Path, *, input_root: Path, expected_sha256: 
     Receiving CLIs supply their fixed input root and independently qualified
     helper identity, never paths or helper pins supplied in the request body.
     """
-    import json
     from .onboarding_release import regular
     try:
         if (not _sha(expected_sha256) or not path.is_absolute() or '..' in path.parts
@@ -741,7 +765,20 @@ def read_remaining_projection(path: Path, *, input_root: Path, expected_sha256: 
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077:
             raise ValueError
-        value = json.loads(regular(path, uid=os.geteuid(), limit=65536))
+        return _projection_value(regular(path, uid=os.geteuid(), limit=65536),
+            expected_sha256=expected_sha256, effect=effect, owner_name=owner_name, command=command,
+            expected_context_sha256=expected_context_sha256, helper_code_digest=helper_code_digest,
+            helper_code_uid=helper_code_uid, now_ms=now_ms)
+    except (OSError, KeyError, TypeError, ValueError, AttributeError):
+        raise OnboardingError('onboarding_group_remaining_owner_input_required') from None
+
+
+def _projection_value(raw: bytes, *, expected_sha256: str, effect: str, owner_name: str,
+                      command: dict, expected_context_sha256: str, helper_code_digest: str,
+                      helper_code_uid: int, now_ms: int) -> dict:
+    import json
+    try:
+        value = json.loads(raw)
         fields = {'schema', 'reference', 'authorization_sha256', 'parent_operation_id',
             'parent_intent_sha256', 'original_vectors_sha256', 'social_operation_id',
             'social_grant_sha256', 'membership_sha256', 'publication_identity_sha256',
@@ -767,5 +804,56 @@ def read_remaining_projection(path: Path, *, input_root: Path, expected_sha256: 
                     for identifier in (value['parent_operation_id'], value['reference']['operation_id']))):
             raise ValueError
         return value
+    except (OSError, KeyError, TypeError, ValueError, AttributeError):
+        raise OnboardingError('onboarding_group_remaining_owner_input_required') from None
+
+
+@contextmanager
+def sealed_remaining_input(reader):
+    """Pass public evidence to a local receiving UID without sharing host state.
+
+    Only the host root can produce this kernel-sealed input. Source retains its
+    own SDK/custody and receives no host journal, credential or writable file.
+    The caller keeps the current remaining_reader scope through the child call.
+    """
+    import fcntl
+    import json
+    if os.geteuid() != 0 or not callable(reader):
+        raise OnboardingError('onboarding_group_remaining_owner_input_required')
+    value = reader()
+    raw = json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+    if not 0 < len(raw) <= 65536:
+        raise OnboardingError('onboarding_group_remaining_owner_input_required')
+    descriptor = os.memfd_create('cluster-owner-execution', os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+    try:
+        pending = raw
+        while pending:
+            pending = pending[os.write(descriptor, pending):]
+        os.fchmod(descriptor, 0o400)
+        fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS,
+            fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
+        if reader() != value:
+            raise OnboardingError('onboarding_group_remaining_owner_input_required')
+        yield descriptor, digest(value)
+    finally:
+        os.close(descriptor)
+
+
+def read_remaining_projection_fd(descriptor: int, **bindings) -> dict:
+    """Accept only a root-created sealed public input inherited by local Source."""
+    import fcntl
+    try:
+        if type(descriptor) is not int or descriptor < 3:
+            raise ValueError
+        info = os.fstat(descriptor)
+        required = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 0
+                or not 0 < info.st_size <= 65536 or info.st_mode & 0o077
+                or fcntl.fcntl(descriptor, fcntl.F_GET_SEALS) & required != required):
+            raise ValueError
+        raw = os.pread(descriptor, 65537, 0)
+        if len(raw) != info.st_size:
+            raise ValueError
+        return _projection_value(raw, **bindings)
     except (OSError, KeyError, TypeError, ValueError, AttributeError):
         raise OnboardingError('onboarding_group_remaining_owner_input_required') from None

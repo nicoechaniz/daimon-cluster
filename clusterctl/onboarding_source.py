@@ -14,6 +14,7 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -124,6 +125,7 @@ class Source:
     def group_publication(self, value: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None,
                           effect_not_after_ms: int | None = None,
+                          remaining_execution: Callable[[], dict] | None = None,
                           deadline_ns: int | None = None) -> dict:
         from .onboarding_receiving_update import source_bootstrap_group
         from .onboarding_group_admission import (
@@ -133,6 +135,10 @@ class Source:
         value = publication_command(value)
         journal = self.outputs / 'group-admission'
         group = self.outputs / 'tribe'
+        if remaining_execution is not None:
+            if value['action'] == 'context-preview':
+                raise OnboardingError('onboarding_group_remaining_owner_context_required')
+            remaining_execution()
         if value['action'] == 'context-preview':
             result = preview_owner_context(self.root, group, value['operation_id'], authority_closure,
                 deadline_ns=deadline_ns)
@@ -147,6 +153,7 @@ class Source:
                                         qualified_startup=self.qualified_startup)
             return publication_request(hosted, group, journal, value, deadline_ns=deadline_ns,
                 effect_not_after_ms=effect_not_after_ms,
+                remaining_execution=remaining_execution,
                 snapshot=lambda: source_bootstrap_group(self, being_seed._read(
                     self.root / 'runtime.json', limit=being_seed.MAX_SELECTION)))
 
@@ -538,6 +545,10 @@ def main(argv=None) -> int:
     parser.add_argument('--operation-journal', type=Path)
     parser.add_argument('--group-request', type=Path)
     parser.add_argument('--group-session', action='store_true')
+    parser.add_argument('--remaining-execution-fd', type=int)
+    parser.add_argument('--remaining-execution-sha256')
+    parser.add_argument('--remaining-owner-name')
+    parser.add_argument('--remaining-parent-pid', type=int)
     args = parser.parse_args(argv)
     probe_scope = ExitStack()
     try:
@@ -549,6 +560,15 @@ def main(argv=None) -> int:
         lifecycle = args.receiving_lifecycle is not None
         preparing = args.prepare_admission_lifecycle is not None
         grouping = args.group_request is not None
+        supplemental = (args.remaining_execution_fd, args.remaining_execution_sha256,
+            args.remaining_owner_name, args.remaining_parent_pid)
+        if any(value is not None for value in supplemental) and (
+                not all(value is not None for value in supplemental) or not grouping or args.group_session
+                or args.remaining_execution_fd < 3):
+            raise OnboardingError('onboarding_group_remaining_owner_input_required')
+        if args.remaining_parent_pid is not None:
+            from .owner_process import require_parent_lifetime
+            require_parent_lifetime(args.remaining_parent_pid)
         if args.native_tooling_json is not None and (not args.qualified_identity
                 or len(args.native_tooling_json.encode()) > 65536):
             raise OnboardingError('receiving_native_tooling_recipe_required')
@@ -640,9 +660,21 @@ def main(argv=None) -> int:
             if 'effect_not_after_ms' in packet:
                 context['effect_not_after_ms']=packet['effect_not_after_ms']
             if 'action' in packet['command']:
+                if args.remaining_execution_fd is not None:
+                    from .onboarding_group_recovery import read_remaining_projection_fd
+                    def read_execution():
+                        return read_remaining_projection_fd(args.remaining_execution_fd,
+                            expected_sha256=args.remaining_execution_sha256, effect='publication',
+                            owner_name=args.remaining_owner_name, command=packet['command'],
+                            expected_context_sha256=packet.get('expected_context_sha256'),
+                            helper_code_digest=source.code_digest, helper_code_uid=source.code_uid,
+                            now_ms=time.time_ns()//1_000_000)
+                    context['remaining_execution'] = read_execution
                 result = source.group_publication(packet['command'], authority_closure=packet['authority_closure'],
                     deadline_ns=args.observation_deadline_ns, **context)
             else:
+                if args.remaining_execution_fd is not None:
+                    raise OnboardingError('onboarding_group_remaining_owner_input_required')
                 result = source.group_relationship(packet['command'], offline=packet['offline'],
                     authority_closure=packet['authority_closure'], deadline_ns=args.observation_deadline_ns,
                     **({'membership_precondition': packet['membership_precondition']}

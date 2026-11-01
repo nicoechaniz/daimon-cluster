@@ -295,3 +295,27 @@ file test has an explicit read-only-filesystem seam; it does not prove an actual
 Incus mount or native CLI adoption. CLI plumbing, protected supplemental owner
 records, all remaining phase consumers and the original integrated journey are
 still pending. No configuration or captured helper selects these new primitives.
+
+
+## Retained publication-consumer frontier — 2026-11-01
+
+The existing publication coordinator now resolves fresh remaining execution
+instead of reusing an expired social-only gate. Each original owner command keeps
+its identity and original effect bound; the separate current protected reader
+carries the approved remaining effect under parent/approval journal locks.
+Source consumes root-sealed input after UID admission. Its technical CLI arms a
+kernel parent-death signal before loading the owner, rejecting loss during
+registration and terminating if its dispatching coordinator exits. Target's
+read-only input validates the same binding, but cross-host execution lifetime
+still needs a supported reservation/termination boundary: a file and deadline
+alone do not preserve the host lock after coordinator death. This source is not
+ready for full operational admission until that remote boundary and subsequent
+lifecycle consumers are integrated and qualified against current main.
+
+Observed checks:95 journal/process cases; two real native Source/Target publication
+cases (unchanged805 identity producer, current004e consumer with actual VCS
+provenance); one actual root-to-UID1000 sealed-input negative-forgery case; five
+adapter/argument cases;90-source typing and scoped lint. Native owner tests retain
+an explicit protected-reader seam. Independent source review accepted the local
+Source crash correction and retained the remote lifetime blocker. No original
+synthetic operation, grant, store, membership, live service or model was changed.

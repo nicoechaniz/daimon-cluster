@@ -14,6 +14,23 @@ import uuid
 PROCESS_FIELDS = {"uid", "pid", "start_ticks", "boot_id"}
 
 
+def require_parent_lifetime(expected_pid: int) -> None:
+    """Bind a technical owner CLI to its dispatching coordinator thread.
+
+    Arm after UID/GID admission, before any owner effect. Checking both sides
+    closes the fork/registration race; exec of the ordinary non-setuid Python
+    owner preserves the kernel death signal. This is process-local, not a
+    supervisor, daemon hook or administrative-access change.
+    """
+    import ctypes
+    import signal
+    if type(expected_pid) is not int or expected_pid < 2 or os.getppid() != expected_pid:
+        raise PresenceError('owner_parent_unavailable')
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0 or os.getppid() != expected_pid:
+        raise PresenceError('owner_parent_unavailable')
+
+
 class PresenceError(ValueError):
     """Generic refusal without disclosing process or private path details."""
 

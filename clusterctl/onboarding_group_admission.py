@@ -531,6 +531,31 @@ def publication_recipe(value: dict, admission: dict, social: dict, senders: list
     return copy.deepcopy(value)
 
 
+def _dispatch_publication(cohort, row: dict, name: str, command: dict, *,
+                          context_sha256: str, authorities: dict, social: dict,
+                          provenance: dict) -> dict:
+    """Keep remaining approval current through the original owner dispatch.
+
+    The original social bound remains part of the immutable owner request.
+    A separate protected reader carries only the approved remaining execution;
+    it cannot rewrite that request or authorize another membership operation.
+    """
+    from . import onboarding_group_recovery as recovery
+    options: dict = ({'effect_not_after_ms': social['acceptance_not_after_ms']} if provenance else {})
+    with ExitStack() as scope:
+        reader = None
+        if (row['runtime_observation'] or {}).get('admission_remaining_effects') is not None:
+            reader = scope.enter_context(recovery.remaining_reader(cohort.journal, row,
+                'publication', owner_name=name, command=command,
+                expected_context_sha256=context_sha256))
+            options['remaining_execution'] = reader
+        result = cohort.owners[name].group_publication(command,
+            expected_context_sha256=context_sha256, authority_closure=authorities, **options)
+        if reader is not None:
+            reader()
+        return result
+
+
 def publish_admission_group(cohort, *, deadline_ns: int) -> dict:
     """Resume fixed offline publication after actual native social completion.
 
@@ -607,7 +632,7 @@ def publish_admission_group(cohort, *, deadline_ns: int) -> dict:
             entry = entries.get(key)
             if entry is None:
                 if provenance and action!='snapshot':
-                    recovery.attached(cohort.journal,row,effect='publication')
+                    recovery.execution(cohort.journal,row,effect='publication')
                 entries[key] = entry = dict(command=value, result=None)
                 cohort.journal.advance(cohort.operation_id, current['state'], runtime_observation=observations,
                     expected_runtime_observation=current['runtime_observation'])
@@ -617,11 +642,11 @@ def publish_admission_group(cohort, *, deadline_ns: int) -> dict:
             # An authentic later renewal must win before dependent visibility or
             # selector effects, not merely fail the final snapshot afterward.
             barrier()
-            owner = cohort.owners[name]
-            result = owner.group_publication(value, expected_context_sha256=contexts[name],
-                authority_closure={ref: item for ref, item in social['authority_closure'].items()
+            result = _dispatch_publication(cohort, cohort._row(), name, value,
+                context_sha256=contexts[name],
+                authorities={ref: item for ref, item in social['authority_closure'].items()
                     if ref != admission['receivers'][name]['being_ref']},
-                **({'effect_not_after_ms':social['acceptance_not_after_ms']} if provenance else {}))
+                social=social, provenance=provenance)
             budget()
             if entry['result'] is None:
                 current = cohort._row()
@@ -1250,6 +1275,7 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
 def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
                         deadline_ns: int | None = None,
                         effect_not_after_ms: int | None = None,
+                        remaining_execution: Callable[[], dict] | None = None,
                         snapshot: Callable[[], dict] | None = None) -> dict:
     """Resume one exact owner publication through supported Matrix operations.
 
@@ -1284,22 +1310,56 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
             if type(effect_not_after_ms) is not int or not 0 < effect_not_after_ms < 2**53:
                 raise OnboardingError('onboarding_group_relationship_command_required')
             intent['effect_not_after_ms']=effect_not_after_ms
+        execution_context: dict | None = None
+
+        def execution_bound():
+            nonlocal execution_context
+            # Only the trusted receiving adapter constructs this reader from
+            # verified host input. A hash or mapping in a request is not it.
+            if remaining_execution is None:
+                return effect_not_after_ms
+            current = remaining_execution()
+            if (current.get('schema') != 'cluster-admission-execution-context/v1'
+                    or current.get('effect') != 'publication'
+                    or current.get('social_operation_id') != selected['operation_id']
+                    or current.get('owner_context_sha256') != digest(context)
+                    or current.get('command_sha256') != digest(selected)
+                    or type(current.get('not_after_ms')) is not int
+                    or not 0 < time.time_ns()//1_000_000 < current['not_after_ms'] < 2**53
+                    or execution_context is not None and current != execution_context):
+                raise OnboardingError('onboarding_group_remaining_owner_context_required')
+            execution_context = copy.deepcopy(current)
+            return current['not_after_ms']
+
+        bound = execution_bound()
         if path.exists():
             retained = being_seed._read(path, limit=being_seed.MAX_SELECTION)
             if retained != {**intent, 'result': retained.get('result')}:
                 raise OnboardingError('onboarding_group_publication_intent_conflict')
         else:
-            if effect_not_after_ms is not None and time.time_ns()//1_000_000 >= effect_not_after_ms and selected['action']!='snapshot':
+            if bound is not None and time.time_ns()//1_000_000 >= bound and selected['action']!='snapshot':
                 raise OnboardingError('onboarding_group_continuation_fresh_effect_required')
             if (selected['action'] == 'application' and selected['params']['expected_application_sha256'] is None
                     and (group_root / 'application').exists()):
                 raise OnboardingError('onboarding_group_publication_changed')
             retained = {**intent, 'result': None}
             being_seed._write(path, retained, limit=being_seed.MAX_SELECTION)
+        if execution_context is not None:
+            supplemental = dict(schema='cluster-group-publication-execution/v1',
+                original_intent_sha256=digest(intent), context=execution_context)
+            execution_directory = private_directory(operation/'execution', create=True)
+            execution_path = execution_directory/(selected['step']+'-'+digest(execution_context)+'.json')
+            if execution_path.exists():
+                if being_seed._read(execution_path, limit=being_seed.MAX_SELECTION) != supplemental:
+                    raise OnboardingError('onboarding_group_publication_intent_conflict')
+            else:
+                execution_bound()
+                being_seed._write(execution_path, supplemental, limit=being_seed.MAX_SELECTION)
+            _sync(execution_directory)
         for parent in (directory, operation, journal, journal.parent):
             _sync(parent)
         check_deadline()
-        if (effect_not_after_ms is not None and time.time_ns()//1_000_000 >= effect_not_after_ms
+        if (bound is not None and time.time_ns()//1_000_000 >= bound
                 and selected['action']!='snapshot'):
             if not isinstance(retained['result'],dict):
                 # No authenticated retained publication result: preserve the
@@ -1350,6 +1410,13 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
                        != guard['installation_sha256']):
                 raise OnboardingError('onboarding_group_publication_visibility_changed')
             check_deadline()
+        bound = execution_bound()
+        if bound is not None and selected['action'] != 'snapshot':
+            now = time.time_ns()//1_000_000
+            if now >= bound:
+                raise OnboardingError('onboarding_group_continuation_fresh_effect_required')
+            fixed_deadline = time.monotonic_ns()+(bound-now)*1_000_000
+            deadline_ns = fixed_deadline if deadline_ns is None else min(deadline_ns, fixed_deadline)
         observed = _publication_effect(hosted, group_root, selected, context['authority_closure'],
             operation=operation, context=context, snapshot=snapshot, deadline_ns=deadline_ns)
         if (selected['action'] == 'snapshot' and retained['result'] is not None
@@ -1363,6 +1430,8 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
         if retained['result'] is not None and retained['result'] != result:
             raise OnboardingError('onboarding_group_publication_changed')
         if retained['result'] is None:
+            execution_bound()
+            check_deadline()
             being_seed._write(path, {**retained, 'result': result}, limit=being_seed.MAX_SELECTION)
         check_deadline()
         return result

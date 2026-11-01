@@ -510,3 +510,81 @@ def test_owner_projection_requires_exact_readonly_input_and_native_binding(tmp_p
         else:
             with pytest.raises(OnboardingError, match='owner_input_required'):
                 recovery.read_remaining_projection(root/name, **arguments)
+
+
+def test_remaining_host_reader_does_not_let_a_cached_result_outlive_execution_scope(tmp_path, monkeypatch):
+    journal, parent, request, clock = remaining_fixture(tmp_path, monkeypatch)
+    selected = recovery.remaining_reference(recovery.remaining_plan(journal, request, audit_identity={}))
+    recovery.remaining_attach(journal, parent['operation_id'], selected)
+    parent = journal.get(parent['operation_id'])
+    command = parent['runtime_observation']['group_publication']['requests']['entrant']['application']['command']
+    with recovery.remaining_reader(journal, parent, 'publication', owner_name='entrant',
+            command=command, expected_context_sha256='a'*64) as reader:
+        first = reader()
+        first['owner_name'] = 'changed-copy'
+        assert reader()['owner_name'] == 'entrant'
+        clock[0] = request['expires_at_ms']
+        with pytest.raises(OnboardingError, match='effect_not_authorized'):
+            reader()
+    clock[0] -= 1
+    with pytest.raises(OnboardingError, match='execution_scope_required'):
+        reader()
+
+
+@pytest.mark.parametrize('owner_name', ['founder', 'entrant'])
+def test_publication_dispatch_carries_remaining_scope_without_rewriting_original(tmp_path, monkeypatch, owner_name):
+    """Real protected journal/locks; owner transport and signed reducer are seams."""
+    from clusterctl.onboarding_group_admission import _dispatch_publication
+    journal, parent, request, clock = remaining_fixture(tmp_path, monkeypatch)
+    approved = recovery.remaining_plan(journal, request, audit_identity={})
+    recovery.remaining_attach(journal, parent['operation_id'], recovery.remaining_reference(approved))
+    current = journal.get(parent['operation_id'])
+    original = copy.deepcopy(current['runtime_observation']['group_publication'])
+    social, _key, _prefix, provenance = recovery.membership(journal, current,
+        current['intended_transition']['cohort_admission'])
+    assert clock[0] > social['acceptance_not_after_ms']
+    command = original['requests']['entrant']['application']['command']
+    captured = {}
+    def publication(value, **options):
+        assert value == command
+        assert options['effect_not_after_ms'] == social['acceptance_not_after_ms']
+        reader = options['remaining_execution']
+        context = reader()
+        assert context['owner_name'] == owner_name
+        assert context['not_after_ms'] == request['expires_at_ms']
+        assert context['command_sha256'] == digest(command)
+        captured['reader'] = reader
+        return {'status': 'recorded'}
+    cohort = SimpleNamespace(journal=journal,
+        owners={owner_name: SimpleNamespace(group_publication=publication)})
+    assert _dispatch_publication(cohort, current, owner_name, command,
+        context_sha256='a'*64, authorities={}, social=social,
+        provenance=provenance) == {'status': 'recorded'}
+    assert journal.get(parent['operation_id'])['runtime_observation']['group_publication'] == original
+    with pytest.raises(OnboardingError, match='execution_scope_required'):
+        captured['reader']()
+    clock[0] = request['expires_at_ms']
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        _dispatch_publication(cohort, current, owner_name, command,
+            context_sha256='a'*64, authorities={}, social=social, provenance=provenance)
+
+
+def test_publication_dispatch_does_not_accept_result_after_remaining_expiry(tmp_path, monkeypatch):
+    from clusterctl.onboarding_group_admission import _dispatch_publication
+    journal, parent, request, clock = remaining_fixture(tmp_path, monkeypatch)
+    approved = recovery.remaining_plan(journal, request, audit_identity={})
+    recovery.remaining_attach(journal, parent['operation_id'], recovery.remaining_reference(approved))
+    current = journal.get(parent['operation_id'])
+    social, _key, _prefix, provenance = recovery.membership(journal, current,
+        current['intended_transition']['cohort_admission'])
+    command = current['runtime_observation']['group_publication']['requests']['entrant']['application']['command']
+    def publication(value, **options):
+        options['remaining_execution']()
+        clock[0] = request['expires_at_ms']
+        return {'status': 'recorded'}
+    cohort = SimpleNamespace(journal=journal,
+        owners={'entrant': SimpleNamespace(group_publication=publication)})
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        _dispatch_publication(cohort, current, 'entrant', command,
+            context_sha256='a'*64, authorities={}, social=social, provenance=provenance)
+    assert journal.get(parent['operation_id'])['runtime_observation']['group_publication']['requests']['entrant']['application']['result'] is None

@@ -88,7 +88,7 @@ def test_guest_observation_deadline_refuses_before_custody_or_unbounded_rpc(monk
         Target.running(target,deadline_ns=time.monotonic_ns()-1)
 
 
-@pytest.mark.parametrize('action,timeout', [('observe','1'),('running','0'),('admitted-running','-1'),
+@pytest.mark.parametrize('action,timeout', [('prepare','1'),('observe','0'),('running','0'),('admitted-running','-1'),
                                          ('running','nan'),('running','inf'),('running','61')])
 def test_guest_cli_rejects_invalid_observation_budget_before_sdk_or_body(capsys, monkeypatch, action, timeout):
     from clusterctl import onboarding_target
@@ -98,6 +98,21 @@ def test_guest_cli_rejects_invalid_observation_budget_before_sdk_or_body(capsys,
         '--genesis','/unused/genesis','--code','/unused/code',
         '--observation-timeout-seconds',timeout])==1
     assert capsys.readouterr().out=='{"error": "native_onboarding_target_refused"}\n'
+
+
+def test_guest_observe_accepts_bounded_metadata_read_before_sdk(monkeypatch):
+    from clusterctl import onboarding_target
+    class PublicPlanReached(BaseException):
+        pass
+    def read_plan(*_args, **_kwargs):
+        raise PublicPlanReached
+    monkeypatch.setattr(onboarding_target.being_seed, '_read', read_plan)
+    # Argument validation admits this supported bounded observation. Stop at
+    # its public plan read, before SDK selection or owner state is opened.
+    with pytest.raises(PublicPlanReached):
+        onboarding_target.main(['observe', '--home', '/unused', '--plan', '/unused/plan',
+            '--genesis', '/unused/genesis', '--code', '/unused/code',
+            '--observation-timeout-seconds', '1'])
 
 
 def child_listener(path, ready):
@@ -336,3 +351,62 @@ def test_exit_observation_rejects_invalid_bound_without_signal(timeout):
         finally:
             left.close()
             right.close()
+
+
+def test_owner_cannot_continue_after_coordinator_dies(tmp_path):
+    """Actual kernel parent-death signal, before the isolated stand-in effect."""
+    import json
+    import os
+    import select
+    import signal
+    import subprocess
+    import sys
+    effect = tmp_path/'unexpected-effect'
+    child = '''import json,os,sys
+from pathlib import Path
+from clusterctl.owner_process import require_parent_lifetime
+require_parent_lifetime(int(sys.argv[1]))
+print(json.dumps({'pid':os.getpid()}),flush=True)
+if os.read(int(sys.argv[2]),1):Path(sys.argv[3]).write_text('effect')
+'''
+    coordinator = '''import os,subprocess,sys
+child=subprocess.Popen([sys.executable,'-B','-c',sys.argv[1],str(os.getpid()),sys.argv[2],sys.argv[3]],
+ pass_fds=(int(sys.argv[2]),),stdout=subprocess.PIPE,text=True,start_new_session=True)
+print(child.stdout.readline().strip(),flush=True)
+sys.stdin.read(1)
+'''
+    reader, writer = os.pipe()
+    process = subprocess.Popen([sys.executable,'-B','-c',coordinator,child,str(reader),str(effect)],
+        pass_fds=(reader,),stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+    os.close(reader)
+    descriptor = -1
+    try:
+        assert select.select([process.stdout],[],[],5)[0], 'owner did not register'
+        owner = json.loads(process.stdout.readline())
+        descriptor = os.pidfd_open(owner['pid'])
+        os.kill(process.pid,signal.SIGKILL)
+        process.wait(timeout=5)
+        assert select.select([descriptor],[],[],5)[0], 'owner outlived coordinator'
+        with pytest.raises(BrokenPipeError):
+            os.write(writer,b'1')
+        assert not effect.exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        process.stdin.close()
+        process.stdout.close()
+        os.close(writer)
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def test_owner_parent_guard_rejects_lost_parent_before_registration():
+    import subprocess
+    import sys
+    program = '''from clusterctl.owner_process import require_parent_lifetime,PresenceError
+try:require_parent_lifetime(1)
+except PresenceError:pass
+else:raise AssertionError('orphaned owner accepted')
+'''
+    subprocess.run([sys.executable,'-B','-c',program],check=True,timeout=5)

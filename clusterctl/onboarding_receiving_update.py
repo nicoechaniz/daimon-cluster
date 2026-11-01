@@ -457,8 +457,11 @@ class GuestGroupClient:
         return supported_scope(self, code, uid=os.geteuid(), code_digest=code_digest)
 
     def group_publication(self, command: dict, *, authority_closure: dict,
-                          expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None) -> dict:
-        return self._call('group-publication', maintenance=True, group_request=dict(command=command,
+                          expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None,
+                          remaining_execution=None) -> dict:
+        return self._call('group-publication', maintenance=True,
+            **({'remaining_execution':remaining_execution} if remaining_execution is not None else {}),
+            group_request=dict(command=command,
             offline=True, authority_closure=authority_closure,
             **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
             **({'effect_not_after_ms':effect_not_after_ms} if effect_not_after_ms is not None else {})))
@@ -554,7 +557,7 @@ class SourceGroupClient:
 
     def _call(self, arguments: list[str], *, command: dict | None = None,
               module: str = 'clusterctl.onboarding_source', native_response: bool = False,
-              maintenance: bool = False) -> dict:
+              maintenance: bool = False, inherited_descriptors: tuple[int, ...] = ()) -> dict:
         deadline = time.monotonic_ns() + int(self.timeout_seconds * 1_000_000_000)
         if self.deadline_ns is not None:
             deadline = self.deadline_ns if maintenance else min(deadline, self.deadline_ns)
@@ -569,6 +572,9 @@ class SourceGroupClient:
             raise OnboardingError('invalid_receiving_control_request')
         if module not in {'clusterctl.onboarding_source', 'clusterctl.onboarding_owner_client'}:
             raise OnboardingError('receiving_source_owner_binding_required')
+        if inherited_descriptors and (not maintenance or module != 'clusterctl.onboarding_source'
+                or any(type(fd) is not int or fd < 3 for fd in inherited_descriptors)):
+            raise OnboardingError('onboarding_group_remaining_owner_input_required')
         code, code_digest = (self.maintenance or (self.code, self.code_digest)) if maintenance else (self.code, self.code_digest)
         argv = onboarding_sdk.runtime_command(self.venv, self.imports, code, module, [
             '--config', str(self.config), '--expected-config-sha256', self.config_sha256,
@@ -583,6 +589,7 @@ class SourceGroupClient:
             result = _run_owner(argv, input=payload, text=True, capture_output=True,
                 timeout=remaining,
                 user=self.owner_uid, group=self.owner_gid, extra_groups=(),
+                **({'pass_fds':inherited_descriptors} if inherited_descriptors else {}),
                 env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'})
             if time.monotonic_ns() >= deadline:
                 raise OnboardingError('receiving_owner_deadline_expired')
@@ -697,11 +704,26 @@ class SourceGroupClient:
             env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'})
 
     def group_publication(self, command: dict, *, authority_closure: dict,
-                          expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None) -> dict:
-        return self._call(['--group-request', '-'], maintenance=True, command=dict(command=command,
+                          expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None,
+                          remaining_execution=None) -> dict:
+        packet = dict(command=command,
             offline=True, authority_closure=authority_closure,
             **({'expected_context_sha256': expected_context_sha256} if expected_context_sha256 is not None else {}),
-            **({'effect_not_after_ms':effect_not_after_ms} if effect_not_after_ms is not None else {})))
+            **({'effect_not_after_ms':effect_not_after_ms} if effect_not_after_ms is not None else {}))
+        if remaining_execution is None:
+            return self._call(['--group-request', '-'], maintenance=True, command=packet)
+        from .onboarding_group_recovery import sealed_remaining_input
+        with sealed_remaining_input(remaining_execution) as (descriptor, pin):
+            context = remaining_execution()
+            if (context.get('effect') != 'publication' or context.get('command_sha256') != digest(command)
+                    or context.get('owner_context_sha256') != expected_context_sha256
+                    or context.get('helper_code_digest') != (self.maintenance or (self.code,self.code_digest))[1]
+                    or context.get('helper_code_uid') != self.code_uid):
+                raise OnboardingError('onboarding_group_remaining_owner_input_required')
+            return self._call(['--group-request', '-', '--remaining-execution-fd', str(descriptor),
+                '--remaining-execution-sha256', pin, '--remaining-owner-name', context['owner_name'],
+                '--remaining-parent-pid', str(os.getpid())],
+                maintenance=True, command=packet, inherited_descriptors=(descriptor,))
 
     def apply_control(self, path: Path) -> dict:
         return self._call(['--apply-control', str(path)])

@@ -1097,6 +1097,7 @@ class HostBackend:
                      control_file: Path | None = None, control_command: Path | None = None,
                      control_value: dict | None = None, identity_expires_at_ms: int | None = None,
                      native_tooling: dict | None = None, group_request: dict | None = None,
+                     remaining_execution: Callable[[], dict] | None = None,
                      authorization_expires_at_ms: int | None = None,
                      owner_deadline_ns: int | None = None) -> tuple[list[str], int | None, str | None]:
         """Invoke the qualified receiving owner within its finite host budget.
@@ -1130,6 +1131,9 @@ class HostBackend:
             if (candidate is None or not group_request['offline'] or observation_timeout_seconds is None
                     or (action == 'group-publication') != ('action' in group_request['command'])):
                 raise OnboardingError('onboarding_group_relationship_writer_required')
+        if remaining_execution is not None and (action != 'group-publication' or not callable(remaining_execution)
+                or self.config.views is None or group_request is None):
+            raise OnboardingError('onboarding_group_remaining_owner_input_required')
         if native_tooling is not None and (action != 'receiving-identity' or not isinstance(native_tooling, dict)):
             raise OnboardingError('receiving_native_tooling_recipe_required')
         if (action == 'receiving-identity') != (identity_expires_at_ms is not None):
@@ -1229,6 +1233,24 @@ class HostBackend:
             if len(input_data.encode()) > being_seed.MAX_SELECTION:
                 raise OnboardingError('onboarding_group_relationship_command_required')
             arguments += ['--group-request', '-']
+        if remaining_execution is not None:
+            if group_request is None or self.config.views is None:
+                raise OnboardingError('onboarding_group_remaining_owner_input_required')
+            context = remaining_execution()
+            if (context.get('schema') != 'cluster-admission-execution-context/v1'
+                    or context.get('effect') != 'publication'
+                    or context.get('owner_name') != plan['name']
+                    or context.get('command_sha256') != digest(group_request['command'])
+                    or context.get('owner_context_sha256') != group_request.get('expected_context_sha256')
+                    or candidate is None or context.get('helper_code_digest') != candidate[1]
+                    or context.get('helper_code_uid') != 0):
+                raise OnboardingError('onboarding_group_remaining_owner_input_required')
+            filename = 'execution-'+digest(context)+'.json'
+            onboarding_mounts.prepare_matrix_public(self.config.views, plan, {filename: context})
+            if remaining_execution() != context:
+                raise OnboardingError('onboarding_group_remaining_owner_input_required')
+            arguments += ['--remaining-execution', public+'/'+filename,
+                '--remaining-execution-sha256', digest(context)]
         if identity_expires_at_ms is not None:
             arguments += ['--identity-expires-at-ms', str(identity_expires_at_ms)]
         if authorization_expires_at_ms is not None:

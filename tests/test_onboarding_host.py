@@ -668,6 +668,47 @@ def test_group_request_uses_prepared_owner_stdin_without_requiring_running_group
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize('lost_scope', [False, True])
+def test_remaining_publication_uses_protected_input_separately_from_original_stdin(tmp_path, monkeypatch, lost_scope):
+    import os
+    import uuid
+    from clusterctl import onboarding_mounts
+    backend, plan, run, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    views = tmp_path/'views'
+    views.mkdir(mode=0o700)
+    backend.config = replace(backend.config, views=views)
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_UID', os.geteuid())
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_GID', os.getegid())
+    mount = backend._matrix_mount(plan)
+    run.instances[0]['expanded_devices']['onboarding-matrix-public'] = mount
+    packet = dict(command=dict(operation_id=str(uuid.uuid4()), step='select', action='selection',
+        params={'expected_selection_sha256': None}), offline=True, authority_closure={},
+        expected_context_sha256='a'*64, effect_not_after_ms=1)
+    context = dict(schema='cluster-admission-execution-context/v1', effect='publication',
+        owner_name=plan['name'], owner_context_sha256='a'*64, command_sha256=digest(packet['command']),
+        helper_code_digest=candidate[1], helper_code_uid=0)
+    reads = []
+    def reader():
+        reads.append(True)
+        if lost_scope and len(reads) == 2:
+            raise OnboardingError('onboarding_group_remaining_execution_scope_required')
+        return context
+    if lost_scope:
+        with pytest.raises(OnboardingError, match='execution_scope_required'):
+            backend._target_call(plan, 'group-publication', candidate=candidate, group_request=packet,
+                observation_timeout_seconds=5, remaining_execution=reader)
+        assert calls == []
+    else:
+        backend._target_call(plan, 'group-publication', candidate=candidate, group_request=packet,
+            observation_timeout_seconds=5, remaining_execution=reader)
+        argv, options = calls[0]
+        assert json.loads(options['input_data']) == packet
+        pin = digest(context)
+        assert argv[argv.index('--remaining-execution')+1] == '/home/agent/.onboarding-matrix/execution-'+pin+'.json'
+        assert argv[argv.index('--remaining-execution-sha256')+1] == pin
+        assert being_seed._read(Path(mount['source'])/('execution-'+pin+'.json')) == context
+
+
 def test_finite_group_owner_reuses_qualified_command_and_rechecks_host_grant(tmp_path, monkeypatch):
     import uuid
     backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)

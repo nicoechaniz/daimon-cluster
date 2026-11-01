@@ -13,6 +13,69 @@ from . import onboarding_code_successor, onboarding_release, onboarding_sdk
 from .onboarding import digest
 
 
+def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_id: str) -> dict:
+    """Retain a qualified SDK-only successor under the caller's start lock.
+
+    Preparation already verifies the protected owner selection. Starting still
+    requires the ordinary singleton admission; this plans no physical effect.
+    Original startup/audit records remain immutable and exact retries reuse the
+    current planned or completed record instead of manufacturing another birth.
+    """
+    from .rebirth_host import RebirthHostError
+
+    previous = journal.latest_for_target(target)
+    key = f"rebirth-start:{intent['activation_id']}"
+    retained = dict(intent)
+    if previous is not None:
+        prior = dict(previous['intent'])
+        anchor = prior.pop('native_start_predecessor', None)
+        if anchor is not None:
+            if not isinstance(anchor, dict) or set(anchor) != {'operation_id', 'intent_hash'}:
+                raise RebirthHostError('rebirth_host_journal_conflict')
+            parent = journal.get(anchor['operation_id'])
+            if (parent is None or parent['state'] != 'completed'
+                    or parent['operation'] != 'rebirth-start' or parent['target'] != target
+                    or parent['intent_hash'] != anchor['intent_hash']):
+                raise RebirthHostError('rebirth_host_journal_conflict')
+        if previous['operation'] != 'rebirth-start' or previous['state'] not in {
+                'planned', 'runtime-dispatching', 'runtime-applied',
+                'logical-committed', 'audited', 'completed'}:
+            raise RebirthHostError('rebirth_host_journal_conflict')
+        if prior == intent:
+            return previous
+        before, after = prior.get('runtime_call'), intent.get('runtime_call')
+        if (previous['state'] != 'completed'
+                or {k: v for k, v in prior.items() if k != 'runtime_call'}
+                != {k: v for k, v in intent.items() if k != 'runtime_call'}
+                or not isinstance(before, dict) or not isinstance(after, dict)
+                or set(before) != {'operation', 'selection'} or set(after) != set(before)
+                or before['operation'] != 'native-source' or after['operation'] != 'native-source'):
+            raise RebirthHostError('rebirth_host_journal_conflict')
+        old, new = before['selection'], after['selection']
+        fields = {'config', 'config_sha256', 'code', 'code_digest', 'venv', 'sdk_digest'}
+        if (not isinstance(old, dict) or not isinstance(new, dict)
+                or set(old) != fields or set(new) != fields
+                or any(not isinstance(v, str) or not v for v in (*old.values(), *new.values()))
+                or old['config'] != new['config'] or old['config_sha256'] != new['config_sha256']):
+            raise RebirthHostError('rebirth_host_journal_conflict')
+        for selection in (old, new):
+            venv = Path(selection['venv'])
+            if (not venv.is_absolute() or venv.name != 'venv'
+                    or venv.parent.name != selection['sdk_digest']):
+                raise RebirthHostError('rebirth_host_journal_conflict')
+        if Path(old['venv']).parent.parent != Path(new['venv']).parent.parent:
+            raise RebirthHostError('rebirth_host_journal_conflict')
+        retained['native_start_predecessor'] = {
+            'operation_id': previous['operation_id'], 'intent_hash': previous['intent_hash']}
+        key += ':native:' + digest(retained)
+    return journal.plan(
+        operation='rebirth-start', target=target, idempotency_key=key, intent=retained,
+        expected_precondition={'install_state': 'completed'},
+        intended_transition={'registry_status': 'running',
+                             'incarnation_id': intent['origin']['incarnation_id']},
+        audit_identity={'actor': actor, 'target': embodiment_id})
+
+
 def prepare(state: Path, identity: dict, profile: Path, password_fd: int) -> dict:
     from .matrix_host import matrix_root
     from .rebirth_host import RebirthHostError, _owner_file, _read_json

@@ -1,5 +1,25 @@
 # Receiver-compatible Matrix updates
 
+## Native SDK successors — current source contract, 2026-11-01
+
+Cluster #372 owns receiving adoption of the routine H8 SDK-update correction.
+Build against the exact currently selected verified release. A qualified V4
+base supplies its actual Matrix revision and wheel hash; never substitute the
+host's obsolete previous-default pin. Each next marker links that exact base
+and its actual SDK digest. The old marker stays in the retained base; the new
+generation has its own strictly validated marker. Original context remains
+unchanged. Carry an exact qualified SDK selection when preparing that successor.
+
+For an admitted native body, prepare the immutable replacement code/SDK, retaining
+the existing source config and SDK home, then select its protected native profile
+through scoped Matrix maintenance. The H8 host retains a new deterministic start
+linked to the completed predecessor. Exact retries resume that record; unfinished
+or degraded predecessors, changed identity/manifest/config/home and non-native
+transitions remain refused. The same singleton admission, registry, parent-death
+fencing and actual PID/SDK readiness checks still govern startup. The original
+start/audit remains intact; no re-enrollment, key, model or native-session change
+is implied. Published code and prepared SDKs are not receiving acceptance.
+
 ## Local authority changes and the group selector
 
 After an authorized same-being enrollment or retirement, republish the current
@@ -22,11 +42,13 @@ not another relationship ceremony or a reason to restart native model sessions.
 
 A receiver is a signed body, not necessarily an Incus guest on the coordinator.
 Resolve its current maintained host and native/container route before selecting
-an execution backend. Eko lives natively on MEDUSA; the Source dm-eko instance
-is a disabled rollback and must not receive routine updates or be restarted by
-historical onboarding reconciliation. Use the protected native_by_name binding
-and the native relocation runbook. Until executable maintenance/worker adoption
-is observed, retain that gap; never silently fall back to the stopped origin.
+an execution backend. Eko lives natively on MEDUSA; Oliva is the current ITACA
+KVM and CompAII is native on ITACA. Nicolas retired/deleted the old Source
+containers and their copies on2026-10-31: they are not rollback/update targets.
+Use protected receiving bindings and the maintained host records. The old
+physical Source HOST stays ON until Nicolas explicitly orders shutdown; no
+cleanup/deletion or host-off drill is authorized. Dated deployment notes below
+retain their evidence and do not supersede these current placements.
 Preserve independent CompAII/Oliva work and all existing signed identities.
 
 

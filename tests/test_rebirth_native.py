@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import os
 import signal
@@ -210,3 +211,156 @@ def test_native_branch_uses_shared_admission_and_dies_on_lease_loss(native_state
     finally:
         if process.poll() is None:
             base._stop_rebirth_host(process)
+
+
+def test_native_sdk_successor_keeps_original_start_and_reuses_admission(native_state, monkeypatch):
+    from clusterctl import rebirth
+    from clusterctl.operation_journal import OperationJournal
+
+    fixture, state, values = base._install(native_state, ceremony_now_ms=time.time_ns() // 1_000_000)
+    installed = rebirth.install_rebirth_package(**values)
+    base._ensure_production_fences(state, installed['embodiment_id'], lease_ttl_s=6)
+    selected = {'config': '/fixture/source.json', 'config_sha256': 'a' * 64,
+                'code': '/fixture/code1', 'code_digest': 'b' * 64,
+                'sdk_digest': 'c' * 64,
+                'venv': '/fixture/home/.local/share/daimon-matrix/sdk/' + 'c' * 64 + '/venv'}
+    monkeypatch.setattr(rebirth_native, 'prepare', lambda *a: dict(selected))
+    spawned = []
+
+    def child(selection, ready_fd):
+        spawned.append(selection['sdk_digest'])
+        return [sys.executable, '-c', ('import os,signal,time;'
+                'signal.signal(signal.SIGTERM,lambda *a:exit(0));'
+                f'os.write({ready_fd},b"READY\\n");os.close({ready_fd});time.sleep(60)')]
+
+    monkeypatch.setattr(rebirth_native, 'command', child)
+    monkeypatch.setattr(rebirth_native, 'verify_ready', lambda *a:
+        {'integrity': 'ok', 'active_embodiment_ids': [installed['embodiment_id']]})
+    target = f"rebirth-start:{installed['embodiment_id']}:{installed['activation_id']}"
+    journal = OperationJournal(state)
+
+    def start_stop():
+        process, ready = rebirth_host.launch_rebirth_host(
+            state, installed['embodiment_id'], base._descriptor(fixture['password']),
+            native_source_profile=state / 'profile.json')
+        try:
+            assert ready['state'] == 'running-ready'
+            assert ready['embodiment_id'] == installed['embodiment_id']
+            assert ready['incarnation_id'] == installed['incarnation_id']
+            with pytest.raises(rebirth_host.RebirthHostError, match='admission_refused'):
+                rebirth_host.launch_rebirth_host(
+                    state, installed['embodiment_id'], base._descriptor(fixture['password']),
+                    native_source_profile=state / 'profile.json')
+        finally:
+            base._stop_rebirth_host(process)
+        return journal.latest_for_target(target)
+
+    original = start_stop()
+    selected.update(code='/fixture/code2', code_digest='d' * 64, sdk_digest='e' * 64,
+                    venv='/fixture/home/.local/share/daimon-matrix/sdk/' + 'e' * 64 + '/venv')
+    successor = start_stop()
+    assert successor['operation_id'] != original['operation_id']
+    assert successor['intent']['native_start_predecessor'] == {
+        'operation_id': original['operation_id'], 'intent_hash': original['intent_hash']}
+    assert journal.get(original['operation_id']) == original
+    assert start_stop()['operation_id'] == successor['operation_id']
+    assert spawned == ['c' * 64, 'e' * 64, 'e' * 64]
+
+
+def _startup_intent():
+    return {'schema': 'dm.cluster.rebirth-host-intent/v1', 'activation_id': 'activation',
+            'origin': {'embodiment_id': 'body', 'incarnation_id': 'incarnation'},
+            'successor_manifest_hash': 'manifest', 'runtime_call': {
+                'operation': 'native-source', 'selection': {
+                    'config': '/fixture/source.json', 'config_sha256': 'a' * 64,
+                    'code': '/fixture/code1', 'code_digest': 'b' * 64,
+                    'sdk_digest': 'c' * 64,
+                    'venv': '/fixture/home/sdk/' + 'c' * 64 + '/venv'}}}
+
+
+def _next_sdk(intent, tag='d'):
+    result = copy.deepcopy(intent)
+    result['runtime_call']['selection'].update(
+        code='/fixture/code-' + tag, code_digest=tag * 64, sdk_digest=tag * 64,
+        venv='/fixture/home/sdk/' + tag * 64 + '/venv')
+    return result
+
+
+def test_native_sdk_plan_recovers_after_lost_return_without_competing_successor(tmp_path):
+    from clusterctl.operation_journal import OperationJournal
+
+    journal = OperationJournal(tmp_path / 'state')
+    def plan(intent):
+        return rebirth_native.start_record(journal, 'target', intent, actor='fixture', embodiment_id='body')
+    original = plan(_startup_intent())
+    journal.advance(original['operation_id'], 'completed', result={'fixture': 'planner-only'})
+    new_intent = _next_sdk(_startup_intent())
+    successor = plan(new_intent)
+    assert successor['state'] == 'planned'
+    assert plan(new_intent) == successor
+    with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+        plan(_next_sdk(new_intent, 'e'))
+    assert journal.latest_for_target('target') == successor
+    journal.advance(successor['operation_id'], 'completed', result={'fixture': 'planner-only'})
+    third = plan(_next_sdk(new_intent, 'e'))
+    assert third['intent']['native_start_predecessor']['operation_id'] == successor['operation_id']
+    assert third['audit_event_id'] not in {successor['audit_event_id'], original['audit_event_id']}
+
+
+@pytest.mark.parametrize('clock_step', [0, -100])
+def test_native_sdk_chain_uses_insertion_order_not_clock_or_uuid(tmp_path, monkeypatch, clock_step):
+    import itertools
+    from clusterctl import operation_journal
+
+    clock = itertools.count(1000, clock_step)
+    identifiers = itertools.count(10000, -1)
+    monkeypatch.setattr(operation_journal, 'now_ms', lambda: next(clock))
+    monkeypatch.setattr(operation_journal.uuid, 'uuid4', lambda: f'{next(identifiers):032x}')
+    state = tmp_path / 'state'
+    journal = operation_journal.OperationJournal(state)
+    def plan(intent):
+        return rebirth_native.start_record(journal, 'target', intent, actor='fixture', embodiment_id='body')
+    original = plan(_startup_intent())
+    journal.advance(original['operation_id'], 'completed', result={'fixture': 'planner-only'})
+    second_intent = _next_sdk(_startup_intent())
+    second = plan(second_intent)
+    assert second['intent']['native_start_predecessor']['operation_id'] == original['operation_id']
+    # Reopen the journal as after process loss; pending and completed retries
+    # must select the durable head even with equal/regressing timestamps/UUIDs.
+    journal = operation_journal.OperationJournal(state)
+    assert plan(second_intent) == second
+    journal.advance(second['operation_id'], 'completed', result={'fixture': 'planner-only'})
+    assert plan(second_intent)['operation_id'] == second['operation_id']
+    third = plan(_next_sdk(second_intent, 'e'))
+    assert third['intent']['native_start_predecessor']['operation_id'] == second['operation_id']
+    assert journal.get(original['operation_id'])['intent'].get('native_start_predecessor') is None
+
+
+@pytest.mark.parametrize('change', ['identity', 'manifest', 'config', 'config-hash',
+                                  'home', 'pending', 'degraded', 'non-native'])
+def test_native_sdk_successor_refuses_other_changes_and_unfinished_start(tmp_path, change):
+    from clusterctl.operation_journal import OperationJournal
+
+    journal = OperationJournal(tmp_path / 'state')
+    original = rebirth_native.start_record(
+        journal, 'target', _startup_intent(), actor='fixture', embodiment_id='body')
+    if change != 'pending':
+        original = journal.advance(original['operation_id'],
+            'degraded' if change == 'degraded' else 'completed', result={'fixture': 'planner-only'})
+    candidate = _next_sdk(_startup_intent())
+    selected = candidate['runtime_call']['selection']
+    if change == 'identity':
+        candidate['origin']['incarnation_id'] = 'other'
+    if change == 'manifest':
+        candidate['successor_manifest_hash'] = 'other'
+    if change == 'config':
+        selected['config'] = '/other/config.json'
+    if change == 'config-hash':
+        selected['config_sha256'] = 'e' * 64
+    if change == 'home':
+        selected['venv'] = '/other/home/sdk/' + 'd' * 64 + '/venv'
+    if change == 'non-native':
+        candidate['runtime_call']['operation'] = 'matrix-host'
+    with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+        rebirth_native.start_record(journal, 'target', candidate, actor='fixture', embodiment_id='body')
+    assert journal.latest_for_target('target') == original

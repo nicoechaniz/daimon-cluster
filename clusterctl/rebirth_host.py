@@ -475,7 +475,10 @@ def launch_rebirth_host(
             if native_selection is not None:
                 intent["runtime_call"] = {"operation":"native-source", "selection":native_selection}
             record = journal.latest_for_target(target)
-            if record is None:
+            if native_selection is not None:
+                record = rebirth_native.start_record(
+                    journal, target, intent, actor=actor, embodiment_id=embodiment_id)
+            elif record is None:
                 record = journal.plan(
                     operation="rebirth-start",
                     target=target,
@@ -716,7 +719,10 @@ def launch_rebirth_host(
                             "activation_id": identity["activation_id"],
                             "successor_manifest_hash": identity["manifest_hash"],
                         },
-                        idempotency_key=f"rebirth-start:{identity['activation_id']}",
+                        idempotency_key=(
+                            f"rebirth-start:{identity['activation_id']}:native:{record['operation_id']}"
+                            if 'native_start_predecessor' in record['intent'] else
+                            f"rebirth-start:{identity['activation_id']}"),
                         event_id=record["audit_event_id"],
                     )
                     record = journal.advance(record["operation_id"], "audited")

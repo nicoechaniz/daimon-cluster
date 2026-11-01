@@ -66,7 +66,11 @@ def intent_hash(value: dict[str, Any]) -> str:
 
 
 class OperationJournal:
-    """Owner-only SQLite journal with one open mutation per exact target."""
+    """Owner-only SQLite journal with one open mutation per exact target.
+
+    Operations are append-only. Authoritative heads use SQLite insertion order,
+    never wall-clock timestamps or random IDs; timestamps remain display data.
+    """
 
     def __init__(self, state_dir: str | Path, *, initialize: bool = True):
         self.path = Path(state_dir) / "operation-journal.sqlite3"
@@ -275,7 +279,7 @@ class OperationJournal:
             if idempotency_key is not None:
                 existing = connection.execute(
                     "SELECT * FROM operations WHERE idempotency_key=? "
-                    "ORDER BY created_ms DESC,operation_id DESC LIMIT 1",
+                    "ORDER BY rowid DESC LIMIT 1",
                     (idempotency_key,),
                 ).fetchone()
                 if existing is not None:
@@ -533,7 +537,7 @@ class OperationJournal:
             connection = self._connect(query_only=True)
             row = connection.execute(
                 "SELECT * FROM operations WHERE target=? "
-                "ORDER BY created_ms DESC,operation_id DESC LIMIT 1",
+                "ORDER BY rowid DESC LIMIT 1",
                 (target,),
             ).fetchone()
             return None if row is None else self._decode(row)
@@ -550,7 +554,7 @@ class OperationJournal:
             connection = self._connect(query_only=True)
             row = connection.execute(
                 "SELECT * FROM operations WHERE idempotency_key=? "
-                "ORDER BY created_ms DESC,operation_id DESC LIMIT 1",
+                "ORDER BY rowid DESC LIMIT 1",
                 (key,),
             ).fetchone()
             return None if row is None else self._decode(row)
@@ -572,7 +576,7 @@ class OperationJournal:
             row = connection.execute(
                 "SELECT * FROM operations WHERE operation=? AND state='completed' "
                 "AND json_extract(result_json,?)=? "
-                "ORDER BY created_ms DESC,operation_id DESC LIMIT 1",
+                "ORDER BY rowid DESC LIMIT 1",
                 (operation, f'$."{field}"', value),
             ).fetchone()
             return None if row is None else self._decode(row)

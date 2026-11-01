@@ -400,6 +400,15 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
             assert descriptor['frame']['src'].startswith('https://content.example/r/')
             assert descriptor['adapter_handshake'] == 'required'
             assert 'recipients' not in descriptor and 'title' not in descriptor
+            scope = {'actor_ref': 'human-two', 'resource': 'd' * 32, 'version': entries[3]['version_ref']}
+            decision = app.owner('one', 'home-owner', 'check-review-access', scope)
+            assert decision == {'schema': 'dm.review-access/v1', **scope, 'allowed': True}
+            assert not app.owner('one', 'home-owner', 'check-review-access', {**scope, 'actor_ref': 'human-one'})['allowed']
+            assert not app.owner('one', 'home-owner', 'check-review-access', {**scope, 'version': '0' * 64})['allowed']
+            with pytest.raises(ValueError):
+                app.owner('one', other, 'check-review-access', scope)
+            with pytest.raises(ValueError):
+                app.owner('one', 'home-owner', 'check-review-access', {**scope, 'actor_ref': 'human-one', 'url': 'https://other.example'})
             assert get(review.replace(entries[3]['version_ref'], 'current'), other)[0] == 404
             assert get(review + '?url=https://other.example', other)[0] == 404
             assert get('/access/review-source/' + 'a' * 32 + '/' + entries[0]['version_ref'])[0] == 404

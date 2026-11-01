@@ -337,6 +337,19 @@ class Application:
                 known_tribe=lambda ref: ref in self.authority.tribes(),
             )
             return {"status": "valid"}
+        if operation == 'check-review-access':
+            # Owner-local read-only decision for a trusted application's
+            # verified participant. No reader session, content lease or model
+            # bytes are minted on behalf of that actor.
+            if (not isinstance(payload, dict) or set(payload) != {'actor_ref', 'resource', 'version'}
+                    or not isinstance(payload['actor_ref'], str) or not 1 <= len(payload['actor_ref']) <= 256
+                    or not isinstance(payload['resource'], str) or not re.fullmatch('[a-f0-9]{32}', payload['resource'])
+                    or not isinstance(payload['version'], str) or not re.fullmatch('[a-f0-9]{64}', payload['version'])):
+                raise ValueError('invalid_review_access_scope')
+            reader = self.authority.actor(payload['actor_ref'])
+            allowed = bool(reader and reader.enabled and self.selected(
+                home, payload['resource'], payload['version'], reader, False))
+            return {'schema': 'dm.review-access/v1', **payload, 'allowed': allowed}
         if operation == "sync":
             if payload:
                 raise ValueError("home_sync_takes_no_manifest_from_client")

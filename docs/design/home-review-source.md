@@ -48,3 +48,19 @@ The corresponding application contract is maintained in
 [Nexus95](https://github.com/compaii/daimon-nexus/blob/main/docs/collaborative-review-contract.md).
 Controlled HTTP and real-renderer browser qualification remain distinct from
 receiving deployment and human listening acceptance.
+
+## Current participant permission at application/native handoff
+
+The owner-local check-review-access operation accepts only actor_ref, a 32-character hexadecimal
+resource and a 64-character hexadecimal pinned version. It returns dm.review-access/v1 with the same
+scope and a strict allowed boolean. The selected home's ordinary current and
+historical evaluator decides for that actor. Reader credentials cannot call this
+operation, and unknown/disabled actors or unavailable versions are denied.
+
+This is a read-only decision for a trusted application's server-verified actor,
+not permission to fetch content as that actor. No reader session or content lease
+is minted and no audience changes. Reuse the receiving publisher's maintained
+owner_request helper; keep its existing custody local. Another home's resources
+require that home's authorized holder/adapter. The application must not accept
+actor claims from the browser, cache an allow after revocation or use a model
+author's identity when it cannot verify its participant.

@@ -783,3 +783,16 @@ def test_remaining_finish_does_not_reenter_preparation_authority(fixture, monkey
         return {'continued':'remaining effects'}
     monkeypatch.setattr(GroupCoordinator, '_finish', finish)
     assert GroupCoordinator(f.backend).advance('newcomer') == {'continued':'remaining effects'}
+
+
+def test_empty_group_policy_waits_for_protected_admission_without_pair_fallback(fixture):
+    f = fixture
+    selected = copy.deepcopy(f.selected)
+    selected.update(owners={}, admissions={})
+    being_seed._write(f.path, selected)
+    assert configuration(f.path) == selected
+    coordinator = GroupCoordinator(f.backend)
+    assert coordinator.advance('newcomer') is None
+    observed = coordinator.observe(f.plans['newcomer'])
+    assert observed.state == 'waiting' and observed.reason == 'group_admission_required'
+    assert not f.calls, 'unbound policy must not invoke any owner or lifecycle producer'

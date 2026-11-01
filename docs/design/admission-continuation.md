@@ -665,3 +665,18 @@ The ordinary worker continues an explicitly retained qualification rather than
 retrying its earlier uncertain probe. No qualification is created automatically.
 Current source tests use synthetic native evidence; receiving qualification is
 still required before claiming installed full admission acceptance.
+
+## Group-only host policy before another member is authorized
+
+The host may select a coordinator configuration with its actual Tribe reference
+and journal location but empty `owners` and `admissions` maps. This declares the
+group path without manufacturing a new identity, invitation, operation or owner
+locator. An unbound new plan reports `group_admission_required`; the Matrix stage
+cannot fall through to legacy pair provisioning. A nonempty admission map still
+requires the complete protected owner and parent bindings. Ordinary completed
+relocated jobs retain their existing history and maintenance route.
+
+Use this policy when no new member is currently authorized. Populate the normal
+protected plan/cohort binding when an actual approved onboarding is requested;
+never copy a fixture's actors, journal or authority into production. Configuring
+the policy is not acceptance of a future member or proof of human access.

@@ -1266,6 +1266,13 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
     if action == 'visibility-publish':
         installation = private_directory(group_root / 'visibility', create=True) / 'installation.json'
         result = operator_messaging.publish_group_visibility(hosted, directory, installation, **params)
+        # The peer app has its own signed catalog key, separate from the base
+        # native runtime. Prepare its stores before first ordinary group load.
+        from daimon_matrix.chat_host import application_view
+        from daimon_matrix.native_egress import VISIBILITY_SCHEMA_VERSION
+        view = application_view(hosted, directory, installation, catalog_mode='migrate')
+        view.egress.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+        view.egress.validate_registered_catalogs()
         return dict(installation_sha256=result['installation_sha256'])
     from .onboarding_peer import publish_group_selection
     result = publish_group_selection(hosted, group_root, operation_id=value['operation_id'],

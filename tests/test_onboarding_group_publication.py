@@ -361,7 +361,7 @@ def test_supplemental_publication_preserves_expired_intent_and_exact_native_retr
 @pytest.mark.parametrize('profile', ['source', 'target'])
 def test_native_first_publication_signatures_and_selector_recover_exact_lost_replies(unicode_group_source, monkeypatch, profile):
     from daimon_matrix import operator_messaging
-    from daimon_matrix.messaging_config import read_publication, verify_binding
+    from daimon_matrix.messaging_config import read_publication, verify_binding, _validate_store_schema
     group_source = unicode_group_source
     source, target, *_ = group_source
     owner, group, journal, request, base = initial_publication(group_source, profile)
@@ -420,9 +420,29 @@ def test_native_first_publication_signatures_and_selector_recover_exact_lost_rep
             qualified_at_ms=disclosure['issued_at_ms'], token_sha256=hashlib.sha256(token).hexdigest(),
             get_me_bot_id=1, probe_chat_id=-123, probe_topic_id=None, probe_message_id=1,
             probe_text_sha256='b' * 64))
-    published_visibility = owner.group_publication(dict(operation_id=identifier, step='visibility',
+    visibility_request = dict(operation_id=identifier, step='visibility',
         action='visibility-publish', params=dict(disclosure=disclosure, bindings=[binding],
-            expected_installation_sha256=None, initial_configuration=configuration)), authority_closure={})
+            expected_installation_sha256=None, initial_configuration=configuration))
+    from daimon_matrix.native_egress import MandatoryEgressController
+    migrate = MandatoryEgressController.migrate_registered_catalogs
+    def lost_catalog_reply(self, *args, **kwargs):
+        migrate(self, *args, **kwargs)
+        raise OSError('synthetic lost native catalog preparation reply')
+    monkeypatch.setattr(MandatoryEgressController, 'migrate_registered_catalogs', lost_catalog_reply)
+    with pytest.raises(OSError, match='lost native catalog preparation'):
+        owner.group_publication(visibility_request, authority_closure={})
+    assert being_seed._read(journal / identifier / 'publications/visibility.json')['result'] is None
+    monkeypatch.setattr(MandatoryEgressController, 'migrate_registered_catalogs', migrate)
+    published_visibility = owner.group_publication(visibility_request, authority_closure={})
+    assert owner.group_publication(visibility_request, authority_closure={}) == published_visibility
+
+    application, _ = read_publication(base, group / 'application')
+    for name, filename in application['stores'].items():
+        # A maintenance-only load accepts legacy catalogs. First ordinary serve
+        # must validate without that exception, using the installed app key after visibility publication.
+        _validate_store_schema(name, group / 'application' / filename)
+    from daimon_matrix.chat_host import application_view
+    application_view(base, group / 'application', visibility / 'installation.json')
 
     selection = dict(operation_id=identifier, step='select', action='selection',
                      params=dict(expected_selection_sha256=None))

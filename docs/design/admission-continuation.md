@@ -528,3 +528,17 @@ without progressing. Keep those native CAS, renewal and quiescence checks; do no
 skip them to make the retry fit. Retain the same operation, original requests and
 partial results. The longer coordinator bound changes scheduling, not authority,
 receiving identity, uncertainty or publication semantics.
+
+## First peer application catalog preparation
+
+After publishing the signed group visibility installation, compose the SDK's
+`chat_host.application_view(..., catalog_mode='migrate')`, migrate its registered
+catalogs and validate them before retaining publication completion. The peer
+view owns its separate installation key and application stores; never migrate
+those stores with the closed base runtime's key or adopt the peer key over base
+native catalogs. Ordinary first load must pass normal store and peer validation,
+not merely maintenance's legacy-schema exception. Native migration and retained
+visibility selection make a lost preparation reply exactly recoverable without
+new identity, installation, send or start. A previously failed initial service
+invocation remains historical; catalog repair alone does not authorize replaying
+its first-start request or claim lifecycle recovery.

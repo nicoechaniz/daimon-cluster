@@ -1,4 +1,49 @@
-## Current receiving deployment and maintenance — 2026-10-27
+## Current receiving and onboarding selection — 2026-11-01
+
+CompAII native primary and shared Cluster/Matrix control run on ITACA. Eko is
+native on MEDUSA; Oliva is the active full KVM `vm-dm-oliva` on ITACA. The old
+Source native/bot/Matrix/network identities are stopped and disabled. The old
+physical HOST must remain ON until Nicolas explicitly orders shutdown: no
+host-off timer/drill, cleanup, deletion or provider cancellation. The seven old
+Source Incus containers and historical copies were deleted on explicit request;
+they are not update or rollback targets. Preserve continuity in living bodies.
+Migration and same-being integration Matrix #376 are COMPLETE; dated sections
+below retain evidence, not current selections or pending authorization gates.
+
+Matrix #407 is accepted on ITACA and Legion without whole-history sync. Current
+CompAII/Eko/Oliva group, direct delivery and exact native readers are accepted
+under [Cluster #375](https://github.com/nicoechaniz/daimon-cluster/issues/375#issuecomment-6554354328).
+All three select SDK `346c527f`, Matrix source `004e6edf`, wheel `634498c8`.
+Eko and Oliva load code `7ac0e07c`; CompAII retains its native code `88ba59d6`
+and separately qualified H8 operator. These distinct code selections preserve
+original context, identity, native conversations, bot/apps and current settings.
+
+The existing onboarding worker's default runtime and Eko/Oliva runtime selectors
+now select the same qualified `7ac0e07c` generation, verified against the original
+approved baseline. The existing locked/journaled `apply_host_selection` route
+preserved all non-runtime settings, native/KVM placements and both completed jobs.
+The installed worker package validates the exact new configuration; its process
+remained unchanged. This is host selection, not a newcomer enrollment or proof
+of complete future-member admission. No completed job or model input was replayed.
+The prior runtime selection remains available as compatible software rollback;
+accepted authority, journals and native histories must never be rolled back.
+
+Current reader selection requires one retained operation with explicit revoke
+reservation followed by select, even when a reader currently reports unselected.
+Use the maintained current-reader observer and owner controls; a daemon restart
+alone does not restore a previously selected reader. Actual current-three signed
+group/direct evidence and configured native client acceptance are linked above.
+Old Source/Oliva signed audience rows and Legion's unqualified Tribe reader remain
+explicit residuals. Legion's accepted `/we` is not Tribe enrollment acceptance.
+
+Future-member portal completion #227, coherent update orchestration #232, I/O
+Matrix #310/#313 into the existing native Interaction integrator and bounded
+coordination #312 remain under the active Matrix #302 roadmap. A code/config
+update does not close these requirements. Autonomous Matrix inference remains
+OFF; technical events stay model-free. Preserve uncertain historical admissions
+and paused/blocked goals. No global Stop is authorized by routine maintenance.
+
+## Historical receiving deployment and maintenance — 2026-10-27
 
 CompAII, Eko on native MEDUSA and Oliva load body/observer `f6b369a9`,
 Matrix SDK `43f05fdb`, Matrix source `6cb82e5a` and wheel `9e46fe11`.
@@ -25,7 +70,7 @@ identities or repeat successful service lifecycle to repair observation. See
 body qualification from PR336 remains valid. The prior sync/Weave goal #376 is complete; the active whole-host migration
 is separate and remains unfinished. Earlier dated deployment sections are history.
 
-## Current physical placement — 2026-10-28
+## Historical physical placement — 2026-10-28
 
 Eko Codex is native on MEDUSA. Its old Source dm-eko is stopped with autostart
 false and retained until Sai confirms complete acceptance and source retirement

@@ -255,15 +255,27 @@ existing source/guest primitives remain responsible for checking that horizon
 at their actual fresh start boundary. Focused journal/helper/custody and
 finisher regressions pass, with independent source review.
 
-Technical communication now resolves current execution independently of social
-provenance. Fresh send/reply dispatch holds both fences and passes the same
-bounded horizon to the qualified owner; delivery inspection remains read-only
-and completed originals are reused. This is **not yet native qualification**:
-[Matrix #422](https://github.com/AlterMundi/daimon-matrix/issues/422) records the
-source-confirmed gap where the owner CLI does not transmit that bound into the
-queued native request. Native first-authoring enforcement and exact-bound
-retention must be implemented and adopted before this path is accepted.
-An already-authored message's carrier completion is separate from new authoring.
+Technical communication resolves current execution independently of social
+provenance. Fresh send/reply dispatch holds both fences. Before native request
+preparation, the parent retains one immutable first-authoring bound per original
+intent and the owner CLI includes it in the existing exact native request.
+Both the actual receiving observer and loaded SDK must advertise
+`messaging-authoring-effect-horizon/v1`; any retained bound also requires that
+support, even if the original grant has expired. Missing support refuses rather
+than falling back to unbounded authoring. A shorter invocation cannot let the
+original request outlive its actual custody.
+
+`--authoring-expires-at-ms` bounds the current permitted fresh dispatch;
+`--authoring-effect-not-after-ms` carries the original native first-authoring
+horizon. They are distinct: after the latter expires, the same request can only
+recover already committed authoring, without a new authoring grant or a renewed
+bound. Delivery inspection and completed proofs remain read-only. The native
+Ledger fence and authenticated send/reply qualification belong to
+[Matrix #422](https://github.com/AlterMundi/daimon-matrix/issues/422). Source and
+tests are qualified; compatible receiving adoption and the original complete
+native admission remain pending. Existing uncertain unbounded requests are not
+rewritten into bounded requests; retain their conflict/history and inspect their
+actual native outcome rather than minting replacement send IDs.
 
 Native communication enforcement and the complete native admission
 journey still need qualification. Retain the original expired synthetic

@@ -711,7 +711,13 @@ class GroupCoordinator:
                         return owner.messaging(method, public, binding=binding, **options)
                 with journal.mutation_lock(row['operation_id']):
                     current = journal.get(row['operation_id'])
-                    deadline = recovery.effect_deadline(journal, current, 'communication', deadline_ns)
+                    retained = (current['runtime_observation'] or {}).get('portal_admission', {}).get(
+                        'communication-authoring-'+step)
+                    saved_horizon = retained.get('effect_not_after_ms') if isinstance(retained, dict) else None
+                    historical_only = (type(saved_horizon) is int
+                        and 0 < saved_horizon <= time.time_ns() // 1_000_000)
+                    deadline = (deadline_ns if historical_only else
+                        recovery.effect_deadline(journal, current, 'communication', deadline_ns))
                     started = time.monotonic_ns()
                     deadline = min(deadline, started + int(
                         min(getattr(owner, 'timeout_seconds', 30), 60) * 1_000_000_000))
@@ -724,20 +730,58 @@ class GroupCoordinator:
                     now_ms = time.time_ns() // 1_000_000
                     until_ms = now_ms + (deadline - time.monotonic_ns()) // 1_000_000
                     options['authoring_expires_at_ms'] = min(authoring_expires, until_ms)
+                    with cohort._owner_deadline(owner, deadline):
+                        observed = owner.status()['runtime_status']
+                    feature = 'messaging-authoring-effect-horizon/v1'
+                    capabilities = observed.get('loaded_runtime', {}).get('qualified_startup', {}).get(
+                        'reader', {}).get('contract', {}).get('capabilities', [])
+                    bounded = retained is not None or grant is not None or feature in capabilities
+                    if bounded:
+                        if (feature not in capabilities
+                                or feature not in observed.get('receiving', {}).get('features', [])):
+                            raise OnboardingError('receiving_communication_effect_horizon_unsupported')
+                        key = 'communication-authoring-'+step
+                        if retained is None:
+                            retained = dict(schema='cluster-native-authoring-bound/v1',
+                                intent_sha256=digest(intent), effect_not_after_ms=options['authoring_expires_at_ms'])
+                            self._retain(journal, row, key, retained)
+                        if (set(retained) != {'schema', 'intent_sha256', 'effect_not_after_ms'}
+                                or retained['schema'] != 'cluster-native-authoring-bound/v1'
+                                or retained['intent_sha256'] != digest(intent)
+                                or type(retained['effect_not_after_ms']) is not int
+                                or not 0 < retained['effect_not_after_ms'] < 2**53):
+                            raise OnboardingError('receiving_communication_original_bound_required')
+                        options['effect_not_after_ms'] = retained['effect_not_after_ms']
+                        if retained['effect_not_after_ms'] <= time.time_ns() // 1_000_000:
+                            # The advertised native primitive cannot first author
+                            # after this retained bound. It may only finish the
+                            # exact message already committed before expiry.
+                            options.pop('authoring_expires_at_ms', None)
+                            with cohort._owner_deadline(owner, deadline):
+                                return owner.messaging(method, public, binding=binding, **options)
+                        if retained['effect_not_after_ms'] > options['authoring_expires_at_ms']:
+                            raise OnboardingError('receiving_communication_original_bound_outlives_custody')
+                        options['authoring_expires_at_ms'] = retained['effect_not_after_ms']
                     with recovery.effect_scope(journal, current, 'communication', deadline_ns=deadline):
                         with cohort._owner_deadline(owner, deadline):
                             return owner.messaging(method, public, binding=binding, **options)
             response = None
             dispatched = False
+            def historical_authoring():
+                retained = (journal.get(row['operation_id'])['runtime_observation'] or {}).get(
+                    'portal_admission', {}).get('communication-authoring-'+step, {})
+                horizon = retained.get('effect_not_after_ms') if isinstance(retained, dict) else None
+                return type(horizon) is int and 0 < horizon <= time.time_ns() // 1_000_000
             if attempted:
                 try:
                     response = call('messaging_delivery', dict(channel_id='tribe', send_id=intent['parameters']['send_id']))
                 except (OnboardingError, OSError):
                     pass
             if response is None:
-                if time.time_ns() // 1_000_000 >= authoring_expires:
+                if time.time_ns() // 1_000_000 >= authoring_expires and not historical_authoring():
                     return False
-                before_authoring()
+                if not historical_authoring():
+                    before_authoring()
                 response = call('messaging_reply' if step == 'reply' else 'messaging_send',
                     intent['parameters'], authoring_expires_at_ms=authoring_expires)
                 dispatched = True
@@ -757,10 +801,11 @@ class GroupCoordinator:
                 return proof if required <= inbound else None
             proof = qualify(response)
             if (proof is None and attempted and not dispatched
-                    and time.time_ns() // 1_000_000 < authoring_expires):
+                    and (time.time_ns() // 1_000_000 < authoring_expires or historical_authoring())):
                 # Inspection cannot resume a busy/interrupted native fanout.
                 # Replay the SAME durable request, never another message ID.
-                before_authoring()
+                if not historical_authoring():
+                    before_authoring()
                 response = call('messaging_reply' if step == 'reply' else 'messaging_send',
                     intent['parameters'], authoring_expires_at_ms=authoring_expires)
                 proof = qualify(response)

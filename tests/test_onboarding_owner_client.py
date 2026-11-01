@@ -120,6 +120,28 @@ def test_technical_authoring_expiry_is_checked_at_emission(tmp_path, monkeypatch
         assert public['ok'] and 'auth' not in public
 
 
+@pytest.mark.parametrize('method', ['messaging_send', 'messaging_reply'])
+def test_native_authoring_bound_is_durable_before_emission_and_allows_completed_only_recovery(tmp_path, monkeypatch, capsys, method):
+    from clusterctl import onboarding_owner_client as owner, onboarding_code_successor
+    calls = []
+    monkeypatch.setattr(owner, 'time', SimpleNamespace(time_ns=lambda: 3_000_000_000, monotonic_ns=lambda: 0))
+    monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {'matrix_commit': 'b'*40})
+    monkeypatch.setattr(owner.onboarding_sdk, 'qualified_startup', lambda *a, **k: {})
+    parameters = dict(channel_id='tribe', send_id='f396883c-66eb-4f96-a49a-d2c0469b0b80', text='Original technical check')
+    parameters.update(dict(thread_id='142a1d58-8e18-42ec-a0c1-cf6d2205952a') if method == 'messaging_send'
+        else dict(received_channel_id='tribe', message_id='142a1d58-8e18-42ec-a0c1-cf6d2205952a'))
+    technical_adapter(monkeypatch, parameters, calls)
+    assert owner.main(['--code-digest', 'a'*64, '--binding', str(tmp_path/'binding.json'),
+        '--observation-deadline-ns', '1000000000', '--authoring-effect-not-after-ms', '2000',
+        'call', method]) == 0
+    prepared, sent = calls
+    assert prepared[1] is sent[1]
+    assert prepared[1]['params']['effect_not_after_ms'] == 2000
+    assert prepared[1]['operation_id'] == parameters['send_id']
+    assert sent[2] == 1_000_000_000
+    assert json.loads(capsys.readouterr().out)['ok']
+
+
 @pytest.mark.parametrize('expired_at', [None, 'durability', 'response', 'tiny-budget'])
 def test_qualified_technical_tool_preserves_original_owner_deadline(tmp_path, monkeypatch, expired_at):
     from clusterctl import onboarding_owner_client as owner
@@ -378,10 +400,13 @@ def test_guest_technical_messaging_preserves_qualified_uid_and_public_stdin(tmp_
     options = dict(candidate=(tmp_path/'candidate','a'*64), binding=Path('/home/agent/group/binding.json'),
         **({'authoring_expires_at_ms':2000} if method == 'messaging_send' else {}))
     assert client.messaging(plan(), method, parameters, **options) == result
+    if method == 'messaging_send':
+        assert client.messaging(plan(), method, parameters, **{**options, 'effect_not_after_ms': 1500}) == result
+        assert calls[-1][calls[-1].index('--authoring-effect-not-after-ms')+1] == '1500'
     result['schema'] = 'not-native'
     with pytest.raises(OnboardingError, match='communication_unobserved'):
         client.messaging(plan(), method, parameters, **options)
-    assert len(calls) == 2
+    assert len(calls) == (3 if method == 'messaging_send' else 2)
 
 
 @pytest.fixture

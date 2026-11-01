@@ -357,8 +357,8 @@ def test_unconfirmed_echo_waits_then_uses_only_delivery_inspection(full):
     assert x.calls.count('activation') == 1
 
 
-@pytest.mark.parametrize('permitted', [True, False])
-def test_remaining_communication_uses_current_approval_and_fixed_owner_custody(full, monkeypatch, permitted):
+@pytest.mark.parametrize('permitted,support', [(True, True), (False, True), (True, False)])
+def test_remaining_communication_uses_current_approval_and_fixed_owner_custody(full, monkeypatch, permitted, support):
     """Real finisher/owner route and journal fences; grant resolution is a seam."""
     from pathlib import Path
     from clusterctl import onboarding_group_recovery as recovery
@@ -382,13 +382,34 @@ def test_remaining_communication_uses_current_approval_and_fixed_owner_custody(f
     monkeypatch.setattr(recovery, 'execution', execution)
     bounded = []
     for owner in x.f.owners.values():
+        status = owner.status
+        def supported(*, status=status):
+            value = copy.deepcopy(status())
+            runtime = value['runtime_status']
+            feature = 'messaging-authoring-effect-horizon/v1'
+            runtime.setdefault('receiving', {}).setdefault('features', []).append(feature)
+            runtime.setdefault('loaded_runtime', {}).setdefault('qualified_startup', {}).setdefault(
+                'reader', {}).setdefault('contract', {}).setdefault('capabilities', []).append(feature)
+            return value
+        if support:
+            owner.status = supported
         original = owner.messaging
         def messaging(method, parameters, *, owner=owner, original=original, **options):
-            assert method != 'messaging_delivery'
-            assert 0 < owner.deadline_ns - time.monotonic_ns() <= 8_000_000_000
-            assert options['authoring_expires_at_ms'] <= grant['expires_at_ms']
+            if method == 'messaging_delivery':
+                return original(method, parameters, **options)
+            historical = options['effect_not_after_ms'] <= module.time.time_ns() // 1_000_000
+            assert 0 < owner.deadline_ns - time.monotonic_ns() <= (30_000_000_000 if historical else 8_000_000_000)
+            if historical:
+                assert 'authoring_expires_at_ms' not in options
+                assert parameters['send_id'] in x.messages
+            else:
+                assert options['authoring_expires_at_ms'] <= grant['expires_at_ms']
+                assert options['effect_not_after_ms'] == options['authoring_expires_at_ms']
+            current = x.journal.get(row['operation_id'])['runtime_observation']['portal_admission']
+            assert any(value.get('effect_not_after_ms') == options['effect_not_after_ms']
+                for key, value in current.items() if key.startswith('communication-authoring-'))
             competitor = OperationJournal.existing(Path(x.journal.path).parent)
-            for operation in (row['operation_id'], approval):
+            for operation in ((row['operation_id'],) if historical else (row['operation_id'], approval)):
                 with pytest.raises(JournalConflict):
                     with competitor.mutation_lock(operation):
                         pass
@@ -402,14 +423,57 @@ def test_remaining_communication_uses_current_approval_and_fixed_owner_custody(f
         return GroupCoordinator(x.f.backend)._communicate(x.f.plans['newcomer'], x.journal, row,
             transition['cohort_admission'], cohort, transition['admission_communication'],
             deadline_ns=time.monotonic_ns() + 30_000_000_000, before_authoring=lambda: None)
-    if permitted:
+    if permitted and support:
         assert communicate() is True
         assert len(set(bounded)) == len(x.messages) == 3
         assert communicate() is True and len(bounded) == 3, 'completed originals were reauthored'
+        # A lost final delivery proof may resume only the exact already-authored
+        # native message after expiry/revocation, without another authoring grant.
+        current = x.journal.get(row['operation_id'])
+        observed = copy.deepcopy(current['runtime_observation'])
+        phases = observed['portal_admission']
+        original = phases.pop('communication-group')
+        send_id = original['intent']['parameters']['send_id']
+        saved = copy.deepcopy(phases['communication-authoring-group'])
+        for leg in x.messages[send_id]['result']['semantic']['legs']:
+            leg['state'] = 'pending'
+        x.fault['busy'] = True
+        x.journal.advance(row['operation_id'], current['state'], runtime_observation=observed)
+        permitted = False
+        with monkeypatch.context() as expired:
+            expired.setattr(module, 'time', SimpleNamespace(monotonic_ns=time.monotonic_ns,
+                time_ns=lambda: (saved['effect_not_after_ms'] + 1) * 1_000_000))
+            assert communicate() is True
+        phases = x.journal.get(row['operation_id'])['runtime_observation']['portal_admission']
+        assert phases['communication-authoring-group'] == saved
+        assert bounded == [*bounded[:3], send_id] and len(x.messages) == 3
     else:
-        with pytest.raises(OnboardingError, match='remaining_effect_not_authorized'):
+        error = 'remaining_effect_not_authorized' if not permitted else 'effect_horizon_unsupported'
+        with pytest.raises(OnboardingError, match=error):
             communicate()
         assert not bounded and not x.messages
+
+
+def test_retained_expired_bound_never_falls_back_when_receiver_loses_support(full):
+    x = full
+    x.fault['phase'] = 'steady'
+    assert x.worker._tick('newcomer')['state'] == 'attention-required'
+    row = x.journal.get(x.row['operation_id'])
+    transition = row['intended_transition']
+    coordinator = GroupCoordinator(x.f.backend)
+    intent = coordinator._communication_intent(row, transition['admission_communication'], 'group', None)
+    observed = copy.deepcopy(row['runtime_observation'])
+    observed['portal_admission']['communication-authoring-group'] = dict(
+        schema='cluster-native-authoring-bound/v1', intent_sha256=digest(intent),
+        effect_not_after_ms=time.time_ns() // 1_000_000 - 1)
+    x.journal.advance(row['operation_id'], row['state'], runtime_observation=observed)
+    cohort = updates.CohortController(x.journal, row['operation_id'], x.f.owners)
+    with pytest.raises(OnboardingError, match='effect_horizon_unsupported'):
+        coordinator._communicate(x.f.plans['newcomer'], x.journal, row,
+            transition['cohort_admission'], cohort, transition['admission_communication'],
+            deadline_ns=time.monotonic_ns() + 30_000_000_000,
+            before_authoring=lambda: pytest.fail('retained expired bound requested fresh authority'))
+    assert not x.messages
 
 
 def test_pending_native_fanout_resumes_same_request_within_original_scope(full):

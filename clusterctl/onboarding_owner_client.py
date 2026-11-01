@@ -151,12 +151,13 @@ def observe_selected_tooling(payload: dict, *, code: Path, startup: dict,
 
 
 def _serve_chat(arguments: list[str], *, startup: dict, binding: Path, code: Path, code_uid: int,
-                deadline_ns: int | None = None, authoring_expires_at_ms: int | None = None) -> int:
+                deadline_ns: int | None = None, authoring_expires_at_ms: int | None = None,
+                effect_not_after_ms: int | None = None) -> int:
     from daimon_matrix import agent_chat
     if arguments != ['mcp']:
-        if (deadline_ns is not None or authoring_expires_at_ms is not None) and arguments[:1] == ['call']:
+        if (deadline_ns is not None or authoring_expires_at_ms is not None or effect_not_after_ms is not None) and arguments[:1] == ['call']:
             return _bounded_chat_call(arguments, binding=binding, deadline_ns=deadline_ns,
-                authoring_expires_at_ms=authoring_expires_at_ms)
+                authoring_expires_at_ms=authoring_expires_at_ms, effect_not_after_ms=effect_not_after_ms)
         if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
             raise OnboardingError('receiving_owner_deadline_expired')
         return agent_chat.main(['--binding', str(binding), *arguments])
@@ -172,7 +173,7 @@ def _serve_chat(arguments: list[str], *, startup: dict, binding: Path, code: Pat
 
 
 def _bounded_chat_call(arguments: list[str], *, binding: Path, deadline_ns: int | None,
-                        authoring_expires_at_ms: int | None) -> int:
+                        authoring_expires_at_ms: int | None, effect_not_after_ms: int | None = None) -> int:
     """Reuse the native request journal with one budget through preparation/send."""
     import sys
     from dataclasses import replace
@@ -209,6 +210,11 @@ def _bounded_chat_call(arguments: list[str], *, binding: Path, deadline_ns: int 
         alias, parameters = agent_chat._link_arguments(arguments[1], parameters)
         adapter = adapter.links[alias]
     method, native_parameters, operation_id = _messaging_tool_params(arguments[1], parameters)
+    if effect_not_after_ms is not None:
+        if (arguments[1] not in {'messaging_send', 'messaging_reply'}
+                or type(effect_not_after_ms) is not int or not 0 < effect_not_after_ms < 2**53):
+            raise OnboardingError('qualified_native_peer_tool_required')
+        native_parameters = {**native_parameters, 'effect_not_after_ms': effect_not_after_ms}
     # The existing LocalClient checks this same deadline after connection setup
     # and before native emission. Request durability cannot start a new budget.
     adapter.client = replace(adapter.client, deadline_ns=original_deadline)
@@ -623,6 +629,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--reconcile-tooling')
     parser.add_argument('--prepare-group-attachment')
     parser.add_argument('--authoring-expires-at-ms', type=int)
+    parser.add_argument('--authoring-effect-not-after-ms', type=int)
     parser.add_argument('--codex-home', type=Path)
     parser.add_argument('--connection-mirror', type=Path, action='append', default=[])
     parser.add_argument('--native-endpoint', type=Path)
@@ -661,6 +668,11 @@ def main(argv: list[str] | None = None) -> int:
         raise OnboardingError('qualified_native_peer_tool_required')
     if args.authoring_expires_at_ms is not None and (
             not 0 < args.authoring_expires_at_ms < 2**53
+            or args.chat_arguments[:2] not in (['call', 'messaging_send'], ['call', 'messaging_reply'])
+            or args.reconcile_tooling or args.native_preflight or args.prepare_group_attachment):
+        raise OnboardingError('qualified_native_peer_tool_required')
+    if args.authoring_effect_not_after_ms is not None and (
+            not 0 < args.authoring_effect_not_after_ms < 2**53
             or args.chat_arguments[:2] not in (['call', 'messaging_send'], ['call', 'messaging_reply'])
             or args.reconcile_tooling or args.native_preflight or args.prepare_group_attachment):
         raise OnboardingError('qualified_native_peer_tool_required')
@@ -714,7 +726,7 @@ def main(argv: list[str] | None = None) -> int:
     # Import only after the exact interpreter, code and SDK tree are qualified.
     return _serve_chat(args.chat_arguments, startup=startup, binding=binding, code=code,
         code_uid=args.code_owner, deadline_ns=args.observation_deadline_ns,
-        authoring_expires_at_ms=args.authoring_expires_at_ms)
+        authoring_expires_at_ms=args.authoring_expires_at_ms, effect_not_after_ms=args.authoring_effect_not_after_ms)
 
 # This maintained program runs as the receiving owner, using the already
 # qualified SDK interpreter. Existing or partly published artifacts are checked
@@ -1182,15 +1194,16 @@ class OwnerClient:
 
     def messaging(self, plan: dict, method: str, parameters: dict, *, candidate: tuple[Path, str],
                     binding: Path, timeout_seconds: float = 30, deadline_ns: int | None = None,
-                    authoring_expires_at_ms: int | None = None) -> dict:
+                    authoring_expires_at_ms: int | None = None, effect_not_after_ms: int | None = None) -> dict:
         """Use the existing owner-qualified tools for an approved technical check."""
         if (method not in {'messaging_send', 'messaging_reply', 'messaging_delivery'}
-                or method != 'messaging_delivery' and authoring_expires_at_ms is None):
+                or method != 'messaging_delivery' and authoring_expires_at_ms is None and effect_not_after_ms is None):
             raise OnboardingError('qualified_native_peer_tool_required')
         result, _sdk, _deadline = self._tooling_call(plan, candidate=candidate,
             timeout_seconds=timeout_seconds, deadline_ns=deadline_ns, input_data=parameters,
             arguments=lambda remaining: ['--binding', str(binding), '--observation-timeout-seconds', str(remaining),
                 *([] if authoring_expires_at_ms is None else ['--authoring-expires-at-ms', str(authoring_expires_at_ms)]),
+                *([] if effect_not_after_ms is None else ['--authoring-effect-not-after-ms', str(effect_not_after_ms)]),
                 'call', method, '--timeout', str(remaining)])
         if (result.get('schema') != 'dm.local.response/v1'
                 or result.get('ok') is not True or result.get('error') is not None):

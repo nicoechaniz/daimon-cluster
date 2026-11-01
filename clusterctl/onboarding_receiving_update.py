@@ -617,11 +617,11 @@ class GuestGroupClient:
             attachment=attachment, codex_home=codex_home, timeout_seconds=self.timeout_seconds, deadline_ns=self.deadline_ns)
 
     def messaging(self, method: str, parameters: dict, *, binding: Path,
-                    authoring_expires_at_ms: int | None = None) -> dict:
+                    authoring_expires_at_ms: int | None = None, effect_not_after_ms: int | None = None) -> dict:
         from .onboarding_owner_client import OwnerClient
         return OwnerClient(self.backend).messaging(self.plan, method, parameters,
             candidate=self.candidate, binding=binding, timeout_seconds=self.timeout_seconds,
-            deadline_ns=self.deadline_ns, authoring_expires_at_ms=authoring_expires_at_ms)
+            deadline_ns=self.deadline_ns, authoring_expires_at_ms=authoring_expires_at_ms, effect_not_after_ms=effect_not_after_ms)
 
 
 def _run_owner(argv: list[str], **options):
@@ -880,13 +880,14 @@ class SourceGroupClient:
         return result
 
     def messaging(self, method: str, parameters: dict, *, binding: Path,
-                    authoring_expires_at_ms: int | None = None) -> dict:
+                    authoring_expires_at_ms: int | None = None, effect_not_after_ms: int | None = None) -> dict:
         """Run the same configured messaging-only tools under the actual owner."""
         if (method not in {'messaging_send', 'messaging_reply', 'messaging_delivery'}
-                or method != 'messaging_delivery' and authoring_expires_at_ms is None):
+                or method != 'messaging_delivery' and authoring_expires_at_ms is None and effect_not_after_ms is None):
             raise OnboardingError('qualified_native_peer_tool_required')
         return self._call(['--binding', str(binding),
             *([] if authoring_expires_at_ms is None else ['--authoring-expires-at-ms', str(authoring_expires_at_ms)]),
+            *([] if effect_not_after_ms is None else ['--authoring-effect-not-after-ms', str(effect_not_after_ms)]),
             'call', method, '--timeout', str(self.timeout_seconds)], command=parameters,
             module='clusterctl.onboarding_owner_client', native_response=True)
 

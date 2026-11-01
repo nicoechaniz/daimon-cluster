@@ -61,6 +61,38 @@ an uncertain start or speech, reenroll a body, reset credentials or use retired
 Source containers. One prepared candidate plus actual current rollback is
 sufficient; discard replaced disposable preparation after its cohort completes.
 
+## Refreshing readers after an already completed software update
+
+A scoped Matrix reload can invalidate the durable reader recovery when its loaded
+view changes. A healthy new daemon and retained group application do not restore
+its reader selection. Inspect the actual gate; do not send another message or
+restart again to obtain readiness.
+
+For current already admitted services, use `observe_current_reader` from
+`onboarding_receiving_update` with each operator-approved exact current selection
+and a finite observation horizon of at most60seconds. It uses the same authenticated
+owner and public credential verification as cohort adoption, checks current code,
+identity, signed roster, authority epochs, wires, visibility and store compatibility,
+and returns credential-bound V2 reader evidence. It does not replay bootstrap,
+enrollment, native/model work or service selection. Observe every selected required
+receiver, retaining unavailable/retired bodies explicitly rather than inventing proof.
+
+Within those proof horizons, apply the resulting reader vector through existing
+owner `runtime.reader-selection` controls / `onboarding_owner_control.execute`, with
+one retained operation, exact process/loaded-selection preimages, current signed
+roster CAS and retained owner-private request files. Preserve an uncertain native
+control and inspect its exact result; do not mint a replacement operation. A source
+or receiver process/selection/roster change requires a fresh observation, never
+relabeled historical loaded-view hashes. Credential validity remains signed validity;
+the finite observation horizon is not an invented permanent reader expiry.
+
+A new software deployment still uses its normal preparation and lifecycle controls.
+This current-state path finishes reader confirmation after observed completed
+adoption; it does not fabricate a lifecycle receipt for the older coordinator.
+Retain actual group/direct receiving and reader acceptance separately. An expired
+unattempted message uses only the supported explicit recovery contract, preserving
+its original identity/audience; no speculative send or new ID.
+
 ## Local authority changes and the group selector
 
 After an authorized same-being enrollment or retirement, republish the current

@@ -108,6 +108,85 @@ def verify_receiving_identity(bundle: dict, observed: dict, *, expires_at_ms: in
         verified_at_ms=now, expires_at_ms=expires_at_ms)
 
 
+
+def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: int,
+                           require_admitted: bool = True) -> dict:
+    """Qualify an already installed reader without replaying its lifecycle.
+
+    The operator pins the approved current software/application selection.
+    This performs no selection, restart, enrollment or native/model dispatch.
+    Returned proof is finite; credential validity retains its signed meaning.
+    Use existing owner controls with the returned process/selection and roster
+    CAS after observing every explicitly required receiver.
+    """
+    from daimon_matrix.identity import validate_validity
+    now = time.time_ns() // 1_000_000
+    if type(expires_at_ms) is not int or not now < expires_at_ms <= now + 60_000:
+        raise OnboardingError('receiving_identity_horizon_expired')
+    observed = owner.qualified_identity(expires_at_ms=expires_at_ms,
+                                        require_admitted=require_admitted)
+    status, identity = observed['runtime_status'], observed['identity']
+    verified = observed['verified_identity']
+    loaded, application = status['loaded_runtime'], status['loaded_application']
+    startup = loaded['qualified_startup']
+    visibility = application['visibility']
+    selection = dict(receiving_code=startup['code_digest'], matrix_sdk=startup['matrix_wheel_sha256'],
+        runtime_bundle_sha256=loaded['runtime_bundle_sha256'], application_sha256=application['application_sha256'],
+        publication_sha256=application['publication_sha256'], visibility_installation_sha256=visibility['installation_sha256'])
+    if (selection != expected_selection or loaded['process_id'] != observed['process']['pid']
+            or loaded['local_origin'] != observed['server']
+            or verified['identity'] != identity
+            or verified['runtime_bundle_sha256'] != loaded['runtime_bundle_sha256']):
+        raise OnboardingError('receiving_cohort_selection_changed')
+    contract = startup['reader']['contract']
+    receiving = status['receiving']
+    roster = receiving['rosters']['tribe']
+    wires = {'dm.tribe.conversation/v1', 'dm.tribe.direct-conversation/v1',
+             'dm.tribe.recovery-conversation/v1'}
+    features = {'signed-roster-cas/v1', 'credential-bound-reader-validity/v1'}
+    if (not features <= set(receiving.get('features', []))
+            or not features <= set(contract['capabilities'])
+            or not wires <= set(contract['wire_read'])
+            or 'dm.runtime.reader-selection/v2' not in receiving.get('contracts', [])
+            or 2 not in contract['store_versions'].get('reader_control', [])
+            or observed['gate'].get('controlled') is not True
+            or roster.get('schema') != 'dm.runtime.tribe-roster/v1'):
+        raise OnboardingError('receiving_cohort_roster_unready')
+    if (visibility.get('catalog_mode') != 'validate'
+            or visibility.get('catalog_validation') != 'validated'
+            or visibility.get('release_enabled') is not True
+            or application.get('shared_relationships') is not True
+            or application.get('communication_store_role') != 'ledger'
+            or application.get('shared_stores', {}).get('ledger', {}).get('schema_versions', {}).get('communication')
+                not in contract['store_versions'].get('communication', [])
+            or visibility.get('catalog_schema_version') not in contract['store_versions'].get('visibility_catalog', [])):
+        raise OnboardingError('receiving_cohort_store_unready')
+    coordinate = (identity['being_ref'], observed['server']['embodiment_id'], identity['credential_ref'])
+    if not any((item['being_ref'], item['embodiment_id'], item['credential_id']) == coordinate
+               and item['authority_manifest_hash'] == identity['manifest_hash'] for item in roster['audience']):
+        raise OnboardingError('receiving_cohort_identity_changed')
+    validity = verified['credential_validity']
+    if set(validity) == {'valid_from_ms', 'valid_until_ms'}:
+        validity = dict(mode='finite', not_before_ms=validity['valid_from_ms'], not_after_ms=validity['valid_until_ms'])
+    validity = validate_validity(validity)
+    epochs = set(loaded['authority_epoch']['accepted_manifest_hashes'])
+    for authority in application['authorities'].values():
+        epochs.update(authority['accepted_manifest_hashes'])
+    if not set(roster['required_authority_epochs']) <= epochs:
+        raise OnboardingError('receiving_cohort_authority_unready')
+    reader = dict(schema='dm.receiving.reader/v2', being_ref=identity['being_ref'],
+        embodiment_id=observed['server']['embodiment_id'], incarnation_id=observed['server']['incarnation_id'],
+        credential_id=identity['credential_ref'], authority_manifest_hash=identity['manifest_hash'],
+        receiving_selection_sha256=digest(selection), loaded_view_sha256=application['loaded_view_sha256'],
+        validity=validity, wire_read=sorted(wires), authority_epochs=sorted(epochs))
+    now = time.time_ns() // 1_000_000
+    if verified['expires_at_ms'] <= now or not _reader_active(reader, now):
+        raise OnboardingError('receiving_cohort_observation_expired')
+    return dict(reader=reader, expected=dict(process=observed['process'], server=observed['server'],
+        selection=selection), gate=observed['gate'], roster=roster,
+        observed_at_ms=now, identity_expires_at_ms=verified['expires_at_ms'])
+
+
 def _reader_active(reader: dict, now: int) -> bool:
     """Check selected validity without converting indefinite authority to a date."""
     if reader.get('schema') == 'dm.receiving.reader/v2':

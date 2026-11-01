@@ -327,7 +327,7 @@ OWNER_CONTROL_TESTS = ('tests/test_onboarding_owner_control.py',
 
 # Routine receiving maintenance composes controllers without changing SDK,
 # authority, custody or the native model. Unknown deltas retain wider coverage.
-MAINTENANCE_FILES = {'clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py',
+MAINTENANCE_FILES = {'tests/test_current_reader_refresh.py', 'clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py',
     'clusterctl/native_body.py', 'tests/test_native_body.py',
     'clusterctl/onboarding_worker.py', 'tests/test_onboarding_progress.py',
     'clusterctl/receiving_worker.py', 'tests/test_receiving_worker.py',
@@ -335,7 +335,7 @@ MAINTENANCE_FILES = {'clusterctl/receiving_maintenance.py', 'tests/test_receivin
     'clusterctl/onboarding_owner_control.py', 'tests/test_onboarding_owner_control.py', 'tests/test_receiving_cohort_control.py',
     'clusterctl/onboarding_owner_client.py', 'tests/test_onboarding_owner_client.py',
     'clusterctl/onboarding_receiving_update.py', 'tests/test_guest_bootstrap_controller.py'}
-MAINTENANCE_TESTS = ('tests/test_native_body.py', 'tests/test_receiving_worker.py', 'tests/test_receiving_maintenance.py', 'tests/test_onboarding_owner_control.py',
+MAINTENANCE_TESTS = ('tests/test_current_reader_refresh.py', 'tests/test_native_body.py', 'tests/test_receiving_worker.py', 'tests/test_receiving_maintenance.py', 'tests/test_onboarding_owner_control.py',
     'tests/test_onboarding_progress.py', 'tests/test_onboarding_worker_install.py',
     'tests/test_source_bootstrap.py', 'tests/test_source_owner_adapter.py',
     'tests/test_guest_bootstrap_controller.py', 'tests/test_receiving_cohort_control.py',
@@ -776,7 +776,8 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         # reuse their existing qualification instead of rerunning body setup.
         return 'peer', orchestration_tests
     if (({'clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py'} <= set(changed)
-            or {'clusterctl/onboarding_receiving_update.py', 'tests/test_receiving_cohort_control.py'} <= set(changed))
+            or {'clusterctl/onboarding_receiving_update.py', 'tests/test_receiving_cohort_control.py'} <= set(changed)
+            or {'clusterctl/onboarding_receiving_update.py', 'tests/test_current_reader_refresh.py'} <= set(changed))
             and set(changed) <= MAINTENANCE_FILES | host | CI_FILES | RUNBOOK_DOCS
             and all((root / name).is_file() for name in MAINTENANCE_TESTS)
             and ('clusterctl/onboarding_host.py' not in changed or owner_diagnostics_only(root, base))):

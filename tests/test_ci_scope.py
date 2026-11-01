@@ -1180,3 +1180,13 @@ def test_home_owner_continuity_keeps_home_login_scope_with_relocation_guide():
     for extra in ['clusterd/auth.py','clusterctl/onboarding_sdk.py','requirements-weave.txt',
                   'clusterctl/homes/unknown.py']:
         assert select([*changed,extra],ROOT)==('full',['tests'])
+
+
+def test_current_reader_refresh_keeps_existing_maintenance_consumer_coverage(tmp_path):
+    from tools.ci_scope import MAINTENANCE_TESTS
+    changed = ['clusterctl/onboarding_receiving_update.py', 'tests/test_current_reader_refresh.py',
+               'tools/ci_scope.py', 'tests/test_ci_scope.py', 'docs/runbooks/tribu-sdk-successor.md']
+    assert select(changed, ROOT) == ('peer', list(MAINTENANCE_TESTS))
+    assert 'tests/test_current_reader_refresh.py' in MAINTENANCE_TESTS
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select([*changed, 'clusterctl/onboarding_sdk.py'], ROOT) == ('full', ['tests'])

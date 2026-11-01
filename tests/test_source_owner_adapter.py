@@ -89,6 +89,29 @@ def test_source_owner_adapter_uses_closed_command_and_drops_privileges_before_ex
     assert 0 < options["timeout"] <= 30
 
 
+@pytest.mark.parametrize('seconds', [2, 300])
+def test_long_cohort_keeps_source_and_guest_maintenance_calls_bounded(adapter, tmp_path, monkeypatch, seconds):
+    client, _, calls = adapter
+    started = time.monotonic_ns()
+    monkeypatch.setattr(receiving, 'time', SimpleNamespace(monotonic_ns=lambda: started))
+    deadline = started + seconds * 1_000_000_000
+    client.deadline_ns = deadline
+    client._call(['--owner-status'], maintenance=True)
+    argv, options = calls[-1]
+    assert 0 < options['timeout'] <= min(seconds, 60)
+    assert int(argv[argv.index('--observation-deadline-ns') + 1]) <= deadline
+    observed = []
+    backend = SimpleNamespace(_target_call=lambda *a, **kw: observed.append(kw) or {})
+    guest = receiving.GuestGroupClient(backend, {}, (tmp_path, 'a'*64), root=tmp_path)
+    guest.deadline_ns = deadline
+    guest.maintenance = (tmp_path, 'b'*64)
+    guest._call('group-publication', maintenance=True, group_request={})
+    assert 0 < observed[0]['observation_timeout_seconds'] <= min(seconds, 60)
+    assert observed[0]['owner_deadline_ns'] <= deadline
+    assert 0 < observed[0]['owner_deadline_ns'] - started <= 60_000_000_000
+    assert client.deadline_ns == guest.deadline_ns == deadline
+
+
 def test_owner_private_control_paths_and_public_stdin_stay_in_owner_cli(adapter):
     client, _, calls = adapter
     path = client.root / "receiving-control/request.json"
@@ -378,7 +401,11 @@ def test_owner_timeout_terminates_only_its_transient_process_group_and_joins_cli
             input=None, text=True, capture_output=True, timeout=1)
     descendant = int(pidfile.read_text())
     state = Path('/proc')/str(descendant)/'stat'
-    assert not state.exists() or state.read_text().split(') ', 1)[1].startswith('Z ')
+    try:
+        remaining = state.read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        remaining = None  # Reaping between lookup and read is successful exit.
+    assert remaining is None or remaining.split(') ', 1)[1].startswith('Z ')
 
 
 @pytest.mark.parametrize('verb,action', [('--prepare-control', 'receiving-control-prepare'),

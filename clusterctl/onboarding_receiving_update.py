@@ -493,7 +493,7 @@ class GuestGroupClient:
         timeout = self.timeout_seconds
         if self.deadline_ns is not None:
             remaining=(self.deadline_ns-time.monotonic_ns())/1_000_000_000
-            timeout = remaining if maintenance else min(timeout,remaining)
+            timeout = min(60, remaining) if maintenance else min(timeout,remaining)
             if timeout <= 0:
                 raise OnboardingError('receiving_owner_deadline_expired')
         candidate = (self.maintenance or self.candidate) if maintenance else self.candidate
@@ -502,7 +502,8 @@ class GuestGroupClient:
                 raise OnboardingError('receiving_host_deadline_required')
             if self.deadline_ns is not None and (self.maintenance is not None
                     or arguments.get('remaining_execution') is not None):
-                arguments['owner_deadline_ns']=self.deadline_ns
+                arguments['owner_deadline_ns']=min(self.deadline_ns,
+                    time.monotonic_ns() + int(timeout * 1_000_000_000))
         result = self.backend._target_call(self.plan, action, candidate=candidate,
             observation_timeout_seconds=timeout, **arguments)
         if self.deadline_ns is not None and time.monotonic_ns() >= self.deadline_ns:
@@ -567,10 +568,11 @@ class GuestGroupClient:
                 raise OnboardingError('receiving_host_deadline_required')
             # One finite invocation has the caller's existing total budget.
             # The one-shot default is not a second, shorter session horizon.
-            timeout = (self.deadline_ns-time.monotonic_ns())/1_000_000_000
+            deadline = min(self.deadline_ns, time.monotonic_ns() + 60_000_000_000)
+            timeout = (deadline-time.monotonic_ns())/1_000_000_000
             self._relationship_process = stack.enter_context(self.backend._target_relationship_session(
                 self.plan, packet, candidate=self.maintenance or self.candidate, timeout_seconds=timeout,
-                deadline_ns=self.deadline_ns))
+                deadline_ns=deadline))
         return self._relationship_process.call({'inspect': packet} if inspect_only else packet)
 
     def group_relationship_scope(self):
@@ -682,7 +684,7 @@ class SourceGroupClient:
               maintenance: bool = False, inherited_descriptors: tuple[int, ...] = ()) -> dict:
         deadline = time.monotonic_ns() + int(self.timeout_seconds * 1_000_000_000)
         if self.deadline_ns is not None:
-            deadline = self.deadline_ns if maintenance else min(deadline, self.deadline_ns)
+            deadline = min(time.monotonic_ns() + 60_000_000_000, self.deadline_ns) if maintenance else min(deadline, self.deadline_ns)
         if deadline <= time.monotonic_ns():
             raise OnboardingError('receiving_owner_deadline_expired')
         info = self.config.lstat()
@@ -801,7 +803,7 @@ class SourceGroupClient:
 
     def _relationship_conversation(self, packet):
         from .onboarding_group_session import OwnerConversation
-        deadline = self.deadline_ns if self.deadline_ns is not None else (
+        deadline = min(self.deadline_ns, time.monotonic_ns() + 60_000_000_000) if self.deadline_ns is not None else (
             time.monotonic_ns() + int(self.timeout_seconds*1_000_000_000))
         if self.lifecycle_journal is None:
             raise OnboardingError('receiving_source_lifecycle_binding_required')
@@ -2757,8 +2759,10 @@ def prepare_guest_bootstrap(backend, plan: dict, *, candidate: tuple[Path, str],
         **({'observation_timeout_seconds': remaining()} if deadline_ns is not None else {}))
     if installed.get('ready') is not True:
         raise OnboardingError('qualified_guest_bootstrap_candidate_required')
+    call_deadline = (None if deadline_ns is None else
+        min(deadline_ns, time.monotonic_ns() + int(remaining() * 1_000_000_000)))
     owner = backend._target_call(plan, 'receiving-bootstrap-freeze', candidate=candidate,
-        bootstrap_timeout_seconds=remaining(), **({'owner_deadline_ns':deadline_ns} if deadline_ns is not None else {}))
+        bootstrap_timeout_seconds=remaining(), **({'owner_deadline_ns':call_deadline} if call_deadline is not None else {}))
     remaining()
     with onboarding_sdk.probe_budget(deadline_ns):
         checked = preflight(candidate[0], candidate[1], manifest_path, manifest_digest,

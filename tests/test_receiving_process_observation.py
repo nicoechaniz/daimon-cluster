@@ -595,7 +595,9 @@ def test_lock_custody_releases_on_completion_or_exact_horizon(tmp_path,lost_tran
     try:
         with journal.mutation_lock('parent'):
             descriptors.append(journal.duplicate_mutation_lock('parent'))
-            deadline=time.monotonic_ns()+(200_000_000 if lost_transport else 5_000_000_000)
+            # A complete cohort may outlive one bounded owner RPC. Normal
+            # completion must still release its longer keeper immediately.
+            deadline=time.monotonic_ns()+(200_000_000 if lost_transport else 75_000_000_000)
             try:
                 with lock_custody(tuple(descriptors),deadline_ns=deadline):
                     with pytest.raises(JournalConflict):

@@ -107,7 +107,9 @@ def fixture(tmp_path, monkeypatch):
         if action == 'observe':
             return {'phase': 'v8'}
         assert selected_plan == plans['newcomer']
-        assert 0 < options['bootstrap_timeout_seconds'] <= 30
+        assert 0 < options['bootstrap_timeout_seconds'] <= 60
+        from clusterctl import onboarding_group_coordinator as caller
+        assert 0 < options['owner_deadline_ns'] - caller.time.monotonic_ns() <= 60_000_000_000
         calls.append(action)
         if action == 'receiving-bootstrap-freeze':
             assert body['registered'], 'physical holder must precede controller freeze'
@@ -151,6 +153,29 @@ def fixture(tmp_path, monkeypatch):
     return SimpleNamespace(store=store, stages=stages, plans=plans, owners=owners, journal=journal,
         row=row, path=path, selected=selected, backend=backend, calls=calls, native=native, body=body,
         managed=managed, activation=_activation)
+
+
+def test_cohort_budget_is_separate_from_each_target_rpc(fixture, monkeypatch):
+    import time
+    f = fixture
+    target = f.backend._target_call
+    budgets = []
+    def observe(plan, action, **options):
+        if 'bootstrap_timeout_seconds' in options:
+            budgets.append(options['bootstrap_timeout_seconds'])
+        return target(plan, action, **options)
+    monkeypatch.setattr(f.backend, '_target_call', observe)
+    deadlines = []
+    original = f.backend._telegram_command
+    def native(plan, action, **options):
+        deadlines.append((options['deadline_ns'] - time.monotonic_ns()) / 1_000_000_000)
+        return original(plan, action, **options)
+    monkeypatch.setattr(f.backend, '_telegram_command', native)
+    GroupCoordinator(f.backend).advance('newcomer', timeout_seconds=300)
+    assert budgets and all(0 < value <= 60 for value in budgets)
+    assert deadlines and max(deadlines) > 60
+    with pytest.raises(OnboardingError, match='receiving_host_deadline_required'):
+        GroupCoordinator(f.backend).advance('newcomer', timeout_seconds=301)
 
 
 @pytest.mark.parametrize('lost_phase', ['communication', 'child'])

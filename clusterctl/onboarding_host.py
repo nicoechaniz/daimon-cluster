@@ -357,7 +357,7 @@ class HostBackend:
         if self.config.group_admission is None:
             return None
         from .onboarding_group_coordinator import GroupCoordinator
-        return GroupCoordinator(self).advance(name)
+        return GroupCoordinator(self).advance(name, timeout_seconds=300)
 
     def prepare_group_target(self, plan: dict, candidate: tuple[Path, str], *, deadline_ns: int,
                              completed_steps: frozenset[str] = frozenset(),
@@ -374,7 +374,7 @@ class HostBackend:
             remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
             if remaining <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
-            return self._target_call(plan, action, observation_timeout_seconds=remaining, **options)
+            return self._target_call(plan, action, observation_timeout_seconds=min(60, remaining), **options)
         def recorded(step):
             if record_step is not None:
                 record_step(step)
@@ -1538,7 +1538,7 @@ class HostBackend:
             remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
             if remaining <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
-            timeout_seconds = remaining if timeout_seconds is None else min(remaining, timeout_seconds)
+            timeout_seconds = min(65, remaining) if timeout_seconds is None else min(65, remaining, timeout_seconds)
         options: dict = {} if timeout_seconds is None else {'timeout_seconds': timeout_seconds}
         if input_data is not None:
             options['input_data'] = input_data

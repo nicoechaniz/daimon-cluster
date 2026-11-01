@@ -511,3 +511,20 @@ adapter/argument cases;90-source typing and scoped lint. Native owner tests reta
 an explicit protected-reader seam. Independent source review accepted the local
 Source crash correction and retained the remote lifetime blocker. No original
 synthetic operation, grant, store, membership, live service or model was changed.
+
+## Whole-cohort and owner-call deadlines
+
+The ordinary worker gives the complete cohort coordinator at most five minutes.
+The direct coordinator API keeps its thirty-second default and accepts an explicit
+bound up to five minutes. Individual owner maintenance calls stay at most sixty
+seconds and Incus transport calls at most sixty-five seconds, clipped further by
+the existing absolute invocation deadline. Linked authorization expiry still
+limits effects, and native observation windows remain unchanged.
+
+The distinction is necessary: actual three-owner publication exceeded a single
+sixty-second invocation while freshly checking already-retained dependencies on
+every retry. Repeating that short invocation reached the same pending acceptance
+without progressing. Keep those native CAS, renewal and quiescence checks; do not
+skip them to make the retry fit. Retain the same operation, original requests and
+partial results. The longer coordinator bound changes scheduling, not authority,
+receiving identity, uncertainty or publication semantics.

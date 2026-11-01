@@ -497,7 +497,7 @@ class GroupCoordinator:
             seconds = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
             if seconds <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
-            return seconds
+            return min(seconds, 60)
         def retain(key, value):
             remaining()
             self._retain(journal, row, key, value)
@@ -827,14 +827,17 @@ class GroupCoordinator:
         join the retained lifecycle/publication/activation/receiving phases.
         Other bindings prepare their existing prerequisites without stopping.
         """
-        if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 60:
+        # A whole cohort includes multiple freshly verified owner publications.
+        # Keep individual RPCs bounded separately: a 60s whole-cohort cap can
+        # starve every retry on the same already-completed dependency checks.
+        if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 300:
             raise OnboardingError('receiving_host_deadline_required')
         deadline = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
         def remaining():
             value = (deadline - time.monotonic_ns()) / 1_000_000_000
             if value <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
-            return value
+            return min(value, 60)
         record = self.store._load(name)
         if record['stage'] != 'matrix':
             return None
@@ -1098,9 +1101,14 @@ class GroupCoordinator:
             value = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
             if value <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
-            return value
+            return min(value, 60)
         def retained():
             return (journal.get(row['operation_id'])['runtime_observation'] or {}).get('portal_admission', {})
+        def owner_call(action, **arguments):
+            seconds = remaining()
+            absolute = min(deadline_ns, time.monotonic_ns() + int(seconds * 1_000_000_000))
+            return self.backend._target_call(plan, action, candidate=candidate,
+                bootstrap_timeout_seconds=seconds, owner_deadline_ns=absolute, **arguments)
         with self._job_scope(plan):
             self._binding(plan)
             remaining()
@@ -1130,8 +1138,7 @@ class GroupCoordinator:
             if request is None:
                 if historical_only:
                     raise OnboardingError('receiving_preservation_authorization_expired')
-                frozen = self.backend._target_call(plan, 'receiving-bootstrap-freeze', candidate=candidate,
-                    bootstrap_timeout_seconds=remaining(), owner_deadline_ns=deadline_ns, bootstrap_initial=True)
+                frozen = owner_call('receiving-bootstrap-freeze', bootstrap_initial=True)
                 expected = profile['enrollment']
                 approved = admission['receivers'][plan['name']]
                 if (frozen['plan_digest'] != digest(plan) or frozen['code_digest'] != candidate[1]
@@ -1168,8 +1175,7 @@ class GroupCoordinator:
             if staged is None:
                 if historical_only and request['mode'] != 'preserve':
                     raise OnboardingError('receiving_preservation_authorization_expired')
-                staged = self.backend._target_call(plan, 'receiving-bootstrap-stage', candidate=candidate,
-                    bootstrap_timeout_seconds=remaining(), owner_deadline_ns=deadline_ns, bootstrap_request=request)
+                staged = owner_call('receiving-bootstrap-stage', bootstrap_request=request)
                 if (staged.get('operation_id') != request['operation_id']
                         or staged.get('schema') != ('cluster-receiving-owner-preserved/v1'
                             if request['mode'] == 'preserve' else 'cluster-guest-owner-bootstrap-ready/v1')
@@ -1178,8 +1184,7 @@ class GroupCoordinator:
                 self._retain(journal, row, 'controller_stage', staged)
             result = staged
             if request['mode'] != 'preserve':
-                result = self.backend._target_call(plan, 'receiving-bootstrap-publish', candidate=candidate,
-                    bootstrap_timeout_seconds=remaining(), owner_deadline_ns=deadline_ns, bootstrap_request=request,
+                result = owner_call('receiving-bootstrap-publish', bootstrap_request=request,
                     bootstrap_ready_sha256=staged['ready_sha256'])
                 if (result.get('schema') != 'cluster-guest-owner-bootstrap-publication/v1'
                         or result.get('operation_id') != request['operation_id']

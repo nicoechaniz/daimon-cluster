@@ -16,7 +16,7 @@ PROCESS_FIELDS = {"uid", "pid", "start_ticks", "boot_id"}
 _LOCK_CUSTODY = '''import os,select,signal,sys,time
 deadline=int(sys.argv[1])
 remaining=(deadline-time.monotonic_ns())/1e9
-if not 0<remaining<=60:raise SystemExit(1)
+if not 0<remaining<=300:raise SystemExit(1)
 signal.signal(signal.SIGALRM,signal.SIG_DFL)
 signal.setitimer(signal.ITIMER_REAL,remaining)
 os.write(1,b'R')
@@ -48,7 +48,7 @@ def lock_custody(descriptors: tuple[int, ...], *, deadline_ns: int):
     if (not descriptors or len(set(descriptors)) != len(descriptors)
             or any(type(fd) is not int or fd < 3 for fd in descriptors)
             or type(deadline_ns) is not int
-            or not 0 < deadline_ns-time.monotonic_ns() <= 60_000_000_000):
+            or not 0 < deadline_ns-time.monotonic_ns() <= 300_000_000_000):
         raise PresenceError('owner_lock_custody_required')
     process = subprocess.Popen([sys.executable, '-B', '-I', '-c', _LOCK_CUSTODY, str(deadline_ns)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,

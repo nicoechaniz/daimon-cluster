@@ -13,20 +13,43 @@ below retain evidence, not current selections or pending authorization gates.
 Matrix #407 is accepted on ITACA and Legion without whole-history sync. Current
 CompAII/Eko/Oliva group, direct delivery and exact native readers are accepted
 under [Cluster #375](https://github.com/nicoechaniz/daimon-cluster/issues/375#issuecomment-6554354328).
-All three select SDK `346c527f`, Matrix source `004e6edf`, wheel `634498c8`.
-Eko and Oliva load code `7ac0e07c`; CompAII retains its native code `88ba59d6`
+All three select SDK `cedb4bb3`, Matrix source `0d178703`, wheel `e0d3968e`.
+Eko and Oliva load code `f5618dbc`; CompAII retains its native code `72b4cf56`
 and separately qualified H8 operator. These distinct code selections preserve
 original context, identity, native conversations, bot/apps and current settings.
 
 The existing onboarding worker's default runtime and Eko/Oliva runtime selectors
-now select the same qualified `7ac0e07c` generation, verified against the original
+now select the same qualified `f5618dbc` generation, verified against the original
 approved baseline. The existing locked/journaled `apply_host_selection` route
 preserved all non-runtime settings, native/KVM placements and both completed jobs.
-The installed worker package validates the exact new configuration; its process
-remained unchanged. This is host selection, not a newcomer enrollment or proof
+That runtime-selector update preserved the then-running worker. The later
+worker software/policy adoption below is a separate observed effect. This is host selection, not a newcomer enrollment or proof
 of complete future-member admission. No completed job or model input was replayed.
 The prior runtime selection remains available as compatible software rollback;
 accepted authority, journals and native histories must never be rolled back.
+
+The independent onboarding worker now runs source `fefb8053` from PR382, following
+PR265 source `28c2ed7` (exact CI41319441380 passed). It preserves the completed
+Eko/MEDUSA and Oliva/ITACA-KVM jobs, current runtime and placement selectors,
+home placements and health registry. Its operator dependency remains distinct
+from body SDK selection. The new small source release reuses the exact qualified
+worker dependency environment; preserve that referenced environment and actual
+predecessor rather than rebuilding or deleting it by age.
+
+The production host selects explicit group-only onboarding with no authorized
+new member: its owner/admission maps are empty. A future plan must obtain the
+normal protected complete cohort binding and cannot fall through to legacy pair
+provisioning. This declares a route, not an invitation or completed new birth.
+Existing completed relocated jobs bypass new-enrollment reconciliation as before.
+
+PR265's distinct current native qualification completed its original parent and
+the normal worker's Matrix stage. The explicit follow-up has group/direct/reply
+receiving-leg counts2/1/2, confirmed synthetic echoes and actual inbox visibility
+on all three fixture bodies. Its earlier expired ambiguous probe remains
+unconfirmed. No model/user turn or public Telegram qualification was performed;
+actual account/access/Telegram/human acceptance remains separate. All exact
+current fixture services/guests and the finite guard are now stopped. Do not rerun
+unchanged native admission or recreate the retired Source environments.
 
 Current reader selection requires one retained operation with explicit revoke
 reservation followed by select, even when a reader currently reports unselected.
@@ -36,7 +59,7 @@ group/direct evidence and configured native client acceptance are linked above.
 Old Source/Oliva signed audience rows and Legion's unqualified Tribe reader remain
 explicit residuals. Legion's accepted `/we` is not Tribe enrollment acceptance.
 
-Future-member portal completion #227, coherent update orchestration #232, I/O
+Future-member real receiving acceptance under #227, coherent update orchestration #232, I/O
 Matrix #310/#313 into the existing native Interaction integrator and bounded
 coordination #312 remain under the active Matrix #302 roadmap. A code/config
 update does not close these requirements. Autonomous Matrix inference remains
@@ -47,8 +70,8 @@ The old #227 native-admission/newcomer and mixed-profile fixture instances and
 home/qualification volumes were among the seven Source instances explicitly
 deleted by Nicolas on2026-10-31. Their incomplete original outcome remains
 historical/uncertain, not recovered. Do not recreate them or require an archive
-restore. Qualify the current integrated admission in a distinctly identified,
-bounded new fixture; preserve original evidence and report the two separately.
+restore. The distinct current integrated admission is qualified above; preserve
+the older uncertainty separately and reuse valid evidence.
 See `docs/design/admission-continuation.md` for the current retirement boundary.
 
 For the owning type gate, run `python tools/check_rc_types.py` using the existing

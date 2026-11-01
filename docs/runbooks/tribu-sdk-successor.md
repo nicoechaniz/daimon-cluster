@@ -718,7 +718,13 @@ Changes to the already-covered code-successor test module keep receiving coverag
 they must not select unrelated physical/archive qualification. The receiving SDK
 suite previously took804 seconds before the newly enabled canonical-owner pass;
 budget the selected suite and setup from actual job duration. The current full
-job has a30-minute cap; this does not alter runtime observation deadlines.
+job has a60-minute cap; this does not alter runtime observation deadlines.
+Run41285528837 passed native admission/composition but exceeded the previous
+combined30-minute cap while the default suite was still advancing without a
+test failure. Retain its successful phase evidence; batch the remaining source
+corrections before the next complete candidate run instead of restarting an
+unchanged prefix for every local increment. Revert the timeout-only commit to
+restore the earlier CI bound; no runtime budget or effect permission changes.
 Qualified `sdk-prepare` installs and verifies the closed runtime import tree before
 returning ready. Do this dependency preparation before freezing a finite owner
 operation or stopping a receiver; the first import-tree construction must not

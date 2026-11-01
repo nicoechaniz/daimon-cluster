@@ -33,9 +33,10 @@ jobs:
     needs: scope
     if: needs.scope.outputs.profile != 'docs'
     runs-on: ubuntu-24.04
-    # Run38728293267 reached75% without a failure before the old20min cap.
-    # Budget the complete suite plus setup; owner/native deadlines stay fixed.
-    timeout-minutes: 30
+    # Run41285528837 passed native admission/composition, then the default
+    # suite was still advancing when the combined30min job cap cancelled it.
+    # Bound the combined qualification, preserving every owner/effect deadline.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6

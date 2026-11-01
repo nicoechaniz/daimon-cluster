@@ -1,5 +1,25 @@
 # Recover an expired shared admission without erasing its effects
 
+## Current qualification after explicit fixture retirement — 2026-11-01
+
+Nicolas explicitly retired all seven old Source Incus instances and their old
+home/qualification volumes on2026-10-31. That observed completed retirement
+includes the old native-admission/newcomer and mixed-profile fixture instances.
+They are not update, rollback or qualification targets. Never recreate their
+identities, restore their environments or add an archive/restore gate to finish
+this issue. Preserve accepted membership and uncertain publication as historical
+evidence; retirement is not proof that the incomplete operation succeeded.
+
+Finish current end-to-end admission qualification with a clearly distinct,
+bounded fixture using the supported current producer/consumer route. Retain
+its own exact request IDs, effect horizons, interruption recovery and receiving
+evidence, and clean up that new fixture when terminal. Do not describe its result
+as recovery of the retired original. The history below and the continuation
+contracts remain useful for genuinely retained living operations, without making
+an explicitly deleted machine environment a prerequisite of the current roadmap.
+
+## Historical retired synthetic frontier
+
 Status: the bounded Astra-reviewed execution is connected in source. The
 retained synthetic operation selected helpera728 through a linked approval and
 actually completed signed membership across all3 bodies, including recovery of
@@ -61,11 +81,12 @@ Preserve any existing signed events and correlate their replacement explicitly.
 
 ## Completion remains an observed integrated result
 
-The same three-body journey must still produce signed membership distribution,
+An integrated three-body qualification must produce signed membership distribution,
 publication, real old-body replacement and entrant first load, fresh all-required
 adoption, sender selection, steady handoff and confirmed communication. Exercise
 the exact lost-acceptance-response recovery and a v2-compatible rollback. The
-old v1 baseline is not a rollback after v2 acceptance. Technical effects launch
+old v1 baseline is not a rollback after v2 acceptance. This does not authorize
+recreating the explicitly retired original fixture. Technical effects launch
 zero models. Synthetic authorization never grants a real service interruption.
 
 ## Implemented planning and inspection boundary

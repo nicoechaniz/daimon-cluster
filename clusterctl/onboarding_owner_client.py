@@ -1166,7 +1166,8 @@ class OwnerClient:
         sdk = onboarding_sdk.verify(candidate[0], uid=0, **sdk_parameters(candidate[0], uid=0))
         venv = Path('/home/agent/.local/share/daimon-matrix/sdk') / digest(sdk) / 'venv'
         argv = onboarding_sdk.runtime_command(venv, venv.parent / 'runtime-imports', guest_code,
-            'clusterctl.onboarding_owner_client', ['--code-digest', candidate[1], *arguments(remaining())])
+            'clusterctl.onboarding_owner_client', ['--code-digest', candidate[1],
+                '--observation-deadline-ns', str(deadline), *arguments(remaining())])
         raw = self.host.execute_body(plan, argv, home=True,
             timeout_seconds=remaining(), deadline_ns=deadline,
             **({} if input_data is None else {'input_data':json.dumps(input_data, separators=(',', ':'))}))

@@ -585,7 +585,8 @@ class GroupCoordinator:
                     runtime_root=str(owner.root), server=current()['runtime_observation']['initial_managed'][entrant]['intent']['owner']['origin'],
                     runtime_bundle_sha256=loaded_selection(loaded)['runtime_bundle_sha256'], group=publication)
                 authorized()
-                result = owner.prepare_attachment(request, attachment=Path(tooling['attachment']), codex_home=Path(tooling['codex_home']))
+                with cohort.tooling_scope(entrant):
+                    result = owner.prepare_attachment(request, attachment=Path(tooling['attachment']), codex_home=Path(tooling['codex_home']))
                 retain('attachment_ready', result)
             cohort.retain_admission_activation(self._activation_plan(current(), admission, cohort, deadline_ns=deadline_ns))
         authorized()

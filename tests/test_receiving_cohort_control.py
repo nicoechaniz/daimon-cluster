@@ -2022,6 +2022,42 @@ def test_codex_tooling_is_retained_once_and_native_drift_prevents_activation(tmp
     assert all(owner.gate['readers'] == [] for owner in owners.values())
 
 
+def test_remaining_tooling_uses_current_approval_and_both_real_fences(tmp_path, monkeypatch):
+    """Grant resolution is explicit; journal locks/deadline scope are actual."""
+    import uuid
+    from clusterctl import onboarding_group_recovery as recovery
+    from clusterctl.operation_journal import JournalConflict
+    controller, owners, journal, row, _ = admission_fixture(tmp_path)
+    approval = str(uuid.uuid4())
+    journal.advance(row['operation_id'], 'runtime-dispatching', runtime_observation={
+        'admission_remaining_effects': {'reference': {'operation_id': approval}}})
+    grant = dict(schema=recovery.REMAINING_SCHEMA, expires_at_ms=time.time_ns() // 1_000_000 + 10_000)
+    permitted = [True]
+    effects = []
+    def execution(journal, parent, **options):
+        if not options.get('historical'):
+            assert options['effect'] == 'tooling'
+            if not permitted[0]:
+                raise OnboardingError('onboarding_group_remaining_effect_not_authorized')
+        return grant
+    monkeypatch.setattr(recovery, 'execution', execution)
+    with controller.tooling_scope('newcomer'):
+        owner = owners['newcomer']
+        assert 0 < owner.deadline_ns - time.monotonic_ns() <= 10_000_000_000
+        competitor = OperationJournal.existing(journal.path.parent)
+        for key in (row['operation_id'], approval):
+            with pytest.raises(JournalConflict):
+                with competitor.mutation_lock(key):
+                    pass
+        effects.append('authorized owner call')
+    assert owners['newcomer'].deadline_ns is None
+    permitted[0] = False
+    with pytest.raises(OnboardingError, match='remaining_effect_not_authorized'):
+        with controller.tooling_scope('newcomer'):
+            effects.append('forbidden')
+    assert effects == ['authorized owner call']
+
+
 def test_codex_configuration_without_catalog_cannot_be_receiving_adoption(tmp_path):
     from types import MethodType
     controller, owners, journal, identifier = activation_fixture(tmp_path, tooling_profile='codex')

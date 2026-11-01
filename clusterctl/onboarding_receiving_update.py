@@ -4499,6 +4499,39 @@ class CohortController:
                     'observation_implementations': implementations},
                 expected_runtime_observation=row['runtime_observation'])
 
+    @contextmanager
+    def tooling_scope(self, name: str):
+        """Bound a fresh owner attachment/configuration under current execution.
+
+        Keep selected body code and private settings with their existing owner
+        client; a maintenance helper must not replace its SDK attribution.
+        """
+        from . import onboarding_group_recovery as recovery
+        with self.journal.mutation_lock(self.operation_id):
+            row = self._row()
+            admission = self._admission(row)
+            owner = self.owners[name]
+            started = time.monotonic_ns()
+            deadline = started + int(min(getattr(owner, 'timeout_seconds', 30), 60) * 1_000_000_000)
+            owner_deadline = getattr(owner, 'deadline_ns', None)
+            if owner_deadline is not None:
+                deadline = min(deadline, owner_deadline)
+            grant = recovery.execution(self.journal, row, historical=True) if admission is not None else None
+            effect = ('tooling' if grant is not None and grant['schema'] == recovery.REMAINING_SCHEMA
+                else 'activation')
+            if admission is not None:
+                bounds = recovery.bounds(self.journal, row)
+                deadline = min(deadline, started + (
+                    bounds['expires_at_ms'] - time.time_ns() // 1_000_000) * 1_000_000)
+                deadline = recovery.effect_deadline(self.journal, row, effect, deadline)
+            with ExitStack() as controls:
+                if admission is not None:
+                    controls.enter_context(recovery.effect_scope(self.journal, row, effect, deadline_ns=deadline))
+                controls.enter_context(self._owner_deadline(owner, deadline))
+                self._accept_activation_deadline(deadline)
+                yield
+                self._accept_activation_deadline(deadline)
+
     def reconcile_tooling(self) -> dict:
         from .onboarding_owner_client import validate_tooling_recipe
         with self.journal.mutation_lock(self.operation_id):
@@ -4516,10 +4549,11 @@ class CohortController:
                 owner = self.owners[name]
                 if not hasattr(owner, 'reconcile_tooling'):
                     raise OnboardingError('receiving_native_tooling_unobserved')
-                result = owner.reconcile_tooling(operation, attachment=Path(recipe['attachment']),
-                    codex_home=Path(recipe['codex_home']), connections=tuple(map(Path, recipe['connections'])),
-                    native_endpoint=Path(recipe['native_endpoint']), native_threads=tuple(recipe['native_threads']),
-                    **({'binding_filename': recipe['binding_filename']} if 'binding_filename' in recipe else {}))
+                with self.tooling_scope(name):
+                    result = owner.reconcile_tooling(operation, attachment=Path(recipe['attachment']),
+                        codex_home=Path(recipe['codex_home']), connections=tuple(map(Path, recipe['connections'])),
+                        native_endpoint=Path(recipe['native_endpoint']), native_threads=tuple(recipe['native_threads']),
+                        **({'binding_filename': recipe['binding_filename']} if 'binding_filename' in recipe else {}))
                 if (result.get('schema') != 'cluster-native-chat-tooling/v1' or result.get('operation_id') != operation
                         or result.get('status') != 'configured' or not isinstance(result.get('native_catalog'), dict)):
                     raise OnboardingError('receiving_native_tooling_unobserved')

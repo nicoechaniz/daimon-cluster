@@ -149,20 +149,24 @@ def test_qualified_technical_tool_preserves_original_owner_deadline(tmp_path, mo
     assert len(calls) == count
 
 
-def test_tooling_owner_entry_requires_explicit_native_home_after_qualification(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize('arrival_ns', [1_000_000_000, 3_000_000_000])
+def test_tooling_owner_entry_requires_explicit_native_home_after_qualification(tmp_path, monkeypatch, capsys, arrival_ns):
     from clusterctl import onboarding_owner_client as owner, onboarding_code_successor
     monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {'matrix_commit': 'b'*40})
     startup = {'selected': True}
     monkeypatch.setattr(owner.onboarding_sdk, 'qualified_startup', lambda *a, **k: startup)
     calls = []
+    monkeypatch.setattr(owner.time, 'monotonic_ns', lambda: arrival_ns)
     def reconcile(attachment, operation_id, **kwargs):
         assert kwargs['startup'] is startup
         assert kwargs['codex_home'] == tmp_path/'private-codex'
+        assert kwargs['deadline_ns'] == 11_000_000_000
         calls.append((attachment, operation_id))
         return {'status': 'configured', 'catalog_acceptance': 'unobserved'}
     monkeypatch.setattr(owner, 'reconcile_chat_tooling', reconcile)
     arguments = ['--binding', str(tmp_path/'attachment/binding.json'),
-        '--code-digest', 'a'*64, '--reconcile-tooling', 'operation:fixture']
+        '--code-digest', 'a'*64, '--reconcile-tooling', 'operation:fixture',
+        '--observation-timeout-seconds', '10', '--observation-deadline-ns', '11000000000']
     with pytest.raises(owner.OnboardingError, match='qualified_native_peer_tool_required'):
         owner.main(arguments)
     assert calls == []
@@ -298,7 +302,9 @@ def test_group_acceptance_preserves_approved_tooling_without_legacy_peer(tmp_pat
 
 
 @pytest.mark.parametrize("binding_filename", ["binding.json", "owner-binding.json"])
-def test_host_tooling_reconciliation_uses_owner_cli_without_private_sdk_reads(tmp_path, monkeypatch, binding_filename):
+@pytest.mark.parametrize('dispatch_delay_ns', [0, 2_000_000_000])
+def test_host_tooling_reconciliation_uses_owner_cli_without_private_sdk_reads(tmp_path, monkeypatch, binding_filename,
+                                                                           dispatch_delay_ns):
     from clusterctl import onboarding_owner_client as owner, onboarding_code_successor
     from clusterctl.onboarding import digest, OnboardingError
     from tests.test_onboarding import plan
@@ -307,8 +313,13 @@ def test_host_tooling_reconciliation_uses_owner_cli_without_private_sdk_reads(tm
     result = dict(schema='cluster-native-chat-tooling/v1', operation_id=operation_id,
         code_digest='a'*64, sdk_digest=digest(sdk), matrix_commit=sdk['matrix_commit'])
     calls = []
+    clock = [1_000_000_000]
+    monkeypatch.setattr(owner.time, 'monotonic_ns', lambda: clock[0])
     def dispatch(value, command, **options):
         assert options['home'] is True
+        clock[0] += dispatch_delay_ns
+        assert int(command[command.index('--observation-deadline-ns')+1]) == options['deadline_ns']
+        assert options['deadline_ns'] == 11_000_000_000
         calls.append(command)
         return json.dumps(result)
     host = SimpleNamespace(authorize=lambda *a: True, _receiving_base=lambda p: Path('/public/base'),
@@ -324,7 +335,7 @@ def test_host_tooling_reconciliation_uses_owner_cli_without_private_sdk_reads(tm
     client = OwnerClient(host)
     arguments = dict(candidate=(tmp_path/'candidate', 'a'*64),
         attachment=Path('/home/agent/existing-attachment'), codex_home=Path('/home/agent/.codex'),
-        binding_filename=binding_filename)
+        binding_filename=binding_filename, deadline_ns=11_000_000_000)
     assert client.reconcile(plan(), operation_id, **arguments) == result
     command = calls[0]
     assert 'exec' not in command  # Physical placement belongs to execute_body.

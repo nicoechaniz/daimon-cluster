@@ -238,7 +238,16 @@ responses preserve the existing forward-reassessment policy and original intent.
 Source qualification is not compatible receiving deployment: do not activate
 this consumer against receivers that have not adopted the advertised contract.
 
-Other lifecycle/activation consumers and the complete native admission
+Fresh attachment and tooling reconciliation use the current execution grant
+under the existing parent/approval kernel fences, retaining the selected body's
+code and SDK attribution. The owner CLI receives the exact absolute observation
+deadline as well as the remaining duration; native/KVM execution rebases that
+existing clock option. Delayed arrival must not restart the protected duration.
+Retained completed attachments and configured tooling remain historical returns.
+Focused tests cover actual owner argv/CLI parsing with delayed arrival, real
+lock custody, inactive approval refusal and the existing finisher paths.
+
+Other lifecycle/communication consumers and the complete native admission
 journey still need qualification. Retain the original expired synthetic
 operation and uncertain publication; do not replay it or enlarge its original
 grant.

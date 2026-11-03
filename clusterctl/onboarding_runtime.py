@@ -119,6 +119,42 @@ def send(connection: socket.socket, value: dict) -> None:
     connection.sendall(len(raw).to_bytes(4, "big") + raw)
 
 
+def connected_body_reader(connection: socket.socket):
+    """Use the existing bounded parent channel, serialized across native reads."""
+    rpc_lock = threading.Lock()
+    def read(body_ref, embodiment_id, incarnation_id, evaluated_at_ms):
+        with rpc_lock:
+            send(connection, dict(body_ref=body_ref, embodiment_id=embodiment_id,
+                incarnation_id=incarnation_id, evaluated_at_ms=evaluated_at_ms))
+            response = receive(connection)
+        if set(response) != {'ok', 'result'} or response['ok'] is not True:
+            raise OnboardingError('onboarding_runtime_observation_unavailable')
+        return response['result']
+    return read
+
+
+def admitted_body_snapshot(origin, presence, supervisor, request: dict) -> dict:
+    """Report a current admitted body; adopting writable resources is separate."""
+    from daimon_matrix.cluster import validate_body_snapshot
+    fields = {'body_ref', 'embodiment_id', 'incarnation_id', 'evaluated_at_ms'}
+    if set(request) != fields or any(request[key] != origin[key] for key in fields - {'evaluated_at_ms'}):
+        raise OnboardingError('onboarding_runtime_origin_rejected')
+    at_ms = request['evaluated_at_ms']
+    now = time.time_ns() // 1_000_000
+    if type(at_ms) is not int or not 0 <= at_ms <= now or now - at_ms > 5000:
+        raise OnboardingError('onboarding_runtime_time_rejected')
+    if presence is None or supervisor is None:
+        raise OnboardingError('onboarding_runtime_not_ready')
+    presence.verify()
+    if supervisor.verify_current(minimum_remaining_s=1) is None:
+        raise OnboardingError('onboarding_admission_not_current')
+    presence.verify()
+    value = dict(schema='dm.cluster-body-snapshot/v1', body_ref=request['body_ref'],
+        embodiment_id=request['embodiment_id'], incarnation_id=request['incarnation_id'],
+        observed_at_ms=at_ms, state='running', resource_fences=[])
+    return validate_body_snapshot(value, **request)
+
+
 class AdmittedDaemon:
     def __init__(self, target, client):
         self.target, self.client = target, client
@@ -131,27 +167,7 @@ class AdmittedDaemon:
         self.origin = target.observe()["receipt"]["origin"]
 
     def snapshot(self, request: dict) -> dict:
-        from daimon_matrix.cluster import validate_body_snapshot
-        fields = {"body_ref", "embodiment_id", "incarnation_id", "evaluated_at_ms"}
-        if set(request) != fields or any(request[key] != self.origin[key] for key in fields - {"evaluated_at_ms"}):
-            raise OnboardingError("onboarding_runtime_origin_rejected")
-        at_ms = request["evaluated_at_ms"]
-        now = time.time_ns() // 1_000_000
-        if type(at_ms) is not int or not 0 <= at_ms <= now or now - at_ms > 5000:
-            raise OnboardingError("onboarding_runtime_time_rejected")
-        if self.presence is None or self.supervisor is None:
-            raise OnboardingError("onboarding_runtime_not_ready")
-        self.presence.verify()
-        current = self.supervisor.verify_current(minimum_remaining_s=1)
-        if current is None:
-            raise OnboardingError("onboarding_admission_not_current")
-        self.presence.verify()
-        # Admission controls execution. No writable resource has been adopted
-        # through this adapter; curator mutations remain unavailable.
-        value = dict(schema="dm.cluster-body-snapshot/v1", body_ref=request["body_ref"],
-            embodiment_id=request["embodiment_id"], incarnation_id=request["incarnation_id"],
-            observed_at_ms=at_ms, state="running", resource_fences=[])
-        return validate_body_snapshot(value, **request)
+        return admitted_body_snapshot(self.origin, self.presence, self.supervisor, request)
 
     def _serve(self):
         while not self.stop.is_set():
@@ -331,15 +347,7 @@ def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
     stopping = threading.Event()
     connection = socket.socket(fileno=descriptor)
     connection.settimeout(5)
-    rpc_lock = threading.Lock()
-    def body_reader(body_ref, embodiment_id, incarnation_id, evaluated_at_ms):
-        with rpc_lock:
-            send(connection, dict(body_ref=body_ref, embodiment_id=embodiment_id,
-                incarnation_id=incarnation_id, evaluated_at_ms=evaluated_at_ms))
-            response = receive(connection)
-        if set(response) != {'ok','result'} or response['ok'] is not True:
-            raise OnboardingError('onboarding_runtime_observation_unavailable')
-        return response['result']
+    body_reader = connected_body_reader(connection)
     def guardian():
         while not stopping.wait(0.25):
             if os.getppid() != guardian_pid:

@@ -855,6 +855,64 @@ def test_supervisor_stops_runtime_before_lease_expiry_on_authority_loss(
     assert ready["admission"]["lease_expires_at_ms"] > 0
 
 
+@pytest.mark.parametrize('response_lost_after_commit', [False, True])
+def test_supervisor_recovers_one_transport_failure_with_fresh_signed_position(
+    short_tmp_path, monkeypatch, response_lost_after_commit,
+):
+    from clusterctl.admission import AdmissionUnavailable
+
+    fixture, state, values = _install(
+        short_tmp_path, ceremony_now_ms=time.time_ns() // 1_000_000
+    )
+    installed = rebirth.install_rebirth_package(**values)
+    _ensure_production_fences(
+        state, installed['embodiment_id'], lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S
+    )
+    identity = rebirth_host._installed_identity(state, installed['embodiment_id'])
+    client = rebirth_host._configured_admission_client(state, identity)
+    real_renew = client.renew
+    recovered = threading.Event()
+    attempts = []
+    committed = []
+
+    def interrupt_once(*, ttl_s):
+        attempts.append(True)
+        if len(attempts) == 1:
+            if response_lost_after_commit:
+                committed.append(real_renew(ttl_s=ttl_s))
+            raise AdmissionUnavailable('admission round-trip deadline expired')
+        receipt = real_renew(ttl_s=ttl_s)
+        committed.append(receipt)
+        recovered.set()
+        return receipt
+
+    monkeypatch.setattr(client, 'renew', interrupt_once)
+    process, ready = rebirth_host.launch_rebirth_host(
+        state, installed['embodiment_id'], _descriptor(fixture['password']),
+        admission_client=client, admission_lease_ttl_s=_REAL_RUNTIME_LEASE_TTL_S,
+    )
+    supervisor = rebirth_host._SUPERVISORS[process.pid]
+    try:
+        assert recovered.wait(timeout=_REAL_RUNTIME_LEASE_TTL_S / 2)
+        with supervisor._condition:
+            assert supervisor._condition.wait_for(
+                lambda: supervisor.receipt == committed[-1], timeout=1
+            )
+        assert process.poll() is None and len(attempts) == 2
+        assert supervisor.termination_reason is None
+        assert supervisor.renewal_failure is None
+        # A lost committed response is followed by a fresh position/CAS, not
+        # another submission of the original expected epoch/authorization.
+        assert committed[-1]['fencing_token'] == (
+            ready['admission']['fencing_token'] + 1 + response_lost_after_commit
+        )
+        current = client.current()
+        assert current and current['session_id'] == client.session_id
+        assert current['fencing_token'] == committed[-1]['fencing_token']
+    finally:
+        _stop_rebirth_host(process)
+
+
 def test_monotonic_watchdog_kills_while_renew_round_trip_is_stuck():
     class StuckClient:
         session_id = "test-session"

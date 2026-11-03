@@ -86,6 +86,17 @@ or a previous signed delivery alone does not prove continuing process health.
 These bounded local lifecycle diagnostics contain no arguments, exception values
 or private runtime contents and use the service's existing journal retention.
 
+Within a still-confirmed lease, transport unavailability or a round-trip deadline
+can receive at most two additional renewal attempts, spaced by 250ms. Each attempt
+obtains a fresh signed position and CAS; an uncertain mutation is never replayed.
+Attempts require budget for both bounded round trips before the original local
+hard-kill margin. Failed responses never advance that monotonic deadline or
+extend a lease. The independent watchdog remains active. Conflict, invalid
+response/binding/signature, requested shutdown, exhausted attempts or insufficient
+remaining budget still terminate immediately. A successful confirmed renewal
+clears the transient failure frame; only the final closed failure is journaled.
+No new retry service, timer, credential, model attention or unbounded log is added.
+
 ## SDK updates on an already selected admitted target
 
 An admitted target keeps its original approved `--code` baseline while

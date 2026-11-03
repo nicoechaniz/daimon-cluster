@@ -816,9 +816,12 @@ bounded deadline rather than extending it to accommodate duplicate preparation.
 
 The original SDK `196ec7219f954cf4e514a1f61ae72eb3451d851e` remains
 `PREVIOUS_MATRIX_COMMIT`: it is the immutable original receiving plan's
-artifact, not the most recently running generation. Keep every prior selected
-runtime and dependency environment for rollback. Changing that original pin to
-the currently running SDK would invalidate legitimate receiving history.
+artifact, not the most recently running generation. Preserve that approved base,
+the current selection, its actual compatible rollback and generations still
+referenced by live services/readers or unfinished work. Do not turn intermediate
+software builds into an indefinite historical environment archive. Changing the
+original pin to the current SDK would invalidate legitimate receiving history;
+that does not require retaining every intermediate dependency environment.
 
 Build the replacement wheelhouse with `tools.build_onboarding_sdk.py` from the
 exact Matrix commit declared in `onboarding_sdk.MATRIX_COMMIT`. It is a closed,
@@ -827,6 +830,15 @@ explicit SDK successor against the ORIGINAL base and verifies that all original
 non-runtime context remains byte-identical. `onboarding_sdk.install` installs a
 new content-addressed environment and validates every installed wheel byte;
 never repair or overwrite a completed generation in place.
+
+Run the builder as a module from the owning Cluster checkout with an existing
+development interpreter that has `pip` (for example `PYTHONPATH=. PYTHON -m
+tools.build_onboarding_sdk --matrix-checkout CHECKOUT --matrix-commit EXACT_SHA
+--output PRIVATE_OUTPUT/sdk`). It creates its missing private output parent;
+an existing unsafe directory is refused, not chmodded. A missing `pip` fails
+before output is created. Error JSON keeps `onboarding_sdk_build_refused` and
+adds an allowlisted `code`; unknown exceptions never print private values.
+These are builder prerequisites, not receiving runtime dependency installation.
 
 SDK installation/preflight must not run startup hooks or an unverified installed
 `pip`. Use the qualified interpreter's ensurepip wheel in a hook-free `-I -S`

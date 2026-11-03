@@ -1454,16 +1454,19 @@ class ProductionFenceStore:
         }
 
     def current_bindings(self, resource_prefix: str, *, limit: int = 256,
-                         requester: Mapping[str, str] | None = None) -> dict[str, Any]:
+                         requester: Mapping[str, str] | None = None,
+                         include_renewer: bool = False) -> dict[str, Any]:
         """Bounded, read-only current-holder inventory from one database snapshot.
 
         This reports admission/fence coordinates, not process liveness or social
-        membership. No holder custody, session or raw signed evidence is returned.
+        membership. No holder custody or raw signed evidence is returned. The
+        authority alone may request the renewer for joining volatile declarations;
+        it must strip that internal session coordinate from its public response.
         The scan bound remains explicit even when expired positions consume it.
         """
         if (not isinstance(resource_prefix, str) or not resource_prefix
                 or len(resource_prefix) > 128 or type(limit) is not int
-                or not 1 <= limit <= 256):
+                or not 1 <= limit <= 256 or type(include_renewer) is not bool):
             raise FenceError("invalid current-holder inventory bounds")
         if requester is not None and (not isinstance(requester, Mapping)
                 or set(requester) != {'resource_ref', 'holder_key_id', 'renewer'}
@@ -1518,6 +1521,8 @@ class ProductionFenceStore:
                 item.update(resource_ref=current["resource_ref"],
                     fencing_token=current["epoch"], proof_ref=self.proof_ref(current),
                     lease_expires_at_ms=current["created_ms"] + current["ttl_s"] * 1000)
+                if include_renewer:
+                    item["renewer"] = current["renewer"]
                 if len(items) == limit:
                     truncated = True
                     break

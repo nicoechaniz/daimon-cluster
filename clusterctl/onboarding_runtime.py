@@ -159,6 +159,12 @@ class ConnectedBodyReader:
             evaluated_at_ms=evaluated_at_ms))
 
 
+    def surface_inventory(self, body_ref, embodiment_id, incarnation_id, evaluated_at_ms):
+        return self._read(dict(kind='surface-inventory', body_ref=body_ref,
+            embodiment_id=embodiment_id, incarnation_id=incarnation_id,
+            evaluated_at_ms=evaluated_at_ms))
+
+
 def connected_body_reader(connection: socket.socket):
     """Preserve the body callback and optionally expose admitted surface reads."""
     return ConnectedBodyReader(connection)
@@ -167,7 +173,7 @@ def connected_body_reader(connection: socket.socket):
 def admitted_observation(origin, presence, supervisor, request: dict) -> dict:
     if 'kind' not in request:
         return admitted_body_snapshot(origin, presence, supervisor, request)
-    if request.get('kind') not in ('surface', 'inventory'):
+    if request.get('kind') not in ('surface', 'inventory', 'surface-inventory'):
         raise OnboardingError('onboarding_runtime_observation_rejected')
     base = {key: value for key, value in request.items() if key != 'kind'}
     body = admitted_body_snapshot(origin, presence, supervisor, base)
@@ -195,10 +201,16 @@ def admitted_observation(origin, presence, supervisor, request: dict) -> dict:
     surface_ref = 'dm:surface:v1:' + hashlib.sha256(
         b'daimon/native-linux-surface/v1\x00' + machine.strip() + b'\x00' + boot_id.encode()).hexdigest()
     presence.verify()
-    return dict(schema='dm.cluster-surface-snapshot/v1',
+    surface = dict(schema='dm.cluster-surface-snapshot/v1',
         body_ref=body['body_ref'], embodiment_id=body['embodiment_id'],
         incarnation_id=body['incarnation_id'], observed_at_ms=body['observed_at_ms'],
         domain='native-linux-os', surface_ref=surface_ref, state=body['state'])
+    if request['kind'] == 'surface-inventory':
+        inventory = supervisor.surface_inventory(dict(domain='native-linux-os', surface_ref=surface_ref))
+        presence.verify()
+        return dict(schema='dm.cluster-surface-inventory-snapshot/v1', body=body,
+                    surface=surface, inventory=inventory)
+    return surface
 
 
 def admitted_body_snapshot(origin, presence, supervisor, request: dict) -> dict:

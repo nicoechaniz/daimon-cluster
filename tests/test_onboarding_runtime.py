@@ -228,7 +228,7 @@ def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(
                         left.settimeout(5)
                         right.settimeout(5)
                         def observe_surface():
-                            for _ in range(2):
+                            for _ in range(3):
                                 query = receive(right)
                                 send(right, dict(ok=True, result=admitted.snapshot(query)))
                         worker = threading.Thread(target=observe_surface)
@@ -237,6 +237,7 @@ def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(
                             reader = connected_body_reader(left)
                             surface = reader.surface(**request)
                             inventory = reader.inventory(**request)
+                            surfaces = reader.surface_inventory(**request)
                         finally:
                             worker.join(5)
                         assert not worker.is_alive()
@@ -246,6 +247,13 @@ def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(
                     assert surface['surface_ref'].startswith('dm:surface:v1:')
                     assert surface['state'] == 'running'
                     assert Path('/etc/machine-id').read_text().strip() not in json.dumps(surface)
+                    assert surfaces['schema'] == 'dm.cluster-surface-inventory-snapshot/v1'
+                    assert surfaces['body'] == inventory['body']
+                    assert surfaces['surface'] == surface
+                    reported = surfaces['inventory']['items'][0]['surface']
+                    assert reported['surface_ref'] == surface['surface_ref']
+                    assert reported['evidence'] == 'admitted-launch-report'
+                    assert 'renewer' not in surfaces['inventory']['items'][0]
                     assert inventory['schema'] == 'dm.cluster-inventory-snapshot/v1'
                     assert inventory['body'] == admitted.snapshot(request)
                     assert inventory['inventory']['truncated'] is False

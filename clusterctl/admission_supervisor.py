@@ -184,6 +184,11 @@ class AdmissionSupervisor:
         with self._client_lock:
             return self.client.inventory()
 
+    def surface_inventory(self, surface: dict[str, str]) -> dict[str, Any]:
+        """Explicit parent-observed OS report; no peer/model request."""
+        with self._client_lock:
+            return self.client.surface_inventory(surface)
+
     def _run(self) -> None:
         try:
             while self.process.poll() is None:

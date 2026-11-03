@@ -79,7 +79,7 @@ cause category, bounded numeric errno and elapsed milliseconds. Unknown authorit
 messages/class names remain `other`; no raw exception, endpoint, holder, session
 or credential is logged. The parent emits this frame only after child cleanup.
 Read it before attributing an intermittent failure to transport, signature,
-fencing or lease expiry. It does not retry renewal, extend admission or repair an
+fencing or lease expiry. The diagnostic itself does not extend admission or authorize an
 uncertain lease. One retained failure per process uses existing journal retention.
 An absent or unclassified outcome leaves the cause unknown; receiving metadata
 or a previous signed delivery alone does not prove continuing process health.

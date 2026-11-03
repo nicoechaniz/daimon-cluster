@@ -1291,3 +1291,12 @@ rewriting or flushing it. Failed receipt publication remains distinguishable
 from completed preparation. Existing loaded-startup, no-site/bytecode, inventory
 and source-origin checks remain unchanged; the runtime never imports an SDK on
 installation-receipt authority alone.
+
+## Native surface observations
+
+The inherited body reader also supports a current native OS surface observation
+without changing the original body callback. See
+[the native surface contract](../design/native-surfaces.md) for exact admission,
+identity, privacy and domain boundaries. Selecting this source does not install
+a Matrix `/here` resolver or prove receiving acceptance. Keep current scope
+coverage and actual cohort observations in Matrix #437.

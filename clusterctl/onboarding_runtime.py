@@ -7,15 +7,18 @@ crosses that socket. Neither side reads Matrix inboxes or starts model turns.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import selectors
 import select
+import re
 import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -119,18 +122,65 @@ def send(connection: socket.socket, value: dict) -> None:
     connection.sendall(len(raw).to_bytes(4, "big") + raw)
 
 
-def connected_body_reader(connection: socket.socket):
-    """Use the existing bounded parent channel, serialized across native reads."""
-    rpc_lock = threading.Lock()
-    def read(body_ref, embodiment_id, incarnation_id, evaluated_at_ms):
-        with rpc_lock:
-            send(connection, dict(body_ref=body_ref, embodiment_id=embodiment_id,
-                incarnation_id=incarnation_id, evaluated_at_ms=evaluated_at_ms))
-            response = receive(connection)
+class ConnectedBodyReader:
+    """Body and surface observations share one serialized inherited channel."""
+    def __init__(self, connection: socket.socket):
+        self.connection = connection
+        self.lock = threading.Lock()
+
+    def _read(self, request: dict) -> dict:
+        with self.lock:
+            send(self.connection, request)
+            response = receive(self.connection)
         if set(response) != {'ok', 'result'} or response['ok'] is not True:
             raise OnboardingError('onboarding_runtime_observation_unavailable')
         return response['result']
-    return read
+
+    def __call__(self, body_ref, embodiment_id, incarnation_id, evaluated_at_ms):
+        return self._read(dict(body_ref=body_ref, embodiment_id=embodiment_id,
+            incarnation_id=incarnation_id, evaluated_at_ms=evaluated_at_ms))
+
+    def surface(self, body_ref, embodiment_id, incarnation_id, evaluated_at_ms):
+        return self._read(dict(kind='surface', body_ref=body_ref,
+            embodiment_id=embodiment_id, incarnation_id=incarnation_id,
+            evaluated_at_ms=evaluated_at_ms))
+
+
+def connected_body_reader(connection: socket.socket):
+    """Preserve the body callback and optionally expose admitted surface reads."""
+    return ConnectedBodyReader(connection)
+
+
+def admitted_observation(origin, presence, supervisor, request: dict) -> dict:
+    if 'kind' not in request:
+        return admitted_body_snapshot(origin, presence, supervisor, request)
+    if request.get('kind') != 'surface':
+        raise OnboardingError('onboarding_runtime_observation_rejected')
+    base = {key: value for key, value in request.items() if key != 'kind'}
+    body = admitted_body_snapshot(origin, presence, supervisor, base)
+    # This realm is the native OS instance, not its physical hypervisor,
+    # network, signed label, Tribe or geographic position. The root-managed
+    # machine identity stays local; only a purpose-separated digest leaves it.
+    with Path('/etc/machine-id').open('rb') as stream:
+        machine = stream.read(34)
+    if re.fullmatch(rb'[0-9a-f]{32}\n?', machine) is None:
+        raise OnboardingError('onboarding_runtime_surface_unavailable')
+    with Path('/proc/sys/kernel/random/boot_id').open('rb') as stream:
+        boot = stream.read(38)
+    try:
+        boot_id = boot.rstrip(b'\n').decode('ascii')
+        if str(uuid.UUID(boot_id)) != boot_id or boot not in {
+                boot_id.encode(), boot_id.encode() + b'\n'}:
+            raise ValueError
+    except (UnicodeError, ValueError):
+        raise OnboardingError('onboarding_runtime_surface_unavailable') from None
+    surface_ref = 'dm:surface:v1:' + hashlib.sha256(
+        b'daimon/native-linux-surface/v1\x00' + machine.strip() + b'\x00' + boot_id.encode()).hexdigest()
+    presence.verify()
+    return dict(schema='dm.cluster-surface-snapshot/v1',
+        body_ref=body['body_ref'], embodiment_id=body['embodiment_id'],
+        incarnation_id=body['incarnation_id'], observed_at_ms=body['observed_at_ms'],
+        domain='native-linux-os', surface_ref=surface_ref, state=body['state'])
 
 
 def admitted_body_snapshot(origin, presence, supervisor, request: dict) -> dict:
@@ -167,7 +217,7 @@ class AdmittedDaemon:
         self.origin = target.observe()["receipt"]["origin"]
 
     def snapshot(self, request: dict) -> dict:
-        return admitted_body_snapshot(self.origin, self.presence, self.supervisor, request)
+        return admitted_observation(self.origin, self.presence, self.supervisor, request)
 
     def _serve(self):
         while not self.stop.is_set():

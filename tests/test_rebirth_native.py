@@ -270,9 +270,12 @@ def test_native_sdk_successor_keeps_original_start_and_reuses_admission(native_s
                 'venv': '/fixture/home/.local/share/daimon-matrix/sdk/' + 'c' * 64 + '/venv'}
     monkeypatch.setattr(rebirth_native, 'prepare', lambda *a: dict(selected))
     spawned = []
+    fail_start = [False]
 
     def child(selection, ready_fd, *, body_observer_fd):
         spawned.append(selection['sdk_digest'])
+        if fail_start[0]:
+            return [sys.executable, '-c', 'raise SystemExit(4)']
         return [sys.executable, '-c', ('import os,signal,time;'
                 'signal.signal(signal.SIGTERM,lambda *a:exit(0));'
                 f'os.write({ready_fd},b"READY\\n");os.close({ready_fd});time.sleep(60)')]
@@ -309,6 +312,31 @@ def test_native_sdk_successor_keeps_original_start_and_reuses_admission(native_s
     assert journal.get(original['operation_id']) == original
     assert start_stop()['operation_id'] == successor['operation_id']
     assert spawned == ['c' * 64, 'e' * 64, 'e' * 64]
+    selected.update(code='/fixture/unready', code_digest='f' * 64, sdk_digest='f' * 64,
+                    venv='/fixture/home/.local/share/daimon-matrix/sdk/' + 'f' * 64 + '/venv')
+    fail_start[0] = True
+    with pytest.raises(rebirth_host.RebirthHostError, match='startup_refused'):
+        rebirth_host.launch_rebirth_host(state, installed['embodiment_id'],
+            base._descriptor(fixture['password']), native_source_profile=state / 'profile.json')
+    failed = journal.latest_for_target(target)
+    assert failed['state'] == 'runtime-dispatching' and not failed['runtime_observation']
+    fail_start[0] = False
+    selected.update(code='/fixture/repair', code_digest='a' * 64, sdk_digest='a' * 64,
+                    venv='/fixture/home/.local/share/daimon-matrix/sdk/' + 'a' * 64 + '/venv')
+    process, ready = rebirth_host.launch_rebirth_host(state, installed['embodiment_id'],
+        base._descriptor(fixture['password']), native_source_profile=state / 'profile.json',
+        recover_native_start=failed['operation_id'])
+    try:
+        assert ready['state'] == 'running-ready'
+        repaired = journal.latest_for_target(target)
+        assert repaired['state'] == 'completed'
+        assert repaired['intent']['native_start_recovery']['operation_id'] == failed['operation_id']
+        preserved = journal.get(failed['operation_id'])
+        assert preserved['state'] == 'compensated'
+        assert preserved['intent'] == failed['intent'] and preserved['intent_hash'] == failed['intent_hash']
+        assert preserved['result']['native_effects_reconciled'] is False
+    finally:
+        base._stop_rebirth_host(process)
 
 
 def _startup_intent():
@@ -349,6 +377,71 @@ def test_native_sdk_plan_recovers_after_lost_return_without_competing_successor(
     third = plan(_next_sdk(new_intent, 'e'))
     assert third['intent']['native_start_predecessor']['operation_id'] == successor['operation_id']
     assert third['audit_event_id'] not in {successor['audit_event_id'], original['audit_event_id']}
+
+
+def test_explicit_unready_native_repair_retains_failed_intent_and_completed_ancestor(tmp_path):
+    from clusterctl.operation_journal import OperationJournal
+    journal = OperationJournal(tmp_path / 'state')
+    def plan(intent, repair=None):
+        return rebirth_native.start_record(journal, 'target', intent, actor='fixture',
+            embodiment_id='body', recover_operation_id=repair)
+    original = plan(_startup_intent())
+    journal.advance(original['operation_id'], 'completed', result={'fixture': 'planner-only'})
+    failed = plan(_next_sdk(_startup_intent()))
+    failed = journal.advance(failed['operation_id'], 'runtime-dispatching')
+    replacement = _next_sdk(_startup_intent(), 'e')
+    with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+        plan(replacement)
+    with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+        plan(replacement, original['operation_id'])
+    repaired = plan(replacement, failed['operation_id'])
+    preserved = journal.get(failed['operation_id'])
+    assert preserved['state'] == 'compensated'
+    assert preserved['intent'] == failed['intent'] and preserved['intent_hash'] == failed['intent_hash']
+    assert preserved['result']['native_effects_reconciled'] is False
+    assert repaired['intent']['native_start_recovery'] == {
+        'operation_id': failed['operation_id'], 'intent_hash': failed['intent_hash']}
+    assert repaired['intent']['native_start_predecessor']['operation_id'] == original['operation_id']
+    assert plan(replacement, failed['operation_id']) == repaired
+    journal.advance(repaired['operation_id'], 'completed', result={'fixture': 'planner-only'})
+    assert plan(replacement)['state'] == 'completed'
+    assert plan(_next_sdk(replacement, 'f'))['intent']['native_start_predecessor']['operation_id'] == repaired['operation_id']
+
+
+def test_native_repair_resumes_after_compensation_before_replacement_plan(tmp_path, monkeypatch):
+    from clusterctl.operation_journal import OperationJournal
+    journal = OperationJournal(tmp_path / 'state')
+    def plan(intent, repair=None):
+        return rebirth_native.start_record(journal, 'target', intent, actor='fixture',
+            embodiment_id='body', recover_operation_id=repair)
+    failed = plan(_startup_intent())
+    journal.advance(failed['operation_id'], 'runtime-dispatching')
+    replacement = _next_sdk(_startup_intent())
+    original_plan = journal.plan
+    def interrupted(**kwargs):
+        raise RuntimeError('fixture interruption before replacement plan')
+    monkeypatch.setattr(journal, 'plan', interrupted)
+    with pytest.raises(RuntimeError, match='fixture interruption'):
+        plan(replacement, failed['operation_id'])
+    assert journal.get(failed['operation_id'])['state'] == 'compensated'
+    monkeypatch.setattr(journal, 'plan', original_plan)
+    with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+        plan(_next_sdk(_startup_intent(), 'e'), failed['operation_id'])
+    recovered = plan(replacement, failed['operation_id'])
+    assert recovered['intent']['native_start_recovery']['operation_id'] == failed['operation_id']
+    assert plan(replacement, failed['operation_id']) == recovered
+
+
+@pytest.mark.parametrize('state', ['planned', 'runtime-applied', 'logical-committed', 'audited'])
+def test_explicit_native_repair_rejects_unqualified_or_observed_predecessor(tmp_path, state):
+    from clusterctl.operation_journal import OperationJournal
+    journal = OperationJournal(tmp_path / 'state')
+    original = rebirth_native.start_record(journal, 'target', _startup_intent(), actor='fixture', embodiment_id='body')
+    if state != 'planned':
+        journal.advance(original['operation_id'], state, runtime_observation={'effect': 'already-observed'})
+    with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
+        rebirth_native.start_record(journal, 'target', _next_sdk(_startup_intent()), actor='fixture',
+            embodiment_id='body', recover_operation_id=original['operation_id'])
 
 
 @pytest.mark.parametrize('clock_step', [0, -100])

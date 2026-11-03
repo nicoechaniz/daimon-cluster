@@ -143,6 +143,17 @@ Retain actual group/direct receiving and reader acceptance separately. An expire
 unattempted message uses only the supported explicit recovery contract, preserving
 its original identity/audience; no speculative send or new ID.
 
+## Canonical TCP authority restart
+
+Scoped authority maintenance must retain the original signer, configuration and
+store and stop only its selected Matrix clients. The TCP listener permits
+same-address reuse after close, while an existing live listener still excludes
+another authority (no SO_REUSEPORT). This avoids a TIME_WAIT-only EADDRINUSE gap;
+it does not permit parallel authorities or weaken signed admission/fences. The
+first transition from an older listener without address reuse may still need its
+existing TCP connections to expire. Inspect actual closed startup diagnostics
+and exact listener state; do not stop an unrelated VPN proxy or recreate custody.
+
 ## Local authority changes and the group selector
 
 After an authorized same-being enrollment or retirement, republish the current

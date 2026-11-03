@@ -79,12 +79,23 @@ cause category, bounded numeric errno and elapsed milliseconds. Unknown authorit
 messages/class names remain `other`; no raw exception, endpoint, holder, session
 or credential is logged. The parent emits this frame only after child cleanup.
 Read it before attributing an intermittent failure to transport, signature,
-fencing or lease expiry. It does not retry renewal, extend admission or repair an
+fencing or lease expiry. The diagnostic itself does not extend admission or authorize an
 uncertain lease. One retained failure per process uses existing journal retention.
 An absent or unclassified outcome leaves the cause unknown; receiving metadata
 or a previous signed delivery alone does not prove continuing process health.
 These bounded local lifecycle diagnostics contain no arguments, exception values
 or private runtime contents and use the service's existing journal retention.
+
+Within a still-confirmed lease, transport unavailability or a round-trip deadline
+can receive at most two additional renewal attempts, spaced by 250ms. Each attempt
+obtains a fresh signed position and CAS; an uncertain mutation is never replayed.
+Attempts require budget for both bounded round trips before the original local
+hard-kill margin. Failed responses never advance that monotonic deadline or
+extend a lease. The independent watchdog remains active. Conflict, invalid
+response/binding/signature, requested shutdown, exhausted attempts or insufficient
+remaining budget still terminate immediately. A successful confirmed renewal
+clears the transient failure frame; only the final closed failure is journaled.
+No new retry service, timer, credential, model attention or unbounded log is added.
 
 ## SDK updates on an already selected admitted target
 
@@ -142,6 +153,17 @@ adoption; it does not fabricate a lifecycle receipt for the older coordinator.
 Retain actual group/direct receiving and reader acceptance separately. An expired
 unattempted message uses only the supported explicit recovery contract, preserving
 its original identity/audience; no speculative send or new ID.
+
+## Canonical TCP authority restart
+
+Scoped authority maintenance must retain the original signer, configuration and
+store and stop only its selected Matrix clients. The TCP listener permits
+same-address reuse after close, while an existing live listener still excludes
+another authority (no SO_REUSEPORT). This avoids a TIME_WAIT-only EADDRINUSE gap;
+it does not permit parallel authorities or weaken signed admission/fences. The
+first transition from an older listener without address reuse may still need its
+existing TCP connections to expire. Inspect actual closed startup diagnostics
+and exact listener state; do not stop an unrelated VPN proxy or recreate custody.
 
 ## Local authority changes and the group selector
 

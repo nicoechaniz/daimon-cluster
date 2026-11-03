@@ -865,7 +865,9 @@ class AdmissionTCPServer(socketserver.ThreadingTCPServer):
     """Network-capable authority endpoint with signed application messages."""
 
     daemon_threads = True
-    allow_reuse_address = False
+    allow_reuse_address = True
+    # Retired connections may remain in TIME_WAIT after scoped maintenance.
+    # SO_REUSEPORT stays disabled: a live listener still excludes a successor.
 
     def __init__(
         self, address: tuple[str, int], authority: AdmissionAuthority

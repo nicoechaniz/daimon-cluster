@@ -522,6 +522,60 @@ def test_parent_exit_diagnostic_is_closed_and_never_masks_cleanup(monkeypatch, c
     onboarding_runtime.report_runtime_exit('runtime-exited', 1, requested_stop=False)
 
 
+@pytest.mark.parametrize('failure', ['transport', 'signature', 'binding', 'conflict', 'shutdown'])
+def test_renewal_recovery_is_bounded_and_never_extends_failed_lease(failure):
+    from clusterctl.admission import AdmissionConflict, AdmissionUnavailable
+    from clusterctl.admission_supervisor import AdmissionSupervisor
+
+    class Client:
+        timeout_s = 0.01
+        attempts = 0
+        released = False
+
+        def renew(self, **kwargs):
+            self.attempts += 1
+            if failure == 'conflict':
+                raise AdmissionConflict('admission session does not own the lease')
+            if failure == 'shutdown':
+                supervisor.request_shutdown()
+            message = {
+                'transport': 'admission round-trip deadline expired',
+                'shutdown': 'admission round-trip deadline expired',
+                'signature': 'admission response signature is invalid',
+                'binding': 'admission response binding mismatch',
+            }[failure]
+            raise AdmissionUnavailable(message)
+
+        def release(self):
+            self.released = True
+
+    process = subprocess.Popen(
+        [sys.executable, '-c', 'import time; time.sleep(30)'],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    client = Client()
+    started = time.monotonic()
+    supervisor = AdmissionSupervisor(
+        process, client, {}, 2, lease_started_monotonic=started - 0.6,
+    )
+    deadline = supervisor._lease_deadline
+    try:
+        supervisor.start()
+        process.wait(timeout=3)
+        supervisor.thread.join(timeout=3)
+        supervisor.watchdog.join(timeout=3)
+        assert process.returncode == -9 and not supervisor.thread.is_alive()
+        assert supervisor._lease_deadline == deadline
+        assert client.attempts == (3 if failure == 'transport' else 1)
+        assert client.released
+        assert supervisor.termination_reason == 'admission-renew-failed'
+        assert time.monotonic() < deadline
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=3)
+
+
 @pytest.mark.parametrize('transport', [True, False])
 def test_actual_supervisor_failure_retains_safe_cause_and_parent_reports_after_cleanup(
         monkeypatch, capsys, transport):

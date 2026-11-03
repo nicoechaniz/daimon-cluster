@@ -11,7 +11,7 @@ import threading
 import time
 from typing import Any
 
-from .admission import AdmissionClient, AdmissionError
+from .admission import AdmissionClient, AdmissionError, AdmissionUnavailable
 
 _SUPERVISORS: dict[int, AdmissionSupervisor] = {}
 _SUPERVISORS_LOCK = threading.Lock()
@@ -190,6 +190,7 @@ class AdmissionSupervisor:
             return self.client.surface_inventory(surface)
 
     def _run(self) -> None:
+        renewal_failures = 0
         try:
             while self.process.poll() is None:
                 if (
@@ -227,12 +228,33 @@ class AdmissionSupervisor:
                     with self._client_lock:
                         receipt = self.client.renew(ttl_s=self.ttl_s)
                 except AdmissionError as error:
+                    renewal_failures += 1
                     with self._condition:
                         self._renewal_failure = _renewal_failure(
                             error, time.monotonic() - renew_started)
+                        retry = (
+                            isinstance(error, AdmissionUnavailable)
+                            and str(error) in {
+                                'admission authority is unavailable',
+                                'admission round-trip deadline expired',
+                            }
+                            and renewal_failures < 3
+                            and not self._shutdown_requested.is_set()
+                            and self._hard_kill_at() - time.monotonic()
+                            > 2 * self.client.timeout_s + 0.25
+                        )
+                        if retry:
+                            # Retry obtains a fresh signed position/CAS, never
+                            # replays the uncertain mutation. Failed responses
+                            # do not move the original monotonic kill deadline.
+                            self._condition.wait(timeout=0.25)
+                    if retry:
+                        continue
                     self.force_stop("admission-renew-failed")
                     return
                 with self._condition:
+                    renewal_failures = 0
+                    self._renewal_failure = None
                     self.receipt = receipt
                     # The remote authority can only create this TTL after the
                     # local request began, so request-start + TTL is a safe,

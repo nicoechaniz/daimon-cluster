@@ -484,6 +484,34 @@ def test_original_outer_deadline_is_shared_by_successive_signed_calls(authority_
         bounded.current()
 
 
+def test_tcp_authority_rebinds_after_server_close_but_rejects_live_listener(
+    authority_fixture: dict[str, Any],
+) -> None:
+    import socket
+
+    authority = authority_fixture["server"].authority
+    server = AdmissionTCPServer(("127.0.0.1", 0), authority)
+    address = ("127.0.0.1", server.server_address[1])
+    thread = serve_in_thread(server)
+    try:
+        # The server closes first, retaining a real TCP TIME_WAIT connection.
+        with socket.create_connection(address, timeout=2) as connection:
+            connection.sendall(b"{}\n")
+            response = bytearray()
+            while chunk := connection.recv(4096):
+                response.extend(chunk)
+            assert b'"ok":false' in response
+        # SO_REUSEADDR must not permit two simultaneous listening authorities.
+        with pytest.raises(OSError):
+            AdmissionTCPServer(address, authority)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    replacement = AdmissionTCPServer(address, authority)
+    replacement.server_close()
+
+
 def test_authenticated_tcp_endpoint_is_network_capable_and_pinned(
     tmp_path: Path,
 ) -> None:

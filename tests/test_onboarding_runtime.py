@@ -23,6 +23,36 @@ from tests.test_admission import _key
 from tests.test_onboarding_target import receiving
 
 
+def test_surface_distinguishes_os_instances_without_exporting_machine_or_boot_identity(monkeypatch):
+    import io
+    from types import SimpleNamespace
+    from clusterctl import onboarding_runtime
+    origin = dict(body_ref='codex:fixture:one', embodiment_id='embodiment:fixture',
+        incarnation_id='incarnation:fixture')
+    # Admission and exact-origin validation are exercised with the real
+    # authority below. Here vary only OS identity, including a cloned image.
+    monkeypatch.setattr(onboarding_runtime, 'admitted_body_snapshot',
+        lambda *args: dict(**origin, observed_at_ms=100, state='running'))
+    values = {'/etc/machine-id': b'a' * 32 + b'\n',
+        '/proc/sys/kernel/random/boot_id': b'10000000-0000-0000-0000-000000000001\n'}
+    monkeypatch.setattr(onboarding_runtime, 'Path',
+        lambda path: SimpleNamespace(open=lambda mode: io.BytesIO(values[path])))
+    def observe():
+        return onboarding_runtime.admitted_observation(origin,
+            SimpleNamespace(verify=lambda: None), None, {'kind': 'surface'})
+    first = observe()
+    assert observe()['surface_ref'] == first['surface_ref']
+    values['/proc/sys/kernel/random/boot_id'] = b'10000000-0000-0000-0000-000000000002\n'
+    cloned = observe()
+    assert cloned['surface_ref'] != first['surface_ref']
+    values['/etc/machine-id'] = b'b' * 32 + b'\n'
+    assert observe()['surface_ref'] not in {first['surface_ref'], cloned['surface_ref']}
+    assert all(value.strip().decode() not in json.dumps(observe()) for value in values.values())
+    values['/etc/machine-id'] = b'a' * 32 + b'\nprivate excess data'
+    with pytest.raises(OnboardingError, match='surface_unavailable'):
+        observe()
+
+
 def test_qualified_offline_child_uses_selected_code_and_preserves_identity(tmp_path, monkeypatch):
     """Opt-in installed artifact qualification; no production binding is read."""
     artifact_path = os.environ.get('CLUSTER_QUALIFIED_ADMISSION_ARTIFACT')
@@ -166,6 +196,33 @@ def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(
                     with pytest.raises(OnboardingError,match='origin_rejected'):
                         admitted.snapshot({**request,'body_ref':'foreign'})
                     assert admitted.snapshot(request)['state'] == 'running'
+                    # Use the real admitted parent across the same framed,
+                    # bounded private socket protocol; no model is started.
+                    import socket
+                    import threading
+                    from clusterctl.onboarding_runtime import connected_body_reader, receive, send
+                    left, right = socket.socketpair()
+                    with left, right:
+                        left.settimeout(5)
+                        right.settimeout(5)
+                        def observe_surface():
+                            query = receive(right)
+                            send(right, dict(ok=True, result=admitted.snapshot(query)))
+                        worker = threading.Thread(target=observe_surface)
+                        worker.start()
+                        try:
+                            surface = connected_body_reader(left).surface(**request)
+                        finally:
+                            worker.join(5)
+                        assert not worker.is_alive()
+                    assert surface['domain'] == 'native-linux-os'
+                    assert surface['body_ref'] == origin['body_ref']
+                    assert surface['observed_at_ms'] == request['evaluated_at_ms']
+                    assert surface['surface_ref'].startswith('dm:surface:v1:')
+                    assert surface['state'] == 'running'
+                    assert Path('/etc/machine-id').read_text().strip() not in json.dumps(surface)
+                    with pytest.raises(OnboardingError, match='observation_rejected'):
+                        admitted.snapshot({**request, 'kind': 'other'})
                 finally:
                     admitted.close()
                 assert owned.current() is None
@@ -182,6 +239,9 @@ def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(
                     revoked.release()
                 unavailable = observer.scope_me()[1]
                 assert unavailable['ok'] is False
+                with pytest.raises(OnboardingError):
+                    admitted.snapshot({**request, 'kind': 'surface',
+                        'evaluated_at_ms': time.time_ns() // 1_000_000})
                 admitted.process.wait(timeout=8)
                 assert admitted.process.returncode != 0
             finally:

@@ -50,6 +50,9 @@ def test_native_body_observation_rejects_expired_admission_and_registry_drift(tm
         request = dict(origin, evaluated_at_ms=time.time_ns() // 1_000_000)
         snapshot = observer.snapshot(request)
         assert snapshot['state'] == 'running' and snapshot['resource_fences'] == []
+        surface = observer.snapshot(dict(request, kind='surface'))
+        assert surface['domain'] == 'native-linux-os' and surface['state'] == 'running'
+        assert surface['body_ref'] == origin['body_ref']
         with pytest.raises(OnboardingError, match='origin_rejected'):
             observer.snapshot(dict(request, incarnation_id='incarnation:substituted'))
         with pytest.raises(OnboardingError, match='time_rejected'):
@@ -57,10 +60,14 @@ def test_native_body_observation_rejects_expired_admission_and_registry_drift(tm
         current.clear()
         with pytest.raises(OnboardingError, match='admission_not_current'):
             observer.snapshot(request)
+        with pytest.raises(OnboardingError, match='admission_not_current'):
+            observer.snapshot(dict(request, kind='surface'))
         current['admitted'] = True
         registry.rollback_start(origin['embodiment_id'], incarnation_id=origin['incarnation_id'])
         with pytest.raises(OnboardingError, match='origin_rejected'):
             observer.snapshot(request)
+        with pytest.raises(OnboardingError, match='origin_rejected'):
+            observer.snapshot(dict(request, kind='surface'))
     finally:
         parent.close()
         child.close()

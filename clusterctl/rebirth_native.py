@@ -209,8 +209,8 @@ class NativeBodyObserver:
             raise OnboardingError('onboarding_runtime_origin_rejected')
 
     def snapshot(self, request):
-        from .onboarding_runtime import admitted_body_snapshot
-        return admitted_body_snapshot(self.origin, self, self.supervisor, request)
+        from .onboarding_runtime import admitted_observation
+        return admitted_observation(self.origin, self, self.supervisor, request)
 
     def _serve(self):
         from .onboarding_runtime import receive, send

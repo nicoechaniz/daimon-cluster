@@ -15,6 +15,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import socket
 import socketserver
 import stat
@@ -47,6 +48,7 @@ FENCE_RECOVERY_CHALLENGE_TTL_MS = 30_000
 MAX_MESSAGE_BYTES = 1024 * 1024
 DEFAULT_LEASE_TTL_S = 15
 INVENTORY_SCHEMA = "dm.cluster.admission-inventory/v1"
+SURFACE_INVENTORY_SCHEMA = "dm.cluster.admission-surfaces/v1"
 ADMISSION_RESOURCE_PREFIX = "embodiment-admission:sha256:"
 
 
@@ -68,6 +70,15 @@ def _canonical(value: Mapping[str, Any]) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _surface_declaration(value: Any) -> dict[str, str]:
+    if (not isinstance(value, dict) or set(value) != {"domain", "surface_ref"}
+            or value["domain"] != "native-linux-os"
+            or not isinstance(value["surface_ref"], str)
+            or re.fullmatch(r"dm:surface:v1:[0-9a-f]{64}", value["surface_ref"]) is None):
+        raise AdmissionError("admission surface declaration is invalid")
+    return dict(value)
 
 
 def _validate_release_recovery(
@@ -262,6 +273,13 @@ class AdmissionAuthority:
         self._store = ProductionFenceStore(state_dir, **arguments)
         self._recovery_challenges: dict[str, dict[str, Any]] = {}
         self._recovery_challenges_lock = threading.Lock()
+        # Volatile declarations, not another ledger: at most one bounded record
+        # per selected resource (256 total), evicted on later census requests.
+        # A declaration is usable only while its exact launch session owns the
+        # current database lease; renewal does not change that OS instance.
+        self._surfaces: dict[str, tuple[str, dict[str, Any]]] = {}
+        self._surfaces_lock = threading.Lock()
+
 
     @property
     def authority_key_id(self) -> str:
@@ -505,19 +523,37 @@ class AdmissionAuthority:
                 raise AdmissionError("admission enrollment is missing")
             return self._store.admit_holder(enrollment)
         session_id = self._verify_session(request)
-        if action == "inventory":
+        if action in {"inventory", "surface-inventory"}:
             binding = self._binding(request)
             resource = admission_resource_ref(binding["being_ref"], binding["embodiment_id"])
-            result = self._store.current_bindings(ADMISSION_RESOURCE_PREFIX,
-                requester=dict(resource_ref=resource, holder_key_id=binding["holder_key_id"],
-                               renewer=f"admission-session:{session_id}"))
-            for row in result["items"]:
-                if row["resource_ref"] != admission_resource_ref(row["being_ref"], row["embodiment_id"]):
-                    raise AdmissionError("inventory admission coordinate mismatch")
-            result.update(schema=INVENTORY_SCHEMA, authority_key_id=self.authority_key_id)
-            if len(_canonical(result)) > MAX_MESSAGE_BYTES // 2:
-                raise AdmissionError("admission inventory is oversized")
-            return result
+            surface = (_surface_declaration(request.get("surface"))
+                       if action == "surface-inventory" else None)
+            with self._surfaces_lock:
+                result = self._store.current_bindings(ADMISSION_RESOURCE_PREFIX,
+                    requester=dict(resource_ref=resource, holder_key_id=binding["holder_key_id"],
+                                   renewer=f"admission-session:{session_id}"),
+                    include_renewer=surface is not None)
+                if surface is not None:
+                    # Reinsert to keep a bounded least-recently-reported order.
+                    self._surfaces.pop(resource, None)
+                    self._surfaces[resource] = (f"admission-session:{session_id}", {
+                        **surface, "reported_at_ms": result["observed_at_ms"],
+                        "evidence": "admitted-launch-report"})
+                    while len(self._surfaces) > 256:
+                        self._surfaces.pop(next(iter(self._surfaces)))
+                for row in result["items"]:
+                    if row["resource_ref"] != admission_resource_ref(row["being_ref"], row["embodiment_id"]):
+                        raise AdmissionError("inventory admission coordinate mismatch")
+                    if surface is not None:
+                        launch = row.pop("renewer")
+                        cached = self._surfaces.get(row["resource_ref"])
+                        row["surface"] = (dict(cached[1]) if cached is not None
+                                          and cached[0] == launch else None)
+                result.update(schema=SURFACE_INVENTORY_SCHEMA if surface is not None else INVENTORY_SCHEMA,
+                              authority_key_id=self.authority_key_id)
+                if len(_canonical(result)) > MAX_MESSAGE_BYTES // 2:
+                    raise AdmissionError("admission inventory is oversized")
+                return result
         if action == "fence-recovery-challenge":
             binding = self._binding(request)
             return self._issue_recovery_challenge(
@@ -992,10 +1028,18 @@ class AdmissionClient:
 
     def inventory(self) -> dict[str, Any]:
         """Read this authority's current admissions, never a Tribe/process census."""
-        result = self._call("inventory", **self._coordinates())
+        return self._inventory_result(self._call("inventory", **self._coordinates()))
+
+    def surface_inventory(self, surface: dict[str, str]) -> dict[str, Any]:
+        """Report this launch's OS surface and read current session-bound reports."""
+        value = _surface_declaration(surface)
+        return self._inventory_result(self._call("surface-inventory", **self._coordinates(),
+                                                surface=value), surfaces=True)
+
+    def _inventory_result(self, result: Any, *, surfaces: bool = False) -> dict[str, Any]:
         fields = {"schema", "authority_key_id", "observed_at_ms", "items", "truncated", "scanned"}
         if (not isinstance(result, dict) or set(result) != fields
-                or result["schema"] != INVENTORY_SCHEMA
+                or result["schema"] != (SURFACE_INVENTORY_SCHEMA if surfaces else INVENTORY_SCHEMA)
                 or result["authority_key_id"] != self.authority_key_id
                 or type(result["observed_at_ms"]) is not int or result["observed_at_ms"] < 0
                 or type(result["truncated"]) is not bool
@@ -1007,7 +1051,8 @@ class AdmissionClient:
                        "credential_id", "manifest_hash", "resource_ref", "proof_ref"}
         resources = []
         for row in result["items"]:
-            if (not isinstance(row, dict) or set(row) != text_fields | {"fencing_token", "lease_expires_at_ms"}
+            extra = {"surface"} if surfaces else set()
+            if (not isinstance(row, dict) or set(row) != text_fields | {"fencing_token", "lease_expires_at_ms"} | extra
                     or any(not isinstance(row[field], str) or not 1 <= len(row[field]) <= 1024
                            for field in text_fields)
                     or type(row["fencing_token"]) is not int or row["fencing_token"] < 0
@@ -1015,6 +1060,18 @@ class AdmissionClient:
                     or row["lease_expires_at_ms"] <= result["observed_at_ms"]
                     or row["resource_ref"] != admission_resource_ref(row["being_ref"], row["embodiment_id"])):
                 raise AdmissionUnavailable("admission inventory member is invalid")
+            if surfaces and row["surface"] is not None:
+                observed = row["surface"]
+                if (not isinstance(observed, dict)
+                        or set(observed) != {"domain", "surface_ref", "reported_at_ms", "evidence"}
+                        or observed["evidence"] != "admitted-launch-report"
+                        or type(observed["reported_at_ms"]) is not int
+                        or not 0 <= observed["reported_at_ms"] <= result["observed_at_ms"]):
+                    raise AdmissionUnavailable("admission inventory surface is invalid")
+                try:
+                    _surface_declaration({key: observed[key] for key in ("domain", "surface_ref")})
+                except AdmissionError as error:
+                    raise AdmissionUnavailable("admission inventory surface is invalid") from error
             resources.append(row["resource_ref"])
         if resources != sorted(set(resources)):
             raise AdmissionUnavailable("admission inventory order is invalid")

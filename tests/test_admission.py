@@ -1116,3 +1116,83 @@ def test_inventory_caller_and_members_share_the_same_snapshot(
     current = successor.inventory()
     assert len(current['items']) == 1
     assert current['items'][0]['fencing_token'] == 2
+
+
+def test_surface_census_reports_only_the_current_launch_without_private_coordinates(
+    authority_fixture: dict[str, Any], tmp_path: Path,
+) -> None:
+    f = authority_fixture
+    clients = []
+    holders = []
+    coordinates = []
+    receipts = []
+    a = {'domain': 'native-linux-os', 'surface_ref': 'dm:surface:v1:' + 'a' * 64}
+    b = {**a, 'surface_ref': 'dm:surface:v1:' + 'b' * 64}
+    for name in ('one', 'two', 'vm'):
+        c = _coordinates(name, being_ref='dm:being:' + name)
+        h = _key(tmp_path / (name + '.pem'), name)
+        client = _client(f['socket'], h, f['authority'], c)
+        _enroll(client, f['registrar'], h, c, f['clock'].value)
+        receipts.append(client.acquire(ttl_s=100))
+        clients.append(client)
+        holders.append(h)
+        coordinates.append(c)
+    first = clients[0].surface_inventory(a)
+    assert sum(row['surface'] is not None for row in first['items']) == 1
+    clients[1].surface_inventory(a)
+    clients[2].surface_inventory(b)
+    census = clients[0].surface_inventory(a)
+    by_body = {row['body_ref']: row for row in census['items']}
+    assert by_body[coordinates[0]['body_ref']]['surface']['surface_ref'] == a['surface_ref']
+    assert by_body[coordinates[1]['body_ref']]['surface']['surface_ref'] == a['surface_ref']
+    assert by_body[coordinates[2]['body_ref']]['surface']['surface_ref'] == b['surface_ref']
+    assert all('renewer' not in row and 'session_id' not in row for row in census['items'])
+    for client, receipt in zip(clients, receipts):
+        current = client.current()
+        assert current is not None and current['proof_ref'] == receipt['proof_ref']
+        assert 'surface' not in client.inventory()['items'][0]
+    # A replacement at the same immutable identity cannot inherit old OS data.
+    clients[1].release()
+    successor = _client(f['socket'], holders[1], f['authority'], coordinates[1])
+    successor.acquire(ttl_s=100)
+    replaced = clients[0].surface_inventory(a)
+    assert next(row['surface'] for row in replaced['items']
+                if row['body_ref'] == coordinates[1]['body_ref']) is None
+    with pytest.raises(AdmissionConflict, match='current admitted session'):
+        clients[1].surface_inventory(a)
+    successor.surface_inventory(b)
+    successor.renew(ttl_s=100)
+    assert next(row['surface'] for row in clients[0].surface_inventory(a)['items']
+                if row['body_ref'] == coordinates[1]['body_ref'])['surface_ref'] == b['surface_ref']
+    # Authority restart loses volatile declarations, never invents known surfaces.
+    f['server'].authority = AdmissionAuthority(f['state'], signer=f['authority'],
+        holder_registrars={f['registrar'].key_id: f['registrar'].public_key}, clock=f['clock'])
+    assert sum(row['surface'] is not None for row in clients[0].surface_inventory(a)['items']) == 1
+    cache = f['server'].authority._surfaces
+    # Expired historical launch reports may remain until bounded eviction.
+    # Populate that valid volatile-cache state without enrolling256 bodies.
+    cache.clear()
+    for number in range(256):
+        cache[f'retired:{number}'] = ('admission-session:old', {
+            **a, 'reported_at_ms': f['clock'].value, 'evidence': 'admitted-launch-report'})
+    clients[0].surface_inventory(a)
+    assert len(cache) == 256 and 'retired:0' not in cache
+    assert admission_resource_ref(clients[0].being_ref, clients[0].embodiment_id) in cache
+
+
+def test_surface_census_rejects_invalid_reports_before_cache_or_lease_change(
+    authority_fixture: dict[str, Any], tmp_path: Path,
+) -> None:
+    f = authority_fixture
+    c = _coordinates('surface')
+    h = _key(tmp_path / 'surface.pem', 'surface')
+    client = _client(f['socket'], h, f['authority'], c)
+    _enroll(client, f['registrar'], h, c, f['clock'].value)
+    receipt = client.acquire(ttl_s=100)
+    for malformed in ({}, {'domain': 'geography', 'surface_ref': 'somewhere'},
+                      {'domain': 'native-linux-os', 'surface_ref': 'dm:surface:v1:' + 'a' * 64, 'path': '/private'}):
+        with pytest.raises(AdmissionError, match='surface declaration'):
+            client._call('surface-inventory', **client._coordinates(), surface=malformed)
+    assert not f['server'].authority._surfaces
+    current = client.current()
+    assert current is not None and current['proof_ref'] == receipt['proof_ref']

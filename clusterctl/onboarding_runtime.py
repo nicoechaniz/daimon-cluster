@@ -27,7 +27,9 @@ from .onboarding_admission import ReceivingHolder
 from .owner_process import ProcessPresence
 from .onboarding_views import STARTUP_TIMEOUT_S
 
-MAX_FRAME = 4096
+# The optional admitted inventory is bounded by the authority to512KiB. Keep
+# its wrapper within one existing framed channel; no alternate listener/key.
+MAX_FRAME = 1024 * 1024
 # Real receiving histories can take longer than five seconds to authenticate.
 # Readiness still requires the actual native READY pipe under current admission.
 READY_TIMEOUT_S = STARTUP_TIMEOUT_S
@@ -151,6 +153,11 @@ class ConnectedBodyReader:
             embodiment_id=embodiment_id, incarnation_id=incarnation_id,
             evaluated_at_ms=evaluated_at_ms))
 
+    def inventory(self, body_ref, embodiment_id, incarnation_id, evaluated_at_ms):
+        return self._read(dict(kind='inventory', body_ref=body_ref,
+            embodiment_id=embodiment_id, incarnation_id=incarnation_id,
+            evaluated_at_ms=evaluated_at_ms))
+
 
 def connected_body_reader(connection: socket.socket):
     """Preserve the body callback and optionally expose admitted surface reads."""
@@ -160,10 +167,15 @@ def connected_body_reader(connection: socket.socket):
 def admitted_observation(origin, presence, supervisor, request: dict) -> dict:
     if 'kind' not in request:
         return admitted_body_snapshot(origin, presence, supervisor, request)
-    if request.get('kind') != 'surface':
+    if request.get('kind') not in ('surface', 'inventory'):
         raise OnboardingError('onboarding_runtime_observation_rejected')
     base = {key: value for key, value in request.items() if key != 'kind'}
     body = admitted_body_snapshot(origin, presence, supervisor, base)
+    if request['kind'] == 'inventory':
+        inventory = supervisor.inventory()
+        presence.verify()
+        return dict(schema='dm.cluster-inventory-snapshot/v1', body=body,
+                    inventory=inventory)
     # This realm is the native OS instance, not its physical hypervisor,
     # network, signed label, Tribe or geographic position. The root-managed
     # machine identity stays local; only a purpose-separated digest leaves it.

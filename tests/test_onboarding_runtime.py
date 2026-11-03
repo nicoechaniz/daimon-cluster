@@ -23,6 +23,28 @@ from tests.test_admission import _key
 from tests.test_onboarding_target import receiving
 
 
+def test_parent_channel_keeps_large_inventory_bounded_without_an_alternate_transport():
+    import socket
+    import threading
+    from clusterctl.onboarding_runtime import MAX_FRAME, receive, send
+    from clusterctl.onboarding import OnboardingError
+    result = {'inventory': 'x' * 8192}
+    left, right = socket.socketpair()
+    with left, right:
+        left.settimeout(2)
+        right.settimeout(2)
+        worker = threading.Thread(target=send, args=(right, result))
+        worker.start()
+        assert receive(left) == result
+        worker.join(2)
+        assert not worker.is_alive()
+        with pytest.raises(OnboardingError, match='frame_rejected'):
+            send(right, {'inventory': 'x' * MAX_FRAME})
+        right.sendall((MAX_FRAME + 1).to_bytes(4, 'big'))
+        with pytest.raises(OnboardingError, match='frame_rejected'):
+            receive(left)
+
+
 def test_surface_distinguishes_os_instances_without_exporting_machine_or_boot_identity(monkeypatch):
     import io
     from types import SimpleNamespace
@@ -206,12 +228,15 @@ def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(
                         left.settimeout(5)
                         right.settimeout(5)
                         def observe_surface():
-                            query = receive(right)
-                            send(right, dict(ok=True, result=admitted.snapshot(query)))
+                            for _ in range(2):
+                                query = receive(right)
+                                send(right, dict(ok=True, result=admitted.snapshot(query)))
                         worker = threading.Thread(target=observe_surface)
                         worker.start()
                         try:
-                            surface = connected_body_reader(left).surface(**request)
+                            reader = connected_body_reader(left)
+                            surface = reader.surface(**request)
+                            inventory = reader.inventory(**request)
                         finally:
                             worker.join(5)
                         assert not worker.is_alive()
@@ -221,6 +246,12 @@ def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(
                     assert surface['surface_ref'].startswith('dm:surface:v1:')
                     assert surface['state'] == 'running'
                     assert Path('/etc/machine-id').read_text().strip() not in json.dumps(surface)
+                    assert inventory['schema'] == 'dm.cluster-inventory-snapshot/v1'
+                    assert inventory['body'] == admitted.snapshot(request)
+                    assert inventory['inventory']['truncated'] is False
+                    assert len(inventory['inventory']['items']) == 1
+                    assert inventory['inventory']['items'][0]['being_ref'] == owned.being_ref
+                    assert inventory['inventory']['items'][0]['embodiment_id'] == origin['embodiment_id']
                     with pytest.raises(OnboardingError, match='observation_rejected'):
                         admitted.snapshot({**request, 'kind': 'other'})
                 finally:
@@ -241,6 +272,9 @@ def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(
                 assert unavailable['ok'] is False
                 with pytest.raises(OnboardingError):
                     admitted.snapshot({**request, 'kind': 'surface',
+                        'evaluated_at_ms': time.time_ns() // 1_000_000})
+                with pytest.raises(OnboardingError):
+                    admitted.snapshot({**request, 'kind': 'inventory',
                         'evaluated_at_ms': time.time_ns() // 1_000_000})
                 admitted.process.wait(timeout=8)
                 assert admitted.process.returncode != 0

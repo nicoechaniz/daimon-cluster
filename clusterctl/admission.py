@@ -46,6 +46,8 @@ FENCE_RECOVERY_PROOF_SCHEMA = "dm.cluster.fence-recovery-proof/v1"
 FENCE_RECOVERY_CHALLENGE_TTL_MS = 30_000
 MAX_MESSAGE_BYTES = 1024 * 1024
 DEFAULT_LEASE_TTL_S = 15
+INVENTORY_SCHEMA = "dm.cluster.admission-inventory/v1"
+ADMISSION_RESOURCE_PREFIX = "embodiment-admission:sha256:"
 
 
 class AdmissionError(RuntimeError):
@@ -219,7 +221,7 @@ def admission_resource_ref(being_ref: str, embodiment_id: str) -> str:
     encoded = json.dumps(
         [being_ref, embodiment_id], ensure_ascii=False, separators=(",", ":")
     ).encode("utf-8")
-    return "embodiment-admission:sha256:" + hashlib.sha256(encoded).hexdigest()
+    return ADMISSION_RESOURCE_PREFIX + hashlib.sha256(encoded).hexdigest()
 
 
 def _lease_expiry(evidence: Mapping[str, Any]) -> int:
@@ -503,6 +505,21 @@ class AdmissionAuthority:
                 raise AdmissionError("admission enrollment is missing")
             return self._store.admit_holder(enrollment)
         session_id = self._verify_session(request)
+        if action == "inventory":
+            binding = self._binding(request)
+            resource = admission_resource_ref(binding["being_ref"], binding["embodiment_id"])
+            current = self._store.verify_current(resource)
+            if (current is None or current.get("holder_key_id") != binding["holder_key_id"]
+                    or current.get("renewer") != f"admission-session:{session_id}"):
+                raise AdmissionConflict("inventory requires the current admitted session")
+            result = self._store.current_bindings(ADMISSION_RESOURCE_PREFIX)
+            for row in result["items"]:
+                if row["resource_ref"] != admission_resource_ref(row["being_ref"], row["embodiment_id"]):
+                    raise AdmissionError("inventory admission coordinate mismatch")
+            result.update(schema=INVENTORY_SCHEMA, authority_key_id=self.authority_key_id)
+            if len(_canonical(result)) > MAX_MESSAGE_BYTES // 2:
+                raise AdmissionError("admission inventory is oversized")
+            return result
         if action == "fence-recovery-challenge":
             binding = self._binding(request)
             return self._issue_recovery_challenge(
@@ -973,6 +990,36 @@ class AdmissionClient:
         result = self._call("enroll", enrollment=enrollment)
         if not isinstance(result, dict) or result.get("admitted") is not True:
             raise AdmissionUnavailable("admission enrollment response is invalid")
+        return result
+
+    def inventory(self) -> dict[str, Any]:
+        """Read this authority's current admissions, never a Tribe/process census."""
+        result = self._call("inventory", **self._coordinates())
+        fields = {"schema", "authority_key_id", "observed_at_ms", "items", "truncated", "scanned"}
+        if (not isinstance(result, dict) or set(result) != fields
+                or result["schema"] != INVENTORY_SCHEMA
+                or result["authority_key_id"] != self.authority_key_id
+                or type(result["observed_at_ms"]) is not int or result["observed_at_ms"] < 0
+                or type(result["truncated"]) is not bool
+                or type(result["scanned"]) is not int or not 0 <= result["scanned"] <= 256
+                or not isinstance(result["items"], list)
+                or len(result["items"]) > result["scanned"]):
+            raise AdmissionUnavailable("admission inventory response is invalid")
+        text_fields = {"being_ref", "body_ref", "embodiment_id", "incarnation_id",
+                       "credential_id", "manifest_hash", "resource_ref", "proof_ref"}
+        resources = []
+        for row in result["items"]:
+            if (not isinstance(row, dict) or set(row) != text_fields | {"fencing_token", "lease_expires_at_ms"}
+                    or any(not isinstance(row[field], str) or not 1 <= len(row[field]) <= 1024
+                           for field in text_fields)
+                    or type(row["fencing_token"]) is not int or row["fencing_token"] < 0
+                    or type(row["lease_expires_at_ms"]) is not int
+                    or row["lease_expires_at_ms"] <= result["observed_at_ms"]
+                    or row["resource_ref"] != admission_resource_ref(row["being_ref"], row["embodiment_id"])):
+                raise AdmissionUnavailable("admission inventory member is invalid")
+            resources.append(row["resource_ref"])
+        if resources != sorted(set(resources)):
+            raise AdmissionUnavailable("admission inventory order is invalid")
         return result
 
     def _position(self) -> dict[str, Any]:

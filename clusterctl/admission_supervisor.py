@@ -179,6 +179,11 @@ class AdmissionSupervisor:
             return None
         return current
 
+    def inventory(self) -> dict[str, Any]:
+        """Explicit bounded discovery using the existing admitted launch session."""
+        with self._client_lock:
+            return self.client.inventory()
+
     def _run(self) -> None:
         try:
             while self.process.poll() is None:

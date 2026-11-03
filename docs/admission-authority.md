@@ -90,7 +90,10 @@ holder binding and actual launch-session proof. Enrollment alone, a copied
 holder credential, an expired lease or a different launch session cannot read
 the inventory. No new key, enrollment, worker or attention mechanism is needed.
 
-One read-only SQLite snapshot verifies current admission positions and their
+The caller's exact current holder/session and every returned member are checked
+inside the same read-only SQLite snapshot. A release or replacement before that
+snapshot cannot authorize the retired session through an earlier successful
+read. That snapshot verifies current admission positions and their
 holder bindings. Released, revoked and expired positions are excluded; an
 inconsistent signed position refuses the read instead of silently omitting a
 member. Each item exposes only the being/body/embodiment/incarnation,

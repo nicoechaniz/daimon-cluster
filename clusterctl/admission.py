@@ -508,11 +508,9 @@ class AdmissionAuthority:
         if action == "inventory":
             binding = self._binding(request)
             resource = admission_resource_ref(binding["being_ref"], binding["embodiment_id"])
-            current = self._store.verify_current(resource)
-            if (current is None or current.get("holder_key_id") != binding["holder_key_id"]
-                    or current.get("renewer") != f"admission-session:{session_id}"):
-                raise AdmissionConflict("inventory requires the current admitted session")
-            result = self._store.current_bindings(ADMISSION_RESOURCE_PREFIX)
+            result = self._store.current_bindings(ADMISSION_RESOURCE_PREFIX,
+                requester=dict(resource_ref=resource, holder_key_id=binding["holder_key_id"],
+                               renewer=f"admission-session:{session_id}"))
             for row in result["items"]:
                 if row["resource_ref"] != admission_resource_ref(row["being_ref"], row["embodiment_id"]):
                     raise AdmissionError("inventory admission coordinate mismatch")

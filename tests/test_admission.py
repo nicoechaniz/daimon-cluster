@@ -1089,3 +1089,28 @@ def test_inventory_client_rejects_expired_duplicate_or_private_members(
         monkeypatch.setattr(client, '_call', lambda *_args, **_kwargs: malformed)
         with pytest.raises(AdmissionUnavailable, match='inventory'):
             client.inventory()
+
+
+def test_inventory_caller_and_members_share_the_same_snapshot(
+    authority_fixture: dict[str, Any], tmp_path: Path, monkeypatch,
+) -> None:
+    fixture = authority_fixture
+    coordinates = _coordinates('replaced')
+    holder = _key(tmp_path / 'replaced.pem', 'replaced')
+    original = _client(fixture['socket'], holder, fixture['authority'], coordinates)
+    _enroll(original, fixture['registrar'], holder, coordinates, fixture['clock'].value)
+    original.acquire(ttl_s=100)
+    successor = _client(fixture['socket'], holder, fixture['authority'], coordinates)
+    store = fixture['server'].authority._store
+    snapshot = store.current_bindings
+    def replace_before_snapshot(*args, **kwargs):
+        original.release()
+        successor.acquire(ttl_s=100)
+        return snapshot(*args, **kwargs)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(store, 'current_bindings', replace_before_snapshot)
+        with pytest.raises(AdmissionConflict, match='current admitted session'):
+            original.inventory()
+    current = successor.inventory()
+    assert len(current['items']) == 1
+    assert current['items'][0]['fencing_token'] == 2

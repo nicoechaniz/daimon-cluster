@@ -81,6 +81,55 @@ tokens, and a physical trial needs a purpose-built shared authority with
 independent failure handling. A state-directory-local database is not a global
 authority and must not be presented as one.
 
+## Current admitted-body inventory
+
+An already-running holder can explicitly call `AdmissionClient.inventory()`.
+The existing authenticated transport returns `dm.cluster.admission-inventory/v1`
+inside its normal authority-signed response. The request uses the existing
+holder binding and actual launch-session proof. Enrollment alone, a copied
+holder credential, an expired lease or a different launch session cannot read
+the inventory. No new key, enrollment, worker or attention mechanism is needed.
+
+The caller's exact current holder/session and every returned member are checked
+inside the same read-only SQLite snapshot. A release or replacement before that
+snapshot cannot authorize the retired session through an earlier successful
+read. That snapshot verifies current admission positions and their
+holder bindings. Released, revoked and expired positions are excluded; an
+inconsistent signed position refuses the read instead of silently omitting a
+member. Each item exposes only the being/body/embodiment/incarnation,
+credential/manifest references, admission resource, fence token, proof reference
+and expiry. Session identifiers, holder custody, resource contents, endpoints and
+ordinary writable-resource positions are not disclosed. The read renews no
+lease and changes no position, token or history.
+
+The inventory scans at most256 current admission positions and returns at
+most256 items; each signed evidence record is bounded to64KiB and the serialized
+result to512KiB. `truncated=true` explicitly means the scan/item bound excluded
+positions; expired positions can consume that scan bound. Do not interpret a
+truncated view as a complete roster. The client validates closed fields, exact
+admission resource coordinates, ordering, uniqueness and expiry at the reported
+evaluation time. The existing authority request/response signature and deadline
+checks still apply.
+
+The existing inherited native observation channel also supports an explicit
+`inventory` callback alongside the original body and optional surface reads.
+It binds the request to the exact local body/time, verifies the current parent
+admission and presence, and uses the supervisor's serialized existing session
+for the authority read. H8 and relocated native parents share this implementation.
+The wrapper is `dm.cluster-inventory-snapshot/v1` with separate `body` and
+`inventory` evidence. Framing remains bounded to1MiB, large enough for the
+512KiB authority result. An older authority refuses this optional read; ordinary
+body/surface observation remains unchanged. No background refresh or alternate
+transport is installed.
+
+This supplies Cluster membership/admission evidence for Matrix domain discovery.
+It does not assert that a process answered, infer Tribe membership, resolve an
+OS surface or a geographical distance, or authorize input/model work. Matrix
+must combine it with actual origin-bound surface observations for `/here` and
+preserve unavailable/partial results. The source/API addition is not evidence
+that the running authority or a receiving Matrix scope has adopted it; retain
+actual selections and native results in the current delivery checkpoint.
+
 ## Required client configuration
 
 Each installed target needs an owner-only `admission-client.json` containing:

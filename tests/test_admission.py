@@ -30,6 +30,7 @@ from clusterctl.admission import (
 )
 from clusterctl.fences import Ed25519Signer
 from clusterctl.production_fences import (
+    FenceError,
     create_holder_authorization,
     create_holder_enrollment,
 )
@@ -506,10 +507,16 @@ def test_authenticated_tcp_endpoint_is_network_capable_and_pinned(
         assert client.acquire(ttl_s=10)["resource_ref"] == admission_resource_ref(
             coordinates["being_ref"], coordinates["embodiment_id"]
         )
+        inventory = client.inventory()
+        assert inventory["truncated"] is False
+        assert inventory["items"][0]["being_ref"] == coordinates["being_ref"]
+        assert len(inventory["items"]) == 1
         wrong_authority = _key(tmp_path / "wrong.pem", "wrong-authority")
         impostor_view = _client(endpoint, holder, wrong_authority, coordinates)
         with pytest.raises(AdmissionUnavailable, match="binding|signature"):
             impostor_view.current()
+        with pytest.raises(AdmissionUnavailable, match="binding|signature"):
+            impostor_view.inventory()
     finally:
         server.shutdown()
         server.server_close()
@@ -960,3 +967,152 @@ def test_release_recovery_requires_fresh_holder_proof_and_rejects_replay(
             resource_ref=resource_ref,
             recovery_proof=altered_proof,
         )
+
+
+def test_inventory_is_current_cross_being_read_without_lease_mutation(
+    authority_fixture: dict[str, Any], tmp_path: Path,
+) -> None:
+    fixture = authority_fixture
+    clients = []
+    receipts = []
+    for label in ('source', 'eko', 'oliva'):
+        coordinates = _coordinates(label, being_ref='dm:being:' + label)
+        holder = _key(tmp_path / (label + '.pem'), label)
+        client = _client(fixture['socket'], holder, fixture['authority'], coordinates)
+        _enroll(client, fixture['registrar'], holder, coordinates, fixture['clock'].value)
+        clients.append(client)
+        if label == 'source':
+            with pytest.raises(AdmissionConflict, match='current admitted session'):
+                client.inventory()
+        receipts.append(client.acquire(ttl_s=100 if label == 'source' else 10))
+    inventory = clients[0].inventory()
+    assert inventory['truncated'] is False
+    assert inventory['scanned'] == 3
+    assert {row['being_ref'] for row in inventory['items']} == {
+        'dm:being:source', 'dm:being:eko', 'dm:being:oliva',
+    }
+    for row in inventory['items']:
+        assert set(row) == {'being_ref', 'body_ref', 'embodiment_id', 'incarnation_id',
+                           'credential_id', 'manifest_hash', 'resource_ref',
+                           'fencing_token', 'proof_ref', 'lease_expires_at_ms'}
+    for client, receipt in zip(clients, receipts):
+        current = client.current()
+        assert current is not None
+        assert current['fencing_token'] == receipt['fencing_token']
+        assert current['proof_ref'] == receipt['proof_ref']
+        assert current['lease_expires_at_ms'] == receipt['lease_expires_at_ms']
+    clients[1].release()
+    assert len(clients[0].inventory()['items']) == 2
+    fixture['clock'].value += 11000
+    assert [row['being_ref'] for row in clients[0].inventory()['items']] == ['dm:being:source']
+    fixture['clock'].value += 100000
+    with pytest.raises(AdmissionConflict, match='current admitted session'):
+        clients[0].inventory()
+
+
+def test_inventory_requires_the_actual_holder_launch_session(
+    authority_fixture: dict[str, Any], tmp_path: Path,
+) -> None:
+    fixture = authority_fixture
+    coordinates = _coordinates('owner')
+    holder = _key(tmp_path / 'owner.pem', 'owner')
+    client = _client(fixture['socket'], holder, fixture['authority'], coordinates)
+    _enroll(client, fixture['registrar'], holder, coordinates, fixture['clock'].value)
+    client.acquire(ttl_s=100)
+    copied_holder = _client(fixture['socket'], holder, fixture['authority'], coordinates)
+    with pytest.raises(AdmissionConflict, match='current admitted session'):
+        copied_holder.inventory()
+    assert len(client.inventory()['items']) == 1
+
+
+def test_inventory_store_bound_and_non_admission_resource_exclusion(
+    authority_fixture: dict[str, Any], tmp_path: Path,
+) -> None:
+    fixture = authority_fixture
+    for label in ('one', 'two'):
+        coordinates = _coordinates(label)
+        holder = _key(tmp_path / (label + '.pem'), label)
+        client = _client(fixture['socket'], holder, fixture['authority'], coordinates)
+        _enroll(client, fixture['registrar'], holder, coordinates, fixture['clock'].value)
+        client.acquire(ttl_s=100)
+    resource = _fence_client(fixture['socket'], holder, fixture['authority'], coordinates)
+    prepared = resource.prepare('volume:private-data', operation='acquire', ttl_s=30)
+    resource.commit(prepared)
+    assert len(client.inventory()['items']) == 2
+    store = fixture['server'].authority._store
+    partial = store.current_bindings('embodiment-admission:sha256:', limit=1)
+    assert len(partial['items']) == 1 and partial['truncated'] is True
+    assert store.current_bindings('other-resource:')['items'] == []
+    for invalid in (0, 257, True):
+        with pytest.raises(FenceError, match='bounds'):
+            store.current_bindings('embodiment-admission:sha256:', limit=invalid)
+
+
+def test_inventory_refuses_corrupt_signed_position_instead_of_omitting_member(
+    authority_fixture: dict[str, Any], tmp_path: Path,
+) -> None:
+    import sqlite3
+    from contextlib import closing
+    fixture = authority_fixture
+    coordinates = _coordinates('tamper')
+    holder = _key(tmp_path / 'tamper.pem', 'tamper')
+    client = _client(fixture['socket'], holder, fixture['authority'], coordinates)
+    _enroll(client, fixture['registrar'], holder, coordinates, fixture['clock'].value)
+    receipt = client.acquire(ttl_s=100)
+    store = fixture['server'].authority._store
+    with closing(sqlite3.connect(store._database_path)) as db:
+        with db:
+            db.execute('UPDATE positions SET last_proof=? WHERE resource_ref=?',
+                       ('invalid-proof', receipt['resource_ref']))
+    with pytest.raises(AdmissionError, match='inconsistent'):
+        client.inventory()
+
+
+def test_inventory_client_rejects_expired_duplicate_or_private_members(
+    authority_fixture: dict[str, Any], tmp_path: Path, monkeypatch,
+) -> None:
+    fixture = authority_fixture
+    coordinates = _coordinates('checked')
+    holder = _key(tmp_path / 'checked.pem', 'checked')
+    client = _client(fixture['socket'], holder, fixture['authority'], coordinates)
+    _enroll(client, fixture['registrar'], holder, coordinates, fixture['clock'].value)
+    client.acquire(ttl_s=100)
+    result = client.inventory()
+    duplicate = copy.deepcopy(result)
+    duplicate['items'] *= 2
+    duplicate['scanned'] = 2
+    expired = copy.deepcopy(result)
+    expired['items'][0]['lease_expires_at_ms'] = result['observed_at_ms']
+    private = copy.deepcopy(result)
+    private['items'][0]['session_id'] = 'must-never-be-exposed'
+    foreign = copy.deepcopy(result)
+    foreign['items'][0]['being_ref'] = 'dm:being:other'
+    for malformed in (duplicate, expired, private, foreign):
+        monkeypatch.setattr(client, '_call', lambda *_args, **_kwargs: malformed)
+        with pytest.raises(AdmissionUnavailable, match='inventory'):
+            client.inventory()
+
+
+def test_inventory_caller_and_members_share_the_same_snapshot(
+    authority_fixture: dict[str, Any], tmp_path: Path, monkeypatch,
+) -> None:
+    fixture = authority_fixture
+    coordinates = _coordinates('replaced')
+    holder = _key(tmp_path / 'replaced.pem', 'replaced')
+    original = _client(fixture['socket'], holder, fixture['authority'], coordinates)
+    _enroll(original, fixture['registrar'], holder, coordinates, fixture['clock'].value)
+    original.acquire(ttl_s=100)
+    successor = _client(fixture['socket'], holder, fixture['authority'], coordinates)
+    store = fixture['server'].authority._store
+    snapshot = store.current_bindings
+    def replace_before_snapshot(*args, **kwargs):
+        original.release()
+        successor.acquire(ttl_s=100)
+        return snapshot(*args, **kwargs)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(store, 'current_bindings', replace_before_snapshot)
+        with pytest.raises(AdmissionConflict, match='current admitted session'):
+            original.inventory()
+    current = successor.inventory()
+    assert len(current['items']) == 1
+    assert current['items'][0]['fencing_token'] == 2

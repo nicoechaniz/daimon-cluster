@@ -1453,6 +1453,81 @@ class ProductionFenceStore:
             "holder_embodiment_id": current["holder_embodiment_id"],
         }
 
+    def current_bindings(self, resource_prefix: str, *, limit: int = 256,
+                         requester: Mapping[str, str] | None = None) -> dict[str, Any]:
+        """Bounded, read-only current-holder inventory from one database snapshot.
+
+        This reports admission/fence coordinates, not process liveness or social
+        membership. No holder custody, session or raw signed evidence is returned.
+        The scan bound remains explicit even when expired positions consume it.
+        """
+        if (not isinstance(resource_prefix, str) or not resource_prefix
+                or len(resource_prefix) > 128 or type(limit) is not int
+                or not 1 <= limit <= 256):
+            raise FenceError("invalid current-holder inventory bounds")
+        if requester is not None and (not isinstance(requester, Mapping)
+                or set(requester) != {'resource_ref', 'holder_key_id', 'renewer'}
+                or any(not isinstance(value, str) or not value for value in requester.values())):
+            raise FenceError("invalid inventory requester")
+        try:
+            connection = self._read_connection()
+            connection.execute("BEGIN")
+            caller = (None if requester is None
+                      else self._position(connection, requester['resource_ref']))
+            rows = connection.execute(
+                "SELECT * FROM positions WHERE resource_ref>=? AND resource_ref<? "
+                "AND current_json IS NOT NULL ORDER BY resource_ref LIMIT 257",
+                (resource_prefix, resource_prefix + "\uffff"),
+            )
+            # Establish the SQLite snapshot before evaluating its leases. A
+            # concurrently committed renewal must not look future-dated just
+            # because opening the read connection crossed a millisecond.
+            observed = self._clock_now()
+            if requester is not None:
+                if caller is None or caller['current_json'] is None:
+                    raise FenceConflict("inventory requires the current admitted session")
+                if any(len(caller[field].encode()) > 65536
+                       for field in ('current_json', 'last_evidence_json')):
+                    raise FenceError("current-holder inventory evidence is oversized")
+                admitted = self._verify_position(connection, caller)
+                if (self._is_expired(admitted, observed)
+                        or any(admitted.get(field) != requester[field]
+                               for field in ('holder_key_id', 'renewer'))):
+                    raise FenceConflict("inventory requires the current admitted session")
+            items: list[dict[str, Any]] = []
+            scanned = 0
+            truncated = False
+            for row in rows:
+                if scanned == 256:
+                    truncated = True
+                    break
+                scanned += 1
+                if any(len(row[field].encode()) > 65536
+                       for field in ("current_json", "last_evidence_json")):
+                    raise FenceError("current-holder inventory evidence is oversized")
+                current = self._verify_position(connection, row)
+                if self._is_expired(current, observed):
+                    continue
+                holder = connection.execute(
+                    "SELECT * FROM holder_keys WHERE key_id=?", (current["holder_key_id"],)
+                ).fetchone()
+                item = {field: holder[field] for field in (
+                    "being_ref", "body_ref", "embodiment_id", "incarnation_id",
+                    "credential_id", "manifest_hash",
+                )}
+                item.update(resource_ref=current["resource_ref"],
+                    fencing_token=current["epoch"], proof_ref=self.proof_ref(current),
+                    lease_expires_at_ms=current["created_ms"] + current["ttl_s"] * 1000)
+                if len(items) == limit:
+                    truncated = True
+                    break
+                items.append(item)
+            return {"observed_at_ms": observed, "items": items,
+                    "truncated": truncated, "scanned": scanned}
+        finally:
+            if "connection" in locals():
+                connection.close()
+
     def list_all(self) -> list[dict[str, Any]]:
         try:
             connection = self._read_connection()

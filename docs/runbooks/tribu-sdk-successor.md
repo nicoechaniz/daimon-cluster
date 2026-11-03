@@ -73,6 +73,14 @@ the closed `reason`, integer `child_returncode` and `requested_stop` after owned
 cleanup. It distinguishes the supervisor's hard lease deadline, failed/deadline
 renewal and unavailable body observer from a child exit or requested shutdown.
 Existing native-child refusal frames remain the evidence for child exceptions.
+On renewal failure the supervisor additionally retains one
+`cluster-admission-renewal-failure/v1` frame: closed refusal category, transport
+cause category, bounded numeric errno and elapsed milliseconds. Unknown authority
+messages/class names remain `other`; no raw exception, endpoint, holder, session
+or credential is logged. The parent emits this frame only after child cleanup.
+Read it before attributing an intermittent failure to transport, signature,
+fencing or lease expiry. It does not retry renewal, extend admission or repair an
+uncertain lease. One retained failure per process uses existing journal retention.
 An absent or unclassified outcome leaves the cause unknown; receiving metadata
 or a previous signed delivery alone does not prove continuing process health.
 These bounded local lifecycle diagnostics contain no arguments, exception values

@@ -98,6 +98,31 @@ def prepare(journey, tmp_path, *, semantic_receipts=False):
     return source, sources[1][1], fingerprint, response, original
 
 
+def test_source_load_connects_the_parent_body_reader_to_actual_scope(journey, tmp_path):
+    import json
+    import time
+    from daimon_matrix.canonical import canonical_bytes
+    source, *_ = prepare(journey, tmp_path)
+    bundle_path = source.root / 'runtime.json'
+    bundle = json.loads(bundle_path.read_text())
+    bundle['scopes'] = {'body_capabilities': [], 'relationships_filename': None}
+    bundle_path.write_bytes(canonical_bytes(bundle))
+    calls = []
+    def reader(body_ref, embodiment_id, incarnation_id, evaluated_at_ms):
+        calls.append((body_ref, embodiment_id, incarnation_id))
+        return dict(schema='dm.cluster-body-snapshot/v1', body_ref=body_ref,
+            embodiment_id=embodiment_id, incarnation_id=incarnation_id,
+            observed_at_ms=evaluated_at_ms, state='running', resource_fences=[])
+    source.body_reader = reader
+    hosted = source._load(signed=False)
+    identity = hosted.service.scopes.identity()
+    assert identity['body']['state'] == 'running'
+    assert identity['body_capabilities'] == []
+    origin = bundle['local_origin']
+    assert calls == [(origin['body_ref'], origin['embodiment_id'], origin['incarnation_id'])]
+    assert identity['evaluated_at_ms'] <= time.time_ns() // 1_000_000
+
+
 def assert_original(source, original):
     current = source.tool.read_public(source.visibility)
     for field in ('disclosure', 'secrets', 'telegram_qualification'):

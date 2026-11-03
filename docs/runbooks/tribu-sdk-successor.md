@@ -20,6 +20,18 @@ fencing and actual PID/SDK readiness checks still govern startup. The original
 start/audit remains intact; no re-enrollment, key, model or native-session change
 is implied. Published code and prepared SDKs are not receiving acceptance.
 
+The native H8 parent supplies `/me.body` through the same bounded inherited
+observation protocol as admitted receiving guests. Each read verifies the exact
+origin against the current local registry and the existing supervisor's current
+admission session/deadline. A stale incarnation, unavailable admission or invalid
+time refuses the observation. No new holder, key, enrollment, Source config or
+start-journal schema is needed. The observation socket closes with its child and
+its thread is joined at shutdown. Deploy the qualified H8 operator AND Source
+child successor: changing either half alone does not establish receiving use.
+Accept with an actual current `scope.me` read returning the admitted body under
+the original identity. Empty resource fences and body capabilities remain empty
+until separately adopted/advertised; this observation grants no resource write.
+
 Keep the H8 operator closure separate from the minimal onboarding/body code
 bundle. The existing systemd wrapper imports H8 from its qualified operator
 selection; the child profile selects its own code/SDK. Copying H8 modules into

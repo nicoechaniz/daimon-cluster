@@ -27,7 +27,8 @@ from .onboarding_views import serve_views
 
 class Source:
     def __init__(self, settings: dict, *, code: Path | None = None, code_uid: int = 0,
-                 code_digest: str | None = None, qualified_startup: dict | None = None):
+                 code_digest: str | None = None, qualified_startup: dict | None = None,
+                 body_reader: Callable | None = None):
         if (not isinstance(settings, dict) or set(settings) - {'same_being_binding'} != {'schema', 'runtime_root', 'password_file',
                 'native_visibility', 'outputs', 'applications'} or settings['schema'] != 'cluster-onboarding-source/v1'
                 or any(not isinstance(settings[key], str) or not Path(settings[key]).is_absolute()
@@ -49,6 +50,7 @@ class Source:
         self.code_uid = code_uid
         self.code_digest = code_digest
         self.qualified_startup = qualified_startup
+        self.body_reader = body_reader
         self._tool = None
         self._writer_state = threading.local()
 
@@ -97,6 +99,8 @@ class Source:
             options['projection_observer'] = operator.observe_effect
         if self.qualified_startup is not None:
             options['qualified_startup'] = self.qualified_startup
+        if self.body_reader is not None:
+            options['body_reader'] = self.body_reader
         return runtime.load_runtime(self.root, 'runtime.json', self._reader, clock=clock, **options)
 
     @contextmanager
@@ -564,6 +568,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--ready-fd', type=int)
+    parser.add_argument('--body-observer-fd', type=int)
     parser.add_argument('--code-digest')
     parser.add_argument('--code-owner', type=int, default=0)
     parser.add_argument('--observe', action='store_true')
@@ -593,6 +598,15 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     probe_scope = ExitStack()
     try:
+        body_reader = None
+        if args.body_observer_fd is not None:
+            if args.body_observer_fd < 3 or args.ready_fd is None:
+                raise OnboardingError('native_body_observer_parent_required')
+            import socket
+            from .onboarding_runtime import connected_body_reader
+            connection = probe_scope.enter_context(socket.socket(fileno=args.body_observer_fd))
+            connection.settimeout(5)
+            body_reader = connected_body_reader(connection)
         from . import onboarding_code_successor, onboarding_sdk
         code = Path(__file__).resolve().parents[1]
         if args.code_owner < 0:
@@ -664,7 +678,7 @@ def main(argv=None) -> int:
             raise OnboardingError('receiving_source_configuration_changed')
         accept_deadline()
         source = Source(settings, code=code, code_uid=args.code_owner, code_digest=args.code_digest,
-                        qualified_startup=startup)
+                        qualified_startup=startup, body_reader=body_reader)
         if preparing:
             if args.prepare_admission_lifecycle == Path('-'):
                 raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1)

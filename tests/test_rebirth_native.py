@@ -6,9 +6,11 @@ import copy
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -28,6 +30,40 @@ def private(path, value):
     path.write_text(json.dumps(value,sort_keys=True,separators=(',',':')))
     path.chmod(0o600)
     return path
+
+
+def test_native_body_observation_rejects_expired_admission_and_registry_drift(tmp_path):
+    from clusterctl.embodiments import Registry
+    from clusterctl.onboarding import OnboardingError
+    origin = {'body_ref': 'codex:fixture:source',
+        'embodiment_id': 'embodiment:11111111-1111-4111-8111-111111111111',
+        'incarnation_id': 'incarnation:22222222-2222-4222-8222-222222222222'}
+    registry = Registry(tmp_path)
+    registry.register(body_ref=origin['body_ref'], embodiment_id=origin['embodiment_id'])
+    registry.start(origin['embodiment_id'], incarnation_id=origin['incarnation_id'], started_at_ms=1)
+    current = {'admitted': True}
+    supervisor = SimpleNamespace(verify_current=lambda **kwargs: current if current else None)
+    parent, child = socket.socketpair()
+    try:
+        observer = rebirth_native.NativeBodyObserver(tmp_path, origin, parent,
+            SimpleNamespace(pid=123), supervisor)
+        request = dict(origin, evaluated_at_ms=time.time_ns() // 1_000_000)
+        snapshot = observer.snapshot(request)
+        assert snapshot['state'] == 'running' and snapshot['resource_fences'] == []
+        with pytest.raises(OnboardingError, match='origin_rejected'):
+            observer.snapshot(dict(request, incarnation_id='incarnation:substituted'))
+        with pytest.raises(OnboardingError, match='time_rejected'):
+            observer.snapshot(dict(request, evaluated_at_ms=True))
+        current.clear()
+        with pytest.raises(OnboardingError, match='admission_not_current'):
+            observer.snapshot(request)
+        current['admitted'] = True
+        registry.rollback_start(origin['embodiment_id'], incarnation_id=origin['incarnation_id'])
+        with pytest.raises(OnboardingError, match='origin_rejected'):
+            observer.snapshot(request)
+    finally:
+        parent.close()
+        child.close()
 
 
 def test_native_profile_binds_h7_root_password_and_qualified_selection(tmp_path, monkeypatch):
@@ -184,9 +220,15 @@ def test_native_branch_uses_shared_admission_and_dies_on_lease_loss(native_state
     base._ensure_production_fences(state, installed['embodiment_id'], lease_ttl_s=6)
     monkeypatch.setattr(rebirth_native, 'prepare', lambda *a: {'fixture': 'native'})
     spawned = []
-    def child(selection, ready_fd):
+    origin = rebirth_host._installed_identity(state, installed['embodiment_id'])['origin']
+    def child(selection, ready_fd, *, body_observer_fd):
         spawned.append(True)
-        return [sys.executable, '-c', ('import os,signal,time;'
+        read_body = ('import socket;from clusterctl.onboarding_runtime import connected_body_reader;'
+            f'read=connected_body_reader(socket.socket(fileno={body_observer_fd}));'
+            f'origin={origin!r};'
+            'snapshot=read(origin["body_ref"],origin["embodiment_id"],origin["incarnation_id"],time.time_ns()//1000000);'
+            'assert snapshot["state"]=="running" and snapshot["resource_fences"]==[];')
+        return [sys.executable, '-c', ('import os,signal,time;'+read_body+
                 'signal.signal(signal.SIGTERM,lambda *a:exit(0));'
                 f'os.write({ready_fd},b"READY\\n");os.close({ready_fd});time.sleep(60)')]
     monkeypatch.setattr(rebirth_native, 'command', child)
@@ -208,6 +250,8 @@ def test_native_branch_uses_shared_admission_and_dies_on_lease_loss(native_state
         process.communicate(timeout=8)
         rebirth_host.wait_rebirth_host_shutdown(process, timeout_s=5)
         assert process.returncode == -signal.SIGKILL
+        assert not process._matrix_body_observer.thread.is_alive()
+        assert process._matrix_body_observer.connection.fileno() == -1
     finally:
         if process.poll() is None:
             base._stop_rebirth_host(process)
@@ -227,7 +271,7 @@ def test_native_sdk_successor_keeps_original_start_and_reuses_admission(native_s
     monkeypatch.setattr(rebirth_native, 'prepare', lambda *a: dict(selected))
     spawned = []
 
-    def child(selection, ready_fd):
+    def child(selection, ready_fd, *, body_observer_fd):
         spawned.append(selection['sdk_digest'])
         return [sys.executable, '-c', ('import os,signal,time;'
                 'signal.signal(signal.SIGTERM,lambda *a:exit(0));'

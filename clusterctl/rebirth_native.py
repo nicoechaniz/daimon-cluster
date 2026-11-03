@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import hmac
 import os
+import select
+import socket
+import threading
 from pathlib import Path
 
 from . import onboarding_code_successor, onboarding_release, onboarding_sdk
@@ -122,13 +125,15 @@ def prepare(state: Path, identity: dict, profile: Path, password_fd: int) -> dic
         raise RebirthHostError('rebirth_host_native_profile_rejected') from error
 
 
-def command(selection: dict, ready_fd: int) -> list[str]:
+def command(selection: dict, ready_fd: int, *, body_observer_fd: int | None = None) -> list[str]:
     """Use the qualified SDK bootstrap and a kernel-enforced parent lifetime."""
     venv, code = Path(selection['venv']), Path(selection['code'])
     result = onboarding_sdk.runtime_command(venv, venv.parent / 'runtime-imports', code,
         'clusterctl.onboarding_source', ['--config', selection['config'], '--code-digest',
         selection['code_digest'], '--code-owner', '0', '--ready-fd', str(ready_fd),
         '--expected-config-sha256', selection['config_sha256']])
+    if body_observer_fd is not None:
+        result.extend(['--body-observer-fd', str(body_observer_fd)])
     # No preexec_fn: admission supervision has live threads. Set PDEATHSIG in
     # the fresh interpreter before any runtime import, checking both race edges.
     guard = ('import os,signal,ctypes,hashlib,json\n'
@@ -140,6 +145,56 @@ def command(selection: dict, ready_fd: int) -> list[str]:
              f'if hashlib.sha256(json.dumps(config,sort_keys=True,separators=(",", ":")).encode()).hexdigest()!={selection["config_sha256"]!r}: raise SystemExit(1)\n')
     result[5] = guard + result[5]
     return result
+
+
+class NativeBodyObserver:
+    """Serve the H8 child's body reads from its EXISTING registry and admission.
+
+    The inherited socket carries bounded public observations, not credentials.
+    Its lifetime is the supervised process; no listener or persistent attention
+    is installed. Resource-fence adoption and body capabilities stay separate.
+    """
+    def __init__(self, state: Path, origin: dict, connection: socket.socket,
+                 process, supervisor):
+        from .embodiments import Registry
+        self.registry = Registry(state)
+        self.origin = origin
+        self.connection = connection
+        self.connection.settimeout(5)
+        self.process = process
+        self.supervisor = supervisor
+        self.thread = threading.Thread(target=self._serve,
+            name=f'native-body-observer-{process.pid}', daemon=True)
+
+    def verify(self):
+        from .onboarding import OnboardingError
+        row = self.registry.status(self.origin['embodiment_id'])
+        if (row.get('status') != 'running' or row.get('body_ref') != self.origin['body_ref']
+                or row.get('current_incarnation_id') != self.origin['incarnation_id']):
+            raise OnboardingError('onboarding_runtime_origin_rejected')
+
+    def snapshot(self, request):
+        from .onboarding_runtime import admitted_body_snapshot
+        return admitted_body_snapshot(self.origin, self, self.supervisor, request)
+
+    def _serve(self):
+        from .onboarding_runtime import receive, send
+        try:
+            while self.process.poll() is None:
+                ready, _, _ = select.select([self.connection], [], [], .25)
+                if not ready:
+                    continue
+                request = receive(self.connection)
+                try:
+                    response = dict(ok=True, result=self.snapshot(request))
+                except Exception:
+                    response = dict(ok=False)
+                send(self.connection, response)
+        except (OSError, ValueError, RuntimeError):
+            if not self.supervisor.shutdown_requested and self.process.poll() is None:
+                self.supervisor.force_stop('body-observer-unavailable')
+        finally:
+            self.connection.close()
 
 
 def verify_ready(state: Path, identity: dict, process_pid: int, selection: dict) -> dict:

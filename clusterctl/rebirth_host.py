@@ -7,6 +7,7 @@ import json
 import os
 import selectors
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -265,11 +266,16 @@ def wait_rebirth_host_shutdown(
     if process.poll() is None:
         raise RebirthHostError("rebirth_host_shutdown_runtime_running")
     supervisor = _supervisor_for(process)
-    if supervisor is None:
-        return
-    if not supervisor._finished.wait(timeout_s):
-        raise RebirthHostError("rebirth_host_shutdown_timeout")
-    supervisor.thread.join()
+    deadline = time.monotonic() + timeout_s
+    if supervisor is not None:
+        if not supervisor._finished.wait(timeout_s):
+            raise RebirthHostError("rebirth_host_shutdown_timeout")
+        supervisor.thread.join()
+    observer = getattr(process, '_matrix_body_observer', None)
+    if observer is not None:
+        observer.thread.join(max(0, deadline - time.monotonic()))
+        if observer.thread.is_alive():
+            raise RebirthHostError('rebirth_host_shutdown_timeout')
 
 
 def _owner_file(path: Path) -> Path:
@@ -645,24 +651,40 @@ def launch_rebirth_host(
                 command.append("--production-fence-verifier")
             if visibility_installation is not None:
                 command.extend(["--visibility-installation", str(visibility_installation)])
+            body_parent = body_child = None
             if native_selection is not None:
-                command = rebirth_native.command(native_selection, ready_write)
+                body_parent, body_child = socket.socketpair()
+                try:
+                    command = rebirth_native.command(native_selection, ready_write,
+                        body_observer_fd=body_child.fileno())
+                except BaseException:
+                    body_parent.close()
+                    body_child.close()
+                    os.close(ready_read)
+                    os.close(ready_write)
+                    compensate_registry_start('rebirth_host_spawn_failed')
+                    raise
             process: subprocess.Popen[bytes] | None = None
             try:
                 process = subprocess.Popen(
                     command,
-                    pass_fds=((ready_write,) if native_selection is not None else (password_descriptor, ready_write)),
+                    pass_fds=((ready_write, body_child.fileno()) if body_child is not None
+                        else (password_descriptor, ready_write)),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
             except BaseException:
                 os.close(ready_read)
+                if body_parent is not None:
+                    body_parent.close()
                 compensate_registry_start("rebirth_host_spawn_failed")
                 raise
             finally:
                 os.close(password_descriptor)
                 os.close(ready_write)
+                if body_child is not None:
+                    body_child.close()
             assert process is not None
             supervisor = _AdmissionSupervisor(
                 process,
@@ -673,6 +695,10 @@ def launch_rebirth_host(
             )
             supervisor.start()
             try:
+                if body_parent is not None:
+                    observer = rebirth_native.NativeBodyObserver(state, origin, body_parent, process, supervisor)
+                    setattr(process, '_matrix_body_observer', observer)
+                    observer.thread.start()
                 _wait_ready(ready_read, process, timeout_s)
                 ready_admission = supervisor.verify_current(
                     minimum_remaining_s=admission_lease_ttl_s / 4
@@ -735,6 +761,8 @@ def launch_rebirth_host(
                 return process, {**result, "admission": supervisor.receipt}
             except BaseException:
                 _terminate(process)
+                if body_parent is not None:
+                    body_parent.close()
                 # Do not return an error while the non-daemon admission
                 # supervisor still owns a final release exchange or the
                 # child's pipe descriptors.  This also keeps failed startup

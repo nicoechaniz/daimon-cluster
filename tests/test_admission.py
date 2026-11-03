@@ -1052,6 +1052,7 @@ def test_inventory_refuses_corrupt_signed_position_instead_of_omitting_member(
     authority_fixture: dict[str, Any], tmp_path: Path,
 ) -> None:
     import sqlite3
+    from contextlib import closing
     fixture = authority_fixture
     coordinates = _coordinates('tamper')
     holder = _key(tmp_path / 'tamper.pem', 'tamper')
@@ -1059,9 +1060,10 @@ def test_inventory_refuses_corrupt_signed_position_instead_of_omitting_member(
     _enroll(client, fixture['registrar'], holder, coordinates, fixture['clock'].value)
     receipt = client.acquire(ttl_s=100)
     store = fixture['server'].authority._store
-    with sqlite3.connect(store._database_path) as db:
-        db.execute('UPDATE positions SET last_proof=? WHERE resource_ref=?',
-                   ('invalid-proof', receipt['resource_ref']))
+    with closing(sqlite3.connect(store._database_path)) as db:
+        with db:
+            db.execute('UPDATE positions SET last_proof=? WHERE resource_ref=?',
+                       ('invalid-proof', receipt['resource_ref']))
     with pytest.raises(AdmissionError, match='inconsistent'):
         client.inventory()
 

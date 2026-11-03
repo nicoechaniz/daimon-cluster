@@ -20,6 +20,23 @@ fencing and actual PID/SDK readiness checks still govern startup. The original
 start/audit remains intact; no re-enrollment, key, model or native-session change
 is implied. Published code and prepared SDKs are not receiving acceptance.
 
+For an explicitly inspected terminal native startup that never reached a
+retained runtime observation, `--recover-native-start OPERATION_ID` permits a
+compatible software replacement of that exact `runtime-dispatching` attempt.
+First inspect the actual process/service and current selection; this flag is
+not an automatic retry or evidence that the old attempt had no effects. Source
+config, identity, manifest and SDK home must remain unchanged. The new record
+links the failed intent and completed ancestor without rewriting either; normal
+singleton admission still precedes every physical effect. Preserve all uncertain
+native effects and inputs without replay. Observed or different operations are
+refused. Keep the corrected operator selected after accepting this recovery;
+an older operator does not understand the new retained recovery reference.
+
+Qualify a mixed-generation child through its actual normal CLI path as well as
+imports. Updating a Source module can require its companion `onboarding_sdk`
+helper even with an unchanged Matrix wheel. An import-only probe cannot prove
+those runtime attribute calls exist; do not patch an immutable installed tree.
+
 The native H8 parent supplies `/me.body` through the same bounded inherited
 observation protocol as admitted receiving guests. Each read verifies the exact
 origin against the current local registry and the existing supervisor's current

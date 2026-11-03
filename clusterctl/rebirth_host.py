@@ -385,6 +385,7 @@ def launch_rebirth_host(
     admission_lease_ttl_s: int = DEFAULT_LEASE_TTL_S,
     visibility_installation: Path | None = None,
     native_source_profile: Path | None = None,
+    recover_native_start: str | None = None,
 ) -> tuple[subprocess.Popen[bytes], dict[str, Any]]:
     """Admit, start and authenticate one installed fresh embodiment."""
 
@@ -392,6 +393,7 @@ def launch_rebirth_host(
         password_descriptor < 0
         or timeout_s <= 0
         or timeout_s > 300
+        or (recover_native_start is not None and native_source_profile is None)
         or isinstance(admission_lease_ttl_s, bool)
         or not 3 <= admission_lease_ttl_s <= 300
     ):
@@ -483,7 +485,8 @@ def launch_rebirth_host(
             record = journal.latest_for_target(target)
             if native_selection is not None:
                 record = rebirth_native.start_record(
-                    journal, target, intent, actor=actor, embodiment_id=embodiment_id)
+                    journal, target, intent, actor=actor, embodiment_id=embodiment_id,
+                    recover_operation_id=recover_native_start)
             elif record is None:
                 record = journal.plan(
                     operation="rebirth-start",
@@ -747,7 +750,8 @@ def launch_rebirth_host(
                         },
                         idempotency_key=(
                             f"rebirth-start:{identity['activation_id']}:native:{record['operation_id']}"
-                            if 'native_start_predecessor' in record['intent'] else
+                            if ('native_start_predecessor' in record['intent']
+                                or 'native_start_recovery' in record['intent']) else
                             f"rebirth-start:{identity['activation_id']}"),
                         event_id=record["audit_event_id"],
                     )
@@ -800,6 +804,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ready-fd", type=int)
     parser.add_argument("--production-fence-verifier", action="store_true")
     parser.add_argument("--native-source-profile", type=Path)
+    parser.add_argument("--recover-native-start")
     args = parser.parse_args(argv)
     try:
         process, result = launch_rebirth_host(
@@ -808,6 +813,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.password_fd,
             production_fence_verifier=args.production_fence_verifier,
             native_source_profile=args.native_source_profile,
+            recover_native_start=args.recover_native_start,
         )
         if args.ready_fd is not None:
             os.write(args.ready_fd, b"READY\n")

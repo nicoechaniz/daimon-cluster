@@ -16,7 +16,8 @@ from . import onboarding_code_successor, onboarding_release, onboarding_sdk
 from .onboarding import digest
 
 
-def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_id: str) -> dict:
+def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_id: str,
+                 recover_operation_id: str | None = None) -> dict:
     """Retain a qualified SDK-only successor under the caller's start lock.
 
     Preparation already verifies the protected owner selection. Starting still
@@ -27,11 +28,23 @@ def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_i
     from .rebirth_host import RebirthHostError
 
     previous = journal.latest_for_target(target)
+    if previous is None and recover_operation_id is not None:
+        raise RebirthHostError('rebirth_host_journal_conflict')
     key = f"rebirth-start:{intent['activation_id']}"
     retained = dict(intent)
     if previous is not None:
         prior = dict(previous['intent'])
         anchor = prior.pop('native_start_predecessor', None)
+        recovery = prior.pop('native_start_recovery', None)
+        if recovery is not None:
+            failed = journal.get(recovery.get('operation_id')) if isinstance(recovery, dict) else None
+            if (not isinstance(recovery, dict) or set(recovery) != {'operation_id', 'intent_hash'}
+                    or failed is None or failed['target'] != target or failed['operation'] != 'rebirth-start'
+                    or failed['state'] != 'compensated' or failed.get('runtime_observation')
+                    or failed.get('logical_observation')
+                    or (failed.get('result') or {}).get('schema') != 'dm.cluster.native-unready-recovery/v1'
+                    or failed['intent_hash'] != recovery['intent_hash']):
+                raise RebirthHostError('rebirth_host_journal_conflict')
         if anchor is not None:
             if not isinstance(anchor, dict) or set(anchor) != {'operation_id', 'intent_hash'}:
                 raise RebirthHostError('rebirth_host_journal_conflict')
@@ -42,12 +55,21 @@ def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_i
                 raise RebirthHostError('rebirth_host_journal_conflict')
         if previous['operation'] != 'rebirth-start' or previous['state'] not in {
                 'planned', 'runtime-dispatching', 'runtime-applied',
-                'logical-committed', 'audited', 'completed'}:
+                'logical-committed', 'audited', 'completed', 'compensated'}:
+            raise RebirthHostError('rebirth_host_journal_conflict')
+        if recover_operation_id is not None and recover_operation_id not in {
+                previous['operation_id'], None if recovery is None else recovery['operation_id']}:
             raise RebirthHostError('rebirth_host_journal_conflict')
         if prior == intent:
             return previous
         before, after = prior.get('runtime_call'), intent.get('runtime_call')
-        if (previous['state'] != 'completed'
+        recovering = (recover_operation_id == previous['operation_id']
+            and (previous['state'] == 'runtime-dispatching' or (
+                previous['state'] == 'compensated'
+                and (previous.get('result') or {}).get('schema') == 'dm.cluster.native-unready-recovery/v1'
+                and previous['result'].get('replacement_intent_hash') == digest(intent)))
+            and not previous.get('runtime_observation') and not previous.get('logical_observation'))
+        if (previous['state'] != 'completed' and not recovering
                 or {k: v for k, v in prior.items() if k != 'runtime_call'}
                 != {k: v for k, v in intent.items() if k != 'runtime_call'}
                 or not isinstance(before, dict) or not isinstance(after, dict)
@@ -68,8 +90,21 @@ def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_i
                 raise RebirthHostError('rebirth_host_journal_conflict')
         if Path(old['venv']).parent.parent != Path(new['venv']).parent.parent:
             raise RebirthHostError('rebirth_host_journal_conflict')
-        retained['native_start_predecessor'] = {
-            'operation_id': previous['operation_id'], 'intent_hash': previous['intent_hash']}
+        if recovering:
+            if previous['state'] == 'runtime-dispatching':
+                journal.advance(previous['operation_id'], 'compensated',
+                    expected_runtime_observation=None, result={
+                        'schema': 'dm.cluster.native-unready-recovery/v1',
+                        'outcome': 'startup-attempt-superseded-before-ready',
+                        'replacement_intent_hash': digest(intent),
+                        'native_effects_reconciled': False})
+            if anchor is not None:
+                retained['native_start_predecessor'] = anchor
+            retained['native_start_recovery'] = {
+                'operation_id': previous['operation_id'], 'intent_hash': previous['intent_hash']}
+        else:
+            retained['native_start_predecessor'] = {
+                'operation_id': previous['operation_id'], 'intent_hash': previous['intent_hash']}
         key += ':native:' + digest(retained)
     return journal.plan(
         operation='rebirth-start', target=target, idempotency_key=key, intent=retained,

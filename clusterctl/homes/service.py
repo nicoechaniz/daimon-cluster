@@ -336,9 +336,12 @@ class Application:
                 return self.designs.recipe_native(owner,payload)
             return self.designs.save_native(home, owner, payload)
         if operation == "validate-audience":
+            # One authenticated request reads the current signed actor catalog
+            # once. Never retain this snapshot between publication requests.
+            actors = self.authority.actors()
             validate_audience(
                 payload,
-                known_actor=self.authority.actor,
+                known_actor=actors.get,
                 known_tribe=lambda ref: ref in self.authority.tribes(),
             )
             return {"status": "valid"}
@@ -361,12 +364,13 @@ class Application:
             with self.locks[home]:
                 revision = self.registry.revision(home)
                 state = self.backends[home].state()
+                actors = self.authority.actors()
                 return self.registry.register(
                     home=home,
                     owner=owner.ref,
                     state=state,
                     expected_revision=revision,
-                    known_actor=self.authority.actor,
+                    known_actor=actors.get,
                     known_tribe=lambda ref: ref in self.authority.tribes(),
                 )
         if operation == "targets":

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import importlib.util
 import json
 import os
 import re
@@ -17,6 +18,13 @@ from clusterctl.onboarding import OnboardingError, private_directory
 from clusterctl.onboarding_input import relative
 
 ROOT = Path(__file__).resolve().parents[1]
+BUILD_REFUSALS = frozenset({
+    'invalid_onboarding_sdk_revision', 'onboarding_sdk_directory_required',
+    'onboarding_sdk_destination_exists', 'private_onboarding_directory_required',
+    'pinned_matrix_code_unavailable', 'invalid_pinned_matrix_archive',
+    'pinned_matrix_wheel_build_refused', 'onboarding_sdk_builder_pip_unavailable',
+    'invalid_onboarding_sdk', 'onboarding_sdk_digest_mismatch',
+})
 
 
 def seal(output: Path, *, matrix_commit: str | None = None) -> dict:
@@ -51,7 +59,7 @@ def build(checkout: Path, output: Path, *, matrix_commit: str | None = None) -> 
         raise OnboardingError("onboarding_sdk_directory_required")
     if output.exists() or output.is_symlink():
         raise OnboardingError("onboarding_sdk_destination_exists")
-    private_directory(output.parent)
+    private_directory(output.parent, create=True)
     result = subprocess.run(["git", "-C", str(checkout), "archive", "--format=tar",
                              revision], capture_output=True, timeout=60, check=False)
     if result.returncode or len(result.stdout) > 64 * 1024**2:
@@ -93,11 +101,15 @@ def main() -> int:
     parser.add_argument('--matrix-commit', help='explicit exact qualified successor revision; default retains the historical pin')
     args = parser.parse_args()
     try:
+        if importlib.util.find_spec('pip') is None:
+            raise OnboardingError('onboarding_sdk_builder_pip_unavailable')
         value = build(args.matrix_checkout, args.output, matrix_commit=args.matrix_commit)
         print(json.dumps(dict(matrix_commit=value["matrix_commit"], wheel_count=len(value["wheels"]))))
         return 0
-    except Exception:
-        print(json.dumps({"error": "onboarding_sdk_build_refused"}))
+    except Exception as error:
+        code = str(error) if isinstance(error, OnboardingError) else None
+        print(json.dumps({"error": "onboarding_sdk_build_refused",
+            "code": code if code in BUILD_REFUSALS else 'unclassified'}))
         return 1
 
 

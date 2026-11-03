@@ -39,6 +39,48 @@ def test_sdk_builder_refuses_non_exact_revision_before_artifact_creation(tmp_pat
     assert not (tmp_path / 'sdk').exists()
 
 
+def test_sdk_builder_cli_missing_pip_refuses_before_creating_output(tmp_path, monkeypatch, capsys):
+    from tools import build_onboarding_sdk as builder
+    output = tmp_path / 'new-private-parent/sdk'
+    monkeypatch.setattr(sys, 'argv', ['builder', '--matrix-checkout', str(tmp_path), '--output', str(output)])
+    monkeypatch.setattr(builder.importlib.util, 'find_spec', lambda name: None)
+    assert builder.main() == 1
+    assert json.loads(capsys.readouterr().out) == dict(error='onboarding_sdk_build_refused',
+        code='onboarding_sdk_builder_pip_unavailable')
+    assert not output.parent.exists()
+
+
+def test_sdk_builder_cli_known_refusal_is_useful_and_unknown_error_is_private(tmp_path, monkeypatch, capsys):
+    from tools import build_onboarding_sdk as builder
+    monkeypatch.setattr(sys, 'argv', ['builder', '--matrix-checkout', str(tmp_path), '--output', str(tmp_path/'sdk')])
+    monkeypatch.setattr(builder.importlib.util, 'find_spec', lambda name: object())
+    for error, expected in [(OnboardingError('pinned_matrix_code_unavailable'), 'pinned_matrix_code_unavailable'),
+                            (RuntimeError('/private/path credential'), 'unclassified'),
+                            (OnboardingError('private_secret'), 'unclassified')]:
+        def refuse(*args, **kwargs):
+            raise error
+        monkeypatch.setattr(builder, 'build', refuse)
+        assert builder.main() == 1
+        raw = capsys.readouterr().out
+        assert json.loads(raw) == dict(error='onboarding_sdk_build_refused', code=expected)
+        assert '/private' not in raw and 'credential' not in raw and 'private_secret' not in raw
+
+
+def test_sdk_builder_creates_private_parent_and_retains_unsafe_existing_directory(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from tools import build_onboarding_sdk as builder
+    # Refuse at the real archive boundary. No wheel build or download occurs.
+    monkeypatch.setattr(builder.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout=b''))
+    parent = tmp_path / 'new/private'
+    with pytest.raises(OnboardingError, match='pinned_matrix_code_unavailable'):
+        builder.build(tmp_path, parent/'sdk', matrix_commit='a'*40)
+    assert parent.stat().st_mode & 0o777 == 0o700 and not (parent/'sdk').exists()
+    parent.chmod(0o755)
+    with pytest.raises(OnboardingError, match='private_onboarding_directory_required'):
+        builder.build(tmp_path, parent/'sdk', matrix_commit='a'*40)
+    assert parent.stat().st_mode & 0o777 == 0o755 and not (parent/'sdk').exists()
+
+
 def test_sdk_probes_share_original_nested_budget_and_release_it_on_failure(monkeypatch):
     from types import SimpleNamespace
     clock, waits = [1_000_000_000], []

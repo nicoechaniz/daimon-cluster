@@ -491,7 +491,7 @@ def test_tcp_authority_rebinds_after_server_close_but_rejects_live_listener(
 
     authority = authority_fixture["server"].authority
     server = AdmissionTCPServer(("127.0.0.1", 0), authority)
-    address = server.server_address
+    address = ("127.0.0.1", server.server_address[1])
     thread = serve_in_thread(server)
     try:
         # The server closes first, retaining a real TCP TIME_WAIT connection.

@@ -17,3 +17,16 @@ Qualify with `tests/test_home_live_review.py`, then actual authenticated browser
 readback on a fresh project URL. Preserve the previous immutable gateway release
 and activate through the existing service override; do not modify releases in
 place or restore old publication/state data during software rollback.
+
+## Publication authority latency
+
+Owner publication validates the current signed actor catalog once per authenticated
+request and reuses that request-local lookup for all selected recipients/resources.
+It never caches the catalog across requests; a recipient revoked before the next
+request must still be rejected. This avoids repeatedly replaying the same signed
+authority reconstruction until the native publisher times out.
+
+If owner sync times out, inspect the actual request/service outcome before retrying.
+The native publisher retains local immutable state on a lost sync, so retry the
+identical publication with reuse-identical after repairing the owning path. Do not
+create a new audience, restore a database, widen access or replay printer actions.

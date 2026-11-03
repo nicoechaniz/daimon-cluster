@@ -580,3 +580,37 @@ def test_browser_code_claim_returns_to_same_local_destination(tmp_path):
             assert '__Host-home=' in err.value.headers['Set-Cookie']
         finally:
             err.value.close()
+
+
+def test_owner_publication_uses_one_request_local_actor_catalog(tmp_path):
+    class CountedAuthority(Authority):
+        def __init__(self):
+            super().__init__()
+            self.reads = 0
+
+        def actors(self):
+            self.reads += 1
+            return dict(self.people)
+
+    authority = CountedAuthority()
+    entry = selected('f' * 32, 'individual', recipients=['owner-one', 'human-one', 'human-two'])
+
+    class Bytes:
+        def state(self):
+            return {'schema': 1, 'entries': [entry]}
+
+    home = {'owner_being_ref': 'owner-one', 'owner_revision': 'v1',
+            'owner_token_file': key(tmp_path, 'owner', 'credential')}
+    app = Application({'homes': {'one': home}}, authority,
+                      Sessions(tmp_path / 'state'), backends={'one': Bytes()})
+    audience = {k: entry[k] for k in ('visibility', 'recipients', 'tribes')}
+    app.owner('one', 'credential', 'validate-audience', audience)
+    assert authority.reads == 1
+    app.owner('one', 'credential', 'sync', {})
+    assert authority.reads == 2
+    # No cached grant survives a later request. Actual audience validation still
+    # rejects a recipient that disappeared after the preceding publication.
+    del authority.people['human-two']
+    with pytest.raises(ValueError):
+        app.owner('one', 'credential', 'sync', {})
+    assert authority.reads == 3

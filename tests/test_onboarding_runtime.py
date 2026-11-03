@@ -409,11 +409,65 @@ def test_parent_exit_diagnostic_is_closed_and_never_masks_cleanup(monkeypatch, c
     value = json.loads(raw)
     assert private not in raw
     assert value['reason'] == 'unclassified-runtime-exit' and value['child_returncode'] is None
+    onboarding_runtime.report_runtime_exit('admission-renew-failed', -9,
+        requested_stop=False, renewal_failure={'code': private})
+    raw = capsys.readouterr().err
+    assert private not in raw and len(raw.splitlines()) == 1
     class Closed:
         def write(self, *_args):
             raise OSError(private)
     monkeypatch.setattr(onboarding_runtime.sys, 'stderr', Closed())
     onboarding_runtime.report_runtime_exit('runtime-exited', 1, requested_stop=False)
+
+
+@pytest.mark.parametrize('transport', [True, False])
+def test_actual_supervisor_failure_retains_safe_cause_and_parent_reports_after_cleanup(
+        monkeypatch, capsys, transport):
+    from types import SimpleNamespace
+    from clusterctl import onboarding_runtime
+    from clusterctl.admission import AdmissionError
+    from clusterctl.admission_supervisor import AdmissionSupervisor
+    private = 'secret holder and /private/path'
+    released = []
+    class Client:
+        def renew(self, **kwargs):
+            if transport:
+                raise AdmissionError('admission authority is unavailable') from ConnectionRefusedError(111, private)
+            raise AdmissionError(private)
+        def release(self):
+            released.append(True)
+    owned = SimpleNamespace(process=None, supervisor=None)
+    holder = SimpleNamespace(configured_client=lambda _: Client(), ensure_enrolled=lambda *a, **k: None)
+    monkeypatch.setattr(onboarding_runtime, 'ReceivingHolder', lambda _: holder)
+    def start(**kwargs):
+        owned.process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Renewal is already due, with ample watchdog budget. No test sleep or
+        # authority/private state is required to exercise the real worker.
+        owned.supervisor = AdmissionSupervisor(owned.process, Client(), {}, 4,
+            lease_started_monotonic=time.monotonic() - 1.1)
+        owned.supervisor.start()
+    def close():
+        owned.supervisor.thread.join(5)
+        owned.supervisor.watchdog.join(5)
+        assert owned.process.poll() == -9
+        assert not owned.supervisor.thread.is_alive()
+        assert not owned.supervisor.watchdog.is_alive()
+    owned.start, owned.close = start, close
+    monkeypatch.setattr(onboarding_runtime, 'AdmittedDaemon', lambda *a: owned)
+    monkeypatch.setattr(onboarding_runtime.signal, 'signal', lambda *a: None)
+    assert onboarding_runtime.serve(None, {}) == 1
+    raw = capsys.readouterr().err
+    frames = [json.loads(line) for line in raw.splitlines()]
+    assert private not in raw and len(frames) == 2 and released == [True]
+    assert frames[0]['code'] == ('authority-unavailable' if transport else 'other-admission-refusal')
+    assert frames[0]['cause'] == ('connection-refused' if transport else 'none')
+    assert frames[0]['errno'] == (111 if transport else None)
+    assert type(frames[0]['elapsed_ms']) is int
+    assert frames[1]['reason'] == 'admission-renew-failed' and frames[1]['child_returncode'] == -9
+    first = owned.supervisor.renewal_failure
+    first['code'] = private
+    assert owned.supervisor.renewal_failure == frames[0]
 
 
 @pytest.mark.parametrize('change', [

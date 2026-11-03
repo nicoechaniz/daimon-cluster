@@ -16,6 +16,54 @@ from .admission import AdmissionClient, AdmissionError
 _SUPERVISORS: dict[int, AdmissionSupervisor] = {}
 _SUPERVISORS_LOCK = threading.Lock()
 
+_RENEWAL_CODES = {
+    'admission authority is unavailable': 'authority-unavailable',
+    'admission round-trip deadline expired': 'roundtrip-deadline',
+    'admission response is malformed': 'response-malformed',
+    'admission response binding mismatch': 'response-binding-mismatch',
+    'admission response signature is invalid': 'response-signature-invalid',
+    'admission session does not own the lease': 'session-not-owner',
+    'resource fence expected position is stale': 'fence-position-stale',
+    'cannot renew expired resource fence': 'lease-expired',
+}
+_RENEWAL_CAUSES = frozenset({
+    'none', 'timeout', 'connection-refused', 'connection-reset',
+    'connection-aborted', 'broken-pipe', 'os-error', 'other',
+})
+
+
+def renewal_failure_diagnostic(value: Any) -> dict[str, Any] | None:
+    """Accept only the closed, non-private failure frame for journal output."""
+    if (not isinstance(value, dict)
+            or set(value) != {'schema', 'code', 'cause', 'errno', 'elapsed_ms'}
+            or value['schema'] != 'cluster-admission-renewal-failure/v1'
+            or not isinstance(value['code'], str)
+            or value['code'] not in {*_RENEWAL_CODES.values(), 'other-admission-refusal'}
+            or not isinstance(value['cause'], str) or value['cause'] not in _RENEWAL_CAUSES
+            or (value['errno'] is not None and (type(value['errno']) is not int
+                or not 0 < value['errno'] <= 4095))
+            or type(value['elapsed_ms']) is not int or not 0 <= value['elapsed_ms'] <= 1_000_000):
+        return None
+    return dict(value)
+
+
+def _renewal_failure(error: AdmissionError, elapsed_s: float) -> dict[str, Any]:
+    """Bounded local evidence, never an authority-supplied exception message."""
+    cause = error.__cause__
+    kinds: dict[type[BaseException], str] = {
+        TimeoutError: 'timeout', ConnectionRefusedError: 'connection-refused',
+        ConnectionResetError: 'connection-reset', ConnectionAbortedError: 'connection-aborted',
+        BrokenPipeError: 'broken-pipe', OSError: 'os-error',
+    }
+    errno = getattr(cause, 'errno', None)
+    return {
+        'schema': 'cluster-admission-renewal-failure/v1',
+        'code': _RENEWAL_CODES.get(str(error), 'other-admission-refusal'),
+        'cause': 'none' if cause is None else kinds.get(type(cause), 'other'),
+        'errno': errno if type(errno) is int and 0 < errno <= 4095 else None,
+        'elapsed_ms': max(0, min(1_000_000, round(elapsed_s * 1000))),
+    }
+
 def _terminate_without_consuming_output(process: subprocess.Popen[bytes]) -> None:
     """Revoke execution immediately while leaving pipes to the owning caller."""
 
@@ -46,6 +94,7 @@ class AdmissionSupervisor:
         self._shutdown_requested = threading.Event()
         self._shutdown_signal_sent = threading.Event()
         self._termination_reason: str | None = None
+        self._renewal_failure: dict[str, Any] | None = None
         self.thread = threading.Thread(
             target=self._run,
             name=f"rebirth-admission-{process.pid}",
@@ -74,6 +123,11 @@ class AdmissionSupervisor:
     def termination_reason(self) -> str | None:
         with self._condition:
             return self._termination_reason
+
+    @property
+    def renewal_failure(self) -> dict[str, Any] | None:
+        with self._condition:
+            return None if self._renewal_failure is None else dict(self._renewal_failure)
 
     @property
     def shutdown_requested(self) -> bool:
@@ -162,7 +216,10 @@ class AdmissionSupervisor:
                     renew_started = time.monotonic()
                     with self._client_lock:
                         receipt = self.client.renew(ttl_s=self.ttl_s)
-                except AdmissionError:
+                except AdmissionError as error:
+                    with self._condition:
+                        self._renewal_failure = _renewal_failure(
+                            error, time.monotonic() - renew_started)
                     self.force_stop("admission-renew-failed")
                     return
                 with self._condition:

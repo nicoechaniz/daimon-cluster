@@ -69,11 +69,15 @@ def serve(target, profile: dict, *, receive_only=False, visibility_installation=
         finally:
             if started:
                 report_runtime_exit(owned.supervisor.termination_reason,
-                    owned.process.returncode, requested_stop=stopping.is_set())
+                    owned.process.returncode, requested_stop=stopping.is_set(),
+                    renewal_failure=owned.supervisor.renewal_failure)
 
 
-def report_runtime_exit(reason: str | None, returncode: int | None, *, requested_stop: bool) -> None:
+def report_runtime_exit(reason: str | None, returncode: int | None, *, requested_stop: bool,
+                        renewal_failure: dict | None = None) -> None:
     """Retain bounded supervisor outcomes without process arguments or exceptions."""
+    from .admission_supervisor import renewal_failure_diagnostic
+    renewal_failure = renewal_failure_diagnostic(renewal_failure)
     if reason not in {'lease-hard-deadline', 'admission-renew-failed',
             'admission-renew-deadline', 'body-observer-unavailable',
             'graceful-shutdown', 'runtime-exited'}:
@@ -83,6 +87,8 @@ def report_runtime_exit(reason: str | None, returncode: int | None, *, requested
     value = dict(schema='cluster-onboarding-runtime-exit/v1', stage='parent-supervision',
         reason=reason, child_returncode=returncode, requested_stop=requested_stop)
     try:
+        if renewal_failure is not None:
+            print(json.dumps(renewal_failure), file=sys.stderr, flush=True)
         print(json.dumps(value), file=sys.stderr, flush=True)
     except (OSError, ValueError):
         # A lost diagnostic stream must not change the already completed

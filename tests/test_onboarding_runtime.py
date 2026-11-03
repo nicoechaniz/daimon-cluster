@@ -370,6 +370,52 @@ def test_initial_parent_refuses_a_changed_profile_before_admission(monkeypatch):
             not_after_ms=time.time_ns() // 1_000_000 + 60000))
 
 
+@pytest.mark.parametrize('reason', ['lease-hard-deadline', 'admission-renew-failed',
+                                  'body-observer-unavailable', 'runtime-exited'])
+def test_parent_retains_supervision_outcome_after_actual_child_cleanup(monkeypatch, capsys, reason):
+    from types import SimpleNamespace
+    from clusterctl import onboarding_runtime
+    from clusterctl.admission_supervisor import AdmissionSupervisor
+    holder = SimpleNamespace(configured_client=lambda _: None,
+                             ensure_enrolled=lambda *args, **kwargs: None)
+    monkeypatch.setattr(onboarding_runtime, 'ReceivingHolder', lambda _: holder)
+    owned = SimpleNamespace(process=None, supervisor=None)
+    closed = []
+    def start(**kwargs):
+        owned.process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        owned.supervisor = AdmissionSupervisor(owned.process, None, {}, 15,
+            lease_started_monotonic=time.monotonic())
+        owned.supervisor.force_stop(reason)
+    def close():
+        assert owned.process.poll() == -9
+        closed.append(True)
+    owned.start = start
+    owned.close = close
+    monkeypatch.setattr(onboarding_runtime, 'AdmittedDaemon', lambda *args: owned)
+    monkeypatch.setattr(onboarding_runtime.signal, 'signal', lambda *args: None)
+    assert onboarding_runtime.serve(None, {}) == 1
+    assert closed == [True]
+    value = json.loads(capsys.readouterr().err)
+    assert value == dict(schema='cluster-onboarding-runtime-exit/v1', stage='parent-supervision',
+                         reason=reason, child_returncode=-9, requested_stop=False)
+
+
+def test_parent_exit_diagnostic_is_closed_and_never_masks_cleanup(monkeypatch, capsys):
+    from clusterctl import onboarding_runtime
+    private = 'private credential and /private/body/path'
+    onboarding_runtime.report_runtime_exit(private, True, requested_stop=False)
+    raw = capsys.readouterr().err
+    value = json.loads(raw)
+    assert private not in raw
+    assert value['reason'] == 'unclassified-runtime-exit' and value['child_returncode'] is None
+    class Closed:
+        def write(self, *_args):
+            raise OSError(private)
+    monkeypatch.setattr(onboarding_runtime.sys, 'stderr', Closed())
+    onboarding_runtime.report_runtime_exit('runtime-exited', 1, requested_stop=False)
+
+
 @pytest.mark.parametrize('change', [
     'disappeared', 'appeared', 'appeared_receive_only',
     'tribe_ref', 'directory', 'visibility', 'socket',

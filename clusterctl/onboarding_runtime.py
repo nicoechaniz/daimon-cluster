@@ -52,9 +52,11 @@ def serve(target, profile: dict, *, receive_only=False, visibility_installation=
         stopping.set()
     signal.signal(signal.SIGTERM,request_stop)
     signal.signal(signal.SIGINT,request_stop)
+    started = False
     try:
         owned.start(receive_only=receive_only,visibility_installation=visibility_installation,
                     messaging_application=messaging_application, expected_initial_context=expected_initial_context)
+        started = True
         if ready_descriptor is not None:
             os.write(ready_descriptor,b'READY\n')
             os.close(ready_descriptor)
@@ -62,7 +64,30 @@ def serve(target, profile: dict, *, receive_only=False, visibility_installation=
             pass
         return 0 if stopping.is_set() else 1
     finally:
-        owned.close()
+        try:
+            owned.close()
+        finally:
+            if started:
+                report_runtime_exit(owned.supervisor.termination_reason,
+                    owned.process.returncode, requested_stop=stopping.is_set())
+
+
+def report_runtime_exit(reason: str | None, returncode: int | None, *, requested_stop: bool) -> None:
+    """Retain bounded supervisor outcomes without process arguments or exceptions."""
+    if reason not in {'lease-hard-deadline', 'admission-renew-failed',
+            'admission-renew-deadline', 'body-observer-unavailable',
+            'graceful-shutdown', 'runtime-exited'}:
+        reason = 'unclassified-runtime-exit'
+    if type(returncode) is not int or not -255 <= returncode <= 255:
+        returncode = None
+    value = dict(schema='cluster-onboarding-runtime-exit/v1', stage='parent-supervision',
+        reason=reason, child_returncode=returncode, requested_stop=requested_stop)
+    try:
+        print(json.dumps(value), file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        # A lost diagnostic stream must not change the already completed
+        # process cleanup or the caller's original result/exception.
+        pass
 
 
 def receive(connection: socket.socket) -> dict:

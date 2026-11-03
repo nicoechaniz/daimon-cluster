@@ -958,6 +958,20 @@ They retain the same durable request under one owner lock. Splitting preparation
 and application across cold qualified owner processes can age a new request beyond
 its native authentication window before its first dispatch; do not increase that
 window or regenerate an uncertain request to conceal the delay.
+
+A truncated response alone does not establish a daemon exit. Check the actual
+service/process and parent supervision outcome first. For a retained local RPC
+whose authentication aged before admission, inspect its exact client/request ID
+in the current canonical native request journal, using a read-only connection
+and verifying the ledger identity. Absence proves non-admission only when that
+journal retains all admitted requests; a missing response file is insufficient.
+After proven non-admission, preserve the original prepared bytes and use the
+existing client preparation API with the SAME request ID, method and parameters
+to refresh authentication. Prepare and send in one owner process, then retain
+the response. Do not change the authentication window, capability or semantic
+operation. An admitted or uncertain request keeps its original recovery path;
+this is not permission to replay model/provider input or an uncertain effect.
+
 For an explicitly selected, already prepared qualified guest candidate, status,
 identity and control calls enter its existing closed SDK interpreter directly.
 The host derives its owner-private generation path from the verified public SDK;

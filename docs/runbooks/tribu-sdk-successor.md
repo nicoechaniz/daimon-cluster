@@ -38,6 +38,17 @@ restoring the old one-intent supervisor cannot interpret the new startup chain.
 Preserve unresolved startup records and recover their exact selection rather
 than changing profiles beneath an uncertain start.
 
+After a completed native load, inspect the retained parent supervision outcome
+before retrying an unexpected exit. `cluster-onboarding-runtime-exit/v1` reports
+the closed `reason`, integer `child_returncode` and `requested_stop` after owned
+cleanup. It distinguishes the supervisor's hard lease deadline, failed/deadline
+renewal and unavailable body observer from a child exit or requested shutdown.
+Existing native-child refusal frames remain the evidence for child exceptions.
+An absent or unclassified outcome leaves the cause unknown; receiving metadata
+or a previous signed delivery alone does not prove continuing process health.
+These bounded local lifecycle diagnostics contain no arguments, exception values
+or private runtime contents and use the service's existing journal retention.
+
 ## SDK updates on an already selected admitted target
 
 An admitted target keeps its original approved `--code` baseline while

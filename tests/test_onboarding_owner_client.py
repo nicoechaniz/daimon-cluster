@@ -956,6 +956,10 @@ def test_native_server_version_binds_the_qualified_sdk_code_and_attachment(
         "stale-alias-drift",
         "foundation",
         "foundation-binding-drift",
+        "foundation-missing-loaded",
+        "foundation-missing-global",
+        "foundation-missing-stale-global",
+        "foundation-missing-no-reload",
     ],
 )
 def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
@@ -992,7 +996,8 @@ def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
             matrix_wheel_sha256="d" * 64,
         )
         schema = {"type": "object", "properties": {"channel_id": {"enum": ["tribe"]}}}
-        foundation_profile = fault in ('foundation', 'foundation-binding-drift')
+        foundation_profile = isinstance(fault, str) and fault.startswith('foundation')
+        missing_foundation = isinstance(fault, str) and fault.startswith('foundation-missing-')
         expected = {
             name: schema
             for name in (["scope_me", "source_status"] if foundation_profile else [
@@ -1067,7 +1072,7 @@ def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
                     assert request['params']['serverName'] == ('matrix_foundation' if foundation_profile else 'matrix')
                     selected = request["params"].get("threadId")
                     assert selected in (None, thread_id, second_thread)
-                    assert (selected is None) == (fault == "threadless")
+                    assert (selected is None) == (fault == "threadless") or missing_foundation
                     statuses[selected] = statuses.get(selected, 0) + 1
                     starting = (fault == "starting" or fault == "mixed-starting" and selected == second_thread) and statuses[selected] == 1
                     stale = fault in ("stale-once", "lost-reload", "mixed-starting", "stale-config-drift", "stale-alias-drift") and not reloads
@@ -1100,6 +1105,12 @@ def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
                     }
                     if fault in ("config-drift", "stale-config-drift"):
                         config.write_text("# Concurrent owner edit\n")
+                    if missing_foundation and selected is not None and not reloads:
+                        result['data'] = []
+                    if fault == 'foundation-missing-global' and selected is None:
+                        result['data'] = []
+                    if fault == 'foundation-missing-stale-global' and selected is None:
+                        result['data'][0]['serverInfo']['version'] = 'old'
                 elif method == "config/mcpServer/reload":
                     reloads.append(True)
                     assert len(reloads) == 1
@@ -1129,7 +1140,7 @@ def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
                         ),
                         config_sha256=config_sha,
                         foundation_request_dir=tmp_path/'requests' if foundation_profile else None,
-                        reload=True,
+                        reload=fault != 'foundation-missing-no-reload',
                         deadline_ns=time.monotonic_ns()
                         + int((0.1 if fault == "stall" else 45 if fault == "long-budget" else 3) * 1e9),
                     )
@@ -1138,7 +1149,7 @@ def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
                     from websockets.exceptions import ConnectionClosed
                     with pytest.raises(ConnectionClosed):
                         observe()
-                if fault in (None, 'alias', 'starting', 'stale-once', 'threadless', 'long-budget', 'lost-reload', 'mixed-starting', 'foundation'):
+                if fault in (None, 'alias', 'starting', 'stale-once', 'threadless', 'long-budget', 'lost-reload', 'mixed-starting', 'foundation', 'foundation-missing-loaded'):
                     result = observe()
                     assert result["acceptance"] == ("server-catalog-only" if fault == "threadless" else "selected-existing-contexts")
                     assert result["native_process"]["pid"] == os.getpid()
@@ -1147,7 +1158,7 @@ def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
                 else:
                     with pytest.raises((OnboardingError, TimeoutError)):
                         observe()
-                assert len(reloads) == (1 if fault in ("old-sdk", "stale-once", "lost-reload", "mixed-starting") else 0)
+                assert len(reloads) == (1 if fault in ("old-sdk", "stale-once", "lost-reload", "mixed-starting", 'foundation-missing-loaded') else 0)
                 if fault in ("starting", "mixed-starting"):
                     assert statuses[second_thread if fault == "mixed-starting" else thread_id] >= 2
                     first_reload = next((i for i, r in enumerate(requests) if r["method"] == "config/mcpServer/reload"), len(requests))

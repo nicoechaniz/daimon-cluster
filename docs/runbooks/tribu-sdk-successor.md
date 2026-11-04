@@ -1387,6 +1387,13 @@ it derives expected tools from the same generic catalog and inspects only
 `matrix_foundation` through the existing native API. No model turn, native/body restart, reader reselection, authority
 transition or new grant follows from installing this client profile.
 
+An existing loaded thread can lack this newly added role even after the server
+catalog accepts it. `native_catalog(..., reload=True)` permits one existing native
+MCP configuration refresh only after the exact current server catalog is verified;
+it rechecks the owner binding, configuration, native endpoint and loaded threads
+before that call. Missing or stale server catalogs refuse. Observe the selected
+loaded contexts afterward; server-only acceptance does not prove model tool use.
+
 This profile exposes the methods in its selected existing client. It does not
 make base observer authority into Source author/import/promote authority. Those
 existing purpose-specific clients and their real operating policies remain

@@ -363,6 +363,7 @@ def _register_codex_mcp_locked(
                 raise ValueError("foundation_native_history_capacity")
     _put(history / "config.before.toml", before)
     candidate_home = history / "candidate-home"
+    candidate_preexisting = candidate_home.exists()
     candidate = _codex_candidate(
         candidate_home,
         before,
@@ -410,9 +411,10 @@ def _register_codex_mcp_locked(
         _registration_budget(deadline_ns)
     finally:
         temporary.unlink(missing_ok=True)
-    if role_name == "matrix_foundation":
-        # The writer has exited; exact preimage/candidate/selection remain.
-        # Its empty-session preparation cache is not receiving history.
+    if role_name == "matrix_foundation" and not candidate_preexisting:
+        # This invocation created the candidate and waited for its writer.
+        # A resumed candidate may still have an orphaned native writer: retain
+        # that cache without claiming stopped ownership or removing its home.
         shutil.rmtree(candidate_home)
     return {
         "status": "configured",

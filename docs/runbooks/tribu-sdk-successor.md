@@ -1365,8 +1365,9 @@ Use the existing `onboarding_chat_native.register_codex_mcp` with
 `role_name="matrix_foundation"` and one retained canonical UUID `operation_id` to prepare/publish that additional role through
 the existing native versioned writer, owner lock and original-or-candidate
 publication. This profile reuses the same operation history on retry, bounds it
-to32retained updates, and removes only the stopped empty-session preparation
-cache after successful publication; exact config preimage/candidate/selection
+to32retained updates, and removes only a fresh empty-session preparation
+cache whose writer this invocation awaited, after successful publication. Resumed
+caches are retained because a predecessor writer may still be active; exact config preimage/candidate/selection
 remain. Capacity refuses another update instead of deleting uncertain history.
 Replacing an already configured role requires its actual prior
 command digest. Preserve the chat role, unrelated configuration and deliberately

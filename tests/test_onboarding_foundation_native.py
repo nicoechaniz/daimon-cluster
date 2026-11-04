@@ -1,5 +1,6 @@
 """Extend the existing native writer without replacing the chat profile."""
 import json
+import subprocess
 import sys
 import tomllib
 
@@ -145,3 +146,36 @@ def test_foundation_history_capacity_refuses_before_native_preparation(tmp_path,
             operation_id='d4de2b07-1a51-4e23-99f4-bf87da50c7f8')
     assert config.read_text() == BEFORE
     assert len(list(history.iterdir())) == 32
+
+
+def test_resumed_foundation_candidate_keeps_an_existing_writer_home(tmp_path, monkeypatch):
+    home = tmp_path/'codex'
+    home.mkdir(mode=0o700)
+    config = home/'config.toml'
+    config.write_text(BEFORE)
+    config.chmod(0o600)
+    monkeypatch.setenv('CODEX_HOME', str(home))
+    operation = 'd4de2b07-1a51-4e23-99f4-bf87da50c7f8'
+    attachment = tmp_path/'attachment'
+    candidate = attachment/'codex-mcp-history'/operation/'candidate-home'
+    candidate.mkdir(parents=True, mode=0o700)
+    expected = BEFORE+'\n[mcp_servers.matrix_foundation]\ncommand = "/selected"\nargs = []\nstartup_timeout_sec = 60\n'
+    (candidate/'config.toml').write_text(expected)
+    (candidate/'config.toml').chmod(0o600)
+    child = subprocess.Popen([sys.executable, '-c',
+        'import sys; f=open("config.toml"); print("ready", flush=True); sys.stdin.read()'],
+        cwd=candidate, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == 'ready'
+        def forbidden(*args, **kwargs):
+            pytest.fail('completed candidate must resume without launching another writer')
+        monkeypatch.setattr(native, '_write_codex_role', forbidden)
+        result = native.register_codex_mcp(attachment, ['/selected'],
+            role_name='matrix_foundation', operation_id=operation)
+        assert result['status'] == 'configured'
+        assert child.poll() is None and candidate.is_dir()
+        assert config.read_text() == expected
+    finally:
+        child.stdin.close()
+        child.wait(timeout=5)
+        child.stdout.close()

@@ -954,6 +954,8 @@ def test_native_server_version_binds_the_qualified_sdk_code_and_attachment(
         "mixed-starting",
         "stale-config-drift",
         "stale-alias-drift",
+        "foundation",
+        "foundation-binding-drift",
     ],
 )
 def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
@@ -990,14 +992,15 @@ def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
             matrix_wheel_sha256="d" * 64,
         )
         schema = {"type": "object", "properties": {"channel_id": {"enum": ["tribe"]}}}
+        foundation_profile = fault in ('foundation', 'foundation-binding-drift')
         expected = {
             name: schema
-            for name in [
+            for name in (["scope_me", "source_status"] if foundation_profile else [
                 "messaging_inbox",
                 "messaging_send",
                 "messaging_reply",
                 "messaging_delivery",
-            ]
+            ])
         }
 
         async def list_tools(*a):
@@ -1015,6 +1018,14 @@ def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
             "_installer",
             lambda *a: SimpleNamespace(_binding_fingerprint=lambda a, **kw: ({}, "e" * 64)),
         )
+        if foundation_profile:
+            from clusterctl import onboarding_foundation_native
+            fingerprints = []
+            def foundation_bridge(*args):
+                fingerprints.append(True)
+                fingerprint = 'f'*64 if fault == 'foundation-binding-drift' and len(fingerprints) > 1 else 'e'*64
+                return SimpleNamespace(list_tools=list_tools), fingerprint
+            monkeypatch.setattr(onboarding_foundation_native, 'foundation_bridge', foundation_bridge)
         requests = []
         statuses = {}
         reloads = []
@@ -1053,6 +1064,7 @@ def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
                         "nextCursor": "repeated" if fault == "pagination" else None,
                     }
                 elif method == "mcpServerStatus/list":
+                    assert request['params']['serverName'] == ('matrix_foundation' if foundation_profile else 'matrix')
                     selected = request["params"].get("threadId")
                     assert selected in (None, thread_id, second_thread)
                     assert (selected is None) == (fault == "threadless")
@@ -1073,7 +1085,7 @@ def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
                     result = {
                         "data": [
                             {
-                                "name": "matrix",
+                                "name": "matrix_foundation" if foundation_profile else "matrix",
                                 "runtimeStatus": "disabled"
                                 if fault == "disabled"
                                 else "starting" if starting else "connected",
@@ -1116,6 +1128,7 @@ def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
                             (thread_id, second_thread) if fault == "mixed-starting" else (thread_id,)
                         ),
                         config_sha256=config_sha,
+                        foundation_request_dir=tmp_path/'requests' if foundation_profile else None,
                         reload=True,
                         deadline_ns=time.monotonic_ns()
                         + int((0.1 if fault == "stall" else 45 if fault == "long-budget" else 3) * 1e9),
@@ -1125,7 +1138,7 @@ def test_native_catalog_pins_actual_peer_and_selected_context_without_turns(
                     from websockets.exceptions import ConnectionClosed
                     with pytest.raises(ConnectionClosed):
                         observe()
-                if fault in (None, 'alias', 'starting', 'stale-once', 'threadless', 'long-budget', 'lost-reload', 'mixed-starting'):
+                if fault in (None, 'alias', 'starting', 'stale-once', 'threadless', 'long-budget', 'lost-reload', 'mixed-starting', 'foundation'):
                     result = observe()
                     assert result["acceptance"] == ("server-catalog-only" if fault == "threadless" else "selected-existing-contexts")
                     assert result["native_process"]["pid"] == os.getpid()

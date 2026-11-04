@@ -62,13 +62,25 @@ def register_codex_mcp(
     *,
     previous_sha256: str | None = None,
     deadline_ns: int | None = None,
+    role_name: str = "matrix",
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Configure this owner's existing Matrix role through Codex's writer.
+    """Configure this owner's selected Matrix role through Codex's writer.
 
     This starts no model or service and makes no catalog/readiness claim.
     Replacing an existing role needs its exact prior command digest; unrelated
     configuration and optional role settings must remain untouched.
     """
+    if role_name not in ("matrix", "matrix_foundation"):
+        raise ValueError("agent_chat_codex_mcp_role_rejected")
+    if role_name == "matrix_foundation":
+        try:
+            if not isinstance(operation_id, str) or str(uuid.UUID(operation_id)) != operation_id:
+                raise ValueError
+        except ValueError:
+            raise ValueError("foundation_native_operation_required") from None
+    elif operation_id is not None:
+        raise ValueError("foundation_native_operation_required")
     _registration_budget(deadline_ns)
     attachment = Path(os.path.abspath(attachment))
     home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
@@ -76,7 +88,8 @@ def register_codex_mcp(
         raise ValueError("agent_chat_codex_home_invalid")
     with _codex_owner_lock(home):
         return _register_codex_mcp_locked(
-            home, attachment, command, previous_sha256, deadline_ns=deadline_ns
+            home, attachment, command, previous_sha256, deadline_ns=deadline_ns,
+            role_name=role_name, operation_id=operation_id,
         )
 
 
@@ -128,12 +141,15 @@ def _write_codex_role(
     *,
     timeout_seconds: float = 30,
     startup_timeout_seconds: int | None = None,
+    role_name: str = "matrix",
 ) -> None:
     """Edit the selected role with Codex's versioned native config writer.
 
     The caller supplies a private candidate home, never the active home.
     This config-only process receives no thread, turn or discovery request.
     """
+    if role_name not in ("matrix", "matrix_foundation"):
+        raise ValueError("agent_chat_codex_mcp_role_rejected")
     if not 0 < timeout_seconds <= 30:
         raise ValueError("agent_chat_codex_mcp_registration_failed")
     config = home / "config.toml"
@@ -221,12 +237,12 @@ def _write_codex_role(
                 "reloadUserConfig": False,
                 "edits": [
                     {
-                        "keyPath": "mcp_servers.matrix.command",
+                        "keyPath": f"mcp_servers.{role_name}.command",
                         "value": command[0],
                         "mergeStrategy": "replace",
                     },
                     {
-                        "keyPath": "mcp_servers.matrix.args",
+                        "keyPath": f"mcp_servers.{role_name}.args",
                         "value": command[1:],
                         "mergeStrategy": "replace",
                     },
@@ -236,7 +252,7 @@ def _write_codex_role(
                     if startup_timeout_seconds is None
                     else [
                         {
-                            "keyPath": "mcp_servers.matrix.startup_timeout_sec",
+                            "keyPath": f"mcp_servers.{role_name}.startup_timeout_sec",
                             "value": startup_timeout_seconds,
                             "mergeStrategy": "replace",
                         }
@@ -308,6 +324,8 @@ def _register_codex_mcp_locked(
     previous_sha256: str | None,
     *,
     deadline_ns: int | None = None,
+    role_name: str = "matrix",
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
     # This lock serializes this receiving-owner installer, not arbitrary native
     # config writers. Reject their observed intervening edits before publication.
@@ -318,7 +336,7 @@ def _register_codex_mcp_locked(
     )
     old = tomllib.loads(before.decode())
     servers = old.get("mcp_servers", {})
-    existing = servers.get("matrix")
+    existing = servers.get(role_name)
     wanted = {"command": command[0], "args": command[1:]}
     if existing is not None:
         if existing.get("enabled", True) is not True:
@@ -335,13 +353,21 @@ def _register_codex_mcp_locked(
             and previous_sha256 != hashlib.sha256(canonical_bytes(current)).hexdigest()
         ):
             raise ValueError("agent_chat_codex_mcp_conflict")
-    history = attachment / "codex-mcp-history" / str(uuid.uuid4())
+    history_root = attachment / "codex-mcp-history"
+    history = history_root / (operation_id or str(uuid.uuid4()))
+    if role_name == "matrix_foundation" and not history.exists() and history_root.exists():
+        # New native profile updates retain a finite number of original/config
+        # candidates. Unfinished operations never mint another history on retry.
+        for index, _entry in enumerate(history_root.iterdir()):
+            if index >= 31:
+                raise ValueError("foundation_native_history_capacity")
     _put(history / "config.before.toml", before)
     candidate_home = history / "candidate-home"
     candidate = _codex_candidate(
         candidate_home,
         before,
         command,
+        **({"role_name": role_name} if role_name != "matrix" else {}),
         **(
             {}
             if deadline_ns is None
@@ -384,6 +410,10 @@ def _register_codex_mcp_locked(
         _registration_budget(deadline_ns)
     finally:
         temporary.unlink(missing_ok=True)
+    if role_name == "matrix_foundation":
+        # The writer has exited; exact preimage/candidate/selection remain.
+        # Its empty-session preparation cache is not receiving history.
+        shutil.rmtree(candidate_home)
     return {
         "status": "configured",
         "catalog_acceptance": "unobserved",
@@ -397,11 +427,14 @@ def _codex_candidate(
     command: list[str],
     *,
     timeout_seconds: float | None = None,
+    role_name: str = "matrix",
 ) -> bytes:
     """Resume private preparation without overwriting an unrecognized candidate."""
+    if role_name not in ("matrix", "matrix_foundation"):
+        raise ValueError("agent_chat_codex_mcp_role_rejected")
     old = tomllib.loads(before.decode())
     servers = old.get("mcp_servers", {})
-    role = servers.get("matrix", {})
+    role = servers.get(role_name, {})
     startup_default = (
         {}
         if "startup_timeout_sec" in role or "startup_timeout_ms" in role
@@ -411,7 +444,7 @@ def _codex_candidate(
         **old,
         "mcp_servers": {
             **servers,
-            "matrix": {
+            role_name: {
                 **role,
                 **startup_default,
                 "command": command[0],
@@ -432,6 +465,7 @@ def _codex_candidate(
             home,
             command,
             **({"startup_timeout_seconds": 60} if startup_default else {}),
+            **({"role_name": role_name} if role_name != "matrix" else {}),
             timeout_seconds=30 if timeout_seconds is None else timeout_seconds,
         )
         candidate = _read_codex_config(config)

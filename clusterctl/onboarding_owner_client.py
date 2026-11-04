@@ -19,7 +19,7 @@ from .onboarding import Observation, OnboardingError, digest, validate_plan
 
 INSTALLER_SHA256 = 'aaef1a28614722a1f52d4c32dbbd3add5f1abfcd6f766cfaf6b7cfa3073a9af9'
 TOOLING_INSTALLER_MODULE = 'onboarding_chat_native.py'
-TOOLING_INSTALLER_SHA256 = 'c45646381246e1e25a0d642f595b1605b6b2c0b8e93c871e695234b047a480a7'
+TOOLING_INSTALLER_SHA256 = '1aa375837fc5d031c19954f5c1993f4cc4f72e05effe7780bd8ab60ed40ab60c'
 
 
 # Only these maintained domain codes may cross the CLI boundary. Exception
@@ -319,7 +319,8 @@ def native_endpoint_readiness(endpoint: Path, *, deadline_ns: int) -> dict:
 def native_catalog(attachment: Path, *, code: Path, code_uid: int, startup: dict,
                    codex_home: Path, endpoint: Path, threads: tuple[str, ...],
                    config_sha256: str, reload: bool = False,
-                   deadline_ns: int | None = None, binding_filename: str = 'binding.json') -> dict:
+                   deadline_ns: int | None = None, binding_filename: str = 'binding.json',
+                   foundation_request_dir: Path | None = None) -> dict:
     """Observe selected existing native contexts; never create a thread or turn."""
     import asyncio
     import time
@@ -334,9 +335,20 @@ def native_catalog(attachment: Path, *, code: Path, code_uid: int, startup: dict
         if hashlib.sha256(protected_read(codex_home / 'config.toml')).hexdigest() != config_sha256:
             raise OnboardingError('native_tooling_configuration_changed')
     configuration()
-    binding, fingerprint = _installer(code, code_uid)._binding_fingerprint(attachment, binding_filename=binding_filename)
+    if foundation_request_dir is None:
+        binding, fingerprint = _installer(code, code_uid)._binding_fingerprint(attachment, binding_filename=binding_filename)
+        catalog = asyncio.run(bridge(binding).list_tools(None, None))
+        role_name = 'matrix'
+        def current_fingerprint():
+            return _installer(code, code_uid)._binding_fingerprint(attachment, binding_filename=binding_filename)[1]
+    else:
+        from .onboarding_foundation_native import foundation_bridge
+        foundation, fingerprint = foundation_bridge(attachment, foundation_request_dir)
+        catalog = asyncio.run(foundation.list_tools(None, None))
+        role_name = 'matrix_foundation'
+        def current_fingerprint():
+            return foundation_bridge(attachment, foundation_request_dir)[1]
     version = tooling_version(startup, fingerprint)
-    catalog = asyncio.run(bridge(binding).list_tools(None, None))
     expected = {tool.name: tool.input_schema for tool in catalog.tools}
     async def query(call, remaining, verify_endpoint, process, initialized):
         async def pages(method, parameters):
@@ -353,7 +365,7 @@ def native_catalog(attachment: Path, *, code: Path, code_uid: int, startup: dict
             raise OnboardingError('native_tooling_observation_limit')
         def unchanged():
             configuration()
-            if _installer(code, code_uid)._binding_fingerprint(attachment, binding_filename=binding_filename)[1] != fingerprint:
+            if current_fingerprint() != fingerprint:
                 raise OnboardingError('native_tooling_binding_changed')
             return verify_endpoint()
         loaded = await pages('thread/loaded/list', {'limit': 128})
@@ -363,11 +375,11 @@ def native_catalog(attachment: Path, *, code: Path, code_uid: int, startup: dict
         while True:
             records, pending, stale = [], False, False
             for thread in threads or (None,):
-                parameters = dict(serverName='matrix', detail='toolsAndAuthOnly', limit=16)
+                parameters = dict(serverName=role_name, detail='toolsAndAuthOnly', limit=16)
                 if thread is not None:
                     parameters['threadId'] = thread
                 rows = await pages('mcpServerStatus/list', parameters)
-                if len(rows) != 1 or rows[0].get('name') != 'matrix':
+                if len(rows) != 1 or rows[0].get('name') != role_name:
                     raise OnboardingError('native_tooling_catalog_unavailable')
                 row = rows[0]
                 if thread is not None and row.get('runtimeStatus') == 'starting':

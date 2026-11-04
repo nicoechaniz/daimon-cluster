@@ -1373,3 +1373,20 @@ def test_owner_client_diagnostic_extension_matches_only_the_exact_covered_delta(
     monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *a, **kw:
         subprocess.CompletedProcess([],0,previous+b'\n# unrelated host change\n'))
     assert not ci_scope.owner_diagnostics_only(ROOT, 'a'*40)
+
+
+def test_foundation_profile_uses_existing_owner_receiving_checks():
+    from tools.ci_scope import OWNER_CLIENT_TESTS
+    changed = ['clusterctl/onboarding_foundation_native.py', 'clusterctl/onboarding_chat_native.py',
+        'clusterctl/onboarding_owner_client.py', 'tests/test_onboarding_foundation_native.py',
+        'tests/test_onboarding_owner_client.py', 'tools/check_rc_types.py',
+        'support/matrix-agent-chat/TOOLING-PROVENANCE.json', 'docs/runbooks/tribu-sdk-successor.md',
+        'tools/ci_scope.py', 'tests/test_ci_scope.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'peer'
+    assert set(OWNER_CLIENT_TESTS) <= set(tests)
+    assert {'tests/test_onboarding_sdk.py', 'tests/test_onboarding_code_successor.py',
+            'tests/test_onboarding_runtime.py'} <= set(tests)
+    assert 'tests/test_onboarding_foundation_native.py' in tests
+    for unrelated in ('clusterctl/onboarding_custody.py', 'requirements-dev.txt', 'unknown.py'):
+        assert select([*changed, unrelated], ROOT)[0] == 'full'

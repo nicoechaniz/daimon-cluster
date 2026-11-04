@@ -2,7 +2,13 @@
   "repository": "https://github.com/AlterMundi/daimon-matrix",
   "commit": "23b2c616bd0b873962108aa53458f791857ae500",
   "path": "tools/install_agent_chat.py",
-  "sha256": "c45646381246e1e25a0d642f595b1605b6b2c0b8e93c871e695234b047a480a7",
+  "sha256": "1aa375837fc5d031c19954f5c1993f4cc4f72e05effe7780bd8ab60ed40ab60c",
   "purpose": "Native messaging installation and resumable existing-tool reconciliation through the owner-selected SDK and supported Codex writer; no identity, daemon or model creation.",
-  "captured_module": "clusterctl/onboarding_chat_native.py"
+  "captured_module": "clusterctl/onboarding_chat_native.py",
+  "adaptation": {
+    "repository": "https://github.com/nicoechaniz/daimon-cluster",
+    "issue": 398,
+    "previous_captured_sha256": "c45646381246e1e25a0d642f595b1605b6b2c0b8e93c871e695234b047a480a7",
+    "purpose": "Maintained additional granted foundation role; existing native writer/CAS preserved, stable finite operation history and stopped empty-session candidate cleanup. Original capture coordinates remain attributed above."
+  }
 }

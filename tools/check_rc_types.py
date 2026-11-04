@@ -56,6 +56,7 @@ FILES = (
     "clusterctl/onboarding_accounts.py",
     "clusterctl/onboarding_welcome.py",
     "clusterctl/onboarding_owner_client.py",
+    "clusterctl/onboarding_foundation_native.py",
     "clusterctl/onboarding_actions.py",
     "clusterctl/onboarding_managed.py",
     "clusterctl/onboarding_registry.py",

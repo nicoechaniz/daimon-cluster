@@ -1342,3 +1342,51 @@ without changing the original body callback. See
 identity, privacy and domain boundaries. Selecting this source does not install
 a Matrix `/here` resolver or prove receiving acceptance. Keep current scope
 coverage and actual cohort observations in Matrix #437.
+
+### Additional granted foundation client profile
+
+Matrix #466 / PR467 adds `DaimonMcp(..., granted_only=True)` to the existing
+closed MCP catalog. Cluster #398 supplies the optional owner route for the separate native
+`matrix_foundation` role; `matrix` remains the chat/echo profile. This does not
+create a scope, registry, identity or capability. The receiving daemon still
+authorizes every call. A client method descriptor is not proof that a particular
+resource operation is currently permitted.
+
+Use `onboarding_foundation_native.foundation_command` with the already selected
+qualified SDK interpreter/imports/code, exact code digest and the receiver's
+existing owner runtime root. Its launcher qualifies those artifacts before
+loading the existing protected client. The key crosses only an internal protected
+file descriptor and never enters argv, environment, model input or receipts.
+`foundation_bridge` exposes the same existing catalog intersection; enumeration
+sends no daemon request and starts no provider or background attention. An older
+SDK without granted-only support refuses before reading client files.
+
+Use the existing `onboarding_chat_native.register_codex_mcp` with
+`role_name="matrix_foundation"` and one retained canonical UUID `operation_id` to prepare/publish that additional role through
+the existing native versioned writer, owner lock and original-or-candidate
+publication. This profile reuses the same operation history on retry, bounds it
+to32retained updates, and removes only the stopped empty-session preparation
+cache after successful publication; exact config preimage/candidate/selection
+remain. Capacity refuses another update instead of deleting uncertain history.
+Replacing an already configured role requires its actual prior
+command digest. Preserve the chat role, unrelated configuration and deliberately
+disabled selections. Keep this adoption as one finite retained operation,
+including its preimage/candidate and actual receiving observation; do not create
+another operation or historical copy merely because observation expired.
+
+The selected granted-only request store bounds durable tokens to256files/16MiB.
+At capacity it preserves exact retries, ordinary reads and uncertain originals;
+new durable dispatch refuses. No automatic deletion or cleanup service is added.
+Retire only demonstrated terminal task artifacts through their owning record;
+stop the selected MCP profile to stop this client workflow. Native configuration,
+server-catalog acceptance, loaded-context tools and actual model use are distinct
+observations. Reuse `onboarding_owner_client.native_catalog` with the existing
+owner runtime as its attachment and the selected `foundation_request_dir`;
+it derives expected tools from the same generic catalog and inspects only
+`matrix_foundation` through the existing native API. No model turn, native/body restart, reader reselection, authority
+transition or new grant follows from installing this client profile.
+
+This profile exposes the methods in its selected existing client. It does not
+make base observer authority into Source author/import/promote authority. Those
+existing purpose-specific clients and their real operating policies remain
+separate; preserve the full foundation workflow gaps until actually accepted.

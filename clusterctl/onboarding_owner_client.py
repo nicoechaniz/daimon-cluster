@@ -379,6 +379,22 @@ def native_catalog(attachment: Path, *, code: Path, code_uid: int, startup: dict
                 if thread is not None:
                     parameters['threadId'] = thread
                 rows = await pages('mcpServerStatus/list', parameters)
+                if not rows and thread is not None and foundation_request_dir is not None:
+                    # A newly configured role can be absent in an already
+                    # loaded thread. Confirm its exact current server catalog
+                    # before treating that absence as refreshable stale state.
+                    published = await pages('mcpServerStatus/list',
+                        dict(serverName=role_name, detail='toolsAndAuthOnly', limit=16))
+                    if len(published) != 1 or published[0].get('name') != role_name:
+                        raise OnboardingError('native_tooling_catalog_unavailable')
+                    current = published[0]
+                    tools = current.get('tools', {})
+                    if (current.get('toolsError') is not None or set(tools) != set(expected)
+                            or any(tools[name].get('inputSchema') != schema for name, schema in expected.items())
+                            or (current.get('serverInfo') or {}).get('version') != version):
+                        raise OnboardingError('native_tooling_catalog_mismatch')
+                    stale = True
+                    continue
                 if len(rows) != 1 or rows[0].get('name') != role_name:
                     raise OnboardingError('native_tooling_catalog_unavailable')
                 row = rows[0]

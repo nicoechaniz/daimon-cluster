@@ -57,13 +57,17 @@ Those jobs prove software behavior on disposable infrastructure. They do not
 prove live physical singleton, independent real custody or an authorized
 cutover.
 
-## Safety
+## Authorized operation
 
-No broad roadmap permission authorizes SSH, administrative access changes,
-real custody, service mutation, production or external contact. Physical work
-requires a reviewed content-addressed preflight and an exact GO for that same
-plan. The production exclusion and administrative-access invariant in
-[`AGENTS.md`](AGENTS.md) are binding.
+An authorized task includes its routine scoped deployment and repair; it does
+not require another same-plan GO. Use the current receiving binding, preserve
+identity, live data, active work and a practical rollback, then verify the
+changed behavior. Start routine SDK updates with the
+[short maintenance path](docs/runbooks/tribu-sdk-successor.md#routine-maintenance-path).
+
+Administrative access, custody/governance changes, the production-host
+exclusion and coordinated global Stop retain their explicit boundaries in
+[`AGENTS.md`](AGENTS.md). Routine software authorization does not expand them.
 
 ## Development
 

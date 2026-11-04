@@ -1,5 +1,46 @@
 # Receiver-compatible Matrix updates
 
+## Routine maintenance path
+
+Use this path for an already authorized ordinary software update. The detailed
+sections below explain existing mechanisms and recovery cases; they are not a
+sequence of additional gates to repeat for every iteration.
+
+1. Resolve the current selected generation and the consumers affected by the
+   actual change. Preserve the existing body, keys, native history and goals.
+   A routine update is not onboarding, a species release or a new authority act.
+2. Prepare one candidate from that verified current selection with
+   `onboarding_code_successor.build(..., current=..., current_fingerprint=...)`.
+   Reuse the qualified SDK artifact directly; the builder already copies it
+   into the candidate, so an extra input/staging copy is unnecessary locally.
+   When both daemon behavior and the installed foundation client change, include
+   `onboarding_runtime.py`, `onboarding_foundation_native.py` and
+   `onboarding_owner_client.py` in this same candidate. The owner-client capture
+   already includes its pinned `onboarding_chat_native.py`; do not list that
+   companion again. Separate client and daemon builds are unnecessary.
+3. Prepare the SDK/imports once using the existing helpers. Reuse unchanged
+   qualification and receiving evidence; run the checks that resolve the changed
+   behavior and the repository's actual required checks. One coherent scenario
+   can establish several outcomes without a report or fixture for every label.
+4. Select through the existing scoped maintenance and native configuration writer.
+   If the foundation client changed, point its existing MCP role at the same
+   qualified candidate using `foundation_command` and `register_codex_mcp`.
+   Reuse the retained operation and expected prior command. Keep chat and
+   unrelated native configuration intact. An SDK-only server fix does not need
+   client reconfiguration when that client remains compatible and unchanged.
+5. Observe the changed receiving behavior and, when affected, the existing native
+   catalog/current context. Retain the result in the same update checkpoint.
+   On uncertainty inspect that operation instead of rebuilding or replaying it.
+   Retire consumed duplicate transfer/input files after verifying the retained
+   copy; preserve active selections, actual rollback and unfinished work.
+
+Routine scoped delivery already within the human's task needs no repeated GO,
+new identity ceremony, mandatory multi-reviewer quorum or unrelated full-stack
+rehearsal. Confirm a substantial service-loss risk and honor explicit global Stop,
+custody and host restrictions. Resource limits and stop controls bound ongoing
+work; finite acceptance-run counters and expiry are not species or deployment
+prerequisites for ordinary updates.
+
 ## Native SDK successors — current source contract, 2026-11-01
 
 Cluster #372 owns receiving adoption of the routine H8 SDK-update correction.

@@ -153,6 +153,11 @@ class ConnectedBodyReader:
             embodiment_id=embodiment_id, incarnation_id=incarnation_id,
             evaluated_at_ms=evaluated_at_ms))
 
+    def realm(self, body_ref, embodiment_id, incarnation_id, evaluated_at_ms):
+        return self._read(dict(kind='realm', body_ref=body_ref,
+            embodiment_id=embodiment_id, incarnation_id=incarnation_id,
+            evaluated_at_ms=evaluated_at_ms))
+
     def inventory(self, body_ref, embodiment_id, incarnation_id, evaluated_at_ms):
         return self._read(dict(kind='inventory', body_ref=body_ref,
             embodiment_id=embodiment_id, incarnation_id=incarnation_id,
@@ -173,7 +178,7 @@ def connected_body_reader(connection: socket.socket):
 def admitted_observation(origin, presence, supervisor, request: dict) -> dict:
     if 'kind' not in request:
         return admitted_body_snapshot(origin, presence, supervisor, request)
-    if request.get('kind') not in ('surface', 'inventory', 'surface-inventory'):
+    if request.get('kind') not in ('surface', 'realm', 'inventory', 'surface-inventory'):
         raise OnboardingError('onboarding_runtime_observation_rejected')
     base = {key: value for key, value in request.items() if key != 'kind'}
     body = admitted_body_snapshot(origin, presence, supervisor, base)
@@ -205,12 +210,60 @@ def admitted_observation(origin, presence, supervisor, request: dict) -> dict:
         body_ref=body['body_ref'], embodiment_id=body['embodiment_id'],
         incarnation_id=body['incarnation_id'], observed_at_ms=body['observed_at_ms'],
         domain='native-linux-os', surface_ref=surface_ref, state=body['state'])
+    if request['kind'] == 'realm':
+        resources = native_realm_resources()
+        presence.verify()
+        return dict(schema='dm.cluster-realm-snapshot/v1', surface=surface,
+            resources=resources,
+            resource_state='observed' if all(v is not None for v in resources.values()) else 'partial')
     if request['kind'] == 'surface-inventory':
         inventory = supervisor.surface_inventory(dict(domain='native-linux-os', surface_ref=surface_ref))
         presence.verify()
         return dict(schema='dm.cluster-surface-inventory-snapshot/v1', body=body,
                     surface=surface, inventory=inventory)
     return surface
+
+
+def native_realm_resources() -> dict[str, int | None]:
+    """Bounded kernel observations, never a cgroup allowance or operation grant."""
+    result: dict[str, int | None] = dict(
+        uptime_ms=None, memory_total_bytes=None, memory_available_bytes=None)
+    try:
+        with Path('/proc/uptime').open('rb') as stream:
+            raw = stream.read(129)
+        if len(raw) > 128:
+            raise ValueError('uptime_limit')
+        token = raw.split()[0]
+        if re.fullmatch(rb'[0-9]{1,12}\.[0-9]{1,3}', token) is None:
+            raise ValueError('uptime_shape')
+        seconds, fraction = token.split(b'.')
+        milliseconds = int(seconds) * 1000 + int(fraction.ljust(3, b'0'))
+        if milliseconds > 2**53 - 1:
+            raise ValueError('uptime_range')
+        result['uptime_ms'] = milliseconds
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        with Path('/proc/meminfo').open('rb') as stream:
+            raw = stream.read(65537)
+        if len(raw) > 65536:
+            raise ValueError('memory_limit')
+        values = {}
+        for line in raw.splitlines():
+            parts = line.split()
+            if parts and parts[0] in (b'MemTotal:', b'MemAvailable:'):
+                if len(parts) != 3 or parts[2] != b'kB' or parts[0] in values:
+                    raise ValueError('memory_shape')
+                if re.fullmatch(rb'[0-9]{1,13}', parts[1]) is None:
+                    raise ValueError('memory_shape')
+                values[parts[0]] = int(parts[1]) * 1024
+        total, available = values[b'MemTotal:'], values[b'MemAvailable:']
+        if not 0 <= available <= total <= 2**53 - 1 or total == 0:
+            raise ValueError('memory_range')
+        result.update(memory_total_bytes=total, memory_available_bytes=available)
+    except (OSError, ValueError, KeyError):
+        pass
+    return result
 
 
 def admitted_body_snapshot(origin, presence, supervisor, request: dict) -> dict:

@@ -224,9 +224,10 @@ def admitted_observation(origin, presence, supervisor, request: dict) -> dict:
     return surface
 
 
-def native_realm_resources() -> dict:
+def native_realm_resources() -> dict[str, int | None]:
     """Bounded kernel observations, never a cgroup allowance or operation grant."""
-    result = dict(uptime_ms=None, memory_total_bytes=None, memory_available_bytes=None)
+    result: dict[str, int | None] = dict(
+        uptime_ms=None, memory_total_bytes=None, memory_available_bytes=None)
     try:
         with Path('/proc/uptime').open('rb') as stream:
             raw = stream.read(129)

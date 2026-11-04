@@ -373,6 +373,32 @@ class Application:
                     known_actor=actors.get,
                     known_tribe=lambda ref: ref in self.authority.tribes(),
                 )
+        if operation == "human-endpoint":
+            if not isinstance(payload, dict) or payload:
+                raise ValueError("human_endpoint_takes_no_selector")
+            human = self.authority.actor(self.authority.paired_human(home))
+            if not human or human.kind != "human" or not human.enabled:
+                raise ValueError("home_pairing_unavailable")
+            # Reuse the current access pairing and registered receiving routes.
+            # Provider-human refs are not native Matrix membership/identity,
+            # and configuration is neither delivery nor human presence.
+            return {
+                "schema": "dm.human-endpoint/v1",
+                "scope": "/human",
+                "source": "shared-resource-access-pairing",
+                "home_ref": home,
+                "owner_being_ref": owner.ref,
+                "human": {"ref": human.ref, "kind": human.kind,
+                          "name": human.name, "revision": human.revision},
+                "applications": [
+                    {"capability": capability, "url": url, "state": "configured"}
+                    for capability, url in sorted(self.miniapp_receivers.get(home, {}).items())
+                ],
+                "route_state": "configured" if self.miniapp_receivers.get(home) else "unconfigured",
+                "human_presence": "not-observed",
+                "delivery": "not-requested",
+                "native_membership": "not-implied",
+            }
         if operation == "targets":
             if payload:
                 raise ValueError("invalid_home_owner_request")

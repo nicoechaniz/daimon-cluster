@@ -59,3 +59,25 @@ must never be interpreted as a different surface or a complete negative match.
 Matrix may compare reported surfaces with its actual current own-body surface;
 unknown reports or a truncated admission scan require an explicitly partial
 `/here` result. Existing `/all` inventory responses remain unchanged.
+
+## Native OS realm status
+
+The same existing admitted observation channel accepts explicit `kind: realm`
+and `ConnectedBodyReader.realm`. It first validates exact origin/current admission
+and computes the same current native OS surface. It returns
+`dm.cluster-realm-snapshot/v1`, containing that unchanged surface plus bounded
+kernel observations: `uptime_ms`, `memory_total_bytes` and
+`memory_available_bytes`. Values use integer milliseconds/bytes, never process
+arguments, paths, machine/boot identifiers or private history.
+
+Each missing/refused/malformed metric group remains null; `resource_state` is
+`partial` if any value is unavailable, otherwise `observed`. Uptime input is capped
+at128bytes and memory input at64KiB; no child process, timer or network call is
+created. Available OS memory is not a cgroup/process allowance, future capacity
+reservation or operation grant. A KVM observes its own guest OS; a native body
+observes its local kernel, not a physical-host census. Existing surface/inventory
+and normal body requests retain their contracts.
+
+This read establishes status only. Realm state-modification controls need their
+own actual resource authority and observed effect; no such control is implied.
+Receiver adoption and full Matrix#437 acceptance remain separate from source tests.

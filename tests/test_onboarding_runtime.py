@@ -228,7 +228,7 @@ def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(
                         left.settimeout(5)
                         right.settimeout(5)
                         def observe_surface():
-                            for _ in range(3):
+                            for _ in range(4):
                                 query = receive(right)
                                 send(right, dict(ok=True, result=admitted.snapshot(query)))
                         worker = threading.Thread(target=observe_surface)
@@ -238,9 +238,15 @@ def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(
                             surface = reader.surface(**request)
                             inventory = reader.inventory(**request)
                             surfaces = reader.surface_inventory(**request)
+                            realm = reader.realm(**request)
                         finally:
                             worker.join(5)
                         assert not worker.is_alive()
+                    assert realm['schema'] == 'dm.cluster-realm-snapshot/v1'
+                    assert realm['surface'] == surface
+                    assert realm['resource_state'] == 'observed'
+                    assert realm['resources']['uptime_ms'] > 0
+                    assert 0 <= realm['resources']['memory_available_bytes'] <= realm['resources']['memory_total_bytes']
                     assert surface['domain'] == 'native-linux-os'
                     assert surface['body_ref'] == origin['body_ref']
                     assert surface['observed_at_ms'] == request['evaluated_at_ms']
@@ -673,3 +679,54 @@ def test_changed_group_selection_never_composes_an_application(tmp_path, monkeyp
         assert not (state_root/'tribe.sock').exists()
     finally:
         right.close()
+
+
+def test_native_realm_resources_keep_kernel_observation_separate_from_allowance(monkeypatch):
+    import io
+    from types import SimpleNamespace
+    from clusterctl import onboarding_runtime
+    files = {'/proc/uptime': b'42.37 80.00\n',
+             '/proc/meminfo': b'MemTotal: 1000 kB\nMemAvailable: 400 kB\nSecretUnrelated: 1\n'}
+    monkeypatch.setattr(onboarding_runtime, 'Path',
+        lambda path: SimpleNamespace(open=lambda mode: io.BytesIO(files[path])))
+    assert onboarding_runtime.native_realm_resources() == dict(
+        uptime_ms=42370, memory_total_bytes=1024000, memory_available_bytes=409600)
+    for uptime in (b'nan 0\n', b'-1.00 0\n', b'1' * 129, b'1e8 0\n'):
+        files['/proc/uptime'] = uptime
+        assert onboarding_runtime.native_realm_resources()['uptime_ms'] is None
+    files['/proc/uptime'] = b'42.37 80.00\n'
+    for memory in (b'MemTotal: 10 kB\nMemAvailable: 20 kB\n',
+                   b'MemTotal: 10 bytes\nMemAvailable: 4 kB\n',
+                   b'MemTotal: 10 kB\nMemTotal: 10 kB\nMemAvailable: 4 kB\n',
+                   b'private ' * 10000):
+        files['/proc/meminfo'] = memory
+        result = onboarding_runtime.native_realm_resources()
+        assert result['memory_total_bytes'] is None
+        assert result['memory_available_bytes'] is None
+        assert result['uptime_ms'] == 42370
+
+
+def test_realm_retains_exact_admitted_surface_and_partial_measurements(monkeypatch):
+    import io
+    from types import SimpleNamespace
+    from clusterctl import onboarding_runtime
+    origin = dict(body_ref='codex:fixture:one', embodiment_id='embodiment:fixture',
+                  incarnation_id='incarnation:fixture')
+    monkeypatch.setattr(onboarding_runtime, 'admitted_body_snapshot',
+        lambda *args: dict(**origin, observed_at_ms=100, state='running'))
+    values = {'/etc/machine-id': b'a' * 32 + b'\n',
+              '/proc/sys/kernel/random/boot_id': b'10000000-0000-0000-0000-000000000001\n'}
+    monkeypatch.setattr(onboarding_runtime, 'Path',
+        lambda path: SimpleNamespace(open=lambda mode: io.BytesIO(values[path])))
+    resources = dict(uptime_ms=42, memory_total_bytes=None, memory_available_bytes=None)
+    monkeypatch.setattr(onboarding_runtime, 'native_realm_resources', lambda: resources)
+    count = []
+    presence = SimpleNamespace(verify=lambda: count.append(True))
+    realm = onboarding_runtime.admitted_observation(origin, presence, None, {'kind': 'realm'})
+    surface = onboarding_runtime.admitted_observation(origin, presence, None, {'kind': 'surface'})
+    assert realm['schema'] == 'dm.cluster-realm-snapshot/v1'
+    assert realm['surface'] == surface
+    assert realm['resources'] == resources
+    assert realm['resource_state'] == 'partial'
+    assert len(count) >= 3
+    assert '/proc' not in json.dumps(realm) and 'machine' not in json.dumps(realm)

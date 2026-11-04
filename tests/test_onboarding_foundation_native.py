@@ -158,7 +158,8 @@ def test_resumed_foundation_candidate_keeps_an_existing_writer_home(tmp_path, mo
     operation = 'd4de2b07-1a51-4e23-99f4-bf87da50c7f8'
     attachment = tmp_path/'attachment'
     candidate = attachment/'codex-mcp-history'/operation/'candidate-home'
-    candidate.mkdir(parents=True, mode=0o700)
+    for directory in (attachment, attachment/'codex-mcp-history', candidate.parent, candidate):
+        directory.mkdir(mode=0o700)
     expected = BEFORE+'\n[mcp_servers.matrix_foundation]\ncommand = "/selected"\nargs = []\nstartup_timeout_sec = 60\n'
     (candidate/'config.toml').write_text(expected)
     (candidate/'config.toml').chmod(0o600)

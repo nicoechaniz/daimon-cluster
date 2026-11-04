@@ -479,6 +479,53 @@ def test_http_catalog_files_ranges_and_revocation_use_same_authority(tmp_path):
             assert get("/artifacts/aaaaaaaa/index.html")[0] == 404
 
 
+def test_human_endpoint_reuses_current_pair_and_routes_without_identity_or_delivery(tmp_path):
+    authority = Authority()
+    homes = {
+        name: {
+            "owner_being_ref": "owner-" + name,
+            "owner_revision": "v1",
+            "owner_token_file": key(tmp_path, name, "credential-" + name),
+            "public_url": "https://" + name + ".example",
+        }
+        for name in ("one", "two")
+    }
+    app = Application(
+        {"homes": homes}, authority, Sessions(tmp_path / "state"),
+        backends={name: object() for name in homes},
+        miniapp_receivers={"one": {"conversation": "https://one.example/interaction/"}},
+    )
+    result = app.owner("one", "credential-one", "human-endpoint", {})
+    assert result["scope"] == "/human"
+    assert result["owner_being_ref"] == "owner-one"
+    assert result["human"]["ref"] == "human-one"
+    assert result["applications"] == [{"capability": "conversation", "url": "https://one.example/interaction/", "state": "configured"}]
+    assert result["human_presence"] == "not-observed"
+    assert result["delivery"] == "not-requested"
+    assert result["native_membership"] == "not-implied"
+    assert result["route_state"] == "configured"
+    assert "credential" not in json.dumps(result)
+    # No fallback to another home or an author's bot when this pair has no route.
+    other = app.owner("two", "credential-two", "human-endpoint", {})
+    assert other["human"]["ref"] == "human-two"
+    assert other["applications"] == [] and other["route_state"] == "unconfigured"
+    for token in ("", "reader", "credential-two"):
+        with pytest.raises(ValueError):
+            app.owner("one", token, "human-endpoint", {})
+    for payload in ({"home": "two"}, [], None):
+        with pytest.raises(ValueError, match="human_endpoint_takes_no_selector"):
+            app.owner("one", "credential-one", "human-endpoint", payload)
+    # The current authority, not a retained endpoint response, selects the pair.
+    authority.paired_human = lambda _: "human-two"
+    assert app.owner("one", "credential-one", "human-endpoint", {})["human"]["ref"] == "human-two"
+    del authority.people["human-two"]
+    with pytest.raises(ValueError, match="home_pairing_unavailable"):
+        app.owner("one", "credential-one", "human-endpoint", {})
+    authority.paired_human = lambda _: "owner-one"
+    with pytest.raises(ValueError, match="home_pairing_unavailable"):
+        app.owner("one", "credential-one", "human-endpoint", {})
+
+
 def test_owner_identity_approval_and_shared_roster_are_not_reader_powers(tmp_path):
     authority = Authority()
 

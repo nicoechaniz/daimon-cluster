@@ -111,3 +111,23 @@ Use the existing same-origin `DaimonHomeAccess.createClient().signIn()` for
 sign-in and exact-path return through the configured common auth service.
 This adapter requires a trusted application mount, not an isolated artifact
 or a cross-origin credential bridge.
+
+## Owner-local `/human` endpoint discovery
+
+The existing protected owner API accepts `human-endpoint` with an empty object.
+It uses the same current owner credential, shared authority pairing and registered
+same-origin application receivers. No human selector, arbitrary home, URL or
+provider credential is accepted. The `dm.human-endpoint/v1` response identifies
+this owning being/home, its current paired provider-human and configured
+application capabilities/URLs. Missing, disabled or non-human pairing refuses;
+no registered applications returns `route_state: unconfigured` and no fallback
+to another pair or an author's bot.
+
+This is the initial resource-access `/human` projection, not native Matrix human
+membership or a new identity store. It creates no login, publication, grant,
+conversation or message, and performs no provider call. `human_presence` remains
+`not-observed`, `delivery` remains `not-requested`; configured routes do not prove
+reachability, message admission or reading. An authorized `/human.tell` continues
+through the selected existing application/communication surface and its receipts.
+The portable `daimon-home human` client makes this one read through its existing
+receiving owner binding. Pairing and revocation are rechecked on every request.

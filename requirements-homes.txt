@@ -1,4 +1,7 @@
 # Optional home passkey adapter; no body/native harness dependency change.
+cheroot==11.1.2
+jaraco.functools==4.6.0
+more-itertools==11.2.1
 webauthn==3.0.1
 cbor2==6.1.5
 pyasn1==0.6.4

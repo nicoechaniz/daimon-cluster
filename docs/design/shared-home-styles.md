@@ -227,3 +227,30 @@ Homemaker modules/fonts support conditional revalidation, and the owner entry
 preloads its actual module roots. No cache restores old private grants, native
 actions or style preferences. New code changes asset URLs; no model wakeup or
 global Stop is part of this browser delivery.
+
+### Private Homemaker code reuse
+
+Homemaker's source application remains private and independently owned. Its
+immutable built UI assets use a private browser-cache namespace derived from the
+selected immutable creator source path, exact gateway adapter bytes and selected
+bootstrap implementation. HTML
+rewrites only registered relative assets plus its fixed bootstrap/preload paths;
+relative ESM/CSS dependencies inherit the namespace. Any owning release or adapter
+change selects another namespace; unknown versions fail closed. Never edit the
+selected creator release in place.
+
+A first network read still requires the current registered human browser and
+scope, with the same source-path checks. Cached generic code contains no visitor
+identity, recipes, selections or grants. HTML/API/content-state responses remain
+fresh; logout/revocation still denies new protected reads and all data operations.
+The original unversioned asset route retains revalidation for compatibility.
+There is no public source cache, copied editor, new identity scheme or creator
+selection change. Ordinary private browser HTTP-cache eviction owns old generic
+code; this adds no persistent application cache or background process.
+
+Qualification covers current actor/source rejection and unknown/traversal paths,
+plus actual HTTPS Chromium cold/warm resource and identity-call counts with
+synthetic identities against the selected source. Production human-cookie/device
+startup remains a distinct acceptance observation; a sign-in shell is not an
+authenticated editor waterfall. This improves code reuse, while cold-load
+bundling and remaining dynamic request/transport costs require measured follow-up.

@@ -118,3 +118,40 @@ and source rollback do not establish completion of any live client request.
 Keep the receiving operator's bounded response and browser-stage measurements
 alongside this test. Cluster #405 retains the remaining device, large-model and
 transport qualification work.
+
+## Frozen viewport notes and loading feedback
+
+The opt-in3D renderer advertises `imageCapture` and its current source through the
+existing review-adapter capability response. Mark view asks that bound adapter to
+confirm the rendered model/camera and capture the2D viewport, then opens a modal
+frozen-image drawing surface. The opaque renderer never receives login credentials.
+Pointer strokes support touch/pen/mouse and undo, bounded to256strokes/20000points.
+Done attempts clipboard PNG export in the click gesture and independently saves
+through the existing authenticated parent home. Clipboard refusal leaves a usable
+saved link and an explicit retry/open-image path. An uncertain save retains its
+exact operation/payload for deduplicated retry; do not edit/re-author a failed save
+silently. Closing the workflow releases its retained image/canvas/strokes.
+
+`POST /review-notes` requires current shared identity, exact browser Origin and
+current plus pinned-source resource permission. It stores a PNG≤3MiB/2million
+pixels plus≤64KiB snapshot; the model remains immutable. Each home retains at most
+128notes/128MiB combined PNG/metadata. Notes remain until their author explicitly
+deletes them; full storage refuses new saves without discarding older references.
+The note page provides author-only deletion (also permitted after model access is
+lost). GET page/image/metadata always checks current source and historical-version
+access; links grant nothing, public model access alone cannot read a saved note
+without authentication. No annotation list or new public catalog is created.
+
+The existing session SQLite owns the additive `review_notes` table. Code rollback
+ignores that table and preserves its data; never restore an old session database.
+The only larger body allowance is the fixed note-upload route (5MiB); other POST
+limits are unchanged. Only the work-preview page permits data images for the local
+frozen-canvas workflow; auth and other page CSPs retain their earlier policy.
+
+Project selection paints a viewport-centered live status immediately, including
+model-only/fullscreen mode. Parent stages report access check, download and
+preparation without invented percentages. Before synchronous child validation,
+two animation frames allow the loading status to paint. Matching commit clears
+busy state; error/timeout briefly explains that the previous view was kept;
+hide/cancel/exit clear pending visual state and superseded preparation cannot stage.
+There is no new polling, model attention, grant, or background service.

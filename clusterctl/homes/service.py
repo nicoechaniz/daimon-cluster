@@ -654,7 +654,7 @@ def preview(app, home, reference, version, subject, vpn, *, origin, parent_token
             download_root = "/works/" + reference + "/" + selected["version_ref"] + "/"
             display = display.replace('<iframe ', '<iframe data-live-review="' + ('current' if version == 'current' else 'pinned') + '" ', 1)
             display = display.replace('<iframe ', '<iframe data-download-root="' + esc(download_root, quote=True) + '" data-download-files="' + esc(json.dumps(media_files), quote=True) + '" ', 1)
-        return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected["title"])} · {esc(app.homes[home]["name"])}</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script><script src="/work-live-review.js" defer></script><script src="/work-view.js" defer></script></head><body class="work-view">{display}</body></html>'''.encode()
+        return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected["title"])} · {esc(app.homes[home]["name"])}</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script><script src="/work-live-review.js" defer></script><script src="/work-view.js" defer></script><script src="/work-annotations.js" defer></script></head><body class="work-view">{display}</body></html>'''.encode()
     versions = ['<li><a href="/view/' + reference + '">Current version</a></li>']
     for previous in reversed(current.get("versions", [])):
         if app.policy.allows(previous, home=home, subject=subject, dedicated_vpn=vpn):
@@ -710,7 +710,7 @@ def handler(app, *, owner=False):
             self._headers_sent = True
             super().end_headers()
 
-        def respond(self, status, body, kind="application/json", cookies=(), headers=(), form_action="'self'", style_inline=False, telegram_sdk=False, cache_control="no-store"):
+        def respond(self, status, body, kind="application/json", cookies=(), headers=(), form_action="'self'", style_inline=False, telegram_sdk=False, cache_control="no-store", image_data=False):
             if isinstance(body, dict):
                 body = json.dumps(body).encode()
             if status == 200 and cache_control != 'no-store':
@@ -739,7 +739,7 @@ def handler(app, *, owner=False):
                 + (" https://telegram.org/js/telegram-web-app.js" if telegram_sdk else "")
                 + "; frame-src "
                 + frames
-                + "; img-src 'self' "
+                + "; img-src 'self' " + ("data: " if image_data else "")
                 + frames
                 + "; media-src "
                 + frames
@@ -816,6 +816,8 @@ def handler(app, *, owner=False):
                 # after external I/O. Only subsequent read routes use a snapshot.
                 read_snapshot = getattr(app.authority, 'read_snapshot', nullcontext)
                 proofs.enter_context(read_snapshot())
+                from .review_notes import routes as note_routes
+                if note_routes(self, app, 'GET'): return
                 if app.designs:
                     from .homemaker import routes
                     if routes(self, app, 'GET'): return
@@ -848,7 +850,7 @@ def handler(app, *, owner=False):
                     return
                 path = urlsplit(self.path).path
                 public_asset = path in (
-                    '/home.css', '/work-live-review.js', '/work-view.js',
+                    '/home.css', '/work-live-review.js', '/work-view.js', '/work-annotations.js', '/work-annotations.css',
                     '/home-style.js', '/artifact-style.js', '/home-miniapp-login.js',
                     '/access-client.js', '/fonts/space-grotesk-latin.woff2',
                 ) or (path == '/passkeys.js' and app.passkeys is not None)
@@ -987,7 +989,12 @@ def handler(app, *, owner=False):
                             display_mode=display_mode,
                         ),
                         "text/html; charset=utf-8",
+                        image_data=(display_mode == "work"),
                     )
+                elif path == '/work-annotations.css':
+                    self.respond(200, (Path(__file__).parent / 'assets' / 'work-annotations.css').read_bytes(), 'text/css; charset=utf-8')
+                elif path == '/work-annotations.js':
+                    self.respond(200, (Path(__file__).parent / 'assets' / 'work-annotations.js').read_bytes(), 'text/javascript; charset=utf-8')
                 elif path == "/work-live-review.js":
                     self.respond(200, (Path(__file__).parent / "assets" / "work-live-review.js").read_bytes(), "text/javascript; charset=utf-8")
                 elif path == "/work-view.js":
@@ -1245,7 +1252,8 @@ def handler(app, *, owner=False):
         def do_POST(self):
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                if not 0 <= length <= 65536:
+                note_upload = urlsplit(self.path).path == '/review-notes' and not owner
+                if not 0 <= length <= (5 * 1024 * 1024 if note_upload else 65536):
                     raise ValueError("invalid_request_size")
                 data = self.rfile.read(length)
                 if len(data) != length:
@@ -1272,6 +1280,8 @@ def handler(app, *, owner=False):
                 if app.sso:
                     from .login import routes
                     if routes(self, app, 'POST', data): return
+                from .review_notes import routes as note_routes
+                if note_routes(self, app, 'POST', data): return
                 if app.designs:
                     from .homemaker import routes
                     if routes(self, app, 'POST', data): return

@@ -71,6 +71,26 @@ checks. This is not an extension-based static allowlist, a new audience, a
 session cache or permission to cache private responses. Login-host assets remain
 owned by their preceding shared-login dispatcher.
 
+## Repeated packed meshes
+
+The packed decoder shares vertices/faces for repeated meshes within one decoded
+gallery. A reuse requires matching coordinate origin, scale and counts, a digest
+match, and an exact encoded-byte comparison against already validated geometry.
+Different metadata remains on independent part objects. Existing whole-buffer
+integrity, expansion, coordinate and face-index limits are unchanged. No new
+wire schema or child protocol is required: structured clone preserves these
+aliases while the renderer reads the same arrays. Source CAD and published
+gallery bytes remain unchanged. The lookup exists only during that decode;
+the existing conservative cache accounting still counts every scene/part and
+does not increase its retention allowance because meshes happen to be shared.
+
+Qualify identical meshes, different geometry/coordinates, independent metadata,
+forced digest collisions and alias preservation through structured clone with
+`tests/test_home_live_review.py`. Compare actual-child switching through the
+post-commit painted frame, not only its earlier validation acknowledgment.
+An instrumented browser may time the copy/receive stages without changing live
+service code; label that as an experiment until exact receiving deployment.
+
 ## HTTP transport qualification
 
 `tests/test_home_gateway.py::test_slow_connections_expire_without_blocking_authorized_reads`

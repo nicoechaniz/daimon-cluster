@@ -103,7 +103,13 @@ def routes(request, app, method, data=None):
                 or not {'review-live.json', 'gallery.json'}.issubset(selected.get('files', []))
                 or not selected.get('entrypoint', '').endswith('.html')):
             raise ValueError('review_note_source_denied')
-        identifier = store.save(home, subject.ref, payload)
+        try:
+            identifier = store.save(home, subject.ref, payload)
+        except ValueError as error:
+            if str(error) not in ('review_note_storage_full', 'review_note_operation_conflict'):
+                raise
+            request.respond(409, {'error': str(error)})
+            return True
         request.respond(200, {'url': origin + '/review-notes/' + identifier})
         return True
     if not match:

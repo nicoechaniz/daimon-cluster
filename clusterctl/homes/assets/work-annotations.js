@@ -23,7 +23,7 @@ window.addEventListener('message',event=>{
  const request=pending;pending=null;clearTimeout(request.timer);data.ok?request.resolve(data.result):request.reject(Error('Capture could not be confirmed'));
 });
 function repaint(){ctx.clearRect(0,0,canvas.width,canvas.height);if(photo)ctx.drawImage(photo,0,0);ctx.lineCap='round';ctx.lineJoin='round';
- for(const stroke of strokes){ctx.strokeStyle=stroke.color;ctx.lineWidth=stroke.width;ctx.beginPath();for(let i=0;i<stroke.points.length;i++){const [x,y]=stroke.points[i];i?ctx.lineTo(x,y):ctx.moveTo(x,y);}ctx.stroke();}}
+ for(const stroke of strokes){ctx.strokeStyle=stroke.color;ctx.lineWidth=stroke.width;if(stroke.points.length===1){ctx.fillStyle=stroke.color;ctx.beginPath();ctx.arc(stroke.points[0][0],stroke.points[0][1],stroke.width/2,0,Math.PI*2);ctx.fill();continue;}ctx.beginPath();for(let i=0;i<stroke.points.length;i++){const [x,y]=stroke.points[i];i?ctx.lineTo(x,y):ctx.moveTo(x,y);}ctx.stroke();}}
 function point(event){const r=canvas.getBoundingClientRect();return [Math.max(0,Math.min(canvas.width,(event.clientX-r.left)*canvas.width/r.width)),Math.max(0,Math.min(canvas.height,(event.clientY-r.top)*canvas.height/r.height))];}
 button.onclick=async()=>{
  button.disabled=true;status.textContent='Freezing view…';

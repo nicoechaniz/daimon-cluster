@@ -8,11 +8,14 @@ that projection is not a Matrix human membership event.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
+import copy
 import hashlib
 import json
 from pathlib import Path
+import threading
 import time
 
 from .policy import Actor
@@ -42,6 +45,40 @@ class NativeAuthority:
         self.human_rosters = human_rosters
         self.clock = clock
         self._read_snapshot = ContextVar("home_public_proofs", default=None)
+        # Successful public constructors only; never cache grants/file reads.
+        self._proof_cache = OrderedDict()
+        self._proof_cache_bytes = 0
+        self._proof_cache_lock = threading.RLock()
+        self._proof_cache_entries = 16
+        self._proof_cache_limit = 16 * 1024 * 1024
+
+    def _constructed(self, kind, value, construct):
+        # The exact complete input, including unknown fields, distinguishes hits.
+        # 64x canonical bytes +64KiB is conservative retention accounting, not a
+        # process peak-memory guarantee; oversize inputs bypass retention.
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                             allow_nan=False).encode()
+        charge = 64 * len(encoded) + 65536
+        if charge > self._proof_cache_limit:
+            return construct(value)
+        key = (kind, encoded)
+        with self._proof_cache_lock:
+            if key in self._proof_cache:
+                cached, _ = self._proof_cache[key]
+                result = copy.deepcopy(cached)
+                self._proof_cache.move_to_end(key)
+                return result
+            result = construct(value)  # Failure never admits an entry.
+            private = copy.deepcopy(result)
+            while self._proof_cache and (
+                    len(self._proof_cache) >= self._proof_cache_entries or
+                    self._proof_cache_bytes + charge > self._proof_cache_limit):
+                _, (_, removed) = self._proof_cache.popitem(last=False)
+                self._proof_cache_bytes -= removed
+            self._proof_cache[key] = (private, charge)
+            self._proof_cache_bytes += charge
+            return result
+
 
     @contextmanager
     def read_snapshot(self):
@@ -77,8 +114,9 @@ class NativeAuthority:
         source = host_config(self.binding_source)
         results = []
         for row in source["participants"]:
-            authority = authority_from_document(
-                json.loads(protected_read(Path(row["authority_file"])))
+            authority = self._constructed("authority",
+                json.loads(protected_read(Path(row["authority_file"]))),
+                authority_from_document,
             )
             if authority.manifest.being_ref != row["being_ref"]:
                 raise ValueError("home_identity_source_mismatch")
@@ -195,7 +233,13 @@ class NativeAuthority:
         candidates = [source, *source.get("sources", {}).get("known_beings", [])]
         histories = {}
         for candidate in candidates:
-            authority = public_history(candidate)
+            # Only the public fields consumed by public_history are retained.
+            # Epoch dictionaries remain complete so invalid extra fields refuse.
+            document = {k: candidate[k] for k in (
+                "control_artifacts", "control_head", "manifest", "credentials",
+                "incarnations")}
+            document["authority_history"] = candidate.get("authority_history", [])
+            authority = self._constructed("history", document, public_history)
             reference = authority.manifest.being_ref
             if (
                 reference in histories

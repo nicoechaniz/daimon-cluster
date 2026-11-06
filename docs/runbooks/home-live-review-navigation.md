@@ -282,3 +282,25 @@ Actual browser before/after must separate authorization, body transfer,
 serialization/parse and visible render; small synthetic geometry alone does not
 establish a production improvement. Existing published renderer HTML needs its
 explicit compatible refresh; selecting a parent does not upgrade old artifacts.
+
+### Verified public-proof reconstruction
+
+The shared gateway's `NativeAuthority` retains only successfully constructed
+public proof objects, keyed by constructor kind and exact canonical constructor
+input. It reads protected sources again before looking up the cache and still
+checks current origin, source forks/pins, actor revision, sessions, relationship
+cards and roster expiry. This is not a cached permission decision or a TTL grant.
+
+Each authority instance has a private synchronized LRU: at most16entries and
+16MiB of conservative accounting (64times canonical input bytes plus64KiB per
+entry). Oversize proofs bypass retention. Accounting bounds retained eligibility;
+it is not a process peak-heap guarantee. Returned proof objects are defensive
+copies because SDK frozen dataclasses contain mutable nested state. Exceptions
+never populate a successful entry. No disk cache, credential storage or new
+worker/timer is introduced; restarting the gateway drops this disposable cache.
+
+Qualification must exercise changed controls/history with unchanged manifests,
+invalid/unreadable sources after warming, current-source forks/pins, time-based
+and revoked authorization, nested caller mutation, concurrent access and byte/
+entry eviction. Compare actual authorized manifest response times before/after;
+constructor microbenchmarks alone do not establish browser or network latency.

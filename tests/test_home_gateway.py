@@ -804,3 +804,58 @@ def test_slow_connections_expire_without_blocking_authorized_reads(tmp_path):
             assert set(slow).issubset(finished)
             assert not active
             assert observed_timeouts and set(observed_timeouts) == {30.0}
+
+
+def test_installed_public_assets_ignore_identity_but_keep_origin_and_private_checks(tmp_path, monkeypatch):
+    from http.client import HTTPConnection
+    from urllib.parse import urlsplit
+    from tests.test_home_passkeys import system, approved
+
+    app, _ = system.__wrapped__(tmp_path)
+    token, _ = approved(app)
+    original = app.identity
+    calls = []
+
+    def identity(*args):
+        calls.append(args)
+        return original(*args)
+    monkeypatch.setattr(app, 'identity', identity)
+    assets = ['/home.css', '/work-live-review.js', '/work-view.js', '/home-style.js',
+              '/artifact-style.js', '/home-miniapp-login.js', '/access-client.js',
+              '/passkeys.js', '/fonts/space-grotesk-latin.woff2']
+    with serving(handler(app)) as base:
+        with closing(HTTPConnection(urlsplit(base).netloc, timeout=5)) as connection:
+            def read(path, extra=None, method='GET'):
+                connection.request(method, path, headers={'Host':'one.example.test', **(extra or {})})
+                response = connection.getresponse()
+                return response.status, response.read(), dict(response.getheaders())
+            for path in assets:
+                anonymous = read(path)
+                assert anonymous[0] == 200
+                for credentials in ({'Cookie':'__Host-home='+token},
+                                    {'Authorization':'Bearer '+token},
+                                    {'Cookie':'__Host-home=untrusted'}):
+                    response = read(path, credentials)
+                    assert response[:2] == anonymous[:2]
+                head = read(path, {'Cookie':'__Host-home='+token}, 'HEAD')
+                assert head[0] == 200 and head[1] == b''
+                assert head[2]['Content-Length'] == str(len(anonymous[1]))
+            assert calls == []  # Public installed bytes need no session/authority lookup.
+
+            for headers in ({'Host':'unknown.example.test'},
+                            {'Origin':'https://other.example.test'},
+                            {'X-Daimon-Home':'unknown'}):
+                assert read('/work-live-review.js', headers)[0] == 404
+            assert calls == []
+
+            # Personal identity is still resolved, including after revocation.
+            cookie = {'Cookie':'__Host-home='+token}
+            status, body, _ = read('/access/status', cookie)
+            assert status == 200 and json.loads(body)['signed_in'] is True
+            assert len(calls) == 1
+            app.authority.people.pop('human')
+            status, body, _ = read('/access/status', cookie)
+            assert status == 200 and json.loads(body)['signed_in'] is False
+            assert len(calls) == 2
+            assert read('/access/identity', cookie)[0] == 401
+            assert len(calls) == 3

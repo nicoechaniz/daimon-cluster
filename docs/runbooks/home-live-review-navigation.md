@@ -61,6 +61,16 @@ measure phone rendering. Keep the preceding immutable gateway release for a
 source-only rollback through the existing service override; preserve the current
 config, credentials, session/resource databases and Homemaker source selection.
 
+Installed public assets (the exact home CSS, viewer/access/style JavaScript,
+enabled passkey JavaScript and installed font routes) validate the same home,
+Host and Origin without resolving ambient identity. Their bytes do not depend
+on a session, so an authenticated reader must not replay authority proofs to
+download them. GET and HEAD use the same path; private data, status/identity,
+personal style, publication, SSO and content authorization retain their existing
+checks. This is not an extension-based static allowlist, a new audience, a
+session cache or permission to cache private responses. Login-host assets remain
+owned by their preceding shared-login dispatcher.
+
 ## HTTP transport qualification
 
 `tests/test_home_gateway.py::test_slow_connections_expire_without_blocking_authorized_reads`

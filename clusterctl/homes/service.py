@@ -754,7 +754,7 @@ def handler(app, *, owner=False):
             if self.command != "HEAD":
                 self.wfile.write(body)
 
-        def context(self, *, login_callback=False, public_style=False):
+        def context(self, *, login_callback=False, public_style=False, resolve_identity=True):
             home = self.headers.get("X-Daimon-Home", "")
             network = self.headers.get("X-Daimon-Vpn", "")
             if not home:
@@ -783,6 +783,10 @@ def handler(app, *, owner=False):
                 # A public stylesheet never consumes ambient credentials or
                 # exposes viewer preferences, even from a same-site browser.
                 return home, origin, None, False, {}, ''
+            if not resolve_identity:
+                # Installed public files are independent of ambient credentials.
+                # Keep the same home, Host and Origin validation above.
+                return home, origin, None, network == '1', {}, ''
             cookies = SimpleCookie()
             cookies.load(self.headers.get("Cookie", ""))
             token = cookies.get("__Host-home")
@@ -842,8 +846,14 @@ def handler(app, *, owner=False):
                         return
                     self.respond(200, css.encode(), 'text/css; charset=utf-8')
                     return
-                home, origin, subject, vpn, cookies, parent_token = self.context()
                 path = urlsplit(self.path).path
+                public_asset = path in (
+                    '/home.css', '/work-live-review.js', '/work-view.js',
+                    '/home-style.js', '/artifact-style.js', '/home-miniapp-login.js',
+                    '/access-client.js', '/fonts/space-grotesk-latin.woff2',
+                ) or (path == '/passkeys.js' and app.passkeys is not None)
+                home, origin, subject, vpn, cookies, parent_token = self.context(
+                    resolve_identity=not public_asset)
                 if path.startswith("/apps/"):
                     from .launcher import routes
                     if routes(self, app, path, home, subject, vpn): return

@@ -248,3 +248,31 @@ cached data, failed downloads, hidden views, publication changes, pinned views
 and full legacy fallback. Production publication and actual device performance
 remain separate receiving checks. Rollback selects the previous gateway and
 project publication; never restore application databases or change grants.
+
+
+## Opt-in bounded iframe JSON text
+
+The parent advertises `reviewJSON:true`; only a source/origin-validated explicit
+`home-artifact:review-json-support` enables `galleryJSON` in existing update
+messages. All envelope fields, current authorization/digest checks, model
+validation, intent cancellation and two-phase commit remain unchanged. Children
+without this capability receive the original `gallery` object. Updated children
+reject ambiguous object+text, malformed/oversized text and unsupported senders,
+retaining the previous view.
+
+Before stringify, the parent counts actual JSON punctuation, escaped UTF8,
+metadata and finite numeric representations. It stops at4MiB, one million nodes
+or32levels; unsupported values and negative zero fall back without losing original
+semantics. Repeated references count each serialization. A final allocation-free
+UTF8 consistency check guards the result. No serialized-string cache or new
+endpoint exists. The4MiB cap is serialized size, not a heap/GPU bound; JSON loses
+shared-array aliases. Existing3entry/48MiB conservative retention stays.
+
+Qualify Unicode/control escapes, fractional/exponent numbers, repeated references,
+negative zero, oversized/deep metadata and exact boundary behavior. Run the paired
+opaque-child fixture with full ordered geometry/metadata equivalence, malformed
+text, legacy fallback and existing revoked-cache/cancellation/restore races.
+Actual browser before/after must separate authorization, body transfer,
+serialization/parse and visible render; small synthetic geometry alone does not
+establish a production improvement. Existing published renderer HTML needs its
+explicit compatible refresh; selecting a parent does not upgrade old artifacts.

@@ -406,6 +406,9 @@ HOME_FILES = {'clusterctl/homes/applications.py', 'clusterctl/homes/__init__.py'
     'tools/qualify_home_style_owner.py',
     'clusterctl/homes/assets/home-style.js', 'clusterctl/homes/assets/artifact-style.js',
     'clusterctl/homes/assets/work-live-review.js', 'tests/test_home_live_review.py',
+    'clusterctl/homes/review_notes.py', 'clusterctl/homes/assets/work-annotations.js',
+    'clusterctl/homes/assets/work-annotations.css', 'tests/test_home_review_notes.py',
+    'clusterctl/homes/assets/work-view.js',
     'docs/runbooks/home-live-review-navigation.md',
     'clusterctl/homes/assets/home-miniapp-login.js',
     'docs/design/shared-home-styles.md', 'tests/js/home-style-client.cjs',
@@ -425,7 +428,7 @@ HOME_FILES = {'clusterctl/homes/applications.py', 'clusterctl/homes/__init__.py'
     'tests/test_home_owner_authority.py'}
 HOME_TESTS = ('tests/test_home_owner_authority.py', 'tests/test_home_launcher.py', 'tests/test_home_access.py', 'tests/test_home_gateway.py', 'tests/test_home_host.py',
               'tests/test_home_passkeys.py', 'tests/test_home_client.py', 'tests/test_home_styles.py', 'tests/test_home_login.py', 'tests/test_home_homemaker.py',
-              'tests/test_home_live_review.py', 'tests/test_auth.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
+              'tests/test_home_live_review.py', 'tests/test_home_review_notes.py', 'tests/test_auth.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 
 
 HOME_PROVISION_FILES = HOME_FILES | {'clusterctl/onboarding_homes.py', 'clusterctl/onboarding_worker.py',

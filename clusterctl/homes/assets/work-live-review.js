@@ -253,6 +253,7 @@ function installLiveReview(frame) {
     requestTimeout = setTimeout(() => { controller.abort(); if (acknowledgment) { post({type:'home-artifact:review-cancel',requestId:acknowledgment.requestId}); acknowledgment.resolve(false); acknowledgment = null; } }, 20000);
     const requested = target, candidateResource = requested?.resource || resource;
     try {
+      if (requested) post({type:'home-artifact:review-progress',stage:'authorizing'});
       const response = await fetch('/works/' + candidateResource + '/current/review-live.json', {cache:'no-store', signal:controller.signal});
       if ([401,403,404].includes(response.status)) geometryCache.evictResource(candidateResource);
       const next = response.headers.get('X-Home-Version');
@@ -264,10 +265,12 @@ function installLiveReview(frame) {
         const cached = geometryCache.get(cacheKey);
         let gallery = cached?.gallery, wireBytes = cached?.wireBytes;
         if (!cached) {
+          if (requested) post({type:'home-artifact:review-progress',stage:'downloading'});
           const response = await fetch('/works/' + candidateResource + '/' + next + '/gallery.json', {cache:'no-store', signal:controller.signal});
           if ([401,403,404].includes(response.status)) geometryCache.evictResource(candidateResource);
           if (response.headers.get('X-Home-Version') !== next) throw Error('Review version changed');
           const data = await bytes(response, 25 * 1024 * 1024); wireBytes = data.byteLength;
+          if (requested) post({type:'home-artifact:review-progress',stage:'preparing'});
           const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)), b => b.toString(16).padStart(2,'0')).join('');
           if (digest !== manifest.sha256) throw Error('Review payload mismatch');
           gallery = await decodeReviewGallery(JSON.parse(new TextDecoder().decode(data)));

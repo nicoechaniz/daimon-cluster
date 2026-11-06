@@ -173,3 +173,30 @@ agent process, presence log or new login/store is involved. Only a subscribed
 viewer containing the matching live client uses this bridge; ordinary artifacts
 and selected media downloads keep their existing behavior. The renderer owns
 mesh validation and state-preserving replacement, not the authority boundary.
+
+
+### Fresh conditional broker observation
+
+The shared gateway may send a strong quoted `"sha256-DIGEST"` If-None-Match on
+its authenticated internal `/_home/state` request. A compatible Home broker reads
+fresh submitted state and computes Registry's sorted compact JSON/allow_nan=False
+UTF-8 digest before returning304. There is no permission cache or second state
+writer. Older brokers return their bounded200 JSON and keep the previous equality
+path. Older gateways keep receiving200 from new brokers.
+
+The candidate digest comes from the committed registry, not an assertion of
+serving freshness. After an exact solicited304 (urllib HTTPError, closed), the
+gateway reads the latest committed row again and requires the same digest and
+existing owner binding. A concurrent sync/withdrawal refuses. Weak, missing,
+duplicate, malformed or unsolicited304 cannot authorize reuse; no automatic
+second request extends the existing timeout. Successful200 remains size-bounded,
+parsed and compared through Registry.current; response ETag is not body proof.
+Entries/selected still evaluate current identity, revocation and resource grants.
+
+Rollout uses the existing qualified Home package updater and scoped broker service
+reload, followed by a source-only shared-gateway selection with its existing
+configuration, sessions, registry and compatible rollback preserved. New broker /
+old gateway and old broker / new gateway remain valid mixed pairs. No state,
+registry or session database rollback accompanies software rollback. Measure
+cross-host bytes and latency: this avoids metadata-body transfer, not the fresh
+broker read/hash or network round trip, and establishes no fleet capacity SLO.

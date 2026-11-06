@@ -859,3 +859,118 @@ def test_installed_public_assets_ignore_identity_but_keep_origin_and_private_che
             assert len(calls) == 2
             assert read('/access/identity', cookie)[0] == 401
             assert len(calls) == 3
+
+
+@pytest.mark.parametrize('mode', ['conditional', 'old-broker', 'changed-body'])
+def test_backend_conditional_wire_and_legacy_pairs(tmp_path, mode):
+    from clusterctl.homes.registry import projection_digest
+    from clusterctl.homes.service import Backend
+    state = {'schema': 1, 'entries': []}
+    digest = projection_digest(state)
+    calls = []
+    class Origin(BaseHTTPRequestHandler):
+        def log_message(self, *_): pass
+        def do_GET(self):
+            assert self.headers.get('Authorization') == 'Bearer fixture'
+            conditional = self.headers.get('If-None-Match')
+            calls.append(conditional)
+            tag = '"sha256-' + digest + '"'
+            if mode == 'conditional' and conditional == tag:
+                self.send_response(304);self.send_header('ETag', tag);self.end_headers();return
+            body = json.dumps(state if mode != 'changed-body' else {'schema': 1, 'entries': [], 'changed': True}).encode()
+            self.send_response(200);self.send_header('Content-Length', str(len(body)));self.end_headers();self.wfile.write(body)
+    with serving(Origin) as url:
+        backend = Backend({'backend': url, 'gateway_token_file': key(tmp_path, 'key', 'fixture')})
+        result = backend.state_if_changed(digest, timeout=2)
+        if mode == 'conditional': assert result is Backend.NOT_MODIFIED
+        elif mode == 'old-broker': assert result == state
+        else: assert result != state
+        assert backend.state(timeout=2) is not None  # Old client/new broker uses full200.
+    assert calls == ['"sha256-' + digest + '"', None]
+
+
+@pytest.mark.parametrize('etag', [None, 'W/"sha256-' + 'a'*64 + '"', '"sha256-' + 'b'*64 + '"', 'duplicate'])
+def test_backend_rejects_bad304_and_closes_response(tmp_path, monkeypatch, etag):
+    from clusterctl.homes.service import Backend
+    class Origin(BaseHTTPRequestHandler):
+        def log_message(self, *_): pass
+        def do_GET(self):
+            self.send_response(304)
+            if etag is not None:
+                self.send_header('ETag', etag)
+                if etag == 'duplicate': self.send_header('ETag', '"sha256-' + 'a'*64 + '"')
+            self.end_headers()
+    with serving(Origin) as url:
+        backend = Backend({'backend': url, 'gateway_token_file': key(tmp_path, 'key', 'fixture')})
+        errors = [];original = backend.open
+        def opened(*args, **kwargs):
+            try: return original(*args, **kwargs)
+            except urllib.error.HTTPError as error: errors.append(error);raise
+        monkeypatch.setattr(backend, 'open', opened)
+        with pytest.raises(ValueError, match='invalid_state_digest_observation'):
+            backend.state_if_changed('a'*64, timeout=2)
+        assert errors and errors[0].fp.closed
+        with pytest.raises(urllib.error.HTTPError) as result: backend.state(timeout=2)
+        result.value.close()  # An unsolicited304 never authorizes reuse.
+
+
+@pytest.mark.parametrize('change', ['unsynced-body', 'registry-update', 'withdrawal', 'owner', 'revocation', 'stable'])
+def test_conditional_observation_preserves_final_registry_and_permission_checks(tmp_path, change):
+    from clusterctl.homes.registry import projection_digest
+    from clusterctl.homes.service import Backend
+    authority = Authority()
+    state = {'schema': 1, 'entries': [selected('a'*32, 'individual', recipients=['human-one'])]}
+    changed = deepcopy(state);changed['entries'][0]['title'] = 'New checkpoint'
+    changed['entries'][0]['version_ref'] = version_digest(changed['entries'][0])
+    calls = []
+    class Origin:
+        def state_if_changed(self, digest, *, timeout=15):
+            calls.append((digest, timeout))
+            if change == 'unsynced-body': return changed
+            if change in ('registry-update', 'withdrawal'):
+                register(changed if change == 'registry-update' else {'schema': 1, 'entries': []}, 1)
+            elif change == 'owner': app.homes['one']['owner_being_ref'] = 'owner-two'
+            elif change == 'revocation': authority.people['human-one'] = Actor('human-one', 'human', 'v1', 'Disabled', enabled=False)
+            return Backend.NOT_MODIFIED
+    app = Application({'homes': {'one': {'owner_being_ref': 'owner-one'}}}, authority, Sessions(tmp_path), backends={'one': Origin()})
+    def register(value, revision):
+        return app.registry.register(home='one', owner='owner-one', state=value, expected_revision=revision, known_actor=authority.actor, known_tribe=lambda _: True)
+    register(state, 0)
+    human = authority.actor('human-one')
+    if change == 'stable': assert app.entries('one', human)
+    else: assert not app.entries('one', human)
+    assert calls == [(projection_digest(state), 15)]
+
+
+@pytest.mark.parametrize('body,status,reason', [(b'x'*65, 200, 'home_manifest_too_large'), (b'{', 200, ''), (b'{}', 202, 'invalid_state_observation_status')])
+def test_conditional200_preserves_body_and_status_bounds(tmp_path, monkeypatch, body, status, reason):
+    from clusterctl.homes import service
+    monkeypatch.setattr(service, 'MAX_MANIFEST', 64)
+    class Origin(BaseHTTPRequestHandler):
+        def log_message(self, *_): pass
+        def do_GET(self):
+            self.send_response(status);self.send_header('Content-Length', str(len(body)))
+            # A matching ETag never substitutes for validating a200 body.
+            self.send_header('ETag', '"sha256-' + 'a'*64 + '"');self.end_headers();self.wfile.write(body)
+    with serving(Origin) as url:
+        backend = service.Backend({'backend': url, 'gateway_token_file': key(tmp_path, 'key', 'fixture')})
+        with pytest.raises(ValueError, match=reason or None): backend.state_if_changed('a'*64, timeout=2)
+
+
+def test_http_null200_never_acknowledges_committed_projection(tmp_path):
+    from clusterctl.homes.service import Backend
+    from clusterctl.homes.registry import projection_digest
+    state = {'schema': 1, 'entries': [selected('a'*32, 'public')]}
+    digest = projection_digest(state)
+    class Origin(BaseHTTPRequestHandler):
+        def log_message(self, *_): pass
+        def do_GET(self):
+            assert self.headers['If-None-Match'] == '"sha256-' + digest + '"'
+            self.send_response(200);self.send_header('Content-Length', '4')
+            self.send_header('ETag', '"sha256-' + digest + '"');self.end_headers();self.wfile.write(b'null')
+    authority = Authority()
+    with serving(Origin) as url:
+        backend = Backend({'backend': url, 'gateway_token_file': key(tmp_path, 'key', 'fixture')})
+        app = Application({'homes': {'one': {'owner_being_ref': 'owner-one'}}}, authority, Sessions(tmp_path/'authority'), backends={'one': backend})
+        app.registry.register(home='one', owner='owner-one', state=state, expected_revision=0, known_actor=authority.actor, known_tribe=lambda _: True)
+        assert not app.publication('one', timeout=2)['entries']

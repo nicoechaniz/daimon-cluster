@@ -162,6 +162,8 @@ def private_text(path):
 
 
 class Backend:
+    NOT_MODIFIED = object()  # Distinct from every possible JSON200 value.
+
     def __init__(self, home):
         self.home = home
         url = urlsplit(home["backend"])
@@ -176,10 +178,14 @@ class Backend:
         ):
             raise ValueError("home_backend_must_be_loopback")
 
-    def open(self, path, *, method="GET", byte_range=None, timeout=15):
+    def open(self, path, *, method="GET", byte_range=None, timeout=15, state_digest=None):
         headers = {
             "Authorization": "Bearer " + private_text(self.home["gateway_token_file"])
         }
+        if state_digest is not None:
+            if path != '/_home/state' or method != 'GET' or not re.fullmatch('[a-f0-9]{64}', state_digest):
+                raise ValueError('invalid_state_digest_observation')
+            headers['If-None-Match'] = '"sha256-' + state_digest + '"'
         if byte_range:
             headers["Range"] = byte_range
 
@@ -193,12 +199,36 @@ class Backend:
         )
         return urllib.request.build_opener(NoRedirect).open(request, timeout=timeout)
 
+    @staticmethod
+    def _state_response(response):
+        data = response.read(MAX_MANIFEST + 1)
+        if len(data) > MAX_MANIFEST:
+            raise ValueError("home_manifest_too_large")
+        return json.loads(data)
+
     def state(self, *, timeout=15):
         with self.open("/_home/state", timeout=timeout) as response:
-            data = response.read(MAX_MANIFEST + 1)
-            if len(data) > MAX_MANIFEST:
-                raise ValueError("home_manifest_too_large")
-            return json.loads(data)
+            return self._state_response(response)
+
+    def state_if_changed(self, digest, *, timeout=15):
+        """NOT_MODIFIED only after a matching fresh authenticated observation."""
+        if not isinstance(digest, str) or not re.fullmatch('[a-f0-9]{64}', digest):
+            raise ValueError('invalid_state_digest_observation')
+        try:
+            response = self.open('/_home/state', timeout=timeout, state_digest=digest)
+        except urllib.error.HTTPError as error:
+            with error:
+                if error.code != 304:
+                    raise
+                if error.headers.get_all('ETag', []) != ['"sha256-' + digest + '"']:
+                    raise ValueError('invalid_state_digest_observation')
+                return self.NOT_MODIFIED
+        with response:
+            if response.status != 200:
+                raise ValueError('invalid_state_observation_status')
+            # Old brokers may ignore the condition. Validate their entire body
+            # through the same bounds and final registry equality as before.
+            return self._state_response(response)
 
 
 class Application:
@@ -269,9 +299,18 @@ class Application:
         return self.policy.current(row["actor"], row["revision"]) if row else None
 
     def publication(self, home, *, timeout=None):
-        observed = (self.backends[home].state() if timeout is None
-                    else self.backends[home].state(timeout=timeout))
-        committed = self.registry.current(home, observed_state=observed)
+        backend = self.backends[home]
+        digest = self.registry.committed_digest(home)
+        conditional = getattr(backend, 'state_if_changed', None)
+        if digest is not None and callable(conditional):
+            observed = conditional(digest, **({} if timeout is None else {'timeout': timeout}))
+            # Re-read the committed row AFTER the remote observation. A concurrent
+            # sync/withdrawal must not give the earlier projection a success.
+            committed = (self.registry.current_if_digest(home, digest) if observed is Backend.NOT_MODIFIED
+                         else self.registry.current(home, observed_state=observed))
+        else:
+            observed = backend.state() if timeout is None else backend.state(timeout=timeout)
+            committed = self.registry.current(home, observed_state=observed)
         return (
             committed["state"]
             if committed and committed["owner"] == self.homes[home]["owner_being_ref"]

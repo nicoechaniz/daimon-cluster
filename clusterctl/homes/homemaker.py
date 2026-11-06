@@ -53,6 +53,8 @@ class Homemaker:
             self.owner_application = owner_module.OwnerApplication(self.source,
                 authority=self.authority, resolve_context=self.verified_context, origin=origin,
                 allowed_returns=app.homemaker_returns)
+        self.asset_version = asset_namespace(self.source,
+            OWNER_BOOTSTRAP if self.owner_application else BOOTSTRAP)
 
     def verified_context(self, principal, *, target, mode):
         home = self.app.homemaker_home
@@ -267,6 +269,13 @@ mountOwnerEntry().catch(() => {
 
 
 
+def asset_namespace(source, bootstrap):
+    # Operator-selected release paths are immutable. Include the selected mode's
+    # generated code as well as the adapter, so one URL never names two scripts.
+    return hashlib.sha256(str(source).encode() + b'\0' + Path(__file__).read_bytes()
+                          + b'\0' + bootstrap.encode()).hexdigest()[:24]
+
+
 def editor_page(provider, entry='index.html', *, context='pair'):
     # Disable the source's standalone initializer and inject its existing
     # builder with this receiving transport. Its escaped shadow previews remain
@@ -278,8 +287,26 @@ def editor_page(provider, entry='index.html', *, context='pair'):
         (b'data-style-viewer="personal" ' if context == 'personal' else b'')), 1)
     if getattr(provider, 'owner_application', None):
         body = body.replace(b'</head>', b'<link rel="modulepreload" href="/homemaker/lib/owner-entry.js"><link rel="modulepreload" href="/homemaker/app.js"></head>')
-    return body.replace(b'data-builder-app', b'data-trusted-builder').replace(
+    body = body.replace(b'data-builder-app', b'data-trusted-builder').replace(
         b'</body>', b'<script src="/access-client.js"></script><script src="/home-style.js"></script><script type="module" src="/homemaker/bootstrap.js"></script></body>')
+    # Relative ESM imports and CSS dependencies inherit this release namespace.
+    # Only generic immutable UI code/assets are cached, never HTML or API state.
+    prefix = '/homemaker/static/' + provider.asset_version + '/'
+    import re
+    def rewrite(match):
+        name = match[2].decode()
+        if name.startswith('/homemaker/') and name[11:] in ('bootstrap.js','lib/owner-entry.js','app.js'):
+            name = name[11:]
+        elif name.startswith(('/', '#', 'https:', 'http:', 'data:')):
+            return match[0]
+        elif name != 'bootstrap.js':
+            try:provider.asset(name)
+            except ValueError:return match[0]
+        if name.lower().endswith(('.html', '.htm')):
+            return match[0]
+        return match[1] + b'="' + (prefix + name).encode() + b'"'
+    return re.sub(rb'(?<![\w:-])(src|href)="([^"]+)"', rewrite, body)
+
 
 
 def routes(handler, app, method, data=b''):
@@ -388,14 +415,27 @@ def routes(handler, app, method, data=b''):
             handler.respond(200, value);return True
     if method == 'GET':
         provider.scope(home, subject, context if path in ('/homemaker/', '/homemaker/miniapp.html') else 'personal')
+        static = None
+        if path.startswith('/homemaker/static/'):
+            import re
+            match = re.fullmatch('/homemaker/static/([a-f0-9]{24})/(.+)', path)
+            if not match or match[1] != provider.asset_version:
+                raise ValueError('homemaker_asset_release_unavailable')
+            static = unquote(match[2])
+            if static.lower().endswith(('.html', '.htm')):
+                raise ValueError('homemaker_html_requires_fresh_navigation')
+            path = '/homemaker/' + static
+        asset_cache = ('private, max-age=31536000, immutable' if static is not None
+                       else 'private, max-age=0, must-revalidate')
+
         if path in ('/homemaker/', '/homemaker/miniapp.html'):
             entry = 'miniapp.html' if path.endswith('miniapp.html') else 'index.html'
             handler.respond(200, editor_page(provider, entry, context=context), 'text/html; charset=utf-8',
                             style_inline=True, telegram_sdk=entry == 'miniapp.html');return True
         if path == '/homemaker/bootstrap.js':
             handler.respond(200, (OWNER_BOOTSTRAP if owner_app else BOOTSTRAP).encode(), 'text/javascript; charset=utf-8',
-                            cache_control='private, max-age=0, must-revalidate');return True
+                            cache_control=asset_cache);return True
         asset = provider.asset(unquote(path.removeprefix('/homemaker/')))
         handler.respond(200, asset.read_bytes(), mimetypes.guess_type(asset.name)[0] or 'application/octet-stream',
-                        cache_control='private, max-age=0, must-revalidate');return True
+                        cache_control=asset_cache);return True
     raise ValueError('unknown_homemaker_operation')

@@ -231,3 +231,49 @@ def test_native_style_operation_requires_publisher_credential_and_fixed_namespac
     app.authority.people['owner']=replace(app.authority.actor('owner'),revision='changed')
     with pytest.raises(ValueError,match='home_owner_binding_unavailable'):
         app.owner('one','publisher-secret','style-default',payload)
+
+
+def test_versioned_private_assets_keep_auth_and_invalidate_on_release(system, tmp_path):
+    from clusterctl.homes.homemaker import editor_page
+    app, _ = system
+    provider = receiving(app)
+    provider.public = tmp_path/'dist';provider.public.mkdir()
+    provider.asset_version = 'a'*24
+    (provider.public/'index.html').write_text('<html><head><link href="style.css" rel="stylesheet"></head><body data-builder-app><a href="guide.html">Guide</a><img data-src="app.js"><script type="module" src="app.js"></script></body></html>')
+    (provider.public/'app.js').write_text('export const safe = true;')
+    (provider.public/'style.css').write_text('body{color:black}')
+    (provider.public/'guide.html').write_text('<html>Guide</html>')
+    app.designs = provider
+    body = editor_page(provider, 'index.html', context='pair')
+    assert b'/homemaker/static/'+b'a'*24+b'/app.js' in body
+    assert b'/homemaker/static/'+b'a'*24+b'/bootstrap.js' in body
+    assert b'href="guide.html"' in body and b'data-src="app.js"' in body
+    token, _ = approved(app)
+    with serving(handler(app)) as base:
+        conn=HTTPConnection(urlsplit(base).netloc)
+        def get(path, credential=token):
+            conn.request('GET',path,headers={'Host':'one.example.test','Cookie':'__Host-home='+credential})
+            response=conn.getresponse();body=response.read()
+            return response.status,body,response.getheader('Cache-Control')
+        path='/homemaker/static/'+'a'*24+'/app.js'
+        code, data, cache = get(path)
+        assert code==200 and b'export const safe' in data and cache=='private, max-age=31536000, immutable'
+        assert get(path, '')[0]==404
+        assert get('/homemaker/static/'+'b'*24+'/app.js')[0]==404
+        assert get('/homemaker/static/'+'a'*24+'/../state')[0]==404
+        for name in ('index.html', 'guide.html', 'miniapp.html'):
+            assert get('/homemaker/static/'+'a'*24+'/'+name)[0]==404
+        # API/HTML remain fresh and current actor revocation still blocks network reads.
+        assert get('/homemaker/api/context')[2]=='no-store'
+        assert get('/homemaker/')[2]=='no-store'
+        app.authority.people.pop('human')
+        assert get(path)[0]==404
+        conn.close()
+
+
+def test_private_asset_namespace_tracks_release_and_selected_bootstrap(tmp_path):
+    from clusterctl.homes.homemaker import asset_namespace, BOOTSTRAP, OWNER_BOOTSTRAP
+    first = asset_namespace(tmp_path/'release-one', OWNER_BOOTSTRAP)
+    assert first == asset_namespace(tmp_path/'release-one', OWNER_BOOTSTRAP)
+    assert first != asset_namespace(tmp_path/'release-two', OWNER_BOOTSTRAP)
+    assert first != asset_namespace(tmp_path/'release-one', BOOTSTRAP)

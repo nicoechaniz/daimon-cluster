@@ -195,13 +195,25 @@ class Registry:
                 db.rollback()
                 raise
 
+    def committed_digest(self, home):
+        """Conditional observation candidate only, never a publication decision."""
+        with closing(self.sessions.connect()) as db:
+            row = db.execute('SELECT digest FROM publications WHERE home=?', (home,)).fetchone()
+            return row['digest'] if row else None
+
     def current(self, home, *, observed_state):
         """Return committed metadata only when the serving content agrees."""
+        return self.current_if_digest(home, projection_digest(observed_state))
+
+    def current_if_digest(self, home, observed_digest):
+        """Re-read after fresh authenticated backend observation of this digest."""
+        if not isinstance(observed_digest, str) or not re.fullmatch('[a-f0-9]{64}', observed_digest):
+            raise ValueError('invalid_home_observed_digest')
         with closing(self.sessions.connect()) as db:
             row = db.execute(
                 "SELECT * FROM publications WHERE home=?", (home,)
             ).fetchone()
-            if not row or row["digest"] != projection_digest(observed_state):
+            if not row or row["digest"] != observed_digest:
                 return None
             return {
                 "revision": row["revision"],

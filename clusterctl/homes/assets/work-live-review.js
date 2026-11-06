@@ -88,6 +88,53 @@ async function decodeReviewGallery(data) {
   return {scenes, navigation:data.navigation || {}};
 }
 
+// Optional index metadata never authorizes a path or substitutes for geometry.
+function reviewSceneMetadata(scene) {
+  const text = (value, max=8192) => typeof value === 'string' && value.trim() && value.length <= max;
+  if (!scene || scene.units !== 'mm' || !text(scene.id,180)
+      || !/^[a-f0-9]{64}$/.test(scene.version || '')
+      || !['title','note','scope','status'].every(k=>text(scene[k]))
+      || typeof scene.dimensions !== 'string' || scene.dimensions.length > 8192
+      || scene.assembly !== false || !Array.isArray(scene.parts)
+      || !scene.parts.length || scene.parts.length > 256) throw Error('Invalid scene metadata');
+  const ids = new Set();
+  const parts = scene.parts.map(part=>{
+    if (!text(part.id,180) || ids.has(part.id) || !text(part.label)
+        || !/^#[a-fA-F0-9]{6}$/.test(part.color || '')) throw Error('Invalid part metadata');
+    ids.add(part.id);
+    const value = {id:part.id,label:part.label,color:part.color};
+    if (part.centerline !== undefined) {
+      if (!Array.isArray(part.centerline) || part.centerline.length !== 2
+          || !part.centerline.every(v=>Array.isArray(v)&&v.length===3&&v.every(n=>Number.isFinite(n)&&Math.abs(n)<=1e9))) throw Error('Invalid metadata centerline');
+      value.centerline = part.centerline.map(v=>[...v]);
+    }
+    return value;
+  });
+  return {id:scene.id,version:scene.version,title:scene.title,note:scene.note,scope:scene.scope,
+    status:scene.status,units:'mm',dimensions:scene.dimensions,assembly:false,parts};
+}
+function validateReviewSceneIndex(data) {
+  if (data?.schema !== 'dm.review-scene-index/v1' || !Array.isArray(data.entries)
+      || !data.entries.length || data.entries.length > 64) throw Error('Invalid scene index');
+  const ids = new Set();
+  const entries = data.entries.map((entry,i)=>{
+    if (entry.file !== 'scene-'+String(i).padStart(3,'0')+'.json'
+        || !/^[a-f0-9]{64}$/.test(entry.sha256 || '')
+        || entry.scene?.parts?.some(p=>['mesh','vertices','faces','triangles'].some(k=>k in p))) throw Error('Invalid scene path or digest');
+    const scene = reviewSceneMetadata(entry.scene);
+    if (ids.has(scene.id)) throw Error('Duplicate scene ID');
+    ids.add(scene.id);return {scene,file:entry.file,sha256:entry.sha256};
+  });
+  if (!ids.has(data.initial)) throw Error('Invalid initial scene');
+  return {schema:data.schema,initial:data.initial,entries};
+}
+function matchReviewScene(entry, gallery) {
+  if (!Array.isArray(gallery?.scenes) || gallery.scenes.length !== 1
+      || JSON.stringify(reviewSceneMetadata(gallery.scenes[0])) !== JSON.stringify(entry.scene))
+    throw Error('Scene geometry metadata mismatch');
+  return gallery.scenes[0];
+}
+
 // Mount-local retained geometry only; never a browser storage or authorization cache.
 function createReviewCache(maxEntries = 3, maxBytes = 48 * 1024 * 1024) {
   const entries = new Map(); let retained = 0;
@@ -144,6 +191,7 @@ function installLiveReview(frame) {
     } catch (_) {}
   }
   const geometryCache = createReviewCache();
+  let sceneSupport = false, selectedScene = null, activeIndex = null;
   let disposed = false;
   const listeners = [];
   const listen = (target, type, callback) => { target.addEventListener(type, callback); listeners.push([target,type,callback]); };
@@ -208,13 +256,80 @@ function installLiveReview(frame) {
     for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
     return result;
   }
+  const digest = async data => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',data)),b=>b.toString(16).padStart(2,'0')).join('');
+  async function loadGallery(manifest, candidateResource, next, signal, requestedScene=null) {
+    const prefix = '/works/'+candidateResource+'/'+next+'/';
+    async function readFile(file, sha, limit) {
+      const response = await fetch(prefix+file,{cache:'no-store',signal});
+      if ([401,403,404].includes(response.status)) geometryCache.evictResource(candidateResource);
+      if (response.headers.get('X-Home-Version') !== next) throw Error('Review version changed');
+      const data = await bytes(response,limit);
+      if (await digest(data) !== sha) throw Error('Review payload mismatch');
+      return data;
+    }
+    if (sceneSupport && manifest.scene_index) {
+      const descriptor = manifest.scene_index;
+      if (descriptor.file !== 'scene-index.json' || !/^[a-f0-9]{64}$/.test(descriptor.sha256 || '')) throw Error('Invalid scene index reference');
+      const indexKey = candidateResource+':'+next+':'+descriptor.sha256;
+      const index = activeIndex?.key === indexKey ? activeIndex.index : validateReviewSceneIndex(
+        JSON.parse(new TextDecoder().decode(await readFile(descriptor.file,descriptor.sha256,256*1024))));
+      const id = requestedScene || (candidateResource === resource && index.entries.some(e=>e.scene.id===selectedScene) ? selectedScene : index.initial);
+      const entry = index.entries.find(e=>e.scene.id===id);
+      if (!entry) throw Error('Scene unavailable');
+      const key = indexKey+':'+entry.sha256, cached = geometryCache.get(key);
+      let retained = cached?.gallery, wireBytes = cached?.wireBytes;
+      if (!retained) {
+        const data = await readFile(entry.file,entry.sha256,25*1024*1024);wireBytes=data.byteLength;
+        retained = await decodeReviewGallery(JSON.parse(new TextDecoder().decode(data)));
+      }
+      const scene = matchReviewScene(entry,retained);
+      return {key,wireBytes,retained,index:{key:indexKey,index,resource:candidateResource,version:next},
+        gallery:{sceneIndex:true,activeScene:id,scenes:index.entries.map(e=>e.scene.id===id?scene:{...e.scene,deferred:true})}};
+    }
+    if (requestedScene) throw Error('Scene loading unavailable');
+    const key=candidateResource+':'+next+':'+manifest.sha256,cached=geometryCache.get(key);
+    if (cached) return {key,wireBytes:cached.wireBytes,retained:cached.gallery,gallery:cached.gallery,index:null};
+    const data=await readFile('gallery.json',manifest.sha256,25*1024*1024);
+    const gallery=await decodeReviewGallery(JSON.parse(new TextDecoder().decode(data)));
+    return {key,wireBytes:data.byteLength,retained:gallery,gallery,index:null};
+  }
+  function acceptReply(message) {
+    const expected=acknowledgment?.phase==='commit'?'home-artifact:review-committed':'home-artifact:review-applied';
+    if(message?.type!==expected||!acknowledgment||message.requestId!==acknowledgment.requestId
+        ||message.resource!==acknowledgment.resource||message.version!==acknowledgment.version)return false;
+    const resolve=acknowledgment.resolve;acknowledgment=null;resolve(message.accepted===true);return true;
+  }
+  async function commit(requestId,nextResource,next,confirm) {
+    let accepted=null;
+    if(confirm)accepted=new Promise(resolve=>{acknowledgment={phase:'commit',requestId,resource:nextResource,version:next,resolve}});
+    post({type:'home-artifact:review-commit',requestId,resource:nextResource,version:next});
+    if(accepted&&!await accepted)throw Error('Review commit superseded');
+  }
+  function cancelScene(message) {
+    if(message?.type!=='home-artifact:review-scene-cancel'||!target?.prepare
+        ||message.intent!==target.sceneIntent)return false;
+    cancel();target=null;return true;
+  }
+  function support(message) {
+    if (message?.type !== 'home-artifact:review-scene-support' || message.enabled !== true) return false;
+    sceneSupport=true;
+    if (typeof message.scene === 'string' && message.scene.length <= 180) selectedScene=message.scene;
+    return true;
+  }
+  function sceneIntent(message) {
+    if (!sceneSupport || message?.type !== 'home-artifact:review-scene'
+        || document.hidden || message.resource !== resource || message.version !== version
+        || typeof message.intent !== 'string' || !/^[0-9]{1,16}$/.test(message.intent)
+        || !activeIndex?.index.entries.some(e=>e.scene.id===message.scene)) return null;
+    return {resource,scene:message.scene,sceneIntent:message.intent,prepare:true,expectedVersion:version};
+  }
   // Historical views may hydrate only their original immutable gallery.
   // No catalog, current-version lookup, resource switch or recurring timer.
   if (!current) {
     let loaded = false;
-    async function hydrate() {
+    async function hydrate(requested=null) {
       if (document.hidden || pending) return;
-      if (loaded) { post({type:'home-artifact:review-current',version,resource}); return; }
+      if (loaded && !requested) { post({type:'home-artifact:review-current',version,resource}); return; }
       const controller = new AbortController(); pending = controller;
       const deadline = setTimeout(() => {controller.abort();if(acknowledgment){post({type:'home-artifact:review-cancel',requestId:acknowledgment.requestId});acknowledgment.resolve(false);acknowledgment=null;}}, 20000);
       try {
@@ -222,24 +337,25 @@ function installLiveReview(frame) {
         if (response.headers.get('X-Home-Version') !== version) throw Error('Pinned version mismatch');
         const manifest = JSON.parse(new TextDecoder().decode(await bytes(response,16384)));
         if (manifest.schema !== 'dm.review-live/v1' || manifest.gallery !== 'gallery.json' || !/^[a-f0-9]{64}$/.test(manifest.sha256 || '')) throw Error('Invalid pinned manifest');
-        const payload = await fetch(root + 'gallery.json', {cache:'no-store',signal:controller.signal});
-        if (payload.headers.get('X-Home-Version') !== version) throw Error('Pinned gallery mismatch');
-        const data = await bytes(payload,25 * 1024 * 1024);
-        const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',data)),b=>b.toString(16).padStart(2,'0')).join('');
-        if (digest !== manifest.sha256) throw Error('Pinned payload mismatch');
-        const gallery = await decodeReviewGallery(JSON.parse(new TextDecoder().decode(data)));
+        const result = await loadGallery(manifest,resource,version,controller.signal,requested?.scene);
+        const gallery=result.gallery;
         if (controller.signal.aborted || document.hidden) return;
         const requestId = String(++serial);
         const accepted = new Promise(resolve=>{acknowledgment={requestId,resource,version,resolve}});
-        post({type:'home-artifact:review-update',version,resource,gallery,requestId,switching:true,pinned:true});
+        post({type:'home-artifact:review-update',version,resource,gallery,requestId,switching:true,pinned:true,prepareOnly:!!requested,sceneIntent:requested?.sceneIntent});
         if (!await accepted || controller.signal.aborted || document.hidden) throw Error('Pinned review not accepted');
-        post({type:'home-artifact:review-commit',requestId,version,resource}); loaded = true;
+        await commit(requestId,resource,version,!!result.index);
+        geometryCache.put(result.key,resource,result.retained,result.wireBytes);activeIndex=result.index;
+        if (!requested) selectedScene=gallery.activeScene || selectedScene;
+        if (target === requested) target=null;loaded = true;
       } catch (error) { if (!controller.signal.aborted) post({type:'home-artifact:review-error'}); }
-      finally { clearTimeout(deadline); pending = null; }
+      finally { clearTimeout(deadline); pending = null;if(target&&target!==requested&&!document.hidden)hydrate(target); }
     }
     listen(window, 'message',event=>{
       if (event.source !== frame.contentWindow || event.origin !== 'null') return;
-      if(event.data?.type==='home-artifact:review-applied' && acknowledgment && event.data.requestId===acknowledgment.requestId && event.data.resource===resource && event.data.version===version){const resolve=acknowledgment.resolve;acknowledgment=null;resolve(event.data.accepted===true);return;}
+      if(support(event.data))return;
+      const intent=sceneIntent(event.data);if(intent){cancel();target=intent;if(!pending)hydrate(intent);return;}
+      if(acceptReply(event.data)||cancelScene(event.data))return;
       if (event.data?.type === 'home-artifact:review-load-pinned' && Object.keys(event.data).length === 1) hydrate();
     });
     listen(document, 'visibilitychange',()=>{if(document.hidden) cancel()});
@@ -260,30 +376,22 @@ function installLiveReview(frame) {
       const manifest = JSON.parse(new TextDecoder().decode(await bytes(response, 16384)));
       if (!/^[a-f0-9]{64}$/.test(next || '') || manifest.schema !== 'dm.review-live/v1' || manifest.gallery !== 'gallery.json' || !/^[a-f0-9]{64}$/.test(manifest.sha256 || '')) throw Error('Invalid review manifest');
       if (requested || next !== version) {
-        // Every reuse follows a newly authorized current-manifest request.
-        const cacheKey = candidateResource + ':' + next + ':' + manifest.sha256;
-        const cached = geometryCache.get(cacheKey);
-        let gallery = cached?.gallery, wireBytes = cached?.wireBytes;
-        if (!cached) {
-          if (requested) post({type:'home-artifact:review-progress',stage:'downloading'});
-          const response = await fetch('/works/' + candidateResource + '/' + next + '/gallery.json', {cache:'no-store', signal:controller.signal});
-          if ([401,403,404].includes(response.status)) geometryCache.evictResource(candidateResource);
-          if (response.headers.get('X-Home-Version') !== next) throw Error('Review version changed');
-          const data = await bytes(response, 25 * 1024 * 1024); wireBytes = data.byteLength;
-          if (requested) post({type:'home-artifact:review-progress',stage:'preparing'});
-          const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)), b => b.toString(16).padStart(2,'0')).join('');
-          if (digest !== manifest.sha256) throw Error('Review payload mismatch');
-          gallery = await decodeReviewGallery(JSON.parse(new TextDecoder().decode(data)));
-        }
+        // Every cache hit follows this freshly authorized manifest response.
+        if (requested?.expectedVersion && requested.expectedVersion !== next) throw Error('Scene publication changed');
+        if (requested) post({type:'home-artifact:review-progress',stage:'downloading'});
+        const result=await loadGallery(manifest,candidateResource,next,controller.signal,requested?.scene);
+        const gallery=result.gallery;
         if (!wanted || document.hidden || controller.signal.aborted) return;
-        if (requested) {
+        if (requested || gallery.sceneIndex) {
           const requestId = String(++serial);
           const accepted = new Promise(resolve => { acknowledgment = {requestId, resource:candidateResource, version:next, resolve}; });
-          post({type:'home-artifact:review-update',version:next,resource:candidateResource,gallery,requestId,switching:true});
+          post({type:'home-artifact:review-update',version:next,resource:candidateResource,gallery,requestId,switching:true,prepareOnly:!!requested?.prepare,sceneIntent:requested?.sceneIntent,preserveState:!requested&&candidateResource===resource});
           if (!await accepted || controller.signal.aborted) throw Error('Review not accepted');
-          geometryCache.put(cacheKey, candidateResource, gallery, wireBytes);
+          await commit(requestId,candidateResource,next,!!result.index);
+          if(controller.signal.aborted)throw Error('Review commit cancelled');
+          geometryCache.put(result.key,candidateResource,result.retained,result.wireBytes);
+          activeIndex=result.index;if(!requested?.prepare)selectedScene=gallery.activeScene||selectedScene;
           resource = candidateResource; rememberProject();
-          post({type:'home-artifact:review-commit',requestId,resource,version:next});
           if (target === requested) target = null;
         } else post({type:'home-artifact:review-update',version:next,resource,gallery});
         version = next;
@@ -301,14 +409,10 @@ function installLiveReview(frame) {
   listen(window, 'message', event => {
     if (event.source !== frame.contentWindow || event.origin !== 'null') return;
     const message = event.data;
+    if(support(message))return;
+    const intent=sceneIntent(message);if(intent){cancel();target=intent;wanted=true;immediate=true;if(!pending)poll();return;}
     if (message?.type === 'home-artifact:review-catalog') { list(); return; }
-    if (message?.type === 'home-artifact:review-applied') {
-      if (acknowledgment && message.requestId === acknowledgment.requestId
-          && message.resource === acknowledgment.resource && message.version === acknowledgment.version) {
-        const resolve = acknowledgment.resolve; acknowledgment = null; resolve(message.accepted === true);
-      }
-      return;
-    }
+    if(acceptReply(message)||cancelScene(message))return;
     if (message?.type === 'home-artifact:review-select') {
       if (document.hidden || !catalog.has(message.resource)) return;
       if (target?.initial && message.resource === resource) return; // Ignore child bootstrap hydration while the explicit target loads.
@@ -352,7 +456,7 @@ globalThis.DaimonHomeReview = Object.freeze({
     frame.dataset.liveReview = 'pinned';
     const hydration = installLiveReview(frame);
     const loaded = () => frame.contentWindow.postMessage({
-      type:'home-artifact:capabilities', downloads:false, reviewPacked:true,
+      type:'home-artifact:capabilities', downloads:false, reviewPacked:true, reviewScenes:true,
       reviewPinned:true, liveReview:false, reviewCatalog:false, reviewContext:true,
       resource:source.resource,
     }, '*');

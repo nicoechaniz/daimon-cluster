@@ -317,3 +317,27 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert/strict'),{webcryp
 })();
 '''
     subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)
+
+
+def test_scene_index_restricts_paths_and_binds_quantized_metadata():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required')
+    source = Path(__file__).resolve().parents[1] / 'clusterctl/homes/assets/work-live-review.js'
+    fixture = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+const c={};vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),c);
+const scene={id:'one',version:'a'.repeat(64),title:'Model',note:'Generated',scope:'Preview',status:'Unqualified',units:'mm',dimensions:'1mm',assembly:false,parts:[{id:'part',label:'Part',color:'#123456'}]};
+const index={schema:'dm.review-scene-index/v1',initial:'one',entries:[{scene,file:'scene-000.json',sha256:'b'.repeat(64)}]};
+const good=c.validateReviewSceneIndex(index),geometry={scenes:[{...scene,parts:[{...scene.parts[0],vertices:[[0,0,0]],faces:[]}]}]};
+assert.equal(c.matchReviewScene(good.entries[0],geometry).id,'one');
+const bad=edit=>{const x=JSON.parse(JSON.stringify(index));edit(x);assert.throws(()=>c.validateReviewSceneIndex(x))};
+bad(x=>x.entries[0].file='../scene-000.json');bad(x=>x.entries[0].file='https://other/scene-000.json');bad(x=>x.entries[0].file='scene-001.json');
+bad(x=>x.entries[0].sha256='x');bad(x=>x.initial='absent');bad(x=>x.entries.push({...x.entries[0],file:'scene-001.json'}));
+bad(x=>x.entries[0].scene.parts.push(x.entries[0].scene.parts[0]));bad(x=>x.entries[0].scene.parts[0].vertices=[]);
+for(const edit of [x=>x.version='c'.repeat(64),x=>x.parts[0].id='other',x=>x.title='Changed',x=>x.parts[0].color='#000000']){
+ const x=JSON.parse(JSON.stringify(geometry));edit(x.scenes[0]);assert.throws(()=>c.matchReviewScene(good.entries[0],x));
+}
+console.log('Scene path and metadata boundaries pass');
+'''
+    subprocess.run([node, '-e', fixture, str(source)], check=True, timeout=10)

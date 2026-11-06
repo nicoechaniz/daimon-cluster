@@ -211,3 +211,40 @@ actual authorized gateway and browser reads before claiming receiving adoption.
 Rollback selects the prior release/transport while preserving current SQLite,
 notes, publications and grants; never restore an old state database. Only the
 shared Homes service needs restarting, not native/Matrix/bot/Interaction.
+
+## Opt-in per-scene loading
+
+The gateway advertises `reviewScenes: true`; only a child that explicitly sends
+`home-artifact:review-scene-support` selects this path. All other combinations
+retain the existing complete gallery fallback. The optional `scene_index` in
+`dm.review-live/v1` pins `scene-index.json` and its SHA256. Its
+`dm.review-scene-index/v1` entries retain complete ordered selector metadata,
+initial scene ID, fixed `scene-NNN.json` names and individual SHA256 digests.
+Each packed file decodes exactly one scene whose canonical quantized scene and
+part metadata must match the index. All reads use the existing authorized
+immutable resource/version route, including pinned views and cache hits.
+
+Limits are64scenes,256parts per scene,256KiB index and existing25MiB file bound;
+the producer separately bounds the combined index/scene files to25MiB and retains
+a full legacy gallery. Parent decoded retention remains3entries/48MiB estimated
+geometry. Large uncached scenes remain usable. The child keeps selected geometry
+plus transient candidate; inactive scene entries become metadata-only stubs.
+No browser storage, grant cache, new endpoint or arbitrary asset URL is added.
+
+Scene preparation uses the existing staged update/apply handshake and an extra
+`review-committed` acknowledgment before parent resource/version/cache advances.
+Selection, restore, visibility and publication changes share the child's intent
+generation. A cancellation matches its in-flight/staged request ID; cancellation
+of a superseded validation cannot cancel the newer selection. Snapshot restore
+validates before fetching and again before synchronous state application.
+
+Run the existing parent tests and the paired portable Chromium fixture in Skills
+`3d-design-and-fabrication/scripts/test_review_bridge_browser.py` with explicit
+installed parent JS, Playwright, Chromium and private work directory. The fixture
+intercepts only synthetic origins, bounds its temporary stage to1MiB and runtime
+to100seconds, and retires its stage on exit. It covers32selectors/one initial
+scene, restore, late response and acknowledgment-phase supersession, revoked
+cached data, failed downloads, hidden views, publication changes, pinned views
+and full legacy fallback. Production publication and actual device performance
+remain separate receiving checks. Rollback selects the previous gateway and
+project publication; never restore application databases or change grants.

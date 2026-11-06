@@ -5,6 +5,37 @@ import subprocess
 import pytest
 
 
+def test_json_iframe_representation_bounds_unicode_numbers_and_aliases():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required')
+    source = Path(__file__).resolve().parents[1] / 'clusterctl/homes/assets/work-live-review.js'
+    fixture = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+const context=vm.createContext({});vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),context);
+const values=[{text:'quotes"\\\b\t\n\f\r\u0000 é 中 😀 \ud800 \udfff',numbers:[Number.MIN_VALUE,Number.MAX_VALUE,1e-25,1e25,-1.23456789]},
+ {scenes:[{parts:[{vertices:[[0,.01,1e-30],[1,2,3],[4,5,6]],faces:[[0,1,2]]}]}]}];
+for(let i=0;i<64;i++)values.push({key:String.fromCharCode(i)+'é😀',value:i*1.23456789e-20});
+for(const value of values){
+ const expected=JSON.stringify(value),bytes=Buffer.byteLength(expected);context.input=expected;context.limit=bytes;
+ const actual=vm.runInContext('reviewGalleryJSON(JSON.parse(input),limit)',context);
+ assert.equal(actual,expected);assert.deepEqual(JSON.parse(actual),value);
+ context.limit=bytes-1;assert.equal(vm.runInContext('reviewGalleryJSON(JSON.parse(input),limit)',context),null);
+}
+const run=s=>vm.runInContext(s,context);
+assert.equal(run('(()=>{const v=[[.01,2,3]],g={a:v,b:v};return reviewGalleryJSON(g)})()'),'\u007b"a":[[0.01,2,3]],"b":[[0.01,2,3]]}');
+assert.equal(run('(()=>{let v={};for(let i=0;i<34;i++)v={nested:v};return reviewGalleryJSON(v)})()'),null);
+assert.equal(run('reviewGalleryJSON({nodes:Array(1000000).fill(0)})'),null);
+assert.equal(run('reviewGalleryJSON({text:"x".repeat(4*1024*1024)})'),null);
+assert.equal(run('reviewGalleryJSON({coordinate:-0})'),null,'object fallback preserves signed zero');
+assert.equal(run('reviewGalleryJSON({get bad(){throw Error("must not execute")}})'),null);
+assert.equal(run('reviewGalleryJSON({toJSON(){throw Error("must not execute")}})'),null);
+assert.equal(run('(()=>{const v={};v.cycle=v;return reviewGalleryJSON(v)})()'),null);
+assert.equal(run('reviewGalleryJSON({value:Infinity})'),null);
+'''
+    subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True, timeout=15)
+
+
 def test_trusted_application_pinned_mount_is_bounded_and_disposable():
     node = shutil.which('node')
     if not node:

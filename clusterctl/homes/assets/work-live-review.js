@@ -135,6 +135,64 @@ function matchReviewScene(entry, gallery) {
   return gallery.scenes[0];
 }
 
+// Opt-in iframe representation, not a second geometry or authorization cache.
+// Bound allocation BEFORE stringify; packed input can expand substantially.
+function reviewJSONBytes(text, maxBytes = 4 * 1024 * 1024) {
+  let size=0;
+  for(let i=0;i<text.length;i++) {
+    const c=text.charCodeAt(i);
+    if(c<128)size++;
+    else if(c<2048)size+=2;
+    else if(c>=0xd800&&c<=0xdbff&&i+1<text.length&&text.charCodeAt(i+1)>=0xdc00&&text.charCodeAt(i+1)<=0xdfff){size+=4;i++;}
+    else size+=3;
+    if(size>maxBytes)return Infinity;
+  }
+  return size;
+}
+function reviewGalleryJSON(gallery, maxBytes = 4 * 1024 * 1024) {
+  if(!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>4*1024*1024)return null;
+  let size = 0, nodes = 0;
+  const add = n => {size += n; return size <= maxBytes;};
+  function string(value) {
+    if (!add(2)) return false;
+    for (let i=0;i<value.length;i++) {
+      const c=value.charCodeAt(i);
+      if (c===34 || c===92 || c===8 || c===9 || c===10 || c===12 || c===13) {if(!add(2))return false;}
+      else if(c<32) {if(!add(6))return false;}
+      else if(c<128) {if(!add(1))return false;}
+      else if(c<2048) {if(!add(2))return false;}
+      else if(c>=0xd800 && c<=0xdbff && i+1<value.length && value.charCodeAt(i+1)>=0xdc00 && value.charCodeAt(i+1)<=0xdfff) {i++;if(!add(4))return false;}
+      else if(c>=0xd800 && c<=0xdfff) {if(!add(6))return false;}
+      else if(!add(3))return false;
+    }
+    return true;
+  }
+  function visit(value, depth) {
+    if (++nodes>1000000 || depth>32) return false;
+    if(value===null)return add(4);
+    if(typeof value==='string')return string(value);
+    if(typeof value==='number')return Number.isFinite(value)&&!Object.is(value,-0)&&add(String(value).length);
+    if(typeof value==='boolean')return add(value?4:5);
+    if(Array.isArray(value)) {
+      if(!add(2+Math.max(0,value.length-1)))return false;
+      for(const item of value)if(!visit(item,depth+1))return false;
+      return true;
+    }
+    if(typeof value!=='object'||(Object.getPrototypeOf(value)!==null&&Object.getPrototypeOf(value)!==Object.prototype)||!add(2))return false;
+    let first=true;
+    for(const key of Object.keys(value)) {
+      const descriptor=Object.getOwnPropertyDescriptor(value,key);
+      if(!descriptor || !('value' in descriptor) || !add(first?1:2) || !string(key) || !visit(descriptor.value,depth+1))return false;
+      first=false;
+    }
+    return true;
+  }
+  if(!visit(gallery,0))return null;
+  const text=JSON.stringify(gallery);
+  if(typeof text!=='string'||text.length>size||reviewJSONBytes(text,maxBytes)!==size)return null;
+  return text;
+}
+
 // Mount-local retained geometry only; never a browser storage or authorization cache.
 function createReviewCache(maxEntries = 3, maxBytes = 48 * 1024 * 1024) {
   const entries = new Map(); let retained = 0;
@@ -195,7 +253,15 @@ function installLiveReview(frame) {
   let disposed = false;
   const listeners = [];
   const listen = (target, type, callback) => { target.addEventListener(type, callback); listeners.push([target,type,callback]); };
-  const post = data => { if (!disposed) frame.contentWindow.postMessage(data, '*'); };
+  let jsonSupport=false;
+  const post = data => {
+    if(disposed)return;
+    if(jsonSupport && data.type==='home-artifact:review-update' && data.gallery) {
+      const text=reviewGalleryJSON(data.gallery);
+      if(text!==null) {const {gallery,...envelope}=data;data={...envelope,galleryJSON:text};}
+    }
+    frame.contentWindow.postMessage(data, '*');
+  };
   function dispose() {
     if (disposed) return;
     disposed = true; wanted = false; geometryCache.clear(); cancel(); if (catalogPending) catalogPending.abort();
@@ -311,6 +377,7 @@ function installLiveReview(frame) {
     cancel();target=null;return true;
   }
   function support(message) {
+    if(message?.type==='home-artifact:review-json-support' && typeof message.enabled==='boolean') {jsonSupport=message.enabled;return true;}
     if (message?.type !== 'home-artifact:review-scene-support' || message.enabled !== true) return false;
     sceneSupport=true;
     if (typeof message.scene === 'string' && message.scene.length <= 180) selectedScene=message.scene;
@@ -456,7 +523,7 @@ globalThis.DaimonHomeReview = Object.freeze({
     frame.dataset.liveReview = 'pinned';
     const hydration = installLiveReview(frame);
     const loaded = () => frame.contentWindow.postMessage({
-      type:'home-artifact:capabilities', downloads:false, reviewPacked:true, reviewScenes:true,
+      type:'home-artifact:capabilities', downloads:false, reviewPacked:true, reviewScenes:true, reviewJSON:true,
       reviewPinned:true, liveReview:false, reviewCatalog:false, reviewContext:true,
       resource:source.resource,
     }, '*');

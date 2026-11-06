@@ -199,6 +199,27 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert'),{webcrypto}=req
  const output=await decode(packed),part=output.scenes[0].parts[0];
  assert.deepStrictEqual(JSON.parse(JSON.stringify(part.vertices)),[[1,2,3],[2,2,3],[1,3,3],[1,2,4]]);
  assert.deepStrictEqual(JSON.parse(JSON.stringify(part.faces)),[[0,1,2],[0,2,3],[0,3,1],[1,3,2]]);assert(!part.mesh);
+ // Repeated meshes retain part metadata but cross the iframe as shared geometry.
+ const changed=Buffer.from(raw);changed.writeInt32LE(1,0);
+ const repeated=await wrap(Buffer.concat([raw,raw,changed,raw]));repeated.buffer.size=288;
+ const template=packed.scenes[0].parts[0],make=(id,extra={})=>({...JSON.parse(JSON.stringify(template)),id,label:id,...extra});
+ repeated.scenes=[{units:'mm',parts:[make('first'),make('same',{color:'#abcdef'})]},
+  {units:'mm',parts:[make('different-bytes'),make('different-origin',{mesh:{...template.mesh,origin:[2,2,3]}})]}];
+ const shared=await decode(repeated),first=shared.scenes[0].parts[0],same=shared.scenes[0].parts[1];
+ assert.strictEqual(first.vertices,same.vertices);assert.strictEqual(first.faces,same.faces);
+ assert.notStrictEqual(first,same);assert.equal(same.label,'same');assert.equal(same.color,'#abcdef');
+ assert.notStrictEqual(first.vertices,shared.scenes[1].parts[0].vertices);
+ assert.notStrictEqual(first.vertices,shared.scenes[1].parts[1].vertices);
+ assert.equal(shared.scenes[1].parts[0].vertices[0][0],1.01);
+ assert.equal(shared.scenes[1].parts[1].vertices[0][0],2);
+ const transferred=structuredClone(shared);
+ assert.strictEqual(transferred.scenes[0].parts[0].vertices,transferred.scenes[0].parts[1].vertices);
+ // Even a digest collision must not alias different encoded geometry.
+ context.crypto={subtle:{digest:async(algorithm,bytes)=>bytes.byteLength===72?new Uint8Array(32).buffer:webcrypto.subtle.digest(algorithm,bytes)}};
+ const collided=await decode(repeated);
+ assert.strictEqual(collided.scenes[0].parts[0].vertices,collided.scenes[0].parts[1].vertices);
+ assert.notStrictEqual(collided.scenes[0].parts[0].vertices,collided.scenes[1].parts[0].vertices);
+ context.crypto=webcrypto;
  const plain={scenes:[]};assert.strictEqual(await decode(plain),plain);
  let bad=copy();bad.buffer.sha256='0'.repeat(64);await assert.rejects(decode(bad),/digest/);
  bad=copy();bad.buffer.size++;await assert.rejects(decode(bad),/size/);

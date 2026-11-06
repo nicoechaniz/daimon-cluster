@@ -44,9 +44,24 @@ async function decodeReviewGallery(data) {
   for (const chunk of chunks) {raw.set(chunk, offset); offset += chunk.byteLength;}
   const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',raw)), b => b.toString(16).padStart(2,'0')).join('');
   if (digest !== buffer.sha256) throw Error('Packed geometry digest mismatch');
-  const view = new DataView(raw.buffer); let cursor = 0;
-  const scenes = data.scenes.map(scene => ({...scene, parts:scene.parts.map(part => {
-    const m = part.mesh, previous = [0,0,0], vertices = [], faces = [];
+  const view = new DataView(raw.buffer), meshes = new Map(), scenes = []; let cursor = 0;
+  for (const scene of data.scenes) {
+   const parts = [];
+   for (const part of scene.parts) {
+    const m = part.mesh, start = cursor, end = start + m.vertices * 12 + m.triangles * 6;
+    const encoded = raw.subarray(start, end);
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',encoded)), b => b.toString(16).padStart(2,'0')).join('');
+    const key = JSON.stringify([m.origin,m.scale,m.vertices,m.triangles]) + ':' + hash;
+    const shared = meshes.get(key), {mesh, ...metadata} = part;
+    // Exact encoded bytes and coordinate interpretation must match. Sharing only
+    // immutable geometry avoids serializing duplicate meshes across the iframe;
+    // part/scene metadata remains independent. This map exists for this decode only.
+    if (shared && encoded.every((value,index)=>value===raw[shared.start+index])) {
+      cursor = end;
+      parts.push({...metadata,vertices:shared.vertices,faces:shared.faces});
+      continue;
+    }
+    const previous = [0,0,0], vertices = [], faces = [];
     for (let i=0; i<m.vertices; i++) {
       const vertex = [];
       for (let k=0; k<3; k++) {
@@ -64,9 +79,11 @@ async function decodeReviewGallery(data) {
       if (a >= m.vertices || b >= m.vertices || c >= m.vertices) throw Error('Packed triangle index');
       faces.push([a,b,c]);
     }
-    const {mesh, ...metadata} = part;
-    return {...metadata, vertices, faces};
-  })}));
+    meshes.set(key,{start,vertices,faces});
+    parts.push({...metadata,vertices,faces});
+   }
+   scenes.push({...scene,parts});
+  }
   if (cursor !== size) throw Error('Unused packed geometry');
   return {scenes, navigation:data.navigation || {}};
 }

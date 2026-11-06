@@ -1395,6 +1395,8 @@ def handler(app, *, owner=False):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
+    parser.add_argument('--http-transport', choices=('legacy', 'cheroot'),
+                        default='legacy', help='Qualified HTTP transport (legacy retained for rollback)')
     parser.add_argument("--passkey-rp-id", help="Enable shared passkeys for exact configured public home origins")
     parser.add_argument("--client-example", action="store_true", help="Serve the optional independently authored library client")
     parser.add_argument('--auth-origin', help='Exact trusted shared login origin under the passkey RP')
@@ -1424,6 +1426,10 @@ def main():
                       homemaker_home=args.homemaker_home, homemaker_returns=args.homemaker_return,
                       miniapp_routes=json.loads(protected_read(Path(args.miniapp_routes))) if args.miniapp_routes else None,
                       miniapp_receivers=json.loads(protected_read(Path(args.miniapp_receivers))) if args.miniapp_receivers else None)
+    if args.http_transport == 'cheroot':
+        from .wsgi import run
+        run(app, config)
+        return
     servers = [
         ThreadingHTTPServer(("127.0.0.1", config[key]), handler(app, owner=owner))
         for key, owner in (("viewer_port", False), ("owner_port", True))

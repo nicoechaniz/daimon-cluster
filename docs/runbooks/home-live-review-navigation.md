@@ -155,3 +155,59 @@ two animation frames allow the loading status to paint. Matching commit clears
 busy state; error/timeout briefly explains that the previous view was kept;
 hide/cancel/exit clear pending visual state and superseded preparation cannot stage.
 There is no new polling, model attention, grant, or background service.
+
+## Optional bounded HTTP transport
+
+`python -m clusterctl.homes.service --http-transport cheroot` selects the pinned
+Cheroot11.1.2 adapter. The default remains `legacy`; source qualification alone
+never changes a receiver. Install the existing `requirements-homes.txt` in the
+qualified release environment, not a running signed native runtime. Retain the
+existing service arguments, stores, credentials, shared proxy and model versions.
+Only socket/request adaptation changes: GET/HEAD/POST policy, proof scopes, login,
+private static assets, note routes and streaming stay in their existing handlers.
+
+Both listeners remain loopback-only. Viewer/owner thread pools are fixed at8/4,
+with accepted queue bounds24/4 and1s admission wait, backlog64/16 and idle keepalive
+limits8/2. No worker grows per connection. Active accepted sockets have30s read
+and write timeouts; partial headers/bodies occupy bounded workers until completion
+or timeout. Queued work is finite but has no per-request wall-clock deadline.
+Continuous client/backend progress can exceed30s. This is not a hundreds-reader
+capacity claim or a correction for the variable remoteHTTP3 path.
+
+Header limits are32KiB. Viewer body parsing permits5MiB for the existing note-upload
+contract; existing policy keeps64KiB for every other POST, and the owner listener
+has a64KiB parser bound. Input/output stream through socket files, without a
+persistent request archive. The existing route chunk sizes and note retention
+remain unchanged. Public TLS/HTTP2/HTTP3 remain Caddy's job. HTTP keepalive/framing
+belong to Cheroot; proxy-header identity rewriting is not enabled.
+Underscore-bearing header names are dropped by the request reader before WSGI
+normalizes names. Otherwise a client spelling such as `X_Daimon_Vpn` could collide
+with the canonical proxy-controlled `X-Daimon-Vpn`. Real HTTP regressions cover
+both conflicting-header orderings; the pinned upstream underscore reader is not
+used because its byte-name handling is incompatible on this interpreter.
+
+The adapter requires raw `REQUEST_URI`, never decoded `PATH_INFO`, preserving
+encoded path checks. Missing raw-target support refuses503. Repeated response
+headers, HEAD, byte ranges, CSP and versions remain the handlers' responsibility;
+request-local proofs close before a pool thread handles another request. A failed
+stream terminates the response instead of acknowledging a complete body.
+
+A discarded Waitress3.0.2 draft passed input/authority tests but its active-output
+high-watermark wait had no timeout: a non-reading client could retain workers
+indefinitely. Do not revive it merely because its partial-input tests passed.
+Qualify stalled-output release as well as partial-input expiry on any successor.
+The checked Cheroot source uses its accepted socket timeout for writes; the real
+non-reading-client regression observes worker release at30s without closing the
+client. The small `ClosingConnection` compatibility class explicitly closes the
+response file after upstream socket closure: this prevents Python3.13 finalizers
+retrying buffered output on a closed descriptor. It does not swallow request
+errors or extend timeouts. The stalled-output test also passes with unraisable
+exception warnings treated as errors.
+See the maintained [WSGI server API](https://cheroot.cherrypy.dev/en/latest/pkg/cheroot.wsgi/)
+and [HTTP server contract](https://cheroot.cherrypy.dev/en/latest/pkg/cheroot.server/).
+
+Run the closed Homes CI profile including `tests/test_home_wsgi.py`, then verify
+actual authorized gateway and browser reads before claiming receiving adoption.
+Rollback selects the prior release/transport while preserving current SQLite,
+notes, publications and grants; never restore an old state database. Only the
+shared Homes service needs restarting, not native/Matrix/bot/Interaction.

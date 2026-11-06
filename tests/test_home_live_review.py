@@ -243,3 +243,56 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert/strict'),{webcryp
  }} )().catch(error=>{console.error(error);process.exit(1)});
 '''
     subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)
+
+
+def test_geometry_retention_is_bounded_and_switches_reauthorize_before_reuse():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required')
+    source = Path(__file__).resolve().parents[1] / 'clusterctl/homes/assets/work-live-review.js'
+    fixture = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict'),{webcrypto}=require('crypto');
+(async()=>{
+ const a='a'.repeat(32),b='b'.repeat(32),v='1'.repeat(64),events={},messages=[],calls=[];
+ let denied=false,revision=v,accepted=true;
+ const gallery={scenes:[{parts:[{vertices:[[0,0,0]],faces:[]}]}]},payload=JSON.stringify(gallery);
+ const hash=Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(payload))).toString('hex');
+ const frame={dataset:{liveReview:'current',downloadRoot:'/works/'+a+'/'+v+'/'},contentWindow:{postMessage:m=>{
+  messages.push(m);
+  if(m.type==='home-artifact:review-update')setImmediate(()=>events.message({source:frame.contentWindow,origin:'null',data:{type:'home-artifact:review-applied',requestId:m.requestId,resource:m.resource,version:m.version,accepted}}));
+ }}};
+ const context={window:{addEventListener:(k,f)=>events[k]=f},document:{hidden:false,addEventListener(){}},Uint8Array,TextDecoder,AbortController,crypto:webcrypto,
+ setTimeout,clearTimeout,fetch:async url=>{
+  calls.push(url);
+  if(url==='/catalog.json')return new Response(JSON.stringify({entries:[a,b].map(resource=>({kind:'artifact',model_review:true,title:resource,resource_ref:'dm:resource:v1:'+resource}))}));
+  if(denied&&url.includes(b))return new Response('Denied',{status:404});
+  return new Response(url.endsWith('review-live.json')?JSON.stringify({schema:'dm.review-live/v1',gallery:'gallery.json',sha256:hash}):payload,{headers:{'X-Home-Version':revision}});
+ }};
+ vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
+ const cache=context.createReviewCache(2,2048);
+ cache.put('a',a,gallery,100);cache.put('b',b,gallery,100);assert(cache.get('a'));
+ cache.put('c',a,gallery,100);assert.equal(cache.get('b'),undefined,'LRU count bound');
+ cache.put('large',a,gallery,1000);assert.equal(cache.get('large'),undefined,'oversized remains unretained');
+ cache.evictResource(a);assert.equal(cache.get('a'),undefined);assert.equal(cache.get('c'),undefined);
+ cache.put('a',a,gallery,100);cache.clear();assert.equal(cache.get('a'),undefined);
+ const bytesCache=context.createReviewCache(3,1000);
+ bytesCache.put('a',a,gallery,100);bytesCache.put('b',b,gallery,100);
+ assert.equal(bytesCache.get('a'),undefined,'aggregate bytes evict below the entry count bound');
+ assert(bytesCache.get('b'));
+ context.installLiveReview(frame);
+ const send=data=>events.message({source:frame.contentWindow,origin:'null',data});
+ const settle=async()=>{for(let i=0;i<30;i++)await new Promise(r=>setTimeout(r,2));};
+ send({type:'home-artifact:review-catalog'});await settle();
+ const choose=async resource=>{send({type:'home-artifact:review-select',resource});await settle();};
+ await choose(b);await choose(a);const start=calls.length;await choose(b);
+ assert.deepEqual(calls.slice(start),['/works/'+b+'/current/review-live.json'],'warm switch still reauthorizes and avoids geometry fetch/decode');
+ await choose(a);denied=true;const before=messages.filter(m=>m.type==='home-artifact:review-commit').length;await choose(b);
+ assert.equal(messages.filter(m=>m.type==='home-artifact:review-commit').length,before,'denial cannot reuse private geometry');
+ denied=false;let n=calls.length;await choose(b);assert.equal(calls.length-n,2,'denial evicts retained resource');
+ await choose(a);revision='2'.repeat(64);n=calls.length;await choose(b);assert.equal(calls.length-n,2,'new version fetches geometry');
+ await choose(a);revision='3'.repeat(64);accepted=false;await choose(b);accepted=true;n=calls.length;await choose(b);assert.equal(calls.length-n,2,'rejected child data is not retained');
+ events.pagehide();n=calls.length;await choose(a);assert.equal(calls.length-n,2,'pagehide releases retained data');
+ send({type:'home-artifact:live-review',enabled:false});
+})();
+'''
+    subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)

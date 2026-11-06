@@ -71,6 +71,36 @@ async function decodeReviewGallery(data) {
   return {scenes, navigation:data.navigation || {}};
 }
 
+// Mount-local retained geometry only; never a browser storage or authorization cache.
+function createReviewCache(maxEntries = 3, maxBytes = 48 * 1024 * 1024) {
+  const entries = new Map(); let retained = 0;
+  const remove = key => {const old=entries.get(key);if(old){retained-=old.cost;entries.delete(key);}};
+  return {
+    get(key) {const item=entries.get(key);if(item){entries.delete(key);entries.set(key,item);}return item;},
+    put(key, resource, gallery, wireBytes) {
+      // Nested JS triplets and metadata cost more than their wire/buffer bytes.
+      // Conservative accounting bounds retained entries, not total browser heap.
+      let cost = wireBytes * 4;
+      if (!Number.isSafeInteger(cost) || cost < 1 || !Array.isArray(gallery?.scenes)
+          || !gallery.scenes.length || gallery.scenes.length > 64) return;
+      for (const scene of gallery.scenes) {
+        if (!Array.isArray(scene.parts) || scene.parts.length > 256) return;
+        for (const part of scene.parts) {
+          if (!Array.isArray(part.vertices) || !Array.isArray(part.faces)) return;
+          cost += 128 * (part.vertices.length + part.faces.length);
+          if (!Number.isSafeInteger(cost) || cost > maxBytes) return;
+        }
+      }
+      if (cost > maxBytes) return; // Large scenes remain usable, without retention.
+      remove(key);
+      while (entries.size >= maxEntries || retained + cost > maxBytes) remove(entries.keys().next().value);
+      entries.set(key,{resource,gallery,wireBytes,cost});retained+=cost;
+    },
+    evictResource(resource) {for(const [key,item] of entries)if(item.resource===resource)remove(key);},
+    clear() {entries.clear();retained=0;},
+  };
+}
+
 function installLiveReview(frame) {
   const root = frame.dataset.downloadRoot || '';
   const match = /^\/works\/([a-f0-9]{32})\/([a-f0-9]{64})\/$/.exec(root);
@@ -96,13 +126,14 @@ function installLiveReview(frame) {
       window.history.replaceState(null, '', url.pathname + url.search + url.hash);
     } catch (_) {}
   }
+  const geometryCache = createReviewCache();
   let disposed = false;
   const listeners = [];
   const listen = (target, type, callback) => { target.addEventListener(type, callback); listeners.push([target,type,callback]); };
   const post = data => { if (!disposed) frame.contentWindow.postMessage(data, '*'); };
   function dispose() {
     if (disposed) return;
-    disposed = true; wanted = false; cancel(); if (catalogPending) catalogPending.abort();
+    disposed = true; wanted = false; geometryCache.clear(); cancel(); if (catalogPending) catalogPending.abort();
     for (const [target,type,callback] of listeners.splice(0)) target.removeEventListener(type,callback);
   }
   async function list() {
@@ -206,22 +237,31 @@ function installLiveReview(frame) {
     const requested = target, candidateResource = requested?.resource || resource;
     try {
       const response = await fetch('/works/' + candidateResource + '/current/review-live.json', {cache:'no-store', signal:controller.signal});
+      if ([401,403,404].includes(response.status)) geometryCache.evictResource(candidateResource);
       const next = response.headers.get('X-Home-Version');
       const manifest = JSON.parse(new TextDecoder().decode(await bytes(response, 16384)));
       if (!/^[a-f0-9]{64}$/.test(next || '') || manifest.schema !== 'dm.review-live/v1' || manifest.gallery !== 'gallery.json' || !/^[a-f0-9]{64}$/.test(manifest.sha256 || '')) throw Error('Invalid review manifest');
       if (requested || next !== version) {
-        const response = await fetch('/works/' + candidateResource + '/' + next + '/gallery.json', {cache:'no-store', signal:controller.signal});
-        if (response.headers.get('X-Home-Version') !== next) throw Error('Review version changed');
-        const data = await bytes(response, 25 * 1024 * 1024);
-        const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)), b => b.toString(16).padStart(2,'0')).join('');
-        if (digest !== manifest.sha256) throw Error('Review payload mismatch');
-        const gallery = await decodeReviewGallery(JSON.parse(new TextDecoder().decode(data)));
+        // Every reuse follows a newly authorized current-manifest request.
+        const cacheKey = candidateResource + ':' + next + ':' + manifest.sha256;
+        const cached = geometryCache.get(cacheKey);
+        let gallery = cached?.gallery, wireBytes = cached?.wireBytes;
+        if (!cached) {
+          const response = await fetch('/works/' + candidateResource + '/' + next + '/gallery.json', {cache:'no-store', signal:controller.signal});
+          if ([401,403,404].includes(response.status)) geometryCache.evictResource(candidateResource);
+          if (response.headers.get('X-Home-Version') !== next) throw Error('Review version changed');
+          const data = await bytes(response, 25 * 1024 * 1024); wireBytes = data.byteLength;
+          const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)), b => b.toString(16).padStart(2,'0')).join('');
+          if (digest !== manifest.sha256) throw Error('Review payload mismatch');
+          gallery = await decodeReviewGallery(JSON.parse(new TextDecoder().decode(data)));
+        }
         if (!wanted || document.hidden || controller.signal.aborted) return;
         if (requested) {
           const requestId = String(++serial);
           const accepted = new Promise(resolve => { acknowledgment = {requestId, resource:candidateResource, version:next, resolve}; });
           post({type:'home-artifact:review-update',version:next,resource:candidateResource,gallery,requestId,switching:true});
           if (!await accepted || controller.signal.aborted) throw Error('Review not accepted');
+          geometryCache.put(cacheKey, candidateResource, gallery, wireBytes);
           resource = candidateResource; rememberProject();
           post({type:'home-artifact:review-commit',requestId,resource,version:next});
           if (target === requested) target = null;
@@ -261,7 +301,7 @@ function installLiveReview(frame) {
     if (wanted && !document.hidden && !pending) poll();
   });
   listen(document, 'visibilitychange', () => { if (document.hidden && catalogPending) catalogPending.abort(); immediate = !document.hidden; cancel(); if (wanted && !document.hidden && !pending) poll(); });
-  listen(window, 'pagehide', () => { cancel(); if (catalogPending) catalogPending.abort(); });
+  listen(window, 'pagehide', () => { geometryCache.clear(); cancel(); if (catalogPending) catalogPending.abort(); });
   listen(window, 'pageshow', () => { if (wanted && !document.hidden && !pending) poll(); });
   return {dispose};
 }

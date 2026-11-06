@@ -8,6 +8,7 @@ to the shared Registry, and every delivery checks its serving manifest digest.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack, nullcontext
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
@@ -802,10 +803,15 @@ def handler(app, *, owner=False):
             if owner:
                 self.respond(404, {})
                 return
+            proofs = ExitStack()
             try:
                 if app.sso:
                     from .login import routes
                     if routes(self, app, 'GET'): return
+                # Login GET callbacks can mutate sessions and recheck authority
+                # after external I/O. Only subsequent read routes use a snapshot.
+                read_snapshot = getattr(app.authority, 'read_snapshot', nullcontext)
+                proofs.enter_context(read_snapshot())
                 if app.designs:
                     from .homemaker import routes
                     if routes(self, app, 'GET'): return
@@ -1132,6 +1138,8 @@ def handler(app, *, owner=False):
                     self.respond(404, {})
                 else:
                     self.close_connection = True
+            finally:
+                proofs.close()
 
         def content(self, origin):
             """One artifact child context, without home cookies or login APIs."""

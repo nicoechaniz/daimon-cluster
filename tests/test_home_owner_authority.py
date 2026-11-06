@@ -106,3 +106,61 @@ def test_actor_lookup_refuses_a_historical_pin_against_current_source(monkeypatc
     # Every actor consumer, not only a later tribe read, must fail closed.
     with pytest.raises(ValueError,match='home_actor_authority_source_stale'):
         authority.actor('being-one')
+
+
+def test_read_snapshot_is_lazy_success_only_nested_and_instance_local(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    authority = NativeAuthority(tmp_path/'bindings', tmp_path/'relationships', {})
+    reads = []
+    source = {'name': 'First', 'fail': False}
+    def bindings():
+        reads.append(source['name'])
+        if source['fail']:
+            raise ValueError('invalid_home_authority_history')
+        return [dict(enabled=True, being_ref='being', origin='origin', label=source['name'],
+                     human_id=123, human_name='Human',
+                     authority=SimpleNamespace(manifest=SimpleNamespace(digest=source['name'])))]
+    monkeypatch.setattr(authority, '_bindings', bindings)
+    with authority.read_snapshot():
+        assert reads == []  # Public GETs do not trigger proof reconstruction.
+        assert authority.actor('being').name == 'First'
+        assert authority.actor('being').name == 'First'
+        assert reads == ['First']
+        source['name'] = 'Second'
+        with authority.read_snapshot():
+            assert authority.actor('being').name == 'Second'
+        assert authority.actor('being').name == 'First'
+    assert authority.actor('being').name == 'Second'
+    source['fail'] = True
+    with pytest.raises(ValueError):
+        with authority.read_snapshot():
+            authority.actor('being')
+    assert authority._read_snapshot.get() is None
+    with authority.read_snapshot():
+        with pytest.raises(ValueError): authority.actor('being')
+        source['fail'] = False
+        assert authority.actor('being').name == 'Second'  # Failed reads never cached.
+    second = NativeAuthority(tmp_path/'other', tmp_path/'relationships', {})
+    assert second._read_snapshot is not authority._read_snapshot
+    with authority.read_snapshot():
+        assert second._read_snapshot.get() is None
+
+
+def test_read_snapshot_isolated_between_concurrent_requests(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, get_ident
+    authority = NativeAuthority(tmp_path/'bindings', tmp_path/'relationships', {})
+    barrier = Barrier(2)
+    def actors():
+        return {'being': Actor('being', 'being', 'revision', str(get_ident()))}
+    monkeypatch.setattr(authority, '_actors', actors)
+    def request():
+        with authority.read_snapshot():
+            first = authority.actor('being')
+            barrier.wait(timeout=5)
+            assert authority.actor('being') is first
+            return first.name
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        a, b = list(executor.map(lambda _: request(), range(2)))
+    assert a != b
+    assert authority._read_snapshot.get() is None

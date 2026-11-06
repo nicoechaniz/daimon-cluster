@@ -661,3 +661,66 @@ def test_owner_publication_uses_one_request_local_actor_catalog(tmp_path):
     with pytest.raises(ValueError):
         app.owner('one', 'credential', 'sync', {})
     assert authority.reads == 3
+
+
+def test_http_proof_snapshot_reuses_actor_reads_but_not_later_revocation(tmp_path, monkeypatch):
+    from clusterctl.homes.authority import NativeAuthority
+    from tests.test_home_passkeys import system, approved
+    # Use the existing gateway/session/publication fixture, not a second auth path.
+    app, _ = system.__wrapped__(tmp_path)
+    class Proofs(NativeAuthority):
+        def __init__(self, existing):
+            super().__init__(tmp_path/'bindings', tmp_path/'relationships', app.homes)
+            self.people = existing.people
+            self.loads = 0
+            self.paired_human, self.tribe_member = existing.paired_human, existing.tribe_member
+        def _actors(self):
+            self.loads += 1
+            if getattr(self, 'invalid', False):
+                raise ValueError('home_actor_authority_source_stale')
+            return dict(self.people)
+    authority = Proofs(app.authority)
+    app.authority = authority
+    app.policy.actor = authority.actor
+    def login_route(request, application, method, *args):
+        assert authority._read_snapshot.get() is None
+        if request.path == '/signin':
+            request.respond(200, {'login': method})
+            return True
+        return False
+    monkeypatch.setattr('clusterctl.homes.login.routes', login_route)
+    app.sso = object()
+    token, _ = approved(app)
+    state = {'schema':1,'entries':[
+        selected(f'{i:032x}', 'individual', recipients=['human']) for i in range(1,21)]}
+    app.backends['one'].state = lambda: state
+    # Commit the exact fixture state through its actual owner publication path.
+    app.registry.register(home='one',owner=app.homes['one']['owner_being_ref'],
+        state=state,expected_revision=0, known_actor=authority.actor, known_tribe=lambda _: False)
+    from http.client import HTTPConnection
+    from urllib.parse import urlsplit
+    with serving(handler(app)) as base:
+        connection = HTTPConnection(urlsplit(base).netloc)
+        headers = {'Host':'one.example.test','Cookie':'__Host-home='+token}
+        before = authority.loads
+        connection.request('GET','/catalog.json',headers=headers)
+        response=connection.getresponse();body=json.loads(response.read())
+        assert response.status==200 and len(body['entries'])==20
+        assert authority.loads-before==1
+        authority.people.pop('human')
+        connection.request('GET','/catalog.json',headers=headers)
+        response=connection.getresponse();body=json.loads(response.read())
+        assert response.status==200 and body['entries']==[]
+        assert authority.loads-before==2
+        connection.request('HEAD','/catalog.json',headers=headers)
+        response=connection.getresponse();assert response.status==200 and response.read()==b''
+        assert authority.loads-before==3
+        authority.invalid = True
+        connection.request('GET','/catalog.json',headers=headers)
+        response=connection.getresponse();response.read()
+        assert response.status != 200  # No stale successful fallback.
+        for method in ('GET', 'POST'):
+            connection.request(method,'/signin',headers=headers)
+            response=connection.getresponse();response.read()
+            assert response.status==200
+        connection.close()

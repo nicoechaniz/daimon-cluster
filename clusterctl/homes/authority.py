@@ -9,6 +9,7 @@ that projection is not a Matrix human membership event.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 from pathlib import Path
@@ -40,8 +41,34 @@ class NativeAuthority:
         self.authority_source = authority_source
         self.human_rosters = human_rosters
         self.clock = clock
+        self._read_snapshot = ContextVar("home_public_proofs", default=None)
+
+    @contextmanager
+    def read_snapshot(self):
+        """Reuse successful public-proof reads within one read-only request.
+
+        Lazy, per-instance and context-local: public reads incur no proof work.
+        Sessions, registry, relationship views, rosters and clocks stay fresh.
+        Nested scopes get independent snapshots; failure always restores scope.
+        """
+        token = self._read_snapshot.set({})
+        try:
+            yield
+        finally:
+            self._read_snapshot.reset(token)
+
+    def _read_once(self, name, read):
+        snapshot = self._read_snapshot.get()
+        if snapshot is None:
+            return read()
+        if name not in snapshot:
+            snapshot[name] = read()  # Exceptions never populate a success entry.
+        return snapshot[name]
 
     def bindings(self):
+        return self._read_once("bindings", self._bindings)
+
+    def _bindings(self):
         from daimon_matrix.human_tribu_process import host_config
         from daimon_matrix.messaging_config import protected_read
         from daimon_matrix.operator_rebirth import authority_from_document
@@ -85,6 +112,9 @@ class NativeAuthority:
         return results
 
     def actors(self):
+        return self._read_once("actors", self._actors)
+
+    def _actors(self):
         # An actor pin alone can be a valid historical Root. Actor-based owner
         # and browser checks must also agree with the selected current source.
         self.authorities()
@@ -151,6 +181,9 @@ class NativeAuthority:
             yield view
 
     def authorities(self):
+        return self._read_once("authorities", self._authorities)
+
+    def _authorities(self):
         rows = self.bindings()
         selected = {r["being_ref"]: r["authority"] for r in rows}
         if self.authority_source is None:

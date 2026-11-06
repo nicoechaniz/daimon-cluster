@@ -165,7 +165,14 @@ sufficient; discard replaced disposable preparation after its cohort completes.
 
 A scoped Matrix reload can invalidate the durable reader recovery when its loaded
 view changes. A healthy new daemon and retained group application do not restore
-its reader selection. Inspect the actual gate; do not send another message or
+its reader selection. Base-socket compact receiving status and scope discovery
+are not messaging acceptance. Inspect `runtime.status` on the actual GROUP
+application socket: require its `receiving.channels.tribe` gate to select the
+current all-required reader vector after every software reload, even when the
+software change did not touch messaging. Keep the deployment incomplete until
+that existing current-reader path finishes. Unchanged software restarts may
+recover the durable vector; a changed loaded view needs fresh qualification.
+ Inspect the actual gate; do not send another message or
 restart again to obtain readiness.
 
 For current already admitted services, use `observe_current_reader` from
@@ -194,6 +201,14 @@ adoption; it does not fabricate a lifecycle receipt for the older coordinator.
 Retain actual group/direct receiving and reader acceptance separately. An expired
 unattempted message uses only the supported explicit recovery contract, preserving
 its original identity/audience; no speculative send or new ID.
+
+The existing critical-service Alerts observer can additionally check each local
+Matrix unit with its `receiving_command` adapter (Daimon Alerts PR28). This uses
+current authenticated group status and the existing timer/incident journal,
+without inbox reads, model attention, new speech or automatic retransmission.
+An active process with an unselected/expired/mismatched reader gate is an outage,
+not a healthy service. Local readiness and actual signed message delivery remain
+separate checks; neither proves that a model has read or answered a message.
 
 ## Canonical TCP authority restart
 

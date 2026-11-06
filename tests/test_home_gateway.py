@@ -724,3 +724,83 @@ def test_http_proof_snapshot_reuses_actor_reads_but_not_later_revocation(tmp_pat
             response=connection.getresponse();response.read()
             assert response.status==200
         connection.close()
+
+
+def test_slow_connections_expire_without_blocking_authorized_reads(tmp_path):
+    """Exercise both actual listeners, their real 30s inactivity bound and cleanup."""
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import ExitStack
+    from http.client import HTTPConnection
+    import socket
+    import time
+    from urllib.parse import urlsplit
+    from tests.test_home_passkeys import system, approved
+
+    app, _ = system.__wrapped__(tmp_path)
+    token, _ = approved(app)
+    finished = []
+    observed_timeouts = []
+    active = set()
+    lock = threading.Lock()
+
+    def tracked(owner):
+        class Tracked(handler(app, owner=owner)):
+            def setup(self):
+                super().setup()
+                with lock:
+                    observed_timeouts.append(self.connection.gettimeout())
+                    active.add(self.client_address)
+
+            def finish(self):
+                try:
+                    super().finish()
+                finally:
+                    with lock:
+                        active.discard(self.client_address)
+                        finished.append(self.client_address)
+        return Tracked
+
+    with ExitStack() as stack:
+        viewer = urlsplit(stack.enter_context(serving(tracked(False)))).netloc
+        owner = urlsplit(stack.enter_context(serving(tracked(True)))).netloc
+        slow = []
+        for target in (viewer, owner):
+            host, port = target.split(':')
+            for payload in (
+                b'GET / HTTP/1.1\r\nHost: one.example.test\r\nX-Incomplete:',
+                b'GET / HTTP/1.1\r\nHost: one.example.test\r\nX-Other:',
+                b'POST /access/claim HTTP/1.1\r\nHost: one.example.test\r\nContent-Length: 16\r\n\r\nx',
+            ):
+                connection = stack.enter_context(closing(socket.create_connection((host, int(port)), timeout=3)))
+                slow.append(connection.getsockname())
+                connection.sendall(payload)
+        start = time.monotonic()
+
+        def read(index):
+            target = owner if index % 4 == 0 else viewer
+            with closing(HTTPConnection(target, timeout=5)) as connection:
+                connection.request('GET', '/catalog.json', headers={
+                    'Host': 'one.example.test', 'Cookie': '__Host-home=' + token})
+                response = connection.getresponse()
+                body = json.loads(response.read())
+                assert response.status == (404 if target == owner else 200)
+                if target == viewer:
+                    assert isinstance(body['entries'], list)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(read, range(16)))
+        # Fast reads must finish while the deliberately incomplete clients still
+        # occupy their handlers, rather than waiting for the inactivity deadline.
+        assert time.monotonic() - start < 10
+        with lock:
+            assert set(slow).issubset(active)
+
+        deadline = start + 35
+        while time.monotonic() < deadline:
+            with lock:
+                if set(slow).issubset(finished):
+                    break
+            time.sleep(0.05)
+        with lock:
+            assert set(slow).issubset(finished)
+            assert not active
+            assert observed_timeouts and set(observed_timeouts) == {30.0}

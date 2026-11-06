@@ -150,7 +150,7 @@ function reviewJSONBytes(text, maxBytes = 4 * 1024 * 1024) {
   return size;
 }
 function reviewGalleryJSON(gallery, maxBytes = 4 * 1024 * 1024) {
-  if(!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>4*1024*1024)return null;
+  if(!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>32*1024*1024)return null;
   let size = 0, nodes = 0;
   const add = n => {size += n; return size <= maxBytes;};
   function string(value) {
@@ -168,7 +168,7 @@ function reviewGalleryJSON(gallery, maxBytes = 4 * 1024 * 1024) {
     return true;
   }
   function visit(value, depth) {
-    if (++nodes>1000000 || depth>32) return false;
+    if (++nodes>4000000 || depth>32) return false;
     if(value===null)return add(4);
     if(typeof value==='string')return string(value);
     if(typeof value==='number')return Number.isFinite(value)&&!Object.is(value,-0)&&add(String(value).length);
@@ -191,6 +191,15 @@ function reviewGalleryJSON(gallery, maxBytes = 4 * 1024 * 1024) {
   const text=JSON.stringify(gallery);
   if(typeof text!=='string'||text.length>size||reviewJSONBytes(text,maxBytes)!==size)return null;
   return text;
+}
+
+// A legacy enabled-only child accepts at most 4 MiB. Invalid explicit limits
+// disable text; an advertised allowance never overrides our own hard ceiling.
+function reviewJSONAllowance(message) {
+  if(message.enabled!==true)return 0;
+  if(!Object.hasOwn(message,'maxBytes'))return 4*1024*1024;
+  return Number.isSafeInteger(message.maxBytes)&&message.maxBytes>0
+    ?Math.min(message.maxBytes,32*1024*1024):0;
 }
 
 // Mount-local retained geometry only; never a browser storage or authorization cache.
@@ -253,11 +262,11 @@ function installLiveReview(frame) {
   let disposed = false;
   const listeners = [];
   const listen = (target, type, callback) => { target.addEventListener(type, callback); listeners.push([target,type,callback]); };
-  let jsonSupport=false;
+  let jsonLimit=0;
   const post = data => {
     if(disposed)return;
-    if(jsonSupport && data.type==='home-artifact:review-update' && data.gallery) {
-      const text=reviewGalleryJSON(data.gallery);
+    if(jsonLimit && data.type==='home-artifact:review-update' && data.gallery) {
+      const text=reviewGalleryJSON(data.gallery,jsonLimit);
       if(text!==null) {const {gallery,...envelope}=data;data={...envelope,galleryJSON:text};}
     }
     frame.contentWindow.postMessage(data, '*');
@@ -377,7 +386,7 @@ function installLiveReview(frame) {
     cancel();target=null;return true;
   }
   function support(message) {
-    if(message?.type==='home-artifact:review-json-support' && typeof message.enabled==='boolean') {jsonSupport=message.enabled;return true;}
+    if(message?.type==='home-artifact:review-json-support' && typeof message.enabled==='boolean') {jsonLimit=reviewJSONAllowance(message);return true;}
     if (message?.type !== 'home-artifact:review-scene-support' || message.enabled !== true) return false;
     sceneSupport=true;
     if (typeof message.scene === 'string' && message.scene.length <= 180) selectedScene=message.scene;

@@ -261,11 +261,17 @@ reject ambiguous object+text, malformed/oversized text and unsupported senders,
 retaining the previous view.
 
 Before stringify, the parent counts actual JSON punctuation, escaped UTF8,
-metadata and finite numeric representations. It stops at4MiB, one million nodes
+metadata and finite numeric representations. It stops at the negotiated ceiling,
+four million nodes
 or32levels; unsupported values and negative zero fall back without losing original
 semantics. Repeated references count each serialization. A final allocation-free
 UTF8 consistency check guards the result. No serialized-string cache or new
-endpoint exists. The4MiB cap is serialized size, not a heap/GPU bound; JSON loses
+endpoint exists. Children advertise `maxBytes` in their existing support message;
+missing values retain the legacy4MiB allowance, malformed explicit values disable
+text, and valid positive integer allowances are capped at32MiB. Old parents
+remain4MiB senders; old enabled-only children never receive larger text. The
+32MiB ceiling bounds the decoded iframe representation, not source downloads.
+It is serialized size, not a heap/GPU bound; JSON loses
 shared-array aliases. Existing3entry/48MiB conservative retention stays.
 
 Qualify Unicode/control escapes, fractional/exponent numbers, repeated references,

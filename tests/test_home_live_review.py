@@ -25,13 +25,32 @@ for(const value of values){
 const run=s=>vm.runInContext(s,context);
 assert.equal(run('(()=>{const v=[[.01,2,3]],g={a:v,b:v};return reviewGalleryJSON(g)})()'),'\u007b"a":[[0.01,2,3]],"b":[[0.01,2,3]]}');
 assert.equal(run('(()=>{let v={};for(let i=0;i<34;i++)v={nested:v};return reviewGalleryJSON(v)})()'),null);
-assert.equal(run('reviewGalleryJSON({nodes:Array(1000000).fill(0)})'),null);
+assert.equal(run('reviewGalleryJSON({nodes:Array(4000000).fill(0)},32*1024*1024)'),null);
 assert.equal(run('reviewGalleryJSON({text:"x".repeat(4*1024*1024)})'),null);
 assert.equal(run('reviewGalleryJSON({coordinate:-0})'),null,'object fallback preserves signed zero');
 assert.equal(run('reviewGalleryJSON({get bad(){throw Error("must not execute")}})'),null);
 assert.equal(run('reviewGalleryJSON({toJSON(){throw Error("must not execute")}})'),null);
 assert.equal(run('(()=>{const v={};v.cycle=v;return reviewGalleryJSON(v)})()'),null);
 assert.equal(run('reviewGalleryJSON({value:Infinity})'),null);
+assert.equal(run('reviewJSONAllowance({enabled:true})'),4*1024*1024);
+assert.equal(run('reviewJSONAllowance({enabled:false,maxBytes:32*1024*1024})'),0);
+for(const limit of [null,undefined,'33554432',NaN,Infinity,1.5,-1,0]){
+ context.limit=limit;assert.equal(run('reviewJSONAllowance({enabled:true,maxBytes:limit})'),0);
+}
+for(const limit of [1,1024,4*1024*1024,32*1024*1024,64*1024*1024]){
+ context.limit=limit;assert.equal(run('reviewJSONAllowance({enabled:true,maxBytes:limit})'),Math.min(limit,32*1024*1024));
+}
+// Larger text requires explicit negotiation; the helper's default stays legacy.
+assert.equal(run('reviewGalleryJSON({text:"x".repeat(5*1024*1024)})'),null);
+assert.equal(run('reviewGalleryJSON({text:"x".repeat(5*1024*1024)},32*1024*1024).length'),5*1024*1024+11);
+assert.equal(run('reviewGalleryJSON({text:"x".repeat(32*1024*1024)},32*1024*1024)'),null);
+assert.equal(run('reviewGalleryJSON({},32*1024*1024+1)'),null);
+for(const limit of [4*1024*1024,32*1024*1024]){
+ context.limit=limit;
+ assert.equal(run('reviewGalleryJSON({text:"é".repeat((limit-12)/2)},limit).length'),(limit-12)/2+11);
+ assert.equal(run('reviewGalleryJSON({text:"é".repeat((limit-12)/2+1)},limit)'),null);
+}
+
 '''
     subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True, timeout=15)
 
@@ -375,3 +394,46 @@ for(const edit of [x=>x.version='c'.repeat(64),x=>x.parts[0].id='other',x=>x.tit
 console.log('Scene path and metadata boundaries pass');
 '''
     subprocess.run([node, '-e', fixture, str(source)], check=True, timeout=10)
+
+
+@pytest.mark.parametrize("support,want_text", [
+    (None, False),
+    ({"enabled": True}, False),
+    ({"enabled": True, "maxBytes": 8 * 1024 * 1024}, True),
+    ({"enabled": True, "maxBytes": 64 * 1024 * 1024}, True),
+    ({"enabled": True, "maxBytes": 1024}, False),
+    ({"enabled": True, "maxBytes": "33554432"}, False),
+    ({"enabled": True, "maxBytes": -1}, False),
+    ({"enabled": True, "maxBytes": 1.5}, False),
+    ({"enabled": False, "maxBytes": 32 * 1024 * 1024}, False),
+])
+def test_large_update_obeys_actual_child_allowance(support, want_text):
+    import json
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required')
+    source = Path(__file__).resolve().parents[1] / 'clusterctl/homes/assets/work-live-review.js'
+    fixture = r'''
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict'),{webcrypto}=require('crypto');
+(async()=>{
+ const a='a'.repeat(32),v='c'.repeat(64),events={},messages=[];
+ const payload=JSON.stringify({scenes:[{parts:[{vertices:[[0,0,0]],faces:[]}]}],padding:'x'.repeat(5*1024*1024)});
+ const hash=Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(payload))).toString('hex');
+ const frame={dataset:{liveReview:'current',downloadRoot:'/works/'+a+'/'+'b'.repeat(64)+'/'},contentWindow:{postMessage:m=>messages.push(m)}};
+ const c={window:{addEventListener:(k,f)=>events[k]=f},document:{hidden:false,addEventListener(){}},Uint8Array,TextDecoder,AbortController,crypto:webcrypto,setTimeout,clearTimeout,
+ fetch:async url=>new Response(url.endsWith('review-live.json')?JSON.stringify({schema:'dm.review-live/v1',gallery:'gallery.json',sha256:hash}):payload,{headers:{'X-Home-Version':v}})};
+ vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),c);c.installLiveReview(frame);
+ const send=data=>events.message({source:frame.contentWindow,origin:'null',data});
+ const support=JSON.parse(process.argv[2]);if(support)send({type:'home-artifact:review-json-support',...support});
+ send({type:'home-artifact:live-review',enabled:true});
+ try{
+  const until=Date.now()+5000;while(!messages.some(m=>m.type==='home-artifact:review-update')){assert(Date.now()<until);await new Promise(r=>setTimeout(r,5))}
+  const update=messages.find(m=>m.type==='home-artifact:review-update');const text=typeof update.galleryJSON==='string';
+  assert.equal(text,process.argv[3]==='true');assert.equal(Object.hasOwn(update,'gallery'),!text);
+  if(text)assert.equal(update.galleryJSON,payload);else assert.equal(JSON.stringify(update.gallery),payload);
+ }finally{send({type:'home-artifact:live-review',enabled:false})}
+})().catch(e=>{console.error(e);process.exit(1)});
+'''
+    result = subprocess.run([node, '-e', fixture, str(source), json.dumps(support),
+                             str(want_text).lower()], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr

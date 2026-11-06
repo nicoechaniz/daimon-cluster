@@ -251,19 +251,22 @@ const fs=require('fs'),vm=require('vm'),assert=require('assert/strict'),{webcryp
  }};
  vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);context.installLiveReview(frame);
  const send=data=>events.message({source:frame.contentWindow,origin:'null',data});
- const flush=async()=>{for(let i=0;i<35;i++)await new Promise(r=>setImmediate(r));};
- send({type:'home-artifact:live-review',enabled:true});await flush();
+ const wait=async predicate=>{const deadline=Date.now()+5000;while(!predicate()){assert(Date.now()<deadline,'review bridge did not reach expected state: '+JSON.stringify({mode,calls,messages,saved}));await new Promise(r=>setTimeout(r,5));}};
+ send({type:'home-artifact:live-review',enabled:true});
+ if(mode!=='pinned')await wait(()=>messages.some(m=>m.type==='home-artifact:review-catalog'));
+ if(mode==='query'||mode==='saved')await wait(()=>messages.some(m=>m.type==='home-artifact:review-update'));
  if(mode==='pinned'){assert.equal(calls.length,0);continue;}
  assert.equal(calls[0],'/catalog.json');
  if(mode==='denied'){assert(!calls.some(url=>url.includes('/'+b+'/')));assert.equal(saved.length,0);continue;}
  assert(calls.slice(1).every(url=>url.includes('/'+b+'/')),'no obsolete renderer gallery fetch');
  const update=messages.find(m=>m.type==='home-artifact:review-update');assert(update);assert.equal(saved.length,0);
- send({type:'home-artifact:review-applied',requestId:update.requestId,resource:b,version:v,accepted:true});await flush();
+ send({type:'home-artifact:review-applied',requestId:update.requestId,resource:b,version:v,accepted:true});await wait(()=>saved.length>0);
  assert.equal(saved[0][0],'dm.review-project:'+a);assert.equal(saved[0][1],b);
  assert(urls[0].includes('display=work'));assert(urls[0].includes('project='+b));
  }} )().catch(error=>{console.error(error);process.exit(1)});
 '''
-    subprocess.run([node, '-e', fixture, str(source)], check=True, capture_output=True, text=True)
+    result = subprocess.run([node, '-e', fixture, str(source)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
 
 
 def test_geometry_retention_is_bounded_and_switches_reauthorize_before_reuse():

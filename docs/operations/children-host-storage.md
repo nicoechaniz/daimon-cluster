@@ -89,3 +89,11 @@ maintained Shared Resources `children-host-security.md` handoff and actual
 Alerts/housekeeping contracts. Do not claim installation or exercised coverage
 from this plan, the XFS timer installed incidentally by its package, or unit files
 alone. That incidental timer was disabled pending the integrated selected policy.
+
+The context bootstrap reuses the maintained `bootstrap_home` account creation.
+For an explicit resource plan only, it accepts a pre-owned0700UID/GID1000home
+whose sole entry is an empty, equally owned `Storage` mount. Both paths must be
+actual mounts in the guest. Missing mounts, foreign ownership or existing files
+refuse initial account creation. Ordinary plans retain the root-owned empty-home
+rule. Environment creation alone does not create the named guest account or
+establish native runtime, provider authentication or human acceptance.

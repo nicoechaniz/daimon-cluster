@@ -194,7 +194,24 @@ def prepare_view(source: Path, views: Path, plan: dict) -> Path:
         return target
 
 
-def bootstrap_home(home: Path = GUEST_HOME) -> None:
+def _empty_resource_home(home: Path) -> bool:
+    """Only the exact new mounted Storage layout may precede user creation."""
+    storage = home / 'Storage'
+    try:
+        being_seed._path(storage)
+        for path in (home, storage):
+            info = path.stat()
+            if (not path.is_dir() or info.st_uid != GUEST_UID
+                    or info.st_gid != GUEST_GID or info.st_mode & 0o777 != 0o700):
+                return False
+        mounted = {line.split(' ')[4] for line in Path('/proc/self/mountinfo').read_text().splitlines()}
+        return (str(home) in mounted and str(storage) in mounted
+                and list(home.iterdir()) == [storage] and not any(storage.iterdir()))
+    except (OSError, ValueError):
+        return False
+
+
+def bootstrap_home(home: Path = GUEST_HOME, *, cold_storage: bool = False) -> None:
     """Only the empty, dedicated mounted home may get its initial ownership."""
     import pwd
     import grp
@@ -205,7 +222,8 @@ def bootstrap_home(home: Path = GUEST_HOME) -> None:
     except KeyError:
         # The qualified image carries tools, not a source user's account/home.
         # Create the dedicated guest identity through the maintained path.
-        if home.stat().st_uid != 0 or not home.is_dir() or any(home.iterdir()):
+        empty_root_home = home.stat().st_uid == 0 and home.is_dir() and not any(home.iterdir())
+        if not empty_root_home and not (cold_storage and _empty_resource_home(home)):
             raise OnboardingError('existing_guest_home_preserved')
         try:
             pwd.getpwuid(GUEST_UID)

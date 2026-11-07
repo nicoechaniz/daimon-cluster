@@ -1184,7 +1184,8 @@ class HostBackend:
             for name in ('onboarding-code', *[key for key in mounts if key.startswith('runtime-')], 'onboarding-input'):
                 if name == "onboarding-input":
                     launcher = ("import sys; sys.path.insert(0, sys.argv[1]); "
-                                "from clusterctl.onboarding_mounts import bootstrap_home; bootstrap_home()")
+                                "from clusterctl.onboarding_mounts import bootstrap_home; "
+                                + ("bootstrap_home(cold_storage=True)" if plan.get("resources") else "bootstrap_home()"))
                     self._dispatch(plan, ["exec", self.instance(plan), "--", "python3", "-B", "-I", "-c", launcher, str(guest_code)])
                 current = row.get("expanded_devices", {}).get(name)
                 if current is not None and current != mounts[name]:

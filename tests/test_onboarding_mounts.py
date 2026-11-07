@@ -231,3 +231,26 @@ def test_private_connections_retry_preserves_original_and_refuses_changed_bot(tm
     assert target.stat().st_mode & 0o077 == 0
     with pytest.raises(OnboardingError, match='connection_data_required'):
         onboarding_mounts.prepare_connections(views, value, {**supplied, 'ssh_public_key': 'excluded'})
+
+
+def test_prepared_resource_home_requires_both_empty_owned_mounts(tmp_path, monkeypatch):
+    from pathlib import Path
+    home = tmp_path / 'agent'; home.mkdir(mode=0o700)
+    storage = home / 'Storage'; storage.mkdir(mode=0o700)
+    real_read = Path.read_text
+    def mounts(path, *args, **kwargs):
+        if str(path) == '/proc/self/mountinfo':
+            return f'1 0 0:1 / {home} rw - btrfs none rw\n2 0 0:2 / {storage} rw - xfs none rw\n'
+        return real_read(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', mounts)
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_UID', home.stat().st_uid)
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_GID', home.stat().st_gid)
+    assert onboarding_mounts._empty_resource_home(home)
+    (storage / 'history').write_text('preserve')
+    assert not onboarding_mounts._empty_resource_home(home)
+    (storage / 'history').unlink()
+    storage.chmod(0o755)
+    assert not onboarding_mounts._empty_resource_home(home)
+    storage.chmod(0o700)
+    monkeypatch.setattr(Path, 'read_text', real_read)
+    assert not onboarding_mounts._empty_resource_home(home)

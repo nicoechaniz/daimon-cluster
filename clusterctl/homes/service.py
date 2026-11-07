@@ -232,7 +232,7 @@ class Backend:
 
 
 class Application:
-    def __init__(self, config, authority, sessions, *, backends=None, passkey_rp_id=None, client_example=False, style_provider=None, auth_origin=None, google_client=None, homemaker_source=None, homemaker_state=None, homemaker_home=None, homemaker_returns=(), miniapp_routes=None, miniapp_receivers=None):
+    def __init__(self, config, authority, sessions, *, backends=None, passkey_rp_id=None, client_example=False, style_provider=None, auth_origin=None, google_client=None, homemaker_source=None, homemaker_state=None, homemaker_home=None, homemaker_returns=(), miniapp_routes=None, miniapp_receivers=None, cluster_dashboard=None):
         self.styles = StyleConsumer(style_provider, authority, config["homes"]) if style_provider else None
         from .launcher import validate_launch_routes
         self.miniapp_routes=validate_launch_routes(miniapp_routes)
@@ -247,6 +247,10 @@ class Application:
             authority,
             sessions,
         )
+        from .fleet import Fleet
+        self.cluster_dashboard = Fleet(cluster_dashboard) if cluster_dashboard else None
+        if self.cluster_dashboard and self.cluster_dashboard.config['home'] not in self.homes:
+            raise ValueError('cluster_dashboard_home_unregistered')
         self.registry = Registry(sessions)
         self.policy = Policy(
             actor=authority.actor,
@@ -891,10 +895,15 @@ def handler(app, *, owner=False):
                 public_asset = path in (
                     '/home.css', '/work-live-review.js', '/work-view.js', '/work-annotations.js', '/work-annotations.css',
                     '/home-style.js', '/artifact-style.js', '/home-miniapp-login.js',
+                    '/cluster/', '/cluster/app.js', '/cluster/app.css',
                     '/access-client.js', '/fonts/space-grotesk-latin.woff2',
                 ) or (path == '/passkeys.js' and app.passkeys is not None)
                 home, origin, subject, vpn, cookies, parent_token = self.context(
                     resolve_identity=not public_asset)
+                if path.startswith('/cluster/'):
+                    from .fleet import routes as fleet_routes
+                    fleet_routes(self, app, path, home, subject, vpn)
+                    return
                 if path.startswith("/apps/"):
                     from .launcher import routes
                     if routes(self, app, path, home, subject, vpn): return
@@ -1446,6 +1455,7 @@ def main():
     parser.add_argument('--homemaker-return', action='append', default=[], help='Additional exact registered consumer return URL')
     parser.add_argument('--miniapp-routes', help='Operator-selected public same-origin destination map JSON')
     parser.add_argument('--miniapp-receivers', help='Verified same-origin per-pair application routes JSON')
+    parser.add_argument('--cluster-dashboard', help='Protected owner-selected read-only Cluster dashboard configuration')
     args = parser.parse_args()
     from daimon_matrix.messaging_config import protected_read
 
@@ -1464,7 +1474,8 @@ def main():
                       homemaker_source=args.homemaker_source, homemaker_state=args.homemaker_state,
                       homemaker_home=args.homemaker_home, homemaker_returns=args.homemaker_return,
                       miniapp_routes=json.loads(protected_read(Path(args.miniapp_routes))) if args.miniapp_routes else None,
-                      miniapp_receivers=json.loads(protected_read(Path(args.miniapp_receivers))) if args.miniapp_receivers else None)
+                      miniapp_receivers=json.loads(protected_read(Path(args.miniapp_receivers))) if args.miniapp_receivers else None,
+                      cluster_dashboard=json.loads(protected_read(Path(args.cluster_dashboard))) if args.cluster_dashboard else None)
     if args.http_transport == 'cheroot':
         from .wsgi import run
         run(app, config)

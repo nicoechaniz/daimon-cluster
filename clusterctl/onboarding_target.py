@@ -62,6 +62,22 @@ def profile(plan: dict) -> dict:
                 advertised_endpoint="http://127.0.0.1:8687/dm-peer/v1", targets=[])
 
 
+def _same_profile_after_owner_renewal(old, new):
+    from daimon_matrix.operator_capabilities import OPERATOR_CAPABILITY_TTL_MS
+    if old == new:
+        return True
+    a, b = old['descriptor'], new['descriptor']
+    changing = {'not_before_ms', 'not_after_ms', 'capability_id'}
+    return (
+        {k:v for k,v in old.items() if k != 'descriptor'}
+        == {k:v for k,v in new.items() if k != 'descriptor'}
+        and {k:v for k,v in a.items() if k not in changing}
+        == {k:v for k,v in b.items() if k not in changing}
+        and a['status'] == b['status'] == 'active'
+        and a['not_after_ms'] <= b['not_before_ms']
+        < b['not_after_ms'] <= b['not_before_ms'] + OPERATOR_CAPABILITY_TTL_MS
+    )
+
 class Target:
     def __init__(self, home: Path, plan: dict, genesis: dict, *, code: Path | None = None,
                  code_uid: int = 0, code_digest: str | None = None,
@@ -388,7 +404,12 @@ class Target:
             profile = profiles.host_capability_profile('receiving-controller')
             previous = expected['capabilities']
             current = bundle['capabilities']
-            if (len(current) != len(previous) + 1 or current[:-1] != previous
+            # Original role lifetimes are not an immutable birth identity.
+            # Native owner renewal retains keys/methods and signs the current
+            # complete set. Compare that narrow evolution to the birth record;
+            # all authentication below still uses the actual signed bundle.
+            if (len(current) != len(previous) + 1
+                    or not all(_same_profile_after_owner_renewal(old, new) for old, new in zip(previous, current[:-1], strict=True))
                     or any(row['profile'] == profile for row in previous)
                     or type(bundle['keystore'].get('counter')) is not int
                     or bundle['keystore']['counter'] <= expected['keystore']['counter']

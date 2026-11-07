@@ -29,7 +29,7 @@ REASONS = frozenset({
     "telegram_idle_required",
 })
 FACTS = frozenset({
-    "verified", "root_gib", "home_gib", "memory_stores", "memory_chapters", "skills",
+    "verified", "root_gib", "home_gib", "cold_gib", "cpu", "memory_gib", "memory_stores", "memory_chapters", "skills",
     "identity_verified", "context_verified", "ssh_ready", "ssh_verified", "provider_verified", "browser_verified",
     "telegram_ready", "telegram_verified", "welcome_delivered", "human_contact_verified",
     "steering_verified", "topics_verified", "restart_verified", "cli_resume_verified",
@@ -123,9 +123,19 @@ def digest(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def validate_resources(value: Any) -> dict:
+    bounds = {'root_gib': (4, 1024), 'home_gib': (4, 1024),
+              'cold_gib': (1, 4096), 'cpu': (1, 64), 'memory_gib': (1, 256)}
+    if (not isinstance(value, dict) or set(value) != set(bounds)
+            or any(type(value[k]) is not int or not low <= value[k] <= high
+                   for k, (low, high) in bounds.items())):
+        raise OnboardingError('invalid_onboarding_resources')
+    return dict(value)
+
+
 def validate_plan(value: Any) -> dict:
     expected = {"schema", "name", "owner", "seed_digest", "release_digest", "account_profile", "browser"}
-    if not isinstance(value, dict) or set(value) != expected or value.get("schema") != PLAN_SCHEMA:
+    if not isinstance(value, dict) or set(value) - {"resources"} != expected or value.get("schema") != PLAN_SCHEMA:
         raise OnboardingError("invalid_onboarding_plan")
     for name in ("name", "owner", "account_profile"):
         if not isinstance(value[name], str) or not being_seed.NAME.fullmatch(value[name]):
@@ -135,7 +145,10 @@ def validate_plan(value: Any) -> dict:
             raise OnboardingError("invalid_onboarding_plan")
     if type(value["browser"]) is not bool:
         raise OnboardingError("invalid_onboarding_plan")
-    return dict(value)
+    result = dict(value)
+    if 'resources' in result:
+        result['resources'] = validate_resources(result['resources'])
+    return result
 
 
 @dataclass(frozen=True)
@@ -309,8 +322,9 @@ class JobStore:
 
     @staticmethod
     def validate_completion(plan: dict, stage: str, facts: dict) -> None:
+        expected = plan['resources'] if stage == 'environment' and 'resources' in plan else STAGE_FACTS[stage]
         if any(type(facts.get(key)) is not type(value) or facts[key] != value
-               for key, value in STAGE_FACTS[stage].items()):
+               for key, value in expected.items()):
             raise OnboardingError("verification_failed")
         if stage == "memory" and any(type(facts.get(key)) is not int
                                      for key in ("memory_stores", "memory_chapters")):

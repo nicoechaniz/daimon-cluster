@@ -498,16 +498,17 @@ class HostBackend:
             raise OnboardingError('invalid_onboarding_environment_observation')
         return value
 
-    def _cold_access(self, plan: dict, action: str, *, deadline_ns: int | None = None) -> bool:
-        if action not in {'observe', 'prepare'}:
+    def _volume_access(self, plan: dict, volume: str, action: str, *, deadline_ns: int | None = None) -> bool:
+        if action not in {'observe', 'prepare'} or volume not in {'home', 'cold'}:
             raise OnboardingError('invalid_onboarding_host_configuration')
-        program = ("import json,os,stat,sys; p='/home/agent/Storage'; "
-                   "assert os.path.ismount(p); fd=os.open(p,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW); "
+        program = ("import json,os,stat,sys; p={'home':'/home/agent','cold':'/home/agent/Storage'}[sys.argv[2]]; "
+                   "assert any(line.split()[4]==p for line in open('/proc/self/mountinfo')); "
+                   "fd=os.open(p,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW); "
                    "os.fchown(fd,1000,1000) if sys.argv[1]=='prepare' else None; "
                    "os.fchmod(fd,0o700) if sys.argv[1]=='prepare' else None; "
                    "s=os.fstat(fd); os.close(fd); "
                    "print(json.dumps({'ready':s.st_uid==1000 and s.st_gid==1000 and stat.S_IMODE(s.st_mode)==0o700}))")
-        argv = ['exec', self.instance(plan), '--', 'python3', '-B', '-I', '-c', program, action]
+        argv = ['exec', self.instance(plan), '--', 'python3', '-B', '-I', '-c', program, action, volume]
         raw = (self._dispatch(plan, argv, timeout_seconds=20, deadline_ns=deadline_ns)
                if action == 'prepare' or deadline_ns is not None else self.run(argv))
         value = json.loads(raw)
@@ -575,7 +576,8 @@ class HostBackend:
             return Observation("absent", safe_to_execute=True)
         if row.get("status") != "Running":
             return Observation("uncertain", reason="uncertain_external_effect")
-        if 'cold_gib' in resources and not self._cold_access(plan, 'observe', deadline_ns=deadline_ns):
+        if 'cold_gib' in resources and not all(self._volume_access(plan, volume, 'observe', deadline_ns=deadline_ns)
+                for volume in ('home', 'cold')):
             return Observation('absent', safe_to_execute=True)
         return Observation("complete", {"verified": True, **resources})
 
@@ -842,8 +844,11 @@ class HostBackend:
                     'pool=' + str(self.config.cold_pool), 'source=' + name + '-cold', 'path=/home/agent/Storage'])
         if row.get("status") == "Stopped":
             self._dispatch(plan, ["start", name])
-        if 'cold_gib' in resources and not self._cold_access(plan, 'prepare'):
-            raise OnboardingError('onboarding_environment_conflict')
+        if 'cold_gib' in resources:
+            for volume in ('home', 'cold'):
+                if (not self._volume_access(plan, volume, 'observe')
+                        and not self._volume_access(plan, volume, 'prepare')):
+                    raise OnboardingError('onboarding_environment_conflict')
 
     def _consented(self, plan: dict, *, stage: str) -> bool:
         # Disposable context-only qualification has no participant decision.

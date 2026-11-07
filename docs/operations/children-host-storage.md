@@ -62,8 +62,10 @@ or concurrent-workload acceptance.
 pool. A resource plan waits before mutation if it is unavailable. The adapter
 checks exact image, plan marker, volume sizes, CPU/memory values and attachments;
 foreign cold volumes are refused before instance creation. Partial effects
-reconcile under the same job/operation. Only the owned cold mount root is changed
+reconcile under the same job/operation. Only the owned hot-home and cold mount roots are changed
 to the guest agent's UID/GID and mode 0700, without recursively changing user data.
+A first actual guest exposed the missing hot-home ownership initialization;
+new-layout readiness now checks both mounts before declaring completion.
 Real filesystem quotas, guest permissions and cgroup values require target-side
 checks before reporting the environment ready.
 

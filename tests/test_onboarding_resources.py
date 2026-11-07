@@ -13,7 +13,7 @@ RESOURCES=dict(root_gib=8,home_gib=8,cold_gib=48,cpu=3,memory_gib=4)
 
 class ResourcesIncus:
     def __init__(self):
-        self.instances=[];self.volumes=[];self.calls=[];self.ready=False;self.fail_after=None
+        self.instances=[];self.volumes=[];self.calls=[];self.ready=set();self.fail_after=None
     def __call__(self,argv,**kwargs):
         if kwargs: assert kwargs == {"timeout_seconds":20}
         if argv[0]=='list':return json.dumps(self.instances)
@@ -21,7 +21,7 @@ class ResourcesIncus:
             return json.dumps([v for v in self.volumes if v['pool']==argv[3]])
         if argv[0]=='query':
             return json.dumps(next(v for v in self.volumes if '/'+v['pool']+'/volumes/custom/'+v['name']==argv[1].removeprefix('/1.0/storage-pools')))
-        if argv[0]=='exec' and argv[-1]=='observe':return json.dumps({'ready':self.ready})
+        if argv[0]=='exec' and argv[-2]=='observe':return json.dumps({'ready':argv[-1] in self.ready})
         self.calls.append(argv)
         if argv[0]=='init':
             config={'volatile.base_image':argv[1]}
@@ -36,7 +36,7 @@ class ResourcesIncus:
         elif argv[:3]==['config','device','add']:
             self.instances[0]['expanded_devices'][argv[4]]=dict(type='disk',**dict(v.split('=',1) for v in argv[6:]))
         elif argv[0]=='start':self.instances[0]['status']='Running'
-        elif argv[0]=='exec' and argv[-1]=='prepare':self.ready=True
+        elif argv[0]=='exec' and argv[-2]=='prepare':self.ready.add(argv[-1])
         else:raise AssertionError(argv)
         if len(self.calls)==self.fail_after:raise RuntimeError('lost response after known fixture effect')
         return json.dumps({'ready':True}) if argv[0]=='exec' else ''
@@ -73,7 +73,7 @@ def test_missing_cold_pool_waits_before_mutation(tmp_path):
     assert not run.calls
 
 
-@pytest.mark.parametrize('after',range(1,8))
+@pytest.mark.parametrize('after',range(1,9))
 def test_each_partial_effect_reconciles_without_recreating(tmp_path,after):
     cfg,value,run,backend=setup(tmp_path);store=JobStore(cfg.jobs)
     store.submit(value,backend);run.fail_after=after
@@ -81,7 +81,7 @@ def test_each_partial_effect_reconciles_without_recreating(tmp_path,after):
     run.fail_after=None
     result=store.tick('eko',backend)
     assert result['completed_steps']==['environment']
-    assert len(run.calls)==7
+    assert len(run.calls)==8
     assert backend.observe(value,'environment','unused').facts=={'verified':True,**RESOURCES}
     assert {(v['pool'],v['config']['size']) for v in run.volumes}=={(cfg.pool,'8GiB'),('cold','48GiB')}
 
@@ -113,3 +113,12 @@ def test_intake_resources_cannot_exceed_its_exact_selection(tmp_path):
     assert not onboarding_intake.allows(cfg,changed)
     del value['beings']['eko']['resources'];being_seed._write(path,value)
     assert not onboarding_intake.allows(cfg,p)
+
+
+def test_unwritable_hot_home_is_not_environment_ready(tmp_path):
+    _,p,run,b=setup(tmp_path);b.execute(p,'environment','unused')
+    run.ready.remove('home')
+    assert b.observe(p,'environment','unused').state=='absent'
+    before=list(run.calls);b.execute(p,'environment','unused')
+    assert b.observe(p,'environment','unused').state=='complete'
+    assert all(c[0]=='exec' for c in run.calls[len(before):])

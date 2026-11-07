@@ -48,7 +48,8 @@ def native_inventory(root: Path) -> dict:
 class Fleet:
     def __init__(self, config, *, reader=native_inventory):
         if (not isinstance(config, dict)
-                or set(config) != {'schema', 'home', 'readers', 'runtime_root', 'placements', 'planned'}
+                or not {'schema', 'home', 'readers', 'runtime_root', 'placements', 'planned'} <= set(config)
+                or set(config) - {'schema', 'home', 'readers', 'runtime_root', 'placements', 'planned', 'observability'}
                 or config.get('schema') != 'cluster-home-dashboard/v1'
                 or not isinstance(config['home'], str)
                 or not isinstance(config['readers'], list) or not 1 <= len(config['readers']) <= 64
@@ -63,6 +64,17 @@ class Fleet:
             if (not isinstance(row, dict) or set(row) != {'name', 'host', 'hosting'}
                     or any(not isinstance(v, str) or not 1 <= len(v) <= 128 for v in row.values())):
                 raise ValueError('invalid_cluster_dashboard')
+        observe = config.get('observability', {})
+        if (not isinstance(observe, dict) or set(observe) - {'health_file', 'alerts'}):
+            raise ValueError('invalid_observability')
+        if 'health_file' in observe and (not isinstance(observe['health_file'], str)
+                or not Path(observe['health_file']).is_absolute()):
+            raise ValueError('invalid_observability')
+        if 'alerts' in observe and (not isinstance(observe['alerts'], dict)
+                or set(observe['alerts']) != {'base_url', 'token_file'}
+                or any(not isinstance(v, str) for v in observe['alerts'].values())
+                or not Path(observe['alerts']['token_file']).is_absolute()):
+            raise ValueError('invalid_observability')
         self.config, self.root, self.reader = config, root, reader
         self.lock = threading.Lock()
         self.cached = None
@@ -101,6 +113,8 @@ class Fleet:
             value = {'schema': 'cluster-home-fleet/v1', 'observed_at_ms': source['evaluated_at_ms'],
                      'partial': source['partial'], 'coverage': 'current-local-cluster-admissions',
                      'instances': rows, 'planned': self.config['planned']}
+            from .observability import observations
+            value['observability'] = observations(self.config.get('observability', {}))
             self.cached, self.cached_until = value, time.monotonic() + 3
             return value
 

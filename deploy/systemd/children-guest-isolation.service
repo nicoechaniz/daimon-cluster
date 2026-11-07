@@ -1,0 +1,14 @@
+[Unit]
+Description=Child guest isolation without replacing host or Incus rules
+Before=incus.service
+After=local-fs.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/children-guest-isolation.nft
+ExecReload=/usr/sbin/nft -f /etc/nftables.d/children-guest-isolation.nft
+TimeoutStartSec=10
+MemoryMax=32M
+TasksMax=16
+[Install]
+WantedBy=multi-user.target

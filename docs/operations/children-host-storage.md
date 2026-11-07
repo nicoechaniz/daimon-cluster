@@ -97,3 +97,18 @@ actual mounts in the guest. Missing mounts, foreign ownership or existing files
 refuse initial account creation. Ordinary plans retain the root-owned empty-home
 rule. Environment creation alone does not create the named guest account or
 establish native runtime, provider authentication or human acceptance.
+
+Guest isolation uses `configs/children-guest-isolation.nft` with the bounded
+`deploy/systemd/children-guest-isolation.service`. It owns only its named inet
+and bridge tables; never flush the global or Incus ruleset. DNS/DHCP are allowed,
+other guest-to-host input and guest-to-guest bridge traffic are denied. The empty
+native TCP/UDP sets must receive only the selected admitted transport ports
+before actual Tribe acceptance. This is not a substitute for resource grants.
+The service has no teardown that silently opens the fence. Rollback retains a
+known qualified table configuration, preserves management access and Incus NAT.
+
+Actual two-fixture qualification retained real fast/cold quota denial and
+removed only its disposable quota volumes. A live peer HTTP listener remained
+healthy before and after denial from its neighbour; guest-to-host SSH was also
+denied, both owned drop counters increased, and DNS/HTTPS egress passed. This is
+network/resource enforcement, not companion identity or application acceptance.

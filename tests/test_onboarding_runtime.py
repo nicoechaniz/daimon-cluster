@@ -349,9 +349,10 @@ def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(
 
 
 @pytest.mark.parametrize('receive_only', [False, True])
+@pytest.mark.parametrize('visibility_exists', [False, True])
 @pytest.mark.parametrize('diagnostics', [False, True])
 @pytest.mark.parametrize('context', ['ordinary', 'same', 'changed', 'expired', 'authority-expired'])
-def test_signed_group_is_selected_before_base_visibility_composition(tmp_path, monkeypatch, receive_only, context, diagnostics, capsys):
+def test_signed_group_is_selected_before_base_visibility_composition(tmp_path, monkeypatch, receive_only, visibility_exists, context, diagnostics, capsys):
     """Composition-order seam only; actual group startup has its own qualification."""
     import socket
     from types import SimpleNamespace
@@ -359,6 +360,11 @@ def test_signed_group_is_selected_before_base_visibility_composition(tmp_path, m
     from daimon_matrix import runtime, daemon
     selected=dict(application=str(tmp_path/'tribe/application'),
         visibility=str(tmp_path/'tribe/visibility/installation.json'))
+    if visibility_exists:
+        visibility = Path(selected['visibility'])
+        visibility.parent.mkdir(parents=True)
+        visibility.write_text('retained owner installation')
+    refusal = receive_only and visibility_exists
     monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *_args, **_kwargs:{})
     monkeypatch.setattr(onboarding_target, 'Target', lambda *_args, **_kwargs:
         SimpleNamespace(observe=lambda:dict(phase='v8',group=selected), package=tmp_path,
@@ -405,8 +411,8 @@ def test_signed_group_is_selected_before_base_visibility_composition(tmp_path, m
         report(error, **kwargs)
     monkeypatch.setattr(onboarding_runtime, 'report_child_refusal', before_close)
     try:
-        expected=OnboardingError if receive_only or context in {'changed', 'expired', 'authority-expired'} else RuntimeError
-        match=('onboarding_visibility_selection_required' if receive_only else
+        expected=OnboardingError if refusal or context in {'changed', 'expired', 'authority-expired'} else RuntimeError
+        match=('onboarding_visibility_selection_required' if refusal else
             'receiving_initial_context_changed' if context == 'changed' else
             'authorization_expired' if context in {'expired', 'authority-expired'} else 'composition-observed')
         args=(tmp_path,{'release_digest':'a'*64},{},descriptor,None,os.getppid(),receive_only,None,None,os.geteuid(),None,expected_context)
@@ -422,11 +428,11 @@ def test_signed_group_is_selected_before_base_visibility_composition(tmp_path, m
         else:
             with pytest.raises(expected,match=match):
                 onboarding_runtime.child_main(*args)
-        assert len(observed)==(0 if receive_only or context in {'changed', 'expired', 'authority-expired'} else 1)
+        assert len(observed)==(0 if refusal or context in {'changed', 'expired', 'authority-expired'} else 1)
     finally:
         right.close()
         # Explicit receive-only refusal happens before the child takes the FD.
-        if receive_only:
+        if refusal:
             os.close(descriptor)
 
 

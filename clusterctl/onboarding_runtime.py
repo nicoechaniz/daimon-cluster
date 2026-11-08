@@ -326,8 +326,6 @@ class AdmittedDaemon:
         startup_deadline_ns = time.monotonic_ns() + READY_TIMEOUT_S * 1_000_000_000
         if receive_only == (visibility_installation is not None):
             raise OnboardingError("onboarding_visibility_selection_required")
-        if messaging_application is not None and receive_only:
-            raise OnboardingError("onboarding_visibility_selection_required")
         parent, child = socket.socketpair()
         parent.settimeout(5)
         ready_read, ready_write = os.pipe()
@@ -449,6 +447,38 @@ raise SystemExit(child_entry(Path(sys.argv[1]), json.loads(sys.argv[2]), json.lo
             self.presence.close()
 
 
+def receive_only_application_view(base, application: Path):
+    """Load the signed receiving application with native outbound still closed.
+
+    This uses the SDK's ordinary publication verification and incoming transport;
+    it creates no visibility installation, alternate client or messaging release.
+    """
+    from dataclasses import replace
+    from daimon_matrix import native_egress
+    from daimon_matrix.messaging_config import load_application
+    from daimon_matrix.service import MESSAGING_METHODS
+    from daimon_matrix.operator_capabilities import STATUS_OBSERVER_METHODS
+
+    if base.egress.release_enabled:
+        raise OnboardingError('onboarding_visibility_selection_required')
+    controller = native_egress.closed_visibility(clock=base.service.clock, catalog_mode='migrate')
+    view = load_application(replace(base, egress=controller), application)
+    # The signed application's catalogs have no outbound installation yet.
+    # Provision only this closed controller's registered catalogs under the
+    # caller's existing native writer; never adopt a signed outbound key.
+    controller.migrate_registered_catalogs(version=native_egress.VISIBILITY_SCHEMA_VERSION)
+    controller.validate_registered_catalogs()
+    receiving = view.service.receiving
+    return replace(view, peer_dispatcher=None, peer_context=None, peer_outbox=None,
+        peer_listen=None, service=replace(view.service, router=None, peer_context=None,
+            capabilities={key: capability for key, capability in view.service.capabilities.items()
+                if set(capability.methods) <= MESSAGING_METHODS
+                or (capability.client_id == 'client:host:' + view.service.runtime_label + ':status'
+                    and set(capability.methods) <= STATUS_OBSERVER_METHODS)
+                or (receiving is not None and key == receiving.capability_id)},
+            visibility_status=controller.status))
+
+
 def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
                receive_only, visibility_installation, messaging_application=None, code_uid=0,
                code_digest=None, expected_initial_context=None, *, startup_diagnostics=False, diagnostic_fd=None,
@@ -474,9 +504,13 @@ def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
         # group application, not the native runtime bundle. No redundant CLI
         # application hint or archived pair selection is needed.
         if receive_only:
-            raise OnboardingError('onboarding_visibility_selection_required')
-        messaging_application = Path(selected_group['application'])
-        visibility_installation = Path(selected_group['visibility'])
+            # An existing owner's installed visibility cannot be disabled by
+            # selecting admission-only mode. New receiving members have none.
+            if Path(selected_group['visibility']).exists():
+                raise OnboardingError('onboarding_visibility_selection_required')
+        else:
+            messaging_application = Path(selected_group['application'])
+            visibility_installation = Path(selected_group['visibility'])
     stopping = threading.Event()
     connection = socket.socket(fileno=descriptor)
     connection.settimeout(5)
@@ -504,8 +538,6 @@ def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
             raise OnboardingError('onboarding_visibility_selection_required')
         def clock():
             return time.time_ns() // 1_000_000
-        if messaging_application is not None and receive_only:
-            raise OnboardingError('onboarding_visibility_selection_required')
         if messaging_application is not None:
             # The receiving native catalogs were initialized before enrollment.
             # The peer app owns a separate signed controller, not their key.
@@ -528,8 +560,6 @@ def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
         if (selected_group is None) != (group is None):
             raise OnboardingError('onboarding_group_selection_changed')
         if group is not None:
-            if receive_only:
-                raise OnboardingError('onboarding_visibility_selection_required')
             if (group['tribe_ref'] != selected_group['tribe_ref']
                     or Path(group['directory']) != Path(selected_group['application'])
                     or Path(group['visibility']) != Path(selected_group['visibility'])
@@ -538,11 +568,15 @@ def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
             # Reuse the same admitted daemon, native lock and visibility adapter.
             # A group selection replaces bootstrap/default pair apps, not history.
             messaging_application = Path(group['directory'])
-            visibility_installation = Path(group['visibility'])
+            if receive_only and Path(group['visibility']).exists():
+                raise OnboardingError('onboarding_visibility_selection_required')
+            if not receive_only:
+                visibility_installation = Path(group['visibility'])
         if messaging_application is not None:
             from dataclasses import replace
             from daimon_matrix.chat_host import application_view
-            peer = application_view(hosted, messaging_application, visibility_installation)
+            peer = (receive_only_application_view(hosted, messaging_application) if receive_only else
+                    application_view(hosted, messaging_application, visibility_installation))
             peer = replace(peer, socket_path=hosted.state_root /
                 ('peer.sock' if group is None else group['socket']))
         def request_stop(_number, _frame):
@@ -552,10 +586,13 @@ def child_main(home, plan, genesis, descriptor, ready_descriptor, guardian_pid,
         if messaging_application is not None:
             from .onboarding_views import serve_views
             from .onboarding_peer import additional_applications
+            additional = [] if group is not None else additional_applications(target)
+            if receive_only and additional:
+                raise OnboardingError('onboarding_visibility_selection_required')
             extras = [] if group is not None else [replace(
                 application_view(hosted, Path(row['directory']), Path(row['visibility'])),
                 socket_path=hosted.state_root / row['socket'])
-                for row in additional_applications(target)]
+                for row in additional]
             serve_views([hosted, peer, *extras], stopping, ready_descriptor=ready_descriptor,
                 startup_deadline_ns=startup_deadline_ns)
         else:

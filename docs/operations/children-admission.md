@@ -396,6 +396,23 @@ body would reintroduce the group-publication dependency admission just removed.
 Serialize ordinary host approval lookups that share the protected approval
 store; this is separate from concurrent native writer initialization.
 
+### Receiving a signed group with outbound closed
+
+For an owner-approved group application with no visibility installation yet,
+the receiving runtime can use `receive_only_application_view`. It verifies the
+ordinary signed application and retains its native incoming transport, canonical
+relationships and scoped client. Under the existing native writer, initialize
+only the closed controller's registered catalogs through the SDK's explicit
+versioned migration, then validate their authentication before listener startup.
+Loading an application alone does not perform that catalog migration.
+
+This mode never installs visibility or enables outbound release. A retained
+visibility installation, an already released base controller, or additional
+outbound applications must not be silently downgraded into this mode. Preserve
+the early/late signed-selection comparison and current owner-context guards.
+Receiving readiness still requires actual installed application grants, native
+listener startup and authenticated reads; a fixture result is not deployment.
+
 ### Keep the receiving context current
 
 Nicolas's explicit requested outcome supplies the operational authorization.

@@ -1,3 +1,46 @@
+## Owner renewal received — 2026-11-08 08:13 UTC
+
+Oliva's existing native V8 original local profiles were renewed through the
+selected SDK's owner transaction, preserving identity, keys, methods and history.
+Custody advanced from2 to3; compatible Target code `04c0ea1529f2df57c0a9625793236e4ea53ca491bc860a9be5b992974faf155a`
+is authenticated in its actual admitted daemon. Native, bot, Interaction and
+Sessions process identities were preserved. The existing owner client reads the
+renewed profiles. Loaded model-context uptake is not established.
+
+All3 current adult readers accepted the actual native selection under operation
+`76b9ecf0-9bb3-4449-85a9-29bc7b9e6728`. Earlier invalid revoke requests are retained as
+terminal refusals; a later Eko admission process changed before corrected controls
+were issued, so the accepted vector uses fresh actual observations. No speech,
+model activation or child enrollment was performed by this repair.
+
+PR440's general-suite fixture failure below was corrected by constructing its
+HostBackend through the real initializer; the exact affected test passed under
+the pinned default Matrix SDK. Follow-up source `1996d96` changes only that fixture
+and reader-schema guidance; its CI remains separate from native receiving proof.
+The prepared controller now records all7 existing owner references and preserves
+all4 original child jobs, with zero linked admission operations. Next: prepare and
+execute the existing Pixin receiving/social operation, then the remaining3. Basic
+Conversation access is already deployed separately; family browser acceptance
+and first real input remain pending.
+
+## PR440 CI failure observed by coordination — 2026-11-08 08:05 UTC
+
+Exact source `d318166abb981c40325e386e338d18a0169f80e3`, run42459144892,
+job128664498290: the general suite stopped with1failed,1760passed,
+11skipped and138deselected. Actual failure:
+`tests/test_onboarding_peer_host.py::test_host_retry_reuses_signed_response_and_retains_native_source`.
+Its manually constructed `object.__new__(HostBackend)` fixture never sets `run`;
+`prepare_matrix_public` now inspects `self.run.prepare_matrix_public`, so it raises
+`AttributeError` before the test reaches its retained-offer assertions. The
+fixture at lines49–59 supplies `_dispatch` and other fields but omits `run`.
+Complete that fixture's ordinary local runner contract and rerun the affected
+test; retain its signed-response/source assertions. Do not weaken production
+publication behavior or reset/retry the prepared Oliva renewal to fix this test.
+The separate actual guest-owner and native-admission CI steps passed. Production
+renewal and child admission remain unproved. This note records direct log/source
+inspection; no source fix, production operation or additional CI run was made by
+coordination.
+
 ## Onboarding delivery priority — Nicolas,8November2026
 
 The minutes-long onboarding claim was not established for the actual fresh,

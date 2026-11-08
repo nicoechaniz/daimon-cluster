@@ -185,3 +185,101 @@ class ContainerBody(IncusBody):
     """A container with its own pinned instance UUID and guest machine ID."""
     placement_schema = 'cluster-incus-container-body-placement/v1'
     instance_type = 'container'
+
+
+class RemoteIncusRunner:
+    """Existing HostBackend execution on one explicitly selected Incus host.
+
+    Job/custody ownership stays with the controller. Incus inventory and mounts
+    describe the physical host; guest execution and framed sessions additionally
+    verify the exact instance and receiving OS. Publication is supplied by the
+    same protected operator, rather than silently leaving files on the controller.
+    """
+    def __init__(self, placements: dict[str, tuple[Path, str]], plans: dict[str, dict], *, publish):
+        if not placements or set(placements) != set(plans) or not callable(publish):
+            raise OnboardingError('remote_incus_host_binding_required')
+        self.placements, self.plans, self.publish = dict(placements), dict(plans), publish
+        bodies = [self.body_for(plan) for plan in self.plans.values()]
+        self.parent = bodies[0]
+        def key(body):
+            return (body.value['host_machine_id_sha256'], body.value.get('incus_host_ssh'), body.value['project'])
+        if self.parent._local() or any(key(body) != key(self.parent) for body in bodies):
+            raise OnboardingError('remote_incus_host_binding_required')
+
+    def body_for(self, plan: dict) -> IncusBody:
+        name = plan.get('name')
+        if name not in self.plans or digest(plan) != digest(self.plans[name]):
+            raise OnboardingError('remote_incus_plan_changed')
+        locator, pin = self.placements[name]
+        body = NativeBody.load(locator, plan, expected_digest=pin)
+        if not isinstance(body, IncusBody):
+            raise OnboardingError('remote_incus_host_binding_required')
+        return body
+
+    def prepare_matrix_public(self, views: Path, plan: dict, documents: dict) -> None:
+        self.body_for(plan)  # Recheck the protected plan and placement before publication.
+        self.publish(views, plan, documents)
+
+    def __call__(self, argv: list[str], *, timeout_seconds: float | None = None,
+                 input_data: str | None = None) -> str:
+        import math
+        if (not argv or any(not isinstance(item, str) or '\0' in item for item in argv)
+                or timeout_seconds is not None and (not math.isfinite(timeout_seconds)
+                    or not 0 < timeout_seconds <= 65)
+                or input_data is not None and (not isinstance(input_data, str)
+                    or len(input_data.encode()) > being_seed.MAX_SELECTION)):
+            raise OnboardingError('remote_incus_request_required')
+        timeout = min(60, timeout_seconds) if timeout_seconds is not None else 60
+        if argv[0] == 'exec':
+            try:
+                separator = argv.index('--', 2)
+                name = next(name for name, plan in self.plans.items()
+                    if argv[1] == 'dm-' + plan['name'])
+            except (ValueError, StopIteration, IndexError):
+                raise OnboardingError('remote_incus_plan_changed') from None
+            uid = gid = 0
+            env = None
+            options = argv[2:separator]
+            if len(options) % 2:
+                raise OnboardingError('remote_incus_exec_options_required')
+            seen = set()
+            for flag, value in zip(options[::2], options[1::2]):
+                if flag in seen or flag not in {'--user', '--group', '--env'}:
+                    raise OnboardingError('remote_incus_exec_options_required')
+                seen.add(flag)
+                if flag == '--env':
+                    if value != 'HOME=/home/agent':
+                        raise OnboardingError('remote_incus_exec_options_required')
+                    env = {'HOME': '/home/agent'}
+                elif value not in {'0', '1000'}:
+                    raise OnboardingError('remote_incus_exec_options_required')
+                elif flag == '--user':
+                    uid = int(value)
+                else:
+                    gid = int(value)
+            if (uid, gid) not in {(0, 0), (1000, 1000)}:
+                raise OnboardingError('remote_incus_exec_options_required')
+            command = argv[separator+1:]
+            deadline = None
+            owner_clock = '--observation-deadline-ns' in command or '--deadline-ns' in command
+            for flag in ('--observation-deadline-ns', '--deadline-ns'):
+                if flag in command:
+                    try:
+                        deadline = int(command[command.index(flag)+1])
+                    except (ValueError, IndexError):
+                        raise OnboardingError('receiving_host_deadline_required') from None
+            return self.body_for(self.plans[name]).execute(command, uid=uid, gid=gid, env=env,
+                input_data=input_data, timeout_seconds=timeout, deadline_ns=deadline, owner_clock=owner_clock)
+        # Keep the already authorized HostBackend's exact Incus operation. SSH
+        # carries an argv array through the same pinned parent launcher, no shell
+        # interpolation, credentials, new service or second resource registry.
+        parent = self.body_for(self.plans[next(iter(self.plans))])
+        try:
+            result = subprocess.run(parent._parent_command(['incus', '--force-local', '--project', parent.value['project'], *argv]), input=input_data,
+                capture_output=True, text=True, timeout=timeout,
+                env={'PATH': os.defpath, 'LANG': 'C.UTF-8'})
+        except (OSError, subprocess.TimeoutExpired):
+            raise OnboardingError('remote_incus_operation_unconfirmed') from None
+        if result.returncode or len(result.stdout.encode()) > being_seed.MAX_SELECTION:
+            raise OnboardingError('remote_incus_operation_unconfirmed')
+        return result.stdout

@@ -242,3 +242,89 @@ def test_selected_existing_sudo_route_is_noninteractive_and_preserves_host_pin(t
     being_seed._write(path, row)
     with pytest.raises(OnboardingError, match='placement_required'):
         native_body.NativeBody.load(path, plan)
+
+
+def remote_runner(tmp_path, publish=lambda *args: None):
+    plan, path, row = remote_placement(tmp_path)
+    row['schema'] = 'cluster-incus-container-body-placement/v1'
+    being_seed._write(path, row)
+    runner = vm_body.RemoteIncusRunner({plan['name']: (path, digest(row))},
+        {plan['name']: plan}, publish=publish)
+    return runner, plan, path, row
+
+
+def test_remote_host_inventory_pins_parent_project_and_preserves_literal_arguments(tmp_path, monkeypatch):
+    import shlex
+    runner, _, _, row = remote_runner(tmp_path)
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        outer = shlex.split(argv[-1])
+        assert outer[5] == row['host_machine_id_sha256']
+        assert json.loads(outer[6]) == ['incus', '--force-local', '--project', 'default',
+            'list', '--format=json', 'literal $(not run)']
+        assert kwargs['input'] is None and kwargs['timeout'] == 3
+        return SimpleNamespace(returncode=0, stdout='[]', stderr='')
+    monkeypatch.setattr(vm_body.subprocess, 'run', run)
+    assert runner(['list', '--format=json', 'literal $(not run)'], timeout_seconds=3) == '[]'
+    assert len(calls) == 1
+
+
+def test_remote_host_exec_and_publication_keep_original_plan_deadline_and_uid(tmp_path, monkeypatch):
+    published = []
+    runner, plan, path, row = remote_runner(tmp_path, publish=lambda *args: published.append(args))
+    calls = []
+    monkeypatch.setattr(vm_body.ContainerBody, 'execute', lambda self, argv, **kw:
+        calls.append((argv, kw)) or 'same-result')
+    deadline = time.monotonic_ns()+2_000_000_000
+    argv = ['exec', 'dm-oliva', '--user', '1000', '--group', '1000', '--env',
+        'HOME=/home/agent', '--', 'owner', '--observation-deadline-ns', str(deadline)]
+    assert runner(argv, timeout_seconds=2, input_data='same request') == 'same-result'
+    assert calls[0] == (argv[argv.index('--')+1:], dict(uid=1000, gid=1000, env={'HOME': '/home/agent'},
+        input_data='same request', timeout_seconds=2, deadline_ns=deadline, owner_clock=True))
+    runner.prepare_matrix_public(tmp_path, plan, {'admission.json': {'same': 'profile'}})
+    assert published == [(tmp_path, plan, {'admission.json': {'same': 'profile'}})]
+    row['instance_uuid'] = '28f437a2-bc2d-408a-8aaf-7693ebc797e4'
+    being_seed._write(path, row)
+    with pytest.raises(OnboardingError, match='placement_changed'):
+        runner(argv)
+    with pytest.raises(OnboardingError, match='placement_changed'):
+        runner.prepare_matrix_public(tmp_path, plan, {'admission.json': {}})
+    assert len(calls) == len(published) == 1
+
+
+@pytest.mark.parametrize('options', [
+    ['--user', '1000'], ['--user', '1000', '--group', '0'],
+    ['--env', 'OTHER=value'], ['--env', 'HOME=/home/agent', '--env', 'HOME=/home/agent'],
+    ['--user', 'root'], ['--unknown', 'option'], ['--user'],
+])
+def test_remote_host_rejects_unsupported_exec_identity_or_environment(tmp_path, monkeypatch, options):
+    runner, _, _, _ = remote_runner(tmp_path)
+    monkeypatch.setattr(vm_body.ContainerBody, 'execute', lambda *a, **k: pytest.fail('guest started'))
+    with pytest.raises(OnboardingError, match='exec_options_required'):
+        runner(['exec', 'dm-oliva', *options, '--', 'owner'])
+
+
+def test_remote_host_refuses_foreign_plan_and_output_or_transport_failures(tmp_path, monkeypatch):
+    runner, _, _, _ = remote_runner(tmp_path)
+    with pytest.raises(OnboardingError, match='plan_changed'):
+        runner(['exec', 'dm-foreign', '--', 'owner'])
+    with pytest.raises(OnboardingError, match='plan_changed'):
+        runner.body_for({'name': 'oliva', 'changed': True})
+    def timeout(*args, **kwargs):
+        raise vm_body.subprocess.TimeoutExpired('private argv', 1)
+    monkeypatch.setattr(vm_body.subprocess, 'run', timeout)
+    with pytest.raises(OnboardingError, match='operation_unconfirmed'):
+        runner(['list'], timeout_seconds=1)
+
+
+def test_remote_host_cannot_mix_two_physical_parents(tmp_path):
+    plan, path, row = remote_placement(tmp_path)
+    other = dict(plan, name='other')
+    second = dict(row, plan_digest=digest(other), instance='dm-other',
+        host_machine_id_sha256='c'*64)
+    locator = tmp_path/'other.json'
+    being_seed._write(locator, second)
+    with pytest.raises(OnboardingError, match='host_binding_required'):
+        vm_body.RemoteIncusRunner({'oliva': (path, digest(row)), 'other': (locator, digest(second))},
+            {'oliva': plan, 'other': other}, publish=lambda *a: None)

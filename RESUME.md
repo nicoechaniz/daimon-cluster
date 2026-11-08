@@ -49,12 +49,15 @@ connection/resource limits and scoped stop/re-enable were exercised before live
 body work. Registrar custody stayed on the central host. Preserve completed
 physical registrations and check uncertain outcomes through the existing holder
 operation, never by recreating identities. See
-[physical admission](docs/operations/children-admission.md). The existing remote
-placement adapter verifies full KVM instances only, and persistent native guest
-relationship sessions are not yet supported. These children are containers; do
-not select a KVM locator or fabricate running rows to bypass that remaining
-controller integration. The protected cohort must be completed before claiming
-Tribe readiness.
+[physical admission](docs/operations/children-admission.md). The remote placement adapter now distinguishes full KVM and container locators
+and supports finite framed owner sessions. Exact source2172dfc passed CI and
+merged in PR432. Actual qualification checked the four pinned physical instances
+and Pixin's two-frame technical fixture; it did not start a native body. The
+existing HostBackend remote Incus carrier/publication integration is prepared
+with focused and native-consumer tests passing, but its physical publication
+callback and controller selection remain pending. Do not encode unfinished
+container jobs as completed native relocations. The protected cohort must be
+completed before claiming Tribe readiness.
 
 Children use the explicitly authorized anyprinter account and no Telegram. Oliva
 retains ai01. A selected provider profile is not a child authentication or real
@@ -92,7 +95,8 @@ installed and exercised on the children's host. The daily inventory timer is ena
 and its hardened service was manually exercised against the official Debian feed
 for the host and all four guests. It retains only current/previous observations,
 with explicit runtime, memory, CPU and state-size bounds and a scoped stop path.
-A scheduled invocation has not yet been observed. Patch transactions, upstream
+The first scheduled invocation actually ran at05:02:26UTC on8November2026
+and exited successfully; the timer remains active for the next daily run. Patch transactions, upstream
 and malicious-release advisories, activity-aware cleanup/browser reclamation,
 failed/missed-run supervision and verified incident delivery remain unfinished. Follow the
 maintained Shared Resources children-host-security handoff and preserve profiles,
@@ -101,6 +105,18 @@ is separate from the existing Heartbeat owner's messaging/review implementation;
 do not add another model scheduler or reset its budgets. Full delivery remains
 incomplete until admission, accounts, tools, Escuela, Drive, conversation and the
 exercised daily controls pass, with human device acceptance explicitly reported.
+
+The shared Banco de ideas semilla uses the existing stable Nexus App at
+<https://apps.dmn.homes/nexus/?entry=web&table=seed-bank>. Eko and Oliva have signed
+receiving evidence for the scoped notice; their installed workflow and native
+bank access are separately recorded by the service owner. All four child guests
+now have audio-seed-bank0.1.1, its transcription/institutional-Drive dependencies
+and own workspace guidance installed with exact readback. This establishes no
+model reading, child participation or bank/Drive grant. The bank owner confirmed
+own table-scoped invitations can be issued independently of native/Home admission;
+child invitation issuance and actual per-child HTTPS qualification remain pending.
+Preserve each being's identity and original audio audience. Homes owns canonical
+Apps publication; do not duplicate the bank or borrow adult invitations.
 
 ## Current receiving and onboarding selection — 2026-11-01
 

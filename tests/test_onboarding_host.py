@@ -1002,7 +1002,8 @@ def test_owner_client_transport_preserves_only_its_closed_public_diagnostic(monk
         HostBackend._run(['exec','dm-fixture','--','/unrelated/tool'],timeout_seconds=1)
 
 
-def test_remote_group_session_keeps_qualified_target_and_rechecks_placement(tmp_path, monkeypatch):
+@pytest.mark.parametrize('placement_kind', ['native', 'remote-incus-runner'])
+def test_remote_group_session_keeps_qualified_target_and_rechecks_placement(tmp_path, monkeypatch, placement_kind):
     import time
     import uuid
     from clusterctl.native_body import NativeBody
@@ -1010,7 +1011,15 @@ def test_remote_group_session_keeps_qualified_target_and_rechecks_placement(tmp_
     native = object.__new__(NativeBody)
     object.__setattr__(native, 'value', {'fixture': 'original pinned placement'})
     selected = [native]
-    monkeypatch.setattr(backend, 'native_body', lambda _: selected[0])
+    monkeypatch.setattr(backend, 'native_body', lambda _: selected[0] if placement_kind == 'native' else None)
+    if placement_kind == 'remote-incus-runner':
+        original = backend.run
+        class PhysicalRunner:
+            def __call__(self, *args, **kwargs):
+                return original(*args, **kwargs)
+            def body_for(self, plan):
+                return selected[0]
+        backend.run = PhysicalRunner()
     # The existing candidate fixture qualifies the target code and SDK. Only
     # physical execution is replaced, keeping packet/deadline construction real.
     monkeypatch.setattr(backend, 'body_python', lambda _: Path('/usr/bin/python3'))
@@ -1040,3 +1049,38 @@ def test_remote_group_session_keeps_qualified_target_and_rechecks_placement(tmp_
     monkeypatch.setattr(backend, 'authorize', lambda *_: False)
     with pytest.raises(OnboardingError, match='host_authorization_required'):
         owner.validate()
+
+
+def test_host_public_matrix_publisher_reuses_local_validation_and_remote_operator(tmp_path, monkeypatch):
+    _, plan, _, backend = configured(tmp_path)
+    from dataclasses import replace
+    views = tmp_path / 'public-views'
+    views.mkdir(mode=0o700)
+    backend.config = replace(backend.config, views=views)
+    # This unprivileged fixture owns its receiving files as the actual runner,
+    # which is UID1001 in CI rather than the deployed guest's UID1000.
+    import os
+    from clusterctl import onboarding_mounts
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_UID', os.geteuid())
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_GID', os.getegid())
+    published = []
+    class PhysicalRunner:
+        def __call__(self, *args, **kwargs):
+            pytest.fail('publication used an unrelated Incus operation')
+        def prepare_matrix_public(self, views, selected, documents):
+            assert selected == plan and views == backend.config.views
+            target = views / digest(plan) / 'matrix-public' / 'admission.json'
+            assert json.loads(target.read_text()) == documents['admission.json']
+            published.append(documents)
+    backend.run = PhysicalRunner()
+    documents = {'admission.json': {'same': 'profile'}}
+    result = backend.prepare_matrix_public(plan, documents)
+    assert result == backend.config.views / digest(plan) / 'matrix-public'
+    assert published == [documents]
+    with pytest.raises(OnboardingError, match='invalid_onboarding_public_matrix_documents'):
+        backend.prepare_matrix_public(plan, {'foreign.json': {}})
+    assert len(published) == 1
+    monkeypatch.setattr(backend, 'authorize', lambda *_: False)
+    with pytest.raises(OnboardingError, match='host_authorization_required'):
+        backend.prepare_matrix_public(plan, documents)
+    assert len(published) == 1

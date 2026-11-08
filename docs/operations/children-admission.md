@@ -69,3 +69,51 @@ presence with matching body/embodiment/incarnation. Complete the existing
 protected cohort and membership route before claiming Tribe delivery. No child
 participation, media capture or external workspace/Drive grant follows from
 this technical preparation.
+
+## One controller across a selected Incus host
+
+Keep a new Incus guest distinct from a relocated native body. A retained native
+placement deliberately bypasses completed onboarding; it must not be used to
+pretend that an unfinished container job is complete. When the canonical
+controller runs elsewhere, use the existing `HostBackend` execution injection
+with `RemoteIncusRunner`. Its protected per-plan locators select one parent,
+project and exact instances; foreign plans or mixed physical hosts refuse.
+Inventory/mounts still describe that Incus host. Guest commands and finite owner
+sessions reuse the same parent/instance/guest checks and remote clock rebasing.
+No local Incus fallback, second registry or receiving model is introduced.
+
+The operator supplies a publication callback that invokes the existing
+`onboarding_mounts.prepare_matrix_public` on the selected physical host, with
+its qualified existing interpreter/code. Reuse the same validated plan and
+immutable documents, preserve conflicting files, and read back exact hashes
+before returning. Local publication alone cannot prove a remote read-only mount
+is ready. Bound the helper's runtime, CPU, memory and output and retain uncertain
+writes under their original operation. Stop only that task-owned helper.
+
+A controller handoff preserves exact original job bytes, stage, operation IDs,
+input manifests, grants, custody and public proofs in protected receiving state.
+Verify all bytes/owners/modes and original signed coordinates before selection.
+Staging is inactive: it authorizes no job retry, new key or admission. Serialize
+actual ownership selection and retain conditional restoration for only unchanged
+operation-owned changes. Keep the original authority/registry and living peer
+state; do not reset jobs or copy virtual machines and private histories merely
+to move their small controller records. Retire the verified disposable transfer,
+keeping required operational state and unfinished work.
+
+For local contract tests, select an existing interpreter with the repository's
+actual declared Matrix commit. Independent test dependencies may be supplied
+without shadowing that SDK. Verify its installed provenance; do not fake package
+metadata or reinstall a shared development SDK to make a mismatched test pass.
+
+## Shared audio seed bank in child contexts
+
+The existing `audio-seed-bank` skill and its transcription/institutional-Drive
+dependencies belong in each child companion's own skill/context installation.
+The stable shared viewer is https://apps.dmn.homes/nexus/?entry=web&table=seed-bank .
+Preserve each being's identity and use its own authorized invitation/binding;
+copying a workflow creates no bank or Drive grant. Record installed hashes,
+actual native access and model reading separately. Human-selected seed audio
+retains original bytes, attribution, audience and transcript uncertainty.
+Ordinary voice commands are never automatically archived or transcribed again.
+Nexus owns table grants and Homes owns the canonical Apps publication; reuse
+those maintained services rather than another bank or child-specific app.

@@ -1417,3 +1417,39 @@ def test_foundation_profile_uses_existing_owner_receiving_checks():
     assert 'tests/test_onboarding_foundation_native.py' in tests
     for unrelated in ('clusterctl/onboarding_custody.py', 'requirements-dev.txt', 'unknown.py'):
         assert select([*changed, unrelated], ROOT)[0] == 'full'
+
+
+def test_remote_incus_host_carrier_retains_exact_source_and_native_consumers(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from tools import ci_scope
+    changed = ['clusterctl/onboarding_host.py', 'clusterctl/onboarding_managed.py',
+        'clusterctl/vm_body.py', 'tests/test_onboarding_host.py', 'tests/test_onboarding_managed.py',
+        'tests/test_vm_body.py', 'docs/operations/children-admission.md',
+        'tools/ci_scope.py', 'tests/test_ci_scope.py']
+    # The selector job verifies actual history. Unit tests also run in a
+    # depth-one checkout, so provide closed prior-file evidence explicitly.
+    base = 'a' * 40
+    previous = {
+        'clusterctl/onboarding_host.py': '4f676b7793046c2cd825465693fc7bdd83052b9e5b10a731edc4c3080a1dbfd9',
+        'clusterctl/onboarding_managed.py': '1cee6ba681aa5ba6ed74fcd1f3f713694ffb32f7ff80d6991a9c6d7fd4a1c980',
+        'clusterctl/vm_body.py': 'd3092b62dde2b47c34ee04d22610cd1e4bdd20660e62aa67c585d52e108c0fa1',
+    }
+    payloads = {('previous:' + name).encode(): pin for name, pin in previous.items()}
+    sha256 = ci_scope.hashlib.sha256
+    monkeypatch.setattr(ci_scope.hashlib, 'sha256', lambda raw:
+        SimpleNamespace(hexdigest=lambda: payloads[raw]) if raw in payloads else sha256(raw))
+    monkeypatch.setattr(ci_scope.subprocess, 'run', lambda argv, **kwargs:
+        SimpleNamespace(returncode=0, stdout=('previous:' + argv[2].split(':', 1)[1]).encode()))
+    profile, tests = select(changed, ROOT, base=base)
+    assert profile == 'peer'
+    assert set(ci_scope.NATIVE_RECEIVING_TESTS) | {'tests/test_vm_body.py',
+        'tests/test_onboarding_group_session.py', 'tests/test_onboarding_group_coordinator.py',
+        'tests/test_onboarding_group_recovery.py'} <= set(tests)
+    assert select(changed, tmp_path, base=base) == ('full', ['tests'])
+    for extra in ('clusterctl/onboarding_target.py', 'clusterctl/onboarding_custody.py',
+                  'clusterctl/onboarding_group_admission.py', 'requirements.txt'):
+        assert select([*changed, extra], ROOT, base=base) == ('full', ['tests'])
+    monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *a, **k:
+        SimpleNamespace(returncode=0, stdout=b'changed source'))
+    assert not ci_scope.remote_incus_source_only(ROOT, base)
+    assert select(changed, ROOT, base=base) == ('full', ['tests'])

@@ -451,6 +451,29 @@ HOME_WORKER_TESTS = ('tests/test_home_worker_successor.py', 'tests/test_onboardi
     'tests/test_home_gateway.py', 'tests/test_home_access.py')
 
 
+def remote_incus_source_only(root: Path, base: str) -> bool:
+    """Exact host-carrier/publication projection; future deltas retain full CI.
+
+    The native SDK, owner commands, admission reducers and wire contract are
+    unchanged. Keep their prior qualification and exercise every affected host,
+    managed-holder, process, journal, worker and transport consumer instead.
+    """
+    if not re.fullmatch(r'[0-9a-f]{40}', base):
+        return False
+    pairs = {'clusterctl/onboarding_host.py': ('4f676b7793046c2cd825465693fc7bdd83052b9e5b10a731edc4c3080a1dbfd9', '0e5417b940e1c1643d4200f2fd1dac24142bbbf2088aaab620d137279bd28dfa'), 'clusterctl/onboarding_managed.py': ('1cee6ba681aa5ba6ed74fcd1f3f713694ffb32f7ff80d6991a9c6d7fd4a1c980', 'bc965fe0b490ac4f1594835db63720a054b503cba3c8607572a2f5e3ab25412c'), 'clusterctl/vm_body.py': ('d3092b62dde2b47c34ee04d22610cd1e4bdd20660e62aa67c585d52e108c0fa1', '8127fa6a479cec936ac9e5e176c53ccb75d8afbd9a61d0dc9d2b29de7197c19a')}
+    for name, (expected_before, expected_after) in pairs.items():
+        previous = subprocess.run(['git', 'show', base + ':' + name], cwd=root,
+            capture_output=True, check=False)
+        try:
+            current = (root / name).read_bytes()
+        except OSError:
+            return False
+        if (previous.returncode or hashlib.sha256(previous.stdout).hexdigest() != expected_before
+                or hashlib.sha256(current).hexdigest() != expected_after):
+            return False
+    return True
+
+
 def native_profile_host_only(root: Path, base: str) -> bool:
     """Recognize only the native service-profile flag at its existing call site."""
     if not re.fullmatch(r'[0-9a-f]{40}', base):
@@ -908,6 +931,18 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         tests = list(dict.fromkeys((*LOADED_STARTUP_TESTS, *MAINTENANCE_TESTS)))
         if all((root / name).is_file() for name in tests):
             return 'peer', tests
+    remote_incus_files = {'clusterctl/onboarding_host.py', 'clusterctl/onboarding_managed.py',
+        'clusterctl/vm_body.py', 'tests/test_onboarding_host.py', 'tests/test_onboarding_managed.py',
+        'tests/test_vm_body.py', 'docs/operations/children-admission.md'}
+    remote_incus_tests = list(dict.fromkeys((*NATIVE_RECEIVING_TESTS,
+        'tests/test_vm_body.py', 'tests/test_onboarding_group_session.py',
+        'tests/test_onboarding_group_coordinator.py', 'tests/test_onboarding_group_recovery.py')))
+    if ({'clusterctl/onboarding_host.py', 'clusterctl/onboarding_managed.py', 'clusterctl/vm_body.py',
+            'tests/test_vm_body.py', 'tests/test_onboarding_host.py', 'tests/test_onboarding_managed.py'} <= set(changed)
+            and set(changed) <= remote_incus_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / name).is_file() for name in remote_incus_tests)
+            and remote_incus_source_only(root, base)):
+        return 'peer', remote_incus_tests
     vm_placement_files = {'clusterctl/native_body.py', 'clusterctl/vm_body.py',
                           'tests/test_native_body.py', 'tests/test_vm_body.py',
                           'tools/build_receiving_maintenance.py', 'tools/check_rc_types.py'}

@@ -172,9 +172,11 @@ class NativeAuthority:
             if not isinstance(row, dict) or set(row) != fields:
                 raise ValueError("home_identity_source_invalid")
             if any(not isinstance(row[k], str) or not 0 < len(row[k]) <= 512
-                   for k in fields - {"enabled"}):
+                   for k in fields - {"enabled", "origin"}):
                 raise ValueError("home_identity_source_invalid")
-            if type(row["enabled"]) is not bool:
+            # Matrix origins are structured native coordinates, not labels.
+            # The verified native authority owns their exact interpretation.
+            if type(row["enabled"]) is not bool or not isinstance(row["origin"], dict):
                 raise ValueError("home_identity_source_invalid")
             subject = row["human_ref"].removeprefix("human:local:")
             try:

@@ -413,6 +413,30 @@ the early/late signed-selection comparison and current owner-context guards.
 Receiving readiness still requires actual installed application grants, native
 listener startup and authenticated reads; a fixture result is not deployment.
 
+Prepare each owner's application from its existing signed Tribe history and
+current public authorities, keeping only the explicitly shared social events.
+Use the actual current body roster; a retired body's historical roster row is
+not a receiving route. Transport keys belong to this group resource, not the
+human's web login, provider account or Telegram bot. Keep their handoff private
+and verify each installed copy as its actual receiving user.
+
+Use the existing owner `communication-prepare`, `application` and `selection`
+operations under one scoped native maintenance window. Pin the communication
+migration's actual read-only plan and retain its original journal. Quiesce only
+that owner's Matrix unit, then select/start the qualified runtime through the
+existing root bootstrap writer. Retain every dispatched request and effect;
+forward recovery must inspect them instead of reissuing membership or grants.
+Keep Conversation/Codex process identities unchanged and verify them afterward.
+
+A root service-start acknowledgement precedes socket readiness. Wait within one
+finite deadline for the same process's signed group socket, then authenticate
+an own `messaging.inbox` read and compare its responder with an own status read.
+Do not restart a healthy process to fix an early observation. Channel listing
+is the existing chat binding's local `channels` operation; `messaging.channels`
+is not a native wire method. Preserve first probe failures as observations.
+An authenticated inbox read proves own access, not a cross-body delivery,
+receiving-cohort release, outbound visibility or family device acceptance.
+
 ### Keep the receiving context current
 
 Nicolas's explicit requested outcome supplies the operational authorization.

@@ -382,3 +382,11 @@ eight), within the same finite owner lifetime. Every actual writer must be held
 before any governance mutation. Serial bootstrap otherwise spends the first
 owner's lifetime loading later owners as the small cohort grows; increasing
 ceremony or replacing an already signed invitation does not resolve that cost.
+
+For a plain admitted body, use the existing `admitted-running` observation and
+compare its authenticated base `loaded_runtime.qualified_startup` with the
+selected code. `--current-native --require-loaded` is the preserved **group**
+observer: it requires an actual signed group selection. Requiring it for a plain
+body would reintroduce the group-publication dependency admission just removed.
+Serialize ordinary host approval lookups that share the protected approval
+store; this is separate from concurrent native writer initialization.

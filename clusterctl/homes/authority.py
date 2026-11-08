@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 import threading
 import time
+import uuid
 
 from .policy import Actor
 
@@ -110,8 +111,27 @@ class NativeAuthority:
         from daimon_matrix.messaging_config import protected_read
         from daimon_matrix.operator_rebirth import authority_from_document
 
-        # host_config validates its protected source but never reads token values.
-        source = host_config(self.binding_source)
+        # A Home-only declaration registers resource-access humans without a bot.
+        # It is selected by the host operator, not accepted from browser input.
+        declaration = json.loads(protected_read(self.binding_source))
+        web = []
+        if isinstance(declaration, dict) and declaration.get("schema") == "dm.home-identities/v1":
+            if set(declaration) != {"schema", "telegram_source", "web"}:
+                raise ValueError("home_identity_source_invalid")
+            web = declaration["web"]
+            if not isinstance(web, list) or not 1 <= len(web) <= 16:
+                raise ValueError("home_identity_source_invalid")
+            legacy = declaration["telegram_source"]
+            if legacy is not None and (
+                not isinstance(legacy, str) or not Path(legacy).is_absolute()
+                or ".." in Path(legacy).parts or Path(legacy) == self.binding_source
+            ):
+                raise ValueError("home_identity_source_invalid")
+            # Exactly one legacy source, validated by its maintained parser.
+            source = host_config(Path(legacy)) if legacy is not None else {"participants": []}
+        else:
+            # Existing deployments retain their original schema and revisions.
+            source = host_config(self.binding_source)
         results = []
         for row in source["participants"]:
             authority = self._constructed("authority",
@@ -145,6 +165,37 @@ class NativeAuthority:
                 }
                 | {"authority": authority}
             )
+        human_refs = set()
+        for row in web:
+            fields = {"being_ref", "label", "human_ref", "human_name", "origin",
+                      "authority_file", "enabled"}
+            if not isinstance(row, dict) or set(row) != fields:
+                raise ValueError("home_identity_source_invalid")
+            if any(not isinstance(row[k], str) or not 0 < len(row[k]) <= 512
+                   for k in fields - {"enabled"}):
+                raise ValueError("home_identity_source_invalid")
+            if type(row["enabled"]) is not bool:
+                raise ValueError("home_identity_source_invalid")
+            subject = row["human_ref"].removeprefix("human:local:")
+            try:
+                valid_subject = str(uuid.UUID(subject)) == subject
+            except ValueError:
+                valid_subject = False
+            if row["human_ref"] != "human:local:" + subject or not valid_subject:
+                raise ValueError("home_identity_source_invalid")
+            path = Path(row["authority_file"])
+            if not path.is_absolute() or ".." in path.parts:
+                raise ValueError("home_identity_source_invalid")
+            authority = self._constructed("authority",
+                json.loads(protected_read(path)), authority_from_document)
+            if authority.manifest.being_ref != row["being_ref"]:
+                raise ValueError("home_identity_source_mismatch")
+            authority.validate_origin(row["origin"], require_active=True)
+            if row["human_ref"] in human_refs:
+                raise ValueError("home_identity_source_conflict")
+            human_refs.add(row["human_ref"])
+            results.append({k: row[k] for k in fields - {"authority_file"}}
+                           | {"authority": authority})
         if len({r["being_ref"] for r in results}) != len(results):
             raise ValueError("home_identity_source_conflict")
         return results
@@ -169,11 +220,14 @@ class NativeAuthority:
                 }
             )
             result[ref] = Actor(ref, "being", revision, row["label"])
-            human = "human:telegram:" + str(row["human_id"])
+            human = row.get("human_ref") or "human:telegram:" + str(row["human_id"])
+            identity = ({"provider": "local", "subject": human.removeprefix("human:local:")}
+                        if "human_ref" in row else
+                        {"provider": "telegram", "subject": row["human_id"]})
             result[human] = Actor(
                 human,
                 "human",
-                digest({"provider": "telegram", "subject": row["human_id"]}),
+                digest(identity),
                 row["human_name"],
             )
         return result
@@ -187,7 +241,9 @@ class NativeAuthority:
             (r for r in self.bindings() if r["being_ref"] == selected and r["enabled"]),
             None,
         )
-        return "human:telegram:" + str(row["human_id"]) if row else None
+        if row is None:
+            return None
+        return row.get("human_ref") or "human:telegram:" + str(row["human_id"])
 
     def bot(self, home):
         selected = self.homes[home]["owner_being_ref"]
@@ -195,7 +251,7 @@ class NativeAuthority:
             (r for r in self.bindings() if r["being_ref"] == selected and r["enabled"]),
             None,
         )
-        return {"id": row["bot_id"], "username": row["username"]} if row else None
+        return {"id": row["bot_id"], "username": row["username"]} if row and "bot_id" in row else None
 
     @contextmanager
     def view(self):

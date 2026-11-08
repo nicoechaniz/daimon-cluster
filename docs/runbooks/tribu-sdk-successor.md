@@ -1510,3 +1510,10 @@ existing owner route without acquiring admission or starting a body. A profile
 refusal occurs before native start-record/admission dispatch. Inspect the actual
 exception and journal before deciding whether a corrected retry is known absent
 or uncertain; never re-enroll, replace keys or blindly replay startup.
+
+When reading systemd properties, fetch `ExecStart` separately with
+`systemctl show --property=ExecStart --value`. Its launcher argument can contain
+real newlines; splitting a combined property response into `key=value` lines
+then fails. Keep the owned unit/configuration selection distinct from a cached
+PID: an automatic restart can replace the process between inspection and a
+scoped stop. Native writer acquisition still proves quiescence for signed work.

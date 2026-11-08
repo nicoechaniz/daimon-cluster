@@ -376,3 +376,9 @@ retained native signed result is verified. This frees the same Tribe target for
 the next original entrant. It does not complete general onboarding or assert
 running readers/visibility; an exact completed retry returns that same result
 without opening writers or issuing another invitation.
+
+The independent read-only writer initializations run concurrently (at most
+eight), within the same finite owner lifetime. Every actual writer must be held
+before any governance mutation. Serial bootstrap otherwise spends the first
+owner's lifetime loading later owners as the small cohort grows; increasing
+ceremony or replacing an already signed invitation does not resolve that cost.

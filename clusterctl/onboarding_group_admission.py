@@ -14,6 +14,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -241,7 +242,7 @@ def admit_membership(cohort, *, deadline_ns: int, native_only: bool = False) -> 
                 # sessions alive across the complete signed phase; a historical
                 # service stop receipt alone cannot authorize it.
                 if not writers_opened:
-                    for name, owner in sorted(cohort.owners.items()):
+                    def open_writer(name, owner):
                         options = dict(authority_closure={ref: value
                             for ref, value in recipe['authority_closure'].items()
                             if ref != admission['receivers'][name]['being_ref']},
@@ -251,6 +252,14 @@ def admit_membership(cohort, *, deadline_ns: int, native_only: bool = False) -> 
                         owner.group_relationship(dict(operation_id=recipe['operation_id'],
                             step='membership-writer-observation', method='relationship.snapshot',
                             params=dict(tribe_ref=admission['tribe_ref'], at_ms=None)), **options)
+                    # These independent read-only initializations need not
+                    # consume each other's finite writer lifetime. No signed
+                    # mutation can run before every owner has acknowledged.
+                    with ThreadPoolExecutor(max_workers=min(8, len(cohort.owners))) as pool:
+                        futures = [pool.submit(open_writer, name, owner)
+                            for name, owner in sorted(cohort.owners.items())]
+                        for future in futures:
+                            future.result()
                     writers_opened = True
                 if any(not callable(getattr(owner, 'relationship_writer_held', None))
                         or not owner.relationship_writer_held() for owner in cohort.owners.values()):

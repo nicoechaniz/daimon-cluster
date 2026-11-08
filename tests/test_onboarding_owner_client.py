@@ -20,6 +20,69 @@ from tests.test_onboarding_target import receiving
 pytest_plugins = ["tests.test_onboarding_peer"]
 
 
+@pytest.mark.parametrize('version,closed,installation,valid', [
+    (1, None, 'a'*64, True),
+    (1, None, None, False),
+    (1, True, None, False),
+    (2, True, None, True),
+    (2, True, 'a'*64, False),
+    (2, False, 'a'*64, True),
+    (2, False, None, False),
+    (2, 1, None, False),
+    (2, None, None, False),
+])
+def test_attachment_request_versions_keep_outbound_installation_explicit(version, closed, installation, valid):
+    from clusterctl import onboarding_owner_client as owner
+    request = dict(schema=f'cluster-group-chat-attachment/v{version}', operation_id='fixture',
+        runtime_root='/runtime', server={}, runtime_bundle_sha256='b'*64,
+        group=dict(installation_sha256=installation))
+    if closed is not None:
+        request['receive_only'] = closed
+    if valid:
+        assert owner._attachment_receive_only(request) is (closed is True)
+    else:
+        with pytest.raises(OnboardingError, match='receiving_chat_attachment_request_required'):
+            owner._attachment_receive_only(request)
+
+
+@pytest.mark.parametrize('visibility,expected', [
+    ({'release_enabled': False, 'installation_sha256': None}, True),
+    ({'release_enabled': True, 'installation_sha256': None}, False),
+    ({'release_enabled': False, 'installation_sha256': 'a'*64}, False),
+    ({'installation_sha256': None}, False),
+    ({'release_enabled': 0}, False),
+])
+def test_intake_attachment_requires_actual_closed_native_status(visibility, expected):
+    from clusterctl import onboarding_owner_client as owner
+    assert owner._attachment_visibility_matches(visibility, {}, receive_only=True) is expected
+
+
+@pytest.mark.parametrize('release', [None, True, False])
+def test_owner_rejects_attachment_result_without_exact_intake_only_scope(monkeypatch, release):
+    import time
+    from clusterctl.onboarding import digest
+    from clusterctl import onboarding_owner_client as owner
+    client = owner.OwnerClient(None)
+    request = dict(schema='cluster-group-chat-attachment/v2', operation_id='fixture', receive_only=True)
+    sdk = dict(matrix_commit='b'*40)
+    result = dict(schema='cluster-group-chat-attachment-prepared/v1', operation_id='fixture',
+        request_sha256=digest(request), code_digest='a'*64, sdk_digest=digest(sdk),
+        matrix_commit=sdk['matrix_commit'], receiving_readiness='unobserved',
+        qualification_mode='native-receive-only')
+    if release is not None:
+        result['outbound_release'] = release
+    monkeypatch.setattr(client, '_tooling_call', lambda *a, **k:
+        (result, sdk, time.monotonic_ns()+1_000_000_000))
+    def prepare():
+        return client.prepare_attachment({}, request, candidate=(Path('/candidate'), 'a'*64),
+            attachment=Path('/attachment'), codex_home=Path('/codex'))
+    if release is False:
+        assert prepare() == result
+    else:
+        with pytest.raises(OnboardingError, match='verification_failed'):
+            prepare()
+
+
 def test_chat_successor_uses_closed_startup_and_qualifies_before_adapter(tmp_path, monkeypatch):
     from clusterctl import onboarding_owner_client as owner, onboarding_code_successor
     venv = tmp_path / 'sdk/venv'

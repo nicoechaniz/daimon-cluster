@@ -447,6 +447,21 @@ newer default can be rejected even though the registered native profile works.
 Keep installed/configured state distinct from receiving-model use. A configured
 outgoing channel is not proof of native outbound release.
 
+Use the existing owner client's `--prepare-group-attachment` operation for a
+receiving-only application too. Its versioned request
+`cluster-group-chat-attachment/v2` adds the explicit boolean `receive_only` to
+the v1 fields. With `receive_only: true`, retain the
+`group.installation_sha256` field as JSON `null`; the authenticated current
+native status must report both `release_enabled: false` and no installation.
+The same signed application/publication, runtime identity and preimage checks
+still run before and after the existing installer. The retained result marks
+`qualification_mode: native-receive-only` and `outbound_release: false`; catalog,
+inbox and model uptake remain separate observations. A real installed outbound
+adapter cannot be silently converted to this path. V1 requests and v2 requests
+with `receive_only: false` still require their exact installation hash.
+This extends the maintained attachment operation; it is not the complete
+single-command companion delivery promised by the design contract.
+
 ### Keep the receiving context current
 
 Nicolas's explicit requested outcome supplies the operational authorization.

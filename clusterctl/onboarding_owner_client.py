@@ -36,6 +36,7 @@ _PUBLIC_STARTUP_ERRORS = frozenset({
     'installed_onboarding_sdk_changed', 'native_onboarding_sdk_refused',
     'receiving_native_tooling_changed', 'receiving_native_tooling_group_changed',
     'receiving_native_tooling_identity_changed', 'receiving_native_tooling_unobserved',
+    'receiving_chat_attachment_request_required',
     'receiving_owner_deadline_expired',
     'receiving_communication_authorization_expired', 'receiving_communication_unobserved',
 })
@@ -482,6 +483,34 @@ def reconcile_chat_tooling(attachment: Path, operation_id: str, *, code: Path,
         'installer_sha256': TOOLING_INSTALLER_SHA256}
 
 
+def _attachment_receive_only(request: dict) -> bool:
+    """Version the intake-only path without weakening an existing release."""
+    fields = {'schema', 'operation_id', 'runtime_root', 'server', 'runtime_bundle_sha256', 'group'}
+    if request.get('schema') == 'cluster-group-chat-attachment/v1':
+        closed = False
+    elif (request.get('schema') == 'cluster-group-chat-attachment/v2'
+            and type(request.get('receive_only')) is bool):
+        fields.add('receive_only')
+        closed = request['receive_only']
+    else:
+        raise OnboardingError('receiving_chat_attachment_request_required')
+    if set(request) != fields:
+        raise OnboardingError('receiving_chat_attachment_request_required')
+    installation = request.get('group', {}).get('installation_sha256')
+    if (closed and installation is not None or not closed and (
+            not isinstance(installation, str) or re.fullmatch('[0-9a-f]{64}', installation) is None)
+            or 'installation_sha256' not in request.get('group', {})):
+        raise OnboardingError('receiving_chat_attachment_request_required')
+    return closed
+
+
+def _attachment_visibility_matches(visibility: dict, request: dict, *, receive_only: bool) -> bool:
+    if receive_only:
+        return (visibility.get('release_enabled') is False
+            and visibility.get('installation_sha256') is None)
+    return visibility.get('installation_sha256') == request['group']['installation_sha256']
+
+
 def prepare_group_chat_attachment(attachment: Path, request: dict, *, code: Path,
                                   code_digest: str, startup: dict, codex_home: Path,
                                   code_uid: int, deadline_ns: int) -> dict:
@@ -513,9 +542,8 @@ def prepare_group_chat_attachment(attachment: Path, request: dict, *, code: Path
             or any(startup.get(key) is not True for key in ('isolated', 'no_site', 'no_bytecode'))):
         raise OnboardingError('qualified_native_peer_tool_required')
     try:
-        if (set(request) != {'schema', 'operation_id', 'runtime_root', 'server', 'runtime_bundle_sha256', 'group'}
-                or request['schema'] != 'cluster-group-chat-attachment/v1'
-                or str(uuid.UUID(request['operation_id'])) != request['operation_id']):
+        receive_only = _attachment_receive_only(request)
+        if str(uuid.UUID(request['operation_id'])) != request['operation_id']:
             raise ValueError
         root = Path(request['runtime_root'])
         selected = request['group']['selected']
@@ -525,7 +553,7 @@ def prepare_group_chat_attachment(attachment: Path, request: dict, *, code: Path
                     for path in (root, application, attachment, codex_home))
                 or any(not isinstance(value, str) or re.fullmatch('[0-9a-f]{64}', value) is None for value in (
                     request['runtime_bundle_sha256'], request['group']['application_sha256'],
-                    request['group']['publication_sha256'], request['group']['installation_sha256']))):
+                    request['group']['publication_sha256']))):
             raise ValueError
     except (ValueError, TypeError, KeyError, AttributeError):
         raise OnboardingError('receiving_chat_attachment_request_required') from None
@@ -581,7 +609,7 @@ def prepare_group_chat_attachment(attachment: Path, request: dict, *, code: Path
             if (value['server'] != request['server'] or loaded['runtime_id'] != peer.runtime_id
                     or loaded['runtime_bundle_sha256'] != request['runtime_bundle_sha256']
                     or any(app.get(key) != request['group'][key] for key in ('application_sha256', 'publication_sha256'))
-                    or app.get('visibility', {}).get('installation_sha256') != request['group']['installation_sha256']
+                    or not _attachment_visibility_matches(app.get('visibility', {}), request, receive_only=receive_only)
                     or app.get('tribe', {}).get('policy', {}).get('tribe_ref') != selected['tribe_ref']):
                 raise OnboardingError('receiving_native_tooling_group_changed')
             budget()
@@ -635,6 +663,8 @@ def prepare_group_chat_attachment(attachment: Path, request: dict, *, code: Path
             request_sha256=digest(request), binding_sha256=fingerprint, server=request['server'], runtime_id=peer.runtime_id,
             code_digest=code_digest, sdk_digest=startup['sdk_digest'], matrix_commit=startup['matrix_commit'],
             matrix_wheel_sha256=startup['matrix_wheel_sha256'], receiving_readiness='unobserved')
+        if receive_only:
+            result.update(qualification_mode='native-receive-only', outbound_release=False)
         retain('result', result)
         unchanged()
         budget()
@@ -1289,6 +1319,8 @@ class OwnerClient:
                 or result.get('request_sha256') != digest(request) or result.get('operation_id') != request['operation_id']
                 or result.get('code_digest') != candidate[1] or result.get('sdk_digest') != digest(sdk)
                 or result.get('matrix_commit') != sdk['matrix_commit'] or result.get('receiving_readiness') != 'unobserved'
+                or request.get('receive_only') is True and (
+                    result.get('qualification_mode') != 'native-receive-only' or result.get('outbound_release') is not False)
                 or time.monotonic_ns() >= deadline):
             raise OnboardingError('verification_failed')
         return result

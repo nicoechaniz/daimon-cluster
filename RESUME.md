@@ -211,9 +211,15 @@ and its hardened service was manually exercised against the official Debian feed
 for the host and all four guests. It retains only current/previous observations,
 with explicit runtime, memory, CPU and state-size bounds and a scoped stop path.
 The first scheduled invocation actually ran at05:02:26UTC on8November2026
-and exited successfully; the timer remains active for the next daily run. Patch transactions, upstream
-and malicious-release advisories, activity-aware cleanup/browser reclamation,
-failed/missed-run supervision and verified incident delivery remain unfinished. Follow the
+and exited successfully; the timer remains active for the next daily run.
+Failed/missed-run supervision now uses the supported Alerts PR31 scheduled-job
+observer with 26-hour grace through the existing storage observation cadence.
+Two actual finite invocations passed; a missed/failed/recovered disposable fixture
+retained one incident and actual opening/resolution delivery receipts. The
+original partial-coverage notice remains open. See
+[the selected observation/stop route](docs/operations/children-daily-observation.md).
+Patch transactions, upstream and malicious-release advisories, activity-aware
+cleanup/browser reclamation and independent availability remain unfinished. Follow the
 maintained Shared Resources children-host-security handoff and preserve profiles,
 originals, histories and unfinished work. Finite metadata-only progress observation
 is separate from the existing Heartbeat owner's messaging/review implementation;

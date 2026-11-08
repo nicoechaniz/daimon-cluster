@@ -6,6 +6,7 @@ separate holders, private password FDs and resumable publication.
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -20,9 +21,14 @@ MODULES = frozenset({'daimon_matrix.operator_genesis',
 
 
 def native_command(venv: Path, imports: Path, code: Path, module: str,
-                   arguments: list[str]) -> list[str]:
+                   arguments: list[str], *, code_digest: str | None = None) -> list[str]:
     if module not in MODULES or imports != venv.parent / 'runtime-imports':
         raise OnboardingError('qualified_native_custody_required')
+    if module == 'clusterctl.onboarding_holder_backup':
+        if code_digest is None or re.fullmatch('[0-9a-f]{64}', code_digest) is None:
+            raise OnboardingError('qualified_native_custody_required')
+        arguments = [*arguments, '--qualified-venv', str(venv), '--qualified-code', str(code),
+                     '--qualified-code-digest', code_digest]
     launcher = '''import sys,runpy
 sys.prefix = sys.exec_prefix = sys.argv.pop(1)
 imports,code,module = sys.argv[1:4]
@@ -87,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         code_uid=0, **parameters)
     imports = args.venv.parent / 'runtime-imports'
     _native_run(arguments, args.password_file, command_builder=lambda module, values:
-        native_command(args.venv, imports, args.code, module, values))
+        native_command(args.venv, imports, args.code, module, values, code_digest=args.code_digest))
     return 0
 
 

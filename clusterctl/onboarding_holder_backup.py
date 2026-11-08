@@ -117,13 +117,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ceremony-root", type=Path, required=True)
     parser.add_argument("--role", choices=("root", "recovery"), required=True)
     parser.add_argument("--password-fd", type=int, required=True)
+    parser.add_argument("--qualified-venv", type=Path)
+    parser.add_argument("--qualified-code", type=Path)
+    parser.add_argument("--qualified-code-digest")
     args = parser.parse_args(argv)
     password = bytearray()
     try:
-        from .matrix_host import _matrix_api
         from daimon_matrix import operator_genesis
 
-        _matrix_api()
+        selected = (args.qualified_venv, args.qualified_code, args.qualified_code_digest)
+        if any(value is not None for value in selected):
+            if not all(value is not None for value in selected):
+                raise OnboardingError('qualified_native_custody_required')
+            from . import onboarding_code_successor, onboarding_sdk
+            parameters = onboarding_code_successor.sdk_parameters(args.qualified_code)
+            if not parameters:
+                raise OnboardingError('qualified_native_custody_required')
+            onboarding_sdk.qualified_startup(args.qualified_venv, args.qualified_code,
+                code_digest=args.qualified_code_digest, code_uid=0, **parameters)
+        else:
+            from .matrix_host import _matrix_api
+            _matrix_api()
         password = operator_genesis._password(args.password_fd)
         backup_restore(args.ceremony_root, args.role, operator_genesis._reader(password))
         return 0

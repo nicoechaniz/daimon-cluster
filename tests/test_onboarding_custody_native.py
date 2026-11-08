@@ -79,3 +79,30 @@ def test_password_uses_private_fd_and_rejects_symlinks(tmp_path):
     linked = tmp_path/'linked';linked.symlink_to(password)
     with pytest.raises(being_seed.SeedError, match='seed_symlink_path_refused'):
         _native_run(['create-holder', '--output', str(output)], linked, command_builder=builder)
+
+
+def test_backup_child_requires_its_own_qualified_startup_selection(tmp_path):
+    venv=tmp_path/'venv';imports=tmp_path/'runtime-imports';code=tmp_path/'code'
+    with pytest.raises(OnboardingError, match='qualified_native_custody_required'):
+        native.native_command(venv,imports,code,'clusterctl.onboarding_holder_backup',[])
+    command=native.native_command(venv,imports,code,'clusterctl.onboarding_holder_backup',
+        ['--role','root'],code_digest='a'*64)
+    assert command[command.index('--qualified-venv')+1]==str(venv)
+    assert command[command.index('--qualified-code')+1]==str(code)
+    assert command[command.index('--qualified-code-digest')+1]=='a'*64
+
+
+def test_qualified_backup_does_not_import_legacy_git_adapter_before_proof(tmp_path,monkeypatch):
+    from clusterctl import onboarding_holder_backup,onboarding_sdk,onboarding_code_successor
+    calls=[]
+    monkeypatch.setitem(sys.modules,'clusterctl.matrix_host',None)
+    monkeypatch.setattr(onboarding_code_successor,'sdk_parameters',lambda p:
+        dict(matrix_commit='a'*40,matrix_wheel_sha256='b'*64))
+    def refuse(*args,**kwargs):
+        calls.append('proof-before-password')
+        raise OnboardingError('qualified_runtime_context_required')
+    monkeypatch.setattr(onboarding_sdk,'qualified_startup',refuse)
+    result=onboarding_holder_backup.main(['--ceremony-root',str(tmp_path),'--role','root',
+        '--password-fd','-1','--qualified-venv',str(tmp_path/'venv'),
+        '--qualified-code',str(tmp_path/'code'),'--qualified-code-digest','c'*64])
+    assert result==1 and calls==['proof-before-password']

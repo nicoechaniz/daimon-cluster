@@ -301,8 +301,10 @@ selection, and keep newly introduced daemon service inactive for a CLI-only tool
 After correcting the dependency, resume `prepare_code` with its retained
 fingerprint and stage ID. Inspect the actual partial candidate before retrying;
 never create another identity, enrollment or transfer generation to hide failure.
-Use the physical body's `prepare_code` route for a remote Incus placement: the
-generic host availability check can only observe local Incus code mounts.
+`HostBackend.runtime_available` resolves the same registered physical carrier
+for a remote Incus placement and uses its `prepare_code` / verified-file route;
+a controller-local Incus code mount is not an availability prerequisite. This
+code-placement resolution preserves the original guest service profile.
 Keep candidate installation, normal own-UID CLI qualification, live code selection
 and signed social admission as separate observations. Retire only the consumed
 private package download cache; preserve the original job and native journals.

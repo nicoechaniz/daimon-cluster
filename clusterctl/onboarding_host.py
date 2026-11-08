@@ -325,6 +325,12 @@ class HostBackend:
         from .native_body import NativeBody
         return NativeBody.load(selected[0], plan, expected_digest=selected[1])
 
+    def _runtime_body(self, plan: dict):
+        """Resolve verified code placement without changing the service profile."""
+        body = self.native_body(plan)
+        physical = getattr(self.run, 'body_for', None)
+        return physical(plan) if body is None and physical is not None else body
+
     def body_python(self, plan: dict) -> Path:
         native = self.native_body(plan)
         return native.python if native is not None else Path('/usr/bin/python3')
@@ -352,7 +358,7 @@ class HostBackend:
         """Availability means verified native files or actual Incus mounts."""
         base = self._receiving_base(plan)
         code, _, mounts = self._runtime_paths(plan, base, candidate=candidate)
-        native = self.native_body(plan)
+        native = self._runtime_body(plan)
         if native is not None:
             if not self.authorize(plan, digest(plan)):
                 raise OnboardingError('host_authorization_required')
@@ -1111,7 +1117,7 @@ class HostBackend:
         onboarding_code_successor.verify(runtime_code, runtime_digest,
             self.config.code, plan['release_digest'], uid=os.geteuid())
         code = Path('/opt/daimon-onboarding-runtime') / runtime_digest
-        if self.native_body(plan) is not None:
+        if self._runtime_body(plan) is not None:
             return code, ['--runtime-code', str(code), '--runtime-digest', runtime_digest], {}
         mount = dict(type='disk', source=str(runtime_code), path=str(code), readonly='true', shift='true')
         return code, ['--runtime-code', str(code), '--runtime-digest', runtime_digest], {

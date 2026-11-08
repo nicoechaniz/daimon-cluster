@@ -1,0 +1,25 @@
+[Unit]
+Description=Own companion loopback WebBridge daemon
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+Environment=HOME=%h
+# The extension connects inbound over loopback; this daemon needs no outbound sockets.
+# Block vendor reporting in the actual process, without changing Chromium networking.
+SystemCallFilter=~connect
+SystemCallErrorNumber=EPERM
+UMask=0077
+ExecStart=%h/.kimi-webbridge/bin/kimi-webbridge start --foreground --addr 127.0.0.1:10086
+Restart=on-failure
+RestartSec=5
+MemoryMax=128M
+TasksMax=32
+CPUQuota=25%
+TimeoutStopSec=15
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=60
+LogRateLimitBurst=100

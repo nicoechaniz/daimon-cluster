@@ -437,6 +437,16 @@ is not a native wire method. Preserve first probe failures as observations.
 An authenticated inbox read proves own access, not a cross-body delivery,
 receiving-cohort release, outbound visibility or family device acceptance.
 
+Install the actual own messaging MCP role through the maintained installer and
+Codex config writer, preserving provider/auth, unrelated configuration and
+running Conversation processes. Reuse the published group client; do not mint
+another identity or copy an adult client. Exercise the exact configured stdio
+command, its tool catalog and one authorized own inbox read without a model turn.
+Use the Codex handshake supported by the selected SDK: a generic MCP client's
+newer default can be rejected even though the registered native profile works.
+Keep installed/configured state distinct from receiving-model use. A configured
+outgoing channel is not proof of native outbound release.
+
 ### Keep the receiving context current
 
 Nicolas's explicit requested outcome supplies the operational authorization.

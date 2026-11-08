@@ -1,5 +1,55 @@
 # Durable receiving jobs
 
+## Single-command companion contract
+
+Nicolas's 8 November correction selects one finite operator command after the
+necessary inputs have been supplied. This is a required completion contract,
+not a claim that the current portal/worker already fulfills it. The next
+companion remains on hold until the full four-child delivery is ready and we
+begin the retained joint timing exercise with Nicolas. Do not provision it to prepare
+the benchmark.
+
+Collect the real pairing, placement/resource limits, authorized account and
+selected service inputs before invocation. Validate completeness against the
+existing supported plan and held writers. A recorded human decision supplies
+operational authorization; component ownership, an expired descriptor or an
+adapter limitation must not create another approval or consultation gate.
+Actual missing credentials and explicit human holds remain real constraints.
+
+One invocation must execute or reconcile the supported body, identity/native
+admission, shared Home/login, general Conversation and selected service/tool
+configuration. Internal phases may use the existing worker and journals, but
+must not require manual helper launches, copied tokens, a second command to
+finish an acknowledged operation, or an unbounded background handoff. Retain
+the original operation identities after uncertain effects. Required signing,
+custody, privacy and resource checks establish the actual result; repeated
+unchanged qualification does not add authority.
+
+Use the maintained source and SDK once for the affected consumers. Keep native
+membership and receiving grants independent of Telegram/outbound visibility;
+optional School, voice/avatar work and family acceptance must not block basic
+Conversation. Selected optional work still needs its own honest completion
+state. A successful command must report the actual usable entry, its pairing,
+technical readiness and any genuinely pending first-login/device acceptance.
+
+Record monotonic elapsed time, finite deadline, terminal exit/result and actual
+effect receipts. Failure must identify the owning step and retained operation,
+leave a safe recoverable state, and exit rather than wait for human babysitting.
+Configuration, loaded catalog, actual authenticated access and model/device
+acceptance remain distinct observations. The joint benchmark measures the
+complete supported invocation, including the work it starts, rather than only
+submission latency. Do not claim a measured duration or a working single-command
+interface from fixtures or an existing companion's earlier deployment.
+
+Each correction discovered during the four-child work belongs in that route and
+its consumed documentation/context. Current examples include authority-metadata
+renewal using held custody; parallel finite writer initialization; remote code
+placement/dependency checks; signed membership without publication; explicit
+closed-catalog migration; waiting for the original process's socket; registering
+the real own MCP client; using the selected SDK's supported Codex handshake;
+and composing a context update over a freshly inspected preimage while preserving
+unrelated instruction changes. None should become a recurring manual ceremony.
+
 The complete onboarding task is tracked with cohort #32 and Matrix #263.
 The intake and the receiving worker are separate processes. An uploaded archive
 or a successful preparation never means that the hosted embodiment is active.
@@ -12,9 +62,13 @@ for current receiving selections. CompAII, Eko and Oliva have a deployed signed
 Tribe group; automatic future portal-to-group enrollment remains #227. Earlier
 phase-specific preparation receipts below do not replace current readiness.
 
-`clusterctl.onboarding` records an exact host-authorized plan and eight ordered
-steps: environment, context, memory, Matrix, access, Telegram, welcome and
-acceptance. Web progress reads the same job's closed projection through
+`clusterctl.onboarding` retains the historical exact host-authorized plan with
+eight ordered steps: environment, context, memory, Matrix, access, Telegram,
+welcome and acceptance. Preserve those original job identities and effects.
+The current explicitly selected no-Telegram companion path must not turn the
+historical Telegram step into a new account or publication prerequisite. Its
+managed native-admission-only mode, signed membership and receiving application
+have their own actual observations. Web progress reads the same job's closed projection through
 `GET /v1/seeds/{seed}/onboarding`; it does not execute host operations.
 
 Before installing Source inheritance, the worker publishes an owner-private

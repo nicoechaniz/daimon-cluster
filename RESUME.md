@@ -1,3 +1,26 @@
+## Four-child receiving clients and next-companion hold —2026-11-08
+
+All4 existing children have signed/native membership and their own signed
+seven-member receiving applications. Source609a8d6/candidate67815540 is selected
+on those four Matrix units; actual own status/inbox reads and existing VPN-only
+intake route installation/readback passed. The twelve Conversation/Codex process
+identities were preserved. Communication stores used the existing versioned
+owner migration; no enrollment, identity, model call or capture was repeated.
+Native MCP roles are configured through their own Codex writer; all4 exact
+registered stdio commands passed a supported Codex handshake, tool catalog and
+authenticated own inbox read. Model uptake, complete cohort/cross-body delivery,
+outbound visibility, family/device and remaining School/security scope are not
+proved by those reads. Preserve the actual private receipts and older failures.
+
+The full goal remains active. Nicolas7bc3e2dc requires repairing every encountered
+onboarding obstacle in the maintained path. The next companion is explicitly
+held until all four-child work is ready and a joint timed exercise is selected;
+do not create it now. The required endpoint is one finite command with a
+deterministic terminal outcome after necessary inputs, not another manual
+procedure. See the single-command contract in docs/design/onboarding-jobs.md.
+The later observation here supersedes earlier unfinished child-admission
+statements below; it does not imply full messaging or roadmap completion.
+
 ## Signed membership verification without visibility —2026-11-08
 
 The owner membership-authorities action retains an own-signed public verification

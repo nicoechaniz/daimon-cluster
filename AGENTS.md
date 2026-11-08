@@ -1,5 +1,21 @@
 # Repository operating rules
 
+## Next-companion hold and single-command onboarding — 2026-11-08
+
+Nicolas reserved the next companion for a jointly observed timed onboarding
+after the full existing four-child delivery is ready and Nicolas begins that
+joint timing exercise with us. Do not provision that
+next identity, virtual, account, key, invitation or enrollment in advance.
+Its pairing/placement and exact human instruction are retained in the private
+receiving checkpoint. Finishing a component is not release of this hold.
+
+Every encountered onboarding defect must be repaired in the maintained route,
+not left as a required operator script. Once the required inputs are complete,
+the supported operator surface must be one command with a bounded start/end
+and a verified result or precise retained failure. Reuse existing job and effect
+journals; preserve uncertain operations and all explicit human holds. Follow
+`docs/design/onboarding-jobs.md#single-command-companion-contract`.
+
 Read `RESUME.md` before roadmap work. Preserve the exact reviewed RC pins and
 the access/production boundaries recorded there. Historical deployed-pair
 receipts are evidence only and do not authorize contact with those systems.

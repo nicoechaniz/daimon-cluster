@@ -223,6 +223,11 @@ metadata or reinstall a shared development SDK to make a mismatched test pass.
 
 ## Shared audio seed bank in child contexts
 
+Scheduled daily inventory supervision and its scoped stop/recovery route are
+maintained in [children-daily-observation.md](children-daily-observation.md).
+Execution health does not establish complete security coverage or native/Tribe
+admission; neither is a prerequisite for the already delivered basic Conversation.
+
 The existing `audio-seed-bank` skill and its transcription/institutional-Drive
 dependencies belong in each child companion's own skill/context installation.
 The stable shared viewer is https://apps.dmn.homes/seeds/ .

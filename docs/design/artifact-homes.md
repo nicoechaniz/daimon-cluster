@@ -200,3 +200,38 @@ old gateway and old broker / new gateway remain valid mixed pairs. No state,
 registry or session database rollback accompanies software rollback. Measure
 cross-host bytes and latency: this avoids metadata-body transfer, not the fresh
 broker read/hash or network round trip, and establishes no fleet capacity SLO.
+
+### Foreground Cluster observations
+
+The authenticated Fleet application keeps signed native `/all` admissions
+separate from physical virtuals, onboarding jobs and service activity. Never
+substitute configured planned names or a stale metrics export for current state.
+The optional private `observer_socket` selects the owner's fixed-scope reader;
+only an already authorized Fleet human request invokes it. Existing shared
+login, grants and the post-I/O identity check remain authoritative.
+
+`clusterctl.homes.fleet_reader` reuses the installed computer-health/Pulso probe,
+pinned by its selected SHA256, and the operator's existing local/SSH/Incus read
+routes. Private root configuration supplies selected resources/commands and
+actual onboarding-store roots. Browser requests supply no command, path, target,
+credential or program. The reader enumerates the selected existing jobs and
+observes actual instance limits/state and named service state; it performs no
+provisioning, model invocation, inbox read, enrollment or repair. A running
+Conversation service does not establish human acceptance or Matrix membership.
+
+Use the maintained socket/service templates in `deploy/fleet-reader`. Select the
+existing Home OS user as the socket reader. The finite root reader can inspect
+owner-only operational metadata without weakening the web service's
+`NoNewPrivileges` or granting it Incus/admin access. It accepts no input payload
+and returns only the safe report. Keep the private owner config, pinned SSH
+routes and source binding outside published code. Preserve the selected Homes
+composition, auth/session writer and current data when overlaying dashboard files.
+
+Bounds: at most8selected resource scopes,4concurrent reads,16existing onboarding
+jobs and128KiB per subprocess/report; each read16seconds, service25seconds,
+128MiB/oneCPU/32tasks, at most2socket clients. One replaceable128KiB current cache
+coalesces foreground reads for5seconds. There is no collection timer; with no
+viewer request, no collector runs. Each result retains its real observation date
+and unavailable sources remain explicit. Stop future collection by disabling
+only this socket; preserve current reports and existing shared services. Revert
+only the selected dashboard code/configuration, never Home databases or sessions.

@@ -1,0 +1,19 @@
+[Unit]
+Description=Finite fixed-scope Cluster resource reading
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -B -I @SELECTED_CODE@/clusterctl/homes/fleet_reader.py --config /etc/daimon-cluster/fleet-reader.json
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/cluster-fleet-reader
+PrivateTmp=yes
+MemoryMax=128M
+CPUQuota=100%
+TasksMax=32
+TimeoutStartSec=25
+LimitFSIZE=256K

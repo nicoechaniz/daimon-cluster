@@ -6,12 +6,17 @@
     const article = document.createElement('article'); article.className = 'fleet-card';
     const badge = document.createElement('span'); badge.className = 'state';
     const current = !planned && row.lease_expires_at_ms > Date.now();
-    badge.textContent = planned ? 'Planned' : current ? 'Admitted' : 'Observation expired';
+    badge.textContent = planned ? (row.physical_state ? 'Virtual ' + row.physical_state : 'Not observed') : current ? 'Admitted' : 'Observation expired';
     if (!current) badge.classList.add('stale');
     article.append(badge);
     const name = document.createElement('h3'); name.textContent = row.name; article.append(name);
-    for (const text of [row.host, row.hosting, planned ? 'Native admission pending; preparation is tracked separately.' : 'Current signed admission; no model response requested.']) {
+    for (const text of [row.host, row.hosting, planned ? 'Onboarding: ' + (row.stage || 'not observed') + ' · ' + (row.job_state || 'unknown') : 'Current signed admission; no model response requested.']) {
       const p = document.createElement('p'); p.textContent = text; article.append(p);
+    }
+    if (planned) {
+      if (row.physical_state === 'running' && !Object.keys(row.services || {}).length) article.append(node('p', 'Service observation unavailable', 'state stale'));
+      for (const [service, state] of Object.entries(row.services || {})) article.append(node('p', service.replace('.service', '') + ': ' + state));
+      article.append(node('p', 'Physical observation: ' + dated(row.observed_at_ms) + '. Matrix admission remains separate.', 'muted'));
     }
     return article;
   }
@@ -89,7 +94,8 @@
     map(data); alerts(data);
     byId('instances').replaceChildren(...data.instances.map(row => card(row, false)));
     byId('planned').replaceChildren(...data.planned.map(row => card(row, true)));
-    byId('count').textContent = data.instances.length + ' observed';
+    byId('count').textContent = data.instances.length + ' admitted · ' + data.planned.length + ' virtual preparations';
+    byId('preparation-status').textContent = data.preparation_state === 'unavailable' ? 'Current virtual observation unavailable; no fixed preparation status is substituted.' : data.preparation_state === 'partial' ? 'Some host observations are unavailable. Only current successful reads are shown.' : 'Current host/job observations · service activity does not establish human acceptance.';
     byId('coverage').textContent = data.partial ? 'Partial inventory: some admissions could not be observed.' : 'Current local Cluster admissions. Unregistered or other-Cluster bodies are outside this inventory.';
     byId('checked').textContent = 'Source checked ' + new Date(data.observed_at_ms).toLocaleString();
   }

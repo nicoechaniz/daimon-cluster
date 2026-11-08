@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import stat
 import threading
 import time
 import uuid
@@ -45,11 +47,47 @@ def native_inventory(root: Path) -> dict:
     return response['result']
 
 
+def observation_socket(path):
+    reference=Path(path)
+    info=reference.lstat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077:
+        raise ValueError('private_observation_socket_required')
+    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
+        connection.settimeout(22);connection.connect(str(reference));raw=bytearray()
+        while True:
+            data=connection.recv(min(65536,131073-len(raw)))
+            if not data:break
+            raw.extend(data)
+            if len(raw)>131072:raise ValueError('observation_limit')
+    value=json.loads(raw)
+    if (value.get('schema')!='cluster-fleet-observation/v1'
+            or type(value.get('observed_at_ms')) is not int
+            or not -1000 <= time.time()*1000-value['observed_at_ms'] <= 30000
+            or not isinstance(value.get('preparations'),list) or len(value['preparations'])>16
+            or not isinstance(value.get('health'),dict)):
+        raise ValueError('invalid_live_observation')
+    clean=[]
+    for row in value['preparations']:
+        item={key:row[key] for key in ('name','host','hosting','physical_state','stage','job_state','observed_at_ms')}
+        if (type(item['observed_at_ms']) is not int or any(not isinstance(v,str) or len(v)>128
+                for k,v in item.items() if k!='observed_at_ms')
+                or not isinstance(row.get('services'),dict) or len(row['services'])>8):
+            raise ValueError('invalid_preparation_observation')
+        item['services']={}
+        for key,state in row['services'].items():
+            if not isinstance(key,str) or len(key)>128 or state not in (
+                    'active','inactive','failed','activating','deactivating','not-installed','unknown'):
+                raise ValueError('invalid_service_observation')
+            item['services'][key]=state
+        clean.append(item)
+    return dict(value,preparations=clean)
+
+
 class Fleet:
     def __init__(self, config, *, reader=native_inventory):
         if (not isinstance(config, dict)
                 or not {'schema', 'home', 'readers', 'runtime_root', 'placements', 'planned'} <= set(config)
-                or set(config) - {'schema', 'home', 'readers', 'runtime_root', 'placements', 'planned', 'observability'}
+                or set(config) - {'schema', 'home', 'readers', 'runtime_root', 'placements', 'planned', 'observability', 'observer_socket'}
                 or config.get('schema') != 'cluster-home-dashboard/v1'
                 or not isinstance(config['home'], str)
                 or not isinstance(config['readers'], list) or not 1 <= len(config['readers']) <= 64
@@ -75,6 +113,9 @@ class Fleet:
                 or any(not isinstance(v, str) for v in observe['alerts'].values())
                 or not Path(observe['alerts']['token_file']).is_absolute()):
             raise ValueError('invalid_observability')
+        if 'observer_socket' in config and (not isinstance(config['observer_socket'],str)
+                or not Path(config['observer_socket']).is_absolute() or '..' in Path(config['observer_socket']).parts):
+            raise ValueError('invalid_observation_socket')
         self.config, self.root, self.reader = config, root, reader
         self.lock = threading.Lock()
         self.cached = None
@@ -114,7 +155,19 @@ class Fleet:
                      'partial': source['partial'], 'coverage': 'current-local-cluster-admissions',
                      'instances': rows, 'planned': self.config['planned']}
             from .observability import observations
-            value['observability'] = observations(self.config.get('observability', {}))
+            live=None
+            if self.config.get('observer_socket'):
+                # The same authenticated foreground read triggers this fixed-scope
+                # owner collector. No client-supplied command, new timer or model.
+                value['planned']=[]
+                try:
+                    live=observation_socket(self.config['observer_socket'])
+                    value['planned']=live['preparations']
+                    value['preparation_state']='partial' if live.get('partial') else 'observed'
+                except (OSError,ValueError,KeyError,TypeError):
+                    value['preparation_state']='unavailable'
+            value['observability'] = observations(self.config.get('observability', {}),
+                health_report=live['health'] if live else None)
             self.cached, self.cached_until = value, time.monotonic() + 3
             return value
 

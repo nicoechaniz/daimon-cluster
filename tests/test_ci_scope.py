@@ -6,6 +6,19 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_children_admission_relay_keeps_protocol_and_fence_coverage(tmp_path):
+    changed = ['deploy/systemd/children-cluster-admission.service',
+               'deploy/systemd/children-cluster-admission.socket',
+               'docs/operations/children-admission.md', 'tools/ci_scope.py',
+               'tests/test_ci_scope.py']
+    assert select(changed, ROOT) == ('peer', [
+        'tests/test_admission.py', 'tests/test_production_fences.py',
+        'tests/test_operational_assets.py', 'tests/test_ci_scope.py',
+        'tests/test_ci_workflow.py'])
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    assert select([*changed, 'clusterctl/admission.py'], ROOT) == ('full', ['tests'])
+
+
 def test_daily_read_only_collector_keeps_closed_scope(tmp_path):
     changed = ['tools/children_daily.py', 'tests/test_children_daily.py',
                'deploy/systemd/children-daily-inventory.service',

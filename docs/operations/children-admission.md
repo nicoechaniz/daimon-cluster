@@ -39,6 +39,44 @@ transaction to claim Matrix readiness. Keep the full delivery scope, but do not 
 polish or preparatory work displace that first usable result. Report incomplete
 links as implementation work rather than handing technical chores to the human.
 
+## Cold web Conversation, independent of social admission
+
+A fresh guest needs the shared native Codex engine as well as the Conversation
+receiver and web process. A healthy web shell or `presentation` read only proves
+the adapter, not that its first model request can reach the engine.
+
+Reuse `onboarding_telegram.native_supervisor_code(base, selected)` and
+`install_native(home, codex, code, budget=...)` for the existing
+`daimon-onboarding-codex.service`. The legacy module name does not require a bot.
+Keep its qualified supervisor, selected Codex binary, own `HOME`/`CODEX_HOME`,
+provider cache and original histories. Do not rewrite an immutable base to add a
+missing helper: select the already qualified runtime containing it. Observe an
+existing singleton before starting it; an observation timeout never authorizes
+stopping or replacing it.
+
+Configure the Conversation receiver with `telegram.enabled = false` and
+`codex.shared_app_server = true`, its own database/control socket and explicitly
+allocated local human/chat/topic coordinates. These local coordinates are not
+Telegram identities. Use the exact registered shared `human_ref` and stable
+application UUID for the web binding; no placeholder bot or adult actor.
+
+Readiness is model-free: check the existing daemon's `app-server daemon version`,
+initialize its shared proxy, then use a supported metadata read when an own
+retained thread already exists. The maintained Native observer permits its
+`status(existing_thread)` read; it rejects `thread/loaded/list` before RPC.
+The receiver's read uses both cursors:
+
+```sh
+telecodex --control "$RECEIVER_CONFIG" presentation list 0 0
+```
+
+Do not create a synthetic human message or a new native thread to prime the cold
+entry. Its first real human input owns ordinary conversation creation. Preserve
+own prior task threads independently. Shared Home registration/login, native
+engine readiness, canonical Matrix running admission, Tribe membership and human
+device acceptance retain distinct evidence. Full social admission, a publication
+broker, Escuela, Drive and voice workshops do not gate basic Conversation.
+
 ## Existing authority over the selected network
 
 When the selected central authority is already reachable on the host's private

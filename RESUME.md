@@ -10,6 +10,21 @@ technical action is needed. The remaining mixed-host coordinator work must reuse
 each old member's existing owner backend/grants, never copy their administrative
 authority into a child's virtual or reset identities to clear a pending stage.
 
+## First cold Conversation receiving — 2026-11-08
+
+Pixin now has its own shared Codex engine, Conversation receiver and web process
+installed in its existing virtual. Native daemon version, shared-proxy handshake
+and an own retained School thread metadata read passed without a new model turn.
+The web serves its shell; anonymous Conversation and administrative API reads
+refuse. Existing identity, provider cache and histories remain intact.
+
+This is private receiving readiness, not a usable public entry or child
+acceptance. Home registration/shared login remains with its existing writer;
+canonical Matrix/Tribe admission remains unfinished. Do not start other children
+by replaying Pixin's jobs. Reuse the same supported cold bootstrap once the first
+pair has usable authenticated access. The maintained path is in
+[children admission](docs/operations/children-admission.md#cold-web-conversation-independent-of-social-admission).
+
 ## Children receiving progress — 2026-11-08
 
 The existing shared Cluster application is available at

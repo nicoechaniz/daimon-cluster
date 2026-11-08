@@ -319,6 +319,28 @@ class PublicAdvisoryPhaseTests(unittest.TestCase):
 class KnownExploitationTests(unittest.TestCase):
     selection={'helper':'/opt/qualified/kev.py','sha256':'a'*64}
 
+    def test_vendor_selection_is_explicit_and_boolean(self):
+        daily.validate_known_selection(dict(self.selection,assess_chromium=True))
+        for value in ({},dict(self.selection,assess_chromium='yes'),dict(self.selection,source='arbitrary')):
+            with self.assertRaises(ValueError):daily.validate_known_selection(value)
+
+    def test_vendor_failure_keeps_accepted_evidence_and_never_returns_clean(self):
+        from types import SimpleNamespace
+        good={'schema':'children-known-exploitation/v1','state':'matched','checked':100,
+              'source_sha256':'previous','needs_triage':True,'matches':[]}
+        report={'targets':{n:{'debian_advisories':'matched'} for n in ('pixin','calipso','c-137','noodles')}}
+        fake=SimpleNamespace(match=lambda *a:dict(good),chromium_context=lambda *a:{},
+                             assess_chromium=lambda *a:(_ for _ in ()).throw(OSError('vendor unavailable')))
+        with tempfile.TemporaryDirectory() as temp,patch.object(daily,'load_public_matcher',return_value=fake):
+            root=Path(temp);candidates={n:[] for n in report['targets']}
+            daily.known_exploitation(self.selection,candidates,report,root)
+            original=(root/'known-exploitation/current.json').read_bytes()
+            for n in report['targets']:
+                (root/n).mkdir();(root/n/'packages.status').write_text('fixture');(root/n/'debian-findings.txt').write_text('')
+            result=daily.known_exploitation(dict(self.selection,assess_chromium=True),candidates,report,root)
+            self.assertEqual(result['state'],'unavailable');self.assertEqual(result['last_success_checked'],100)
+            self.assertEqual((root/'known-exploitation/current.json').read_bytes(),original)
+
     def test_failure_keeps_original_receipt_and_records_old_freshness(self):
         from types import SimpleNamespace
         good={'schema':'children-known-exploitation/v1','state':'matched','checked':100,

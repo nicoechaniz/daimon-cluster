@@ -1,3 +1,23 @@
+## Primary Debian Chromium assessment —2026-11-08
+
+The optional known-exploitation assess_chromium flag fetches the fixed public
+Debian Chromium source table and binds its exact current trixie-security version
+to both current amd64 browser declarations on each guest. It retains raw
+Debian/KEV leads, annotates only explicitly resolved/current-suite fixed entries,
+and preserves missing identifiers, changed versions and other affected packages
+as pending. Current open vendor cases remain source candidates even when old
+KEV entries resolve. No broad whitelist, version-floor guess or green-clearance
+claim follows. Tables/source identity, source sizes, candidate/output counts and
+unavailability retention are bounded; no package list is uploaded.
+
+Actual source inspection found the two historical debsecan records have empty
+unstable fixed floors and exact old branch lists. Current Debian resolves
+CVE-2025-24201 for the offered156.0.8078.79-1~deb13u1, but CVE-2020-15999 is absent
+and remains pending. The same primary table contains current open candidates.
+Native selection/current results belong in the maintained private checkpoint.
+See [vendor assessment](docs/operations/children-known-exploitation.md#optional-current-debian-chromium-assessment).
+Original full no-Telegram admission and Matrix53 pause remain unchanged.
+
 ## Reviewed Brotli update family —2026-11-08
 
 The existing package coordinator supports a separate closed libbrotli1 security

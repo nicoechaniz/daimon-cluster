@@ -131,7 +131,7 @@ def validate(config):
             or type(config.get('compiler_cleanup_enabled',False)) is not bool):
         raise ValueError('explicit_daily_configuration_required')
     if 'known_exploitation' in config:
-        validate_browser_selection(config['known_exploitation'])
+        validate_known_selection(config['known_exploitation'])
     if 'public_advisories' in config:
         if 'application_inventory' not in config:raise ValueError('application_inventory_required_for_advisories')
         validate_advisory_selection(config['public_advisories'])
@@ -163,6 +163,13 @@ def validate_browser_selection(value):
             or not isinstance(value['sha256'],str) or len(value['sha256'])!=64
             or any(c not in '0123456789abcdef' for c in value['sha256'])):
         raise ValueError('qualified_browser_status_selection_required')
+
+
+def validate_known_selection(value):
+    if (not isinstance(value,dict) or not {'helper','sha256'}<=set(value) or set(value)-{'helper','sha256','assess_chromium'}
+            or type(value.get('assess_chromium',False)) is not bool):
+        raise ValueError('explicit_known_exploitation_selection_required')
+    validate_browser_selection({k:value[k] for k in ('helper','sha256')})
 
 
 def browser_status(instance, selection):
@@ -332,7 +339,7 @@ def public_advisories(selection, inventories, root):
 
 def known_exploitation(selection, candidates, report, root):
     """Preserve the last accepted intersection on source/input failure."""
-    validate_browser_selection(selection)
+    validate_known_selection(selection)
     cache=root/'known-exploitation';cache.mkdir(mode=0o700,exist_ok=True)
     if cache.is_symlink() or cache.stat().st_uid!=os.geteuid() or cache.stat().st_mode & 0o077:
         raise ValueError('private_kev_state_required')
@@ -355,6 +362,10 @@ def known_exploitation(selection, candidates, report, root):
                 for identifier in [r['id'],*r['aliases']] if re.fullmatch(r'CVE-[0-9]{4}-[0-9]{4,19}',identifier)})
         module=load_public_matcher(selection)
         result=module.match(values)
+        if selection.get('assess_chromium'):
+            contexts={name:module.chromium_context((root/name/'packages.status').read_text(),
+                (root/name/'debian-findings.txt').read_text()) for name in ('pixin','calipso','c-137','noodles')}
+            result=module.assess_chromium(result,contexts)
         if (result.get('schema')!='children-known-exploitation/v1' or result.get('state')!='matched'
                 or type(result.get('needs_triage')) is not bool):raise ValueError('kev_result_schema')
         raw=json.dumps(result,sort_keys=True).encode()

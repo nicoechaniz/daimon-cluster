@@ -94,6 +94,9 @@ class NativeBody:
         if value.get('schema') == 'cluster-incus-vm-body-placement/v1':
             from .vm_body import VMBody
             return VMBody.load(locator, plan, expected_digest=expected_digest)
+        if value.get('schema') == 'cluster-incus-container-body-placement/v1':
+            from .vm_body import ContainerBody
+            return ContainerBody.load(locator, plan, expected_digest=expected_digest)
         if expected_digest is not None and digest(value) != expected_digest:
             raise OnboardingError('native_receiving_placement_changed')
         required = {'schema', 'plan_digest', 'host', 'port', 'ssh_user',
@@ -219,10 +222,10 @@ if result!=0 and ctypes.get_errno()!=errno.EEXIST:raise OSError(ctypes.get_errno
         target = self.value['ssh_user'] + '@' + self.value['host']
         return [*self.ssh(), '--', target, shlex.join(command)]
 
-    def execute(self, argv: list[str], *, uid: int = 1000, gid: int = 1000,
+    def _launch_request(self, argv: list[str], *, uid: int = 1000, gid: int = 1000,
                 env: dict | None = None, input_data: str | None = None,
                 timeout_seconds: float = 60, deadline_ns: int | None = None,
-                owner_clock: bool = False) -> str:
+                owner_clock: bool = False) -> tuple[list[str], float]:
         if (not argv or any(not isinstance(item, str) or '\0' in item for item in argv)
                 or (uid, gid) not in {(0, 0), (1000, 1000)}
                 or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 65
@@ -245,6 +248,30 @@ if result!=0 and ctypes.get_errno()!=errno.EEXIST:raise OSError(ctypes.get_errno
                        remaining_seconds=remaining, expires_at_ms=wall_started_ms + int(remaining * 1000),
                        owner_clock=owner_clock)
         command = [str(self.python), '-B', '-I', '-c', REMOTE_LAUNCH, json.dumps(request)]
+        return command, remaining
+
+    def relationship_conversation(self, argv: list[str], packet: dict, *,
+                                  deadline_ns: int, validate):
+        """Use the same pinned transport and remote clock for a finite CLI session.
+
+        The receiving owner enforces its rebased deadline independently of SSH.
+        Closing the local transport does not prove remote writer release.
+        """
+        from .onboarding_group_session import OwnerConversation
+        validate()
+        command, remaining = self._launch_request(argv, deadline_ns=deadline_ns,
+            timeout_seconds=60, owner_clock=True)
+        transport = self._transport_command(command, timeout_seconds=remaining)
+        return OwnerConversation(transport, packet, deadline_ns=deadline_ns,
+            validate=validate, env={'PATH': os.defpath, 'LANG': 'C.UTF-8'})
+
+    def execute(self, argv: list[str], *, uid: int = 1000, gid: int = 1000,
+                env: dict | None = None, input_data: str | None = None,
+                timeout_seconds: float = 60, deadline_ns: int | None = None,
+                owner_clock: bool = False) -> str:
+        command, remaining = self._launch_request(argv, uid=uid, gid=gid, env=env,
+            input_data=input_data, timeout_seconds=timeout_seconds,
+            deadline_ns=deadline_ns, owner_clock=owner_clock)
         try:
             transport_started = time.monotonic()
             transport_command = self._transport_command(command, timeout_seconds=remaining)

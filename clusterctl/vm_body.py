@@ -1,4 +1,4 @@
-"""Retained full-OS VM maintenance through the local Incus agent.
+"""Retained, explicitly typed Incus bodies through the existing agent.
 
 Physical VM lifecycle remains in Cluster's journaled resource controller. This
 placement reuses native OS code adoption and owner controls, without SSH
@@ -29,15 +29,18 @@ os.execvpe(argv[0],argv,{'PATH':os.defpath,'LANG':'C.UTF-8'})
 """
 
 
-class VMBody(NativeBody):
+class IncusBody(NativeBody):
+    placement_schema = ''
+    instance_type = ''
+
     @classmethod
-    def load(cls, locator: Path, plan: dict, *, expected_digest: str | None = None) -> VMBody:
+    def load(cls, locator: Path, plan: dict, *, expected_digest: str | None = None) -> IncusBody:
         value = being_seed._read(locator)
         if expected_digest is not None and digest(value) != expected_digest:
             raise OnboardingError('native_receiving_placement_changed')
         required = {'schema', 'plan_digest', 'project', 'instance', 'instance_uuid',
                     'host_machine_id_sha256', 'machine_id_sha256', 'bootstrap_python', 'home'}
-        if (set(value) - {'incus_host_ssh'} != required or value['schema'] != 'cluster-incus-vm-body-placement/v1'
+        if (set(value) - {'incus_host_ssh'} != required or value['schema'] != cls.placement_schema
                 or value['plan_digest'] != digest(plan)
                 or value['instance'] != 'dm-' + plan['name']
                 or not isinstance(value['project'], str)
@@ -58,7 +61,8 @@ class VMBody(NativeBody):
         parent = value.get('incus_host_ssh')
         if parent is not None:
             keys = {'host', 'port', 'ssh_user', 'identity_file', 'identity_uid', 'known_hosts', 'bootstrap_python'}
-            if (not isinstance(parent, dict) or set(parent) != keys
+            if (not isinstance(parent, dict) or set(parent) - {'sudo'} != keys
+                    or 'sudo' in parent and type(parent['sudo']) is not bool
                     or not isinstance(parent['host'], str)
                     or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]{0,252}', parent['host']) is None
                     or not isinstance(parent['ssh_user'], str)
@@ -94,6 +98,8 @@ class VMBody(NativeBody):
             raise OnboardingError('vm_receiving_host_changed')
         command = [parent['bootstrap_python'], '-B', '-I', '-c', HOST_LAUNCH,
                    self.value['host_machine_id_sha256'], json.dumps(argv)]
+        if parent.get('sudo', False):
+            command = ['sudo', '-n', '--', *command]
         return [*ssh_arguments(parent), '--', parent['ssh_user']+'@'+parent['host'], shlex.join(command)]
 
     def _verify_instance(self, timeout_seconds: float) -> None:
@@ -109,7 +115,7 @@ class VMBody(NativeBody):
             row = json.loads(result.stdout)
         except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
             raise OnboardingError('vm_receiving_instance_unconfirmed') from None
-        if (not isinstance(row, dict) or row.get('type') != 'virtual-machine'
+        if (not isinstance(row, dict) or row.get('type') != self.instance_type
                 or row.get('config', {}).get('volatile.uuid') != self.value['instance_uuid']):
             raise OnboardingError('vm_receiving_instance_changed')
 
@@ -138,6 +144,8 @@ class VMBody(NativeBody):
             server = [parent['bootstrap_python'], '-B', '-I', '-c', HOST_LAUNCH,
                       self.value['host_machine_id_sha256'],
                       json.dumps([*self._incus(), 'exec', self.value['instance'], '--', 'rsync'])]
+            if parent.get('sudo', False):
+                server = ['sudo', '-n', '--', *server]
             command = ['rsync', '--archive', '--checksum', '--protect-args', '--chmod=D755,F644',
                        '-e', shlex.join(ssh_arguments(parent)), '--rsync-path', shlex.join(server),
                        '--', str(source)+'/', parent['ssh_user']+'@'+host+':'+str(stage)+'/']
@@ -165,3 +173,15 @@ for p in [root,*root.rglob('*')]:
 """
         self.execute([str(self.python), '-B', '-I', '-c', normalize, str(stage)],
                      uid=0, gid=0, deadline_ns=deadline)
+
+
+class VMBody(IncusBody):
+    """A full OS VM; container observations never satisfy this locator."""
+    placement_schema = 'cluster-incus-vm-body-placement/v1'
+    instance_type = 'virtual-machine'
+
+
+class ContainerBody(IncusBody):
+    """A container with its own pinned instance UUID and guest machine ID."""
+    placement_schema = 'cluster-incus-container-body-placement/v1'
+    instance_type = 'container'

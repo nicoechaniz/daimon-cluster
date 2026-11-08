@@ -266,3 +266,54 @@ with hard_deadline(int(sys.argv[1])):
         fcntl.flock(descriptor, fcntl.LOCK_EX|fcntl.LOCK_NB)
     finally:
         os.close(descriptor)
+
+
+def test_native_conversation_rebases_remote_clock_and_retains_one_actual_process(tmp_path, monkeypatch):
+    import hashlib
+    from clusterctl.native_body import NativeBody, REMOTE_LAUNCH
+    body = object.__new__(NativeBody)
+    object.__setattr__(body, 'value', dict(bootstrap_python=sys.executable, home=str(tmp_path),
+        machine_id_sha256=hashlib.sha256(Path('/etc/machine-id').read_bytes().strip()).hexdigest()))
+    seen = []
+    def transport(self, command, **options):
+        request = json.loads(command[-1])
+        seen.append(request)
+        assert request['owner_clock'] and request['uid'] == request['gid'] == 1000
+        # The fixture runs under the test user's credentials; production's
+        # unchanged remote launcher performs its actual supplementary-group drop.
+        fixture = REMOTE_LAUNCH.replace('os.setgroups([])', 'os.setgroups = lambda groups: None')
+        fixture = fixture.replace("os.setgid(request['gid']);os.setuid(request['uid'])", 'pass')
+        return [sys.executable, '-B', '-c', fixture, command[-1]]
+    monkeypatch.setattr(NativeBody, '_transport_command', transport)
+    deadline = time.monotonic_ns() + 5_000_000_000
+    marker = tmp_path/'remote-writer-released'
+    program = PROGRAM.replace('sys.argv[2]', 'sys.argv[3]').replace('int(sys.argv[1])', 'int(sys.argv[2])')
+    checks = []
+    invocation = [sys.executable, '-B', '-c', program, '--observation-deadline-ns',
+                  '1', str(marker)]
+    # Give the framed fixture the normal checkout import route after chdir.
+    invocation[3] = 'import sys;sys.path.insert(0,' + repr(str(Path.cwd())) + ');' + invocation[3]
+    owner = body.relationship_conversation(invocation, {'command': {'operation_id': 'same-operation'}},
+        deadline_ns=deadline, validate=lambda: checks.append(True))
+    with owner as session:
+        process = session.process
+        assert session.call({'first': True}) == {'echo': {'first': True}}
+        assert session.call({'second': True}) == {'echo': {'second': True}}
+        assert session.process is process and not marker.exists()
+    assert marker.read_text() == 'released' and process.returncode == 0
+    assert len(seen) == 1 and len(checks) >= 4
+
+
+def test_native_conversation_expired_or_revoked_never_builds_transport(monkeypatch):
+    from clusterctl.native_body import NativeBody
+    body = object.__new__(NativeBody)
+    object.__setattr__(body, 'value', {'home': '/home/agent'})
+    monkeypatch.setattr(NativeBody, '_transport_command', lambda *a, **k: pytest.fail('transport started'))
+    with pytest.raises(OnboardingError, match='host_deadline_expired'):
+        body.relationship_conversation(['owner'], {}, deadline_ns=time.monotonic_ns()-1,
+            validate=lambda: None)
+    def revoked():
+        raise OnboardingError('host_authorization_required')
+    with pytest.raises(OnboardingError, match='host_authorization_required'):
+        body.relationship_conversation(['owner'], {}, deadline_ns=time.monotonic_ns()+1_000_000_000,
+            validate=revoked)

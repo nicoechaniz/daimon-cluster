@@ -1000,3 +1000,43 @@ def test_owner_client_transport_preserves_only_its_closed_public_diagnostic(monk
         HostBackend._run(['exec','dm-fixture','--','/approved/python','clusterctl.onboarding_owner_client'],timeout_seconds=1)
     with pytest.raises(OnboardingError, match='^onboarding_host_operation_failed$'):
         HostBackend._run(['exec','dm-fixture','--','/unrelated/tool'],timeout_seconds=1)
+
+
+def test_remote_group_session_keeps_qualified_target_and_rechecks_placement(tmp_path, monkeypatch):
+    import time
+    import uuid
+    from clusterctl.native_body import NativeBody
+    backend, plan, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    native = object.__new__(NativeBody)
+    object.__setattr__(native, 'value', {'fixture': 'original pinned placement'})
+    selected = [native]
+    monkeypatch.setattr(backend, 'native_body', lambda _: selected[0])
+    # The existing candidate fixture qualifies the target code and SDK. Only
+    # physical execution is replaced, keeping packet/deadline construction real.
+    monkeypatch.setattr(backend, 'body_python', lambda _: Path('/usr/bin/python3'))
+    monkeypatch.setattr(backend, 'runtime_available', lambda *a, **k: True)
+    observed = []
+    def conversation(self, argv, packet, **options):
+        observed.append((argv, packet, options))
+        options['validate']()
+        return SimpleNamespace(argv=argv, validate=options['validate'], deadline_ns=options['deadline_ns'])
+    monkeypatch.setattr(NativeBody, 'relationship_conversation', conversation)
+    packet = dict(command=dict(operation_id=str(uuid.uuid4()), step='observe',
+        method='relationship.snapshot', params={'tribe_ref': 'tribe', 'at_ms': None}),
+        offline=True, authority_closure={})
+    deadline = time.monotonic_ns()+4_000_000_000
+    owner = backend._target_relationship_session(plan, packet, candidate=candidate,
+        timeout_seconds=5, deadline_ns=deadline)
+    assert calls == [] and len(observed) == 1
+    assert observed[0][1] is packet and 'group-session' in owner.argv
+    assert owner.deadline_ns == deadline
+    assert owner.argv[owner.argv.index('--observation-deadline-ns')+1] == str(deadline)
+    replacement = object.__new__(NativeBody)
+    object.__setattr__(replacement, 'value', {'fixture': 'replacement'})
+    selected[0] = replacement
+    with pytest.raises(OnboardingError, match='native_receiving_placement_changed'):
+        owner.validate()
+    selected[0] = native
+    monkeypatch.setattr(backend, 'authorize', lambda *_: False)
+    with pytest.raises(OnboardingError, match='host_authorization_required'):
+        owner.validate()

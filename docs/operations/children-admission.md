@@ -284,3 +284,25 @@ or VM placement and plan authorization. Use that owner backend for lifecycle
 preparation and finish; never copy adult administrative grants into child state.
 Omitting both fields retains the original primary-host behavior. This repairs
 the full Tribe coordinator; it is not a prerequisite for basic web Conversation.
+
+## Remote Incus public-code transfer dependency
+
+The existing `IncusBody` carrier sends a verified public code generation through
+host SSH and `incus exec ... rsync`. The **receiving guest** needs the `rsync`
+executable; having it only on the controller or Incus host is insufficient.
+Include it in the guest's normal Debian tooling baseline. If an existing guest
+lacks it, inspect its actual package state and signed-repository install plan,
+then install the selected package through the normal native package writer.
+Preserve active package operations and companion services; a disconnected
+observer must not kill dpkg or cause an uncertain install to be replayed.
+The rsync daemon is unnecessary for this carrier; preserve an existing service
+selection, and keep newly introduced daemon service inactive for a CLI-only tool.
+
+After correcting the dependency, resume `prepare_code` with its retained
+fingerprint and stage ID. Inspect the actual partial candidate before retrying;
+never create another identity, enrollment or transfer generation to hide failure.
+Use the physical body's `prepare_code` route for a remote Incus placement: the
+generic host availability check can only observe local Incus code mounts.
+Keep candidate installation, normal own-UID CLI qualification, live code selection
+and signed social admission as separate observations. Retire only the consumed
+private package download cache; preserve the original job and native journals.

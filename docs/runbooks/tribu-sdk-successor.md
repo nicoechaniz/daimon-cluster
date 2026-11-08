@@ -1577,3 +1577,15 @@ merely to communicate. Audience, signed membership proofs and required authority
 epochs must agree. Retain each receiver's actual full `roster_sha256` separately
 for its native CAS; never replace it with the membership-basis digest. This
 helper changes no native wire schema, local roster, grant or publication policy.
+
+Admission timing is an existing `cluster-onboarding-admission-profile/v1`
+configuration: `lease_ttl_s` remains within the holder's supported3..300seconds,
+and the RPC timeout is bounded by both the client default and TTL/10. A timing
+change preserves the independent pre-expiry watchdog and original signed holder
+enrollment. It does not establish a network cause or permanent acceptance.
+Provisioning files can be immutable mounts: prepare and verify an owner-private
+writable operational profile before quiescence, then select it through the
+existing `--admission-profile` argument. Preserve the selected admission path
+and all other existing arguments during later SDK/application maintenance;
+never remount or edit provisioning inputs, recreate a holder or leave a failed
+pre-effect configuration attempt with its service stopped.

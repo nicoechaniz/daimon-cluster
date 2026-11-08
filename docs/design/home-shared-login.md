@@ -115,3 +115,16 @@ New shared sessions require the successor's parent checks; do not expose them
 through a predecessor handler without invalidating those sessions first.
 Technical protocol and browser evidence are distinct from human phone acceptance
 and a real configured Google exchange.
+
+
+## Login-only registered homes
+
+A registered Home may set its existing `backend` field to JSON `null` when it
+needs shared login and its own Conversation before an artifact publisher exists.
+This is an explicit empty publication, not a placeholder network service, another
+home's store or a second identity system. Artifact reads remain unavailable and
+no old publication is acknowledged by a conditional observation. Owner credentials,
+current signed identity, pairing, shared sessions/passkeys and application-specific
+grants retain their existing checks. Register a genuine own broker later through
+the existing guarded host configuration writer. No broker is needed to authenticate
+a human for a separately authorized trusted application.

@@ -166,6 +166,10 @@ class Backend:
 
     def __init__(self, home):
         self.home = home
+        # Login-only homes need no artifact broker. An explicit null is an
+        # empty publication, never another home's store or an unreachable URL.
+        if home["backend"] is None:
+            return
         url = urlsplit(home["backend"])
         if (
             url.scheme != "http"
@@ -179,6 +183,8 @@ class Backend:
             raise ValueError("home_backend_must_be_loopback")
 
     def open(self, path, *, method="GET", byte_range=None, timeout=15, state_digest=None):
+        if self.home["backend"] is None:
+            raise ValueError("home_artifact_backend_unconfigured")
         headers = {
             "Authorization": "Bearer " + private_text(self.home["gateway_token_file"])
         }
@@ -207,11 +213,15 @@ class Backend:
         return json.loads(data)
 
     def state(self, *, timeout=15):
+        if self.home["backend"] is None:
+            return {"schema": 1, "entries": []}
         with self.open("/_home/state", timeout=timeout) as response:
             return self._state_response(response)
 
     def state_if_changed(self, digest, *, timeout=15):
         """NOT_MODIFIED only after a matching fresh authenticated observation."""
+        if self.home["backend"] is None:
+            return self.state()
         if not isinstance(digest, str) or not re.fullmatch('[a-f0-9]{64}', digest):
             raise ValueError('invalid_state_digest_observation')
         try:

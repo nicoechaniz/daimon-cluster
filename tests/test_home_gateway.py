@@ -983,3 +983,32 @@ def test_http_null200_never_acknowledges_committed_projection(tmp_path):
         app = Application({'homes': {'one': {'owner_being_ref': 'owner-one'}}}, authority, Sessions(tmp_path/'authority'), backends={'one': backend})
         app.registry.register(home='one', owner='owner-one', state=state, expected_revision=0, known_actor=authority.actor, known_tribe=lambda _: True)
         assert not app.publication('one', timeout=2)['entries']
+
+
+def test_login_only_home_has_no_artifact_broker(tmp_path):
+    from clusterctl.homes.service import Backend
+    authority = Authority()
+    home = {"backend": None, "gateway_token_file": key(tmp_path, "reader", "reader"),
+            "owner_token_file": key(tmp_path, "owner", "owner-key"),
+            "owner_being_ref": "owner-one", "owner_revision": "v1",
+            "public_url": "https://one.example", "vpn_url": "https://private-one.example",
+            "name": "Login only"}
+    backend = Backend(home)
+    assert backend.state() == {"schema": 1, "entries": []}
+    assert backend.state_if_changed("a" * 64) == backend.state()
+    with pytest.raises(ValueError, match="home_artifact_backend_unconfigured"):
+        backend.open("/private-history")
+    app = Application({"homes": {"one": home}, "content_public_url": "https://content.example",
+                       "content_vpn_url": "https://private-content.example"},
+                      authority, Sessions(tmp_path / "state"))
+    app.owner("one", "owner-key", "sync", {})
+    assert app.owner("one", "owner-key", "human-endpoint", {})["human"]["ref"] == "human-one"
+    token = app.sessions.issue(home="one", origin=home["public_url"], subject=authority.actor("human-one"))
+    assert app.identity(token, "one", home["public_url"]).ref == "human-one"
+    assert app.entries("one", authority.actor("human-one")) == []
+    assert app.selected("one", "a" * 32, "current", authority.actor("human-one")) is None
+    with serving(handler(app)) as gateway:
+        with urllib.request.urlopen(urllib.request.Request(gateway + "/access/identity",
+                 headers={"Host": "one.example", "Cookie": "__Host-home=" + token})) as response:
+            assert response.status == 200
+            assert json.load(response)["actor"]["ref"] == "human-one"

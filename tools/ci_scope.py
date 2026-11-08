@@ -960,6 +960,15 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
             and all((root / name).is_file() for name in MAINTENANCE_TESTS)
             and ('clusterctl/onboarding_host.py' not in changed or owner_diagnostics_only(root, base))):
         return 'peer', list(MAINTENANCE_TESTS)
+    daily_files = {'tools/children_daily.py', 'tests/test_children_daily.py',
+                   'docs/operations/children-daily.md',
+                   'deploy/systemd/children-daily-inventory.service',
+                   'deploy/systemd/children-daily-inventory.timer'}
+    daily_tests = ['tests/test_children_daily.py', 'tests/test_operational_assets.py',
+                   'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & daily_files and set(changed) <= daily_files | CI_FILES
+            and all((root / name).is_file() for name in daily_tests)):
+        return 'peer', daily_tests
     storage_files = {'tools/storage_hygiene.py', 'tests/test_storage_hygiene.py',
                      'docs/operations/host-storage-hygiene.md'}
     storage_tests = ['tests/test_storage_hygiene.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']

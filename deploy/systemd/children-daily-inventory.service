@@ -1,0 +1,31 @@
+[Unit]
+Description=Children's host and guest Debian inventory and advisory matching
+Wants=network-online.target
+After=network-online.target incus.service
+RequiresMountsFor=/var/lib/children-maintenance/daily
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -B /opt/children-maintenance/selected/children_daily.py --config /etc/children-maintenance/daily-inventory.json
+Environment=INCUS_CONF=/run/children-daily/incus
+RuntimeDirectory=children-daily
+RuntimeDirectoryMode=0700
+UMask=0077
+TimeoutStartSec=900
+TimeoutStopSec=15
+MemoryMax=512M
+CPUQuota=25%
+TasksMax=64
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/children-maintenance/daily
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+

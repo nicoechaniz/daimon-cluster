@@ -34,6 +34,7 @@ FILES = (
     "clusterctl/onboarding_consent.py",
     "clusterctl/onboarding_approvals.py",
     "clusterctl/onboarding_custody.py",
+    "clusterctl/onboarding_custody_native.py",
     "clusterctl/onboarding_credential.py",
     "clusterctl/onboarding_holder_backup.py",
     "clusterctl/onboarding_sdk.py",

@@ -130,6 +130,26 @@ validate existing packages instead of rekeying. Missing unlock material,
 foreign intent or changed grant stops without replacing identity. Grant
 revocation is rechecked between holder operations.
 
+For a host whose selected SDK was installed from a qualified offline wheelhouse,
+use `QualifiedHolderRunner` from `onboarding_custody_native` as the explicit
+`HostBackend(..., custody_run=runner)` dependency. It verifies the selected
+runtime successor against the frozen base and reuses its existing private SDK
+installation and closed imports. Each holder process runs the maintained
+`qualified_startup` proof before opening any holder or password FD. Its native
+child uses isolated, no-site, bytecode-disabled imports and a fixed operator
+module allowlist. The normal per-plan custody grant, revocation checks, separate
+Root/Recovery packages, private FD handling and atomic public-output publication
+remain in `FirstCustody`. This software selection cannot issue a custody grant.
+
+The old default runner retains its installed-Git provenance check. Do not forge
+`direct_url.json`, remove that check or treat a successful `--help` as identity
+readiness. An offline wheel can be valid while that legacy route refuses its
+missing Git installation metadata. The qualified runner addresses that case
+without changing any existing body, Root holder or administrative login path.
+No production adoption is implied by adding the runner: qualify native creation,
+interrupted publication and backup/restore on a disposable marked identity,
+then select the actual receiving host route and retain its own receipts.
+
 Custody preparation does not mark Matrix enrollment complete. Its receipt
 marks backup/restore verified only after separate native holder processes back
 up complete encrypted packages, restore with the independently retained counter

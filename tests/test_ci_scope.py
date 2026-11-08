@@ -1453,3 +1453,17 @@ def test_remote_incus_host_carrier_retains_exact_source_and_native_consumers(mon
         SimpleNamespace(returncode=0, stdout=b'changed source'))
     assert not ci_scope.remote_incus_source_only(ROOT, base)
     assert select(changed, ROOT, base=base) == ('full', ['tests'])
+
+
+def test_retained_owner_host_orchestration_keeps_focused_checks_with_its_runbook():
+    changed = ['clusterctl/onboarding_group_coordinator.py',
+        'tests/test_onboarding_group_coordinator.py', 'docs/operations/children-admission.md',
+        'RESUME.md', 'tools/ci_scope.py', 'tests/test_ci_scope.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'ci'
+    assert {'tests/test_onboarding_group_coordinator.py',
+        'tests/test_onboarding_group_finisher.py', 'tests/test_receiving_update_journal.py',
+        'tests/test_onboarding_progress.py', 'tests/test_onboarding_worker_install.py',
+        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'} <= set(tests)
+    broader, _ = select(changed + ['clusterctl/onboarding_host.py'], ROOT)
+    assert broader != 'ci', 'native host implementation changes retain their broader qualification'

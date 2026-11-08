@@ -30,12 +30,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def observations(config):
+def observations(config, *, health_report=None):
     value = {'health': None, 'health_state': 'unconfigured',
              'alerts': [], 'alerts_state': 'unconfigured', 'alerts_partial': False}
-    if config.get('health_file'):
+    if health_report is not None or config.get('health_file'):
         try:
-            report = json.loads(private_bytes(config['health_file'], 131072))
+            report = health_report if health_report is not None else json.loads(private_bytes(config['health_file'], 131072))
             if (report.get('schema') != 'computer-health/v1'
                     or not isinstance(report.get('targets'), list) or len(report['targets']) > 8):
                 raise ValueError('invalid_health_report')

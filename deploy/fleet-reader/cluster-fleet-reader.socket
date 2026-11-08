@@ -1,0 +1,12 @@
+[Unit]
+Description=Foreground-only Cluster resource observation
+[Socket]
+ListenStream=/run/cluster-fleet-reader.sock
+SocketUser=@READER_USER@
+SocketMode=0600
+Accept=yes
+MaxConnections=2
+Backlog=2
+RemoveOnStop=yes
+[Install]
+WantedBy=sockets.target

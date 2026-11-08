@@ -59,3 +59,23 @@ def test_authenticated_read_and_identity_recheck():
     assert h.result[0]==200 and len(h.result[1]['instances'])==1
     h=Handler(None);routes(h,app,'/cluster/api/fleet','one',actor,False)
     assert h.result[0]==403
+
+
+def test_foreground_source_replaces_fixed_plan_and_refuses_stale_substitution(monkeypatch):
+    import time
+    from clusterctl.homes import fleet as module
+    config=configuration();config['observer_socket']='/unused/reader.sock'
+    current={'schema':'cluster-fleet-observation/v1','observed_at_ms':int(time.time()*1000),
+        'partial':False,'health':{'schema':'computer-health/v1','targets':[]},
+        'preparations':[dict(name='Actual',host='Host',hosting='Incus',physical_state='running',
+                            stage='matrix',job_state='waiting',observed_at_ms=1,services={})]}
+    monkeypatch.setattr(module,'observation_socket',lambda _:current)
+    fleet=Fleet(config,reader=lambda _:inventory())
+    assert fleet.snapshot()['planned'][0]['name']=='Actual'
+    assert 'Next' not in str(fleet.snapshot())
+    fleet.cached_until=0
+    def unavailable(_):raise OSError('private')
+    monkeypatch.setattr(module,'observation_socket',unavailable)
+    missing=fleet.snapshot()
+    assert missing['planned']==[] and missing['preparation_state']=='unavailable'
+    assert len(missing['instances'])==1

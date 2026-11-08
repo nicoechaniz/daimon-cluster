@@ -127,9 +127,11 @@ def fetch_feed(opener=None):
 
 def validate(config):
     required={'schema', 'state', 'scanner', 'scanner_sha256', 'targets'}
-    if (not required<=set(config) or set(config)-required-{'compiler_cleanup_enabled','browser_status','application_inventory','public_advisories'}
+    if (not required<=set(config) or set(config)-required-{'compiler_cleanup_enabled','browser_status','application_inventory','public_advisories','known_exploitation'}
             or type(config.get('compiler_cleanup_enabled',False)) is not bool):
         raise ValueError('explicit_daily_configuration_required')
+    if 'known_exploitation' in config:
+        validate_browser_selection(config['known_exploitation'])
     if 'public_advisories' in config:
         if 'application_inventory' not in config:raise ValueError('application_inventory_required_for_advisories')
         validate_advisory_selection(config['public_advisories'])
@@ -328,6 +330,48 @@ def public_advisories(selection, inventories, root):
     return result
 
 
+def known_exploitation(selection, candidates, report, root):
+    """Preserve the last accepted intersection on source/input failure."""
+    validate_browser_selection(selection)
+    cache=root/'known-exploitation';cache.mkdir(mode=0o700,exist_ok=True)
+    if cache.is_symlink() or cache.stat().st_uid!=os.geteuid() or cache.stat().st_mode & 0o077:
+        raise ValueError('private_kev_state_required')
+    current=cache/'current.json';prior=None
+    if current.exists():
+        if current.is_symlink() or current.stat().st_size>128*1024:raise ValueError('kev_state_capacity')
+        prior=json.loads(current.read_bytes())
+        if prior.get('schema')!='children-known-exploitation/v1' or prior.get('state')!='matched':
+            raise ValueError('retained_kev_schema')
+    try:
+        if (not report['targets'] or set(candidates)!=set(report['targets'])
+                or any(v.get('debian_advisories')!='matched' for v in report['targets'].values())):
+            raise ValueError('current_debian_matches_required')
+        import re
+        values={k:sorted(set(v)) for k,v in candidates.items()}
+        public=report.get('public_advisories')
+        if public is not None:
+            if public.get('state')!='matched':raise ValueError('current_public_matches_required')
+            values['public-python']=sorted({identifier for r in public['records'] if r['withdrawn'] is None
+                for identifier in [r['id'],*r['aliases']] if re.fullmatch(r'CVE-[0-9]{4}-[0-9]{4,19}',identifier)})
+        module=load_public_matcher(selection)
+        result=module.match(values)
+        if (result.get('schema')!='children-known-exploitation/v1' or result.get('state')!='matched'
+                or type(result.get('needs_triage')) is not bool):raise ValueError('kev_result_schema')
+        raw=json.dumps(result,sort_keys=True).encode()
+        if len(raw)>128*1024:raise ValueError('kev_receipt_capacity')
+        if prior is not None:atomic(cache/'previous.json',current.read_bytes())
+        atomic(current,raw)
+    except (OSError,ValueError,KeyError,TypeError) as error:
+        result={'schema':'children-known-exploitation/v1','state':'unavailable','checked':int(time.time()),
+                'reason':type(error).__name__,'coverage':'partial',
+                'last_success_checked':prior.get('checked') if prior else None,
+                'last_success_source_sha256':prior.get('source_sha256') if prior else None}
+    status={k:result[k] for k in ('schema','state','checked','reason','needs_triage',
+        'last_success_checked','last_success_source_sha256') if k in result}
+    atomic(cache/'status.json',json.dumps(status,sort_keys=True).encode())
+    return result
+
+
 def collect(config):
     validate(config)
     root = Path(config['state'])
@@ -357,6 +401,7 @@ def collect(config):
                                 'bytes': len(raw), 'checked': int(time.time())}
         except (OSError, ValueError, zlib.error) as error:
             report['source'] = {'state': 'unavailable', 'reason': type(error).__name__}
+        kev_candidates={}
         for target in config['targets']:
             name = target['id']
             directory = root/name
@@ -408,6 +453,10 @@ def collect(config):
                         seconds=40, limit=4*MIB)
                     # Preserve exact current findings, including unfixed vulnerabilities.
                     atomic(directory/'debian-findings.txt', found)
+                    if config.get('known_exploitation'):
+                        import re
+                        kev_candidates[name]=sorted({word for word in found.decode().split()
+                            if re.fullmatch(r'CVE-[0-9]{4}-[0-9]{4,19}',word)})
                     value.update(debian_advisories='matched',
                                  vulnerability_pairs=len(set(found.decode().splitlines())))
                 raw = json.dumps(value, sort_keys=True).encode()
@@ -429,6 +478,8 @@ def collect(config):
         if config.get('public_advisories'):
             report['public_advisories']=public_advisories(config['public_advisories'],
                 [v.get('applications',{}) for v in report['targets'].values()],root)
+        if config.get('known_exploitation'):
+            report['known_exploitation']=known_exploitation(config['known_exploitation'],kev_candidates,report,root)
         report['finished'] = int(time.time())
         raw = json.dumps(report, sort_keys=True).encode()
         if len(raw) > 256*1024 or footprint(root) > 512*MIB:
@@ -452,7 +503,9 @@ def main():
         and value.get('applications',{}).get('state','observed')=='observed'
         for value in result['targets'].values()) and (
         result.get('public_advisories',{}).get('state','matched')=='matched'
-        and result.get('public_advisories',{}).get('needs_triage',False) is False) else 2
+        and result.get('public_advisories',{}).get('needs_triage',False) is False
+        and result.get('known_exploitation',{}).get('state','matched')=='matched'
+        and result.get('known_exploitation',{}).get('needs_triage',False) is False) else 2
 
 
 if __name__ == '__main__':

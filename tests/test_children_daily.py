@@ -316,5 +316,50 @@ class PublicAdvisoryPhaseTests(unittest.TestCase):
                 self.assertEqual(daily.main(),2)
 
 
+class KnownExploitationTests(unittest.TestCase):
+    selection={'helper':'/opt/qualified/kev.py','sha256':'a'*64}
+
+    def test_failure_keeps_original_receipt_and_records_old_freshness(self):
+        from types import SimpleNamespace
+        good={'schema':'children-known-exploitation/v1','state':'matched','checked':100,
+              'source_sha256':'previous','needs_triage':True,'matches':[{'cve':'CVE-2026-12345'}]}
+        report={'targets':{'pixin':{'debian_advisories':'matched'}}}
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            with patch.object(daily,'load_public_matcher',return_value=SimpleNamespace(match=lambda *a:good)):
+                self.assertEqual(daily.known_exploitation(self.selection,{'pixin':[]},report,root),good)
+            original=(root/'known-exploitation/current.json').read_bytes()
+            with patch.object(daily,'load_public_matcher',side_effect=ValueError('bad hash')):
+                failed=daily.known_exploitation(self.selection,{'pixin':[]},report,root)
+            self.assertEqual(failed['state'],'unavailable')
+            self.assertEqual(failed['last_success_checked'],100)
+            self.assertEqual((root/'known-exploitation/current.json').read_bytes(),original)
+            with patch.object(daily,'load_public_matcher') as loader:
+                self.assertEqual(daily.known_exploitation(self.selection,{},report,root)['state'],'unavailable')
+                loader.assert_not_called()
+
+    def test_osv_aliases_bind_current_candidates_but_withdrawn_records_do_not(self):
+        from types import SimpleNamespace
+        report={'targets':{'pixin':{'debian_advisories':'matched'}},'public_advisories':{
+            'state':'matched','records':[{'id':'GHSA-test','aliases':['CVE-2026-12345'],'withdrawn':None},
+                {'id':'CVE-2026-99999','aliases':[],'withdrawn':'yesterday'}]}}
+        seen=[]
+        def match(values):
+            seen.append(values)
+            return {'schema':'children-known-exploitation/v1','state':'matched','checked':100,'needs_triage':False}
+        with tempfile.TemporaryDirectory() as temp, patch.object(daily,'load_public_matcher',return_value=SimpleNamespace(match=match)):
+            daily.known_exploitation(self.selection,{'pixin':[]},report,Path(temp))
+        self.assertEqual(seen,[{'pixin':[],'public-python':['CVE-2026-12345']}])
+
+    def test_matches_or_unavailable_source_leave_daily_pending(self):
+        for state,triage in [('matched',True),('unavailable',False)]:
+            result={'coverage':'partial','source':{'state':'fresh'},'targets':{},
+                    'known_exploitation':{'state':state,'needs_triage':triage}}
+            with tempfile.TemporaryDirectory() as temp:
+                p=Path(temp)/'config.json';p.write_text('{}')
+                with patch.object(sys,'argv',['daily','--config',str(p)]),patch.object(daily,'collect',return_value=result):
+                    self.assertEqual(daily.main(),2)
+
+
 if __name__ == '__main__':
     unittest.main()

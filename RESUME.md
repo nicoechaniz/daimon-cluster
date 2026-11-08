@@ -1,3 +1,19 @@
+## Known exploitation from CISA —2026-11-08
+
+The optional known_exploitation phase intersects current local Debian CVE
+matches and non-withdrawn OSV aliases with the complete current official CISA
+KEV catalog. No inventory upload; one fixed unauthenticated public GET.
+Catalog count/unique identities/record fields/dates and freshness are validated;
+stale/unavailable inputs retain old accepted evidence with explicit failure.
+Matches remain pending for actual exposure/vendor mitigation assessment.
+Existing daily bounds, timer and Alerts observer are reused; no automatic patch,
+restart, credential or model invocation. See
+[known-exploitation operation](docs/operations/children-known-exploitation.md).
+Source qualification actually fetched catalog2026.11.06,1769rows/1832349bytes;
+this is not a receiving deployment or vulnerability-clearance claim. Exact
+native selection/results belong in the maintained private children checkpoint.
+Full social Matrix496/App452 remains first priority and Matrix53 stays paused.
+
 ## Selected public Python advisory queries —2026-11-08
 
 The optional public_advisories phase uses current observed application metadata

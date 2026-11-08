@@ -305,8 +305,14 @@ class NativeAuthority:
             ):
                 raise ValueError("home_authority_source_fork")
             histories[reference] = authority
+        web = {row["being_ref"] for row in rows if "human_ref" in row}
         for reference, authority in selected.items():
-            if (
+            if reference not in histories and reference in web:
+                # Explicit operator web registrations carry their own signed,
+                # active public origin. Founder discovery is not Home admission.
+                # _bindings rechecks the protected proof and origin each read.
+                histories[reference] = authority
+            elif (
                 reference not in histories
                 or histories[reference].manifest.digest != authority.manifest.digest
             ):

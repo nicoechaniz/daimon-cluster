@@ -35,7 +35,11 @@ The gateway's existing `binding_source` can select an owner-only
 It contains exactly `schema`, `telegram_source` and `web`. `telegram_source` is
 the absolute path of the unchanged existing human-Tribu configuration, or `null`
 for an exclusively web deployment. The adapter reads no bot tokens. It never
-loads a Matrix runtime or changes native admission.
+loads a Matrix runtime or changes native admission. Operator-registered web
+origins use their own protected signed public authority; they need not first
+appear in the founder’s discovery catalog. Existing catalog roots still reject
+conflicting authority pins, and Telegram bindings retain their current-source
+checks.
 
 `web` contains one to sixteen entries with exactly `being_ref`, `label`,
 `human_ref`, `human_name`, `origin`, `authority_file` and boolean `enabled`.

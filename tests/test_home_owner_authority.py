@@ -342,3 +342,43 @@ def test_accounting_limit_evicts_individually_cacheable_entries(tmp_path):
     assert all(key[1] != b'{"id":"one"}' for key in a._proof_cache)
     assert a._proof_cache_bytes == sum(charge for _, charge in a._proof_cache.values())
     assert a._proof_cache_bytes <= a._proof_cache_limit
+
+
+def test_registered_web_origin_does_not_require_founder_discovery(tmp_path, monkeypatch):
+    import clusterctl.homes.authority as module
+    import daimon_matrix.messaging_config as config
+    a = NativeAuthority(tmp_path/'bindings', tmp_path/'relationships', {},
+        authority_source=tmp_path/'current')
+    document = dict(control_artifacts=[], control_head='current', manifest={},
+        credentials={}, incarnations={}, authority_history=[])
+    source = {'document': document}
+    monkeypatch.setattr(config, 'protected_read', lambda _: json.dumps(source['document']))
+    def proof(value):
+        return SimpleNamespace(manifest=SimpleNamespace(being_ref='adult', digest=value['control_head']))
+    monkeypatch.setattr(module, 'public_history', proof)
+    adult = SimpleNamespace(manifest=SimpleNamespace(digest='current'))
+    child = SimpleNamespace(manifest=SimpleNamespace(digest='child-proof'))
+    rows = [dict(being_ref='adult', authority=adult),
+        dict(being_ref='child', human_ref='human:local:103ac2fb-e3a1-42fe-810a-f571d87bcb64',
+            authority=child)]
+    monkeypatch.setattr(a, 'bindings', lambda: rows)
+    assert a.authorities() == {'adult': proof(document), 'child': child}
+    # Legacy/native pins still require the current public source. A missing
+    # Telegram entry must never acquire the web-registration exception.
+    del rows[1]['human_ref']
+    with pytest.raises(ValueError, match='home_actor_authority_source_stale'):
+        a.authorities()
+    rows[1]['human_ref'] = 'human:local:103ac2fb-e3a1-42fe-810a-f571d87bcb64'
+    source['document'] = {**document, 'control_head': 'later'}
+    with pytest.raises(ValueError, match='home_actor_authority_source_stale'):
+        a.authorities()
+    # A conflicting catalog root is still refused, not overwritten by a pin.
+    source['document'] = {**document, 'sources': {'known_beings': [
+        {**document, 'control_head': 'child-fork'}]}}
+    def conflicting(value):
+        if value['control_head'] == 'child-fork':
+            return SimpleNamespace(manifest=SimpleNamespace(being_ref='child', digest='different-proof'))
+        return proof(value)
+    monkeypatch.setattr(module, 'public_history', conflicting)
+    with pytest.raises(ValueError, match='home_actor_authority_source_stale'):
+        a.authorities()

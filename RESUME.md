@@ -1,3 +1,26 @@
+## Daily browser package coordinator —2026-11-08
+
+The new durable coordinator composes the current signed selector and native APT
+guard. All4 actual guest units/source/policy are installed and first fleet
+assessment exited0: every guest up_to_date, no write requested. Original package
+installation and archive/guard evidence were reused; no reinstall or model call.
+The current candidate bundle is33f4739e24418ae8e62441fbc9222647d3f0224026e4a4ed2f4ffc6636529356.
+
+Commit intent is fsynced before APT, which owns its native package locks. Lost
+supervisor/ACK reconciles actual versions, locks, executable and preserved own
+services without replay. Actual harmless-child supervisor-loss and real POSIX
+lock fixtures passed. Guest writers have independent cgroups and no kill timeout;
+fleet observation is bounded. Existing bounded guest journals receive APT output
+directly. Exact completed archives retire only after actual health proof.
+
+The supported existing-timer dependency and additive scheduled-job observation
+are documented in [daily observation](docs/operations/children-daily-observation.md).
+Read the maintained receiving checkpoint for activation and next scheduled
+acceptance; do not infer either from this source. The full daily-security goal
+and original partial-coverage incident remain incomplete. Social admission of
+all4 is still first priority under Matrix496/App452; preserve goal53 pause,
+current identities/grants and completed basic web/School/Drive readiness.
+
 ## Signed browser selection component —2026-11-08
 
 The current four guests actually consumed the read-only candidate selector and

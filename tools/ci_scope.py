@@ -1019,6 +1019,19 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
     if (set(changed) & daily_files and set(changed) <= daily_files | CI_FILES
             and all((root / name).is_file() for name in daily_tests)):
         return 'peer', daily_tests
+    package_maintenance_files = {'tools/children_package_maintenance.py',
+                                 'tests/test_children_package_maintenance.py',
+                                 'deploy/systemd/children-guest-package-maintenance.service',
+                                 'deploy/systemd/children-packages-daily.service'}
+    package_maintenance_tests = ['tests/test_children_package_maintenance.py',
+                                 'tests/test_children_package_selection.py',
+                                 'tests/test_children_package_guard.py',
+                                 'tests/test_children_daily.py',
+                                 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & package_maintenance_files
+            and set(changed) <= package_maintenance_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / name).is_file() for name in package_maintenance_tests)):
+        return 'peer', package_maintenance_tests
     package_selection_files = {'tools/children_package_selection.py',
                                'tests/test_children_package_selection.py',
                                'support/children-maintenance/browser-package-policy.json'}

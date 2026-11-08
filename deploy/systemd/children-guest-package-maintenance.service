@@ -1,0 +1,21 @@
+[Unit]
+Description=Reviewed browser security transaction in the child's own guest
+After=network-online.target apt-daily.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -B -I /opt/children-maintenance/package-selected/children_package_maintenance.py --policy /etc/children-maintenance/browser-package-policy.json --state /var/lib/children-maintenance/browser-selection --install
+UMask=0077
+# APT/dpkg must finish; a fleet read deadline cannot kill this independent writer.
+TimeoutStartSec=infinity
+TimeoutStopSec=infinity
+KillMode=process
+MemoryMax=1G
+CPUQuota=100%
+TasksMax=128
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
+

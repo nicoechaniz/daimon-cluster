@@ -112,3 +112,55 @@ locks: 493665344 bytes total, without touching other caches, profiles or work.
 The existing daily collector was then rerun because software had changed; retain
 its current findings and partial coverage rather than reusing the pre-update
 inventory or resolving the broader coverage incident.
+
+## Check the transaction while APT owns its package locks
+
+`tools/children_package_guard.py` is a read-only, per-command APT pre-install
+hook for an already reviewed local transaction. It does not download packages,
+verify repository signatures, decide that maintainer scripts are safe, install
+updates or schedule work. The owning producer must perform those source/maintainer
+checks before producing its private `children-reviewed-apt-transaction/v1` manifest.
+The initial closed package family is Chromium plus Chromium-common; every other
+package remains a deferred transaction, including service/runtime changes.
+
+The manifest has `source: verified-local-debian-security`,
+`maintainer_reviewed: true` and `packages`, keyed by the exact two names. Each
+entry binds `old_version`, `version`, absolute `archive`, `sha256` and `bytes`.
+These are trusted operator observations, not assertions accepted from a companion
+message or an external feed. The manifest is operator-owned mode0600; archives
+must have trusted ownership/parents and a combined maximum of256MiB. APT's v2
+old/new/action fields must match the complete selection: no removal, downgrade,
+new or extra package. The hook also refuses unknown invoke hooks, unsafe dpkg
+options, insecure source flags, changed archives and an active browser; process
+observation is repeated after hashing and fails closed when unavailable.
+The producer must reject unreviewed installed APT invoke hooks **before starting
+APT**: APT runs `Pre-Invoke` before this seam. The guard's later configuration
+check cannot undo an earlier hook's effects and is not that producer preflight.
+
+Use APT protocol2 explicitly with the hook's exact Python command. APT3.0.3
+selects its protocol option using the **first command token**, so a command
+beginning `/usr/bin/python3` needs
+`DPkg::Tools::Options::/usr/bin/python3::Version=2`. Do not assume that reopening
+an APT option scope replaces an existing hook list. Keep this hook local to the
+selected automatic transaction; do not install it globally or change manual
+operator access. [APT's contract](https://manpages.debian.org/trixie/apt/apt.conf.5.en.html)
+and [the selected implementation](https://github.com/Debian/apt/blob/3.0.3/apt-pkg/deb/dpkgpm.cc)
+own the protocol and pre-dpkg ordering.
+
+`tools/qualify_children_package_guard.py GUARD --state EMPTY_PRIVATE_STATE`
+exercises the actual installed APT3.0.3 seam using tiny synthetic packages,
+separate APT configuration/status/cache and fixed `Debug::pkgDPkgPM=true`.
+The latter runs the hook but skips dpkg execution. Source/review fields in these
+fixture manifests are imitations for protocol testing, never signed-source
+qualification or production grants. The checks require unchanged real and
+fixture package-status bytes, admit the exact inert fixture and reject an extra
+service-package plan, a live synthetic browser process and a mismatched archive.
+Only its newly created fixture tree is retired; bounded logs/result remain.
+Run it in the owning finite guest service (180seconds/256MiB/50%CPU/64tasks),
+not as a new timer or a real package reinstall. Preserve a failed stage and
+inspect it before selecting a continuation. Reuse completed valid evidence.
+
+This component is not the complete automatic updater. The signed selection/
+maintainer-review producer, durable commit/recovery coordinator and its daily
+activation still need qualification before enabling future automatic writes.
+The existing report-only/index policy and daily coverage incident remain in place.

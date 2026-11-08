@@ -1467,3 +1467,16 @@ def test_retained_owner_host_orchestration_keeps_focused_checks_with_its_runbook
         'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'} <= set(tests)
     broader, _ = select(changed + ['clusterctl/onboarding_host.py'], ROOT)
     assert broader != 'ci', 'native host implementation changes retain their broader qualification'
+
+
+def test_package_guard_read_only_seam_has_closed_scope(tmp_path):
+    changed=['tools/children_package_guard.py','tools/qualify_children_package_guard.py',
+             'tests/test_children_package_guard.py',
+             'tools/ci_scope.py','tests/test_ci_scope.py',
+             'docs/operations/children-daily-observation.md','RESUME.md']
+    expected=('peer',['tests/test_children_package_guard.py',
+                      'tests/test_ci_scope.py','tests/test_ci_workflow.py'])
+    assert select(changed,ROOT)==expected
+    assert select(changed,tmp_path)==('full',['tests'])
+    for extra in ('tools/children_daily.py','clusterctl/admission.py','requirements.txt'):
+        assert select([*changed,extra],ROOT)==('full',['tests'])

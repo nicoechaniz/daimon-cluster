@@ -58,7 +58,8 @@ def test_each_receiving_body_selects_its_verified_peer_application(monkeypatch):
 
 
 @pytest.mark.parametrize('bounded', [False, True])
-def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp_path, monkeypatch, bounded):
+@pytest.mark.parametrize('admission_only', [False, True])
+def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp_path, monkeypatch, bounded, admission_only):
     ceremony, plan, blank = receiving(tmp_path)
     ceremony.prepare(plan, identity_mode='first')
     registrar = _key(tmp_path / 'host/registrar.pem', 'registrar')
@@ -75,6 +76,8 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
         authority_key_id=signer.key_id, authority_public_key=signer.public_key,
         registrar_key_id=registrar.key_id, registrar_key=str(tmp_path / 'host/registrar.pem'),
         registry=str(tmp_path / 'registry'), state=str(tmp_path / 'service-state'), visibility_installation=None)
+    if admission_only:
+        settings.update(schema='cluster-onboarding-managed-runtime/v2', mode='native-admission-only')
     being_seed._write(tmp_path / 'managed.json', settings)
     published = []
     with tempfile.TemporaryDirectory(prefix='dm-') as home:
@@ -133,9 +136,27 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
             _guest_paths=lambda _plan: (None, Path('/opt/qualified-code'), {}),
             _runtime_paths=lambda _plan, code: (code, [], {}))
         backend._ceremony = lambda _plan: ceremony
+        if admission_only and not bounded:
+            for field, value in (('mode', 'full'), ('visibility_installation', '/home/agent/visibility'),
+                                 ('messaging_application', '/home/agent/application')):
+                being_seed._write(tmp_path / 'managed.json', {**settings, field: value})
+                with pytest.raises(OnboardingError, match='invalid_onboarding_managed_configuration'):
+                    ManagedRuntime(backend)
+            being_seed._write(tmp_path / 'managed.json', settings)
+            for field in ('group_admission', 'peer'):
+                setattr(backend.config, field, Path('/protected/existing-selection'))
+                with pytest.raises(OnboardingError, match='invalid_onboarding_managed_configuration'):
+                    ManagedRuntime(backend)
+                setattr(backend.config, field, None)
         managed = ManagedRuntime(backend)
-        # Receive-only is a disposable qualification mode, never a live fallback.
-        assert managed.observe({**plan, 'name': 'eko'}).state == 'waiting'
+        # Legacy no-visibility remains qualification-only. The new explicit
+        # configuration admits an ordinary original, without enabling egress.
+        if admission_only:
+            backend.config.qualification = False
+            assert managed._ready({**plan, 'name': 'pixin'})
+            assert managed._selection(plan) == (None, None)
+        else:
+            assert managed.observe({**plan, 'name': 'eko'}).state == 'waiting'
         original_adopt = managed.registry.adopt_running
         def adopt(**origin):
             result = original_adopt(**origin)

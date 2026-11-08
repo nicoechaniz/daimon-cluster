@@ -27,11 +27,22 @@ class ManagedRuntime:
         value = self.settings
         fields = {'schema', 'host_port', 'guest_port', 'authority_key_id', 'authority_public_key',
                   'registrar_key_id', 'registrar_key', 'registry', 'state', 'visibility_installation'}
-        if (set(value) - {'messaging_application'} != fields or value['schema'] != 'cluster-onboarding-managed-runtime/v1'
+        admission_only = value.get('schema') == 'cluster-onboarding-managed-runtime/v2'
+        if (set(value) - {'messaging_application'} != fields | ({'mode'} if admission_only else set())
+                or value.get('schema') not in {'cluster-onboarding-managed-runtime/v1', 'cluster-onboarding-managed-runtime/v2'}
                 or any(type(value[key]) is not int or not 1 <= value[key] <= 65535
                        for key in ('host_port', 'guest_port'))
                 or any(not isinstance(value[key], str) or not value[key]
                        for key in ('authority_key_id', 'registrar_key_id'))):
+            raise OnboardingError('invalid_onboarding_managed_configuration')
+        # This explicit selection admits the existing body with closed outbound.
+        # It cannot downgrade a selected social/peer application or acquire its
+        # completion semantics. Legacy v1 remains visibility-gated.
+        if admission_only and (value.get('mode') != 'native-admission-only'
+                or value.get('visibility_installation') is not None
+                or value.get('messaging_application') is not None
+                or getattr(config, 'group_admission', None) is not None
+                or getattr(config, 'peer', None) is not None):
             raise OnboardingError('invalid_onboarding_managed_configuration')
         ed25519_fingerprint(value['authority_public_key'])
         for key in ('registrar_key', 'registry', 'state'):
@@ -52,7 +63,7 @@ class ManagedRuntime:
             raise OnboardingError('invalid_onboarding_managed_configuration')
 
     def _ready(self, plan: dict) -> bool:
-        return self._selection(plan)[1] is not None or (
+        return self.settings.get('mode') == 'native-admission-only' or self._selection(plan)[1] is not None or (
             self.backend.config.qualification and plan['name'].startswith('qualify-'))
 
     def _selection(self, plan: dict) -> tuple[str | None, str | None]:

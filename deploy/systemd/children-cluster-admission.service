@@ -1,0 +1,25 @@
+[Unit]
+Description=Bounded relay to the existing Cluster admission authority
+Requires=children-cluster-admission.socket
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+EnvironmentFile=/etc/children-maintenance/admission-proxy.env
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=16 --exit-idle-time=5min ${CLUSTER_ADMISSION_ENDPOINT}
+DynamicUser=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+MemoryMax=32M
+CPUQuota=10%
+TasksMax=16
+LimitNOFILE=64
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5

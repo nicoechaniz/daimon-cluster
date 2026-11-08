@@ -88,13 +88,16 @@ This enables daily signed indexes, not automatic package commits. The complete
 transaction preflight and future automatic-update policy remain unfinished; do
 not enable unattended installation merely because its tool or timer exists.
 Existing APT timer definitions and the host's separate policy were preserved.
-The next scheduled consumption of the guest policy remains to be observed.
+Actual native `apt-daily.service` execution succeeded on all four with a fresh
+`/var/lib/apt/periodic/update-stamp`; package-status bytes stayed unchanged.
+Naturally scheduled consumption remains distinct and unobserved.
 
 One reviewed transaction upgraded only `chromium` and `chromium-common` from
 `154.0.8037.92-1~deb13u1` to Debian-Security `156.0.8078.79-1~deb13u1` on all four.
 Signed-index hashes matched the downloaded archives. Their control scripts and
 contents had no service units/restart hooks; no browser was running, and no
-installed APT invoke hooks were present. Each plan contained exactly those two
+installed APT Pre/Post-Invoke hooks were present. The standard debconf
+Pre-Install callback remained configured; these packages had no config/templates. Each plan contained exactly those two
 upgrades, with no added/removed packages. These are dated candidate observations,
 not an allowlist for arbitrary future maintainer scripts or dependencies.
 
@@ -164,3 +167,53 @@ This component is not the complete automatic updater. The signed selection/
 maintainer-review producer, durable commit/recovery coordinator and its daily
 activation still need qualification before enabling future automatic writes.
 The existing report-only/index policy and daily coverage incident remain in place.
+
+
+## Select signed security metadata and inspect reviewed archives
+
+`tools/children_package_selection.py --policy PRIVATE_POLICY --state PRIVATE_STATE`
+consumes native APT trusted `indextargets` for the official Debian trixie-security
+main/amd64 index. APT remains the signature verifier. The producer checks the
+native source binding, update-stamp age (26h), signed Release identity/expiry,
+installed/candidate versions, package database health and exact two-package plan.
+It audits APT configuration before invoking APT; unknown hooks, weakened trust,
+new dependencies, removals, downgrades and active/unobservable browsers defer.
+The initial reviewed family is Chromium and Chromium-common, not a general
+permission to install Debian packages or silently revise this policy.
+
+`support/children-maintenance/browser-package-policy.json` records reviewed
+payload paths/links and maintainer-script hashes from the actual Debian package
+baseline156.0.8078.79-1~deb13u1. Changed controls, service files, modes, links or
+scripts require review. Packages with debconf config/templates always defer.
+The existing root-owned `/usr/sbin/dpkg-preconfigure --apt || true` callback is
+recognized only with its exact reviewed file hash. For this family without
+config/templates, generated **per-transaction** configuration clears that callback
+and selects only the current protocol2 guard. No global hook or manual APT
+configuration is changed; unknown/binary-scoped hooks still refuse.
+
+The default mode produces metadata only. `--download` fetches exact signed-index
+archives, verifies custody/bytes/SHA, inspects control tar and payload listing,
+then prepares `manifest.json` and `transaction.apt.conf` for the existing guard.
+It never runs a package writer. An existing manifest requires reconciliation;
+it is not overwritten or automatically retired after an uncertain transaction.
+State is root-owned0700, files0600, one current/previous result, exclusive lock,
+512MiB total and256MiB archive cap; native downloads have300s deadlines. Run under
+a finite resource-bounded guest service. Keep unfinished archives/results when a
+stage fails; only retire exact verified task-owned copies after qualification.
+
+All four actual guests consumed the selected standalone producer and reported
+`up_to_date`, with native signed index metadata and no package writes. The first
+Pixin check refused the standard debconf callback before any download; that
+outcome was retained before the exact callback audit/continuation. Native index
+qualification initially read the wrong stamp name; Pixin's already-successful
+APT service was not replayed, and the continuation consumed the native stamp.
+The durable commit/recovery coordinator and daily automatic-write activation
+remain unfinished. Keep automatic install/download/reboot/removal off and the
+original partial-coverage incident open until the complete path is exercised.
+
+A single actual Pixin download-only qualification then exercised the same selected
+inspector against both real signed-index archives (123416336bytes total). Actual
+control/listing/hash checks passed, exact copies were retired and real dpkg status
+SHA remained unchanged. No installed-version substitution, reinstall, production
+manifest or provider call was used to exercise that seam. The byte-identical
+inspector needs no fourfold duplicate archive download.

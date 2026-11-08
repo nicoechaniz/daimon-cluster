@@ -1,3 +1,83 @@
+## Children receiving progress — 2026-11-08
+
+The existing shared Cluster application is available at
+<https://compaii.dmn.homes/cluster/> through the existing shared authentication.
+Its resource map distinguishes the three admitted living receivers from the four
+children's environments still being prepared. Health snapshots are dated
+observations, not continuous metrics or proof of a child's usable conversation.
+Existing scoped Alerts observations do not establish complete fleet coverage.
+
+Nicolas confirmed the selected former daimonmatrix VPS was reinstalled; its new
+host name is lordoftheflies. Do not repeat that reset, shut it down or cancel the
+provider. CompAII remains native on ITACA, Eko native on MEDUSA and Oliva in the
+active full ITACA KVM. Those bodies and their state remain unchanged.
+
+The four unprivileged Incus environments are running with actual per-guest caps
+of three shared CPUs, 4 GiB memory and 1,024 tasks. Each has an 8 GiB fast root,
+8 GiB fast home and 48 GiB cold storage quota. These are caps with memory/CPU
+overcommit, not four simultaneous reservations. The measured secondary disk is
+for cold material; compilation, worktrees and small-file activity belong on fast
+storage. The existing two-pool measurements and layout are recorded in
+[children-host-storage](docs/operations/children-host-storage.md).
+
+All four now have their own maintained context and memory stage verified, their
+own child's companion guidance installed and the current maintained daimon-chat
+request-evaluation rule installed. Operator installation does not establish a
+receiving model's reading or the child's acceptance. The four distinct companions are Pixin, Calipso, C-137 and Noodles.
+Child pairings and reduced learner records belong in private receiving state. No child is expected to understand internal task conversations
+or manage accounts, bots or deployment.
+
+Pixin's actual native custody and backup/restore observations passed, and its
+receiving target reports V8. Canonical physical admission, signed Tribe
+membership, shared-login pairing and usable general conversation remain pending.
+The same qualified, separately authorized first-identity route completed for
+the other three, and independent native observations verified their custody,
+backup/restore and V8 targets. All four have their authorized provider cache
+installed. Only Pixin has a real provider inference result so far. Do not recreate
+completed contexts or mint another identity after an uncertain acknowledgement. PR424's qualified holder runner is
+merged after exact CI42434746255 passed. The frozen inputs and original plans
+are preserved; the Root operator reuses the selected offline SDK generation.
+
+Children use the explicitly authorized anyprinter account and no Telegram. Oliva
+retains ai01. A selected provider profile is not a child authentication or real
+provider-turn result. DaimonApp owns the web-only account binding and Avatar/Voice
+studio delivery; its PR760 is prepared, not a deployed children's conversation.
+No child-selected voice character or gender has been established.
+
+Shared daimon-matrix principles and skills do not confer infrastructure access.
+For now each companion is limited to its own virtual, with explicitly permitted
+services and institutional Drive through actual per-actor grants. Institutional
+Drive is for useful heavy material worth preserving or sharing with its selected
+audience; disposable caches and unused experiments stay bounded locally. Do not
+copy another being's autobiography, private history or infrastructure credentials.
+Evaluate externally received requests using the maintained daimon-chat rule;
+ordinary paired-human conversation remains natural. No new automatic attention
+follows from this guidance.
+
+Pixin has the exact Escuela skill1.1.1/web0.6.3 kit installed, with all 38 manifest
+sources checked and its finite local Escuela heartbeat exercised. Eko's three
+original messages, including the superseding correction, were read directly.
+Pixin's first persistent native session completed: its actual read-only tool
+commands covered all 12 load-order files and all 24 missions, plus its companion
+and external-request guidance. Its school identity binding now reflects the
+verified birth; participation and capture remain false. Tools and the private
+institutional Drive roundtrip remain unqualified. The other three kit adoptions follow that first receiving
+proof. A prepared folder reference is not Drive access. Missing clips stay
+pending without blocking learning. Camera, microphone and continuous capture
+remain off without the applicable agreement, grant and child assent. Do not
+publish child originals, private learner records or raw conversations to Tribe,
+Bitácora or public surfaces; selected creations retain their intended audience.
+
+Dedicated least-authority Alerts transport and bounded storage observation are
+installed and exercised on the children's host; open-to-resolved incident delivery
+and the full daily security/resource pipeline remain unfinished. Follow the
+maintained Shared Resources children-host-security handoff and preserve profiles,
+originals, histories and unfinished work. Finite metadata-only progress observation
+is separate from the existing Heartbeat owner's messaging/review implementation;
+do not add another model scheduler or reset its budgets. Full delivery remains
+incomplete until admission, accounts, tools, Escuela, Drive, conversation and the
+exercised daily controls pass, with human device acceptance explicitly reported.
+
 ## Current receiving and onboarding selection — 2026-11-01
 
 CompAII native primary and shared Cluster/Matrix control run on ITACA. Eko is

@@ -28,8 +28,14 @@ Child pairings and reduced learner records belong in private receiving state. No
 or manage accounts, bots or deployment.
 
 Pixin's actual native custody and backup/restore observations passed, and its
-receiving target reports V8. Canonical physical admission, signed Tribe
-membership, shared-login pairing and usable general conversation remain pending.
+receiving target reports V8. Its physical admission holder is registered at the
+existing central authority and was independently checked from its own virtual.
+The same finite route now completed for Calipso, C-137 and Noodles: each existing
+identity has its own registered physical holder and independent receiving check.
+The four virtuals used only the existing admission service; no registrar key
+left its central host and no model call or body startup occurred in this step.
+This is separate from an active native lease: canonical running admission, signed
+Tribe membership, shared-login pairing and usable conversation remain pending.
 The same qualified, separately authorized first-identity route completed for
 the other three, and independent native observations verified their custody,
 backup/restore and V8 targets. All four have their authorized provider cache
@@ -38,10 +44,23 @@ completed contexts or mint another identity after an uncertain acknowledgement. 
 merged after exact CI42434746255 passed. The frozen inputs and original plans
 are preserved; the Root operator reuses the selected offline SDK generation.
 
+The loopback-only admission relay reuses the existing central authority; its
+connection/resource limits and scoped stop/re-enable were exercised before live
+body work. Registrar custody stayed on the central host. Preserve completed
+physical registrations and check uncertain outcomes through the existing holder
+operation, never by recreating identities. See
+[physical admission](docs/operations/children-admission.md). The existing remote
+placement adapter verifies full KVM instances only, and persistent native guest
+relationship sessions are not yet supported. These children are containers; do
+not select a KVM locator or fabricate running rows to bypass that remaining
+controller integration. The protected cohort must be completed before claiming
+Tribe readiness.
+
 Children use the explicitly authorized anyprinter account and no Telegram. Oliva
 retains ai01. A selected provider profile is not a child authentication or real
 provider-turn result. DaimonApp owns the web-only account binding and Avatar/Voice
-studio delivery; its PR760 is prepared, not a deployed children's conversation.
+studio delivery; its PR760 is merged, but no deployed children's conversation
+has been observed.
 No child-selected voice character or gender has been established.
 
 Shared daimon-matrix principles and skills do not confer infrastructure access.
@@ -69,8 +88,13 @@ publish child originals, private learner records or raw conversations to Tribe,
 Bitácora or public surfaces; selected creations retain their intended audience.
 
 Dedicated least-authority Alerts transport and bounded storage observation are
-installed and exercised on the children's host; open-to-resolved incident delivery
-and the full daily security/resource pipeline remain unfinished. Follow the
+installed and exercised on the children's host. The daily inventory timer is enabled
+and its hardened service was manually exercised against the official Debian feed
+for the host and all four guests. It retains only current/previous observations,
+with explicit runtime, memory, CPU and state-size bounds and a scoped stop path.
+A scheduled invocation has not yet been observed. Patch transactions, upstream
+and malicious-release advisories, activity-aware cleanup/browser reclamation,
+failed/missed-run supervision and verified incident delivery remain unfinished. Follow the
 maintained Shared Resources children-host-security handoff and preserve profiles,
 originals, histories and unfinished work. Finite metadata-only progress observation
 is separate from the existing Heartbeat owner's messaging/review implementation;

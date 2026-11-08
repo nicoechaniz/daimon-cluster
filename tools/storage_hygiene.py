@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import time
 
@@ -107,6 +108,42 @@ def old_enough(path, cutoff):
     return True
 
 
+class CleanupBudget(RuntimeError):
+    """A safe finite-pass stop, never permission to remove a large candidate."""
+
+
+def inspect_entry(budget):
+    budget['entries'] += 1
+    if budget['entries'] > budget['max_entries']:
+        raise CleanupBudget('entry_limit')
+    if time.monotonic() >= budget['deadline']:
+        raise CleanupBudget('time_limit')
+
+
+def eligible_bytes(path, cutoff, budget):
+    total = 0
+    def eligible(entry):
+        nonlocal total
+        inspect_entry(budget)
+        info=entry.lstat()
+        if (stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid()
+                or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))
+                or max(info.st_mtime,info.st_ctime)>=cutoff):
+            return False
+        if stat.S_ISREG(info.st_mode):
+            total += info.st_size
+            if total > budget['remaining_bytes']:
+                raise CleanupBudget('byte_limit')
+        return True
+    if not eligible(path):
+        return None
+    def error(value):raise value
+    for directory,dirs,files in os.walk(path,followlinks=False,onerror=error):
+        if any(not eligible(Path(directory)/name) for name in dirs+files):
+            return None
+    return total
+
+
 def configured_path(value):
     return Path(value).expanduser().absolute()
 
@@ -205,7 +242,7 @@ def validate_roots(config):
     return projects, roots
 
 
-def clean(config, apply=False, now=None, active_paths=None):
+def clean(config, apply=False, now=None, active_paths=None, activity_scan=None):
     days = int(config.get("min_age_days", 14))
     cache_days = int(config.get("cache_min_age_days", days))
     if days < 7 or cache_days < 2:
@@ -213,30 +250,42 @@ def clean(config, apply=False, now=None, active_paths=None):
     max_cache_dirs = int(config.get("max_cache_dirs_per_run", 100))
     if not 1 <= max_cache_dirs <= 1000:
         raise ValueError("Cache removal budget must be between one and 1000 directories")
+    max_bytes=int(config.get('max_bytes_per_run',1024**3))
+    max_entries=int(config.get('max_entries_per_run',100000))
+    seconds=float(config.get('max_seconds_per_run',120))
+    if not 1 <= max_bytes <= 4*1024**3 or not 1<=max_entries<=1000000 or not 0<seconds<=300:
+        raise ValueError('Explicit finite cleanup budgets required')
+    if activity_scan is not None and active_paths is not None:
+        raise ValueError('Select one activity evidence route')
+    budget={'remaining_bytes':max_bytes,'max_entries':max_entries,'entries':0,
+            'deadline':time.monotonic()+seconds}
     projects, roots = validate_roots(config)
     cutoff = (time.time() if now is None else now) - days * 86400
     def scan():
-        return (process_paths(allow_privileged=config.get("allow_privileged_process_scan", False))
+        return (activity_scan() if activity_scan is not None else
+                process_paths(allow_privileged=config.get("allow_privileged_process_scan", False))
                 if active_paths is None else active_paths)
 
-    if config.get("retired_worktrees") and active_paths is None and not config.get("allow_privileged_process_scan"):
+    if config.get("retired_worktrees") and active_paths is None and activity_scan is None and not config.get("allow_privileged_process_scan"):
         raise RuntimeError("Worktree cleanup requires complete host process inspection")
     active = scan()
     cache_cutoff = (time.time() if now is None else now) - cache_days * 86400
     report = {"apply": apply, "cache_dirs_removed": 0, "candidates": 0,
               "worktrees_removed": 0, "skipped": 0, "errors": 0,
+              "bytes_removed":0,"budget_exhausted":None,
               "free_bytes_before": shutil.disk_usage(projects).free}
     for item in list(config.get("retired_worktrees", [])):
         repo, path = validate_worktree(config, item, projects)
         try:
             if (not path.exists() or float(item["retired_at"]) >= cutoff
-                    or in_use(path, active) or not old_enough(path, cutoff)
+                    or in_use(path, active) or eligible_bytes(path, cutoff,budget) is None
                     or not unchanged_and_integrated(item)):
                 report["skipped"] += 1
                 continue
             report["candidates"] += 1
             if apply:
-                if (in_use(path, scan()) or not old_enough(path, cutoff)
+                size=eligible_bytes(path, cutoff,budget)
+                if (in_use(path, scan()) or size is None
                         or not unchanged_and_integrated(item)):
                     report["skipped"] += 1
                     continue
@@ -246,10 +295,14 @@ def clean(config, apply=False, now=None, active_paths=None):
                     report["errors"] += 1
                 else:
                     report["worktrees_removed"] += 1
+                    report['bytes_removed']+=size;budget['remaining_bytes']-=size
                     config["retired_worktrees"].remove(item)
+        except CleanupBudget as error:
+            report['budget_exhausted']=str(error);break
         except (OSError, subprocess.TimeoutExpired):
             report["errors"] += 1
     for root in roots:
+        if report['budget_exhausted']:break
         if not root.exists():
             continue
         workspace = root.parent.parent.parent
@@ -261,21 +314,29 @@ def clean(config, apply=False, now=None, active_paths=None):
             if report["cache_dirs_removed"] >= max_cache_dirs:
                 break
             try:
-                if not candidate.is_dir() or not old_enough(candidate, cache_cutoff):
+                # Count non-directory root entries too: a cache full of flat
+                # files must not bypass the entry/time bound while being kept.
+                inspect_entry(budget)
+                if not candidate.is_dir() or eligible_bytes(candidate, cache_cutoff,budget) is None:
                     report["skipped"] += 1
                     continue
                 report["candidates"] += 1
                 if apply:
                     current = scan()
+                    size=eligible_bytes(candidate,cache_cutoff,budget)
                     if (in_use(owner, current) or root.resolve() != root
-                            or not old_enough(candidate, cache_cutoff)):
+                            or size is None):
                         report["skipped"] += 1
                         continue
                     shutil.rmtree(candidate)
                     report["cache_dirs_removed"] += 1
+                    report['bytes_removed']+=size;budget['remaining_bytes']-=size
+            except CleanupBudget as error:
+                report['budget_exhausted']=str(error);break
             except OSError:
                 report["errors"] += 1
     report["free_bytes_after"] = shutil.disk_usage(projects).free
+    report['entries_inspected']=budget['entries']
     return report
 
 
@@ -309,7 +370,7 @@ def main():
                 if report["worktrees_removed"]:
                     save_config(args.config, config)
         print(json.dumps(report, sort_keys=True))
-        return 1 if report.get("errors") else 0
+        return 1 if report.get("errors") or report.get('budget_exhausted') else 0
     except (OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
         # No process contents or private filesystem paths in the journal.
         print(json.dumps({"status": "kept", "reason": type(error).__name__}))

@@ -1,0 +1,24 @@
+[Unit]
+Description=Bounded owned compiler cache cleanup with privileged activity observation
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -B -I /opt/children-maintenance/cleanup-selected/children_cache_cleanup.py --config /etc/children-maintenance/compiler-cleanup.json --state /var/lib/children-maintenance/cache-cleanup
+UMask=0077
+TimeoutStartSec=90
+TimeoutStopSec=10
+MemoryMax=128M
+CPUQuota=25%
+TasksMax=32
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/lib/children-maintenance/cache-cleanup /home/agent/Projects
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX

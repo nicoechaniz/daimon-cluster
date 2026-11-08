@@ -99,6 +99,52 @@ class DailyTests(unittest.TestCase):
             self.assertEqual(result['targets']['pixin']['debian_advisories'],'unassessed')
             self.assertEqual((Path(temp)/'no-suppressions').read_text(),'VERSION 0\n')
 
+    def test_cleanup_failure_never_discards_real_inventory_or_advisory_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config={'state':temp,'scanner':'unused','compiler_cleanup_enabled':True,
+                    'targets':[{'id':'pixin','instance':'dm-pixin'}]}
+            observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},
+                      'package_status':'Package: fixture\nVersion: 1\n'}
+            with patch.object(daily,'validate'),patch.object(daily,'fetch_feed',return_value=b'feed'),\
+                 patch.object(daily,'command',side_effect=[ValueError('cleanup failed'),
+                   json.dumps(observed).encode(),b'CVE-fictional fixture\n']):
+                result=daily.collect(config)
+            value=result['targets']['pixin']
+            self.assertEqual(value['inventory'],'observed')
+            self.assertEqual(value['debian_advisories'],'matched')
+            self.assertEqual(value['compiler_cleanup']['status'],'unavailable')
+
+    def test_selected_cleanup_uses_its_own_finite_guest_unit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config={'state':temp,'scanner':'unused','compiler_cleanup_enabled':True,
+                    'targets':[{'id':'pixin','instance':'dm-pixin'}]}
+            observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},
+                      'package_status':'Package: fixture\nVersion: 1\n'}
+            cleanup={'schema':'children-cache-cleanup/v1','status':'complete','cache_dirs_removed':0}
+            with patch.object(daily,'validate'),patch.object(daily,'fetch_feed',return_value=b'feed'),\
+                 patch.object(daily,'command',side_effect=[b'',json.dumps(cleanup).encode(),
+                   json.dumps(observed).encode(),b'']) as calls:
+                result=daily.collect(config)
+            self.assertEqual(result['targets']['pixin']['compiler_cleanup'],cleanup)
+            first=calls.call_args_list[0]
+            self.assertIn('children-cache-cleanup.service',first.args[0])
+            self.assertEqual(first.kwargs['seconds'],100)
+
+    def test_disabling_cleanup_preserves_pending_state_and_other_daily_phases(self):
+        with tempfile.TemporaryDirectory() as temp:
+            pending=Path(temp)/'pending-evidence';pending.write_bytes(b'keep pending')
+            config={'state':temp,'scanner':'unused','compiler_cleanup_enabled':False,
+                    'targets':[{'id':'pixin','instance':'dm-pixin'}]}
+            observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},
+                      'package_status':'Package: fixture\nVersion: 1\n'}
+            with patch.object(daily,'validate'),patch.object(daily,'fetch_feed',return_value=b'feed'),\
+                 patch.object(daily,'command',side_effect=[json.dumps(observed).encode(),b'']) as calls:
+                result=daily.collect(config)
+            self.assertEqual(calls.call_count,2)
+            self.assertEqual(result['targets']['pixin']['debian_advisories'],'matched')
+            self.assertNotIn('compiler_cleanup',result['targets']['pixin'])
+            self.assertEqual(pending.read_bytes(),b'keep pending')
+
 
 if __name__ == '__main__':
     unittest.main()

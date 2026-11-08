@@ -1,3 +1,41 @@
+## Bounded compiler-cache cleanup receiving —2026-11-08
+
+The existing cleaner now bounds bytes/entries/time as well as directory count.
+The guest wrapper performs full fixed activity reads in a finite privileged parent,
+but permanently drops its deletion worker to agent/UID1000 and verifies that UID
+from /proc. No sudo, administrative login, new broker/socket service or timer was
+granted to a companion. Only owned real Git/Cargo debug/dev-small incremental
+caches under the selected own Projects tree qualify; all other content is kept.
+
+One actual disposable Pixin fixture removed exactly one5-byte old cache, preserving
+its live held-file project, recent/symlink/foreign examples, release executable and
+unfinished source. Byte exhaustion and unavailable-scan cases kept their data.
+A separate affected-stage fixture proved flat non-directory entries consume the
+entry budget; preceding quote/parser failure occurred before fixture creation and
+was retained, not hidden by replaying a successful qualification. Both fixtures
+were retired after exact inventory verification. Actual deletion UID1000 proof
+and privileged read counts are recorded separately from any model adoption.
+
+The current all4 worker source/bounded units are installed and selected. Existing
+collector source accepts compiler_cleanup_enabled:boolean; the first actual full
+pipeline invocation58a40ef45cd3473f88959fdc3dffab19 exited0, matched fresh vendor
+metadata/inventory on all5resources and consumed cleanup on all4. No real eligible
+cache existed and none was deleted. Final budget-accounting successor readback/
+consumer proof belongs in the maintained receiving checkpoint, not a source-only
+claim. Effective readback found the generic LXC service drop-in overriding
+NoNewPrivileges; the correction is an own-unit-only drop-in and an actual kernel
+flag check that refuses production cleanup when absent. The generic LXC file and
+other services remain unchanged. Retain the preceding effective-check refusal. The existing collector timer/Alerts observation covers degraded cleanup;
+no extra schedule or producer. Disabling the optional stage in a disposable
+fixture preserved pending state and inventory/advisory phases.
+
+This closes only the bounded compiler-cache phase. Other cache classes, browser
+session lifecycle, explicit worktree retirement, broader advisories/availability,
+School/device journeys and all4 social admission remain unfinished. Preserve
+original identities/grants, the goal53 pause and existing coverage incident.
+See [storage hygiene](docs/operations/host-storage-hygiene.md) and
+[daily observation](docs/operations/children-daily-observation.md).
+
 ## Daily package cadence and observation adopted —2026-11-08
 
 Cluster PR448/source405bf9f merged2cf5d99e; exact CI42483542017 passed.

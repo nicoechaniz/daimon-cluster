@@ -317,3 +317,22 @@ successful terminal. All guest transaction timestamps and write_requested=false
 remained identical, proving daily intent reuse rather than another selection,
 download or installation. Naturally scheduled package execution remains a future
 acceptance item; dependency selection and actual manual execution are distinct.
+
+## Optional bounded compiler-cache phase
+
+The current collector accepts only one additional opt-in key,
+`compiler_cleanup_enabled` (boolean; absent/false preserves the original route).
+When selected it invokes the installed own guest's finite
+`children-cache-cleanup.service` before its inventory. The service owns the
+90s/128MiB/25%CPU/32task limit and a1MiB current/previous-state bound. The collector
+waits at most100s and reads at most64KiB of its result. No child model or browser
+is started. Host inventory remains separate; this phase is scoped to the four
+own guests, not a general host-cache deletion grant.
+
+Cleanup and actual Debian inventory/advisory matching are retained separately.
+A failed/partial/unavailable cleanup causes a degraded daily exit even when
+inventory matching succeeded; existing Alerts scheduled-job observation therefore
+continues to cover the expanded pipeline. Browser/other-cache/worktree coverage
+is explicit, not converted to complete cleanup by a zero-removal result. See
+[storage hygiene](host-storage-hygiene.md) for the unprivileged deletion,
+privileged activity projection, allowed roots, budgets and stop/recovery route.

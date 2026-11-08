@@ -311,9 +311,11 @@ class HostConfig:
 
 
 class HostBackend:
-    def __init__(self, config: HostConfig, *, run: Callable | None = None, input_cache=None):
+    def __init__(self, config: HostConfig, *, run: Callable | None = None, input_cache=None,
+                 custody_run: Callable | None = None):
         self.config = config
         self.run = run or self._run
+        self.custody_run = custody_run
         self.input_cache = input_cache if input_cache is not None else onboarding_input.VerificationCache()
 
     def native_body(self, plan: dict):
@@ -1216,7 +1218,9 @@ class HostBackend:
             return ExistingEnrollment(self)
         if self.config.custody is None or self.config.custody_grants is None:
             raise OnboardingError("identity_authorization_required")
-        return FirstCustody(self.config.custody, self.config.custody_grants)
+        if self.custody_run is None:
+            return FirstCustody(self.config.custody, self.config.custody_grants)
+        return FirstCustody(self.config.custody, self.config.custody_grants, run=self.custody_run)
 
     def _matrix_mount(self, plan: dict) -> dict:
         if self.config.views is None:

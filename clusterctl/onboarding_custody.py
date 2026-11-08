@@ -119,68 +119,7 @@ class FirstCustody:
         from .matrix_host import _matrix_api
 
         _matrix_api()
-        descriptor = -1
-        staging = None
-        public_output = None
-        try:
-            command = [sys.executable, "-B", "-I", "-m", "daimon_matrix.operator_genesis", *arguments]
-            if arguments[0] == "first-embodiment":
-                command = [sys.executable, "-B", "-I", "-m", "daimon_matrix.operator_first_embodiment", *arguments[1:]]
-            if arguments[0] == "backup-restore":
-                launcher = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
-                            "from clusterctl.onboarding_holder_backup import main; raise SystemExit(main())")
-                command = [sys.executable, "-B", "-I", "-c", launcher,
-                           str(Path(__file__).resolve().parents[1]), *arguments[1:]]
-            if arguments[0] == "credential-response":
-                launcher = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
-                            "from clusterctl.onboarding_credential import main; raise SystemExit(main())")
-                command = [sys.executable, "-B", "-I", "-c", launcher,
-                           str(Path(__file__).resolve().parents[1]), *arguments[1:]]
-            public_command = (arguments[0] in {"create-intent", "sign", "aggregate"}
-                              or arguments[0] == "credential-response"
-                              or arguments[:2] in [["first-embodiment", "root-share"],
-                                                   ["first-embodiment", "aggregate"]])
-            if public_command:
-                index = command.index("--output") + 1
-                candidate = being_seed._path(Path(command[index]))
-                if not candidate.exists():
-                    private_directory(candidate.parent)
-                    staging = Path(tempfile.mkdtemp(prefix=".native-public-", dir=candidate.parent))
-                    public_output = candidate
-                    command[index] = str(staging / "result.json")
-            if password is not None:
-                descriptor = os.open(being_seed._path(password), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                info = os.fstat(descriptor)
-                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                        or info.st_mode & 0o077 or info.st_nlink != 1 or info.st_size != 64):
-                    raise OnboardingError("private_onboarding_custody_required")
-                command += ["--password-fd", str(descriptor)]
-            result = subprocess.run(command, pass_fds=(descriptor,) if descriptor >= 0 else (),
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    env={"PATH": os.defpath, "LANG": "C.UTF-8",
-                                         "LD_LIBRARY_PATH": str(Path(sys.base_prefix) / "lib")},
-                                    timeout=120, check=False)
-            if result.returncode:
-                raise OnboardingError("native_onboarding_custody_refused")
-            if staging is not None and public_output is not None:
-                # Native public-output CLIs write a small document directly.
-                # Their incomplete output must never become a live checkpoint.
-                # The enclosing custody lock owns publication; a completed
-                # existing document is compared, never overwritten on retry.
-                from daimon_matrix import canonical, keystore
-                value = document(staging / "result.json")
-                if public_output.exists():
-                    if document(public_output) != value:
-                        raise OnboardingError("existing_onboarding_custody_preserved")
-                else:
-                    keystore._atomic_write(public_output, canonical.canonical_bytes(value))
-        except (OSError, subprocess.TimeoutExpired):
-            raise OnboardingError("native_onboarding_custody_refused") from None
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-            if staging is not None:
-                shutil.rmtree(staging)
+        _native_run(arguments, password)
 
     def _dispatch(self, plan: dict, arguments: list[str], password: Path | None = None) -> None:
         if not self.authorize(plan):
@@ -467,3 +406,74 @@ class FirstCustody:
                 embodiment_id=origin["embodiment_id"], incarnation_id=origin["incarnation_id"],
                 activation_id=activation["activation_id"], credential_id=credential["artifact_id"],
                 manifest_hash=current.manifest.digest)
+
+
+def _native_run(arguments: list[str], password: Path | None, *,
+                command_builder: Callable[[str, list[str]], list[str]] | None = None) -> None:
+    """Dispatch after the legacy pin or current qualified startup has passed."""
+    descriptor = -1
+    staging = None
+    public_output = None
+    try:
+        command = (command_builder("daimon_matrix.operator_genesis", arguments) if command_builder else
+                   [sys.executable, "-B", "-I", "-m", "daimon_matrix.operator_genesis", *arguments])
+        if arguments[0] == "first-embodiment":
+            command = (command_builder("daimon_matrix.operator_first_embodiment", arguments[1:]) if command_builder else
+                       [sys.executable, "-B", "-I", "-m", "daimon_matrix.operator_first_embodiment", *arguments[1:]])
+        if arguments[0] == "backup-restore":
+            launcher = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
+                        "from clusterctl.onboarding_holder_backup import main; raise SystemExit(main())")
+            command = (command_builder("clusterctl.onboarding_holder_backup", arguments[1:]) if command_builder else
+                       [sys.executable, "-B", "-I", "-c", launcher,
+                        str(Path(__file__).resolve().parents[1]), *arguments[1:]])
+        if arguments[0] == "credential-response":
+            launcher = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
+                        "from clusterctl.onboarding_credential import main; raise SystemExit(main())")
+            command = (command_builder("clusterctl.onboarding_credential", arguments[1:]) if command_builder else
+                       [sys.executable, "-B", "-I", "-c", launcher,
+                        str(Path(__file__).resolve().parents[1]), *arguments[1:]])
+        public_command = (arguments[0] in {"create-intent", "sign", "aggregate"}
+                          or arguments[0] == "credential-response"
+                          or arguments[:2] in [["first-embodiment", "root-share"],
+                                               ["first-embodiment", "aggregate"]])
+        if public_command:
+            index = command.index("--output") + 1
+            candidate = being_seed._path(Path(command[index]))
+            if not candidate.exists():
+                private_directory(candidate.parent)
+                staging = Path(tempfile.mkdtemp(prefix=".native-public-", dir=candidate.parent))
+                public_output = candidate
+                command[index] = str(staging / "result.json")
+        if password is not None:
+            descriptor = os.open(being_seed._path(password), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            info = os.fstat(descriptor)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or info.st_mode & 0o077 or info.st_nlink != 1 or info.st_size != 64):
+                raise OnboardingError("private_onboarding_custody_required")
+            command += ["--password-fd", str(descriptor)]
+        result = subprocess.run(command, pass_fds=(descriptor,) if descriptor >= 0 else (),
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                env={"PATH": os.defpath, "LANG": "C.UTF-8",
+                                     "LD_LIBRARY_PATH": str(Path(sys.base_prefix) / "lib")},
+                                timeout=120, check=False)
+        if result.returncode:
+            raise OnboardingError("native_onboarding_custody_refused")
+        if staging is not None and public_output is not None:
+            # Native public-output CLIs write a small document directly.
+            # Their incomplete output must never become a live checkpoint.
+            # The enclosing custody lock owns publication; a completed
+            # existing document is compared, never overwritten on retry.
+            from daimon_matrix import canonical, keystore
+            value = document(staging / "result.json")
+            if public_output.exists():
+                if document(public_output) != value:
+                    raise OnboardingError("existing_onboarding_custody_preserved")
+            else:
+                keystore._atomic_write(public_output, canonical.canonical_bytes(value))
+    except (OSError, subprocess.TimeoutExpired):
+        raise OnboardingError("native_onboarding_custody_refused") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if staging is not None:
+            shutil.rmtree(staging)

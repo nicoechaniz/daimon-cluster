@@ -1562,3 +1562,10 @@ loaded authority coverage. It reports `native-receive-only` and
 mode. The default qualification still requires validated outbound visibility.
 Native receiving selection, actual cross-body intake, native tool/model use and
 reply publication remain separate observed effects.
+
+A native service `start` acknowledgement can precede group-socket publication.
+Bounded owner status uses the existing socket wait within its original monotonic
+deadline, then performs one authenticated RPC. It starts or restarts nothing and
+never obtains a fresh observation budget by waiting. Keep the original failed
+observation distinct from later authenticated readiness; an unclassified remote
+nonzero status does not establish a lower-level cause.

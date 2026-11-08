@@ -616,3 +616,49 @@ def test_lock_custody_releases_on_completion_or_exact_horizon(tmp_path,lost_tran
         pass
     if not lost_transport:
         assert time.monotonic()-started < 3
+
+
+def test_bounded_owner_status_waits_for_initial_group_socket_before_one_rpc(tmp_path):
+    from types import SimpleNamespace
+    from clusterctl.onboarding_receiving_update import OwnerGroupClient
+    path = tmp_path/'tribe.sock'
+    release = threading.Event()
+    def publish():
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            time.sleep(.05)
+            listener.bind(str(path))
+            listener.listen(1)
+            release.wait(3)
+    worker = threading.Thread(target=publish)
+    worker.start()
+    owner = OwnerGroupClient(tmp_path, path, deadline_ns=time.monotonic_ns()+2_000_000_000)
+    # This seam isolates startup timing; the other tests exercise real RPC and
+    # kernel responder authentication independently.
+    owner._observer = SimpleNamespace(process={'pid':os.getpid()}, verify=lambda:None)
+    calls = []
+    def client(role):
+        assert path.exists()
+        calls.append(role)
+        return object()
+    owner._client = client
+    owner._status_response = lambda _: dict(ok=True, server={},
+        result={'loaded_runtime':{'process_id':os.getpid()}})
+    try:
+        observed = owner._observe_status()
+        assert calls == ['status']
+        assert observed['process']['pid'] == os.getpid()
+    finally:
+        release.set()
+        worker.join(3)
+        assert not worker.is_alive()
+
+
+def test_bounded_owner_socket_timeout_never_dispatches_rpc_or_extends_budget(tmp_path):
+    from clusterctl.onboarding import OnboardingError
+    from clusterctl.onboarding_receiving_update import OwnerGroupClient
+    deadline = time.monotonic_ns()+20_000_000
+    owner = OwnerGroupClient(tmp_path, tmp_path/'missing.sock', deadline_ns=deadline)
+    owner._client = lambda _: pytest.fail('expired startup observation dispatched RPC')
+    with pytest.raises(OnboardingError, match='observation_deadline_expired'):
+        owner._observe_status()
+    assert owner.deadline_ns == deadline

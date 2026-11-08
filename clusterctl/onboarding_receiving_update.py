@@ -269,7 +269,13 @@ class OwnerGroupClient:
         return LocalClient(self.socket, config, **options)
 
     def _observe_status(self) -> dict:
-        before = self.socket.lstat()
+        # A service start acknowledgement can precede group socket publication.
+        # Spend only the caller's existing deadline; do not start/restart a body.
+        if self.deadline_ns is None:
+            before = self.socket.lstat()
+        else:
+            from .onboarding_target import _socket_identity
+            before = _socket_identity(self.socket, self.deadline_ns)
         client = self._client('status')
         # First read-start in this owner scope, never response completion or a
         # cached response's timestamp. Include request retention/dispatch cost.

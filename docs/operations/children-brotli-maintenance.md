@@ -44,3 +44,16 @@ To disable library updates, remove only its second ExecStart and the fleet
 browser policy, pending/uncertain writers and other timers. Do not restore dpkg
 databases or silently roll packages backward as a code rollback. Full advisory
 coverage and social admission remain separate unfinished work.
+
+The first actual precommit simulation returned APT100 because `--no-download`
+used the global archive cache, although selection downloaded and verified the
+archive in the transaction's private cache. Repeating that same read with its
+actual private archive directory returned the exact single-package plan. The
+coordinator now uses that directory for simulation as well as the writer.
+All four original journals remained prepared with write_requested=false.
+A coordinator-only overlay may reuse the qualified immutable helper files via
+root-owned links: expected_config resolves the actual guard file, preserving the
+original frozen hook, manifest, archives and transaction identities. Never
+replace a frozen guard with changed bytes or rewrite pending intent merely to
+make a changed hook pass. Continue the supported prepared-state path; no second
+selection/download or writer replay is required for this repair.

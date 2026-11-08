@@ -73,7 +73,7 @@ def service_state(run=command):
 
 
 def expected_config(state):
-    guard = Path(__file__).resolve().with_name('children_package_guard.py')
+    guard = Path(__file__).resolve().with_name('children_package_guard.py').resolve()
     hook = shlex.join(['/usr/bin/python3', '-B', '-I', str(guard),
                        '--manifest', str(state / 'manifest.json')])
     return ('#clear DPkg::Pre-Install-Pkgs;\nDPkg::Pre-Install-Pkgs { "' + hook +
@@ -108,6 +108,7 @@ def precommit(policy, state, manifest, run=command):
     if set(packages) & set(held):
         raise Deferred('held_browser_package')
     argv = ['apt-get', '-s', '--no-download', '--no-remove', '--no-install-recommends',
+            '-o', 'Dir::Cache::archives='+str(state/'archives'),
             'install', '--only-upgrade', *[n+'='+p['version'] for n, p in sorted(packages.items())]]
     selection.plan_exact(run(argv, seconds=30, limit=256*1024).decode(),
                          {n: p['old_version'] for n, p in packages.items()}, current)

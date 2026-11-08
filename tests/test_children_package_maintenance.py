@@ -220,7 +220,9 @@ def test_precommit_rechecks_plan_hold_config_and_service_health(transaction):
         if argv==['apt-get','indextargets']:return b'index fixture'
         if 'cat-file' in argv:return index
         if argv==['apt-mark','showhold']:return '\n'.join(held).encode()
-        if '-s' in argv:return '\n'.join('Inst '+n+' [1] (2 Debian-Security:13/security)' for n in installed).encode()
+        if '-s' in argv:
+            assert 'Dir::Cache::archives='+str(state/'archives') in argv
+            return '\n'.join('Inst '+n+' [1] (2 Debian-Security:13/security)' for n in installed).encode()
         return run(argv,**kwargs)
     # The fixture overrides precommit for state-machine tests. Explicitly use
     # its real wrapped source here rather than that mock.
@@ -237,6 +239,14 @@ def test_precommit_rechecks_plan_hold_config_and_service_health(transaction):
 
 
 ORIGINAL_PRECOMMIT=m.precommit
+
+
+def test_coordinator_overlay_resolves_actual_frozen_guard_file(tmp_path):
+    original=tmp_path/'original';original.mkdir();guard=original/'children_package_guard.py';guard.write_text('inert fixture')
+    overlay=tmp_path/'overlay';overlay.mkdir();(overlay/'children_package_guard.py').symlink_to(guard)
+    with patch.object(m,'__file__',str(overlay/'children_package_maintenance.py')):
+        assert str(guard) in m.expected_config(tmp_path).decode()
+        assert str(overlay/'children_package_guard.py') not in m.expected_config(tmp_path).decode()
 
 
 def test_brotli_commit_bytes_health_and_uncertain_postcheck_do_not_replay(transaction):

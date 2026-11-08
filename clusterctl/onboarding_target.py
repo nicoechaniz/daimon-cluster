@@ -595,7 +595,8 @@ class Target:
                 pass
 
     def running(self, *, admitted: bool = False, require_loaded: bool = False,
-                deadline_ns: int | None = None, bootstrap_base_only: bool = False) -> dict:
+                deadline_ns: int | None = None, bootstrap_base_only: bool = False,
+                compact: bool = False) -> dict:
         """Observe a kernel-pinned daemon and authenticate its native status.
 
         Admitted observations also check the current native body scope. Loaded
@@ -688,6 +689,15 @@ class Target:
                     raise OnboardingError('onboarding_admission_not_current')
                 return observed
 
+            def runtime_status(connection):
+                if not compact:
+                    return connection.runtime_status()[1]
+                response = connection.runtime_status(view='receiving')[1]
+                # Only the verified old-SDK unsupported-view refusal falls back.
+                if response.get('ok') is False and response.get('error', {}).get('code') == 'invalid_params':
+                    return connection.runtime_status()[1]
+                return response
+
             admission = None
             if bootstrap_base_only:
                 assert deadline_ns is not None
@@ -698,7 +708,7 @@ class Target:
                 status = RetainedStatusOwner.connected_status_response(client,
                     root=root, observer=presence, deadline_ns=deadline_ns)
             else:
-                _, status = client.runtime_status()
+                status = runtime_status(client)
             if status["ok"] is not True or any(status["server"].get(field) != value for field, value in expected.items()):
                 raise OnboardingError("onboarding_daemon_origin_conflict")
             loaded = status['result'].get('loaded_runtime')
@@ -721,7 +731,7 @@ class Target:
                     directory / role['client_key_filename'], uid=os.geteuid()))
                 group_config = ClientConfig.load(directory / role['client_config_filename'], group_key)
                 hosted = LocalClient(group_socket, group_config, timeout_seconds=40, **options)
-                response = hosted.runtime_status()[1]
+                response = runtime_status(hosted)
                 if response.get('ok') is not True or response['server'] != status['server']:
                     raise OnboardingError('onboarding_daemon_origin_conflict')
                 group_status = response['result']

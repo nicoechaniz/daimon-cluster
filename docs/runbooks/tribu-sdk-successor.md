@@ -1535,3 +1535,13 @@ For an already-authorized change, the component's current source and retained
 operation are the continuation route. Do not wait for another conversation or
 model review to confer the human's authority again. Repair a procedural dependency
 through the existing administrative writers and keep the actual effects honest.
+
+### Native parent startup health
+
+The admitted Matrix parent uses the authenticated compact receiving status for
+its post-READY process and loaded-group check. A full historical ledger audit
+is an explicit inspection, not a service-start availability prerequisite. Both
+base and group remain associated with the actual responder and must report the
+same loaded base. Only an authenticated unsupported-view refusal from an older
+SDK permits the legacy full-status fallback. Readiness still does not prove
+reader selection, message delivery or model action.

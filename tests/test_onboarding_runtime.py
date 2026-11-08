@@ -170,7 +170,7 @@ def test_qualified_offline_child_uses_selected_code_and_preserves_identity(tmp_p
         assert all((root/name).read_bytes() == raw for name,raw in original.items())
 
 
-def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(tmp_path):
+def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(tmp_path, monkeypatch):
     ceremony, plan, blank = receiving(tmp_path)
     ceremony.prepare(plan, identity_mode='first')
     with tempfile.TemporaryDirectory(prefix='dm-') as short:
@@ -200,7 +200,16 @@ def test_actual_receiving_scope_reports_running_only_under_current_shared_lease(
                 owned = client()
                 admitted = AdmittedDaemon(target,owned)
                 try:
-                    presence = admitted.start(receive_only=True)
+                    ordinary_status = LocalClient.runtime_status
+                    observed_views = []
+                    def compact_status(client, **kwargs):
+                        observed_views.append(kwargs.get('view'))
+                        assert kwargs.get('view') == 'receiving', 'startup must not audit full history'
+                        return ordinary_status(client, **kwargs)
+                    with monkeypatch.context() as startup:
+                        startup.setattr(LocalClient, 'runtime_status', compact_status)
+                        presence = admitted.start(receive_only=True)
+                    assert observed_views == ['receiving']
                     pids.append(presence['process']['pid'])
                     assert presence['origin'] == origin
                     me = observer.scope_me()[1]

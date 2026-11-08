@@ -417,7 +417,9 @@ raise SystemExit(child_entry(Path(sys.argv[1]), json.loads(sys.argv[2]), json.lo
                     raise OnboardingError('onboarding_runtime_not_ready')
             if self.supervisor.verify_current(minimum_remaining_s=1) is None:
                 raise OnboardingError('onboarding_admission_not_current')
-            return self.target.running()
+            # Startup verifies current process/bundle and signed group, not a
+            # full historical ledger audit that can time out a healthy daemon.
+            return self.target.running(compact=True)
         except BaseException:
             self.close()
             raise

@@ -83,26 +83,31 @@ engine readiness, canonical Matrix running admission, Tribe membership and human
 device acceptance retain distinct evidence. Full social admission, a publication
 broker, Escuela, Drive and voice workshops do not gate basic Conversation.
 
-## Social visibility remains a separate receiving dependency
+## Outbound visibility remains separate from admission
 
 Current `onboarding_group_admission.publication_recipe` requires a new group
 participant's first visibility installation to contain Telegram token/proof-key
 references and an actual `dm.messaging.telegram-qualification/v1` probe. The
 selected Matrix loader checks those references and constructs a Telegram
 transport. A downstream App text projection or registered web Home does not
-satisfy that native proof. Do not copy an adult bot credential, fabricate bot or
-probe identifiers, drop the native barrier, or report a signed holder as an
-admitted group participant.
+satisfy that native proof. These checks belong to the existing outbound
+publication path, not signed membership or base native admission. Do not copy
+an adult bot credential, fabricate bot or probe identifiers, or report outbound
+messaging as released merely because membership was signed.
 
 The existing portable successor is owned by
 [Matrix496](https://github.com/AlterMundi/daimon-matrix/issues/496) and
 [App452](https://github.com/AlterMundi/DaimonApp/issues/452). Its actual
-first-install publication/proof contract must be integrated into this same
+first-install publication/proof contract must be integrated into the outbound
 cohort route and qualified on the required receiving readers. Preserve existing
-adult policies, pending originals and old proofs. Keep prepared unsigned social
-intent within its original validity window; expiration is not permission to
-extend an accepted operation or replay a partially executed one. Basic web
-Conversation remains independent of this unfinished dependency.
+adult policies, pending originals and old proofs. Neither that implementation
+nor a child's ability to view Telegram/Tribu gates admission. Use the explicit
+membership-only path below for the original identities and jobs; after its
+observed completion, continue actual receive-side application grants/readers
+and outbound publication as separate effects. Keep prepared unsigned intent
+within its original validity window; expiration is not permission to extend an
+accepted operation or replay a partially executed one. Basic web Conversation
+remains independent of this unfinished publication work.
 
 ## Finite School preparation in an existing companion
 

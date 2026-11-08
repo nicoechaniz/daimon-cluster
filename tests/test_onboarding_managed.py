@@ -87,7 +87,7 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
         holder = ReceivingHolder(target)
         instances = [dict(name='dm-' + plan['name'], expanded_devices={})]
         active = []
-        failures = ['enroll', 'registry']
+        failures = ['enroll', 'first-running', 'registry']
         calls = []
         deadline = time.monotonic_ns() + 60_000_000_000
         expiry = time.time_ns() // 1_000_000 + 60000
@@ -109,6 +109,9 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
                     raise OSError('lost ACK after authority registration')
                 return result
             assert action == 'admitted-running'
+            if 'first-running' in failures:
+                failures.remove('first-running')
+                raise OSError('lost first native readiness response')
             return target.running(admitted=True)
         def dispatch(_plan, argv, **options):
             if options:
@@ -122,6 +125,7 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
             if 'systemctl' in argv:
                 return 'ActiveState=active\nMainPID=1\n' if active else 'ActiveState=inactive\nMainPID=0\n'
             assert 'python3' in argv
+            calls.append('service-install')
             if not active:
                 client = holder.client(endpoint, authority_key_id=signer.key_id, authority_public_key=signer.public_key)
                 daemon = AdmittedDaemon(target, client)
@@ -183,6 +187,9 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
             assert active == []
             assert not managed._registered(managed._expected(plan))
             managed._ready = ready
+            with pytest.raises(OSError, match='first native readiness'):
+                managed.execute(plan)
+            assert active and not managed._registered(managed._expected(plan))
             with pytest.raises(OSError, match='registry publication'):
                 managed.execute(plan)
             pid = active[0].process.pid
@@ -194,6 +201,7 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
             assert managed.registry.path.read_bytes() == before
             assert len(active) == 1 and active[0].process.pid == pid
             assert holder.key.read_bytes() == preserved_key
+            assert calls.count('service-install') == 1
             assert calls.count('admission-prepare') == calls.count('admission-enroll') == 1
             assert all(documents['admission.json'] == proposal for documents in published)
             active[0].close()

@@ -178,7 +178,7 @@ class ManagedRuntime:
             except (KeyError, TypeError, ValueError, OnboardingError):
                 raise OnboardingError('onboarding_managed_presence_rejected') from None
         if not registered:
-            return Observation('absent', safe_to_execute=True)
+            return Observation('absent', dict(native_running_verified=True), safe_to_execute=True)
         return Observation('complete', dict(verified=True, identity_verified=True))
 
     def prepare_admission(self, plan: dict, *, candidate: tuple[Path, str] | None = None,
@@ -260,6 +260,16 @@ class ManagedRuntime:
             return
         if not self._ready(plan):
             raise OnboardingError('onboarding_visibility_selection_required')
+        # Reconcile a successful first start whose readiness response was lost
+        # or arrived before the daemon had its lease. Never reinstall that body.
+        observed = self.observe(plan)
+        if observed.state == 'complete':
+            return
+        if observed.state == 'absent' and observed.facts.get('native_running_verified') is True:
+            expected = self._expected(plan)
+            self.registry.adopt_running(**{key: expected[key]
+                for key in ('body_ref', 'embodiment_id', 'incarnation_id')})
+            return
         self.prepare_admission(plan)
         expected = self._expected(plan)
         _, code, _ = self.backend._guest_paths(plan)

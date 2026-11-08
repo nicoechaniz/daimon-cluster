@@ -476,7 +476,9 @@ remain unchanged. Publication never replaces the receiving identity or memory.
 
 Only authenticated native running status with a current shared lease permits
 atomic canonical registry adoption. A lost registry acknowledgement reuses that
-exact active incarnation. The observer checks service state and native daemon
+exact active incarnation. If the first readiness read is unconfirmed, the next
+execution observes the existing authenticated running body and adopts it without
+reinstalling its service. The observer checks service state and native daemon
 presence again; an existing registry row alone does not complete the stage. The
 unit is enabled for boot and renews admission independently of the Codex
 conversation or worker lifetime. Foreign proxies, units and registry origins

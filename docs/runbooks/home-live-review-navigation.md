@@ -304,3 +304,36 @@ invalid/unreadable sources after warming, current-source forks/pins, time-based
 and revoked authorization, nested caller mutation, concurrent access and byte/
 entry eviction. Compare actual authorized manifest response times before/after;
 constructor microbenchmarks alone do not establish browser or network latency.
+
+## A related work from an isolated study
+
+The trusted work frame advertises `relatedWork:true` with its existing
+`home-artifact:capabilities` message. A selected study may then offer one action:
+
+```js
+addEventListener('message', event => {
+  if (event.source !== parent || event.data?.type !== 'home-artifact:capabilities'
+      || !event.data.relatedWork) return;
+  parent.postMessage({type:'home-artifact:related-work',
+    resource:'0123456789abcdef0123456789abcdef', label:'Open 3D viewer'}, '*');
+});
+```
+
+Use an actual selected same-home resource ID. The parent accepts only its own
+opaque child, an exact lowercase32-hex resource ID and a nonempty plain-text
+label of at most80characters. It renders at most one ordinary link in the trusted
+outer header. Messages never click it or navigate automatically; a user click
+opens `/view/RESOURCE?display=work` on the same Home. That destination performs
+its normal current identity/audience checks. Offering a link grants no read,
+changes no permission and exposes no session or owner API to the child. External
+URLs, API paths and another frame's messages cannot select a destination. A new
+child load clears the previous action. Fragment and selected-download behavior
+remain unchanged; the sandbox remains exactly `allow-scripts`.
+
+This is useful for one evolving study with one link to its existing model viewer.
+Do not create another renderer or a card per model revision. The artifact's old
+`target=_top` link remains blocked; use the advertised action instead. Keep the
+previous immutable gateway source for software rollback, preserving all current
+publication, auth, session and resource state. Qualify the opaque-child request,
+ordinary click, destination refusal and mobile layout separately from actual
+human-device acceptance.

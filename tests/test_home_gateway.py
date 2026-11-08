@@ -16,6 +16,15 @@ from clusterctl.homes.service import Application, handler, return_target, auth_c
 from clusterctl.homes.sessions import Sessions
 
 
+def test_trusted_related_work_navigation():
+    """Opaque content may offer a link, never navigate or grant its destination."""
+    import subprocess
+    from pathlib import Path
+
+    subprocess.run(['node', '--test', 'tests/js/home-related-work.cjs'],
+                   cwd=Path(__file__).resolve().parents[1], check=True)
+
+
 @contextmanager
 def serving(cls):
     server = ThreadingHTTPServer(("127.0.0.1", 0), cls)

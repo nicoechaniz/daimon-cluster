@@ -109,3 +109,30 @@ def test_current_reader_option_reads_native_catalog_through_same_qualified_owner
         native_tooling=native)
     assert calls == [dict(expires_at_ms=horizon, require_admitted=True, native_tooling=native)]
     assert result['native_tooling'] == receipt
+
+
+def test_native_relationship_context_covers_peers_outside_application_enrollment():
+    owner, data, selection, _ = fixture()
+    loaded = data['runtime_status']['loaded_runtime']
+    loaded['relationship_authorities'] = {
+        'being:new-member': dict(active_manifest_hash='9'*64,
+            accepted_manifest_hashes=['8'*64, '9'*64]),
+    }
+    data['runtime_status']['receiving']['rosters']['tribe']['required_authority_epochs'] += ['8'*64, '9'*64]
+    result = observe_current_reader(owner, expected_selection=selection,
+        expires_at_ms=time.time_ns()//1_000_000+30_000)
+    assert result['reader']['authority_epochs'] == ['8'*64, '9'*64, 'a'*64]
+    assert data['runtime_status']['loaded_application']['authorities'] == {}
+    assert result['expected']['selection'] == selection
+
+
+def test_native_relationship_context_does_not_substitute_for_missing_epoch():
+    owner, data, selection, _ = fixture()
+    data['runtime_status']['loaded_runtime']['relationship_authorities'] = {
+        'being:new-member': dict(active_manifest_hash='8'*64,
+            accepted_manifest_hashes=['8'*64]),
+    }
+    data['runtime_status']['receiving']['rosters']['tribe']['required_authority_epochs'] += ['9'*64]
+    with pytest.raises(OnboardingError, match='authority_unready'):
+        observe_current_reader(owner, expected_selection=selection,
+            expires_at_ms=time.time_ns()//1_000_000+30_000)

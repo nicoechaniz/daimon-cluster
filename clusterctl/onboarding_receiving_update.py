@@ -176,6 +176,10 @@ def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: in
     epochs = set(loaded['authority_epoch']['accepted_manifest_hashes'])
     for authority in application['authorities'].values():
         epochs.update(authority['accepted_manifest_hashes'])
+    # A native context may include admitted peers before app enrollment. Use
+    # only the actual loaded verifier's report, never the roster as its proof.
+    for authority in loaded.get('relationship_authorities', {}).values():
+        epochs.update(authority['accepted_manifest_hashes'])
     if not set(roster['required_authority_epochs']) <= epochs:
         raise OnboardingError('receiving_cohort_authority_unready')
     reader = dict(schema='dm.receiving.reader/v2', being_ref=identity['being_ref'],

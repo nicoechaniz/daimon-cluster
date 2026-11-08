@@ -1517,3 +1517,21 @@ real newlines; splitting a combined property response into `key=value` lines
 then fails. Keep the owned unit/configuration selection distinct from a cached
 PID: an automatic restart can replace the process between inspection and a
 scoped stop. Native writer acquisition still proves quiescence for signed work.
+
+
+### Native verification context in current-reader observation
+
+A messaging application's enrolled authorities may be older or narrower than the
+native relationship verifier. The additive loaded-base field
+`relationship_authorities` reports that verifier's actual active/accepted public
+manifest hashes, frozen to its loaded process. Current-reader qualification uses
+those reported epochs alongside existing local/application observations. It still
+refuses every required roster epoch that has no observed verifier coverage; it
+never copies the roster's requirements into the reader proof. Older runtimes
+without this field retain the previous conservative check. This changes no grant,
+application enrollment, route, publication, attention or message identity.
+
+For an already-authorized change, the component's current source and retained
+operation are the continuation route. Do not wait for another conversation or
+model review to confer the human's authority again. Repair a procedural dependency
+through the existing administrative writers and keep the actual effects honest.

@@ -410,6 +410,7 @@ HOME_FILES = {'clusterctl/homes/applications.py', 'clusterctl/homes/__init__.py'
     'clusterctl/homes/review_notes.py', 'clusterctl/homes/assets/work-annotations.js',
     'clusterctl/homes/assets/work-annotations.css', 'tests/test_home_review_notes.py',
     'clusterctl/homes/assets/work-view.js',
+    'tests/js/home-related-work.cjs',
     'docs/runbooks/home-live-review-navigation.md',
     'clusterctl/homes/assets/home-miniapp-login.js',
     'docs/design/shared-home-styles.md', 'tests/js/home-style-client.cjs',

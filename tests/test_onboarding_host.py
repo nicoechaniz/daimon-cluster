@@ -1057,6 +1057,12 @@ def test_host_public_matrix_publisher_reuses_local_validation_and_remote_operato
     views = tmp_path / 'public-views'
     views.mkdir(mode=0o700)
     backend.config = replace(backend.config, views=views)
+    # This unprivileged fixture owns its receiving files as the actual runner,
+    # which is UID1001 in CI rather than the deployed guest's UID1000.
+    import os
+    from clusterctl import onboarding_mounts
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_UID', os.geteuid())
+    monkeypatch.setattr(onboarding_mounts, 'GUEST_GID', os.getegid())
     published = []
     class PhysicalRunner:
         def __call__(self, *args, **kwargs):

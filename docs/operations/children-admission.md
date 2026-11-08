@@ -370,3 +370,9 @@ selected target `tribe_ref`**, then verify that subset and its current membershi
 Keep other histories in their owning original artifacts. Do not relax
 `membership_recipe` to accept unrelated Tribe events, extend an invalid draft's
 expiry, or invent a new invitation to hide a preparation error.
+
+An explicitly selected membership-only operation becomes terminal once its
+retained native signed result is verified. This frees the same Tribe target for
+the next original entrant. It does not complete general onboarding or assert
+running readers/visibility; an exact completed retry returns that same result
+without opening writers or issuing another invitation.

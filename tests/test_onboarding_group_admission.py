@@ -478,6 +478,22 @@ def test_protected_social_phase_resumes_partial_native_distribution(group_source
     assert {name: load(root, (source if name == 'founder' else target)._reader,
         authorities=social.public_authorities(bundles[name], {ref: item for ref, item in closure_all.items()
             if ref != bundles[name]['manifest']['being_ref']})).service.ledger.events() for name, root in roots.items()} == ledger_events
+    if native_only:
+        from clusterctl.onboarding_group_coordinator import finish_membership_only
+        before_completion = len(calls)
+        with pytest.raises(OnboardingError, match='membership_completion_required'):
+            finish_membership_only(journal, journal.get(row['operation_id']),
+                {**result, 'receiving_readiness': 'ready'})
+        assert journal.get(row['operation_id'])['state'] == 'planned'
+        assert finish_membership_only(journal, journal.get(row['operation_id']), result) == result
+        completed = journal.get(row['operation_id'])
+        assert completed['state'] == 'completed' and completed['result'] == result
+        assert finish_membership_only(journal, completed, result) == result
+        assert len(calls) == before_completion, 'completion and its retry must not reopen native writers'
+        following = plan_update(journal, manifest_digest=digest({'next': result['operation_id']}),
+            target=row['target'], expected_precondition={'members': 'actual-successor'},
+            intended_transition={'next': 'separate-admission'}, audit_identity={'actor': 'synthetic-host'})
+        assert following['operation_id'] != row['operation_id']
 
 
 def test_owner_refuses_expired_unsubmitted_membership_without_refreshing_frame(group_source, monkeypatch):

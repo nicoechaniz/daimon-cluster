@@ -276,6 +276,7 @@ def test_linked_continuation_reinspects_and_recovers_real_native_acceptance(grou
 def test_protected_social_phase_resumes_partial_native_distribution(group_source, tmp_path, monkeypatch, native_only):
     """Real native Roots/RPC/journal; physical quiescence is an explicit seam."""
     from types import SimpleNamespace
+    from threading import Barrier
     from contextlib import contextmanager, ExitStack
     from clusterctl.onboarding_group_session import RelationshipSession
     from clusterctl import onboarding_group_admission as social
@@ -328,6 +329,7 @@ def test_protected_social_phase_resumes_partial_native_distribution(group_source
         with pytest.raises(OnboardingError, match='membership_recipe_required'):
             membership_recipe(changed, admission, [sender])
     calls, fault = [], {'accept': False, 'ingest': False, 'barrier': 'revoked-original'}
+    writer_read_barrier = Barrier(2, timeout=10)
     from daimon_matrix.service import HostedWeave
     handle = HostedWeave.handle
 
@@ -367,6 +369,10 @@ def test_protected_social_phase_resumes_partial_native_distribution(group_source
                     self.session = self.sessions.enter_context(RelationshipSession(self.local, packet,
                         deadline_ns=self.deadline_ns, target=self.name != 'founder'))
                 result = self.session.call(packet)
+                if value['step'] == 'membership-writer-observation':
+                    # Both genuine native writers must initialize together;
+                    # serial bootstrap exhausts their finite lifetime at scale.
+                    writer_read_barrier.wait()
             else:
                 result = self.local.group_relationship(value, **options)
             if self.name == 'founder' and value['step'] == 'membership-acceptance' and fault['ingest']:

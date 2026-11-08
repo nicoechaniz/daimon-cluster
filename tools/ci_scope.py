@@ -1029,10 +1029,12 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         'deploy/systemd/user/kimi-webbridge-daemon.service',
         'deploy/systemd/user/kimi-webbridge-display.service',
         'support/children-browser/PROVENANCE.json',
-        'docs/operations/children-browser.md'}
-    browser_tests = ['tests/test_children_browser.py','tests/test_ci_scope.py',
+        'docs/operations/children-browser.md','tools/children_daily.py',
+        'tests/test_children_daily.py','docs/operations/children-daily-observation.md'}
+    browser_tests = ['tests/test_children_browser.py','tests/test_children_daily.py','tests/test_ci_scope.py',
                      'tests/test_ci_workflow.py']
-    if (set(changed) & browser_files and set(changed) <= browser_files | CI_FILES | RUNBOOK_DOCS
+    if (any(not name.startswith('docs/') for name in set(changed) & browser_files)
+            and set(changed) <= browser_files | CI_FILES | RUNBOOK_DOCS
             and all((root / name).is_file() for name in browser_tests)):
         return 'peer', browser_tests
     daily_files = {'tools/children_daily.py', 'tests/test_children_daily.py',

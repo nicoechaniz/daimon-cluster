@@ -127,9 +127,11 @@ def fetch_feed(opener=None):
 
 def validate(config):
     required={'schema', 'state', 'scanner', 'scanner_sha256', 'targets'}
-    if (not required<=set(config) or set(config)-required-{'compiler_cleanup_enabled'}
+    if (not required<=set(config) or set(config)-required-{'compiler_cleanup_enabled','browser_status'}
             or type(config.get('compiler_cleanup_enabled',False)) is not bool):
         raise ValueError('explicit_daily_configuration_required')
+    if 'browser_status' in config:
+        validate_browser_selection(config['browser_status'])
     if config['schema'] != 'cluster-children-daily/v1':
         raise ValueError('unsupported_daily_configuration')
     targets = config['targets']
@@ -145,6 +147,54 @@ def validate(config):
             or scanner.stat().st_mode & 0o022 or scanner.stat().st_size > MIB
             or hashlib.sha256(scanner.read_bytes()).hexdigest() != config['scanner_sha256']):
         raise ValueError('qualified_vendor_scanner_required')
+
+
+def validate_browser_selection(value):
+    if (not isinstance(value,dict) or set(value)!={'helper','sha256'}
+            or not isinstance(value['helper'],str)
+            or not Path(value['helper']).is_absolute()
+            or not isinstance(value['sha256'],str) or len(value['sha256'])!=64
+            or any(c not in '0123456789abcdef' for c in value['sha256'])):
+        raise ValueError('qualified_browser_status_selection_required')
+
+
+def browser_status(instance, selection):
+    """Read own-user metadata only; never open tabs, start or stop browser units."""
+    validate_browser_selection(selection)
+    probe = 'selection='+repr(selection)+'\n'+r'''
+import hashlib,json,pathlib,subprocess
+p=pathlib.Path(selection['helper'])
+if p.resolve()!=p or p.stat().st_size>65536:raise ValueError('browser_helper_path')
+for item in [p,*p.parents]:
+ info=item.stat()
+ if info.st_uid!=0 or info.st_mode & 0o022:raise ValueError('browser_helper_custody')
+if hashlib.sha256(p.read_bytes()).hexdigest()!=selection['sha256']:raise ValueError('browser_helper_bytes')
+r=subprocess.run(['runuser','-u','agent','--','env','HOME=/home/agent',
+ 'XDG_RUNTIME_DIR=/run/user/1000','DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus',
+ '/usr/bin/python3','-B','-I',str(p),'status'],capture_output=True,timeout=20)
+if r.returncode not in (0,2) or len(r.stdout)>65536:raise ValueError('browser_status_read')
+value=json.loads(r.stdout)
+if value.get('schema')!='children-browser-status/v1':raise ValueError('browser_status_schema')
+print(json.dumps(value))
+'''
+    value=json.loads(command(['incus','exec',instance,'--','/usr/bin/python3',
+                              '-B','-I','-c',probe],seconds=25,limit=128*1024))
+    if not isinstance(value,dict) or value.get('schema')!='children-browser-status/v1':
+        raise ValueError('browser_status_schema')
+    if value.get('state')=='standby':
+        if value.get('intentional') is not True:raise ValueError('browser_standby_not_observed')
+        result={'state':'standby','intentional':True}
+    elif value.get('state')=='ready':
+        bridge=value.get('bridge',{})
+        if (not isinstance(bridge,dict) or bridge.get('running') is not True
+                or bridge.get('extension_connected') is not True
+                or bridge.get('version') not in ('2.0.22','v2.0.22')):
+            raise ValueError('browser_connection_not_observed')
+        result={'state':'ready','version':bridge['version'],'observation':'connection-metadata-only'}
+    elif value.get('state')=='unavailable':
+        result={'state':'unavailable','reason':'own_browser_status_unavailable'}
+    else:raise ValueError('browser_status_unknown')
+    return {**result,'checked':int(time.time()),'helper_sha256':selection['sha256']}
 
 
 def collect(config):
@@ -182,6 +232,13 @@ def collect(config):
             directory.mkdir(mode=0o700, exist_ok=True)
             value = None
             cleanup = None
+            browser = None
+            if config.get('browser_status') and target['instance']:
+                try:
+                    browser=browser_status(target['instance'],config['browser_status'])
+                except (OSError,ValueError,KeyError,subprocess.SubprocessError) as error:
+                    browser={'state':'unavailable','reason':type(error).__name__,
+                             'checked':int(time.time())}
             if config.get('compiler_cleanup_enabled') and target['instance']:
                 try:
                     command(['incus','exec',target['instance'],'--','systemctl','start',
@@ -206,6 +263,7 @@ def collect(config):
                 value.update(inventory='observed', inventory_sha256=hashlib.sha256(status).hexdigest(),
                              debian_advisories='unassessed')
                 if cleanup is not None:value['compiler_cleanup']=cleanup
+                if browser is not None:value['browser']=browser
                 if report['source']['state'] == 'fresh':
                     found = command(['/usr/bin/python3', config['scanner'], '--suite', 'trixie',
                         '--source', feed.as_uri(), '--status', str(directory/'packages.status'),
@@ -227,6 +285,7 @@ def collect(config):
                 observed = value if value is not None and value.get('inventory') == 'observed' else {}
                 report['targets'][name] = {**observed,
                     **({'compiler_cleanup':cleanup} if cleanup is not None else {}),
+                    **({'browser':browser} if browser is not None else {}),
                     'inventory': 'observed' if observed else 'unavailable',
                     'debian_advisories': 'unassessed', 'reason': type(error).__name__}
         report['finished'] = int(time.time())
@@ -248,6 +307,7 @@ def main():
     return 0 if result['source']['state'] == 'fresh' and all(
         value.get('debian_advisories') == 'matched'
         and value.get('compiler_cleanup',{}).get('status','complete')=='complete'
+        and value.get('browser',{}).get('state','standby') in ('standby','ready')
         for value in result['targets'].values()) else 2
 
 

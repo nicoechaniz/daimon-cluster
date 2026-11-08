@@ -336,3 +336,14 @@ continues to cover the expanded pipeline. Browser/other-cache/worktree coverage
 is explicit, not converted to complete cleanup by a zero-removal result. See
 [storage hygiene](host-storage-hygiene.md) for the unprivileged deletion,
 privileged activity projection, allowed roots, budgets and stop/recovery route.
+
+## Own browser readiness without periodic wakeup
+
+The optional browser metadata stage uses the existing inventory service/timer,
+not a new schedule. See [browser selection and stop path](children-browser.md#daily-connection-and-standby-observation).
+Intentional standby passes; failed units, unavailable helper/extension or invalid
+metadata degrade the daily result and produce a nonzero service exit, consumed
+by the unchanged scheduled-job observer. No tab, private page, lifecycle action,
+model input or provider call is part of the read. Package/advisory and cleanup
+evidence remains separate if the browser stage fails. Complete idle detection
+and independent host availability remain unfinished.

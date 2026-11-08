@@ -1539,7 +1539,17 @@ def test_own_browser_has_closed_scope_and_unknown_changes_keep_full_suite(tmp_pa
         'deploy/systemd/user/kimi-webbridge-display.service',
         'support/children-browser/PROVENANCE.json','docs/operations/children-browser.md',
         'RESUME.md','tools/ci_scope.py','tests/test_ci_scope.py']
-    assert select(changed,ROOT)==('peer',['tests/test_children_browser.py',
+    assert select(changed,ROOT)==('peer',['tests/test_children_browser.py','tests/test_children_daily.py',
         'tests/test_ci_scope.py','tests/test_ci_workflow.py'])
     assert select(changed,tmp_path)==('full',['tests'])
     assert select(changed+['clusterctl/admission.py'],ROOT)==('full',['tests'])
+
+
+def test_daily_browser_status_keeps_closed_composition():
+    changed=['tools/children_daily.py','tests/test_children_daily.py',
+             'tools/ci_scope.py','tests/test_ci_scope.py',
+             'docs/operations/children-browser.md','docs/operations/children-daily-observation.md',
+             'RESUME.md']
+    assert select(changed,ROOT)==('peer',['tests/test_children_browser.py',
+        'tests/test_children_daily.py','tests/test_ci_scope.py','tests/test_ci_workflow.py'])
+    assert select(changed+['tools/children_package_maintenance.py'],ROOT)==('full',['tests'])

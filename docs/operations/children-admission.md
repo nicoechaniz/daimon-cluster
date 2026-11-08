@@ -308,3 +308,23 @@ code-placement resolution preserves the original guest service profile.
 Keep candidate installation, normal own-UID CLI qualification, live code selection
 and signed social admission as separate observations. Retire only the consumed
 private package download cache; preserve the original job and native journals.
+
+## Plain admitted Matrix code update
+
+`ManagedRuntime.update_native_code` selects an already installed immutable code
+candidate for an explicit `native-admission-only` body. Use the original host,
+job, admission profile and a single retained operation UUID. It takes the existing
+job locks, authenticates the current admitted process, freezes its exact unit and
+runtime-bundle preimage, and delegates validate/quiesce/select/start to the
+existing `GuestServiceBootstrap` unit writer. It changes only Matrix ExecStart;
+Conversation, credentials, identity, native stores and controller grants stay in
+place. There is no group, visibility or Telegram prerequisite and no enrollment
+or grant renewal. A different operation/candidate is refused while the retained
+per-body update exists; reconcile that record before selecting a later update.
+
+Lost effects are resumed under the same root bootstrap request. The final
+observation verifies the unchanged runtime bundle, admitted origin, selected
+unit and actual successor process. This proves code selection and native
+presence only, not signed membership, readable group selection, messaging
+release, device acceptance or model reading. Keep these later observations
+separate, and never use a code update to extend an expired social recipe.

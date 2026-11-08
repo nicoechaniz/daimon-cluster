@@ -958,3 +958,76 @@ def test_initial_managed_adopts_explicit_successor_without_replaying_start(tmp_p
     with pytest.raises(OnboardingError, match='initial_service_changed'):
         managed.execute_initial(plan, cohort)
     assert manager.starts == 1
+
+
+@pytest.mark.parametrize('lost_start_ack', [False, True])
+def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack):
+    """A plain admitted body needs no group/controller publication to update code."""
+    managed = object.__new__(ManagedRuntime)
+    managed.settings = {'mode': 'native-admission-only'}
+    managed.state = tmp_path / 'state'
+    managed.state.mkdir(mode=0o700)
+    jobs = tmp_path / 'jobs'
+    jobs.mkdir(mode=0o700)
+    (jobs / 'newcomer').mkdir(mode=0o700)
+    plan = {'name': 'newcomer'}
+    job = {'plan': plan, 'original': 'retained'}
+    class Store:
+        def __init__(self, _):
+            pass
+        def directory(self, _):
+            return jobs / 'newcomer'
+        def _load(self, _):
+            return copy.deepcopy(job)
+    monkeypatch.setattr('clusterctl.onboarding_managed.JobStore', Store)
+    managed._selection = lambda _: (None, None)
+    managed._expected = lambda _: dict(body_ref='body', embodiment_id='embodiment', incarnation_id='incarnation')
+    managed._registered = lambda _: True
+    calls = []
+    effects = {}
+    process = {'pid': 10}
+    parent = {'pid': 9}
+    current = dict(process=process, admission_parent=parent, origin=managed._expected(plan),
+        runtime_sha256='original-bundle', responder_association='same-connection', group=None)
+    failures = [lost_start_ack]
+    def owner(_plan, action, **_):
+        assert action == 'admitted-running'
+        return copy.deepcopy(current)
+    def root(_plan, action, **options):
+        calls.append(action)
+        if action == 'bootstrap-inspect':
+            assert options['owner_observation'] == dict(process=current['process'], admission_parent=current['admission_parent'])
+            return dict(service=dict(unit_sha256='selected' if effects else 'previous'),
+                scope=dict(admission_parent=current['admission_parent']))
+        request = options['request']
+        assert request['operation_id'] == '68d4481f-9ade-4b1c-a08d-cfa3f962f5bc'
+        assert '--receive-only' in request['argv']
+        assert '--visibility-installation' not in request['argv']
+        state = being_seed._read(managed.state / 'newcomer/native-code-update.json')
+        assert state['dispatching'] == action.removeprefix('bootstrap-')
+        if action == 'bootstrap-start':
+            current.update(process={'pid': 20}, admission_parent={'pid': 19})
+            effects.setdefault(action, dict(admission_parent=current['admission_parent']))
+            if failures.pop() if failures else False:
+                raise OnboardingError('lost_start_ack')
+        else:
+            effects.setdefault(action, dict(selected_sha256='selected'))
+        return copy.deepcopy(effects[action])
+    managed.backend = SimpleNamespace(config=SimpleNamespace(jobs=jobs), authorize=lambda *_: True,
+        runtime_available=lambda *_, **__: True, _receiving_base=lambda _: Path('/original/base'),
+        _runtime_paths=lambda *_, **__: (Path('/approved/candidate'), [], []),
+        _target_call=owner, _guest_service_call=root)
+    options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bc')
+    if lost_start_ack:
+        with pytest.raises(OnboardingError, match='lost_start_ack'):
+            managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
+        assert calls.count('bootstrap-start') == 1
+    result = managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
+    assert result['runtime_sha256'] == 'original-bundle'
+    assert result['receiving_readiness'] == 'unobserved'
+    assert calls.count('bootstrap-quiesce') == 1
+    assert calls.count('bootstrap-select') == 1
+    assert len(effects) == 4
+    with pytest.raises(OnboardingError, match='operation_conflict'):
+        managed.update_native_code(plan, (tmp_path, 'b' * 64), **options)
+    assert job == {'plan': plan, 'original': 'retained'}

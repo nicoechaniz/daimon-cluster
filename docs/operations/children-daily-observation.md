@@ -84,9 +84,9 @@ Unattended-Upgrade::Remove-New-Unused-Dependencies "false";
 Unattended-Upgrade::Remove-Unused-Kernel-Packages "false";
 ```
 
-This enables daily signed indexes, not automatic package commits. The complete
-transaction preflight and future automatic-update policy remain unfinished; do
-not enable unattended installation merely because its tool or timer exists.
+These native periodic settings enable signed indexes, not package commits. The
+selected coordinator below independently handles the reviewed browser family;
+keep native unattended installation disabled and broader transactions deferred.
 Existing APT timer definitions and the host's separate policy were preserved.
 Actual native `apt-daily.service` execution succeeded on all four with a fresh
 `/var/lib/apt/periodic/update-stamp`; package-status bytes stayed unchanged.
@@ -163,10 +163,9 @@ Run it in the owning finite guest service (180seconds/256MiB/50%CPU/64tasks),
 not as a new timer or a real package reinstall. Preserve a failed stage and
 inspect it before selecting a continuation. Reuse completed valid evidence.
 
-This component is not the complete automatic updater. The signed selection/
-maintainer-review producer, durable commit/recovery coordinator and its daily
-activation still need qualification before enabling future automatic writes.
-The existing report-only/index policy and daily coverage incident remain in place.
+The guard alone is not an updater. The current producer and daily coordinator
+below own selection, commit/recovery and activation. Broader package families
+remain deferred and the original daily coverage incident stays open.
 
 
 ## Select signed security metadata and inspect reviewed archives
@@ -207,9 +206,10 @@ Pixin check refused the standard debconf callback before any download; that
 outcome was retained before the exact callback audit/continuation. Native index
 qualification initially read the wrong stamp name; Pixin's already-successful
 APT service was not replayed, and the continuation consumed the native stamp.
-The durable commit/recovery coordinator and daily automatic-write activation
-remain unfinished. Keep automatic install/download/reboot/removal off and the
-original partial-coverage incident open until the complete path is exercised.
+The selected daily coordinator below now owns the narrow browser transaction
+and its automatic admission. Keep native APT periodic install/download and
+automatic reboot/removal off; this producer never enables those global controls.
+The original broader partial-coverage incident remains open.
 
 A single actual Pixin download-only qualification then exercised the same selected
 inspector against both real signed-index archives (123416336bytes total). Actual
@@ -281,7 +281,11 @@ old package database to roll back code.
 
 The existing Alerts observer supports explicit additive target extension. Add
 `daily-packages`, same existing inventory timer, host unit
-`children-packages-daily.service`, max_age93600s and max_run900s. Use its maintained
+`children-packages-daily.service`, explicit
+`trigger_unit: children-daily-inventory.service`, max_age93600s and max_run900s.
+Alerts PR32 checks actual timer Triggers plus the trigger service's Wants/Requires
+and After. The original matching-name-only adapter refused this target; that
+no-effect binding refusal is retained. Use its maintained
 `Monitor.extend`/`--extend-to` operation and update the private configuration
 while holding that monitor's lock; retain the same authority, journal, original
 target and pending outbox. Merely editing targets makes the bound monitor refuse.
@@ -294,3 +298,22 @@ upgrade through this coordinator. Existing signed Chromium installation, native
 APT guard and real archive-inspector evidence remain valid and are not repeated.
 Broader upstream/malicious applicability, host/critical package policy, cleanup
 and independent availability are still unfinished parts of daily coverage.
+
+
+Receiving activation now selects the existing daily inventory dependency; its
+remove/reload/readback/restore stop-path test passed without changing either
+existing timer's bytes or starting another package installation. Alerts PR32
+sourcec80c8e8 is installed only on the owning children's observer, preserving
+its client, configuration authority, SQLite journal, original target and cadence.
+Its supported additive extension admitted daily-packages; actual subsequent
+scheduled ticks report both daily-inventory and daily-packages healthy, with
+empty pending outbox. No acknowledgment or broad coverage resolution occurred.
+
+The initial fleet success existed in its durable receipt but systemd later
+reported zero exit timestamps after the dependency stop-path reloads. Observation
+correctly refused to infer a successful native lifecycle from that receipt. One
+new coordinator execution under the selected dependency recorded an actual
+successful terminal. All guest transaction timestamps and write_requested=false
+remained identical, proving daily intent reuse rather than another selection,
+download or installation. Naturally scheduled package execution remains a future
+acceptance item; dependency selection and actual manual execution are distinct.

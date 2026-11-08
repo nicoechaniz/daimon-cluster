@@ -1,3 +1,29 @@
+## Daily package cadence and observation adopted —2026-11-08
+
+Cluster PR448/source405bf9f merged2cf5d99e; exact CI42483542017 passed.
+Current four guest worker units and bounded fleet observer are installed with
+source readback; all4 actual daily transactions report up_to_date, no write.
+The package phase is now a Wants/After dependency of the EXISTING inventory
+service/timer. The supported future-admission stop/remove/reload/readback/restore
+passed, both original timer hashes unchanged. No new timer or model scheduler.
+
+Alerts PR32/sourcec80c8e8 merged with exact CI42483937415 passed. Its explicit
+trigger_unit contract checks timer Triggers plus loaded service pull-in/order,
+allowing this dependent job without a duplicate timer. Installed on the own
+children's observer and extended through its retained journal binding. Actual
+scheduled ticks report both targets healthy, outbox0. The original unsupported
+name-check refusal and transient missing lifecycle observation remain retained;
+no original package work was replayed and the partial coverage incident stays open.
+
+Fleet terminal invocationa95af61cf00144d5b906f069d91046e2 under the selected
+link exited0. All4 original guest transaction timestamps remained identical;
+write_requested=false. Next naturally scheduled package invocation and a future
+needed real upgrade through the new coordinator remain separate acceptance.
+Broader advisories, cleanup/availability and social admission are unfinished.
+See [the owning route](docs/operations/children-daily-observation.md), current
+private package-maintenance activation/receiving checkpoints and preserved goal53
+pause. No current canonical/Tribe admission has been claimed for child holders.
+
 ## Daily browser package coordinator —2026-11-08
 
 The new durable coordinator composes the current signed selector and native APT
@@ -39,9 +65,9 @@ or service changes defer. All4 selection bundle8517ed138d55 and policy remain
 installed; root-private current receipts are in the existing onboarding checkpoint.
 
 This component prepares a reviewed manifest/scoped guard configuration only for
-an actual upgrade, never installs. Durable commit/recovery, daily activation,
-broader advisory applicability and cleanup/availability remain unfinished; keep
-automatic writes off and the original coverage incident open. Social admission
+an actual upgrade, never installs. The current coordinator/cadence above now
+owns the reviewed browser commit path. Broader advisory applicability and
+cleanup/availability remain unfinished; keep the original coverage incident open. Social admission
 Matrix496/App452 remains first priority and separate; preserve paused goal53,
 all4 signed identities, current web/auth/grants and completed School/Drive work.
 See [daily observation](docs/operations/children-daily-observation.md).
@@ -284,8 +310,9 @@ The read-only package pre-install guard now has actual APT3.0.3 wire evidence
 on all four: the inert reviewed fixture is admitted, while extra service-package,
 active-browser and changed-archive fixtures stop before dpkg. Real package-status
 bytes remained unchanged and fixture payloads were retired. This is component
-qualification, not automatic-update activation; source/maintainer selection and
-the durable daily commit/recovery producer remain unfinished.
+qualification of the guard seam. The current signed selector and durable daily
+coordinator are adopted as described above; this historical fixture is not their
+activation proof.
 Broader automatic patch transactions, upstream/malicious-release advisories,
 activity-aware cleanup/browser reclamation and independent availability remain unfinished. Follow the
 maintained Shared Resources children-host-security handoff and preserve profiles,

@@ -6,6 +6,18 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_known_exploitation_selection_keeps_daily_and_public_regressions(tmp_path):
+    changed=['tools/children_known_exploitation.py','tests/test_children_known_exploitation.py',
+             'tools/children_daily.py','tests/test_children_daily.py','tools/ci_scope.py',
+             'tests/test_ci_scope.py','docs/operations/children-known-exploitation.md','RESUME.md']
+    profile, tests=select(changed,ROOT)
+    assert profile=='peer'
+    assert {'tests/test_children_daily.py','tests/test_children_public_advisories.py',
+            'tests/test_children_known_exploitation.py'} <= set(tests)
+    assert select(changed,tmp_path)==('full',['tests'])
+    assert select([*changed,'clusterctl/admission.py'],ROOT)==('full',['tests'])
+
+
 def test_children_admission_relay_keeps_protocol_and_fence_coverage(tmp_path):
     changed = ['deploy/systemd/children-cluster-admission.service',
                'deploy/systemd/children-cluster-admission.socket',

@@ -239,6 +239,42 @@ Ordinary voice commands are never automatically archived or transcribed again.
 Nexus owns table grants and Homes owns the canonical Apps publication; reuse
 those maintained services rather than another bank or child-specific app.
 
+## Receiving institutional Drive access
+
+Use each companion's existing institutional connection and private learner folder
+from the maintained project map. Inspect its actual account selector/schema and
+verify `institucional@altermundi.net`; leave unrelated accounts untouched. An
+operator read, installed skill or prepared folder reference is not receiving access.
+
+The selected Codex singleton uses Unix WebSocket, including its stdio proxy.
+Reuse the owning socket with a Unix WebSocket client, bounded `app/list` pages
+and a deadline compatible with the native 90-second limit. Suppress irrelevant
+`app/list/updated` notifications; selected-connector discovery is not a complete
+catalog observation and requires no model turn or daemon restart.
+
+Use normal file-aware tools for upload. In Core15 `0dee30e37`, manual
+`mcpServer/tool/call` bypasses the model-tool handler's `openai/fileParams`
+preparation. Retain a failed reply; it does not prove remote absence. For one
+tiny operator marker without child content, reconcile the exact name/parent
+before any write, then verify identity, private permissions and recovered bytes
+against the original. An unmaterialized download reference can be followed by
+the connector's supported inline-content read; do not repeat a successful upload.
+Keep actual tool/byte evidence separate from the model's final report.
+
+A resumed School thread may retain its reading-only permission profile. A live
+`thread/resume` can ignore configuration overrides. For an explicitly authorized
+Drive task, use the already selected own-virtual profile through
+`thread/settings/update`, read back the effective settings before provider input,
+and restore/read back the original settings at the physical terminal. This grants
+no external access and must not override an actual external approval decision.
+Preserve rejected/uncertain attempts and original operation IDs; no new thread,
+identity, helper, account or background attention is needed.
+
+After verification, update the own private Drive binding and Escuela `media-config`
+check reference. Keep family capture/voice/publication agreements unchanged and
+completed kit-reading/heartbeat jobs intact. Retain only the tiny selected marker
+and bounded evidence; qualification is not recurring ingestion or backup.
+
 ## Retained members on different hosts
 
 A guest owner may select its existing private `host_config` and canonical

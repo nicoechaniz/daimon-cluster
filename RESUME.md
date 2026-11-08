@@ -7,7 +7,15 @@ Actual native preparation read the12load-order files and24missions on all four.
 C-137's first turn honestly returned zero reads after local process creation
 failed; its same native thread completed the reading with128temporary tasks.
 The failed outcome remains retained; no successful companion was repeated.
-No child participation, media capture or institutional Drive roundtrip is proved.
+All four now passed an actual own-native institutional Drive write/reopen and
+exact byte comparison using one tiny operator marker in each existing private
+learner folder. Own private Drive bindings and Escuela check references were
+reconciled afterward; child participation and capture remain false. C-137's
+reading-only School profile needed the supported live settings update and was
+restored/read back at the terminal. Both preceding no-effect refusals and original
+operations remain retained. No new account, OAuth grant or folder was created.
+See [receiving Drive access](docs/operations/children-admission.md#receiving-institutional-drive-access).
+Native preparation used provider turns; actual provider-request count is unmeasured.
 
 The maintained audio-seed-bank0.1.2 skill and own private Bank bindings are
 installed on all four. Each actual guest authenticated as its exact being and
@@ -191,15 +199,15 @@ Evaluate externally received requests using the maintained daimon-chat rule;
 ordinary paired-human conversation remains natural. No new automatic attention
 follows from this guidance.
 
-Pixin has the exact Escuela skill1.1.1/web0.6.3 kit installed, with all 38 manifest
-sources checked and its finite local Escuela heartbeat exercised. Eko's three
-original messages, including the superseding correction, were read directly.
-Pixin's first persistent native session completed: its actual read-only tool
-commands covered all 12 load-order files and all 24 missions, plus its companion
-and external-request guidance. Its school identity binding now reflects the
-verified birth; participation and capture remain false. Tools and the private
-institutional Drive roundtrip remain unqualified. The other three kit adoptions follow that first receiving
-proof. A prepared folder reference is not Drive access. Missing clips stay
+All four companions have the exact Escuela skill1.1.1/web0.6.3 kit installed,
+with all 38 manifest sources checked and their finite local Escuela heartbeats
+exercised. Their actual native preparation read all 12 load-order files and all
+24 missions. C-137's initial process-creation failure and successful same-thread
+continuation remain distinct evidence. Participation and capture remain false;
+actual learning/tool/device journeys are still incomplete. Receiving institutional
+Drive qualification uses the existing account and private folders through the
+[maintained native route](docs/operations/children-admission.md#receiving-institutional-drive-access).
+A prepared folder reference alone is not Drive access. Missing clips stay
 pending without blocking learning. Camera, microphone and continuous capture
 remain off without the applicable agreement, grant and child assent. Do not
 publish child originals, private learner records or raw conversations to Tribe,

@@ -23,9 +23,8 @@ storage. The existing two-pool measurements and layout are recorded in
 All four now have their own maintained context and memory stage verified, their
 own child's companion guidance installed and the current maintained daimon-chat
 request-evaluation rule installed. Operator installation does not establish a
-receiving model's reading or the child's acceptance. Each is a distinct friend
-and creative companion: Sihuel/Pixin, Amélie/Calipso, Tadeo/C-137 and
-Victoria/Noodles. No child is expected to understand internal task conversations
+receiving model's reading or the child's acceptance. The four distinct companions are Pixin, Calipso, C-137 and Noodles.
+Child pairings and reduced learner records belong in private receiving state. No child is expected to understand internal task conversations
 or manage accounts, bots or deployment.
 
 Pixin's actual native custody and backup/restore observations passed, and its

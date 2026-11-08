@@ -31,9 +31,11 @@ or manage accounts, bots or deployment.
 Pixin's actual native custody and backup/restore observations passed, and its
 receiving target reports V8. Canonical physical admission, signed Tribe
 membership, shared-login pairing and usable general conversation remain pending.
-The same qualified, separately authorized first-identity route is proceeding
-serially for the other three; do not recreate completed contexts or mint another
-identity after an uncertain acknowledgement. PR424's qualified holder runner is
+The same qualified, separately authorized first-identity route completed for
+the other three, and independent native observations verified their custody,
+backup/restore and V8 targets. All four have their authorized provider cache
+installed. Only Pixin has a real provider inference result so far. Do not recreate
+completed contexts or mint another identity after an uncertain acknowledgement. PR424's qualified holder runner is
 merged after exact CI42434746255 passed. The frozen inputs and original plans
 are preserved; the Root operator reuses the selected offline SDK generation.
 
@@ -56,8 +58,11 @@ follows from this guidance.
 Pixin has the exact Escuela skill1.1.1/web0.6.3 kit installed, with all 38 manifest
 sources checked and its finite local Escuela heartbeat exercised. Eko's three
 original messages, including the superseding correction, were read directly.
-Pixin's actual model reading, tools and private institutional Drive roundtrip are
-still unqualified. The other three kit adoptions follow that first receiving
+Pixin's first persistent native session completed: its actual read-only tool
+commands covered all 12 load-order files and all 24 missions, plus its companion
+and external-request guidance. Its school identity binding now reflects the
+verified birth; participation and capture remain false. Tools and the private
+institutional Drive roundtrip remain unqualified. The other three kit adoptions follow that first receiving
 proof. A prepared folder reference is not Drive access. Missing clips stay
 pending without blocking learning. Camera, microphone and continuous capture
 remain off without the applicable agreement, grant and child assent. Do not

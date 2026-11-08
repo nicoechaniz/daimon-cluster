@@ -15,15 +15,46 @@ import stat
 import shlex
 import sys
 import urllib.parse
+import time
 
 MAX_INPUT = 256 * 1024
 MAX_ARCHIVES = 256 * 1024 * 1024
 PACKAGES = frozenset({'chromium', 'chromium-common'})
+BROTLI = frozenset({'libbrotli1'})
 BROWSERS = ('chromium', 'chrome', 'firefox', 'webbridge')
+LIBRARY_FILES=frozenset('/usr/lib/x86_64-linux-gnu/libbrotli'+n+'.so.1.1.0' for n in ('common','dec','enc'))
+TRIGGER_FILES=frozenset({'/var/lib/dpkg/info/libc-bin.triggers','/var/lib/dpkg/info/libc-bin.postinst','/usr/sbin/ldconfig'})
 
 
 class Deferred(ValueError):
     """A bounded reason code, without process contents or private paths."""
+
+
+def reviewed_packages(names):
+    names=frozenset(names)
+    if names not in (PACKAGES,BROTLI):
+        raise Deferred('unreviewed_packages')
+    return names
+
+
+def library_metadata(manifest):
+    for key,expected in (('installed_files_sha256',LIBRARY_FILES),('trigger_runtime',TRIGGER_FILES)):
+        values=manifest.get(key)
+        if (not isinstance(values,dict) or set(values)!=expected
+                or any(not isinstance(v,str) or not re.fullmatch(r'[a-f0-9]{64}',v) for v in values.values())):
+            raise Deferred('unreviewed_library_metadata')
+
+
+def verify_trigger_runtime(values):
+    for name,digest in values.items():
+        path=Path(name)
+        for parent in path.parents:
+            if parent.is_symlink() or parent.stat().st_uid!=0 or parent.stat().st_mode & 0o022:
+                raise Deferred('changed_library_trigger_custody')
+        if (path.is_symlink() or not path.is_file() or path.stat().st_uid!=0
+                or path.stat().st_mode & 0o022 or path.stat().st_size>2*1024*1024
+                or hashlib.sha256(path.read_bytes()).hexdigest()!=digest):
+            raise Deferred('changed_library_trigger_runtime')
 
 
 def private_json(path, owner_uid):
@@ -46,8 +77,10 @@ def manifest_packages(manifest):
             or manifest.get('maintainer_reviewed') is not True):
         raise Deferred('unqualified_selection')
     packages = manifest.get('packages')
-    if not isinstance(packages, dict) or set(packages) != PACKAGES:
+    if not isinstance(packages, dict):
         raise Deferred('unreviewed_packages')
+    reviewed_packages(packages)
+    if set(packages)==BROTLI:library_metadata(manifest)
     total = 0
     for item in packages.values():
         if (not isinstance(item, dict)
@@ -117,6 +150,25 @@ def idle_browser_scope(proc_root=Path('/proc')):
             raise Deferred('browser_active')
 
 
+def idle_package_scope(packages, proc_root=Path('/proc')):
+    if reviewed_packages(packages)==PACKAGES:
+        return idle_browser_scope(proc_root)
+    # Never restart/kill a consumer to make a library update admissible.
+    deadline=time.monotonic()+5;seen=0;total=0
+    for proc in proc_root.iterdir():
+        if not proc.name.isdigit():continue
+        seen+=1
+        if seen>4096 or time.monotonic()>deadline:raise Deferred('library_process_capacity')
+        try:
+            with (proc/'maps').open('rb') as stream:raw=stream.read(2*1024*1024+1)
+        except (FileNotFoundError,ProcessLookupError):continue
+        except OSError:raise Deferred('library_observation_unavailable') from None
+        total+=len(raw)
+        if len(raw)>2*1024*1024 or total>32*1024*1024 or time.monotonic()>deadline:
+            raise Deferred('library_process_capacity')
+        if b'libbrotli' in raw:raise Deferred('library_consumer_active')
+
+
 def verify_archive(item, owner_uid):
     path = Path(item['archive'])
     # APT's cache and manifest directories must exclude unprivileged writers.
@@ -142,6 +194,7 @@ def verify_archive(item, owner_uid):
 
 def guard(raw, manifest, *, owner_uid=0, proc_root=Path('/proc'), verify=verify_archive, expected_hook=None):
     packages = manifest_packages(manifest)
+    if set(packages)==BROTLI:verify_trigger_runtime(manifest['trigger_runtime'])
     actions = parse_protocol(raw, expected_hook)
     unpacked, configured = set(), set()
     for package, old, direction, new, action in actions:
@@ -163,11 +216,12 @@ def guard(raw, manifest, *, owner_uid=0, proc_root=Path('/proc'), verify=verify_
             raise Deferred('changed_package_action')
     if unpacked != set(packages) or not configured <= unpacked:
         raise Deferred('incomplete_transaction')
-    idle_browser_scope(proc_root)
+    idle_package_scope(packages,proc_root)
     for item in packages.values():
         verify(item, owner_uid)
     # Repeat activity observation after hashing immediately before admission.
-    idle_browser_scope(proc_root)
+    idle_package_scope(packages,proc_root)
+    if set(packages)==BROTLI:verify_trigger_runtime(manifest['trigger_runtime'])
     return {'schema': 'children-apt-guard-result/v1', 'decision': 'admitted',
             'packages': sorted(packages), 'archives_verified': len(packages),
             'package_write_performed': False}

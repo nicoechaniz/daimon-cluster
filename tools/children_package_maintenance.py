@@ -22,12 +22,12 @@ import time
 if __package__:
     from . import children_package_selection as selection
     from .children_daily import atomic, command, footprint
-    from .children_package_guard import Deferred, private_json, manifest_packages, idle_browser_scope, verify_archive
+    from .children_package_guard import Deferred, BROTLI, reviewed_packages, verify_trigger_runtime, private_json, manifest_packages, idle_package_scope, verify_archive
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import children_package_selection as selection
     from children_daily import atomic, command, footprint
-    from children_package_guard import Deferred, private_json, manifest_packages, idle_browser_scope, verify_archive
+    from children_package_guard import Deferred, BROTLI, reviewed_packages, verify_trigger_runtime, private_json, manifest_packages, idle_package_scope, verify_archive
 
 CHILDREN = ('pixin', 'calipso', 'c-137', 'noodles')
 SERVICES = ('daimon-onboarding-codex.service', 'children-conversation-native.service',
@@ -46,12 +46,13 @@ def save(path, value):
         os.close(fd)
 
 
-def versions(run=command):
+def versions(run=command, names=selection.PACKAGES):
+    names=reviewed_packages(names)
     raw = run(['dpkg-query', '-W', '-f=${Package}\t${Version}\t${db:Status-Status}\n',
-               *sorted(selection.PACKAGES)], seconds=10, limit=4096).decode()
+               *sorted(names)], seconds=10, limit=4096).decode()
     rows = [line.split('\t') for line in raw.splitlines()]
-    if (len(rows) != 2 or any(len(r) != 3 or r[2] != 'installed' for r in rows)
-            or {r[0] for r in rows} != selection.PACKAGES):
+    if (len(rows) != len(names) or any(len(r) != 3 or r[2] != 'installed' for r in rows)
+            or {r[0] for r in rows} != names):
         raise Deferred('incomplete_installed_browser')
     if run(['dpkg', '--audit'], seconds=20, limit=64 * 1024).strip():
         raise Deferred('package_database_requires_recovery')
@@ -91,7 +92,10 @@ def precommit(policy, state, manifest, run=command):
         if records[n]['SHA256'] != p['sha256'] or int(records[n]['Size']) != p['bytes']:
             raise Deferred('changed_security_archive')
         verify_archive(p, 0)
-    if versions(run) != {n: p['old_version'] for n, p in packages.items()}:
+    if set(packages)==BROTLI:
+        if policy.get('trigger_runtime')!=manifest['trigger_runtime']:raise Deferred('changed_library_policy')
+        verify_trigger_runtime(manifest['trigger_runtime'])
+    if versions(run,packages) != {n: p['old_version'] for n, p in packages.items()}:
         raise Deferred('changed_installed_plan')
     config = state / 'transaction.apt.conf'
     info = config.lstat()
@@ -101,7 +105,7 @@ def precommit(policy, state, manifest, run=command):
     # Stop the transaction before APT if a held package or an expanded dependency
     # changes the reviewed plan; the guard repeats under APT's real locks.
     held = run(['apt-mark', 'showhold'], seconds=10, limit=64*1024).decode().splitlines()
-    if selection.PACKAGES & set(held):
+    if set(packages) & set(held):
         raise Deferred('held_browser_package')
     argv = ['apt-get', '-s', '--no-download', '--no-remove', '--no-install-recommends',
             'install', '--only-upgrade', *[n+'='+p['version'] for n, p in sorted(packages.items())]]
@@ -109,7 +113,7 @@ def precommit(policy, state, manifest, run=command):
                          {n: p['old_version'] for n, p in packages.items()}, current)
     if os.statvfs('/').f_bavail * os.statvfs('/').f_frsize < GIB:
         raise Deferred('insufficient_guest_space')
-    idle_browser_scope()
+    idle_package_scope(packages)
     return service_state(run)
 
 
@@ -156,21 +160,36 @@ def finish_locked(state, journal, run=command):
     if hashlib.sha256((state/'manifest.json').read_bytes()).hexdigest() != journal['manifest_sha256']:
         raise Deferred('changed_pending_manifest')
     packages = manifest_packages(manifest)
-    if versions(run) != {n: p['version'] for n, p in packages.items()}:
+    if versions(run,packages) != {n: p['version'] for n, p in packages.items()}:
         raise Deferred('commit_uncertain_requires_operator')
     if service_state(run) != journal['services_before']:
         raise Deferred('own_service_changed_requires_operator')
     # Read actual executable version as well as the installed package database.
-    version = run(['/usr/bin/chromium', '--version'], seconds=10, limit=4096).decode().strip()
-    expected = packages['chromium']['version'].split(':')[-1].split('-')[0]
-    if not version.startswith('Chromium '+expected+' '):
-        raise Deferred('executable_version_mismatch')
-    journal.update(phase='complete', finished=int(time.time()), executable_version=version,
+    if set(packages)==BROTLI:
+        idle_package_scope(packages)
+        verify_installed_library(manifest)
+        journal['installed_files_sha256']=manifest['installed_files_sha256']
+    else:
+        version = run(['/usr/bin/chromium', '--version'], seconds=10, limit=4096).decode().strip()
+        expected = packages['chromium']['version'].split(':')[-1].split('-')[0]
+        if not version.startswith('Chromium '+expected+' '):
+            raise Deferred('executable_version_mismatch')
+        journal['executable_version']=version
+    journal.update(phase='complete', finished=int(time.time()),
                    observed_versions={n: p['version'] for n, p in packages.items()})
     journal.pop('reason',None)
     save(state/'transaction.json', journal)
     retire(state, journal)
     return journal
+
+
+def verify_installed_library(manifest, root=Path('/'), owner_uid=0):
+    # Fields have already passed manifest_packages' closed library metadata.
+    for name,digest in manifest['installed_files_sha256'].items():
+        p=root/name.lstrip('/')
+        if (p.is_symlink() or not p.is_file() or p.stat().st_uid!=owner_uid or p.stat().st_mode & 0o022
+                or p.stat().st_size>2*1024*1024 or hashlib.sha256(p.read_bytes()).hexdigest()!=digest):
+            raise Deferred('installed_library_bytes_mismatch')
 
 
 def retire(state, journal):
@@ -274,7 +293,7 @@ def maintain(policy, state, *, install=False, occurrence=None, run=command, comm
         raise
 
 
-def fleet(state, run=command, wait=time.sleep, now=time.monotonic, duration=600):
+def fleet(state, run=command, wait=time.sleep, now=time.monotonic, duration=600, include_brotli=False):
     report = {'schema':'children-daily-packages/v1', 'at':int(time.time()), 'targets':{}}
     deadline = now()+duration
     for name in CHILDREN:
@@ -313,6 +332,12 @@ def fleet(state, run=command, wait=time.sleep, now=time.monotonic, duration=600)
             if (value['ExecMainStatus']!='0' or result['phase'] not in {'complete','up_to_date'}
                     or result.get('occurrence')!=today):
                 raise Deferred('guest_package_coverage_degraded')
+            if include_brotli:
+                library=json.loads(run([*prefix,'cat','/var/lib/children-maintenance/brotli-selection/transaction.json'],seconds=10,limit=256*1024))
+                report['targets'][name]['brotli']={k:library[k] for k in ('phase','occurrence','write_requested','reason','finished') if k in library}
+                if (library.get('schema')!='children-package-maintenance/v1' or library.get('occurrence')!=today
+                        or library.get('phase') not in {'complete','up_to_date'}):
+                    raise Deferred('guest_library_coverage_degraded')
         except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             report['targets'].setdefault(name,{})['error']=str(error) if isinstance(error,Deferred) else type(error).__name__
             # Other idle guests may still assess independently; an observation
@@ -336,9 +361,10 @@ def main():
     parser.add_argument('--policy',type=Path)
     parser.add_argument('--install',action='store_true')
     parser.add_argument('--fleet',action='store_true')
+    parser.add_argument('--with-brotli',action='store_true')
     args=parser.parse_args()
     os.umask(0o077)
-    if os.geteuid()!=0 or (not args.fleet and args.policy is None) or (args.fleet and (args.install or args.policy)):
+    if os.geteuid()!=0 or (not args.fleet and args.policy is None) or (args.fleet and (args.install or args.policy)) or (args.with_brotli and not args.fleet):
         parser.error('selected root guest or fleet configuration required')
     state=args.state.absolute();state.mkdir(parents=True,mode=0o700,exist_ok=True)
     if state.is_symlink() or state.stat().st_uid!=0 or state.stat().st_mode & 0o077:
@@ -348,7 +374,7 @@ def main():
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         if footprint(state)>384*1024*1024:
             raise Deferred('package_state_capacity')
-        result=fleet(state) if args.fleet else maintain(private_json(args.policy,0),state,install=args.install)
+        result=fleet(state,include_brotli=args.with_brotli) if args.fleet else maintain(private_json(args.policy,0),state,install=args.install)
     print(json.dumps(result,sort_keys=True))
     return 0 if result.get('complete') or result.get('phase') in {'up_to_date','complete','report_only'} else 2
 

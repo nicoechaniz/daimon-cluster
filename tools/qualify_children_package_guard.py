@@ -20,6 +20,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('guard', type=Path)
     parser.add_argument('--state', type=Path, required=True)
+    parser.add_argument('--with-brotli',action='store_true')
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('requires the selected guest operator')
@@ -39,9 +40,10 @@ def main():
     # The manifest/source fields below are synthetic protocol fixtures, not a signed
     # package selection or an authorization for any production package transaction.
     archives={}
-    for name in ['chromium','chromium-common','systemd']:
+    names=['chromium','chromium-common','systemd']+(['libbrotli1'] if args.with_brotli else [])
+    for name in names:
      p=f/('build-'+name);(p/'DEBIAN').mkdir(parents=True,mode=0o755,exist_ok=True);(p/'DEBIAN').chmod(0o755)
-     (p/'DEBIAN/control').write_text('Package: '+name+'\nVersion: 2\nArchitecture: amd64\nMaintainer: Operator fixture <fixture@invalid>\nDescription: Synthetic protocol qualification; never installed\n')
+     (p/'DEBIAN/control').write_text('Package: '+name+'\nVersion: 2\nArchitecture: amd64\n'+('Multi-Arch: same\n' if name=='libbrotli1' else '')+'Maintainer: Operator fixture <fixture@invalid>\nDescription: Synthetic protocol qualification; never installed\n')
      (p/'DEBIAN/control').chmod(0o644)
      (p/'usr/share/children-apt-fixture').mkdir(parents=True,exist_ok=True)
      (p/'usr/share/children-apt-fixture'/name).write_text('synthetic; no child content\n')
@@ -49,8 +51,8 @@ def main():
      build=subprocess.run(['dpkg-deb','--build','--root-owner-group',str(p),str(archive)],capture_output=True,text=True,timeout=10)
      if build.returncode:(root/('build-'+name+'.stderr')).write_text(build.stderr);raise RuntimeError('Inspect retained synthetic package build output')
      archives[name]=archive
-     if name!='systemd':manifest['packages'][name]={'old_version':'1','version':'2','archive':str(archive),'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'bytes':archive.stat().st_size}
-    (f/'state/status').write_text('\n\n'.join('Package: '+n+'\nStatus: install ok installed\nArchitecture: amd64\nVersion: 1\nDescription: Synthetic fixture\n' for n in archives)+'\n')
+     if name in {'chromium','chromium-common'}:manifest['packages'][name]={'old_version':'1','version':'2','archive':str(archive),'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'bytes':archive.stat().st_size}
+    (f/'state/status').write_text('\n\n'.join('Package: '+n+'\nStatus: install ok installed\nArchitecture: amd64\n'+('Multi-Arch: same\n' if n=='libbrotli1' else '')+'Version: 1\nDescription: Synthetic fixture\n' for n in archives)+'\n')
     fake_before=hashlib.sha256((f/'state/status').read_bytes()).hexdigest()
     m=f/'manifest.json';m.write_text(json.dumps(manifest));m.chmod(0o600)
     hook=shlex.join(['/usr/bin/python3','-B','-I',str(guard),'--manifest',str(m)])
@@ -85,6 +87,13 @@ def main():
     finally:child.terminate();child.wait(timeout=5)
     manifest['packages']['chromium']['sha256']='0'*64;m.write_text(json.dumps(manifest));m.chmod(0o600)
     run('changed-archive-fixture',['chromium','chromium-common'],'deferred','archive_changed')
+    if args.with_brotli:
+     archive=archives['libbrotli1']
+     manifest['packages']={'libbrotli1':{'old_version':'1','version':'2','archive':str(archive),'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'bytes':archive.stat().st_size}}
+     manifest['installed_files_sha256']={'/usr/lib/x86_64-linux-gnu/libbrotli'+n+'.so.1.1.0':'a'*64 for n in ('common','dec','enc')}
+     manifest['trigger_runtime']={n:hashlib.sha256(Path(n).read_bytes()).hexdigest() for n in ('/var/lib/dpkg/info/libc-bin.triggers','/var/lib/dpkg/info/libc-bin.postinst','/usr/sbin/ldconfig')}
+     m.write_text(json.dumps(manifest));m.chmod(0o600)
+     run('brotli-multiarch-fixture',['libbrotli1'],'admitted')
     shutil.rmtree(f);assert not f.exists()
     value={'schema':'children-apt-guard-qualification/v1','at':time.time(),'source_sha256':source_sha,'apt':v,'synthetic_protocol_only':True,'production_manifest_created':False,'production_package_install':False,'global_hook_installed':False,'results':results,'fixture_retired':True,'global_dpkg_sha256':before}
     (root/'current.json').write_text(json.dumps(value,indent=2));print(json.dumps(value),flush=True)

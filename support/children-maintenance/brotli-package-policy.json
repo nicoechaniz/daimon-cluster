@@ -1,0 +1,47 @@
+{
+  "schema": "children-library-package-policy/v1",
+  "baseline_version": "1.1.0-2+deb13u1",
+  "packages": {
+    "libbrotli1": {
+      "paths": [
+        "/",
+        "/usr",
+        "/usr/lib",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib/x86_64-linux-gnu/libbrotlicommon.so.1.1.0",
+        "/usr/lib/x86_64-linux-gnu/libbrotlidec.so.1.1.0",
+        "/usr/lib/x86_64-linux-gnu/libbrotlienc.so.1.1.0",
+        "/usr/share",
+        "/usr/share/doc",
+        "/usr/share/doc/libbrotli1",
+        "/usr/share/doc/libbrotli1/changelog.Debian.gz",
+        "/usr/share/doc/libbrotli1/changelog.gz",
+        "/usr/share/doc/libbrotli1/copyright",
+        "/usr/share/lintian",
+        "/usr/share/lintian/overrides",
+        "/usr/share/lintian/overrides/libbrotli1",
+        "/usr/lib/x86_64-linux-gnu/libbrotlicommon.so.1",
+        "/usr/lib/x86_64-linux-gnu/libbrotlidec.so.1",
+        "/usr/lib/x86_64-linux-gnu/libbrotlienc.so.1"
+      ],
+      "links": {
+        "/usr/lib/x86_64-linux-gnu/libbrotlicommon.so.1": "libbrotlicommon.so.1.1.0",
+        "/usr/lib/x86_64-linux-gnu/libbrotlidec.so.1": "libbrotlidec.so.1.1.0",
+        "/usr/lib/x86_64-linux-gnu/libbrotlienc.so.1": "libbrotlienc.so.1.1.0"
+      },
+      "scripts": {
+        "triggers": "c67ab4558a59eb1e96d899a5bdbb153d6a2ab0e580f4acf5bfb1e4e6150ad2f4"
+      }
+    }
+  },
+  "trigger_runtime": {
+    "/var/lib/dpkg/info/libc-bin.triggers": "c3d6b5df131336e54c31dc5687929467de7abea5c5798e3d6a6b2a64ef971fd4",
+    "/var/lib/dpkg/info/libc-bin.postinst": "3daa7e3ffd429c1d77287f0fc840a490a607697906d2303452f70578647ce0d4",
+    "/usr/sbin/ldconfig": "3a5ca649454250c3b725f0a68f2bac65f929a2060d423ba9f9cbe1a62620cce1"
+  },
+  "omittable_preinstall": {
+    "command": "/usr/sbin/dpkg-preconfigure --apt || true",
+    "path": "/usr/sbin/dpkg-preconfigure",
+    "sha256": "39577985ac160864db65d2efe65e411941010fd3facb5c6e07e9c5da26998fea"
+  }
+}

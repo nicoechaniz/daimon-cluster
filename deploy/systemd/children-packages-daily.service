@@ -6,7 +6,7 @@ RequiresMountsFor=/var/lib/children-maintenance/packages
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 -B -I /opt/children-maintenance/package-selected/children_package_maintenance.py --fleet --state /var/lib/children-maintenance/packages
+ExecStart=/usr/bin/python3 -B -I /opt/children-maintenance/package-selected/children_package_maintenance.py --fleet --with-brotli --state /var/lib/children-maintenance/packages
 Environment=INCUS_CONF=/run/children-packages/incus
 RuntimeDirectory=children-packages
 RuntimeDirectoryMode=0700

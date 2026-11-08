@@ -178,7 +178,7 @@ class PackageSelectionTests(unittest.TestCase):
             original_verify=selection.verify_archive
             with patch.object(selection,'security_target',return_value={}),\
                  patch.object(selection,'release_fresh',return_value=Path('/index')),\
-                 patch.object(selection,'idle_browser_scope'),\
+                 patch.object(selection,'idle_package_scope'),\
                  patch.object(selection,'verify_archive',side_effect=lambda item,uid:original_verify(item,os.getuid())):
                 result=selection.select(policy,state,download=True,run=run)
             self.assertEqual(result['decision'],'reviewed_manifest_prepared')
@@ -221,6 +221,31 @@ class PackageSelectionTests(unittest.TestCase):
         self.assertFalse(result['package_write_performed'])
         self.assertTrue(any(argv[-2:]==['dpkg','--audit'] for argv in calls))
         self.assertFalse(any('--download-only' in argv for argv in calls))
+
+
+def test_brotli_payload_exact_library_bytes_and_missing_archive_fields():
+    import io,tarfile,hashlib
+    import pytest
+    def archive(names):
+        raw=io.BytesIO()
+        with tarfile.open(fileobj=raw,mode='w') as t:
+            for name in names:
+                item=tarfile.TarInfo('.'+name);item.size=4;t.addfile(item,io.BytesIO(b'ELF!'))
+        return raw.getvalue()
+    names=selection.LIBRARY_FILES
+    values=selection.library_payload(archive(names))
+    assert set(values)==names and set(values.values())=={hashlib.sha256(b'ELF!').hexdigest()}
+    with pytest.raises(Deferred,match='incomplete'):selection.library_payload(archive(list(names)[:2]))
+    with pytest.raises(Deferred,match='identity'):selection.library_payload(archive([*names,next(iter(names))]))
+
+
+def test_brotli_requires_its_own_security_pool_and_exact_single_action():
+    import pytest
+    record='Package: libbrotli1\nArchitecture: amd64\nVersion: 2\nSHA256: '+'a'*64+'\nSize: 100\nFilename: pool/updates/main/b/brotli/library.deb'
+    assert set(selection.record_selection(record,{'libbrotli1':'2'}))=={'libbrotli1'}
+    with pytest.raises(Deferred):selection.record_selection(record.replace('/b/brotli/','/c/chromium/'),{'libbrotli1':'2'})
+    selection.plan_exact('Inst libbrotli1 [1] (2 Debian-Security:13/security)',{'libbrotli1':'1'},{'libbrotli1':'2'})
+    with pytest.raises(Deferred):selection.plan_exact('Inst libbrotli1 [1] (2 Debian-Security:13/security)\nInst libc6 [1] (2 Debian-Security:13/security)',{'libbrotli1':'1'},{'libbrotli1':'2'})
 
 
 if __name__=='__main__':unittest.main()

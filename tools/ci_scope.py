@@ -1078,6 +1078,19 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
     if (set(changed) & daily_files and set(changed) <= daily_files | CI_FILES
             and all((root / name).is_file() for name in daily_tests)):
         return 'peer', daily_tests
+    brotli_files={'tools/children_package_maintenance.py','tests/test_children_package_maintenance.py',
+        'tools/children_package_guard.py','tests/test_children_package_guard.py',
+        'tools/children_package_selection.py','tests/test_children_package_selection.py',
+        'tools/qualify_children_package_guard.py','support/children-maintenance/brotli-package-policy.json',
+        'docs/operations/children-brotli-maintenance.md',
+        'deploy/systemd/children-guest-package-maintenance.service','deploy/systemd/children-packages-daily.service'}
+    brotli_tests=['tests/test_children_package_maintenance.py','tests/test_children_package_selection.py',
+        'tests/test_children_package_guard.py','tests/test_children_daily.py','tests/test_ci_scope.py','tests/test_ci_workflow.py']
+    if ({'support/children-maintenance/brotli-package-policy.json','tools/children_package_guard.py',
+            'tools/children_package_selection.py','tools/children_package_maintenance.py'} <= set(changed)
+            and set(changed)<=brotli_files | CI_FILES | RUNBOOK_DOCS
+            and all((root/name).is_file() for name in brotli_tests)):
+        return 'peer',brotli_tests
     package_maintenance_files = {'tools/children_package_maintenance.py',
                                  'tests/test_children_package_maintenance.py',
                                  'deploy/systemd/children-guest-package-maintenance.service',

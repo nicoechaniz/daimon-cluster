@@ -4,7 +4,11 @@ The maintained Security handoff is Shared Resources
 `docs/services/children-host-security.md`. Full daily maintenance remains
 unfinished. The first deterministic phase is `tools/children_daily.py`; it
 collects the selected host and four guests and matches Debian package evidence.
-It neither installs updates nor deletes files or starts a model/browser.
+The Debian matcher itself installs no packages. The currently selected optional
+phases include bounded compiler cleanup, no-wake browser metadata and
+[selected application inventory](children-application-inventory.md). The existing
+reviewed package coordinator is a separate declared dependency. No phase starts
+a model or opens a browser for a health check.
 
 ## Inventory and Debian advisory phase
 
@@ -70,7 +74,7 @@ python3 -m unittest tests.test_children_daily -q
 
 The initial receiving run is a finite foreground qualification. The maintained
 `deploy/systemd/children-daily-inventory.service` and matching timer run only this
-read-only phase daily at 05:00 UTC, with up to ten minutes of jitter and one
+selected finite phases daily at 05:00 UTC, with up to ten minutes of jitter and one
 persistent catch-up after downtime. Copying the assets does not enable them.
 The trusted operator must first select the checked immutable source through
 `/opt/children-maintenance/selected` and install the private configuration/vendor

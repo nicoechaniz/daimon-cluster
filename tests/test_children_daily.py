@@ -219,5 +219,65 @@ class BrowserObservationTests(unittest.TestCase):
             self.assertNotIn('browser',result['targets']['pixin'])
 
 
+class ApplicationObservationTests(unittest.TestCase):
+    selection={'helper':'/opt/children-maintenance/qualified/reader.py','sha256':'a'*64,
+               'units':{n:['own.service'] for n in ['lordoftheflies','pixin','calipso','c-137','noodles']}}
+
+    def test_application_selection_is_explicit_bounded_and_not_shell(self):
+        daily.validate_application_selection(self.selection)
+        for value in ({},dict(self.selection,units={}),
+                      dict(self.selection,units={**self.selection['units'],'pixin':['own.service; bad']}),
+                      dict(self.selection,units={**self.selection['units'],'pixin':[{}]})):
+            with self.assertRaises(ValueError):daily.validate_application_selection(value)
+
+    def test_reader_uses_own_bounded_native_read_job_and_keeps_partial_data(self):
+        value={'schema':'children-application-inventory/v1','units':{'own.service':{'state':'unavailable','reason':'fixture'}},'coverage':'partial'}
+        with patch.object(daily,'command',return_value=json.dumps(value).encode()) as call:
+            result=daily.application_inventory('pixin','dm-pixin',self.selection)
+        self.assertEqual(result['state'],'unavailable');self.assertEqual(result['units'],value['units'])
+        argv=call.call_args.args[0]
+        self.assertEqual(argv[:4],['incus','exec','dm-pixin','--'])
+        self.assertIn('RuntimeMaxSec=40',argv);self.assertIn('-S',argv)
+        self.assertIn('hashlib.sha256(p.read_bytes())',argv[-1])
+        self.assertEqual(call.call_args.kwargs,{'seconds':55,'limit':384*1024})
+
+    def test_application_read_failure_keeps_other_daily_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config={'state':temp,'scanner':'unused','application_inventory':self.selection,
+                    'targets':[{'id':'pixin','instance':'dm-pixin'}]}
+            observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},
+                      'package_status':'Package: fixture\nVersion: 1\n'}
+            with patch.object(daily,'validate'),patch.object(daily,'fetch_feed',return_value=b'feed'),                  patch.object(daily,'application_inventory',side_effect=ValueError('fixture')),                  patch.object(daily,'command',side_effect=[json.dumps(observed).encode(),b'CVE-fictional\n']):
+                result=daily.collect(config)
+            self.assertEqual(result['targets']['pixin']['applications']['state'],'unavailable')
+            self.assertEqual(result['targets']['pixin']['debian_advisories'],'matched')
+
+    def test_disabled_stage_does_not_run_a_reader(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config={'state':temp,'scanner':'unused','targets':[{'id':'pixin','instance':'dm-pixin'}]}
+            observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},'package_status':'Package: fixture\nVersion: 1\n'}
+            with patch.object(daily,'validate'),patch.object(daily,'fetch_feed',return_value=b'feed'),                  patch.object(daily,'application_inventory',side_effect=AssertionError('disabled')),                  patch.object(daily,'command',side_effect=[json.dumps(observed).encode(),b'']):
+                result=daily.collect(config)
+            self.assertNotIn('applications',result['targets']['pixin'])
+
+
+class CleanupReceiptReadTests(unittest.TestCase):
+    def test_malformed_read_reconciles_receipt_without_another_mutation(self):
+        receipt={'schema':'children-cache-cleanup/v1','status':'complete'}
+        with patch.object(daily,'command',side_effect=[b'',json.dumps(receipt).encode()]) as calls:
+            result=daily.cleanup_receipt('dm-calipso')
+        self.assertEqual(result['status'],'complete')
+        self.assertEqual(result['receipt_read_recovery']['bytes'],0)
+        self.assertEqual(calls.call_count,2)
+        for call in calls.call_args_list:
+            self.assertNotIn('systemctl',call.args[0])
+            self.assertIn('json.loads(raw)',call.args[0][-1])
+
+    def test_second_bad_read_stays_unavailable(self):
+        with patch.object(daily,'command',return_value=b'not-json') as calls:
+            with self.assertRaises(ValueError):daily.cleanup_receipt('dm-calipso')
+        self.assertEqual(calls.call_count,2)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -232,6 +232,12 @@ native/web processes passed. Daily signed-index renewal is explicitly configured
 through their existing APT timers; its next scheduled consumption is unobserved.
 The exact completed package archives were retired after hash verification under
 APT locks. No eligible compiler caches or active guest browsers were observed.
+The read-only package pre-install guard now has actual APT3.0.3 wire evidence
+on all four: the inert reviewed fixture is admitted, while extra service-package,
+active-browser and changed-archive fixtures stop before dpkg. Real package-status
+bytes remained unchanged and fixture payloads were retired. This is component
+qualification, not automatic-update activation; source/maintainer selection and
+the durable daily commit/recovery producer remain unfinished.
 Broader automatic patch transactions, upstream/malicious-release advisories,
 activity-aware cleanup/browser reclamation and independent availability remain unfinished. Follow the
 maintained Shared Resources children-host-security handoff and preserve profiles,

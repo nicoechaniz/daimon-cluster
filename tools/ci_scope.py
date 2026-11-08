@@ -1019,6 +1019,16 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
     if (set(changed) & daily_files and set(changed) <= daily_files | CI_FILES
             and all((root / name).is_file() for name in daily_tests)):
         return 'peer', daily_tests
+    package_guard_files = {'tools/children_package_guard.py',
+                           'tools/qualify_children_package_guard.py',
+                           'tests/test_children_package_guard.py'}
+    package_guard_tests = ['tests/test_children_package_guard.py',
+                           'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & package_guard_files
+            and set(changed) <= package_guard_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / name).is_file() for name in package_guard_tests)):
+        # A read-only APT seam; no daemon, credentials, installer or guest lifecycle.
+        return 'peer', package_guard_tests
     storage_files = {'tools/storage_hygiene.py', 'tests/test_storage_hygiene.py',
                      'docs/operations/host-storage-hygiene.md'}
     storage_tests = ['tests/test_storage_hygiene.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']

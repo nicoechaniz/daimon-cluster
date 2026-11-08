@@ -25,6 +25,20 @@ fresh profile; retain the prior artifact and its expired/unattempted status.
 An uncertain network result instead requires the maintained enrollment check,
 not another identity, key or blind request replay.
 
+## Complete the usable onboarding path first
+
+Nicolas clarified on8November2026 that the promised short onboarding must be a
+real reusable receiving path. An earlier Eko/Oliva deployment or green component
+fixtures do not establish that a fresh companion on another host can be used.
+Close the first actual companion through the existing native conversation
+backend and shared login, then repeat the same supported route for the remaining
+companions. Basic Conversation does not wait for full Tribe membership, Escuela,
+Drive qualification, voice or Avatar polish. Preserve signed identity and actual
+per-pair privacy grants; do not manufacture admission or bypass an active social
+transaction to claim Matrix readiness. Keep the full delivery scope, but do not let optional
+polish or preparatory work displace that first usable result. Report incomplete
+links as implementation work rather than handing technical chores to the human.
+
 ## Existing authority over the selected network
 
 When the selected central authority is already reachable on the host's private
@@ -82,6 +96,16 @@ Inventory/mounts still describe that Incus host. Guest commands and finite owner
 sessions reuse the same parent/instance/guest checks and remote clock rebasing.
 No local Incus fallback, second registry or receiving model is introduced.
 
+For these retained read-only Incus mounts, the controller and physical host must
+resolve the same selected absolute code, input and view paths. A byte-identical
+base at a different controller path does not prove that the physical mount is
+correct. Reuse its verified bytes at the retained mount path, preserving the
+sealed release and separate file ownership; do not substitute a symlink or change
+an existing guest device to a controller-only path. Qualify actual inventory,
+all frozen/runtime/public mounts and an own-UID/OS command through HostBackend
+before selecting that controller. Keep staging separate from canonical running
+admission and Tribe membership.
+
 The operator supplies a publication callback that invokes the existing
 `onboarding_mounts.prepare_matrix_public` on the selected physical host, with
 its qualified existing interpreter/code. Reuse the same validated plan and
@@ -109,7 +133,7 @@ metadata or reinstall a shared development SDK to make a mismatched test pass.
 
 The existing `audio-seed-bank` skill and its transcription/institutional-Drive
 dependencies belong in each child companion's own skill/context installation.
-The stable shared viewer is https://apps.dmn.homes/nexus/?entry=web&table=seed-bank .
+The stable shared viewer is https://apps.dmn.homes/seeds/ .
 Preserve each being's identity and use its own authorized invitation/binding;
 copying a workflow creates no bank or Drive grant. Record installed hashes,
 actual native access and model reading separately. Human-selected seed audio
@@ -117,3 +141,13 @@ retains original bytes, attribution, audience and transcript uncertainty.
 Ordinary voice commands are never automatically archived or transcribed again.
 Nexus owns table grants and Homes owns the canonical Apps publication; reuse
 those maintained services rather than another bank or child-specific app.
+
+## Retained members on different hosts
+
+A guest owner may select its existing private `host_config` and canonical
+`host_config_sha256` together. The existing complete owner-record digest binds
+that choice. Recheck it before effects and require its original explicit native
+or VM placement and plan authorization. Use that owner backend for lifecycle
+preparation and finish; never copy adult administrative grants into child state.
+Omitting both fields retains the original primary-host behavior. This repairs
+the full Tribe coordinator; it is not a prerequisite for basic web Conversation.

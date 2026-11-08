@@ -180,7 +180,8 @@ def test_cohort_budget_is_separate_from_each_target_rpc(fixture, monkeypatch):
 
 @pytest.mark.parametrize('lost_phase', ['communication', 'child'])
 @pytest.mark.parametrize('linked_bound', [False, True])
-def test_worker_prepares_and_binds_every_old_child_without_stopping_members(fixture, monkeypatch, lost_phase, linked_bound):
+@pytest.mark.parametrize('separate_host', [False, True])
+def test_worker_prepares_and_binds_every_old_child_without_stopping_members(fixture, monkeypatch, lost_phase, linked_bound, separate_host):
     """Real worker/journal/binder; native governance/child producer are seams."""
     import uuid
     from clusterctl import onboarding_receiving_update as updates
@@ -208,6 +209,13 @@ def test_worker_prepares_and_binds_every_old_child_without_stopping_members(fixt
     if linked_bound:
         monkeypatch.setattr('clusterctl.onboarding_group_recovery.bounds', lambda journal,row:{
             **row['intended_transition']['cohort_admission']['activation'], 'expires_at_ms':effective})
+    old_backend = object() if separate_host else f.backend
+    old_host = f.store.root.parent/'old-host.json'
+    for name in old:
+        f.owners[name].backend = old_backend
+    if separate_host:
+        monkeypatch.setattr(GroupCoordinator, '_guest_host',
+            lambda self, name: (old_host, {}) if name in old else None)
     children, requests, lose = {}, [], [True]
     communication, schema_calls = {}, []
     def prepare_communication(request, **options):
@@ -230,7 +238,8 @@ def test_worker_prepares_and_binds_every_old_child_without_stopping_members(fixt
     f.owners['newcomer'].group_publication = prepare_communication
     def prepare(backend, plan, selected_journal, request, **options):
         assert communication.get('result'), 'schema preparation must precede old-member preparation'
-        assert backend is f.backend and selected_journal.path == journal.path
+        assert backend is old_backend and selected_journal.path == journal.path
+        assert options['config'] == (old_host if separate_host else Path(before['host_config']))
         assert request['expires_at_ms'] == effective
         assert request['cohort_intent_sha256'] == digest(row['intent'])
         assert request['operation_id'] == social['operation_id']
@@ -796,3 +805,72 @@ def test_empty_group_policy_waits_for_protected_admission_without_pair_fallback(
     observed = coordinator.observe(f.plans['newcomer'])
     assert observed.state == 'waiting' and observed.reason == 'group_admission_required'
     assert not f.calls, 'unbound policy must not invoke any owner or lifecycle producer'
+
+
+def _guest_host_policy(tmp_path):
+    host = tmp_path / 'old-host.json'
+    value = {'selected': 'original old-member host'}
+    being_seed._write(host, value)
+    old = dict(profile='guest', plan=plan(name='old-member'), root='/old/runtime',
+        candidate={'code': '/qualified/code', 'digest': '1' * 64},
+        host_config=str(host), host_config_sha256=digest(value))
+    settings = dict(schema=SCHEMA, tribe_ref='tribe:fixture', journal=str(tmp_path / 'journal'),
+        owners={'old-member': old}, admissions={})
+    return host, value, settings
+
+
+def test_guest_host_reference_is_closed_and_never_changes_default(tmp_path):
+    host, value, settings = _guest_host_policy(tmp_path)
+    path = tmp_path / 'policy.json'
+    being_seed._write(path, settings)
+    assert configuration(path) == settings
+    for key in ('host_config', 'host_config_sha256'):
+        changed = copy.deepcopy(settings)
+        del changed['owners']['old-member'][key]
+        being_seed._write(path, changed)
+        with pytest.raises(OnboardingError, match='coordinator_configuration_required'):
+            configuration(path)
+    for key, invalid in (('host_config', 'relative.json'), ('host_config_sha256', 'not-a-digest')):
+        changed = copy.deepcopy(settings)
+        changed['owners']['old-member'][key] = invalid
+        being_seed._write(path, changed)
+        with pytest.raises(OnboardingError, match='coordinator_configuration_required'):
+            configuration(path)
+    caller = object.__new__(GroupCoordinator)
+    caller.settings = settings
+    caller.backend = object()
+    caller.settings['owners']['newcomer'] = dict(profile='guest', plan=plan(name='newcomer'),
+        root='/new/runtime', candidate={'code': '/qualified/code', 'digest': '2' * 64})
+    assert caller._guest_backend('newcomer') is caller.backend
+
+
+@pytest.mark.parametrize('placement, authorized', [(True, True), (False, True), (True, False)])
+def test_old_guest_uses_its_pinned_host_and_original_grant(tmp_path, monkeypatch, placement, authorized):
+    from clusterctl import onboarding_host
+    host, value, settings = _guest_host_policy(tmp_path)
+    caller = object.__new__(GroupCoordinator)
+    caller.settings, caller.backend = settings, object()
+    chosen = object()
+    calls = []
+    def load(path, *, expected_value):
+        assert path == host and expected_value == value
+        calls.append('load-selected-host')
+        return chosen
+    def construct(config):
+        assert config is chosen
+        return SimpleNamespace(native_body=lambda selected: object() if placement else None,
+            authorize=lambda selected, pin: authorized and selected == settings['owners']['old-member']['plan']
+                and pin == digest(selected))
+    monkeypatch.setattr(onboarding_host.HostConfig, 'load', load)
+    monkeypatch.setattr(onboarding_host, 'HostBackend', construct)
+    if placement and authorized:
+        selected = caller._guest_backend('old-member')
+        assert selected is not caller.backend
+    else:
+        with pytest.raises(OnboardingError, match='onboarding_group_owner_host_required'):
+            caller._guest_backend('old-member')
+    assert calls == ['load-selected-host']
+    being_seed._write(host, {'selected': 'later unrelated host'})
+    with pytest.raises(OnboardingError, match='onboarding_group_owner_host_changed'):
+        caller._guest_backend('old-member')
+    assert calls == ['load-selected-host'], 'changed configuration must fail before constructing a backend'

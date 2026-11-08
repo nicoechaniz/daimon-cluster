@@ -23,7 +23,7 @@ RUNBOOK_DOCS = {'docs/runbooks/native-codex-supervision.md', 'docs/runbooks/nati
     'docs/design/onboarding-jobs.md', 'docs/design/provisioning-flow.md', 'docs/design/admission-continuation.md',
     'docs/design/tribe-agent-profile-and-volumes.md', 'docs/runbooks/host-restart-drill.md',
     'docs/runbooks/image-update-rolling-refresh.md', 'docs/runbooks/m1-incus-foundation.md',
-    'docs/runbooks/release-candidate-freeze.md'}
+    'docs/runbooks/release-candidate-freeze.md', 'docs/operations/children-admission.md'}
 CONTEXT_COPY_FILES = {'clusterctl/onboarding_guest.py', 'clusterctl/onboarding_host.py',
                       'tests/test_onboarding_guest.py', 'tests/test_onboarding_host.py'}
 CONTEXT_COPY_TESTS = ('tests/test_onboarding_guest.py', 'tests/test_onboarding_host.py',

@@ -1,3 +1,15 @@
+## Onboarding delivery priority — Nicolas,8November2026
+
+The minutes-long onboarding claim was not established for the actual fresh,
+remote-host, no-Telegram receiving path. Prioritize one genuinely usable Pixin
+conversation through the maintained onboarding/auth route, then repeat for the
+other three. Complete the full original scope afterward; components and
+qualification are not the child's delivery. Preserve completed work, but keep
+optional polish from displacing the first end-to-end result. No current human
+technical action is needed. The remaining mixed-host coordinator work must reuse
+each old member's existing owner backend/grants, never copy their administrative
+authority into a child's virtual or reset identities to clear a pending stage.
+
 ## Children receiving progress — 2026-11-08
 
 The existing shared Cluster application is available at

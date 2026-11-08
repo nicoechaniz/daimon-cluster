@@ -68,9 +68,33 @@ inventory when the separate vendor matcher fails. Run:
 python3 -m unittest tests.test_children_daily -q
 ```
 
-The initial receiving run is a finite foreground qualification. No recurring
-daily timer is selected merely by copying this script. Continue the same source
-into the complete daily pipeline, with the existing scoped Alerts producer and
+The initial receiving run is a finite foreground qualification. The maintained
+`deploy/systemd/children-daily-inventory.service` and matching timer run only this
+read-only phase daily at 05:00 UTC, with up to ten minutes of jitter and one
+persistent catch-up after downtime. Copying the assets does not enable them.
+The trusted operator must first select the checked immutable source through
+`/opt/children-maintenance/selected` and install the private configuration/vendor
+payload. The service's only writable persistent tree is its bounded daily state;
+its disposable Incus client configuration lives in its private runtime directory.
+It uses the existing local Incus operator route and grants no guest access to the
+host. The hard timeout applies only to inventory/matching, never package writers.
+
+Qualify the installed service once from the existing visible tmux, inspect its
+actual result and all five targets, then enable the timer. Check the next elapse
+and real service limits. Disable future runs with
+`systemctl disable --now children-daily-inventory.timer`; this preserves receipts
+and does not cancel a running read-only check. Stop that service separately only
+when intended. Installation, enablement, exercised matching, alert delivery and
+missed-run supervision are separate observations.
+
+A finished, otherwise unreferenced systemd oneshot can be unloaded and lose its
+transient `ExecMainStartTimestampMonotonic`/invocation properties. A zero value
+is not proof that it did not run. For that case use the retained journal's same
+boot and invocation: link the collector's exact five-target result to the unit's
+completed job after the installation checkpoint. Do not rerun a successful
+collector merely to replace an observation that systemd has reclaimed.
+
+Continue the same source into the complete daily pipeline, with the scoped Alerts producer and
 missed-run observation, supported activity-aware storage hygiene and actual
 package/download policy. Keep host and four guest coverage distinct. The
 stop path disables only its future timer, preserving receipts and any safe

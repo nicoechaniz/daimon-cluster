@@ -6,6 +6,20 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_daily_read_only_collector_keeps_closed_scope(tmp_path):
+    changed = ['tools/children_daily.py', 'tests/test_children_daily.py',
+               'deploy/systemd/children-daily-inventory.service',
+               'deploy/systemd/children-daily-inventory.timer',
+               'docs/operations/children-daily.md', 'tools/ci_scope.py',
+               'tests/test_ci_scope.py']
+    assert select(changed, ROOT) == ('peer', [
+        'tests/test_children_daily.py', 'tests/test_operational_assets.py',
+        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py'])
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for extra in ('clusterctl/onboarding_host.py', 'requirements.txt', 'unknown.py'):
+        assert select([*changed, extra], ROOT) == ('full', ['tests'])
+
+
 def test_native_h8_profile_keeps_real_admission_and_native_group_contracts(tmp_path):
     changed = ['clusterctl/rebirth_host.py', 'clusterctl/rebirth_native.py',
         'clusterctl/onboarding_source.py', 'tests/test_rebirth_native.py',

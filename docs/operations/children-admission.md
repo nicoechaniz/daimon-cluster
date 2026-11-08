@@ -70,6 +70,12 @@ The receiver's read uses both cursors:
 telecodex --control "$RECEIVER_CONFIG" presentation list 0 0
 ```
 
+A newly started service may report active before its control socket exists.
+Use one finite readiness deadline and retry only the read against that same
+process while the socket appears. Keep the original failed probe and inspect
+the service/socket when the deadline expires; do not restart an already healthy
+receiver to clean up a readiness result.
+
 Do not create a synthetic human message or a new native thread to prime the cold
 entry. Its first real human input owns ordinary conversation creation. Preserve
 own prior task threads independently. Shared Home registration/login, native

@@ -22,11 +22,11 @@ import time
 # Standalone selected releases contain the same pinned read/guard helpers.
 if __package__:
     from .children_daily import command, atomic
-    from .children_package_guard import Deferred, PACKAGES, MAX_ARCHIVES, private_json, idle_browser_scope, verify_archive
+    from .children_package_guard import Deferred, PACKAGES, BROTLI, LIBRARY_FILES, TRIGGER_FILES, reviewed_packages, verify_trigger_runtime, MAX_ARCHIVES, private_json, idle_package_scope, verify_archive
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from children_daily import command, atomic
-    from children_package_guard import Deferred, PACKAGES, MAX_ARCHIVES, private_json, idle_browser_scope, verify_archive
+    from children_package_guard import Deferred, PACKAGES, BROTLI, LIBRARY_FILES, TRIGGER_FILES, reviewed_packages, verify_trigger_runtime, MAX_ARCHIVES, private_json, idle_package_scope, verify_archive
 
 MAX_INDEX = 16 * 1024 * 1024
 MAX_STATE = 512 * 1024 * 1024
@@ -142,7 +142,9 @@ def release_fresh(target, now, stamp=Path('/var/lib/apt/periodic/update-stamp'))
 
 
 def record_selection(index, versions):
-    rows = [r for r in paragraphs(index) if r.get('Package') in PACKAGES
+    packages=reviewed_packages(versions)
+    prefix='pool/updates/main/b/brotli/' if packages==BROTLI else 'pool/updates/main/c/chromium/'
+    rows = [r for r in paragraphs(index) if r.get('Package') in packages
             and r.get('Architecture') == 'amd64' and r.get('Version') == versions[r['Package']]]
     selected = {}
     for row in rows:
@@ -152,16 +154,17 @@ def record_selection(index, versions):
         if (not re.fullmatch('[a-f0-9]{64}', row.get('SHA256', ''))
                 or not row.get('Size', '').isdigit()
                 or not 0 < int(row['Size']) <= MAX_ARCHIVES
-                or not row.get('Filename', '').startswith('pool/updates/main/c/chromium/')
+                or not row.get('Filename', '').startswith(prefix)
                 or '..' in PurePosixPath(row['Filename']).parts):
             raise Deferred('malformed_security_record')
         selected[name] = row
-    if set(selected) != PACKAGES or sum(int(v['Size']) for v in selected.values()) > MAX_ARCHIVES:
+    if set(selected) != packages or sum(int(v['Size']) for v in selected.values()) > MAX_ARCHIVES:
         raise Deferred('missing_or_oversized_security_records')
     return selected
 
 
 def plan_exact(text, installed, versions):
+    packages=reviewed_packages(versions)
     seen = set()
     for line in text.splitlines():
         if line.startswith('Remv '):
@@ -172,11 +175,11 @@ def plan_exact(text, installed, versions):
         if not match:
             raise Deferred('unreviewed_package_plan')
         name, old, new = match.groups()
-        if (name not in PACKAGES or name in seen or old != installed[name]
+        if (name not in packages or name in seen or old != installed[name]
                 or new != versions[name]):
             raise Deferred('changed_package_plan')
         seen.add(name)
-    if seen != PACKAGES:
+    if seen != packages:
         raise Deferred('incomplete_package_plan')
 
 
@@ -209,7 +212,7 @@ def inspect_listing(text, policy):
 def inspect_control(raw, policy, package, version):
     scripts = {}
     control = None
-    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+    with tarfile.open(fileobj=io.BytesIO(raw),mode='r:') as archive:
         for member in archive:
             name = member.name.removeprefix('./')
             if name in {'config', 'templates'}:
@@ -228,8 +231,10 @@ def inspect_control(raw, policy, package, version):
                 if not member.isfile() or member.size > 64 * 1024:
                     raise Deferred('maintainer_script_capacity')
                 scripts[name] = hashlib.sha256(archive.extractfile(member).read()).hexdigest()
-            elif name not in {'', '.', 'control', 'conffiles', 'md5sums'}:
+            elif name not in {'', '.', 'control', 'conffiles', 'md5sums','shlibs','symbols'}:
                 raise Deferred('unreviewed_control_metadata')
+            elif name in {'shlibs','symbols'} and (package!='libbrotli1' or not member.isfile() or member.size>64*1024):
+                raise Deferred('unreviewed_library_metadata')
     if (not control or len(control) != 1 or (control[0].get('Package'), control[0].get('Version'),
             control[0].get('Architecture')) != (package, version, 'amd64')
             or control[0].get('Essential', 'no') != 'no'):
@@ -238,18 +243,38 @@ def inspect_control(raw, policy, package, version):
         raise Deferred('changed_maintainer_scripts')
 
 
+def library_payload(raw):
+    expected=LIBRARY_FILES
+    if len(raw)>4*1024*1024:raise Deferred('library_payload_capacity')
+    files={}
+    with tarfile.open(fileobj=io.BytesIO(raw),mode='r:') as archive:
+        for member in archive:
+            name='/'+member.name.removeprefix('./')
+            if name not in expected:continue
+            if name in files or not member.isfile() or not 0<member.size<=2*1024*1024:
+                raise Deferred('library_payload_identity')
+            files[name]=hashlib.sha256(archive.extractfile(member).read()).hexdigest()
+    if set(files)!=expected:raise Deferred('library_payload_incomplete')
+    return files
+
+
 def select(policy, state, *, download=False, run=command, now=None):
     now = time.time() if now is None else now
     if (state / 'manifest.json').exists():
         raise Deferred('pending_transaction_requires_reconciliation')
-    if os.environ.get('APT_CONFIG') or set(policy.get('packages', {})) != PACKAGES:
+    packages=reviewed_packages(policy.get('packages',{}))
+    if os.environ.get('APT_CONFIG'):
         raise Deferred('unreviewed_selection_environment')
+    if packages==BROTLI:
+        if not isinstance(policy.get('trigger_runtime'),dict) or set(policy['trigger_runtime'])!=TRIGGER_FILES:
+            raise Deferred('unreviewed_library_trigger')
+        verify_trigger_runtime(policy['trigger_runtime'])
     read = lambda args, limit=256 * 1024: run(['/usr/bin/env', 'LC_ALL=C', *args], seconds=40, limit=limit)
     check_config(read(['apt-config', 'dump']).decode(), policy)
     target = security_target(read(['apt-get', 'indextargets']).decode())
     index_path = release_fresh(target, now)
     installed, versions = {}, {}
-    for name in sorted(PACKAGES):
+    for name in sorted(packages):
         value = read(['apt-cache', 'policy', name]).decode()
         old = re.findall(r'^\s+Installed: (\S+)$', value, re.M)
         candidate = re.findall(r'^\s+Candidate: (\S+)$', value, re.M)
@@ -270,11 +295,11 @@ def select(policy, state, *, download=False, run=command, now=None):
     if installed == versions:
         return {**result, 'decision': 'up_to_date'}
     # No reinstalls, downgrades or mixed update families in this first policy.
-    for name in PACKAGES:
+    for name in packages:
         run(['dpkg', '--compare-versions', installed[name], 'lt', versions[name]], seconds=5, limit=4096)
-    idle_browser_scope()
+    idle_package_scope(packages)
     argv = ['apt-get', '--no-remove', '--no-install-recommends', 'install', '--only-upgrade',
-            *[n + '=' + versions[n] for n in sorted(PACKAGES)]]
+            *[n + '=' + versions[n] for n in sorted(packages)]]
     plan_exact(read(['apt-get', '-s', *argv[1:]]).decode(), installed, versions)
     if not download:
         return {**result, 'decision': 'review_download_required'}
@@ -299,6 +324,9 @@ def select(policy, state, *, download=False, run=command, now=None):
         inspect_control(read(['dpkg-deb', '--ctrl-tarfile', str(archive)]),
                         policy['packages'][name], name, versions[name])
         inspect_listing(read(['dpkg-deb', '--contents', str(archive)], 512 * 1024).decode(), policy['packages'][name])
+        if packages==BROTLI:
+            manifest['installed_files_sha256']=library_payload(read(['dpkg-deb','--fsys-tarfile',str(archive)],4*1024*1024))
+            manifest['trigger_runtime']=policy['trigger_runtime']
         manifest['packages'][name] = item
     # The existing guard revalidates old/new actions and bytes under APT's lock.
     guard_path = Path(__file__).resolve().with_name('children_package_guard.py')
@@ -328,7 +356,8 @@ def main():
         if os.geteuid() != 0:
             raise Deferred('requires_selected_guest_operator')
         policy = private_json(args.policy, 0)
-        if policy.get('schema') != 'children-browser-package-policy/v1':
+        if ((policy.get('schema'),reviewed_packages(policy.get('packages',{}))) not in {
+                ('children-browser-package-policy/v1',PACKAGES),('children-library-package-policy/v1',BROTLI)}):
             raise Deferred('unknown_package_policy')
         state = args.state.absolute()
         state.mkdir(mode=0o700, parents=True, exist_ok=True)

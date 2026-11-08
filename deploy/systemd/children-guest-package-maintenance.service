@@ -1,11 +1,12 @@
 [Unit]
-Description=Reviewed browser security transaction in the child's own guest
+Description=Reviewed browser and Brotli security transactions in the child's own guest
 After=network-online.target apt-daily.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 -B -I /opt/children-maintenance/package-selected/children_package_maintenance.py --policy /etc/children-maintenance/browser-package-policy.json --state /var/lib/children-maintenance/browser-selection --install
+ExecStart=/usr/bin/python3 -B -I /opt/children-maintenance/package-selected/children_package_maintenance.py --policy /etc/children-maintenance/brotli-package-policy.json --state /var/lib/children-maintenance/brotli-selection --install
 UMask=0077
 # APT/dpkg must finish; a fleet read deadline cannot kill this independent writer.
 TimeoutStartSec=infinity

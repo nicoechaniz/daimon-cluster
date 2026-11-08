@@ -1,3 +1,23 @@
+## Reviewed Brotli update family —2026-11-08
+
+The existing package coordinator supports a separate closed libbrotli1 security
+family alongside its unchanged browser transaction/state. Signed index/archive,
+exact action plan, reviewed scripts/payload and libc-bin trigger/runtime hashes
+are required. Bounded process maps must show no loaded consumer before selection,
+under the APT guard and after installation; no consumer is stopped for admission.
+Postcheck verifies all3installed library image hashes against the reviewed archive,
+dpkg health and unchanged native/web services. Pending/uncertain commit recovery
+only reconciles; original browser journals and occurrence accounting remain.
+
+Actual preflight on all4 selected guests matched installed1.1.0-2+b7 to signed
+Debian-Security1.1.0-2+deb13u1, same303640-byte archive/SHA. The Pixin inert real
+APT3.0.3 seam accepted the separate multi-arch library fixture and retained the
+browser/important-package/activity/corrupt-archive cases, with real/fixture dpkg
+unchanged and synthetic files retired. This is preparation, not installation.
+Native receiving evidence/selection belongs in the current private checkpoint.
+See [Brotli operation](docs/operations/children-brotli-maintenance.md).
+Original no-Telegram social admission and Matrix53 pause remain unchanged.
+
 ## Known exploitation from CISA —2026-11-08
 
 The optional known_exploitation phase intersects current local Debian CVE

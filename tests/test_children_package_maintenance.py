@@ -220,14 +220,16 @@ def test_precommit_rechecks_plan_hold_config_and_service_health(transaction):
         if argv==['apt-get','indextargets']:return b'index fixture'
         if 'cat-file' in argv:return index
         if argv==['apt-mark','showhold']:return '\n'.join(held).encode()
-        if '-s' in argv:return '\n'.join('Inst '+n+' [1] (2 Debian-Security:13/security)' for n in installed).encode()
+        if '-s' in argv:
+            assert 'Dir::Cache::archives='+str(state/'archives') in argv
+            return '\n'.join('Inst '+n+' [1] (2 Debian-Security:13/security)' for n in installed).encode()
         return run(argv,**kwargs)
     # The fixture overrides precommit for state-machine tests. Explicitly use
     # its real wrapped source here rather than that mock.
     real=ORIGINAL_PRECOMMIT
     with patch.object(m.selection,'security_target',return_value={}),\
          patch.object(m.selection,'release_fresh',return_value=Path('/fixture-index')),\
-         patch.object(m,'idle_browser_scope'):
+         patch.object(m,'idle_package_scope'):
         assert real({},state,manifest,native)==services
         held.append('chromium')
         with pytest.raises(Deferred,match='held_browser'):real({},state,manifest,native)
@@ -237,6 +239,63 @@ def test_precommit_rechecks_plan_hold_config_and_service_health(transaction):
 
 
 ORIGINAL_PRECOMMIT=m.precommit
+
+
+def test_coordinator_overlay_resolves_actual_frozen_guard_file(tmp_path):
+    original=tmp_path/'original';original.mkdir();guard=original/'children_package_guard.py';guard.write_text('inert fixture')
+    overlay=tmp_path/'overlay';overlay.mkdir();(overlay/'children_package_guard.py').symlink_to(guard)
+    with patch.object(m,'__file__',str(overlay/'children_package_maintenance.py')):
+        assert str(guard) in m.expected_config(tmp_path).decode()
+        assert str(overlay/'children_package_guard.py') not in m.expected_config(tmp_path).decode()
+
+
+def test_brotli_commit_bytes_health_and_uncertain_postcheck_do_not_replay(transaction):
+    state,installed,services,calls,run,commit=transaction
+    installed.clear();installed['libbrotli1']='1'
+    original=m.selection.select.side_effect
+    def select(*args,**kwargs):
+        result=original(*args,**kwargs)
+        manifest=json.loads((state/'manifest.json').read_bytes())
+        manifest.update(installed_files_sha256={n:'a'*64 for n in m.selection.LIBRARY_FILES},
+                        trigger_runtime={n:'b'*64 for n in m.selection.TRIGGER_FILES})
+        m.save(state/'manifest.json',manifest)
+        result['manifest_sha256']=hashlib.sha256((state/'manifest.json').read_bytes()).hexdigest()
+        return result
+    with patch.object(m.selection,'select',side_effect=select),patch.object(m,'idle_package_scope'),\
+            patch.object(m,'verify_installed_library',side_effect=Deferred('installed_library_bytes_mismatch')):
+        with pytest.raises(Deferred,match='library_bytes'):
+            m.maintain({},state,install=True,run=run,commit=commit)
+    assert len(calls)==1 and (state/'manifest.json').exists()
+    with patch.object(m.selection,'select',side_effect=AssertionError('repeat writer')),\
+            patch.object(m,'idle_package_scope'),patch.object(m,'verify_installed_library') as verify:
+        result=m.maintain({},state,install=True,run=run,commit=commit)
+    assert result['phase']=='complete' and result['observed_versions']=={'libbrotli1':'2'}
+    verify.assert_called_once();assert len(calls)==1 and result['artifacts_retired']
+
+
+def test_installed_library_bytes_not_only_dpkg_version(tmp_path):
+    manifest={'installed_files_sha256':{n:hashlib.sha256(b'ELF!').hexdigest() for n in m.selection.LIBRARY_FILES}}
+    for n in manifest['installed_files_sha256']:
+        p=tmp_path/n.lstrip('/');p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'ELF!')
+    m.verify_installed_library(manifest,tmp_path,os.getuid())
+    p.write_bytes(b'different')
+    with pytest.raises(Deferred,match='bytes_mismatch'):m.verify_installed_library(manifest,tmp_path,os.getuid())
+
+
+def test_fleet_library_failure_not_hidden_by_current_browser_receipt(tmp_path):
+    today=datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    def run(argv,**kwargs):
+        if argv[:2]==['incus','query']:return json.dumps({'usage':{'total':8*m.GIB,'used':0}}).encode()
+        if 'show' in argv:return b'ActiveState=inactive\nLoadState=loaded\nExecMainStatus=0\n'
+        if 'start' in argv:return b''
+        if 'cat' in argv:
+            return json.dumps({'schema':'children-package-maintenance/v1','occurrence':today,
+                               'phase':'deferred' if 'brotli-selection' in argv[-1] else 'complete',
+                               'write_requested':False}).encode()
+        raise AssertionError(argv)
+    result=m.fleet(tmp_path,run=run,include_brotli=True)
+    assert not result['complete'] and len(result['targets'])==4
+    assert all(v['error']=='guest_library_coverage_degraded' for v in result['targets'].values())
 
 
 def test_package_units_keep_writer_independent_of_observer_timeout():

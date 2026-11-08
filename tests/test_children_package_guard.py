@@ -144,6 +144,44 @@ class PackageGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(guard.Deferred, 'archive_capacity'):
             guard.manifest_packages(modified)
 
+    def test_only_separate_closed_brotli_family_with_reviewed_metadata(self):
+        item=next(iter(self.manifest['packages'].values()))
+        self.manifest['packages']={'libbrotli1':item}
+        self.manifest.update(installed_files_sha256={n:'a'*64 for n in guard.LIBRARY_FILES},
+                             trigger_runtime={n:'b'*64 for n in guard.TRIGGER_FILES})
+        self.actions=[f'libbrotli1 1 < 2 {item["archive"]}']
+        with patch.object(guard,'verify_trigger_runtime') as runtime:
+            self.assertEqual(self.check()['decision'],'admitted');self.assertEqual(runtime.call_count,2)
+        self.manifest['packages']['chromium']=item
+        with self.assertRaisesRegex(guard.Deferred,'unreviewed_packages'):self.check()
+        self.manifest['packages'].pop('chromium')
+        self.manifest['trigger_runtime'].pop(next(iter(guard.TRIGGER_FILES)))
+        with self.assertRaisesRegex(guard.Deferred,'library_metadata'):self.check()
+
+    def test_library_active_appearing_consumer_unavailable_or_oversized_maps_defers(self):
+        p=self.proc/'123';p.mkdir();maps=p/'maps';maps.write_text('idle maps')
+        guard.idle_package_scope(guard.BROTLI,self.proc)
+        maps.write_text('/usr/lib/libbrotlidec.so.1 (deleted)')
+        with self.assertRaisesRegex(guard.Deferred,'consumer_active'):
+            guard.idle_package_scope(guard.BROTLI,self.proc)
+        maps.write_bytes(b'x'*(2*1024*1024+1))
+        with self.assertRaisesRegex(guard.Deferred,'capacity'):
+            guard.idle_package_scope(guard.BROTLI,self.proc)
+        with patch.object(Path,'open',side_effect=PermissionError):
+            with self.assertRaisesRegex(guard.Deferred,'observation_unavailable'):
+                guard.idle_package_scope(guard.BROTLI,self.proc)
+
+    def test_brotli_hash_time_consumer_is_rechecked_before_admission(self):
+        item=next(iter(self.manifest['packages'].values()))
+        self.manifest['packages']={'libbrotli1':item}
+        self.manifest.update(installed_files_sha256={n:'a'*64 for n in guard.LIBRARY_FILES},
+                             trigger_runtime={n:'b'*64 for n in guard.TRIGGER_FILES})
+        self.actions=[f'libbrotli1 1 < 2 {item["archive"]}']
+        p=self.proc/'1';p.mkdir();(p/'maps').write_text('idle')
+        def appeared(*a):(p/'maps').write_text('/usr/lib/libbrotlidec.so.1')
+        with patch.object(guard,'verify_trigger_runtime'),self.assertRaisesRegex(guard.Deferred,'consumer_active'):
+            self.check(verify=appeared)
+
 
 if __name__ == '__main__':
     unittest.main()

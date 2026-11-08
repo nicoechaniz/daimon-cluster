@@ -6,6 +6,18 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_brotli_family_requires_coherent_guard_selection_coordinator_and_policy(tmp_path):
+    changed=['tools/children_package_maintenance.py','tools/children_package_selection.py',
+             'tools/children_package_guard.py','support/children-maintenance/brotli-package-policy.json',
+             'tools/qualify_children_package_guard.py','docs/operations/children-brotli-maintenance.md',
+             'tools/ci_scope.py','tests/test_ci_scope.py']
+    assert select(changed,ROOT)==('peer',['tests/test_children_package_maintenance.py',
+        'tests/test_children_package_selection.py','tests/test_children_package_guard.py',
+        'tests/test_children_daily.py','tests/test_ci_scope.py','tests/test_ci_workflow.py'])
+    assert select(changed,tmp_path)==('full',['tests'])
+    assert select([*changed,'clusterctl/admission.py'],ROOT)==('full',['tests'])
+
+
 def test_known_exploitation_selection_keeps_daily_and_public_regressions(tmp_path):
     changed=['tools/children_known_exploitation.py','tests/test_children_known_exploitation.py',
              'tools/children_daily.py','tests/test_children_daily.py','tools/ci_scope.py',

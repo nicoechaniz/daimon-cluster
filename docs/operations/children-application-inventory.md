@@ -1,5 +1,18 @@
 # Selected application inventory without package execution
 
+Optional browser_components uses the same existing read job for guests only.
+It invokes /usr/bin/readelf -dW on the fixed Chromium image, records the direct
+FreeType DT_NEEDED and presence of custom RPATH/RUNPATH, and hashes the standard
+root-owned library file with before/after image/link consistency checks. It
+never executes Chromium, ldd or the library. The331MiB browser is inspected as
+metadata, not copied or silently admitted into the128MiB image-hash budget.
+Browser size is capped512MiB, readelf accepted output64KiB/5seconds, library
+size/hash4MiB within the remaining original hash budget. Existing job40seconds/
+128MiB/25CPU/32tasks and output/state bounds remain. Unknown/changed/oversized
+or unavailable data stays unavailable while other unit observations remain.
+This supports the explicitly selected FreeType source assessment; it is static
+dependency evidence, not upstream authenticity or actual runtime loading.
+
 Invoke `python3 -B -I -S tools/children_application_inventory.py --units NAME.service`
 through the bounded native read job. It reads explicitly selected systemd main
 processes. It binds executable bytes to the actual running PID, then checks the

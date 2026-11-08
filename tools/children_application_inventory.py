@@ -9,10 +9,51 @@ from pathlib import Path
 import re
 import subprocess
 import time
+import stat
 
 MAX_FILE=128*1024*1024
 MAX_METADATA=65536
 MAX_OUTPUT=256*1024
+
+
+def browser_components(check=lambda:None, root=Path('/'), owner_uid=0, run=subprocess.run, budget=4*1024*1024):
+    """Inspect dynamic metadata and a standard library file, never run Chromium/ldd."""
+    binary=root/'usr/lib/chromium/chromium';before=binary.stat()
+    def identity(info):return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+    if (binary.is_symlink() or not stat.S_ISREG(before.st_mode) or before.st_uid!=owner_uid
+            or before.st_mode & 0o022 or not 0<before.st_size<=512*1024*1024):
+        raise ValueError('browser_component_binary_custody')
+    check()
+    reply=run(['/usr/bin/readelf','-dW',str(binary)],capture_output=True,timeout=5,
+              env={**os.environ,'LC_ALL':'C'})
+    check()
+    if reply.returncode or len(reply.stdout)+len(reply.stderr)>65536:
+        raise ValueError('bounded_dynamic_metadata_required')
+    if identity(binary.stat())!=identity(before):raise ValueError('browser_changed_during_metadata_read')
+    text=reply.stdout.decode();needed=re.findall(r'\(NEEDED\).*?\[([^]]+)\]',text)
+    if (not needed or len(needed)>256 or len(set(needed))!=len(needed)
+            or any(not re.fullmatch(r'[A-Za-z0-9_.+\-]{1,128}',v) for v in needed)):
+        raise ValueError('browser_dynamic_dependencies_shape')
+    standard=root/'usr/lib/x86_64-linux-gnu';alias=standard/'libfreetype.so.6';library=alias.resolve(strict=True)
+    if standard.resolve()!=standard or not library.is_relative_to(standard):raise ValueError('nonstandard_freetype_target')
+    for p in [alias,*alias.parents,library]:
+        if not p.is_relative_to(root):continue
+        info=p.lstat()
+        if info.st_uid!=owner_uid or (not p.is_symlink() and info.st_mode & 0o022):
+            raise ValueError('freetype_component_custody')
+    with library.open('rb') as stream:
+        first=os.fstat(stream.fileno())
+        if not stat.S_ISREG(first.st_mode) or not 0<first.st_size<=min(4*1024*1024,budget):
+            raise ValueError('freetype_component_capacity')
+        raw=stream.read(min(4*1024*1024,budget)+1);check();last=os.fstat(stream.fileno())
+    if (len(raw)!=first.st_size or identity(first)!=identity(last) or identity(library.stat())!=identity(first)
+            or alias.resolve(strict=True)!=library):
+        raise ValueError('freetype_changed_during_read')
+    return {'state':'observed','scope':'static-package-dependency-only','direct_freetype_needed':'libfreetype.so.6' in needed,
+            'custom_search_path':bool(re.search(r'\((?:RPATH|RUNPATH)\)',text)),
+            'chromium_bytes':before.st_size,'dynamic_metadata_sha256':hashlib.sha256(reply.stdout).hexdigest(),
+            'freetype_standard_path':True,'freetype_file_bytes':len(raw),'freetype_file_sha256':hashlib.sha256(raw).hexdigest(),
+            'unassessed':['upstream-artifact-authenticity','actual-runtime-loader-environment','loaded-module-and-exposure']}
 
 
 def properties(unit):
@@ -69,7 +110,7 @@ def declared_python_paths(process):
     return result
 
 
-def collect(units, proc=Path('/proc'), seconds=25):
+def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=False):
     if not 1<=len(units)<=8 or len(set(units))!=len(units):
         raise ValueError('bounded_unique_service_selection_required')
     deadline=time.monotonic()+seconds;remaining=MAX_FILE;images={}
@@ -133,16 +174,21 @@ def collect(units, proc=Path('/proc'), seconds=25):
             value['state']='observed'
         except (OSError,ValueError,KeyError,subprocess.SubprocessError) as error:
             value.update(state='unavailable',reason=str(error) if type(error) is ValueError else type(error).__name__)
+    if include_browser_components:
+        try:report['browser_components']=browser_components(check,budget=remaining)
+        except (OSError,ValueError,subprocess.SubprocessError) as error:
+            report['browser_components']={'state':'unavailable','reason':str(error) if type(error) is ValueError else type(error).__name__}
     if len(json.dumps(report).encode())>MAX_OUTPUT:raise ValueError('application_receipt_capacity')
     return report
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--units',nargs='+',required=True)
+    p.add_argument('--browser-components',action='store_true')
     args=p.parse_args()
     try:
-        report=collect(args.units);print(json.dumps(report,sort_keys=True))
-        return 0 if all(v.get('state')=='observed' for v in report['units'].values()) else 2
+        report=collect(args.units,include_browser_components=args.browser_components);print(json.dumps(report,sort_keys=True))
+        return 0 if all(v.get('state')=='observed' for v in report['units'].values()) and report.get('browser_components',{}).get('state','observed')=='observed' else 2
     except (OSError,ValueError,subprocess.SubprocessError) as error:
         print(json.dumps({'schema':'children-application-inventory/v1','state':'unavailable',
                           'reason':type(error).__name__}));return 2

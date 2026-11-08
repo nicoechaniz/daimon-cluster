@@ -1,3 +1,24 @@
+## Static FreeType component assessment —2026-11-08
+
+Optional application browser_components uses the existing guest read job to
+inspect Chromium DT_NEEDED through readelf and hash its standard root-owned
+FreeType file, without executing either image or ldd. Actual all4 read-only
+qualification observed direct libfreetype.so.6, no custom RPATH/RUNPATH, identical
+dynamic-metadata SHA and845736-byte library SHA, and installed source version
+2.13.3+dfsg-1+deb13u1. The current primary Debian CVE2020record marks that exact
+trixie-security component fixed. This is static evidence, not loaded-code or
+upstream artifact authenticity proof.
+
+Explicit assess_freetype requires both that native read and Chromium assessment.
+Match only this identified component/source relationship with exact current
+versions; contradictory current Chromium status, unknown/changed components,
+other affected packages or unavailable primary data remain pending. Preserve
+raw leads and current open vendor candidates. The extra fixed GET is1MiB, with
+KEV11MiB/Chromium4MiB/component1MiB within the original16MiB phase and64MiB daily
+network bound. Existing runtime/hash/output/state bounds and timers remain.
+Actual selected receiving/context/failure outcomes belong in the private current
+checkpoint. Original full no-Telegram admission and Matrix53 pause remain.
+
 ## Primary Debian Chromium assessment —2026-11-08
 
 The optional known-exploitation assess_chromium flag fetches the fixed public

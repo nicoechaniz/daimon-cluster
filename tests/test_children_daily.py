@@ -223,6 +223,14 @@ class ApplicationObservationTests(unittest.TestCase):
     selection={'helper':'/opt/children-maintenance/qualified/reader.py','sha256':'a'*64,
                'units':{n:['own.service'] for n in ['lordoftheflies','pixin','calipso','c-137','noodles']}}
 
+    def test_selected_components_cannot_hide_missing_data_or_require_host_browser(self):
+        value={'schema':'children-application-inventory/v1','units':{'own.service':{'state':'observed'}}}
+        chosen=dict(self.selection,browser_components=True)
+        with patch.object(daily,'command',return_value=json.dumps(value).encode()):
+            self.assertEqual(daily.application_inventory('pixin','dm-pixin',chosen)['state'],'unavailable')
+            self.assertEqual(daily.application_inventory('lordoftheflies',None,chosen)['state'],'observed')
+        with self.assertRaises(ValueError):daily.validate_application_selection(dict(self.selection,browser_components='yes'))
+
     def test_application_selection_is_explicit_bounded_and_not_shell(self):
         daily.validate_application_selection(self.selection)
         for value in ({},dict(self.selection,units={}),
@@ -321,6 +329,8 @@ class KnownExploitationTests(unittest.TestCase):
 
     def test_vendor_selection_is_explicit_and_boolean(self):
         daily.validate_known_selection(dict(self.selection,assess_chromium=True))
+        daily.validate_known_selection(dict(self.selection,assess_chromium=True,assess_freetype=True))
+        with self.assertRaises(ValueError):daily.validate_known_selection(dict(self.selection,assess_freetype=True))
         for value in ({},dict(self.selection,assess_chromium='yes'),dict(self.selection,source='arbitrary')):
             with self.assertRaises(ValueError):daily.validate_known_selection(value)
 

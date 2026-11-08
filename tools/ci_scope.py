@@ -1024,6 +1024,17 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
             and set(changed) <= bounded_cleanup_files | CI_FILES | RUNBOOK_DOCS
             and all((root / name).is_file() for name in bounded_cleanup_tests)):
         return 'peer', bounded_cleanup_tests
+    component_files={'tools/children_known_exploitation.py','tests/test_children_known_exploitation.py',
+        'tools/children_application_inventory.py','tests/test_children_application_inventory.py',
+        'tools/children_daily.py','tests/test_children_daily.py',
+        'docs/operations/children-known-exploitation.md','docs/operations/children-application-inventory.md'}
+    component_tests=['tests/test_children_known_exploitation.py','tests/test_children_application_inventory.py',
+        'tests/test_children_daily.py','tests/test_children_public_advisories.py','tests/test_children_browser.py',
+        'tests/test_ci_scope.py','tests/test_ci_workflow.py']
+    if ({'tools/children_known_exploitation.py','tools/children_application_inventory.py','tools/children_daily.py'}<=set(changed)
+            and set(changed)<=component_files | CI_FILES | RUNBOOK_DOCS
+            and all((root/name).is_file() for name in component_tests)):
+        return 'peer',component_tests
     kev_files = {'tools/children_known_exploitation.py','tests/test_children_known_exploitation.py',
         'tools/children_daily.py','tests/test_children_daily.py',
         'docs/operations/children-known-exploitation.md'}

@@ -132,6 +132,9 @@ def validate(config):
         raise ValueError('explicit_daily_configuration_required')
     if 'known_exploitation' in config:
         validate_known_selection(config['known_exploitation'])
+        if (config['known_exploitation'].get('assess_freetype') and
+                not config.get('application_inventory',{}).get('browser_components')):
+            raise ValueError('current_browser_components_required_for_freetype')
     if 'public_advisories' in config:
         if 'application_inventory' not in config:raise ValueError('application_inventory_required_for_advisories')
         validate_advisory_selection(config['public_advisories'])
@@ -166,8 +169,9 @@ def validate_browser_selection(value):
 
 
 def validate_known_selection(value):
-    if (not isinstance(value,dict) or not {'helper','sha256'}<=set(value) or set(value)-{'helper','sha256','assess_chromium'}
-            or type(value.get('assess_chromium',False)) is not bool):
+    if (not isinstance(value,dict) or not {'helper','sha256'}<=set(value) or set(value)-{'helper','sha256','assess_chromium','assess_freetype'}
+            or type(value.get('assess_chromium',False)) is not bool or type(value.get('assess_freetype',False)) is not bool
+            or (value.get('assess_freetype') and not value.get('assess_chromium'))):
         raise ValueError('explicit_known_exploitation_selection_required')
     validate_browser_selection({k:value[k] for k in ('helper','sha256')})
 
@@ -212,7 +216,9 @@ print(json.dumps(value))
 
 
 def validate_application_selection(selection):
-    if not isinstance(selection,dict) or set(selection)!={'helper','sha256','units'}:
+    if (not isinstance(selection,dict) or not {'helper','sha256','units'}<=set(selection)
+            or set(selection)-{'helper','sha256','units','browser_components'}
+            or type(selection.get('browser_components',False)) is not bool):
         raise ValueError('explicit_application_selection_required')
     validate_browser_selection({k:selection[k] for k in ('helper','sha256')})
     units=selection['units']
@@ -238,7 +244,8 @@ for item in [p,*p.parents]:
 if hashlib.sha256(p.read_bytes()).hexdigest()!=selection['sha256']:raise ValueError('application_helper_bytes')
 spec=importlib.util.spec_from_file_location('selected_application_reader',p)
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-print(json.dumps(m.collect(selection['units'][name]),sort_keys=True))
+options={'include_browser_components':True} if selection.get('browser_components') and name!='lordoftheflies' else {}
+print(json.dumps(m.collect(selection['units'][name],**options),sort_keys=True))
 '''
     argv=['systemd-run','--unit=children-application-inventory-daily','--collect','--pipe','--wait',
           '-p','RuntimeMaxSec=40','-p','MemoryMax=128M','-p','CPUQuota=25%','-p','TasksMax=32',
@@ -250,7 +257,10 @@ print(json.dumps(m.collect(selection['units'][name]),sort_keys=True))
             or set(value['units'])!=set(selection['units'][name])
             or any(not isinstance(v,dict) for v in value['units'].values())):
         raise ValueError('application_inventory_schema')
-    return {**value,'state':'observed' if all(v.get('state')=='observed' for v in value['units'].values()) else 'unavailable',
+    complete=all(v.get('state')=='observed' for v in value['units'].values())
+    if selection.get('browser_components') and instance:
+        complete=complete and value.get('browser_components',{}).get('state')=='observed'
+    return {**value,'state':'observed' if complete else 'unavailable',
             'helper_sha256':selection['sha256']}
 
 
@@ -365,7 +375,11 @@ def known_exploitation(selection, candidates, report, root):
         if selection.get('assess_chromium'):
             contexts={name:module.chromium_context((root/name/'packages.status').read_text(),
                 (root/name/'debian-findings.txt').read_text()) for name in ('pixin','calipso','c-137','noodles')}
-            result=module.assess_chromium(result,contexts)
+            options={}
+            if selection.get('assess_freetype'):
+                options['freetype_components']={name:report['targets'][name]['applications'].get('browser_components',{})
+                    for name in ('pixin','calipso','c-137','noodles')}
+            result=module.assess_chromium(result,contexts,**options)
         if (result.get('schema')!='children-known-exploitation/v1' or result.get('state')!='matched'
                 or type(result.get('needs_triage')) is not bool):raise ValueError('kev_result_schema')
         raw=json.dumps(result,sort_keys=True).encode()

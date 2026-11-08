@@ -1,8 +1,10 @@
 """Finite owner conversation over its qualified CLI, never a listener or model.
 
-Each request keeps the existing native journal/authentication. The caller still
-checks fresh stopped-service evidence before every write; this scope only avoids
-repeated interpreter, custody and runtime initialization within one invocation.
+Each request keeps the existing native journal/authentication. Full receiving
+updates retain their stopped-service barrier. Explicit membership-only admission
+holds every required native writer continuously, with live qualified CLI handles;
+no historical stop receipt substitutes for that ownership. The finite scope also
+avoids repeated interpreter, custody and runtime initialization.
 """
 from __future__ import annotations
 
@@ -86,6 +88,7 @@ class OwnerConversation:
         self.validate, self.options = validate, options
         self.process = self.frames = None
         self.sequence = 0
+        self.ready = False
 
     def __enter__(self):
         self.validate()
@@ -98,6 +101,7 @@ class OwnerConversation:
             self.frames.write(self.packet)
             if self.frames.read() != {'ready': True}:
                 raise OnboardingError('receiving_owner_session_unavailable')
+            self.ready = True
             return self
         except BaseException as error:
             self.__exit__(type(error), error, error.__traceback__)
@@ -112,7 +116,14 @@ class OwnerConversation:
             raise OnboardingError('receiving_owner_session_unavailable')
         return result['result']
 
+    def writer_held(self):
+        """The pinned owner CLI acknowledged entry under its native writer."""
+        self.validate()
+        return (self.ready and self.process is not None and self.process.poll() is None
+                and time.monotonic_ns() < self.deadline_ns)
+
     def __exit__(self, exc_type, _error, _traceback):
+        self.ready = False
         if self.process is None:
             return
         process, self.process = self.process, None

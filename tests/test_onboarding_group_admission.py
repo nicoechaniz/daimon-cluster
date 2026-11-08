@@ -272,9 +272,12 @@ def test_linked_continuation_reinspects_and_recovers_real_native_acceptance(grou
     assert {name:(root/'runtime.json').read_bytes() for name,root in roots.items()}==identities
 
 
-def test_protected_social_phase_resumes_partial_native_distribution(group_source, tmp_path, monkeypatch):
+@pytest.mark.parametrize("native_only", [False, True])
+def test_protected_social_phase_resumes_partial_native_distribution(group_source, tmp_path, monkeypatch, native_only):
     """Real native Roots/RPC/journal; physical quiescence is an explicit seam."""
     from types import SimpleNamespace
+    from contextlib import contextmanager, ExitStack
+    from clusterctl.onboarding_group_session import RelationshipSession
     from clusterctl import onboarding_group_admission as social
     from clusterctl.onboarding_code_successor import plan_update
     from clusterctl.onboarding_group_admission import membership_recipe
@@ -341,10 +344,31 @@ def test_protected_social_phase_resumes_partial_native_distribution(group_source
         deadline_ns = None
         def __init__(self, name, local):
             self.name, self.local, self.root, self.socket = name, local, roots[name], roots[name]/'tribe.sock'
+        @contextmanager
+        def group_relationship_scope(self):
+            self.sessions, self.session = ExitStack(), None
+            try:
+                yield
+            finally:
+                self.sessions.close()
+                self.session = None
+        def relationship_writer_held(self):
+            from daimon_matrix.daemon import acquire_lock
+            assert self.session is not None
+            with pytest.raises(BlockingIOError):
+                acquire_lock(self.root)
+            return fault['barrier'] == 'stopped'
         def group_relationship(self, value, **options):
             calls.append((self.name, copy.deepcopy(value)))
             assert self.deadline_ns > time.monotonic_ns()
-            result = self.local.group_relationship(value, **options)
+            if native_only:
+                packet = dict(command=value, offline=True, **{key: item for key, item in options.items() if key != 'offline'})
+                if self.session is None:
+                    self.session = self.sessions.enter_context(RelationshipSession(self.local, packet,
+                        deadline_ns=self.deadline_ns, target=self.name != 'founder'))
+                result = self.session.call(packet)
+            else:
+                result = self.local.group_relationship(value, **options)
             if self.name == 'founder' and value['step'] == 'membership-acceptance' and fault['ingest']:
                 fault['ingest'] = False
                 raise OSError('synthetic lost acceptance intake response')
@@ -356,20 +380,26 @@ def test_protected_social_phase_resumes_partial_native_distribution(group_source
         expected_precondition=dict(tribe_ref=admission['tribe_ref'], senders=[sender],
             receiver_selections={name: None for name in owners}),
         intended_transition=dict(cohort_admission=admission,
-            portal_admission=dict(schema='cluster-portal-group-admission/v2', social=recipe)),
+            portal_admission=dict(schema='cluster-portal-group-admission/v2', social=recipe),
+            **({'membership_only': {'schema': 'cluster-native-membership-only/v1'}} if native_only else {})),
         audit_identity={'actor': 'synthetic-host'})
     cohort = CohortController(journal, row['operation_id'], owners)
+    if not native_only:
+        with pytest.raises(OnboardingError, match='membership_only_intent_required'):
+            cohort.admit_membership_only(deadline_ns=time.monotonic_ns()+30_000_000_000)
+        assert calls == []
+    join = cohort.admit_membership_only if native_only else cohort.admit_membership
     monkeypatch.setattr(cohort, 'require_revocation_barrier', lambda: dict(
         schema='cluster-receiving-admission-barrier/v1', current_senders={'founder': {'state': fault['barrier']}}))
     with pytest.raises(OnboardingError, match='quiescence_required'):
-        cohort.admit_membership(deadline_ns=time.monotonic_ns()+30_000_000_000)
-    assert calls == []
+        join(deadline_ns=time.monotonic_ns()+30_000_000_000)
+    assert all(value['method'] == 'relationship.snapshot' for _, value in calls) if native_only else calls == []
     pending = journal.get(row['operation_id'])['runtime_observation']['membership_admission']['requests']
     assert pending['founder']['membership-invite']['result'] is None
     assert pending['founder']['membership-invite']['command']['params']['payload'] == recipe['invitation']
     fault.update(barrier='stopped', accept=True)
     with pytest.raises(OSError, match='lost membership acceptance response'):
-        cohort.admit_membership(deadline_ns=time.monotonic_ns()+30_000_000_000)
+        join(deadline_ns=time.monotonic_ns()+30_000_000_000)
     commands = journal.get(row['operation_id'])['runtime_observation']['membership_admission']['requests']
     frozen_accept = copy.deepcopy(commands['entrant']['membership-accept']['command'])
     assert commands['entrant']['membership-accept']['result'] is None
@@ -389,7 +419,7 @@ def test_protected_social_phase_resumes_partial_native_distribution(group_source
     monkeypatch.setattr(social, 'load_owner_runtime', late_owner_load)
     fault['ingest'] = True
     with pytest.raises(OSError, match='lost acceptance intake response'):
-        cohort.admit_membership(deadline_ns=time.monotonic_ns()+30_000_000_000)
+        join(deadline_ns=time.monotonic_ns()+30_000_000_000)
     retained = journal.get(row['operation_id'])
     assert retained['state'] == 'planned'
     commands = retained['runtime_observation']['membership_admission']['requests']
@@ -397,7 +427,7 @@ def test_protected_social_phase_resumes_partial_native_distribution(group_source
     assert commands['entrant']['membership-accept']['command'] == frozen_accept
     assert commands['founder']['membership-acceptance']['result'] is None
     count_before = len(calls)
-    result = cohort.admit_membership(deadline_ns=time.monotonic_ns()+30_000_000_000)
+    result = join(deadline_ns=time.monotonic_ns()+30_000_000_000)
     assert result['schema'] == 'cluster-native-membership-admission/v1'
     assert result['receiving_readiness'] == 'unobserved' and result['acceptance'] == accepted
     assert all(value['step'] not in {'membership-invite', 'membership-accept'} for _, value in calls[count_before:])
@@ -405,7 +435,7 @@ def test_protected_social_phase_resumes_partial_native_distribution(group_source
     assert row['runtime_observation']['membership_admission']['requests']['entrant']['membership-accept']['command'] == frozen_accept
     count_before = len(calls)
     monkeypatch.setattr(cohort, 'require_revocation_barrier', lambda: pytest.fail('completed social phase repeated a physical barrier'))
-    assert cohort.admit_membership(deadline_ns=time.monotonic_ns()+30_000_000_000) == result
+    assert join(deadline_ns=time.monotonic_ns()+30_000_000_000) == result
     assert len(calls) == count_before and row['state'] == 'planned'
     assert not (roots['entrant']/'matrix.sock').exists()
     assert all(owner.deadline_ns is None for owner in owners.values())

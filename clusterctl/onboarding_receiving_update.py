@@ -583,6 +583,10 @@ class GuestGroupClient:
         code, code_digest = self.maintenance or self.candidate
         return supported_scope(self, code, uid=os.geteuid(), code_digest=code_digest)
 
+    def relationship_writer_held(self):
+        current = self._relationship_process
+        return current is not None and current.writer_held()
+
     def group_publication(self, command: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None,
                           remaining_execution=None) -> dict:
@@ -803,6 +807,10 @@ class SourceGroupClient:
         from .onboarding_group_session import supported_scope
         code, code_digest = self.maintenance or (self.code, self.code_digest)
         return supported_scope(self, code, uid=self.code_uid, code_digest=code_digest)
+
+    def relationship_writer_held(self):
+        current = self._relationship_process
+        return current is not None and current.writer_held()
 
     def _relationship_conversation(self, packet):
         from .onboarding_group_session import OwnerConversation
@@ -3761,6 +3769,17 @@ class CohortController:
         from .onboarding_group_admission import admit_membership
         with self.journal.mutation_lock(self.operation_id), self._observation_scope():
             return admit_membership(self, deadline_ns=deadline_ns)
+
+    def admit_membership_only(self, *, deadline_ns: int) -> dict:
+        """Run the same signed phase under all owners' exclusive native writers.
+
+        Only an explicit protected admission-only intent selects this path.
+        It neither publishes a group nor discharges existing outbound policy.
+        The physical caller owns scoped Matrix stop/start and forward recovery.
+        """
+        from .onboarding_group_admission import admit_membership
+        with self.journal.mutation_lock(self.operation_id), self._observation_scope():
+            return admit_membership(self, deadline_ns=deadline_ns, native_only=True)
 
     def publish_admission_group(self, *, deadline_ns: int) -> dict:
         """Publish only the protected post-membership offline group phase."""

@@ -328,3 +328,38 @@ unit and actual successor process. This proves code selection and native
 presence only, not signed membership, readable group selection, messaging
 release, device acceptance or model reading. Keep these later observations
 separate, and never use a code update to extend an expired social recipe.
+
+## Signed membership without messaging publication
+
+For an already admitted original body, a protected receiving operation may
+select exactly `membership_only: {"schema":"cluster-native-membership-only/v1"}`
+in its intended transition. Keep its original job/plan and owner bindings,
+verified public authority closure, current native governance and fixed social
+recipe. `GroupCoordinator.advance` then calls `advance_membership_only`, which
+reuses `CohortController.admit_membership_only` and the existing signed native
+invite/accept/ingest sequence. It does not enter controller bootstrap, group
+publication, native-conversation priming, Telegram or technical speech.
+
+The physical caller owns scoped maintenance of the actual Matrix units and
+forward recovery. Before governance mutation, the coordinator opens every
+required owner's qualified finite CLI under that owner's existing exclusive
+native writer. A running Matrix daemon refuses that same kernel lock. The
+coordinator keeps all writer sessions alive throughout the signed phase and
+checks their liveness before every missing effect. Historical stopped receipts
+cannot replace these writers. The original full messaging path keeps its old
+revocation/lifecycle/publication requirements; unmarked old preparation intents
+cannot acquire admission-only effects. Admission-only rejects publication or
+communication scopes in the same intent.
+
+Native requests and fixed acceptance timestamps remain in their original
+journals across lost acknowledgements. A completed social result is historical,
+with receiving readiness unobserved; it does not reopen writers or repeat
+signatures. Preserve expired/unattempted social drafts rather than extending or
+replaying them. Use actual current native state for the next authorized missing
+admission, and retain an uncertain original under its exact request identity.
+
+After signed membership, retain each owner's approved public verification
+context with the existing `membership-authorities` owner operation. Complete
+actual serving-code/context adoption and receive-side grants separately. Group
+receiving qualification, outbound visibility and messaging release retain their
+own truthful states and obligations. No child Telegram account is required.

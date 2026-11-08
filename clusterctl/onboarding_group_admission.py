@@ -173,12 +173,13 @@ def admission_owner_contexts(row: dict, social: dict) -> dict:
     return contexts
 
 
-def admit_membership(cohort, *, deadline_ns: int) -> dict:
+def admit_membership(cohort, *, deadline_ns: int, native_only: bool = False) -> dict:
     """Resume the fixed native social phase; never publish or enable a group.
 
-    The physical caller still owns preparing/binding every old lifecycle and
-    stopping its Matrix service. This phase requires their observed quiescence,
-    uses only the operation's protected recipe and retains commands before RPC.
+    The physical caller owns scoped Matrix maintenance. The full path retains
+    its old lifecycle/revocation barrier; explicit membership-only intent instead
+    holds every actual native writer continuously. Both paths use the same fixed
+    signed sequence and retain commands before RPC.
     """
     from daimon_matrix.relationships import (
         MEMBERSHIP_ACCEPTANCE_SCHEMA, relationship_event_subject, validate_relationship_event_payload,
@@ -193,6 +194,12 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
 
     with cohort.journal.mutation_lock(cohort.operation_id), ExitStack() as scope:
         row = cohort._row()
+        if (type(native_only) is not bool or native_only and (
+                row['intended_transition'].get('membership_only') != {
+                    'schema': 'cluster-native-membership-only/v1'}
+                or any(key in row['intended_transition'] for key in (
+                    'admission_publications', 'admission_communication', 'cohort_activation')))):
+            raise OnboardingError('onboarding_group_membership_only_intent_required')
         admission = cohort._admission(row)
         portal = row['intended_transition'].get('portal_admission', {})
         if admission is None or portal.get('schema') != 'cluster-portal-group-admission/v2':
@@ -222,9 +229,33 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
             if callable(session):
                 scope.enter_context(session())
         contexts = admission_owner_contexts(row, recipe)
+        writers_opened = False
 
         def barrier():
+            nonlocal writers_opened
             budget()
+            if native_only:
+                # Opening each qualified finite CLI acquires that owner's
+                # existing native writer before any governance mutation. A
+                # running daemon refuses the same kernel lock. Keep ALL these
+                # sessions alive across the complete signed phase; a historical
+                # service stop receipt alone cannot authorize it.
+                if not writers_opened:
+                    for name, owner in sorted(cohort.owners.items()):
+                        options = dict(authority_closure={ref: value
+                            for ref, value in recipe['authority_closure'].items()
+                            if ref != admission['receivers'][name]['being_ref']},
+                            expected_context_sha256=contexts[name])
+                        if admission['receivers'][name]['recipe']['profile'] == 'source':
+                            options['offline'] = True
+                        owner.group_relationship(dict(operation_id=recipe['operation_id'],
+                            step='membership-writer-observation', method='relationship.snapshot',
+                            params=dict(tribe_ref=admission['tribe_ref'], at_ms=None)), **options)
+                    writers_opened = True
+                if any(not callable(getattr(owner, 'relationship_writer_held', None))
+                        or not owner.relationship_writer_held() for owner in cohort.owners.values()):
+                    raise OnboardingError('onboarding_group_membership_quiescence_required')
+                return
             recovery.attached(cohort.journal, row)
             proof = cohort.require_revocation_barrier()
             if (proof.get('schema') != 'cluster-receiving-admission-barrier/v1'

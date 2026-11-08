@@ -112,3 +112,54 @@ removed only its disposable quota volumes. A live peer HTTP listener remained
 healthy before and after denial from its neighbour; guest-to-host SSH was also
 denied, both owned drop counters increased, and DNS/HTTPS egress passed. This is
 network/resource enforcement, not companion identity or application acceptance.
+
+## Receiving resource checkpoint —8November2026
+
+The four actual environments dm-pixin, dm-calipso, dm-c-137 and dm-noodles are
+created and running. Each exact resource plan binds its own prepared empty-new
+seed; real guest cgroup and private mount checks passed for all four. Two
+marked synthetic qualification containers and their owned auxiliary volumes
+were retired only after terminal quota, network and account-bootstrap proof.
+Their small evidence records remain. No signed identity, provider/model turn,
+Tribe admission or child acceptance is implied by resource preparation.
+
+The host has4GiB fast swap and swappiness20, verified active. Effective merged
+journald limits are256MiB system/32MiB runtime on the host and64/16MiB in each
+child container, retaining at most seven days. All five journal services were
+active after selection. No reboot test was performed. Source's original network
+identity remains on ITACA; this host joined with its own fresh network identity.
+
+[The Alerts link and storage observer](children-alerts-link.md) records the
+receiving route, least-authority scope, actual checks and remaining qualification.
+Daily security/advisory assessment and activity-aware cleanup remain unfinished;
+these capacity/journal controls do not establish that pipeline.
+
+## Entry and progress supervision —8November2026
+
+Nicolas explicitly selected web/Avatar entry for all four children, without
+Telegram. Do not request bot tokens, run Telegram getMe, or create bots for them.
+Oliva keeps her existing ai01 configuration. The children's selected service
+account remains distinct from CompAII's. A legacy onboarding stage that requires
+a bot is an implementation gap to adapt through the owning App contract; it is
+not an additional human prerequisite. Context/memory preparation can continue
+independently. No voice gender or character has yet been selected by the children.
+
+The existing Heartbeat goal is active; its implementation remains with that
+owner. Clúster installed a separate model-free checkpoint freshness observation
+on ITACA, running every five minutes for at most24hours/288checks. It reads only
+the owning current checkpoint, bounds source reads to256KiB and keeps only current
+and previous summaries, each at most64KiB. Missing/unreadable checkpoints or an
+unchanged checkpoint older than30minutes mark review as needed. A changed hash
+is not proof of useful work, native readiness, message delivery or acceptance.
+It creates no model wakeup and cannot resume goals, alter contracts or call a
+provider. First actual observation succeeded; full time-window exhaustion has
+not been exercised. Stop with `systemctl stop children-progress-watch.timer`;
+remove its enablement with `systemctl disable children-progress-watch.timer`.
+The original heartbeat's continuous operation request has no24hour expiry; only
+this temporary deployment-progress observation is bounded. Do not reset an
+existing observation window to hide expiry or retain an accumulating event log.
+
+The four prepared private initial contexts and qualified public code arrived at
+the target with the expected transfer digest. Bounded extraction verified421
+ordinary files/directories and72,769,978expanded bytes. This prepares host inputs;
+it does not install context into a guest or establish a signed identity.

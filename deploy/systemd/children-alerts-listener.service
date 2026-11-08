@@ -1,0 +1,21 @@
+[Unit]
+Description=Restricted reverse-forward listener for children's host Alerts
+After=network-online.target zerotier-one.service
+Wants=network-online.target
+[Service]
+Type=simple
+RuntimeDirectory=children-alerts-link
+RuntimeDirectoryMode=0700
+ExecStart=/usr/sbin/sshd -D -e -f /etc/children-alerts-link/sshd.conf
+Restart=on-failure
+RestartSec=10
+MemoryMax=64M
+TasksMax=32
+CPUQuota=10%
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/run/children-alerts-link
+ProtectHome=yes
+PrivateTmp=yes
+[Install]
+WantedBy=multi-user.target

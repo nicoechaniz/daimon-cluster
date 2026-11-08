@@ -19,14 +19,18 @@ def source(tmp_path, monkeypatch):
     def row(n):
         return dict(being_ref=f'being-{n}', label=f'Companion {n}',
                     human_ref=f'human:local:00000000-0000-4000-8000-{n:012d}',
-                    human_name=f'Person {n}', origin=f'body-{n}',
+                    human_name=f'Person {n}', origin=dict(principal_id=f'principal-{n}',
+                        embodiment_id=f'embodiment-{n}', incarnation_id=f'incarnation-{n}',
+                        body_ref=f'body-{n}'),
                     authority_file=str(tmp_path / f'proof-{n}'), enabled=True)
 
     declaration = dict(schema='dm.home-identities/v1', telegram_source=None,
                        web=[row(1), row(2)])
     old = dict(being_ref='adult', label='Adult companion', human_id=123,
                human_name='Adult', bot_id=456, username='adult_bot',
-               origin='adult-body', authority_file=str(tmp_path/'adult-proof'), enabled=True)
+               origin=dict(principal_id='adult-principal', embodiment_id='adult-embodiment',
+                           incarnation_id='adult-incarnation', body_ref='adult-body'),
+               authority_file=str(tmp_path/'adult-proof'), enabled=True)
     documents = {str(tmp_path/'bindings'): declaration,
                  **{r['authority_file']: {'being': r['being_ref'], 'origin': r['origin']}
                     for r in declaration['web'] + [old]}}
@@ -98,7 +102,7 @@ def test_existing_browser_approval_and_paired_app_route_need_no_telegram(source,
 @pytest.mark.parametrize('change', [
     {'human_ref': 'human:telegram:123'}, {'human_ref': 'human:local:invalid'},
     {'bot_id': 123}, {'enabled': 1}, {'authority_file': '../proof'},
-    {'origin': 'revoked'}, {'being_ref': 'foreign'},
+    {'origin': 'revoked'}, {'origin': {'body_ref': 'foreign'}}, {'being_ref': 'foreign'},
 ])
 def test_invalid_or_inactive_web_binding_is_refused(source, change):
     a, doc, _, _, _ = source
@@ -121,3 +125,40 @@ def test_closed_bounded_operator_declaration(source, change):
     a, doc, _, _, _ = source
     doc.update(change)
     with pytest.raises(ValueError): a.bindings()
+
+
+def test_real_native_authority_accepts_structured_origin_and_rejects_foreign_body(tmp_path):
+    # Use the SDK's isolated synthetic identity, with real native signatures and
+    # validators. No live custody, account, Matrix runtime or transport is read.
+    from daimon_matrix.synthetic_relationships import _identity, _seed
+    from daimon_matrix.identity import create_synthetic_genesis_in_process
+    label = 'home-web-origin-test'
+    identity = _identity(label)
+    genesis = create_synthetic_genesis_in_process(
+        [_seed(f'{label}:root:{n}') for n in range(3)], 2,
+        [_seed(f'{label}:recovery:{n}') for n in range(3)], 2,
+        created_at_ms=0, nonce=_seed(f'{label}:being'))
+    proof = dict(schema='dm.operator.authority/v1', control_artifacts=[genesis],
+                 control_head=identity.state.head, manifest=identity.authority.manifest.value,
+                 credentials=list(identity.authority.credentials.values()),
+                 incarnations=list(identity.authority.incarnations.values()))
+    tmp_path.chmod(0o700)
+    def write(name, value):
+        path = tmp_path/name
+        path.write_text(json.dumps(value)); path.chmod(0o600)
+        return path
+    authority = write('authority.json', proof)
+    human = 'human:local:95c8fb8b-b71a-44bd-8c36-e4047b1d12bc'
+    row = dict(being_ref=identity.state.being_ref, label='Fixture companion',
+               human_ref=human, human_name='Fixture human', origin=dict(identity.origin),
+               authority_file=str(authority), enabled=True)
+    declaration = dict(schema='dm.home-identities/v1', telegram_source=None, web=[row])
+    binding = write('bindings.json', declaration)
+    a = NativeAuthority(binding, tmp_path/'relationships',
+                        {'fixture': {'owner_being_ref': identity.state.being_ref}})
+    assert a.actor(human).kind == 'human'
+    assert a.actor(identity.state.being_ref).kind == 'being'
+    assert a.paired_human('fixture') == human and a.bot('fixture') is None
+    row['origin']['body_ref'] = 'cluster:synthetic:foreign-body'
+    write('bindings.json', declaration)
+    with pytest.raises(ValueError): a.actor(human)

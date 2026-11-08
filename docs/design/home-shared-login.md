@@ -52,6 +52,10 @@ duplicate web human identities are refused. Web entries contain no bot ID,
 username, token or invented Telegram account. They project the existing human
 Actor and pairing contract; `bot()` returns unavailable for these homes.
 Legacy human revisions, bots and sessions retain their original interpretation.
+`origin` is the structured native origin object from that being's verified
+public identity, including its body, embodiment, incarnation and principal
+coordinates. A display label or string is not an origin. Preserve the native
+object and let the existing authority validate it rather than translating it.
 
 Use the same Home registration, owner credential, approved-browser and passkey
 routes described above. This declaration does not create a browser session,

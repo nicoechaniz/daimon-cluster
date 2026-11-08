@@ -1,3 +1,27 @@
+## Installed application metadata reader —2026-11-08
+
+The selected read-only application reader observes actual systemd main-process
+images/SHA and installed Python version headers without importing packages or
+executing .pth. The initially observed empty venv was not the dependency root:
+actual web apps use external vendored PYTHONPATH. A real131572-byte Pydantic
+METADATA description exceeded the first cap, so final reading bounds complete
+headers at64KiB and records their SHA/full-file size distinctly. Initial partial
+observations are retained. Final native all4 qualification observed all12selected
+main processes and22distributions per companion, with no package/model/provider
+execution or credential/environment retention. These are installed declarations,
+not proof of loaded packages, authenticity or advisory clearance.
+
+The optional application_inventory daily stage selects exact root-owned helper
+bytes and explicit units for the host/four guests. It uses own finite40s/128MiB/
+25CPU/32task read jobs; outer55s/384KiB, aggregate receipt/state bounds retained.
+No scheduler, account, grant or native/app restart is introduced. Missing data
+fails this phase while preserving other evidence. Remove only the optional
+object to stop it; pending state/other phases remain. Source/deployment digests
+and actual first daily receiving result belong in the current private checkpoint.
+Broader upstream/malicious advisory applicability and the no-Telegram social
+blocker remain unfinished; preserve Matrix53's pause and all existing identities.
+See [application inventory](docs/operations/children-application-inventory.md).
+
 ## Daily browser metadata is installed without wakeup —2026-11-08
 
 The existing daily inventory now has an optional exact root-owned browser helper

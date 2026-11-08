@@ -127,9 +127,11 @@ def fetch_feed(opener=None):
 
 def validate(config):
     required={'schema', 'state', 'scanner', 'scanner_sha256', 'targets'}
-    if (not required<=set(config) or set(config)-required-{'compiler_cleanup_enabled','browser_status'}
+    if (not required<=set(config) or set(config)-required-{'compiler_cleanup_enabled','browser_status','application_inventory'}
             or type(config.get('compiler_cleanup_enabled',False)) is not bool):
         raise ValueError('explicit_daily_configuration_required')
+    if 'application_inventory' in config:
+        validate_application_selection(config['application_inventory'])
     if 'browser_status' in config:
         validate_browser_selection(config['browser_status'])
     if config['schema'] != 'cluster-children-daily/v1':
@@ -197,6 +199,49 @@ print(json.dumps(value))
     return {**result,'checked':int(time.time()),'helper_sha256':selection['sha256']}
 
 
+def validate_application_selection(selection):
+    if not isinstance(selection,dict) or set(selection)!={'helper','sha256','units'}:
+        raise ValueError('explicit_application_selection_required')
+    validate_browser_selection({k:selection[k] for k in ('helper','sha256')})
+    units=selection['units']
+    if not isinstance(units,dict) or set(units)!={'lordoftheflies','pixin','calipso','c-137','noodles'}:
+        raise ValueError('five_application_targets_required')
+    import re
+    for names in units.values():
+        if (not isinstance(names,list) or not 1<=len(names)<=8
+                or any(not isinstance(n,str) or not re.fullmatch(r'[A-Za-z0-9_.@:-]{1,120}\.service',n) for n in names)
+                or len(set(names))!=len(names)):
+            raise ValueError('bounded_application_units_required')
+
+
+def application_inventory(name, instance, selection):
+    validate_application_selection(selection)
+    code='selection='+repr(selection)+'\nname='+repr(name)+'\n'+r'''
+import pathlib,hashlib,importlib.util,json
+p=pathlib.Path(selection['helper'])
+if p.resolve()!=p or not p.is_file() or p.stat().st_size>65536:raise ValueError('application_helper_path')
+for item in [p,*p.parents]:
+ info=item.stat()
+ if info.st_uid!=0 or info.st_mode & 0o022:raise ValueError('application_helper_custody')
+if hashlib.sha256(p.read_bytes()).hexdigest()!=selection['sha256']:raise ValueError('application_helper_bytes')
+spec=importlib.util.spec_from_file_location('selected_application_reader',p)
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+print(json.dumps(m.collect(selection['units'][name]),sort_keys=True))
+'''
+    argv=['systemd-run','--unit=children-application-inventory-daily','--collect','--pipe','--wait',
+          '-p','RuntimeMaxSec=40','-p','MemoryMax=128M','-p','CPUQuota=25%','-p','TasksMax=32',
+          '/usr/bin/python3','-B','-I','-S','-c',code]
+    if instance:argv=['incus','exec',instance,'--',*argv]
+    value=json.loads(command(argv,seconds=55,limit=384*1024))
+    if (not isinstance(value,dict) or value.get('schema')!='children-application-inventory/v1'
+            or not isinstance(value.get('units'),dict)
+            or set(value['units'])!=set(selection['units'][name])
+            or any(not isinstance(v,dict) for v in value['units'].values())):
+        raise ValueError('application_inventory_schema')
+    return {**value,'state':'observed' if all(v.get('state')=='observed' for v in value['units'].values()) else 'unavailable',
+            'helper_sha256':selection['sha256']}
+
+
 def collect(config):
     validate(config)
     root = Path(config['state'])
@@ -233,6 +278,12 @@ def collect(config):
             value = None
             cleanup = None
             browser = None
+            applications = None
+            if config.get('application_inventory'):
+                try:
+                    applications=application_inventory(name,target['instance'],config['application_inventory'])
+                except (OSError,ValueError,KeyError,subprocess.SubprocessError) as error:
+                    applications={'state':'unavailable','reason':type(error).__name__,'checked':int(time.time())}
             if config.get('browser_status') and target['instance']:
                 try:
                     browser=browser_status(target['instance'],config['browser_status'])
@@ -264,6 +315,7 @@ def collect(config):
                              debian_advisories='unassessed')
                 if cleanup is not None:value['compiler_cleanup']=cleanup
                 if browser is not None:value['browser']=browser
+                if applications is not None:value['applications']=applications
                 if report['source']['state'] == 'fresh':
                     found = command(['/usr/bin/python3', config['scanner'], '--suite', 'trixie',
                         '--source', feed.as_uri(), '--status', str(directory/'packages.status'),
@@ -286,6 +338,7 @@ def collect(config):
                 report['targets'][name] = {**observed,
                     **({'compiler_cleanup':cleanup} if cleanup is not None else {}),
                     **({'browser':browser} if browser is not None else {}),
+                    **({'applications':applications} if applications is not None else {}),
                     'inventory': 'observed' if observed else 'unavailable',
                     'debian_advisories': 'unassessed', 'reason': type(error).__name__}
         report['finished'] = int(time.time())
@@ -308,6 +361,7 @@ def main():
         value.get('debian_advisories') == 'matched'
         and value.get('compiler_cleanup',{}).get('status','complete')=='complete'
         and value.get('browser',{}).get('state','standby') in ('standby','ready')
+        and value.get('applications',{}).get('state','observed')=='observed'
         for value in result['targets'].values()) else 2
 
 

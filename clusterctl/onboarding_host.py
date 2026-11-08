@@ -99,6 +99,7 @@ class HostConfig:
     browser_artifact: dict[str, str] | None = None
     native_by_name: dict[str, tuple[Path, str]] | None = None
     group_admission: Path | None = None
+    cold_pool: str | None = None
 
     @classmethod
     def load(cls, path: Path, *, expected_value: dict | None = None) -> HostConfig:
@@ -109,7 +110,7 @@ class HostConfig:
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
         telegram_keys = {"telegram_code", "telegram_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -118,6 +119,10 @@ class HostConfig:
                 or type(value["concurrency"]) is not int or not 1 <= value["concurrency"] <= 8
                 or type(value.get("qualification", False)) is not bool):
             raise OnboardingError("invalid_onboarding_host_configuration")
+        cold_pool = value.get('cold_pool')
+        if cold_pool is not None and (not isinstance(cold_pool, str)
+                or not being_seed.NAME.fullmatch(cold_pool) or cold_pool == value['pool']):
+            raise OnboardingError('invalid_onboarding_host_configuration')
         directories = {}
         for key in ("jobs", "grants", "inputs", "views"):
             if not isinstance(value[key], str) or not Path(value[key]).is_absolute():
@@ -284,7 +289,7 @@ class HostConfig:
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission, cold_pool)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -483,9 +488,40 @@ class HostBackend:
             raise OnboardingError("invalid_onboarding_environment_observation")
         return instances, volumes
 
+    def _cold_volumes(self, plan: dict, *, deadline_ns: int | None = None) -> list:
+        if self.config.cold_pool is None:
+            raise OnboardingError('invalid_onboarding_host_configuration')
+        command = ['storage', 'volume', 'list', self.config.cold_pool, '--format=json']
+        raw = self.run(command) if deadline_ns is None else self._dispatch(plan, command, deadline_ns=deadline_ns)
+        value = json.loads(raw)
+        if not isinstance(value, list):
+            raise OnboardingError('invalid_onboarding_environment_observation')
+        return value
+
+    def _volume_access(self, plan: dict, volume: str, action: str, *, deadline_ns: int | None = None) -> bool:
+        if action not in {'observe', 'prepare'} or volume not in {'home', 'cold'}:
+            raise OnboardingError('invalid_onboarding_host_configuration')
+        program = ("import json,os,stat,sys; p={'home':'/home/agent','cold':'/home/agent/Storage'}[sys.argv[2]]; "
+                   "assert any(line.split()[4]==p for line in open('/proc/self/mountinfo')); "
+                   "fd=os.open(p,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW); "
+                   "os.fchown(fd,1000,1000) if sys.argv[1]=='prepare' else None; "
+                   "os.fchmod(fd,0o700) if sys.argv[1]=='prepare' else None; "
+                   "s=os.fstat(fd); os.close(fd); "
+                   "print(json.dumps({'ready':s.st_uid==1000 and s.st_gid==1000 and stat.S_IMODE(s.st_mode)==0o700}))")
+        argv = ['exec', self.instance(plan), '--', 'python3', '-B', '-I', '-c', program, action, volume]
+        raw = (self._dispatch(plan, argv, timeout_seconds=20, deadline_ns=deadline_ns)
+               if action == 'prepare' or deadline_ns is not None else self.run(argv))
+        value = json.loads(raw)
+        if not isinstance(value, dict) or set(value) != {'ready'} or type(value['ready']) is not bool:
+            raise OnboardingError('invalid_onboarding_environment_observation')
+        return value['ready']
+
     def _environment(self, plan: dict, *, deadline_ns: int | None = None) -> Observation:
         if self.native_body(plan) is not None:
             raise OnboardingError('native_receiving_initial_enrollment_unsupported')
+        resources = plan.get('resources', {'root_gib': 8, 'home_gib': 22})
+        if 'cold_gib' in resources and self.config.cold_pool is None:
+            return Observation('waiting', reason='capacity_required')
         instances, volumes = (self._inventory() if deadline_ns is None
             else self._inventory(plan=plan, deadline_ns=deadline_ns))
         name, fingerprint = self.instance(plan), digest(plan)
@@ -498,8 +534,17 @@ class HostBackend:
             home = json.loads(self.run(command) if deadline_ns is None
                 else self._dispatch(plan, command, deadline_ns=deadline_ns))
             if (home.get("config", {}).get("user.dm.onboarding-plan") != fingerprint
-                    or home.get("config", {}).get("size") != "22GiB"):
+                    or home.get("config", {}).get("size") != str(resources["home_gib"]) + "GiB"):
                 return Observation("conflict", reason="observed_state_conflict")
+        selected_cold = []
+        if 'cold_gib' in resources:
+            cold = self._cold_volumes(plan, deadline_ns=deadline_ns)
+            selected_cold = [v for v in cold if v.get('name') == name + '-cold' and v.get('type') == 'custom']
+            if len(selected_cold) > 1:
+                return Observation('conflict', reason='observed_state_conflict')
+            if selected_cold and (selected_cold[0].get('config', {}).get('user.dm.onboarding-plan') != fingerprint
+                    or selected_cold[0].get('config', {}).get('size') != str(resources['cold_gib']) + 'GiB'):
+                return Observation('conflict', reason='observed_state_conflict')
         if not rows:
             return Observation("absent", safe_to_execute=True)
         row = rows[0]
@@ -510,17 +555,31 @@ class HostBackend:
             return Observation("conflict", reason="observed_state_conflict")
         devices = row.get("expanded_devices", {})
         root = devices.get("root", {})
-        if root != {"type": "disk", "path": "/", "pool": self.config.pool, "size": "8GiB"}:
+        if root != {"type": "disk", "path": "/", "pool": self.config.pool, "size": str(resources["root_gib"]) + "GiB"}:
             return Observation("conflict", reason="observed_state_conflict")
         attached = devices.get("home")
         expected_home = {"type": "disk", "path": "/home/agent", "pool": self.config.pool, "source": name + "-home"}
         if attached is not None and attached != expected_home:
             return Observation("conflict", reason="observed_state_conflict")
-        if not homes or attached is None or row.get("status") == "Stopped":
+        cold_complete = True
+        if 'cold_gib' in resources:
+            if (config.get('limits.cpu') != str(resources['cpu'])
+                    or config.get('limits.memory') != str(resources['memory_gib']) + 'GiB'):
+                return Observation('conflict', reason='observed_state_conflict')
+            expected_cold = dict(type='disk', path='/home/agent/Storage', pool=self.config.cold_pool,
+                                 source=name + '-cold')
+            cold_device = devices.get('cold')
+            if cold_device is not None and cold_device != expected_cold:
+                return Observation('conflict', reason='observed_state_conflict')
+            cold_complete = bool(selected_cold and cold_device is not None)
+        if not homes or attached is None or not cold_complete or row.get("status") == "Stopped":
             return Observation("absent", safe_to_execute=True)
         if row.get("status") != "Running":
             return Observation("uncertain", reason="uncertain_external_effect")
-        return Observation("complete", {"verified": True, "root_gib": 8, "home_gib": 22})
+        if 'cold_gib' in resources and not all(self._volume_access(plan, volume, 'observe', deadline_ns=deadline_ns)
+                for volume in ('home', 'cold')):
+            return Observation('absent', safe_to_execute=True)
+        return Observation("complete", {"verified": True, **resources})
 
     def observe(self, plan: dict, stage: str, operation_id: str) -> Observation:
         if not self.authorize(plan, digest(plan)):
@@ -754,21 +813,42 @@ class HostBackend:
             raise OnboardingError("onboarding_environment_conflict")
         instances, volumes = self._inventory()
         name, fingerprint = self.instance(plan), digest(plan)
+        resources = plan.get('resources', {'root_gib': 8, 'home_gib': 22})
         if not any(row.get("name") == name for row in instances):
             image = self.config.browser_image if plan["browser"] else self.config.native_image
+            limits = [] if 'resources' not in plan else [
+                '--config', 'limits.cpu=' + str(resources['cpu']),
+                '--config', 'limits.memory=' + str(resources['memory_gib']) + 'GiB']
             self._dispatch(plan, ["init", image, name, "--profile", self.config.profile,
-                      "--storage", self.config.pool, "--device", "root,size=8GiB",
-                      "--config", "user.dm.onboarding-plan=" + fingerprint])
+                      "--storage", self.config.pool, "--device", "root,size=" + str(resources['root_gib']) + "GiB",
+                      *limits, "--config", "user.dm.onboarding-plan=" + fingerprint])
         if not any(row.get("name") == name + "-home" and row.get("type") == "custom" for row in volumes):
             self._dispatch(plan, ["storage", "volume", "create", self.config.pool, name + "-home",
-                      "size=22GiB", "user.dm.onboarding-plan=" + fingerprint])
+                      "size=" + str(resources["home_gib"]) + "GiB", "user.dm.onboarding-plan=" + fingerprint])
         instances, _ = self._inventory()
         row = next(row for row in instances if row.get("name") == name)
         if "home" not in row.get("expanded_devices", {}):
             self._dispatch(plan, ["config", "device", "add", name, "home", "disk", "pool=" + self.config.pool,
                       "source=" + name + "-home", "path=/home/agent"])
+        if 'cold_gib' in resources:
+            cold = self._cold_volumes(plan)
+            existing = [v for v in cold if v.get('name') == name + '-cold' and v.get('type') == 'custom']
+            if existing and any(v.get('config', {}).get('user.dm.onboarding-plan') != fingerprint
+                    or v.get('config', {}).get('size') != str(resources['cold_gib']) + 'GiB' for v in existing):
+                raise OnboardingError('onboarding_environment_conflict')
+            if not any(v.get('name') == name + '-cold' and v.get('type') == 'custom' for v in cold):
+                self._dispatch(plan, ['storage', 'volume', 'create', str(self.config.cold_pool), name + '-cold',
+                    'size=' + str(resources['cold_gib']) + 'GiB', 'user.dm.onboarding-plan=' + fingerprint])
+            if 'cold' not in row.get('expanded_devices', {}):
+                self._dispatch(plan, ['config', 'device', 'add', name, 'cold', 'disk',
+                    'pool=' + str(self.config.cold_pool), 'source=' + name + '-cold', 'path=/home/agent/Storage'])
         if row.get("status") == "Stopped":
             self._dispatch(plan, ["start", name])
+        if 'cold_gib' in resources:
+            for volume in ('home', 'cold'):
+                if (not self._volume_access(plan, volume, 'observe')
+                        and not self._volume_access(plan, volume, 'prepare')):
+                    raise OnboardingError('onboarding_environment_conflict')
 
     def _consented(self, plan: dict, *, stage: str) -> bool:
         # Disposable context-only qualification has no participant decision.
@@ -1104,8 +1184,10 @@ class HostBackend:
             for name in ('onboarding-code', *[key for key in mounts if key.startswith('runtime-')], 'onboarding-input'):
                 if name == "onboarding-input":
                     launcher = ("import sys; sys.path.insert(0, sys.argv[1]); "
-                                "from clusterctl.onboarding_mounts import bootstrap_home; bootstrap_home()")
-                    self._dispatch(plan, ["exec", self.instance(plan), "--", "python3", "-B", "-I", "-c", launcher, str(guest_code)])
+                                "from clusterctl.onboarding_mounts import bootstrap_home; "
+                                + ("bootstrap_home(cold_storage=True)" if plan.get("resources") else "bootstrap_home()"))
+                    bootstrap_code = self._runtime_paths(plan, guest_code)[0] if plan.get("resources") else guest_code
+                    self._dispatch(plan, ["exec", self.instance(plan), "--", "python3", "-B", "-I", "-c", launcher, str(bootstrap_code)])
                 current = row.get("expanded_devices", {}).get(name)
                 if current is not None and current != mounts[name]:
                     raise OnboardingError("foreign_receiving_mount_preserved")

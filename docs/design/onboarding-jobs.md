@@ -92,8 +92,11 @@ receipts or issue host grants. Missing or malformed decisions never complete a
 stage. The acknowledgement is an authenticated owner statement, not a claim
 of a separate human cryptographic signature.
 
-The current typed host adapter reconciles Incus environment preparation: exact
-image fingerprint, isolated instance, 8 GiB root and 22 GiB durable home.
+The typed host adapter reconciles Incus environment preparation: exact
+image fingerprint and isolated instance. Legacy plans retain an 8 GiB root and
+22 GiB durable home. New exact protected resource plans can select fast root/home
+sizes, a separate cold pool and CPU/memory caps; see
+[the current two-pool layout](../operations/children-host-storage.md).
 It refuses a foreign instance, home volume or attachment. Context and memory
 use the same engine's typed receiving adapter. Incus mounts exact qualified
 code and a private per-body frozen input view read-only with ID shifting. The

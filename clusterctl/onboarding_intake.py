@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from . import being_seed, onboarding_consent, onboarding_input, onboarding_release
-from .onboarding import PLAN_SCHEMA, OnboardingError, digest, private_directory, validate_plan
+from .onboarding import PLAN_SCHEMA, OnboardingError, digest, private_directory, validate_plan, validate_resources
 from .onboarding_progress import Progress
 
 POLICY = 'cluster-onboarding-intake-policy/v1'
@@ -28,10 +28,15 @@ def policy(path: Path, release_digest: str) -> dict:
         raise OnboardingError('invalid_onboarding_intake_policy')
     for name, selection in value['beings'].items():
         if (not isinstance(name, str) or not being_seed.NAME.fullmatch(name)
-                or not isinstance(selection, dict) or set(selection) != {'owner', 'account_profile', 'browser'}
+                or not isinstance(selection, dict) or set(selection) - {'resources'} != {'owner', 'account_profile', 'browser'}
                 or any(not isinstance(selection[key], str) or not being_seed.NAME.fullmatch(selection[key])
                        for key in ('owner', 'account_profile')) or type(selection['browser']) is not bool):
             raise OnboardingError('invalid_onboarding_intake_policy')
+        if 'resources' in selection:
+            try:
+                validate_resources(selection['resources'])
+            except OnboardingError:
+                raise OnboardingError('invalid_onboarding_intake_policy') from None
     return value
 
 
@@ -39,7 +44,8 @@ def allows(config, plan: dict) -> bool:
     selected = policy(config.intake_policy, config.release_digest)
     entry = selected['beings'].get(plan['name'])
     return (selected['revoked'] is False and entry is not None
-            and all(plan[key] == entry[key] for key in ('owner', 'account_profile', 'browser')))
+            and all(plan[key] == entry[key] for key in ('owner', 'account_profile', 'browser'))
+            and plan.get('resources') == entry.get('resources'))
 
 
 class Intake:

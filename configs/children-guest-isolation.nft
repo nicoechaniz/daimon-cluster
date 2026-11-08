@@ -1,0 +1,26 @@
+# Own only these tables. Never flush the host or Incus ruleset.
+# Empty native-port sets are filled only from the selected admitted transport.
+destroy table inet children_isolation
+table inet children_isolation {
+    set native_udp_ports { type inet_service; }
+    set native_tcp_ports { type inet_service; }
+    chain guest_input {
+        type filter hook input priority -5; policy accept;
+        iifname "children0" udp dport { 53, 67 } counter accept
+        iifname "children0" tcp dport 53 counter accept
+        iifname "children0" udp dport @native_udp_ports counter accept
+        iifname "children0" tcp dport @native_tcp_ports counter accept
+        iifname "children0" counter drop
+    }
+}
+destroy table bridge children_isolation
+table bridge children_isolation {
+    set native_udp_ports { type inet_service; }
+    set native_tcp_ports { type inet_service; }
+    chain guest_forward {
+        type filter hook forward priority -5; policy accept;
+        meta ibrname "children0" meta obrname "children0" ether type ip ip protocol udp udp dport @native_udp_ports counter accept
+        meta ibrname "children0" meta obrname "children0" ether type ip ip protocol tcp tcp dport @native_tcp_ports counter accept
+        meta ibrname "children0" meta obrname "children0" counter drop
+    }
+}

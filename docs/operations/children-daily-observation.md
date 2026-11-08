@@ -347,3 +347,31 @@ by the unchanged scheduled-job observer. No tab, private page, lifecycle action,
 model input or provider call is part of the read. Package/advisory and cleanup
 evidence remains separate if the browser stage fails. Complete idle detection
 and independent host availability remain unfinished.
+
+## Availability observed outside the children's host
+
+ITACA's existing critical-service observer additionally selects one bounded
+HTTPS group for Pixin, Calipso, C-137 and Noodles. Each complete public
+`https://<companion>.dmn.homes/interaction/health` URL must return bounded JSON
+`ok: true` with TLS verification, no redirect, cookies or provider/model request.
+The four reads run concurrently; an unavailable/malformed member degrades the
+group. Only the closed health code is retained, without response bodies or raw
+errors. This observes route/service availability outside Lordoftheflies; it does
+not diagnose host power or prove authenticated Conversation/provider acceptance.
+
+The original thirteen targets, own Alerts authority, journal, demand policy and
+30-second timer remain. One group makes fourteen targets within the unchanged
+sixteen-target bound, without a new credential, timer or health service. Actual
+public endpoints passed from ITACA; a deliberately nonexistent path refused
+without interrupting a guest. Actual manual and subsequent existing periodic
+observations accepted the group as healthy, with an empty outbox. Controlled
+probe refusal is separate from a real outage/incident-delivery trial.
+
+Maintained adapter and contract: Daimon Alerts PR33,
+`docs/runtime-health.md#bounded-https-deployment-group`. The existing explicit
+configuration reconciliation can set only this group's `enabled` to false,
+keeping fixed target IDs, all other observation and pending history. It reports
+intentional standby, not recovery. Keep a compatible group-aware reader; the
+pre-group binary/config is not a valid rollback, and fixed target IDs cannot
+be removed with the relocation control. Receiving selectors and exact receipts
+belong in the existing private CompAII Alerts operations and children checkpoint.

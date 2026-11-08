@@ -70,3 +70,67 @@ Compression and cache retention do not provide unlimited capacity. Keep root and
 data-volume availability separately monitored, preserve pending/uncertain work,
 and record remaining staging/release/backup retention gaps in the owning issue.
 Do not resolve a storage incident through acknowledgment or changed thresholds.
+
+## Finite byte, entry and time budgets
+
+`max_bytes_per_run` (default1GiB, maximum4GiB), `max_entries_per_run`
+(default100000, maximum1000000) and `max_seconds_per_run` (default120,
+maximum300) bound each pass in addition to its directory count. Eligibility
+walks and final repeated validation consume the entry/time budget. An oversized
+candidate is kept whole; earlier completed removals retain their measured byte
+count (logical file bytes, not a guaranteed physical-space recovery). Flat
+non-directory entries also consume the inspection budget. A byte/entry/time stop reports `budget_exhausted` and a nonzero CLI result,
+never claims complete cleanup or evicts protected data. Explicit worktree removal
+uses the same budgets and original clean/integrated/retired checks.
+
+The programmatic `activity_scan` callback is an alternative to the existing own
+or sudo process scan, not permission to supply a stale snapshot in production.
+It must return a fresh complete projection on every call. `active_paths` remains
+for controlled fixtures. A failed scan prevents subsequent removal.
+
+## Children's own guest route
+
+`tools/children_cache_cleanup.py` reuses this cleaner without granting `agent`
+sudo. A finite root parent runs the existing fixed read-only process scan;
+a forked worker permanently drops real/effective/saved identity to `agent`,
+clears supplementary groups and environment, and performs the deletions. Inherited
+bounded JSON IPC accepts only scan requests and final counts. The parent verifies
+the actual child UID before scanning and returns only busy selected project
+roots, never raw process arguments/paths or arbitrary privileged operations.
+There is no new network listener, permanent broker or administrative login path.
+
+The private root policy has schema`children-compiler-cleanup/v1`, user`agent`,
+projects_root`/home/agent/Projects` (or a selected subtree for technical fixtures)
+and max_bytes_per_run256MiB. Discovery checks at most64 immediate project entries,
+2048 workspace entries and64 Cargo cache roots, one nested workspace level. Only
+real Git/Cargo debug/dev-small incremental roots qualify. Hidden/symlinked or
+unclassified trees are preserved. Future eligible repositories in this selected
+tree need no per-pair cache ceremony; unknown cache classes are not inferred.
+
+The guest policy removes at most32old cache directories/256MiB, inspects at
+most20000entries and has a40s internal cleanup budget. The native unit has90s,
+128MiB,25%CPU and32tasks. Its sandbox allows writes only to its private state and
+own Projects; other home state is read-only. Each privileged read has10s/8MiB
+bounds, IPC frames16KiB and at most34scan requests. Root state is at most1MiB,
+current/previous successful report only. Existing bounded journals apply.
+Profiles, executables, release artifacts, sources, original media, credential and
+memory stores remain outside this policy. Browser-session lifecycle, other cache
+classes and explicit worktree retirement stay separately unassessed; the wrapper
+does not invent retirement records or close a human's browser.
+
+The existing daily collector optionally selects `compiler_cleanup_enabled:true`.
+It starts each own guest's `children-cache-cleanup.service`, reads the bounded
+actual result, and keeps cleanup status separate from inventory/advisory evidence.
+A failed cleanup degrades the collector exit without discarding real inventory.
+The existing scheduled-job Alerts target therefore observes failure/missed runs;
+no extra timer or producer is needed. Disable future cleanup by selecting false
+in the same private collector config, preserving other phases, state and timers.
+
+Actual qualification used a new isolated subtree under the own Projects tree and
+an artificial age cutoff confined to that fixture; production uses real time.
+A live own-user file holder kept its project intact; recent, symlinked,
+foreign-owned, release and unfinished-source examples survived. Only one5-byte
+old cache was removed. A1-byte budget kept an oversized candidate, and simulated
+unavailable process observation prevented removal. The exact verified disposable
+fixture was retired. This is not evidence of child participation or a production
+browser capture, and it does not establish all broader cleanup acceptance.

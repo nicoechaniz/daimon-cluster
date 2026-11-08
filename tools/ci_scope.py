@@ -1010,6 +1010,19 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
     if (set(changed) & admission_link_files and set(changed) <= admission_link_files | CI_FILES
             and all((root / name).is_file() for name in admission_link_tests)):
         return 'peer', admission_link_tests
+    bounded_cleanup_files = {'tools/storage_hygiene.py','tests/test_storage_hygiene.py',
+        'tools/children_cache_cleanup.py','tests/test_children_cache_cleanup.py',
+        'tools/children_daily.py','tests/test_children_daily.py',
+        'deploy/systemd/children-cache-cleanup.service',
+        'docs/operations/host-storage-hygiene.md'}
+    bounded_cleanup_tests = ['tests/test_storage_hygiene.py','tests/test_children_cache_cleanup.py',
+        'tests/test_children_daily.py','tests/test_children_package_guard.py',
+        'tests/test_children_package_selection.py','tests/test_children_package_maintenance.py',
+        'tests/test_ci_scope.py','tests/test_ci_workflow.py']
+    if (set(changed) & {'tools/children_cache_cleanup.py','tests/test_children_cache_cleanup.py'}
+            and set(changed) <= bounded_cleanup_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / name).is_file() for name in bounded_cleanup_tests)):
+        return 'peer', bounded_cleanup_tests
     daily_files = {'tools/children_daily.py', 'tests/test_children_daily.py',
                    'docs/operations/children-daily.md',
                    'deploy/systemd/children-daily-inventory.service',

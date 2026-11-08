@@ -126,7 +126,9 @@ def fetch_feed(opener=None):
 
 
 def validate(config):
-    if set(config) != {'schema', 'state', 'scanner', 'scanner_sha256', 'targets'}:
+    required={'schema', 'state', 'scanner', 'scanner_sha256', 'targets'}
+    if (not required<=set(config) or set(config)-required-{'compiler_cleanup_enabled'}
+            or type(config.get('compiler_cleanup_enabled',False)) is not bool):
         raise ValueError('explicit_daily_configuration_required')
     if config['schema'] != 'cluster-children-daily/v1':
         raise ValueError('unsupported_daily_configuration')
@@ -179,6 +181,17 @@ def collect(config):
             directory = root/name
             directory.mkdir(mode=0o700, exist_ok=True)
             value = None
+            cleanup = None
+            if config.get('compiler_cleanup_enabled') and target['instance']:
+                try:
+                    command(['incus','exec',target['instance'],'--','systemctl','start',
+                             'children-cache-cleanup.service'],seconds=100,limit=64*1024)
+                    cleanup=json.loads(command(['incus','exec',target['instance'],'--','cat',
+                        '/var/lib/children-maintenance/cache-cleanup/current.json'],seconds=10,limit=64*1024))
+                    if cleanup.get('schema')!='children-cache-cleanup/v1' or cleanup.get('status')!='complete':
+                        raise ValueError('compiler_cleanup_incomplete')
+                except (OSError,ValueError,KeyError,subprocess.SubprocessError) as error:
+                    cleanup={**(cleanup or {}),'status':'unavailable','reason':type(error).__name__}
             try:
                 argv = ['/usr/bin/python3', '-B', '-I', '-c', PROBE]
                 if target['instance']:
@@ -192,6 +205,7 @@ def collect(config):
                 atomic(directory/'packages.status', status)
                 value.update(inventory='observed', inventory_sha256=hashlib.sha256(status).hexdigest(),
                              debian_advisories='unassessed')
+                if cleanup is not None:value['compiler_cleanup']=cleanup
                 if report['source']['state'] == 'fresh':
                     found = command(['/usr/bin/python3', config['scanner'], '--suite', 'trixie',
                         '--source', feed.as_uri(), '--status', str(directory/'packages.status'),
@@ -212,6 +226,7 @@ def collect(config):
             except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
                 observed = value if value is not None and value.get('inventory') == 'observed' else {}
                 report['targets'][name] = {**observed,
+                    **({'compiler_cleanup':cleanup} if cleanup is not None else {}),
                     'inventory': 'observed' if observed else 'unavailable',
                     'debian_advisories': 'unassessed', 'reason': type(error).__name__}
         report['finished'] = int(time.time())
@@ -231,7 +246,9 @@ def main():
     print(json.dumps({'coverage': result['coverage'], 'source': result['source']['state'],
                       'targets': {k: v.get('debian_advisories') for k, v in result['targets'].items()}}))
     return 0 if result['source']['state'] == 'fresh' and all(
-        value.get('debian_advisories') == 'matched' for value in result['targets'].values()) else 2
+        value.get('debian_advisories') == 'matched'
+        and value.get('compiler_cleanup',{}).get('status','complete')=='complete'
+        for value in result['targets'].values()) else 2
 
 
 if __name__ == '__main__':

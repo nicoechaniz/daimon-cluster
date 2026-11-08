@@ -6,6 +6,17 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_component_assessment_keeps_inventory_and_source_consumers_together(tmp_path):
+    changed=['tools/children_application_inventory.py','tools/children_known_exploitation.py','tools/children_daily.py',
+             'docs/operations/children-application-inventory.md','docs/operations/children-known-exploitation.md',
+             'tools/ci_scope.py','tests/test_ci_scope.py']
+    profile,tests=select(changed,ROOT)
+    assert profile=='peer' and {'tests/test_children_application_inventory.py','tests/test_children_known_exploitation.py',
+                              'tests/test_children_daily.py'}<=set(tests)
+    assert select(changed,tmp_path)==('full',['tests'])
+    assert select([*changed,'clusterctl/admission.py'],ROOT)==('full',['tests'])
+
+
 def test_brotli_family_requires_coherent_guard_selection_coordinator_and_policy(tmp_path):
     changed=['tools/children_package_maintenance.py','tools/children_package_selection.py',
              'tools/children_package_guard.py','support/children-maintenance/brotli-package-policy.json',

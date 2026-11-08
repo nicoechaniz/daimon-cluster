@@ -7,6 +7,50 @@ import pytest
 from tools import children_application_inventory as inventory
 
 
+def component_fixture(root):
+    binary=root/'usr/lib/chromium/chromium';binary.parent.mkdir(parents=True);binary.write_bytes(b'ELF fixture only')
+    library=root/'usr/lib/x86_64-linux-gnu/libfreetype.so.6.20.2';library.parent.mkdir(parents=True);library.write_bytes(b'library fixture; never load')
+    (library.parent/'libfreetype.so.6').symlink_to(library.name)
+    return binary,library
+
+
+def test_static_browser_dependency_uses_readelf_only_and_hashes_library(tmp_path):
+    import os
+    from types import SimpleNamespace
+    _,library=component_fixture(tmp_path);calls=[]
+    def run(argv,**kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0,stdout=b' (NEEDED) Shared library: [libfreetype.so.6]\n',stderr=b'')
+    result=inventory.browser_components(root=tmp_path,owner_uid=os.getuid(),run=run)
+    assert result['direct_freetype_needed'] and not result['custom_search_path']
+    assert result['freetype_file_sha256']==hashlib.sha256(library.read_bytes()).hexdigest()
+    assert calls==[['/usr/bin/readelf','-dW',str(tmp_path/'usr/lib/chromium/chromium')]]
+    assert result['scope']=='static-package-dependency-only' and result['unassessed']
+
+
+@pytest.mark.parametrize('mode',['changed-binary','oversized-output','bad-metadata','library-cap','external-link'])
+def test_static_component_failure_never_reports_observed(tmp_path,mode):
+    import os
+    from types import SimpleNamespace
+    binary,library=component_fixture(tmp_path)
+    if mode=='external-link':
+        alias=library.parent/'libfreetype.so.6';alias.unlink();alias.symlink_to(binary)
+    def run(*args,**kwargs):
+        if mode=='changed-binary':binary.write_bytes(b'changed')
+        raw=b'x'*65537 if mode=='oversized-output' else (b'unknown' if mode=='bad-metadata' else b' (NEEDED) [libfreetype.so.6]\n')
+        return SimpleNamespace(returncode=0,stdout=raw,stderr=b'')
+    with pytest.raises(ValueError):inventory.browser_components(root=tmp_path,owner_uid=os.getuid(),run=run,budget=1 if mode=='library-cap' else 4096)
+
+
+def test_custom_runtime_search_is_recorded_for_pending_assessment(tmp_path):
+    import os
+    from types import SimpleNamespace
+    component_fixture(tmp_path)
+    result=inventory.browser_components(root=tmp_path,owner_uid=os.getuid(),run=lambda *a,**k:SimpleNamespace(
+        returncode=0,stdout=b' (NEEDED) [libfreetype.so.6]\n (RUNPATH) [$ORIGIN]\n',stderr=b''))
+    assert result['state']=='observed' and result['custom_search_path'] is True
+
+
 def test_metadata_is_data_not_imports_or_private_direct_urls(tmp_path):
     site=tmp_path/'site-packages';site.mkdir();dist=site/'fictional-1.dist-info';dist.mkdir()
     (dist/'METADATA').write_text('Name: fictional\nVersion: 1.2.3\n\nnot executed\n')

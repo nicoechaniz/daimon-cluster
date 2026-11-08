@@ -226,8 +226,14 @@ Two actual finite invocations passed; a missed/failed/recovered disposable fixtu
 retained one incident and actual opening/resolution delivery receipts. The
 original partial-coverage notice remains open. See
 [the selected observation/stop route](docs/operations/children-daily-observation.md).
-Patch transactions, upstream and malicious-release advisories, activity-aware
-cleanup/browser reclamation and independent availability remain unfinished. Follow the
+All four guests received the reviewed Debian-Security Chromium update to
+156.0.8078.79; their actual executable versions, dpkg health and unchanged
+native/web processes passed. Daily signed-index renewal is explicitly configured
+through their existing APT timers; its next scheduled consumption is unobserved.
+The exact completed package archives were retired after hash verification under
+APT locks. No eligible compiler caches or active guest browsers were observed.
+Broader automatic patch transactions, upstream/malicious-release advisories,
+activity-aware cleanup/browser reclamation and independent availability remain unfinished. Follow the
 maintained Shared Resources children-host-security handoff and preserve profiles,
 originals, histories and unfinished work. Finite metadata-only progress observation
 is separate from the existing Heartbeat owner's messaging/review implementation;

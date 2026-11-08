@@ -57,3 +57,58 @@ incident and remains in the operator evidence, separate from the corrected test.
 The original partial daily-security coverage notice remains open. Package
 transactions, broader application/malicious-advisory applicability, bounded
 cleanup and independent host availability remain separate unfinished work.
+
+## Signed indexes and reviewed package changes
+
+On 2026-11-08 the four guests' APT timers were enabled, but their cached package
+indexes still selected an older Chromium than the Debian advisory feed. A
+successful manual signed-index refresh changed their candidate. Timer enablement
+alone therefore must not be reported as fresh package evidence.
+
+The existing guest APT cadence now consumes this explicit local policy:
+
+```aptconf
+APT::Periodic::Enable "1";
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Download-Upgradeable-Packages "0";
+APT::Periodic::Unattended-Upgrade "0";
+APT::Periodic::AutocleanInterval "0";
+#clear Unattended-Upgrade::Allowed-Origins;
+#clear Unattended-Upgrade::Origins-Pattern;
+Unattended-Upgrade::Origins-Pattern {
+    "origin=Debian,codename=trixie-security,label=Debian-Security";
+};
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Remove-Unused-Dependencies "false";
+Unattended-Upgrade::Remove-New-Unused-Dependencies "false";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "false";
+```
+
+This enables daily signed indexes, not automatic package commits. The complete
+transaction preflight and future automatic-update policy remain unfinished; do
+not enable unattended installation merely because its tool or timer exists.
+Existing APT timer definitions and the host's separate policy were preserved.
+The next scheduled consumption of the guest policy remains to be observed.
+
+One reviewed transaction upgraded only `chromium` and `chromium-common` from
+`154.0.8037.92-1~deb13u1` to Debian-Security `156.0.8078.79-1~deb13u1` on all four.
+Signed-index hashes matched the downloaded archives. Their control scripts and
+contents had no service units/restart hooks; no browser was running, and no
+installed APT invoke hooks were present. Each plan contained exactly those two
+upgrades, with no added/removed packages. These are dated candidate observations,
+not an allowlist for arbitrary future maintainer scripts or dependencies.
+
+The finite downloads had 300-second/512-MiB/50%-CPU/64-task guest limits. Each
+package writer used its own persistent service with 1-GiB/100%-CPU/128-task limits;
+no collector deadline killed dpkg. For a stalled writer, stop admitting subsequent
+targets and inspect the same transaction; do not restart it or kill a committed
+package operation. Verify actual packages, executable version, dpkg health and
+existing application processes after each target before continuing.
+
+All four installed/executable versions matched and their three native/web service
+PIDs and restart counts were preserved. After qualification, the exact two
+completed public archives were hash-checked and retired under APT's existing
+locks: 493665344 bytes total, without touching other caches, profiles or work.
+The existing daily collector was then rerun because software had changed; retain
+its current findings and partial coverage rather than reusing the pre-update
+inventory or resolving the broader coverage incident.

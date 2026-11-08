@@ -1019,6 +1019,19 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
     if (set(changed) & daily_files and set(changed) <= daily_files | CI_FILES
             and all((root / name).is_file() for name in daily_tests)):
         return 'peer', daily_tests
+    package_selection_files = {'tools/children_package_selection.py',
+                               'tests/test_children_package_selection.py',
+                               'support/children-maintenance/browser-package-policy.json'}
+    package_selection_tests = ['tests/test_children_package_selection.py',
+                               'tests/test_children_package_guard.py',
+                               'tests/test_children_daily.py',
+                               'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & package_selection_files
+            and set(changed) <= package_selection_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / name).is_file() for name in package_selection_tests)):
+        # Read-only signed metadata/download producer; changed guard/daily
+        # implementations require their wider coverage instead of this scope.
+        return 'peer', package_selection_tests
     package_guard_files = {'tools/children_package_guard.py',
                            'tools/qualify_children_package_guard.py',
                            'tests/test_children_package_guard.py'}

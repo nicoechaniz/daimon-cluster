@@ -1,3 +1,28 @@
+## Signed browser selection component —2026-11-08
+
+The current four guests actually consumed the read-only candidate selector and
+reported the installed156.0.8078.79-1~deb13u1 family up to date against native
+trusted Debian-Security metadata. Native apt-daily.service completed successfully
+on all4; consume `/var/lib/apt/periodic/update-stamp`, not the nonexistent
+update-success-stamp. Original successful Pixin execution was not replayed.
+Package-status bytes stayed unchanged. Naturally scheduled uptake is unobserved.
+
+One Pixin download-only real-archive qualification passed exact SHA/control/payload
+inspection for both packages, retired123416336B verified task copies, and preserved
+real dpkg bytes. Existing debconf callback is audited by command/helper hash and
+omitted only in generated transaction configuration for packages without
+config/templates; global/manual APT behavior is preserved. Unknown scripts/hooks
+or service changes defer. All4 selection bundle8517ed138d55 and policy remain
+installed; root-private current receipts are in the existing onboarding checkpoint.
+
+This component prepares a reviewed manifest/scoped guard configuration only for
+an actual upgrade, never installs. Durable commit/recovery, daily activation,
+broader advisory applicability and cleanup/availability remain unfinished; keep
+automatic writes off and the original coverage incident open. Social admission
+Matrix496/App452 remains first priority and separate; preserve paused goal53,
+all4 signed identities, current web/auth/grants and completed School/Drive work.
+See [daily observation](docs/operations/children-daily-observation.md).
+
 ## Four-companion receiving checkpoint — 2026-11-08
 
 All four existing companions have the exact Escuela kit1.1.1/web0.6.3,

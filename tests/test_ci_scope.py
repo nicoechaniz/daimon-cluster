@@ -1495,3 +1495,20 @@ def test_package_selection_has_closed_scope(tmp_path):
     for extra in ('tools/children_daily.py','tools/children_package_guard.py',
                   'clusterctl/admission.py','requirements.txt'):
         assert select([*changed,extra],ROOT)==('full',['tests'])
+
+
+def test_daily_package_coordinator_has_closed_scope(tmp_path):
+    changed=['tools/children_package_maintenance.py','tests/test_children_package_maintenance.py',
+             'deploy/systemd/children-guest-package-maintenance.service',
+             'deploy/systemd/children-packages-daily.service',
+             'tools/ci_scope.py','tests/test_ci_scope.py',
+             'docs/operations/children-daily-observation.md','RESUME.md']
+    expected=('peer',['tests/test_children_package_maintenance.py',
+                      'tests/test_children_package_selection.py',
+                      'tests/test_children_package_guard.py','tests/test_children_daily.py',
+                      'tests/test_ci_scope.py','tests/test_ci_workflow.py'])
+    assert select(changed,ROOT)==expected
+    assert select(changed,tmp_path)==('full',['tests'])
+    for extra in ('tools/children_daily.py','tools/children_package_guard.py',
+                  'tools/children_package_selection.py','clusterctl/admission.py'):
+        assert select([*changed,extra],ROOT)==('full',['tests'])

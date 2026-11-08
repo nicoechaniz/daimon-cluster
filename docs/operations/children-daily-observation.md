@@ -217,3 +217,80 @@ control/listing/hash checks passed, exact copies were retired and real dpkg stat
 SHA remained unchanged. No installed-version substitution, reinstall, production
 manifest or provider call was used to exercise that seam. The byte-identical
 inspector needs no fourfold duplicate archive download.
+
+## Durable daily package coordinator
+
+`tools/children_package_maintenance.py` composes the existing selector and guard.
+Each guest owns `children-package-maintenance.service`, installed from
+`deploy/systemd/children-guest-package-maintenance.service`. It holds the same
+private state lock as the standalone selector and records one current and one
+previous daily transaction. A pending manifest is bound by SHA; reviewed but
+uncommitted work revalidates rather than downloading another transaction.
+
+Before commit it rechecks trusted/fresh native security metadata, exact archive
+hashes, installed versions, held packages, the exact scoped guard configuration,
+package simulation, browser inactivity, guest free space and all three existing
+native/web services. It fsyncs **commit_requested before launching APT**. The
+command uses no-download, no-remove, only-upgrade and preserved local config;
+APT owns the real package locks and executes the current protocol2 guard.
+No arbitrary package/service/runtime upgrade is admitted by this browser policy.
+
+The guest writer service has1GiB/100%CPU/128tasks, no start/stop deadline and
+`KillMode=process`. Its APT process inherits the systemd journal directly; a
+Python-owned output pipe would cause SIGPIPE after supervisor loss. Existing
+guest journals are bounded64MiB persistent/16MiB runtime/7days. No collector
+read deadline or cleanup command may kill a package writer. An actual harmless
+child-process test survived its Python supervisor; this is not an induced
+production APT interruption. Failed/OOM/uncertain transactions retain their
+journal, manifest and archives and require the existing operator to inspect
+actual versions/locks/health; they never automatically repeat commit.
+
+Recovery obtains the actual POSIX frontend/dpkg/cache locks without deleting or
+replacing lock files. It requires installed and executable target versions,
+empty dpkg audit and unchanged active native/web process identities. Only then
+can it mark complete and retire exact verified archives/config/manifest. This
+cleanup is resumable after partial completion and touches no unrelated cache,
+profile, history or work. An unchanged old version after a lost response is
+**not** evidence that installation was never admitted. A deferred pre-commit
+browser check, however, can resume the same reviewed manifest without another
+selection or download. Unknown/orphan state remains preserved.
+
+The host `children-packages-daily.service` has900s/128MiB/25%CPU/32tasks and
+observes the four independent guest units serially for at most600s. It checks
+actual Incus fast-root quota headroom (at least2GiB) before guest admission;
+guest `df` alone measures shared backing and cannot establish quota headroom.
+An already-running guest is observed, never restarted. Observer expiry leaves
+its writer alive. Missing/stale/failed guest receipts make the fleet degraded.
+The host keeps current/previous successful fleet projections. Each private
+state tree has a384MiB admission threshold within the existing512MiB cap,
+including the selector's256MiB maximum archive set. Pending work is not evicted.
+
+The supported daily link is a drop-in on the **existing** inventory service:
+
+```ini
+[Unit]
+Wants=children-packages-daily.service
+After=children-packages-daily.service
+```
+
+Do not add a second timer. Stopping future package admission means removing only
+this owned dependency drop-in and reloading systemd. Preserve both existing
+timers, all guest units/state and any running writer; let it finish. Code rollback
+preserves transaction journals and selected guard dependencies. Never restore an
+old package database to roll back code.
+
+The existing Alerts observer supports explicit additive target extension. Add
+`daily-packages`, same existing inventory timer, host unit
+`children-packages-daily.service`, max_age93600s and max_run900s. Use its maintained
+`Monitor.extend`/`--extend-to` operation and update the private configuration
+while holding that monitor's lock; retain the same authority, journal, original
+target and pending outbox. Merely editing targets makes the bound monitor refuse.
+Do not acknowledge or close the broader partial-coverage incident.
+
+First actual fleet evaluation succeeded for all four with current native metadata,
+up_to_date and write_requested=false; no reinstall was needed. Source/policy
+readback and actual unit/cgroup selections are separate from a future real
+upgrade through this coordinator. Existing signed Chromium installation, native
+APT guard and real archive-inspector evidence remain valid and are not repeated.
+Broader upstream/malicious applicability, host/critical package policy, cleanup
+and independent availability are still unfinished parts of daily coverage.

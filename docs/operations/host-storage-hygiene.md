@@ -134,3 +134,13 @@ old cache was removed. A1-byte budget kept an oversized candidate, and simulated
 unavailable process observation prevented removal. The exact verified disposable
 fixture was retired. This is not evidence of child participation or a production
 browser capture, and it does not establish all broader cleanup acceptance.
+
+Incus may load a generic `service.d/zzz-lxc-service.conf` that overrides
+NoNewPrivileges from the base unit. The cleaner therefore installs its own
+`children-cache-cleanup.service.d/zzzz-children-no-new-privileges.conf`, scoped
+only to that finite unit. Keep the generic LXC drop-in unchanged. Receiving
+qualification checks effective systemd properties and `/proc/self/status`, not
+just the unit text. The production CLI refuses to clean unless its actual kernel
+NoNewPrivs flag is1, and reports that observation alongside actual deletion UID.
+Other LXC sandbox overrides remain explicit; a base directive is not proof that
+the container's service manager enforces it.

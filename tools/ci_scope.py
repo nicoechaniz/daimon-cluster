@@ -1014,6 +1014,7 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         'tools/children_cache_cleanup.py','tests/test_children_cache_cleanup.py',
         'tools/children_daily.py','tests/test_children_daily.py',
         'deploy/systemd/children-cache-cleanup.service',
+        'deploy/systemd/children-cache-cleanup.service.d/zzzz-children-no-new-privileges.conf',
         'docs/operations/host-storage-hygiene.md'}
     bounded_cleanup_tests = ['tests/test_storage_hygiene.py','tests/test_children_cache_cleanup.py',
         'tests/test_children_daily.py','tests/test_children_package_guard.py',

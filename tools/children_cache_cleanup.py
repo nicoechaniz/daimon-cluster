@@ -28,6 +28,13 @@ else:
 MAX_FRAME=16384
 
 
+def no_new_privileges():
+    for line in Path('/proc/self/status').read_text().splitlines():
+        if line.startswith('NoNewPrivs:'):
+            return line.split()[1:] == ['1']
+    return False
+
+
 def discover(projects):
     """Bounded Cargo discovery in the selected Projects tree, not host crawling."""
     repos=[];roots=[];entries=0
@@ -150,7 +157,8 @@ def run(config, *, now=None, scanner=None):
         _,status=os.waitpid(pid,0)
     if not result or not owner_verified or (status and result.get('status')=='complete'):
         raise ValueError('cleanup_consumer_unavailable')
-    return {**result,'privileged_scans':scans,'deletion_owner_verified':owner_verified,'at':int(time.time())}
+    return {**result,'privileged_scans':scans,'deletion_owner_verified':owner_verified,
+            'no_new_privileges':no_new_privileges(),'at':int(time.time())}
 
 
 def main():
@@ -165,7 +173,9 @@ def main():
     with (state/'lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         if footprint(state)>1024*1024:raise ValueError('cleanup_state_capacity')
-        try:result=run(private_json(args.config,0))
+        try:
+            if not no_new_privileges():raise ValueError('effective_no_new_privileges_required')
+            result=run(private_json(args.config,0))
         except (OSError,ValueError,RuntimeError):result={'status':'unavailable','reason':type(sys.exception()).__name__,'at':int(time.time())}
         result['schema']='children-cache-cleanup/v1'
         current=state/'current.json'

@@ -22,7 +22,10 @@ pipeline invocation58a40ef45cd3473f88959fdc3dffab19 exited0, matched fresh vendo
 metadata/inventory on all5resources and consumed cleanup on all4. No real eligible
 cache existed and none was deleted. Final budget-accounting successor readback/
 consumer proof belongs in the maintained receiving checkpoint, not a source-only
-claim. The existing collector timer/Alerts observation covers degraded cleanup;
+claim. Effective readback found the generic LXC service drop-in overriding
+NoNewPrivileges; the correction is an own-unit-only drop-in and an actual kernel
+flag check that refuses production cleanup when absent. The generic LXC file and
+other services remain unchanged. Retain the preceding effective-check refusal. The existing collector timer/Alerts observation covers degraded cleanup;
 no extra schedule or producer. Disabling the optional stage in a disposable
 fixture preserved pending state and inventory/advisory phases.
 

@@ -4,6 +4,7 @@ from pathlib import Path
 import socket
 import subprocess
 import pytest
+from unittest.mock import patch
 from tools import children_cache_cleanup as cleanup
 
 
@@ -43,3 +44,10 @@ def test_inherited_ipc_is_bounded_json_without_pickle_or_command_capability():
 def test_unknown_configuration_refuses_before_owner_lookup_or_mutation():
     with pytest.raises(ValueError,match='selected_guest_owner_required'):
         cleanup.run({'schema':'unknown','user':'root'})
+
+
+def test_no_new_privileges_comes_from_actual_kernel_process_state():
+    for text,expected in [('NoNewPrivs:\t1\n',True),('NoNewPrivs:\t0\n',False),
+                          ('NoNewPrivs:\tinvalid\n',False),('Name:\tfixture\n',False)]:
+        with patch.object(Path,'read_text',return_value=text):
+            assert cleanup.no_new_privileges() is expected

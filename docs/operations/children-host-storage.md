@@ -112,3 +112,24 @@ removed only its disposable quota volumes. A live peer HTTP listener remained
 healthy before and after denial from its neighbour; guest-to-host SSH was also
 denied, both owned drop counters increased, and DNS/HTTPS egress passed. This is
 network/resource enforcement, not companion identity or application acceptance.
+
+## Receiving resource checkpoint —8November2026
+
+The four actual environments dm-pixin, dm-calipso, dm-c-137 and dm-noodles are
+created and running. Each exact resource plan binds its own prepared empty-new
+seed; real guest cgroup and private mount checks passed for all four. Two
+marked synthetic qualification containers and their owned auxiliary volumes
+were retired only after terminal quota, network and account-bootstrap proof.
+Their small evidence records remain. No signed identity, provider/model turn,
+Tribe admission or child acceptance is implied by resource preparation.
+
+The host has4GiB fast swap and swappiness20, verified active. Effective merged
+journald limits are256MiB system/32MiB runtime on the host and64/16MiB in each
+child container, retaining at most seven days. All five journal services were
+active after selection. No reboot test was performed. Source's original network
+identity remains on ITACA; this host joined with its own fresh network identity.
+
+[The Alerts link and storage observer](children-alerts-link.md) records the
+receiving route, least-authority scope, actual checks and remaining qualification.
+Daily security/advisory assessment and activity-aware cleanup remain unfinished;
+these capacity/journal controls do not establish that pipeline.

@@ -281,7 +281,11 @@ old package database to roll back code.
 
 The existing Alerts observer supports explicit additive target extension. Add
 `daily-packages`, same existing inventory timer, host unit
-`children-packages-daily.service`, max_age93600s and max_run900s. Use its maintained
+`children-packages-daily.service`, explicit
+`trigger_unit: children-daily-inventory.service`, max_age93600s and max_run900s.
+Alerts PR32 checks actual timer Triggers plus the trigger service's Wants/Requires
+and After. The original matching-name-only adapter refused this target; that
+no-effect binding refusal is retained. Use its maintained
 `Monitor.extend`/`--extend-to` operation and update the private configuration
 while holding that monitor's lock; retain the same authority, journal, original
 target and pending outbox. Merely editing targets makes the bound monitor refuse.
@@ -294,3 +298,22 @@ upgrade through this coordinator. Existing signed Chromium installation, native
 APT guard and real archive-inspector evidence remain valid and are not repeated.
 Broader upstream/malicious applicability, host/critical package policy, cleanup
 and independent availability are still unfinished parts of daily coverage.
+
+
+Receiving activation now selects the existing daily inventory dependency; its
+remove/reload/readback/restore stop-path test passed without changing either
+existing timer's bytes or starting another package installation. Alerts PR32
+sourcec80c8e8 is installed only on the owning children's observer, preserving
+its client, configuration authority, SQLite journal, original target and cadence.
+Its supported additive extension admitted daily-packages; actual subsequent
+scheduled ticks report both daily-inventory and daily-packages healthy, with
+empty pending outbox. No acknowledgment or broad coverage resolution occurred.
+
+The initial fleet success existed in its durable receipt but systemd later
+reported zero exit timestamps after the dependency stop-path reloads. Observation
+correctly refused to infer a successful native lifecycle from that receipt. One
+new coordinator execution under the selected dependency recorded an actual
+successful terminal. All guest transaction timestamps and write_requested=false
+remained identical, proving daily intent reuse rather than another selection,
+download or installation. Naturally scheduled package execution remains a future
+acceptance item; dependency selection and actual manual execution are distinct.

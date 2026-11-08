@@ -1,3 +1,29 @@
+## Daily package cadence and observation adopted —2026-11-08
+
+Cluster PR448/source405bf9f merged2cf5d99e; exact CI42483542017 passed.
+Current four guest worker units and bounded fleet observer are installed with
+source readback; all4 actual daily transactions report up_to_date, no write.
+The package phase is now a Wants/After dependency of the EXISTING inventory
+service/timer. The supported future-admission stop/remove/reload/readback/restore
+passed, both original timer hashes unchanged. No new timer or model scheduler.
+
+Alerts PR32/sourcec80c8e8 merged with exact CI42483937415 passed. Its explicit
+trigger_unit contract checks timer Triggers plus loaded service pull-in/order,
+allowing this dependent job without a duplicate timer. Installed on the own
+children's observer and extended through its retained journal binding. Actual
+scheduled ticks report both targets healthy, outbox0. The original unsupported
+name-check refusal and transient missing lifecycle observation remain retained;
+no original package work was replayed and the partial coverage incident stays open.
+
+Fleet terminal invocationa95af61cf00144d5b906f069d91046e2 under the selected
+link exited0. All4 original guest transaction timestamps remained identical;
+write_requested=false. Next naturally scheduled package invocation and a future
+needed real upgrade through the new coordinator remain separate acceptance.
+Broader advisories, cleanup/availability and social admission are unfinished.
+See [the owning route](docs/operations/children-daily-observation.md), current
+private package-maintenance activation/receiving checkpoints and preserved goal53
+pause. No current canonical/Tribe admission has been claimed for child holders.
+
 ## Daily browser package coordinator —2026-11-08
 
 The new durable coordinator composes the current signed selector and native APT

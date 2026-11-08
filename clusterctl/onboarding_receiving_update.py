@@ -203,6 +203,33 @@ def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: in
         **({'qualification_mode':'native-receive-only','outbound_release':False} if receive_only else {}))
 
 
+
+def conversation_cohort(proofs: dict[str, dict]) -> dict:
+    """Compare messaging membership while retaining each receiver's full CAS.
+
+    Tribe lineage also hashes resource grants. Those grants need not be disclosed
+    or synchronized merely to converse. Actual native audience, membership proofs
+    and authority coverage must agree; no native roster hash is rewritten.
+    """
+    if not isinstance(proofs, dict) or not 1 <= len(proofs) <= 256:
+        raise OnboardingError('receiving_cohort_membership_conflict')
+    fields = ('schema', 'tribe_ref', 'audience', 'membership_proofs', 'required_authority_epochs')
+    try:
+        rosters = {name: proof['roster'] for name,proof in proofs.items()}
+        if any(roster['schema'] != 'dm.runtime.tribe-roster/v1' for roster in rosters.values()):
+            raise ValueError
+        bases = {digest({key: roster[key] for key in fields}) for roster in rosters.values()}
+        if len(bases) != 1:
+            raise ValueError
+        readers = sorted((proof['reader'] for proof in proofs.values()),
+            key=lambda row:(row['being_ref'],row['embodiment_id']))
+        if len({(row['being_ref'],row['embodiment_id']) for row in readers}) != len(readers):
+            raise ValueError
+        return dict(membership_basis_sha256=next(iter(bases)), readers=readers,
+            local_roster_sha256={name:roster['roster_sha256'] for name,roster in rosters.items()})
+    except (KeyError, TypeError, ValueError):
+        raise OnboardingError('receiving_cohort_membership_conflict') from None
+
 def _reader_active(reader: dict, now: int) -> bool:
     """Check selected validity without converting indefinite authority to a date."""
     if reader.get('schema') == 'dm.receiving.reader/v2':

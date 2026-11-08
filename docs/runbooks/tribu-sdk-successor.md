@@ -1569,3 +1569,11 @@ deadline, then performs one authenticated RPC. It starts or restarts nothing and
 never obtains a fresh observation budget by waiting. Keep the original failed
 observation distinct from later authenticated readiness; an unclassified remote
 nonzero status does not establish a lower-level cause.
+
+For a messaging cohort, compare `conversation_cohort`'s membership basis, not
+whole Tribe lineage equality. The native lineage hash also contains resource
+grants; differing legitimate grants must not require disclosure or convergence
+merely to communicate. Audience, signed membership proofs and required authority
+epochs must agree. Retain each receiver's actual full `roster_sha256` separately
+for its native CAS; never replace it with the membership-basis digest. This
+helper changes no native wire schema, local roster, grant or publication policy.

@@ -166,3 +166,23 @@ def test_receive_only_mode_cannot_reclassify_an_existing_publication_adapter():
     with pytest.raises(OnboardingError, match='store_unready'):
         observe_current_reader(owner, expected_selection=selection,
             expires_at_ms=time.time_ns()//1_000_000+30_000, receive_only=True)
+
+
+def test_conversation_cohort_does_not_require_shared_private_resource_grants():
+    from clusterctl.onboarding_receiving_update import conversation_cohort
+    roster = dict(schema='dm.runtime.tribe-roster/v1', tribe_ref='tribe:one',
+        audience=[{'being_ref':'being:one'}], membership_proofs=[{'membership_ref':'member:one'}],
+        required_authority_epochs=['a'*64], lineage_head_ref='lineage:resource-grant-one', roster_sha256='b'*64)
+    other = copy.deepcopy(roster)
+    other.update(lineage_head_ref='lineage:different-resource-grants',roster_sha256='c'*64)
+    proofs = {'one':dict(roster=roster,reader=dict(being_ref='being:one',embodiment_id='body:one')),
+        'two':dict(roster=other,reader=dict(being_ref='being:two',embodiment_id='body:two'))}
+    actual = conversation_cohort(proofs)
+    assert actual['local_roster_sha256'] == {'one':'b'*64,'two':'c'*64}
+    assert [r['being_ref'] for r in actual['readers']] == ['being:one','being:two']
+    assert roster['lineage_head_ref'] != other['lineage_head_ref']
+    for field in ('tribe_ref','audience','membership_proofs','required_authority_epochs'):
+        changed=copy.deepcopy(proofs)
+        changed['two']['roster'][field] = 'changed' if field=='tribe_ref' else []
+        with pytest.raises(OnboardingError,match='membership_conflict'):
+            conversation_cohort(changed)

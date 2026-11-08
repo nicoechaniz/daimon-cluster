@@ -1545,3 +1545,20 @@ base and group remain associated with the actual responder and must report the
 same loaded base. Only an authenticated unsupported-view refusal from an older
 SDK permits the legacy full-status fallback. Readiness still does not prove
 reader selection, message delivery or model action.
+
+### Receive-only members and control provisioning
+
+A native receive-only application can be installed without an outbound visibility
+adapter. `bootstrap_group` freezes that adapter's absence as explicit null hashes;
+it still verifies the signed application and freezes its selection/publication.
+Appearance or removal of an adapter changes the frozen group. Use the existing
+owner optional-controller `issue` stage/publication for the retained body; this
+adds the control role, not human authorization, a new enrollment or outbound release.
+
+For this explicit closed composition, `observe_current_reader(receive_only=True)`
+checks actual process, identity, controlled roster, wire/store compatibility and
+loaded authority coverage. It reports `native-receive-only` and
+`outbound_release=false`, and refuses an installed/outbound-enabled adapter in that
+mode. The default qualification still requires validated outbound visibility.
+Native receiving selection, actual cross-body intake, native tool/model use and
+reply publication remain separate observed effects.

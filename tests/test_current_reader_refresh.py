@@ -136,3 +136,33 @@ def test_native_relationship_context_does_not_substitute_for_missing_epoch():
     with pytest.raises(OnboardingError, match='authority_unready'):
         observe_current_reader(owner, expected_selection=selection,
             expires_at_ms=time.time_ns()//1_000_000+30_000)
+
+
+def test_receive_only_qualification_keeps_outbound_closed_and_checks_real_intake():
+    owner, data, selection, _ = fixture()
+    view = data['runtime_status']['loaded_application']['visibility']
+    view.update(installation_sha256=None, release_enabled=False, catalog_mode='migrate',
+        catalog_validation='pending', catalog_schema_version=None)
+    selection['visibility_installation_sha256'] = None
+    horizon = time.time_ns()//1_000_000+30_000
+    with pytest.raises(OnboardingError, match='store_unready'):
+        observe_current_reader(owner, expected_selection=selection, expires_at_ms=horizon)
+    result = observe_current_reader(owner, expected_selection=selection, expires_at_ms=horizon,
+        receive_only=True)
+    assert result['qualification_mode'] == 'native-receive-only'
+    assert result['outbound_release'] is False
+    assert result['expected']['selection']['visibility_installation_sha256'] is None
+    data['runtime_status']['receiving']['rosters']['tribe']['required_authority_epochs'] = ['9'*64]
+    with pytest.raises(OnboardingError, match='authority_unready'):
+        observe_current_reader(owner, expected_selection=selection, expires_at_ms=horizon, receive_only=True)
+    data['runtime_status']['receiving']['rosters']['tribe']['required_authority_epochs'] = ['a'*64]
+    data['gate']['controlled'] = False
+    with pytest.raises(OnboardingError, match='roster_unready'):
+        observe_current_reader(owner, expected_selection=selection, expires_at_ms=horizon, receive_only=True)
+
+
+def test_receive_only_mode_cannot_reclassify_an_existing_publication_adapter():
+    owner, _, selection, _ = fixture()
+    with pytest.raises(OnboardingError, match='store_unready'):
+        observe_current_reader(owner, expected_selection=selection,
+            expires_at_ms=time.time_ns()//1_000_000+30_000, receive_only=True)

@@ -21,6 +21,8 @@ from daimon_matrix.client import ClientError
 from clusterctl.onboarding_receiving_update import GuestOwnerBootstrap
 from tests.test_onboarding_target import receiving
 
+_BOOTSTRAP_GROUP = receiving_update.bootstrap_group
+
 
 def deadline():
     return time.monotonic_ns() + 10_000_000_000
@@ -1361,3 +1363,53 @@ def test_original_profile_renewal_requires_matching_original_client(renewed_orig
     path.write_text(json.dumps(value))
     with pytest.raises(OnboardingError, match='^existing_onboarding_target_preserved$'):
         target._controller_comparison(expected, current, store, signing_key)
+
+
+def test_existing_receive_only_owner_can_issue_control_without_publication_adapter(fixture):
+    target, request, group, _ = fixture
+    group['installation_sha256'] = None
+    group['hashes']['visibility'] = None
+    request['group_sha256'] = digest(group)
+    owner = GuestOwnerBootstrap(target, request)
+    before = target.document_bundle()
+    original_key = (owner.runtime/'client.key').read_bytes()
+    ready = owner.execute('stage', deadline_ns=deadline())
+    result = owner.execute('publish', deadline_ns=deadline(), ready_sha256=ready['ready_sha256'])
+    after = target.document_bundle()
+    assert after['keystore']['counter'] == before['keystore']['counter'] + 1
+    assert after['local_origin'] == before['local_origin']
+    assert after['manifest'] == before['manifest']
+    assert (owner.runtime/'client.key').read_bytes() == original_key
+    assert after['capabilities'][:-1] == before['capabilities']
+    assert after['capabilities'][-1]['profile']['role'] == 'receiving-controller'
+    assert result['receiving_readiness'] == 'unobserved'
+    assert owner._group()['installation_sha256'] is None
+
+
+def test_group_freeze_pins_missing_visibility_without_inventing_receipt(fixture, monkeypatch):
+    target, _, _, _ = fixture
+    root = target.root/'freeze-closed-group'
+    root.mkdir()
+    for name in ('publication.json', 'application.json', 'binding.json'):
+        (root/name).write_text('{}')
+        (root/name).chmod(0o600)
+    selected = dict(application=str(root), visibility=str(root/'absent-visibility.json'))
+    monkeypatch.setattr('clusterctl.onboarding_peer.observed_group', lambda *a, **k: selected)
+    monkeypatch.setattr('daimon_matrix.messaging_config._read_verified_publication',
+        lambda *a, **k: ({}, root, {}))
+    # The signed application verifier is a seam here; identity/custody use the
+    # genuine fixture. This checks the actual absence pin, not signature uptake.
+    # Existing target selection is required independently of the missing adapter.
+    selection = target.root/'tribe/selection.json'
+    selection.parent.mkdir(exist_ok=True)
+    selection.write_text('{}')
+    selection.chmod(0o600)
+    frozen = _BOOTSTRAP_GROUP(target, target.document_bundle())
+    assert frozen['installation_sha256'] is None
+    assert frozen['hashes']['visibility'] is None
+    assert all(value is not None for key,value in frozen['hashes'].items() if key != 'visibility')
+    (root/'absent-visibility.json').write_text('{"document":{}}')
+    (root/'absent-visibility.json').chmod(0o600)
+    appeared = _BOOTSTRAP_GROUP(target, target.document_bundle())
+    assert digest(appeared) != digest(frozen)
+    assert appeared['hashes']['visibility'] is not None

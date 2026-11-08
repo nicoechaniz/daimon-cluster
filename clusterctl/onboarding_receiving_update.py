@@ -112,7 +112,8 @@ def verify_receiving_identity(bundle: dict, observed: dict, *, expires_at_ms: in
 
 
 def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: int,
-                           require_admitted: bool = True, native_tooling: dict | None = None) -> dict:
+                           require_admitted: bool = True, native_tooling: dict | None = None,
+                           receive_only: bool = False) -> dict:
     """Qualify an already installed reader without replaying its lifecycle.
 
     The operator pins the approved current software/application selection.
@@ -156,14 +157,19 @@ def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: in
             or observed['gate'].get('controlled') is not True
             or roster.get('schema') != 'dm.runtime.tribe-roster/v1'):
         raise OnboardingError('receiving_cohort_roster_unready')
-    if (visibility.get('catalog_mode') != 'validate'
-            or visibility.get('catalog_validation') != 'validated'
-            or visibility.get('release_enabled') is not True
+    # Intake readiness does not depend on a sender's outbound publication client.
+    # The explicit closed mode never qualifies an installed visibility adapter.
+    closed = (receive_only is True and visibility.get('release_enabled') is False
+        and visibility.get('installation_sha256') is None)
+    published = (receive_only is False and visibility.get('catalog_mode') == 'validate'
+        and visibility.get('catalog_validation') == 'validated'
+        and visibility.get('release_enabled') is True
+        and visibility.get('catalog_schema_version') in contract['store_versions'].get('visibility_catalog', []))
+    if (type(receive_only) is not bool or not (closed or published)
             or application.get('shared_relationships') is not True
             or application.get('communication_store_role') != 'ledger'
             or application.get('shared_stores', {}).get('ledger', {}).get('schema_versions', {}).get('communication')
-                not in contract['store_versions'].get('communication', [])
-            or visibility.get('catalog_schema_version') not in contract['store_versions'].get('visibility_catalog', [])):
+                not in contract['store_versions'].get('communication', [])):
         raise OnboardingError('receiving_cohort_store_unready')
     coordinate = (identity['being_ref'], observed['server']['embodiment_id'], identity['credential_ref'])
     if not any((item['being_ref'], item['embodiment_id'], item['credential_id']) == coordinate
@@ -193,7 +199,8 @@ def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: in
     return dict(reader=reader, expected=dict(process=observed['process'], server=observed['server'],
         selection=selection), gate=observed['gate'], roster=roster,
         observed_at_ms=now, identity_expires_at_ms=verified['expires_at_ms'],
-        **({'native_tooling': observed['native_tooling']} if native_tooling is not None else {}))
+        **({'native_tooling': observed['native_tooling']} if native_tooling is not None else {}),
+        **({'qualification_mode':'native-receive-only','outbound_release':False} if receive_only else {}))
 
 
 def _reader_active(reader: dict, now: int) -> bool:
@@ -1614,10 +1621,14 @@ def bootstrap_group(target, bundle: dict, *, socket_root: Path | None = None) ->
     paths = dict(selection=target.root / 'tribe/selection.json',
         publication=Path(group['application']) / 'publication.json',
         application=metadata / 'application.json', binding=metadata / 'binding.json', visibility=Path(group['visibility']))
-    visibility = being_seed._read(Path(group['visibility']), limit=being_seed.MAX_SELECTION)
+    # A selected receiving application can deliberately have no outbound
+    # adapter. Freeze that absence explicitly; never invent publication evidence.
+    visibility_path = paths['visibility']
+    absent = not visibility_path.exists() and not visibility_path.is_symlink()
+    visibility = None if absent else being_seed._read(visibility_path, limit=being_seed.MAX_SELECTION)
     return dict(selected=group, application_sha256=config_digest(application), publication_sha256=config_digest(publication),
-        installation_sha256=config_digest(visibility['document']),
-        hashes={key: hashlib.sha256(onboarding_release.regular(
+        installation_sha256=None if absent else config_digest(visibility['document']),
+        hashes={key: None if key == 'visibility' and absent else hashlib.sha256(onboarding_release.regular(
         path, uid=os.geteuid())).hexdigest() for key, path in paths.items()})
 
 

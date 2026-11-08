@@ -83,6 +83,54 @@ engine readiness, canonical Matrix running admission, Tribe membership and human
 device acceptance retain distinct evidence. Full social admission, a publication
 broker, Escuela, Drive and voice workshops do not gate basic Conversation.
 
+## Social visibility remains a separate receiving dependency
+
+Current `onboarding_group_admission.publication_recipe` requires a new group
+participant's first visibility installation to contain Telegram token/proof-key
+references and an actual `dm.messaging.telegram-qualification/v1` probe. The
+selected Matrix loader checks those references and constructs a Telegram
+transport. A downstream App text projection or registered web Home does not
+satisfy that native proof. Do not copy an adult bot credential, fabricate bot or
+probe identifiers, drop the native barrier, or report a signed holder as an
+admitted group participant.
+
+The existing portable successor is owned by
+[Matrix496](https://github.com/AlterMundi/daimon-matrix/issues/496) and
+[App452](https://github.com/AlterMundi/DaimonApp/issues/452). Its actual
+first-install publication/proof contract must be integrated into this same
+cohort route and qualified on the required receiving readers. Preserve existing
+adult policies, pending originals and old proofs. Keep prepared unsigned social
+intent within its original validity window; expiration is not permission to
+extend an accepted operation or replay a partially executed one. Basic web
+Conversation remains independent of this unfinished dependency.
+
+## Finite School preparation in an existing companion
+
+Install the selected exact kit and only that companion's reduced learner
+profile, own signed identity reference, tool bindings and private media settings.
+Verify the package manifest and exercise its finite foreground heartbeat without
+inventing achievements, participation or capture grants. A successful installer
+is not evidence that the companion model read the kit or that Drive works.
+
+When the human has authorized actual receiving-model preparation, use one
+bounded native task thread with explicitly operator-authored context. Keep it
+separate from the child's first ordinary conversation. Preserve the chosen
+provider, account and native history; read local selected material only and do
+not enable background attention. Retain both the process outcome and the
+model/tool results. A completed turn can honestly report that no files were
+read: it is not successful adoption.
+
+The finite operator invocation needs headroom for native tool-process bursts
+inside the guest's unchanged task limit. The receiving continuation uses
+`TasksMax=128`, `MemoryMax=1G`, `CPUQuota=200%` and a 540-second deadline, with
+at most1MiB stdout and64KiB stderr retained. An earlier64-task invocation could
+finish its model turn while every local tool failed with `EAGAIN`. Inspect
+actual cgroup/command evidence before changing a bound. Continue that same
+native thread after the concrete failure is corrected; do not create another
+identity or repeat the successful companions' preparation. Preserve earlier
+failed results. Model reading, private Drive roundtrip, family device acceptance
+and capture agreements remain separate facts.
+
 ## Existing authority over the selected network
 
 When the selected central authority is already reachable on the host's private

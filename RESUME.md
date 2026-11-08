@@ -1,3 +1,26 @@
+## Own four-companion browser qualification —2026-11-08
+
+The four existing guests now have their own public WebBridge2.0.22 runtime,
+private retained profile and on-demand user-unit trio. Actual loopback navigation,
+accessibility/evaluation, synthetic PNG capture, task-tab isolation and storage
+retention across explicit stop/start passed on each guest. All three browser
+units ended in intentional standby. No provider/model call, account sign-in,
+child media, native service restart or social-admission effect was requested.
+
+The vendor status has a literal v prefix; the helper accepts only the two exact
+spellings for the qualified release. Vendor startup telemetry ignored proxy
+variables; the selected daemon now refuses outgoing connect syscalls, with actual
+EPERM plus working inbound extension/command proof. This changes only the own
+daemon, retaining Chromium's sandbox/networking. Preserve the failed transfer/
+quoting/proxy observations and successful per-child stages; do not rerun completed
+journeys because an earlier coordinator failed before the next guest.
+
+This closes the installation and technical on-demand journey, not model-context
+uptake, family acceptance, automatic complete-idle detection, full daily browser
+supervision or the unchanged no-Telegram social admission blocker. Maintain own
+context pointers via the existing route. See
+[own browser operations](docs/operations/children-browser.md).
+
 ## Bounded compiler-cache cleanup receiving —2026-11-08
 
 The existing cleaner now bounds bytes/entries/time as well as directory count.

@@ -1024,6 +1024,17 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
             and set(changed) <= bounded_cleanup_files | CI_FILES | RUNBOOK_DOCS
             and all((root / name).is_file() for name in bounded_cleanup_tests)):
         return 'peer', bounded_cleanup_tests
+    browser_files = {'tools/children_browser.py','tests/test_children_browser.py',
+        'deploy/systemd/user/kimi-webbridge-browser.service',
+        'deploy/systemd/user/kimi-webbridge-daemon.service',
+        'deploy/systemd/user/kimi-webbridge-display.service',
+        'support/children-browser/PROVENANCE.json',
+        'docs/operations/children-browser.md'}
+    browser_tests = ['tests/test_children_browser.py','tests/test_ci_scope.py',
+                     'tests/test_ci_workflow.py']
+    if (set(changed) & browser_files and set(changed) <= browser_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / name).is_file() for name in browser_tests)):
+        return 'peer', browser_tests
     daily_files = {'tools/children_daily.py', 'tests/test_children_daily.py',
                    'docs/operations/children-daily.md',
                    'deploy/systemd/children-daily-inventory.service',

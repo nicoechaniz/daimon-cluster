@@ -1,0 +1,27 @@
+[Unit]
+Description=On-demand own companion Chromium and retained private profile
+Wants=kimi-webbridge-daemon.service kimi-webbridge-display.service
+After=kimi-webbridge-daemon.service kimi-webbridge-display.service
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+Environment=HOME=%h
+Environment=DISPLAY=:77
+Environment=XAUTHORITY=%h/.kimi-webbridge/Xauthority
+UMask=0077
+ExecStartPre=%h/.local/bin/daimon-browser wait
+ExecStart=/usr/bin/chromium --user-data-dir=%h/.kimi-webbridge/chromium-profile --disable-extensions-except=%h/.kimi-webbridge/extension --load-extension=%h/.kimi-webbridge/extension --no-first-run --no-default-browser-check --disable-dev-shm-usage --disable-background-networking --disk-cache-size=104857600 about:blank
+Restart=on-failure
+RestartSec=5
+MemoryHigh=768M
+MemoryMax=1280M
+TasksMax=512
+CPUQuota=200%
+TimeoutStopSec=20
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=60
+LogRateLimitBurst=100

@@ -1530,3 +1530,16 @@ def test_bounded_cleanup_composition_has_closed_scope(tmp_path):
     assert select(changed,tmp_path)==('full',['tests'])
     for extra in ['scripts/restic-backup.sh','clusterctl/onboarding_host.py','tools/children_package_guard.py']:
         assert select([*changed,extra],ROOT)==('full',['tests'])
+
+
+def test_own_browser_has_closed_scope_and_unknown_changes_keep_full_suite(tmp_path):
+    changed = ['tools/children_browser.py','tests/test_children_browser.py',
+        'deploy/systemd/user/kimi-webbridge-browser.service',
+        'deploy/systemd/user/kimi-webbridge-daemon.service',
+        'deploy/systemd/user/kimi-webbridge-display.service',
+        'support/children-browser/PROVENANCE.json','docs/operations/children-browser.md',
+        'RESUME.md','tools/ci_scope.py','tests/test_ci_scope.py']
+    assert select(changed,ROOT)==('peer',['tests/test_children_browser.py',
+        'tests/test_ci_scope.py','tests/test_ci_workflow.py'])
+    assert select(changed,tmp_path)==('full',['tests'])
+    assert select(changed+['clusterctl/admission.py'],ROOT)==('full',['tests'])

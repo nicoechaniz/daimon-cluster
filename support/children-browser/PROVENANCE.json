@@ -1,0 +1,11 @@
+{
+  "schema": "children-browser-provenance/v1",
+  "version": "2.0.22",
+  "artifact_tree_sha256": "cd20ef6fdd72eb700c9cf0ba14906f9012591d09a42895f8476101d0e067da1d",
+  "daemon_sha256": "0d1b2bf5be0c4854110f60b755fbe50cdc3d06c6a086ab3b4d4c7505f41fdcf6",
+  "extension_manifest_sha256": "f13a5d21d763748e4a5dbde73bf897eadadd7a57ee4568c0f3c6e0e266e6ca40",
+  "source": "Existing selected generic public WebBridge runtime from current ITACA body. Public static binary/extension only; no installation identity, profile, account or credential.",
+  "upstream_signature": "not independently asserted",
+  "discovery": "service-kimi-webbridge, maintained source-acquisition guide; vendor entrypoint https://www.kimi.com/features/webbridge",
+  "selection": "Compare actual public artifact bytes and receiving functional result before selecting; missing provenance stays a gap."
+}

@@ -1417,3 +1417,26 @@ def test_foundation_profile_uses_existing_owner_receiving_checks():
     assert 'tests/test_onboarding_foundation_native.py' in tests
     for unrelated in ('clusterctl/onboarding_custody.py', 'requirements-dev.txt', 'unknown.py'):
         assert select([*changed, unrelated], ROOT)[0] == 'full'
+
+
+def test_remote_incus_host_carrier_retains_exact_source_and_native_consumers(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from tools import ci_scope
+    changed = ['clusterctl/onboarding_host.py', 'clusterctl/onboarding_managed.py',
+        'clusterctl/vm_body.py', 'tests/test_onboarding_host.py', 'tests/test_onboarding_managed.py',
+        'tests/test_vm_body.py', 'docs/operations/children-admission.md',
+        'tools/ci_scope.py', 'tests/test_ci_scope.py']
+    base = '2172dfcc13787cfae7b2efe06c33295dabde0d7c'
+    profile, tests = select(changed, ROOT, base=base)
+    assert profile == 'peer'
+    assert set(ci_scope.NATIVE_RECEIVING_TESTS) | {'tests/test_vm_body.py',
+        'tests/test_onboarding_group_session.py', 'tests/test_onboarding_group_coordinator.py',
+        'tests/test_onboarding_group_recovery.py'} <= set(tests)
+    assert select(changed, tmp_path, base=base) == ('full', ['tests'])
+    for extra in ('clusterctl/onboarding_target.py', 'clusterctl/onboarding_custody.py',
+                  'clusterctl/onboarding_group_admission.py', 'requirements.txt'):
+        assert select([*changed, extra], ROOT, base=base) == ('full', ['tests'])
+    monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *a, **k:
+        SimpleNamespace(returncode=0, stdout=b'changed source'))
+    assert not ci_scope.remote_incus_source_only(ROOT, base)
+    assert select(changed, ROOT, base=base) == ('full', ['tests'])

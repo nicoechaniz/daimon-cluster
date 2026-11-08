@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 import time
 
-from . import being_seed, onboarding_admission, onboarding_mounts
+from . import being_seed, onboarding_admission
 from .admission import AdmissionEndpoint
 from .onboarding_registry import OwnerRegistry
 from .fences import Ed25519Signer
@@ -236,7 +236,7 @@ class ManagedRuntime:
             being_seed._write(root / 'confirmed.json', configuration)
         assert configuration is not None
         remaining()
-        onboarding_mounts.prepare_matrix_public(self.backend.config.views, plan, {'admission.json': configuration})
+        self.backend.prepare_matrix_public(plan, {'admission.json': configuration})
         remaining()
         return configuration
 

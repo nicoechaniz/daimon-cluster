@@ -1228,6 +1228,18 @@ class HostBackend:
         return dict(type="disk", source=str(self.config.views / digest(plan) / "matrix-public"),
                     path="/home/agent/.onboarding-matrix", readonly="true", shift="true")
 
+    def prepare_matrix_public(self, plan: dict, documents: dict) -> Path:
+        """Use the same publisher on the controller and selected physical host."""
+        if not self.authorize(plan, digest(plan)):
+            raise OnboardingError('host_authorization_required')
+        if self.config.views is None:
+            raise OnboardingError('receiving_code_configuration_required')
+        result = onboarding_mounts.prepare_matrix_public(self.config.views, plan, documents)
+        publish = getattr(self.run, 'prepare_matrix_public', None)
+        if publish is not None:
+            publish(self.config.views, plan, documents)
+        return result
+
     def _target_call(self, plan: dict, action: str, **arguments) -> dict:
         command, deadline_ns, input_data = self._target_invocation(plan, action, **arguments)
         dispatch: dict = {} if input_data is None else {'input_data': input_data}
@@ -1248,6 +1260,9 @@ class HostBackend:
                                      timeout_seconds: float, deadline_ns: int):
         from .onboarding_group_session import OwnerConversation
         native = self.native_body(plan)
+        physical = getattr(self.run, 'body_for', None)
+        if native is None and physical is not None:
+            native = physical(plan)
         command, deadline, _payload = self._target_invocation(plan, 'group-session',
             candidate=candidate, group_request=packet, observation_timeout_seconds=timeout_seconds,
             owner_deadline_ns=deadline_ns)
@@ -1256,6 +1271,8 @@ class HostBackend:
                 raise OnboardingError('host_authorization_required')
             if native is not None:
                 current = self.native_body(plan)
+                if current is None and physical is not None:
+                    current = physical(plan)
                 if current is None or current.value != native.value:
                     raise OnboardingError('native_receiving_placement_changed')
         if native is not None:
@@ -1395,7 +1412,7 @@ class HostBackend:
             signer = onboarding_peer.native(Path(__file__).resolve().parents[1]).verify_identity(peer_packet['sender_identity'])
             if approved != peer_being_ref or signer.state.being_ref != approved:
                 raise OnboardingError('approved_onboarding_peer_required')
-            onboarding_mounts.prepare_matrix_public(self.config.views, plan, {'peer-offer.json': peer_packet})
+            self.prepare_matrix_public(plan, {'peer-offer.json': peer_packet})
             peer_args = ['--peer-packet', public + '/peer-offer.json', '--peer-packet-sha256',
                 hashlib.sha256(canonical_bytes(peer_packet)).hexdigest(), '--peer-being-ref', approved]
         elif action == 'peer-accept':
@@ -1436,7 +1453,7 @@ class HostBackend:
                     or context.get('helper_code_uid') != 0):
                 raise OnboardingError('onboarding_group_remaining_owner_input_required')
             filename = 'execution-'+digest(context)+'.json'
-            onboarding_mounts.prepare_matrix_public(self.config.views, plan, {filename: context})
+            self.prepare_matrix_public(plan, {filename: context})
             if remaining_execution() != context:
                 raise OnboardingError('onboarding_group_remaining_owner_input_required')
             arguments += ['--remaining-execution', public+'/'+filename,
@@ -1581,7 +1598,7 @@ class HostBackend:
                     *[key + '=' + value for key, value in mount.items() if key != 'type']])
         root = ceremony.root / digest(plan)
         genesis = document(root / "genesis.json")
-        onboarding_mounts.prepare_matrix_public(self.config.views, plan, {"genesis.json": genesis})
+        self.prepare_matrix_public(plan, {"genesis.json": genesis})
         mount = self._matrix_mount(plan)
         instances, _ = self._inventory()
         row = next(row for row in instances if row.get("name") == self.instance(plan))
@@ -1604,13 +1621,13 @@ class HostBackend:
         activation = ceremony.authorize_target(plan, target["request"])
         if activation is None:
             return False
-        onboarding_mounts.prepare_matrix_public(self.config.views, plan, {"activation.json": activation})
+        self.prepare_matrix_public(plan, {"activation.json": activation})
         self._matrix_command(plan, "activate")
         proposed = self._matrix_command(plan, "credential-prepare")
         response = ceremony.authorize_credential(plan, proposed["request"])
         if response is None:
             return False
-        onboarding_mounts.prepare_matrix_public(self.config.views, plan, {"credential-response.json": response})
+        self.prepare_matrix_public(plan, {"credential-response.json": response})
         self._matrix_command(plan, "credential-apply")
         return True
 

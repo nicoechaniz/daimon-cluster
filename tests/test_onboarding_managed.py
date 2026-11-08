@@ -77,8 +77,6 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
         registry=str(tmp_path / 'registry'), state=str(tmp_path / 'service-state'), visibility_installation=None)
     being_seed._write(tmp_path / 'managed.json', settings)
     published = []
-    monkeypatch.setattr('clusterctl.onboarding_mounts.prepare_matrix_public',
-                        lambda _root, _plan, documents: published.append(documents))
     with tempfile.TemporaryDirectory(prefix='dm-') as home:
         target = Target(Path(home), plan, blank.genesis)
         target.activate(ceremony.authorize_target(plan, target.prepare()))
@@ -131,6 +129,7 @@ def test_lost_enrollment_and_registry_ack_resume_same_holder_and_native_body(tmp
             custody=ceremony.root, custody_grants=ceremony.grants, views=tmp_path / 'views'),
             instance=lambda _plan: instances[0]['name'], _inventory=lambda: (instances, []),
             _dispatch=dispatch, _target_call=target_call,
+            prepare_matrix_public=lambda _plan, documents: published.append(documents),
             _guest_paths=lambda _plan: (None, Path('/opt/qualified-code'), {}),
             _runtime_paths=lambda _plan, code: (code, [], {}))
         backend._ceremony = lambda _plan: ceremony

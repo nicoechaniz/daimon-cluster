@@ -60,3 +60,32 @@ work until actual receiving evidence exists.
 Rollback selects the previous qualified helper/units only after current task
 ownership is settled. Keep retained private state and existing account sessions;
 never restore an older profile or rerun enrollment to repair code selection.
+
+## Daily connection and standby observation
+
+The existing daily collector supports an optional `browser_status` selection:
+
+```json
+{"browser_status":{"helper":"/opt/children-maintenance/browser-helpers/SELECTED_HASH/children_browser.py","sha256":"EXACT_SELECTED_HELPER_SHA256"}}
+```
+
+Set it only after actual own-browser installation. This is one exact public
+helper selection for the four existing guests, not a new grant or login. The
+root-side read verifies the selected helper's bytes, size, resolved path and
+root-owned non-writable ancestry, then runs `status` as the actual agent user.
+The guest subprocess is bounded at 20 seconds; the outer finite read at 25 seconds
+and 128 KiB combined output. No lifecycle action, tab listing, navigation, model
+call or private browser content is requested. Only whitelisted status metadata
+enters the daily receipt.
+
+Intentional standby is healthy without starting anything. An active connection
+requires the qualified version and actual connected extension; it remains only
+connection metadata, not a new functional journey. Missing/unavailable/unknown
+status is degraded, while successful package inventory and advisory findings are
+retained. The daily service returns nonzero and its existing scheduled-job Alerts
+observer reports the failed occurrence. There is no extra timer or observer
+credential. This daily check is distinct from independent host/network
+availability and complete-idle cleanup, which remain separate work.
+
+To stop this optional read, remove only `browser_status` from the private daily
+configuration. Keep the timer, other phases, browser profiles and pending state.

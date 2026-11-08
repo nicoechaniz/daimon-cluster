@@ -1,3 +1,24 @@
+## Daily browser metadata is installed without wakeup —2026-11-08
+
+The existing daily inventory now has an optional exact root-owned browser helper
+selection. It verifies source/ancestry custody, then reads metadata as each own
+agent user with bounded guest/outer deadlines and output. It never starts or
+stops a browser, opens a tab or requests a model. Standby is healthy; unavailable
+or invalid status degrades the occurrence while retaining inventory/advisories.
+Remove only browser_status to disable the optional read, preserving all other
+phases and pending state. Existing scheduled-job Alerts consumes nonzero exits;
+no new schedule, producer credential or periodic browser wake was created.
+
+All4 actual no-wake reads preserved browser unit states/invocation IDs, and an
+incorrect selected hash was refused before helper execution. Existing daily
+invocation c99ed55ec23447c0b4a3e730757c0c98 then finished successfully with fresh
+Debian source, all5 actual inventories/matches, all4 cleanup and browser standby.
+Both existing timer file hashes were unchanged. These observations are separate
+from future naturally scheduled uptake, full idle/download detection, family/
+model acceptance and independent network/host availability. The original broad
+coverage incident and no-Telegram social blocker remain open; preserve Matrix53.
+See [browser observation](docs/operations/children-browser.md#daily-connection-and-standby-observation).
+
 ## Own four-companion browser qualification —2026-11-08
 
 The four existing guests now have their own public WebBridge2.0.22 runtime,

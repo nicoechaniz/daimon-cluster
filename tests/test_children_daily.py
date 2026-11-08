@@ -146,5 +146,78 @@ class DailyTests(unittest.TestCase):
             self.assertEqual(pending.read_bytes(),b'keep pending')
 
 
+class BrowserObservationTests(unittest.TestCase):
+    selection={'helper':'/opt/children-maintenance/browser-helpers/fixture/children_browser.py',
+               'sha256':'a'*64}
+
+    def test_selection_requires_exact_explicit_fields(self):
+        daily.validate_browser_selection(self.selection)
+        for value in (True,{},dict(self.selection,extra=True),
+                      dict(self.selection,helper='relative.py'),
+                      dict(self.selection,sha256='not-a-hash')):
+            with self.subTest(value=value),self.assertRaises(ValueError):
+                daily.validate_browser_selection(value)
+
+    def test_standby_read_contains_no_lifecycle_or_tab_command(self):
+        reply={'schema':'children-browser-status/v1','state':'standby','intentional':True}
+        with patch.object(daily,'command',return_value=json.dumps(reply).encode()) as call:
+            result=daily.browser_status('dm-pixin',self.selection)
+        self.assertEqual(result['state'],'standby')
+        argv=call.call_args.args[0]
+        self.assertEqual(argv[:4],['incus','exec','dm-pixin','--'])
+        source=argv[-1]
+        self.assertIn("str(p),'status'",source)
+        self.assertIn("hashlib.sha256(p.read_bytes())",source)
+        self.assertNotIn("'start'",source)
+        self.assertNotIn('/command',source)
+        self.assertEqual(call.call_args.kwargs,{'seconds':25,'limit':128*1024})
+
+    def test_connection_metadata_is_not_a_browser_journey(self):
+        reply={'schema':'children-browser-status/v1','state':'ready',
+               'bridge':{'running':True,'extension_connected':True,'version':'v2.0.22'},
+               'arbitrary_private_field':'never propagate'}
+        with patch.object(daily,'command',return_value=json.dumps(reply).encode()):
+            result=daily.browser_status('dm-pixin',self.selection)
+        self.assertEqual(result['observation'],'connection-metadata-only')
+        self.assertNotIn('arbitrary_private_field',result)
+        for bridge in ({'running':True,'extension_connected':False,'version':'v2.0.22'},
+                       {'running':True,'extension_connected':True,'version':'2.0.23'}):
+            with patch.object(daily,'command',return_value=json.dumps(dict(reply,bridge=bridge)).encode()):
+                with self.assertRaises(ValueError):daily.browser_status('dm-pixin',self.selection)
+
+    def test_unknown_and_false_standby_are_not_green(self):
+        for reply in ({'schema':'children-browser-status/v1','state':'standby','intentional':False},
+                      {'schema':'children-browser-status/v1','state':'unknown'},
+                      {'schema':'other','state':'standby','intentional':True},[]):
+            with patch.object(daily,'command',return_value=json.dumps(reply).encode()):
+                with self.assertRaises(ValueError):daily.browser_status('dm-pixin',self.selection)
+
+    def test_unavailable_browser_keeps_inventory_findings_and_pending_work(self):
+        with tempfile.TemporaryDirectory() as temp:
+            pending=Path(temp)/'pending-evidence';pending.write_bytes(b'keep')
+            config={'state':temp,'scanner':'unused','browser_status':self.selection,
+                    'targets':[{'id':'pixin','instance':'dm-pixin'}]}
+            observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},
+                      'package_status':'Package: fixture\nVersion: 1\n'}
+            with patch.object(daily,'validate'),patch.object(daily,'fetch_feed',return_value=b'feed'),                  patch.object(daily,'browser_status',side_effect=ValueError('unavailable')),                  patch.object(daily,'command',side_effect=[json.dumps(observed).encode(),b'CVE-fictional\n']):
+                result=daily.collect(config)
+            self.assertEqual(result['targets']['pixin']['browser']['state'],'unavailable')
+            self.assertEqual(result['targets']['pixin']['inventory'],'observed')
+            self.assertEqual(result['targets']['pixin']['debian_advisories'],'matched')
+            self.assertEqual(pending.read_bytes(),b'keep')
+            with patch.object(sys,'argv',['daily','--config',str(Path(temp)/'config.json')]),                  patch.object(daily,'collect',return_value=result):
+                (Path(temp)/'config.json').write_text(json.dumps(config))
+                self.assertEqual(daily.main(),2)
+
+    def test_omitting_browser_selection_does_not_run_its_reader(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config={'state':temp,'scanner':'unused','targets':[{'id':'pixin','instance':'dm-pixin'}]}
+            observed={'os':{'ID':'debian','VERSION_ID':'13','VERSION_CODENAME':'trixie'},
+                      'package_status':'Package: fixture\nVersion: 1\n'}
+            with patch.object(daily,'validate'),patch.object(daily,'fetch_feed',return_value=b'feed'),                  patch.object(daily,'browser_status',side_effect=AssertionError('disabled reader')),                  patch.object(daily,'command',side_effect=[json.dumps(observed).encode(),b'']):
+                result=daily.collect(config)
+            self.assertNotIn('browser',result['targets']['pixin'])
+
+
 if __name__ == '__main__':
     unittest.main()

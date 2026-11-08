@@ -189,8 +189,10 @@ existing owner controls, even when its current phase is `unselected`: native
 selection requires this operation reservation. Then apply the reader vector through
 `runtime.reader-selection` / `onboarding_owner_control.execute` using the accepted
 revocation head, the SAME operation/release, exact process/loaded-selection preimages,
-current signed roster CAS and separate retained revoke/select request files. Preserve an uncertain native
-control and inspect its exact result; do not mint a replacement operation. A source
+current signed roster CAS and separate retained revoke/select request files. `effect_not_after_ms` belongs
+only to the `select` command; omit it from `revoke`, whose native schema rejects
+that field. Preserve an uncertain native control and inspect its exact result;
+do not mint a replacement operation. A source
 or receiver process/selection/roster change requires a fresh observation, never
 relabeled historical loaded-view hashes. Credential validity remains signed validity;
 the finite observation horizon is not an invented permanent reader expiry.

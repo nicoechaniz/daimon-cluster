@@ -54,3 +54,11 @@ lock/provenance and explicitly select only public ecosystem/name/version tuples.
 Keep private identifiers offline. Empty advisory results are not a clean-system
 certificate; missing sources, alias/revision handling, no-fix/malicious advisories,
 artifact authenticity and real exposure require their maintained evidence.
+
+A first receiving occurrence captured all five application inventories but failed
+a Calipso cleanup-receipt JSON read. The retained original receipt was complete
+with zero removals; the failed transport output was unavailable, so no cause was
+invented. The collector now reads the bounded structured receipt and permits
+one parse-only re-read without starting cleanup again in that reconciliation.
+It preserves failure size/digest if recovered; a second invalid read stays
+failed. Original partial occurrence and later verification remain distinct.

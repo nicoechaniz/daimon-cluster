@@ -261,5 +261,23 @@ class ApplicationObservationTests(unittest.TestCase):
             self.assertNotIn('applications',result['targets']['pixin'])
 
 
+class CleanupReceiptReadTests(unittest.TestCase):
+    def test_malformed_read_reconciles_receipt_without_another_mutation(self):
+        receipt={'schema':'children-cache-cleanup/v1','status':'complete'}
+        with patch.object(daily,'command',side_effect=[b'',json.dumps(receipt).encode()]) as calls:
+            result=daily.cleanup_receipt('dm-calipso')
+        self.assertEqual(result['status'],'complete')
+        self.assertEqual(result['receipt_read_recovery']['bytes'],0)
+        self.assertEqual(calls.call_count,2)
+        for call in calls.call_args_list:
+            self.assertNotIn('systemctl',call.args[0])
+            self.assertIn('json.loads(raw)',call.args[0][-1])
+
+    def test_second_bad_read_stays_unavailable(self):
+        with patch.object(daily,'command',return_value=b'not-json') as calls:
+            with self.assertRaises(ValueError):daily.cleanup_receipt('dm-calipso')
+        self.assertEqual(calls.call_count,2)
+
+
 if __name__ == '__main__':
     unittest.main()

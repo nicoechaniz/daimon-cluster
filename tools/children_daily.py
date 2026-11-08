@@ -242,6 +242,28 @@ print(json.dumps(m.collect(selection['units'][name]),sort_keys=True))
             'helper_sha256':selection['sha256']}
 
 
+def cleanup_receipt(instance):
+    # Reconcile only the completed receipt; never restart a cleanup on read failure.
+    code=r'''
+import pathlib,json
+p=pathlib.Path('/var/lib/children-maintenance/cache-cleanup/current.json')
+with p.open('rb') as stream:raw=stream.read(65537)
+if len(raw)>65536:raise ValueError('cleanup_receipt_capacity')
+print(json.dumps(json.loads(raw)))
+'''
+    failure=None
+    for attempt in range(2):
+        raw=command(['incus','exec',instance,'--','/usr/bin/python3','-B','-I','-S','-c',code],
+                    seconds=10,limit=64*1024)
+        try:value=json.loads(raw)
+        except ValueError as error:
+            failure={'reason':type(error).__name__,'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()}
+            if attempt:raise
+            continue
+        if failure is not None:value={**value,'receipt_read_recovery':failure}
+        return value
+
+
 def collect(config):
     validate(config)
     root = Path(config['state'])
@@ -294,8 +316,7 @@ def collect(config):
                 try:
                     command(['incus','exec',target['instance'],'--','systemctl','start',
                              'children-cache-cleanup.service'],seconds=100,limit=64*1024)
-                    cleanup=json.loads(command(['incus','exec',target['instance'],'--','cat',
-                        '/var/lib/children-maintenance/cache-cleanup/current.json'],seconds=10,limit=64*1024))
+                    cleanup=cleanup_receipt(target['instance'])
                     if cleanup.get('schema')!='children-cache-cleanup/v1' or cleanup.get('status')!='complete':
                         raise ValueError('compiler_cleanup_incomplete')
                 except (OSError,ValueError,KeyError,subprocess.SubprocessError) as error:

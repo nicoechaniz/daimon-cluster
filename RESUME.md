@@ -8,7 +8,7 @@ METADATA description exceeded the first cap, so final reading bounds complete
 headers at64KiB and records their SHA/full-file size distinctly. Initial partial
 observations are retained. Final native all4 qualification observed all12selected
 main processes and22distributions per companion, with no package/model/provider
-execution or credential/environment retention. These are installed declarations,
+execution or credential/full-environment retention. These are installed declarations,
 not proof of loaded packages, authenticity or advisory clearance.
 
 The optional application_inventory daily stage selects exact root-owned helper

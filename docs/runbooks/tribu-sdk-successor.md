@@ -1493,3 +1493,20 @@ This profile exposes the methods in its selected existing client. It does not
 make base observer authority into Source author/import/promote authority. Those
 existing purpose-specific clients and their real operating policies remain
 separate; preserve the full foundation workflow gaps until actually accepted.
+
+### Native profile serialization
+
+The H8 `dm.cluster.rebirth-native-profile/v1` selector is an owner-private
+**canonical JSON** artifact. Use the existing `rebirth._atomic_json` writer and
+`rebirth._read_json` reader; ordinary indented or space-separated `json.dumps`
+bytes are refused even when they decode to the same object. Retain the exact
+predecessor and compare it before replacement. Check the actual native parent
+and its selected profile from the receiving placement; a historical user unit
+must not substitute for the living system service or its admission supervisor.
+
+The supported `rebirth_native.prepare` is a preparation-only check. It can verify
+the selected code, unchanged SDK/config/home and private password through the
+existing owner route without acquiring admission or starting a body. A profile
+refusal occurs before native start-record/admission dispatch. Inspect the actual
+exception and journal before deciding whether a corrected retry is known absent
+or uncertain; never re-enroll, replace keys or blindly replay startup.

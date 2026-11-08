@@ -363,3 +363,10 @@ context with the existing `membership-authorities` owner operation. Complete
 actual serving-code/context adoption and receive-side grants separately. Group
 receiving qualification, outbound visibility and messaging release retain their
 own truthful states and obligations. No child Telegram account is required.
+
+A current shared application's bootstrap `relationship_events` can include
+signed history for retired Tribe refs. Select governance by the **actual
+selected target `tribe_ref`**, then verify that subset and its current membership.
+Keep other histories in their owning original artifacts. Do not relax
+`membership_recipe` to accept unrelated Tribe events, extend an invalid draft's
+expiry, or invent a new invitation to hide a preparation error.

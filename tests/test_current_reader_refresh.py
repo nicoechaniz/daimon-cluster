@@ -186,3 +186,29 @@ def test_conversation_cohort_does_not_require_shared_private_resource_grants():
         changed['two']['roster'][field] = 'changed' if field=='tribe_ref' else []
         with pytest.raises(OnboardingError,match='membership_conflict'):
             conversation_cohort(changed)
+
+
+@pytest.mark.parametrize('retryable', [False, True])
+def test_explicitly_retryable_roster_observation_reuses_original_budget(retryable):
+    owner, _, selection, calls = fixture()
+    owner.deadline_ns = time.monotonic_ns()+2_000_000_000
+    deadline = owner.deadline_ns
+    observe = owner.qualified_identity
+    def pending(**options):
+        value=observe(**options)
+        if len(calls) <= 2:
+            value['runtime_status']['receiving']['rosters']['tribe'] = dict(
+                schema='dm.runtime.tribe-roster-unavailable/v1',error='reader_roster_unavailable',retryable=retryable)
+        return value
+    owner.qualified_identity = pending
+    horizon=time.time_ns()//1_000_000+30_000
+    if retryable:
+        result=observe_current_reader(owner,expected_selection=selection,expires_at_ms=horizon)
+        assert result['identity_expires_at_ms']==horizon
+        assert len(calls)==3
+    else:
+        with pytest.raises(OnboardingError,match='roster_unready'):
+            observe_current_reader(owner,expected_selection=selection,expires_at_ms=horizon)
+        assert len(calls)==1
+    assert owner.deadline_ns==deadline
+    assert all(x['expires_at_ms']==horizon for x in calls)

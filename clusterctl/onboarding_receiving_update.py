@@ -128,8 +128,20 @@ def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: in
     now = time.time_ns() // 1_000_000
     if type(expires_at_ms) is not int or not now < expires_at_ms <= now + 60_000:
         raise OnboardingError('receiving_identity_horizon_expired')
-    observed = owner.qualified_identity(expires_at_ms=expires_at_ms,
-        require_admitted=require_admitted, **({'native_tooling': native_tooling} if native_tooling is not None else {}))
+    for attempt in range(3):
+        observed = owner.qualified_identity(expires_at_ms=expires_at_ms,
+            require_admitted=require_admitted, **({'native_tooling': native_tooling} if native_tooling is not None else {}))
+        pending = observed['runtime_status'].get('receiving', {}).get('rosters', {}).get('tribe', {})
+        deadline = getattr(owner, 'deadline_ns', None)
+        if (pending.get('schema') == 'dm.runtime.tribe-roster-unavailable/v1'
+                and pending.get('retryable') is True and attempt < 2
+                and type(deadline) is int and deadline - time.monotonic_ns() > 50_000_000
+                and expires_at_ms - time.time_ns() // 1_000_000 > 50):
+            # Only an explicitly retryable native observation, within the same
+            # owner/process pin and original proof/deadline. Never retry control.
+            time.sleep(.05)
+            continue
+        break
     status, identity = observed['runtime_status'], observed['identity']
     verified = observed['verified_identity']
     loaded, application = status['loaded_runtime'], status['loaded_application']

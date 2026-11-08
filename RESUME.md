@@ -1,3 +1,37 @@
+## Four-companion receiving checkpoint — 2026-11-08
+
+All four existing companions have the exact Escuela kit1.1.1/web0.6.3,
+source`b195fe85326e202f838c4bd12eaf3c4171092c21`, with38manifest files verified,
+their own reduced learner/identity bindings and a finite foreground heartbeat.
+Actual native preparation read the12load-order files and24missions on all four.
+C-137's first turn honestly returned zero reads after local process creation
+failed; its same native thread completed the reading with128temporary tasks.
+The failed outcome remains retained; no successful companion was repeated.
+No child participation, media capture or institutional Drive roundtrip is proved.
+
+The maintained audio-seed-bank0.1.2 skill and own private Bank bindings are
+installed on all four. Each actual guest authenticated as its exact being and
+passed native catalog, selected-edition read and timed-transcript access; an
+existing unrelated table was refused. Invitations expire6February2027. Those
+checks used no models and do not prove family-device, model or Drive uptake.
+
+Basic own-account HTTPS Conversations remain deployed separately from social
+admission. Nicolas's Pixin browser challenge was approved for his explicit test;
+claim, first actual input and child acceptance remain unobserved. Original jobs,
+identities, holders, pairings and private histories are preserved.
+
+All four signed admission profiles and public authority histories are prepared;
+first-cohort owner contexts pass using the coherent helper closure. No child
+canonical running admission or Tribe membership has been published. The actual
+remaining native visibility dependency is recorded in
+[Matrix496](https://github.com/AlterMundi/daimon-matrix/issues/496#issuecomment-6719758740),
+under the existing App452 successor. Do not copy adult Telegram custody or
+substitute an App publication claim for native proof. Full scope, daily security
+completion and actual family acceptance remain active.
+
+PR440 final`a5db57c` passed all four applicable CI checks and merged as`7797c31`.
+Its already observed Oliva renewal/current-reader effects were not replayed.
+
 ## Owner renewal received — 2026-11-08 08:13 UTC
 
 Oliva's existing native V8 original local profiles were renewed through the
@@ -67,7 +101,8 @@ The stable entries are each companion's own home plus
 `/interaction/?view=conversation&client=standalone`. First family-device login
 and first real human input remain pending. These checks do not establish actual
 provider response, voice/hearing acceptance, canonical Matrix admission or Tribe
-membership. Only Pixin has the earlier actual read-only School inference.
+membership. The current School reading results are recorded in the receiving
+checkpoint above; they do not establish family Conversation acceptance.
 
 All four use the same qualified public App native/web runtime with their own
 application UUID, human reference, private configuration, account and history.

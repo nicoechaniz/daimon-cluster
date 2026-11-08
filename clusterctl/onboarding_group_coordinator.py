@@ -313,12 +313,18 @@ def configuration(path: Path) -> dict:
                                for key in ('config_sha256', 'code_digest'))):
                     raise ValueError
             elif owner.get('profile') == 'guest':
-                if (set(owner) != {'profile', 'plan', 'candidate', 'root'}
+                host_fields = {'host_config', 'host_config_sha256'}
+                if (set(owner) not in ({'profile', 'plan', 'candidate', 'root'},
+                        {'profile', 'plan', 'candidate', 'root'} | host_fields)
                         or not _path(owner['root']) or not isinstance(owner['candidate'], dict)
                         or set(owner['candidate']) != {'code', 'digest'}
                         or not _path(owner['candidate']['code'])
                         or re.fullmatch('[0-9a-f]{64}', owner['candidate']['digest']) is None
-                        or validate_plan(owner['plan'])['name'] != name):
+                        or validate_plan(owner['plan'])['name'] != name
+                        or host_fields <= set(owner) and (
+                            not _path(owner['host_config'])
+                            or not isinstance(owner['host_config_sha256'], str)
+                            or re.fullmatch('[0-9a-f]{64}', owner['host_config_sha256']) is None)):
                     raise ValueError
             else:
                 raise ValueError
@@ -364,6 +370,36 @@ class GroupCoordinator:
         self.settings = configuration(self.path)
         self.store = JobStore(backend.config.jobs)
 
+    def _guest_host(self, name: str) -> tuple[Path, dict] | None:
+        """Resolve a retained old owner's existing host without copying its grants.
+
+        The complete owner record is already pinned by owners_sha256 in this
+        admission. Its canonical configuration digest additionally rejects a
+        changed host file before another native effect can begin.
+        """
+        owner = self.settings['owners'][name]
+        if owner.get('profile') != 'guest' or 'host_config' not in owner:
+            return None
+        path = Path(owner['host_config'])
+        value = being_seed._read(path)
+        if digest(value) != owner['host_config_sha256']:
+            raise OnboardingError('onboarding_group_owner_host_changed')
+        return path, value
+
+    def _guest_backend(self, name: str):
+        selected = self._guest_host(name)
+        if selected is None:
+            return self.backend
+        from .onboarding_host import HostBackend, HostConfig
+        path, value = selected
+        backend = HostBackend(HostConfig.load(path, expected_value=value))
+        plan = self.settings['owners'][name]['plan']
+        # Alternate old owners must have an explicit native/VM placement. Do
+        # not fall back to this controller's local Incus for another host.
+        if backend.native_body(plan) is None or not backend.authorize(plan, digest(plan)):
+            raise OnboardingError('onboarding_group_owner_host_required')
+        return backend
+
     def _binding(self, plan: dict):
         if configuration(self.path) != self.settings:
             raise OnboardingError('onboarding_group_coordinator_configuration_changed')
@@ -398,6 +434,8 @@ class GroupCoordinator:
                 caller.get('social', {}), admission, before.get('senders', [])))
         if caller != expected:
             raise OnboardingError('onboarding_group_admission_binding_changed')
+        for name in admission['receivers']:
+            self._guest_host(name)
         preparations = after.get('admission_preparations')
         if preparations is not None:
             old = {item['name'] for item in before.get('senders', [])}
@@ -487,7 +525,7 @@ class GroupCoordinator:
                 options: dict = {key: Path(row[key]) if key in SOURCE_PATHS else row[key] for key in SOURCE_FIELDS}
                 owner = SourceGroupClient(**options)
             else:
-                owner = GuestGroupClient(self.backend, row['plan'],
+                owner = GuestGroupClient(self._guest_backend(name), row['plan'],
                     (Path(row['candidate']['code']), row['candidate']['digest']), root=Path(row['root']))
             approved = admission['receivers'][name]
             selected_code = row['code'] if row['profile'] == 'source' else row['candidate']['code']
@@ -884,7 +922,8 @@ class GroupCoordinator:
                                 recipe['lifecycle_operation_id'], 'quiesce'))))
                         result = owner.lifecycle_action(recipe['lifecycle_operation_id'], 'preserve')
                     else:
-                        controller = GuestBootstrapController(journal, recipe['lifecycle_operation_id'], self.backend, name)
+                        controller = GuestBootstrapController(journal, recipe['lifecycle_operation_id'],
+                            getattr(cohort.owners[name], 'backend', self.backend), name)
                         if 'quiesced-'+name not in phases():
                             retain('quiesced-'+name, dict(result_sha256=digest(controller.quiesce(timeout_seconds=remaining(), deadline_ns=deadline_ns))))
                         result = controller.preserve(timeout_seconds=remaining(), deadline_ns=deadline_ns)
@@ -907,7 +946,8 @@ class GroupCoordinator:
                         loaded = owner.lifecycle_action(recipe['lifecycle_operation_id'], 'start',
                             **({'continuation':continuation} if continuation is not None else {}))
                 else:
-                    controller = GuestBootstrapController(journal, recipe['lifecycle_operation_id'], self.backend, name)
+                    controller = GuestBootstrapController(journal, recipe['lifecycle_operation_id'],
+                        getattr(cohort.owners[name], 'backend', self.backend), name)
                     closure = {ref:value for ref,value in caller['social']['authority_closure'].items()
                         if ref != admission['receivers'][name]['being_ref']}
                     if 'derived-'+name not in phases():
@@ -1456,8 +1496,10 @@ class GroupCoordinator:
                     result = owner.prepare_admission_lifecycle(request)
                 else:
                     configured = self.settings['owners'][name]
-                    result = prepare_guest_admission(self.backend, configured['plan'], journal, request,
-                        config=Path(row['expected_precondition']['host_config']),
+                    host = self._guest_host(name)
+                    result = prepare_guest_admission(getattr(owner, 'backend', self.backend),
+                        configured['plan'], journal, request,
+                        config=host[0] if host is not None else Path(row['expected_precondition']['host_config']),
                         candidate=(Path(configured['candidate']['code']), configured['candidate']['digest']),
                         deadline_ns=deadline_ns)
                 if (result.get('schema') != 'cluster-'+selected['profile']+'-admission-prepared/v1'

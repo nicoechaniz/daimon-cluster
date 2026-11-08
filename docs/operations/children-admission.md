@@ -390,3 +390,26 @@ observer: it requires an actual signed group selection. Requiring it for a plain
 body would reintroduce the group-publication dependency admission just removed.
 Serialize ordinary host approval lookups that share the protected approval
 store; this is separate from concurrent native writer initialization.
+
+### Keep the receiving context current
+
+Nicolas's explicit requested outcome supplies the operational authorization.
+Apply the existing owner writers and held signing/grant route directly; an owner
+conversation's response or a review quorum is not another admission prerequisite.
+If a procedural adapter demands that repeated approval, repair it. Missing
+verification metadata and expired profiles remain technical work with truthful
+signatures and effects; they are not requests for the human to authorize again.
+
+After genuine native admission and signed membership have been observed, carry
+each body's own dated observation into its existing mutable operational context.
+Do not rerun the original context/memory stage or rewrite its selected SOUL.
+Preserve the entire installed instruction prefix and compare its exact digest
+before appending one bounded replaceable status block. Bind the observation to
+that body's actual runtime bundle/origin and original acceptance; this is a
+local context pointer, never another identity registry, authority or grant.
+
+Read back the resulting private files as the actual receiving user. Preserve
+the runtime bundle and running Conversation/Codex process identities. Installed
+guidance is not proof of model reading: no model turn, service restart, peer
+attention or recording activation is needed to deliver this context update.
+Keep group readers/outbound release and real family/device acceptance explicit.

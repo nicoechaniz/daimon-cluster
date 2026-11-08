@@ -127,9 +127,12 @@ def fetch_feed(opener=None):
 
 def validate(config):
     required={'schema', 'state', 'scanner', 'scanner_sha256', 'targets'}
-    if (not required<=set(config) or set(config)-required-{'compiler_cleanup_enabled','browser_status','application_inventory'}
+    if (not required<=set(config) or set(config)-required-{'compiler_cleanup_enabled','browser_status','application_inventory','public_advisories'}
             or type(config.get('compiler_cleanup_enabled',False)) is not bool):
         raise ValueError('explicit_daily_configuration_required')
+    if 'public_advisories' in config:
+        if 'application_inventory' not in config:raise ValueError('application_inventory_required_for_advisories')
+        validate_advisory_selection(config['public_advisories'])
     if 'application_inventory' in config:
         validate_application_selection(config['application_inventory'])
     if 'browser_status' in config:
@@ -264,6 +267,67 @@ print(json.dumps(json.loads(raw)))
         return value
 
 
+def validate_advisory_selection(selection):
+    if not isinstance(selection,dict) or set(selection)!={'helper','sha256','public_names'}:
+        raise ValueError('explicit_public_advisory_selection_required')
+    validate_browser_selection({k:selection[k] for k in ('helper','sha256')})
+    import re
+    names=selection['public_names']
+    if (not isinstance(names,list) or not 1<=len(names)<=64
+            or any(not isinstance(n,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',n) for n in names)
+            or len({re.sub(r'[-_.]+','-',n).lower() for n in names})!=len(names)):
+        raise ValueError('bounded_explicit_public_names_required')
+
+
+def load_public_matcher(selection):
+    import importlib.util
+    helper=Path(selection['helper'])
+    if helper.resolve()!=helper or not helper.is_file() or helper.stat().st_size>65536:
+        raise ValueError('advisory_helper_path')
+    for item in [helper,*helper.parents]:
+        info=item.stat()
+        if info.st_uid!=0 or info.st_mode & 0o022:raise ValueError('advisory_helper_custody')
+    if hashlib.sha256(helper.read_bytes()).hexdigest()!=selection['sha256']:
+        raise ValueError('advisory_helper_bytes')
+    spec=importlib.util.spec_from_file_location('selected_public_advisories',helper)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module
+
+
+def public_advisories(selection, inventories, root):
+    validate_advisory_selection(selection)
+    cache=root/'public-advisories';cache.mkdir(mode=0o700,exist_ok=True)
+    if cache.is_symlink() or cache.stat().st_uid!=os.geteuid() or cache.stat().st_mode & 0o077:
+        raise ValueError('private_advisory_state_required')
+    current=cache/'current.json'
+    def previous():
+        if not current.exists():return None
+        if current.is_symlink() or current.stat().st_size>128*1024:raise ValueError('advisory_state_capacity')
+        value=json.loads(current.read_bytes())
+        if value.get('schema')!='children-public-advisories/v1' or value.get('state')!='matched':
+            raise ValueError('retained_advisory_schema')
+        return value
+    prior=previous()
+    try:
+        module=load_public_matcher(selection)
+        result=module.match(inventories,selection['public_names'])
+        if (result.get('schema')!='children-public-advisories/v1' or result.get('state')!='matched'
+                or type(result.get('needs_triage')) is not bool):
+            raise ValueError('public_advisory_result_schema')
+        raw=json.dumps(result,sort_keys=True).encode()
+        if len(raw)>128*1024:raise ValueError('public_advisory_receipt_capacity')
+        if prior is not None:atomic(cache/'previous.json',current.read_bytes())
+        atomic(current,raw)
+    except (OSError,ValueError,KeyError,TypeError) as error:
+        result={'schema':'children-public-advisories/v1','state':'unavailable','checked':int(time.time()),
+                'reason':type(error).__name__,'last_success_checked':prior.get('checked') if prior else None,
+                'last_success_query_sha256':prior.get('query_sha256') if prior else None,
+                'coverage':'partial'}
+    status={k:result[k] for k in ('schema','state','checked','reason','needs_triage','last_success_checked','last_success_query_sha256') if k in result}
+    atomic(cache/'status.json',json.dumps(status,sort_keys=True).encode())
+    return result
+
+
 def collect(config):
     validate(config)
     root = Path(config['state'])
@@ -362,6 +426,9 @@ def collect(config):
                     **({'applications':applications} if applications is not None else {}),
                     'inventory': 'observed' if observed else 'unavailable',
                     'debian_advisories': 'unassessed', 'reason': type(error).__name__}
+        if config.get('public_advisories'):
+            report['public_advisories']=public_advisories(config['public_advisories'],
+                [v.get('applications',{}) for v in report['targets'].values()],root)
         report['finished'] = int(time.time())
         raw = json.dumps(report, sort_keys=True).encode()
         if len(raw) > 256*1024 or footprint(root) > 512*MIB:
@@ -383,7 +450,9 @@ def main():
         and value.get('compiler_cleanup',{}).get('status','complete')=='complete'
         and value.get('browser',{}).get('state','standby') in ('standby','ready')
         and value.get('applications',{}).get('state','observed')=='observed'
-        for value in result['targets'].values()) else 2
+        for value in result['targets'].values()) and (
+        result.get('public_advisories',{}).get('state','matched')=='matched'
+        and result.get('public_advisories',{}).get('needs_triage',False) is False) else 2
 
 
 if __name__ == '__main__':

@@ -1,0 +1,5 @@
+{
+  "schema": "children-public-PyPI-selection/v1",
+  "classification": "Explicit public package names from the maintained DaimonApp dashboard dependency lock and its deployed public wsproto transport; never derive this selection from private metadata.",
+  "names": ["annotated-doc", "annotated-types", "anyio", "certifi", "cffi", "click", "cryptography", "fastapi", "h11", "httpcore", "httpx", "idna", "init-data-py", "opentelemetry-api", "pycparser", "pydantic", "pydantic-core", "starlette", "typing-inspection", "typing-extensions", "uvicorn", "wsproto"]
+}

@@ -1563,3 +1563,13 @@ def test_application_inventory_and_daily_have_closed_scope():
         'tests/test_children_daily.py','tests/test_children_browser.py',
         'tests/test_ci_scope.py','tests/test_ci_workflow.py'])
     assert select(changed+['clusterctl/admission.py'],ROOT)==('full',['tests'])
+
+
+def test_public_advisory_phase_has_closed_scope():
+    changed=['tools/children_public_advisories.py','tests/test_children_public_advisories.py',
+        'tools/children_daily.py','tests/test_children_daily.py','tools/ci_scope.py','tests/test_ci_scope.py',
+        'support/children-maintenance/public-python-packages.json','docs/operations/children-public-advisories.md','RESUME.md']
+    assert select(changed,ROOT)==('peer',['tests/test_children_public_advisories.py',
+        'tests/test_children_daily.py','tests/test_children_application_inventory.py',
+        'tests/test_children_browser.py','tests/test_ci_scope.py','tests/test_ci_workflow.py'])
+    assert select(changed+['clusterctl/admission.py'],ROOT)==('full',['tests'])

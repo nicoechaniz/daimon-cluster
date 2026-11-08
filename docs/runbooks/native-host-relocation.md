@@ -523,3 +523,28 @@ row per credential, rather than another entry on every update. It is a host
 provisioning command, never an owner-local or browser operation. A later authority
 revision is denied until the authorized rollout accepts that current revision;
 revoked credentials remain denied. Verify an actual owner-local read afterward.
+
+## Typed remote Incus containers and finite owner sessions
+
+A retained container can use the same existing Incus agent transport as a VM,
+with schema `cluster-incus-container-body-placement/v1`. A VM continues using
+`cluster-incus-vm-body-placement/v1`. Both pin the approved plan digest, project,
+instance name, instance UUID, parent machine ID digest and receiving guest machine
+ID digest. The observed instance type must match that schema before any guest
+command or code transfer. A container is never accepted by a VM locator.
+
+The optional protected `incus_host_ssh.sudo` boolean selects an already authorized
+passwordless operator route with `sudo -n --`. It defaults to false. This changes
+no account, SSH key, group, sudo policy or host grant; absent authorization fails
+without a password prompt. SSH host/key pinning and the parent identity check
+remain unchanged. Public code transfer uses the same selected route.
+
+Persistent relationship CLI sessions reuse that transport and the existing
+framed owner conversation, not another service or listener. The receiving owner
+gets the same bounded duration and original wall expiry, rebased to its own
+kernel's monotonic clock. It retains its own hard deadline and native writer;
+transport loss remains an uncertain outcome. The host rechecks the original
+plan authorization and protected placement before each framed operation. Code,
+SDK, authority closure, operation journal and per-effect approval checks remain
+in the existing owner command. Transport availability alone is not admission,
+Tribe membership, reader readiness or permission to author a social effect.

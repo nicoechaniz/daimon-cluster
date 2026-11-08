@@ -1247,14 +1247,20 @@ class HostBackend:
     def _target_relationship_session(self, plan: dict, packet: dict, *, candidate,
                                      timeout_seconds: float, deadline_ns: int):
         from .onboarding_group_session import OwnerConversation
-        if self.native_body(plan) is not None:
-            raise OnboardingError('native_receiving_session_unsupported')
+        native = self.native_body(plan)
         command, deadline, _payload = self._target_invocation(plan, 'group-session',
             candidate=candidate, group_request=packet, observation_timeout_seconds=timeout_seconds,
             owner_deadline_ns=deadline_ns)
         def authorized():
             if not self.authorize(plan, digest(plan)):
                 raise OnboardingError('host_authorization_required')
+            if native is not None:
+                current = self.native_body(plan)
+                if current is None or current.value != native.value:
+                    raise OnboardingError('native_receiving_placement_changed')
+        if native is not None:
+            return native.relationship_conversation(command, packet,
+                deadline_ns=deadline, validate=authorized)
         return OwnerConversation(['incus', 'exec', self.instance(plan), '--user', '1000', '--group', '1000',
             '--env', 'HOME=/home/agent', '--', *command], packet, deadline_ns=deadline,
             validate=authorized, env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'})

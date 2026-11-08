@@ -169,3 +169,76 @@ def test_parent_launcher_validates_actual_host_and_preserves_rsync_server_argume
     argv[4]='b'*64
     result=subprocess.run(argv,capture_output=True,text=True)
     assert result.returncode!=0 and result.stdout=='' and result.stderr.strip()=='vm_receiving_host_changed'
+
+
+@pytest.mark.parametrize('remote', [False, True])
+def test_container_locator_uses_own_type_and_preserves_both_machine_pins(tmp_path, monkeypatch, remote):
+    import shlex
+    plan, path, row = remote_placement(tmp_path) if remote else placement(tmp_path)
+    row['schema'] = 'cluster-incus-container-body-placement/v1'
+    being_seed._write(path, row)
+    body = native_body.NativeBody.load(path, plan, expected_digest=digest(row))
+    assert isinstance(body, vm_body.ContainerBody) and not isinstance(body, vm_body.VMBody)
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if remote:
+            parent = shlex.split(argv[-1])
+            assert parent[5] == row['host_machine_id_sha256']
+            incus = json.loads(parent[6])
+        else:
+            incus = argv
+        if 'query' in incus:
+            return SimpleNamespace(returncode=0, stdout=json.dumps({'type': 'container',
+                'config': {'volatile.uuid': row['instance_uuid']}}))
+        request = json.loads(incus[-1])
+        assert request['machine_id_sha256'] == row['machine_id_sha256']
+        assert request['argv'] == ['retained-owner', 'literal $(argument)']
+        return SimpleNamespace(returncode=0, stdout='own-container', stderr='')
+    monkeypatch.setattr(vm_body.subprocess, 'run', run)
+    assert body.execute(['retained-owner', 'literal $(argument)']) == 'own-container'
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize('observed', [
+    {'type': 'virtual-machine', 'config': {'volatile.uuid': '18f437a2-bc2d-408a-8aaf-7693ebc797e4'}},
+    {'type': 'container', 'config': {'volatile.uuid': 'different'}},
+])
+def test_container_type_or_uuid_replacement_never_starts_owner(tmp_path, monkeypatch, observed):
+    plan, path, row = placement(tmp_path)
+    row['schema'] = 'cluster-incus-container-body-placement/v1'
+    being_seed._write(path, row)
+    body = native_body.NativeBody.load(path, plan)
+    calls = []
+    monkeypatch.setattr(vm_body.subprocess, 'run', lambda argv, **kw:
+        calls.append(argv) or SimpleNamespace(returncode=0, stdout=json.dumps(observed)))
+    with pytest.raises(OnboardingError, match='vm_receiving_instance_changed'):
+        body.execute(['retained-owner'])
+    assert len(calls) == 1 and calls[0][2] == 'query'
+
+
+def test_selected_existing_sudo_route_is_noninteractive_and_preserves_host_pin(tmp_path, monkeypatch):
+    import shlex
+    plan, path, row = remote_placement(tmp_path)
+    row['schema'] = 'cluster-incus-container-body-placement/v1'
+    row['incus_host_ssh']['sudo'] = True
+    being_seed._write(path, row)
+    body = native_body.NativeBody.load(path, plan)
+    command = shlex.split(body._parent_command(['incus', 'query', 'literal argument'])[-1])
+    assert command[:3] == ['sudo', '-n', '--']
+    assert command[7] == vm_body.HOST_LAUNCH
+    assert command[8] == row['host_machine_id_sha256']
+    assert json.loads(command[9]) == ['incus', 'query', 'literal argument']
+    monkeypatch.setattr(vm_body.ContainerBody, '_verify_instance', lambda *a: None)
+    monkeypatch.setattr(vm_body.ContainerBody, 'execute', lambda *a, **k: '')
+    calls = []
+    monkeypatch.setattr(vm_body.subprocess, 'run', lambda argv, **kw:
+        calls.append(argv) or SimpleNamespace(returncode=0))
+    body._transfer_code(tmp_path, Path('/opt/public-stage'), 2)
+    server = shlex.split(calls[0][calls[0].index('--rsync-path')+1])
+    assert server[:3] == ['sudo', '-n', '--']
+    assert server[8] == row['host_machine_id_sha256']
+    row['incus_host_ssh']['sudo'] = 'interactive'
+    being_seed._write(path, row)
+    with pytest.raises(OnboardingError, match='placement_required'):
+        native_body.NativeBody.load(path, plan)

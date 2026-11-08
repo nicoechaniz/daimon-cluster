@@ -1,3 +1,26 @@
+## Selected public Python advisory queries —2026-11-08
+
+The optional public_advisories phase uses current observed application metadata
+and an explicit maintained public-name classification. Only ordinary selected
+PyPI release tuples leave the host: private/local labels, VCS/direct installs,
+paths/env/arguments and unknown names stay offline. Identical four-receiver
+versions are deduplicated. OSV batch pagination, exact record/package binding,
+alias groups, modified/withdrawn state, no-fix and non-CVE/MAL records are covered.
+Unavailable/capped sources retain the last matched current/previous evidence,
+with compact latest status; active untriaged candidates remain pending/nonzero
+for the existing observer, never an automatic patch or a security verdict.
+
+Actual first standalone API qualification queried22tuples in1request/79response
+bytes with no listed records. The selected final helper then passed current
+existing daily invocation f174c0ae1f19429da2f9a7bbd6725d45, including all5current
+inventories/advisories/applications, all4cleanup/browser standby and the same
+22public queries/1request/79bytes/no listed records. Existing timer hashes were
+unchanged. This proves a bounded current source response, not complete upstream
+coverage, wheel authenticity, loaded usage/exposure or a clean system. Broader
+vendor/malicious sources and social Matrix496/App452/paused development53 remain.
+Source/selection/cache/native receipts belong in the maintained private checkpoint.
+See [public advisory matching](docs/operations/children-public-advisories.md).
+
 ## Installed application metadata reader —2026-11-08
 
 The selected read-only application reader observes actual systemd main-process

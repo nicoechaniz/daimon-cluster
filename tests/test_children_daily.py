@@ -279,5 +279,42 @@ class CleanupReceiptReadTests(unittest.TestCase):
         self.assertEqual(calls.call_count,2)
 
 
+class PublicAdvisoryPhaseTests(unittest.TestCase):
+    selection={'helper':'/opt/qualified/advisories.py','sha256':'a'*64,'public_names':['public-one']}
+
+    def test_explicit_public_selection_is_required(self):
+        daily.validate_advisory_selection(self.selection)
+        for value in (dict(self.selection,public_names=['private token']),
+                      dict(self.selection,public_names=['public_one','public-one']),{},
+                      dict(self.selection,public_names=[])):
+            with self.assertRaises(ValueError):daily.validate_advisory_selection(value)
+
+    def test_source_failure_preserves_last_success_not_a_clean_empty_result(self):
+        from types import SimpleNamespace
+        good={'schema':'children-public-advisories/v1','state':'matched','checked':100,
+              'query_sha256':'previous','needs_triage':True,'records':[{'id':'MAL-fixture'}]}
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            with patch.object(daily,'load_public_matcher',return_value=SimpleNamespace(match=lambda *a:good)):
+                self.assertEqual(daily.public_advisories(self.selection,[],root),good)
+            original=(root/'public-advisories/current.json').read_bytes()
+            with patch.object(daily,'load_public_matcher',side_effect=OSError('offline')):
+                failed=daily.public_advisories(self.selection,[],root)
+            self.assertEqual(failed['state'],'unavailable')
+            self.assertEqual(failed['last_success_checked'],100)
+            self.assertEqual((root/'public-advisories/current.json').read_bytes(),original)
+            status=json.loads((root/'public-advisories/status.json').read_text())
+            self.assertEqual(status['state'],'unavailable')
+            self.assertNotIn('records',status)
+
+    def test_untriaged_candidate_is_pending_even_with_successful_queries(self):
+        result={'coverage':'partial','source':{'state':'fresh'},'targets':{},
+                'public_advisories':{'state':'matched','needs_triage':True}}
+        with tempfile.TemporaryDirectory() as temp:
+            p=Path(temp)/'config.json';p.write_text('{}')
+            with patch.object(sys,'argv',['daily','--config',str(p)]),patch.object(daily,'collect',return_value=result):
+                self.assertEqual(daily.main(),2)
+
+
 if __name__ == '__main__':
     unittest.main()

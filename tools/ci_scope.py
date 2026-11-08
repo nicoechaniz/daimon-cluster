@@ -1024,6 +1024,17 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
             and set(changed) <= bounded_cleanup_files | CI_FILES | RUNBOOK_DOCS
             and all((root / name).is_file() for name in bounded_cleanup_tests)):
         return 'peer', bounded_cleanup_tests
+    advisory_files = {'tools/children_public_advisories.py',
+        'tests/test_children_public_advisories.py','tools/children_daily.py',
+        'tests/test_children_daily.py','support/children-maintenance/public-python-packages.json',
+        'docs/operations/children-public-advisories.md'}
+    advisory_tests = ['tests/test_children_public_advisories.py','tests/test_children_daily.py',
+        'tests/test_children_application_inventory.py','tests/test_children_browser.py',
+        'tests/test_ci_scope.py','tests/test_ci_workflow.py']
+    if (set(changed) & {'tools/children_public_advisories.py','tests/test_children_public_advisories.py'}
+            and set(changed) <= advisory_files | CI_FILES | RUNBOOK_DOCS
+            and all((root / name).is_file() for name in advisory_tests)):
+        return 'peer', advisory_tests
     application_files = {'tools/children_application_inventory.py',
         'tests/test_children_application_inventory.py','tools/children_daily.py',
         'tests/test_children_daily.py','docs/operations/children-application-inventory.md',

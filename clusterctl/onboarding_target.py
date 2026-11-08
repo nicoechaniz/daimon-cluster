@@ -373,6 +373,9 @@ class Target:
     def _controller_comparison(self, expected: dict, bundle: dict, store, signing_key: dict) -> tuple[dict, dict | None]:
         """Observe the native one-controller successor without changing history.
 
+        Signed native original-profile renewals retain their role, methods,
+        client/key binding and historical receipt. Their validity windows may
+        advance after expiry; they do not become another birth ceremony.
         Normalize only for the retained credential/peer comparison. Current
         group validation and loaded evidence always use the actual bundle.
         Authenticity remains inspectable after expiry; this grants no control.
@@ -388,12 +391,33 @@ class Target:
             profile = profiles.host_capability_profile('receiving-controller')
             previous = expected['capabilities']
             current = bundle['capabilities']
-            if (len(current) != len(previous) + 1 or current[:-1] != previous
+            if (len(current) != len(previous) + 1
                     or any(row['profile'] == profile for row in previous)
                     or type(bundle['keystore'].get('counter')) is not int
                     or bundle['keystore']['counter'] <= expected['keystore']['counter']
                     or bundle['keystore'] != {**expected['keystore'], 'counter': bundle['keystore']['counter']}
                     or store.counter != bundle['keystore']['counter']):
+                raise ValueError
+            # A native V8 profile renewal changes only expired active windows.
+            # The authenticated current signature and unchanged key IDs below
+            # establish ownership; neither a newer counter nor dates alone do.
+            renewed = []
+            changing = {'capability_id', 'not_before_ms', 'not_after_ms'}
+            for old, new in zip(previous, current[:-1], strict=True):
+                if old == new:
+                    continue
+                before, after = old['descriptor'], new['descriptor']
+                if (expected['schema'] != 'dm.runtime.bundle/v8'
+                        or set(old) != set(new) or set(before) != set(after)
+                        or any(old[key] != new[key] for key in old if key != 'descriptor')
+                        or any(before[key] != after[key] for key in before if key not in changing)
+                        or before['status'] != 'active'
+                        or not before['not_before_ms'] < before['not_after_ms'] <= after['not_before_ms']
+                        or not after['not_before_ms'] < after['not_after_ms'] <=
+                            after['not_before_ms'] + profiles.OPERATOR_CAPABILITY_TTL_MS):
+                    raise ValueError
+                renewed.append((after['not_before_ms'], after['not_after_ms']))
+            if renewed and len(set(renewed)) != 1:
                 raise ValueError
             label = expected['runtime_label']
             slot = profiles.host_capability_slot(label, 'receiving-controller')
@@ -415,13 +439,20 @@ class Target:
                 runtime_id=expected['runtime_id'], runtime_label=label,
                 being_ref=expected['manifest']['being_ref'], origin=expected['local_origin'],
                 signing_key=signing_key, capability_rows=current)
-            directory = private_directory(self.package / 'runtime' / profile['client_directory'])
-            key_path = directory / profile['client_key_filename']
-            if (onboarding_release.regular(key_path, uid=os.geteuid()) != key or key_path.stat().st_mode & 0o077
-                    or document(directory / profile['client_config_filename']) != dict(
-                        schema='dm.local.client-config/v3', capability=capability.descriptor,
-                        expected_server=expected['local_origin'], runtime_id=expected['runtime_id'], runtime_label=label)):
-                raise ValueError
+            # A renewed descriptor must be installed in its own existing client;
+            # rendering only the controller would leave the original role unusable.
+            for selected in (current if renewed else [row]):
+                selected_profile = selected['profile']
+                directory = private_directory(self.package / 'runtime' / selected_profile['client_directory'])
+                key_path = directory / selected_profile['client_key_filename']
+                selected_key = store.secrets[selected['secret_slot']]
+                if (onboarding_release.regular(key_path, uid=os.geteuid()) != selected_key
+                        or key_path.stat().st_mode & 0o077
+                        or document(directory / selected_profile['client_config_filename']) != dict(
+                            schema='dm.local.client-config/v3', capability=selected['descriptor'],
+                            expected_server=expected['local_origin'], runtime_id=expected['runtime_id'],
+                            runtime_label=label)):
+                    raise ValueError
             comparison = {**bundle, **{field: expected[field] for field in fields}}
             observation = dict(schema='cluster-receiving-controller-observation/v1',
                 runtime_sha256=hashlib.sha256(canonical.canonical_bytes(bundle)).hexdigest(),

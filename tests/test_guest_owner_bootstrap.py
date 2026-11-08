@@ -1251,3 +1251,113 @@ def test_native_client_diagnostics_preserve_only_typed_public_codes(error, code)
     from clusterctl.onboarding import refusal_diagnostic
     assert refusal_diagnostic(error, stage='owner-action') == dict(
         schema='cluster-onboarding-refusal/v1', stage='owner-action', code=code)
+
+
+@pytest.fixture
+def renewed_original_profiles(fixture):
+    """Real V8 publication; this component does not assert service admission."""
+    import hashlib
+    from daimon_matrix import operator_runtime_upgrade as upgrade
+    from daimon_matrix.canonical import canonical_bytes
+    from daimon_matrix.keystore import EncryptedKeystore
+    from daimon_matrix.local_api import create_capability
+    from daimon_matrix.operator_capabilities import create_operator_capability_binding
+    if 'profile_renewal_not_after_ms' not in inspect.signature(upgrade.stage_capabilities).parameters:
+        pytest.skip('selected successor SDK is required for original-profile renewal')
+    target, request, _, _ = fixture
+    first = GuestOwnerBootstrap(target, request)
+    ready = first.execute('stage', deadline_ns=deadline())
+    first.execute('publish', deadline_ns=deadline(), ready_sha256=ready['ready_sha256'])
+    root = target.package / 'runtime'
+    original = target.document_bundle()
+    custody = EncryptedKeystore(root / 'custody.json').open(target._reader)
+    now = time.time_ns() // 1_000_000
+    # Create an authenticated expired fixture with the existing operational keys.
+    for row in original['capabilities']:
+        old = row['descriptor']
+        row['descriptor'] = create_capability(custody.secrets[row['secret_slot']],
+            **{key: old[key] for key in ('client_id', 'methods', 'status')},
+            not_before_ms=now - 120000, not_after_ms=now - 60000).descriptor
+        client = root / row['profile']['client_directory'] / row['profile']['client_config_filename']
+        config = json.loads(client.read_bytes())
+        config['capability'] = row['descriptor']
+        client.write_bytes(canonical_bytes(config))
+    signer = custody.secrets[original['keystore']['signing_slot']]
+    def binding(rows):
+        return create_operator_capability_binding(runtime_id=original['runtime_id'],
+            runtime_label=original['runtime_label'], being_ref=original['manifest']['being_ref'],
+            origin=original['local_origin'], signing_seed=signer, capability_rows=rows)
+    original['operator_capability_binding'] = binding(original['capabilities'])
+    (root / 'runtime.json').write_bytes(canonical_bytes(original))
+    expected = copy.deepcopy(original)
+    expected['capabilities'] = expected['capabilities'][:-1]
+    expected['operator_capability_binding'] = binding(expected['capabilities'])
+    transaction = root.parent / 'expired-original-profiles'
+    password = target._reader()
+    try:
+        upgrade.stage_capabilities(source=root, transaction=transaction,
+            expected_source_sha256=upgrade.inventory_digest(root), expected_counter=custody.counter,
+            expected_control_head=original['control_head'], expected_being_ref=original['manifest']['being_ref'],
+            expected_origin=original['local_origin'], add_methods={}, expires_at_ms=now + 60000,
+            profile_renewal_not_after_ms=now + 86400000, password=bytes(password), externally_quiesced=True)
+        upgrade.publish(source=root, transaction=transaction,
+            expected_receipt_sha256=hashlib.sha256((transaction / 'ready.json').read_bytes()).hexdigest(),
+            password=bytes(password), externally_quiesced=True, capability_upgrade=True)
+    finally:
+        password[:] = b'\0' * len(password)
+    current = target.document_bundle()
+    store = EncryptedKeystore(root / 'custody.json').open(target._reader)
+    from daimon_matrix.identity import signing_descriptor
+    signing_key = signing_descriptor(signer)
+    return target, expected, current, store, signing_key, binding
+
+
+def test_native_original_profile_renewal_keeps_historical_comparison(renewed_original_profiles):
+    target, expected, current, store, signing_key, _ = renewed_original_profiles
+    before = files(target.credential)
+    normalized, observed = target._controller_comparison(expected, current, store, signing_key)
+    assert normalized == expected
+    assert current['local_origin'] == expected['local_origin']
+    assert observed['counter'] == store.counter > expected['keystore']['counter']
+    assert observed['runtime_sha256'] == digest(current)
+    assert observed['control_usability'] == 'unobserved'
+    assert files(target.credential) == before
+
+
+@pytest.mark.parametrize('change', ['methods', 'client-id', 'key', 'unexpired', 'revoked', 'too-long', 'different-window'])
+def test_original_profile_renewal_cannot_expand_or_replace_roles(renewed_original_profiles, change):
+    from daimon_matrix.local_api import create_capability
+    target, expected, current, store, signing_key, binding = renewed_original_profiles
+    old, new = expected['capabilities'][0], current['capabilities'][0]
+    if change in {'methods', 'client-id'}:
+        descriptor = new['descriptor']
+        methods = descriptor['methods'] + ['tribe.invite'] if change == 'methods' else descriptor['methods']
+        new['descriptor'] = create_capability(store.secrets[new['secret_slot']],
+            client_id=descriptor['client_id'] + ('-foreign' if change == 'client-id' else ''),
+            methods=methods, status=descriptor['status'],
+            not_before_ms=descriptor['not_before_ms'], not_after_ms=descriptor['not_after_ms']).descriptor
+    elif change == 'key':
+        store.secrets[new['secret_slot']] = b'x' * 32
+    elif change == 'unexpired':
+        old['descriptor']['not_after_ms'] = new['descriptor']['not_before_ms'] + 1000
+    elif change == 'revoked':
+        old['descriptor']['status'] = 'revoked'
+    elif change == 'too-long':
+        new['descriptor']['not_after_ms'] += 31 * 86400000
+    else:
+        new['descriptor']['not_before_ms'] += 1
+    # A valid body signature alone must not widen the historical normalization.
+    current['operator_capability_binding'] = binding(current['capabilities'])
+    with pytest.raises(OnboardingError, match='^existing_onboarding_target_preserved$'):
+        target._controller_comparison(expected, current, store, signing_key)
+
+
+def test_original_profile_renewal_requires_matching_original_client(renewed_original_profiles):
+    target, expected, current, store, signing_key, _ = renewed_original_profiles
+    row = current['capabilities'][0]
+    path = target.package / 'runtime' / row['profile']['client_directory'] / row['profile']['client_config_filename']
+    value = json.loads(path.read_bytes())
+    value['capability'] = expected['capabilities'][0]['descriptor']
+    path.write_text(json.dumps(value))
+    with pytest.raises(OnboardingError, match='^existing_onboarding_target_preserved$'):
+        target._controller_comparison(expected, current, store, signing_key)

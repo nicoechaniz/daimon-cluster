@@ -189,8 +189,10 @@ existing owner controls, even when its current phase is `unselected`: native
 selection requires this operation reservation. Then apply the reader vector through
 `runtime.reader-selection` / `onboarding_owner_control.execute` using the accepted
 revocation head, the SAME operation/release, exact process/loaded-selection preimages,
-current signed roster CAS and separate retained revoke/select request files. Preserve an uncertain native
-control and inspect its exact result; do not mint a replacement operation. A source
+current signed roster CAS and separate retained revoke/select request files. `effect_not_after_ms` belongs
+only to the `select` command; omit it from `revoke`, whose native schema rejects
+that field. Preserve an uncertain native control and inspect its exact result;
+do not mint a replacement operation. A source
 or receiver process/selection/roster change requires a fresh observation, never
 relabeled historical loaded-view hashes. Credential validity remains signed validity;
 the finite observation horizon is not an invented permanent reader expiry.
@@ -801,6 +803,8 @@ stop; the operation deadline must fit the remaining owner authorization horizon.
 It uses the existing owner/root transaction and lifecycle controllers, retaining
 identity, controller key/methods and credential history. It does not grant
 revoked roles, repair expired original roles or create automatic renewal.
+Expired original profiles instead use the separate native V8 owner-profile
+renewal described below; recreating the embodiment is not their recovery.
 
 Keep the original expired operation and its actual load receipts unchanged. A
 new explicitly authorized recovery lifecycle links the retained body/process
@@ -1140,7 +1144,9 @@ publication made a controller appear.
 custody and client bytes, signed group inputs and the existing visibility. Check
 its finite authorization before stopping. An expired controller cannot qualify
 control in `preserve` mode; use the explicit optional-controller `renew` route
-above when its original roles remain valid. Expired original roles remain refused.
+above when its original roles remain valid. That optional-controller-only branch
+refuses expired original roles; use the explicit native original-profile recovery
+below instead.
 Under native parent/writer ownership,
 after predecessor exits, validate the unchanged runtime in the native isolated
 clone and retain a full quiescent inventory as `owner_preserved`. This does not
@@ -1150,6 +1156,39 @@ start reply observes that process rather than stopping it again. Database activi
 after genuine startup is reconciled through its loaded proof, not by comparing
 mutable stores against the pre-start inventory. A replacement still needs its
 own empty gate/revoke before the cohort can activate positive readers.
+
+## Expired original owner profiles
+
+When a current owner read refuses, inspect its actual selected descriptor's
+status and validity before attempting another SDK copy or body enrollment.
+An active-status local profile can expire while signed body identity, custody,
+ordinary conversation and its separately issued messaging application remain
+valid. An authentication refusal is not proof that the body or holder is absent.
+
+The qualified native V8 SDK already supports an explicit owner-local
+`profile_renewal_not_after_ms` in the existing `stage-capabilities` and
+`publish-capabilities` transaction, with `add_methods: {}`. Follow the maintained
+[Matrix owner-profile recovery](https://github.com/AlterMundi/daimon-matrix/blob/main/docs/runbooks/operator-capability-upgrade.md#expired-original-local-profiles).
+Use current source/counter/control-head/origin pins, the existing protected
+password descriptor, bounded authorization and grant horizons, and the existing
+scoped quiescence/restoration route. Preserve actual pending requests with their
+original capability IDs. Do not edit descriptors in place, change clocks,
+recreate an identity or substitute another actor's credential.
+
+Prepare the complete receiving path before interruption. The target's historical
+comparison recognizes the native signed renewal while retaining the original
+credential/peer receipts. It checks unchanged role metadata, methods and key IDs,
+expired active original windows, one coherent renewal window within the native
+thirty-day bound, matching installed clients and a strictly advancing authenticated
+custody counter. This normalization grants no control and never substitutes for
+current native authority, loaded-process or reader qualification.
+
+After the native transaction, re-render only affected existing client projections
+through their maintained owner route, reload the selected Matrix service, and
+finish the existing all-required reader qualification/selection. Preserve native
+conversations, goals, accounts, private histories and unaffected services. A ready
+receipt or this guidance alone proves neither actual publication nor receiving
+adoption. This adds no timer or automatic renewal authority.
 
 ## Qualification and live selection
 

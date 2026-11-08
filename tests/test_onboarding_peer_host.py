@@ -49,8 +49,8 @@ def test_host_retry_reuses_signed_response_and_retains_native_source(journey, tm
     views.mkdir(mode=0o700)
     monkeypatch.setattr('clusterctl.onboarding_mounts.GUEST_UID', os.geteuid())
     monkeypatch.setattr('clusterctl.onboarding_mounts.GUEST_GID', os.getegid())
-    typed = object.__new__(HostBackend)
-    typed.config = SimpleNamespace(peer=path, custody=tmp_path / 'custody', custody_grants=tmp_path / 'grants', views=views)
+    typed = HostBackend(SimpleNamespace(peer=path, custody=tmp_path / 'custody',
+        custody_grants=tmp_path / 'grants', views=views))
     typed._ceremony = lambda p: SimpleNamespace(authorize=lambda p: True)
     typed.authorize = lambda p, fingerprint: fingerprint == digest(p)
     typed._guest_paths = lambda p: (None, target.code, {})

@@ -10,19 +10,28 @@ technical action is needed. The remaining mixed-host coordinator work must reuse
 each old member's existing owner backend/grants, never copy their administrative
 authority into a child's virtual or reset identities to clear a pending stage.
 
-## First cold Conversation receiving — 2026-11-08
+## Four cold Conversation entries — 2026-11-08
 
-Pixin now has its own shared Codex engine, Conversation receiver and web process
-installed in its existing virtual. Native daemon version, shared-proxy handshake
-and an own retained School thread metadata read passed without a new model turn.
-The web serves its shell; anonymous Conversation and administrative API reads
-refuse. Existing identity, provider cache and histories remain intact.
+Pixin, Calipso, C-137 and Noodles now have their own shared Codex engine,
+Conversation receiver and web process in their existing virtuals. All four
+existing Home pairings are registered. Each actual HTTPS entry passed its own
+paired-human identity, Conversation presentation and input-history reads;
+an authenticated foreign pair and administrative reads were refused. Ephemeral
+technical browser sessions were signed out. No synthetic human message, new
+model turn or child participation was used for this qualification.
 
-This is private receiving readiness, not a usable public entry or child
-acceptance. Home registration/shared login remains with its existing writer;
-canonical Matrix/Tribe admission remains unfinished. Do not start other children
-by replaying Pixin's jobs. Reuse the same supported cold bootstrap once the first
-pair has usable authenticated access. The maintained path is in
+The stable entries are each companion's own home plus
+`/interaction/?view=conversation&client=standalone`. First family-device login
+and first real human input remain pending. These checks do not establish actual
+provider response, voice/hearing acceptance, canonical Matrix admission or Tribe
+membership. Only Pixin has the earlier actual read-only School inference.
+
+All four use the same qualified public App native/web runtime with their own
+application UUID, human reference, private configuration, account and history.
+Calipso's first readiness probe raced its control socket; the already running
+receiver was preserved and the read retried after bounded socket readiness,
+without restarting it. Reuse the corrected finite readiness wait for cold starts.
+The maintained path is in
 [children admission](docs/operations/children-admission.md#cold-web-conversation-independent-of-social-admission).
 
 ## Children receiving progress — 2026-11-08
@@ -61,8 +70,9 @@ The same finite route now completed for Calipso, C-137 and Noodles: each existin
 identity has its own registered physical holder and independent receiving check.
 The four virtuals used only the existing admission service; no registrar key
 left its central host and no model call or body startup occurred in this step.
-This is separate from an active native lease: canonical running admission, signed
-Tribe membership, shared-login pairing and usable conversation remain pending.
+This is separate from an active native lease: canonical running admission and signed
+Tribe membership remain pending; shared-login pairing and basic authenticated
+Conversation are now technically qualified as recorded above.
 The same qualified, separately authorized first-identity route completed for
 the other three, and independent native observations verified their custody,
 backup/restore and V8 targets. All four have their authorized provider cache
@@ -89,8 +99,8 @@ completed before claiming Tribe readiness.
 Children use the explicitly authorized anyprinter account and no Telegram. Oliva
 retains ai01. A selected provider profile is not a child authentication or real
 provider-turn result. DaimonApp owns the web-only account binding and Avatar/Voice
-studio delivery; its PR760 is merged, but no deployed children's conversation
-has been observed.
+studio delivery; its PR760-or-later web-only route is now installed and
+authenticated on all four companions, with actual family acceptance pending.
 No child-selected voice character or gender has been established.
 
 Shared daimon-matrix principles and skills do not confer infrastructure access.

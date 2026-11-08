@@ -478,6 +478,109 @@ def _group_selection_packet_from_bundle(directory: Path, bundle: dict):
         verify_public_binding(identity, key, value, binding))
 
 
+def approved_membership_authorities(group_root: Path, bundle: dict) -> dict:
+    """Recover this owner's signed public verification context, without a channel."""
+    import time
+    from daimon_matrix.canonical import unb64url
+    from daimon_matrix.operator_rebirth import authority_from_runtime_bundle
+    from daimon_matrix.messaging_config import _public_identity, verify_public_binding
+    from .onboarding_group_admission import public_authorities
+
+    path = group_root / 'membership-authorities.json'
+    if not path.exists():
+        return {}
+    packet = json.loads(onboarding_release.regular(path, uid=os.geteuid()))
+    if set(packet) != {'document', 'binding'}:
+        raise OnboardingError('approved_onboarding_membership_context_required')
+    document = packet['document']
+    own = authority_from_runtime_bundle(bundle)
+    identity = _public_identity(own, bundle['local_origin'], bundle['runtime_id'],
+        bundle['runtime_label'], time.time_ns() // 1000000)
+    key = unb64url(own.credentials[identity['credential_id']]['body']['signing_key']['public'])
+    verify_public_binding(identity, key, document, packet['binding'])
+    if (set(document) != {'schema', 'operation_id', 'tribe_ref', 'members', 'authority_closure'}
+            or document['schema'] != 'cluster-onboarding-membership-authorities/v1'
+            or not isinstance(document['tribe_ref'], str) or not 1 <= len(document['tribe_ref']) <= 256
+            or not isinstance(document['members'], list)
+            or any(not isinstance(ref, str) for ref in document['members'])
+            or document['members'] != sorted(set(document['members']))
+            or bundle['manifest']['being_ref'] not in document['members']
+            or not set(document['members']) <= {bundle['manifest']['being_ref'], *document['authority_closure']}):
+        raise OnboardingError('approved_onboarding_membership_context_required')
+    import uuid
+    if str(uuid.UUID(document['operation_id'])) != document['operation_id']:
+        raise OnboardingError('approved_onboarding_membership_context_required')
+    authorities = public_authorities(bundle, document['authority_closure'])
+    return _group_authorities_with_history(bundle, authorities,
+        {ref: authority.active for ref, authority in authorities.items()})
+
+
+def retain_membership_authorities(hosted, group_root: Path, *, operation_id: str,
+                                  tribe_ref: str, authority_closure: dict,
+                                  expected_selection_sha256: str | None) -> dict:
+    """Retain native-verified members under an existing exclusive owner writer.
+
+    The caller's protected owner context supplies approval of the public roots.
+    This signs neither a messaging application nor an outbound installation.
+    """
+    import time
+    import uuid
+    import re
+    from daimon_matrix.messaging_config import create_binding, verify_binding
+    from .onboarding_group_admission import public_authorities
+
+    if (str(uuid.UUID(operation_id)) != operation_id
+            or not isinstance(tribe_ref, str) or not 1 <= len(tribe_ref) <= 256
+            or expected_selection_sha256 is not None and (
+                not isinstance(expected_selection_sha256, str)
+                or re.fullmatch('[0-9a-f]{64}', expected_selection_sha256) is None)):
+        raise OnboardingError('approved_onboarding_membership_context_required')
+    bundle = being_seed._read(hosted.state_root / 'runtime.json', limit=being_seed.MAX_SELECTION)
+    authorities = public_authorities(bundle, authority_closure)
+    _group_authorities_with_history(bundle, authorities,
+        {ref: authority.active for ref, authority in authorities.items()})
+    private_directory(group_root, create=True)
+    path = group_root / 'membership-authorities.json'
+    with being_seed._locked(group_root):
+        before = being_seed._read(path, limit=being_seed.MAX_SELECTION) if path.exists() else None
+        if before is not None:
+            approved_membership_authorities(group_root, bundle)
+            verify_binding(hosted, before['document'], before['binding'])
+            # Verification history is retained even after a member leaves. It
+            # verifies old events; current native membership still owns rights.
+            if any(authority_closure.get(ref, row) != row
+                    for ref, row in before['document']['authority_closure'].items()):
+                raise OnboardingError('onboarding_group_membership_context_changed')
+            authority_closure = {**before['document']['authority_closure'], **authority_closure}
+            if before['document']['operation_id'] == operation_id:
+                # The enclosing owner journal retains the same exact command.
+                selected = before['document']
+                if (selected['tribe_ref'] != tribe_ref
+                        or any(authority_closure.get(ref) != row
+                            for ref, row in selected['authority_closure'].items())):
+                    raise OnboardingError('onboarding_group_membership_context_changed')
+                return dict(membership_authorities_sha256=digest(before),
+                    members=selected['members'])
+        if (None if before is None else digest(before)) != expected_selection_sha256:
+            raise OnboardingError('onboarding_group_membership_context_changed')
+        relationships = hosted.service.relationships
+        with relationships.store.authorization_view(at_ms=time.time_ns() // 1000000,
+                card_verifier=relationships.card_verifier, busy_timeout_ms=0) as view:
+            tribe = view.tribes.get(tribe_ref)
+            own = bundle['manifest']['being_ref']
+            if tribe is None or tribe['state'] != 'active':
+                raise OnboardingError('onboarding_group_membership_unobserved')
+            members = sorted(ref for ref, row in tribe['memberships'].items() if row['state'] == 'active')
+            if own not in members or not set(members) - {own} <= set(authority_closure):
+                raise OnboardingError('onboarding_group_membership_unobserved')
+            document = dict(schema='cluster-onboarding-membership-authorities/v1',
+                operation_id=operation_id, tribe_ref=tribe_ref, members=members,
+                authority_closure=copy.deepcopy(authority_closure))
+            candidate = dict(document=document, binding=create_binding(hosted, document))
+            being_seed._write(path, candidate, limit=being_seed.MAX_SELECTION)
+        return dict(membership_authorities_sha256=digest(candidate), members=members)
+
+
 def approved_group_authorities(runtime_root: Path, group_root: Path, bundle: dict) -> dict:
     """Recover the owner-approved group's Root closure without pair enrollment.
 
@@ -485,15 +588,17 @@ def approved_group_authorities(runtime_root: Path, group_root: Path, bundle: dic
     bundle and preserves any already-known authority history. No peer discovery,
     native bundle mutation or private custody access is performed here.
     """
+    membership = approved_membership_authorities(group_root, bundle)
     packet = _group_selection_packet_from_bundle(group_root, bundle)
     if packet is None:
-        return {}
+        return membership
     selected, histories = packet
     import time
     from daimon_matrix.messaging_config import read_application_authorities
     current = read_application_authorities(runtime_root, 'runtime.json',
         Path(selected['directory']), at_ms=time.time_ns() // 1000000)
-    return _group_authorities_with_history(bundle, histories, current)
+    from .onboarding_group_admission import merge_authorities
+    return merge_authorities(membership, _group_authorities_with_history(bundle, histories, current))
 
 
 def _group_authorities_with_history(bundle: dict, histories: dict | None, current: dict) -> dict:

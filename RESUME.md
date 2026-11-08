@@ -1,3 +1,15 @@
+## Signed membership verification without visibility —2026-11-08
+
+The owner membership-authorities action retains an own-signed public verification
+context after an actual native membership read. Existing Source/guest loaders
+consume it independently of a selected group/visibility installation. It uses
+existing protected owner context, writer, request journal, native signatures and
+CAS; it grants no membership, channel, private peer state or messaging release by
+itself. Preserve old authority histories and adult publication obligations.
+Actual child deployment and coordinator/lifecycle integration remain pending;
+code/fixture qualification is not recipient adoption. Native/canonical all4
+admission remains verified under PR460, with original identities/jobs/processes.
+
 ## Admission without Telegram —2026-11-08
 
 Nicolas selects all4 existing children for native/canonical and signed social

@@ -677,8 +677,34 @@ from that owner-signed selected group before opening private runtime state. They
 reuse Matrix's `read_application_authorities` preflight, which verifies the current
 local bundle and preserves already-known Root histories. A peer need not appear
 in a historical pair registration or the native bundle's source list. An absent
-selector adds no authorities; a tampered selector or publication refuses loading.
-This Root closure does not itself grant membership, resource access or delivery.
+selector adds no authorities unless this owner separately retained a signed
+membership verification context. A tampered selector or publication refuses
+loading. This Root closure does not itself grant membership, resource access or
+delivery.
+
+Signed membership can retain its public verification roots independently of a
+messaging application through the existing owner `membership-authorities` action.
+Its closed parameters are `tribe_ref` and `expected_selection_sha256` (null for
+first selection). The protected owner operation supplies its already approved
+public authority/history closure. The writer checks the actual native signed
+membership reducer, requires the owner to be active, then signs one bounded
+`membership-authorities.json` under its existing group metadata directory. It
+creates no bot, visibility installation, channel, identity or private peer store.
+Cold Source and guest loaders verify that owner's signature, public Root history
+and any existing native/group authority bindings before merging this verification
+context. Retained roots verify historical events after a member leaves; current
+native membership and resource grants continue to decide access.
+
+The existing owner journal retains the exact action before dispatch. Exact retry
+reuses the signed selection; a changed precondition or later selection refuses
+replacement. Use the current selected digest for a later native membership
+change, retaining old public verification histories. Native body admission,
+signed membership, receiving-channel installation, outbound visibility and
+actual messaging release have separate outcomes. No Telegram credential or
+Tribu viewing is required for the first two. Keep existing adult publication
+obligations and qualify any receiving application before reporting that channel
+usable. This primitive alone does not complete the physical coordinator/lifecycle
+continuation or establish real child adoption.
 
 Managed admission retains the native controller, custody, receiving context,
 history and owner session bindings. Its actual dependency/code selections must

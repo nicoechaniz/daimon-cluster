@@ -1,5 +1,6 @@
 """Native owner requests retain real relationship effects across interrupted ACKs."""
 import copy
+import json
 import os
 import time
 import uuid
@@ -695,6 +696,43 @@ def test_source_and_offline_newcomer_record_real_membership_without_running_grou
         card_verifier=hosted.service.relationships.card_verifier)
     tribe = view.tribes[request['params']['payload']['tribe_ref']]
     assert tribe['memberships'][peer_bundle['manifest']['being_ref']]['state'] == 'active'
+    # Real signed membership can retain its own public verification context
+    # without selecting a receiving application or providing Telegram proof.
+    from clusterctl.onboarding_peer import approved_group_authorities
+    authority_command = dict(operation_id=request['operation_id'], step='membership-authorities',
+        action='membership-authorities', params=dict(tribe_ref=request['params']['payload']['tribe_ref'],
+            expected_selection_sha256=None))
+    source_context = source.group_publication(authority_command, authority_closure=closure(peer_bundle))
+    child_context = target.group_publication(authority_command, authority_closure=authorities)
+    assert source_context['status'] == child_context['status'] == 'recorded'
+    assert source_context['members'] == child_context['members'] == sorted([
+        first.document_bundle()['manifest']['being_ref'], peer_bundle['manifest']['being_ref']])
+    context_before = (target.root / 'tribe/membership-authorities.json').read_bytes()
+    assert target.group_publication(authority_command, authority_closure=authorities) == child_context
+    assert (target.root / 'tribe/membership-authorities.json').read_bytes() == context_before
+    changed = {**authority_command, 'operation_id': str(uuid.uuid4()),
+        'params': {**authority_command['params'], 'expected_selection_sha256': 'f' * 64}}
+    with pytest.raises(OnboardingError, match='membership_context_changed'):
+        target.group_publication(changed, authority_closure=authorities)
+    assert (target.root / 'tribe/membership-authorities.json').read_bytes() == context_before
+    assert not (target.root / 'tribe/selection.json').exists()
+    assert not (target.root / 'tribe/visibility/installation.json').exists()
+    forged = json.loads(context_before)
+    forged['document']['tribe_ref'] = 'tribe:unapproved-change'
+    being_seed._write(target.root / 'tribe/membership-authorities.json', forged)
+    from daimon_matrix.messaging_config import MessagingConfigError
+    with pytest.raises(MessagingConfigError):
+        approved_group_authorities(target.package / 'runtime', target.root / 'tribe', peer_bundle)
+    being_seed._write(target.root / 'tribe/membership-authorities.json', json.loads(context_before))
+    recovered = approved_group_authorities(target.package / 'runtime', target.root / 'tribe', peer_bundle)
+    assert set(recovered) == {first.document_bundle()['manifest']['being_ref']}
+    from clusterctl.onboarding_group_admission import load_owner_runtime
+    cold = load_owner_runtime(target.package / 'runtime', target._reader, authorities=recovered)
+    with cold.service.relationships.store.authorization_view(at_ms=time.time_ns() // 1000000,
+            card_verifier=cold.service.relationships.card_verifier) as current:
+        assert current.tribes[request['params']['payload']['tribe_ref']]['memberships'][
+            peer_bundle['manifest']['being_ref']]['state'] == 'active'
+
     # Native intake being recorded is not membership proof. Query the actual
     # reducer through the same authenticated route on both owner profiles.
     # The before-step remains a historical observation after acceptance.

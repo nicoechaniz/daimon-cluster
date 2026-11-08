@@ -24,6 +24,7 @@ METHODS = frozenset({'tribe.invite', 'tribe.membership.accept', 'relationship.ev
                      'relationship.snapshot'})
 PUBLICATIONS = {
     'context-preview': set(),
+    'membership-authorities': {'tribe_ref', 'expected_selection_sha256'},
     'communication-prepare': {'expected_plan_sha256', 'expires_at_ms'},
     'application': {'expected_application_sha256', 'specification', 'additions',
                     'admitted_being_refs', 'secret_sources'},
@@ -828,6 +829,12 @@ def publication_command(value: dict) -> dict:
                     and set(value['params']) - PUBLICATIONS['snapshot'] <= {'expected_stores', 'expected_preservation'})):
             raise ValueError
         params = value['params']
+        if value['action'] == 'membership-authorities' and (
+                not isinstance(params['tribe_ref'], str) or not 1 <= len(params['tribe_ref']) <= 256
+                or params['expected_selection_sha256'] is not None and (
+                    not isinstance(params['expected_selection_sha256'], str)
+                    or re.fullmatch('[0-9a-f]{64}', params['expected_selection_sha256']) is None)):
+            raise ValueError
         if value['action'] == 'communication-prepare' and (
                 not isinstance(params['expected_plan_sha256'], str)
                 or re.fullmatch('[0-9a-f]{64}', params['expected_plan_sha256']) is None
@@ -836,7 +843,7 @@ def publication_command(value: dict) -> dict:
             raise ValueError
         if 'application_precondition' in value:
             guard = value['application_precondition']
-            if (value['action'] in {'application', 'context-preview', 'communication-prepare'}
+            if (value['action'] in {'application', 'context-preview', 'communication-prepare', 'membership-authorities'}
                     or not isinstance(guard, dict) or set(guard) != {'application_step', 'application_sha256'}
                     or not isinstance(guard['application_step'], str)
                     or re.fullmatch('[a-z][a-z0-9-]{0,79}', guard['application_step']) is None
@@ -1200,6 +1207,11 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
     params = value['params']
     directory = group_root / 'application'
     action = value['action']
+    if action == 'membership-authorities':
+        from .onboarding_peer import retain_membership_authorities
+        return retain_membership_authorities(hosted, group_root,
+            operation_id=value['operation_id'], tribe_ref=params['tribe_ref'],
+            authority_closure=closure, expected_selection_sha256=params['expected_selection_sha256'])
     if action == 'communication-prepare':
         from daimon_matrix import operator_communication_migration as migration
         from .onboarding_service import GuestServiceBootstrap

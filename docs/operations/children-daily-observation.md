@@ -84,9 +84,9 @@ Unattended-Upgrade::Remove-New-Unused-Dependencies "false";
 Unattended-Upgrade::Remove-Unused-Kernel-Packages "false";
 ```
 
-This enables daily signed indexes, not automatic package commits. The complete
-transaction preflight and future automatic-update policy remain unfinished; do
-not enable unattended installation merely because its tool or timer exists.
+These native periodic settings enable signed indexes, not package commits. The
+selected coordinator below independently handles the reviewed browser family;
+keep native unattended installation disabled and broader transactions deferred.
 Existing APT timer definitions and the host's separate policy were preserved.
 Actual native `apt-daily.service` execution succeeded on all four with a fresh
 `/var/lib/apt/periodic/update-stamp`; package-status bytes stayed unchanged.
@@ -163,10 +163,9 @@ Run it in the owning finite guest service (180seconds/256MiB/50%CPU/64tasks),
 not as a new timer or a real package reinstall. Preserve a failed stage and
 inspect it before selecting a continuation. Reuse completed valid evidence.
 
-This component is not the complete automatic updater. The signed selection/
-maintainer-review producer, durable commit/recovery coordinator and its daily
-activation still need qualification before enabling future automatic writes.
-The existing report-only/index policy and daily coverage incident remain in place.
+The guard alone is not an updater. The current producer and daily coordinator
+below own selection, commit/recovery and activation. Broader package families
+remain deferred and the original daily coverage incident stays open.
 
 
 ## Select signed security metadata and inspect reviewed archives
@@ -207,9 +206,10 @@ Pixin check refused the standard debconf callback before any download; that
 outcome was retained before the exact callback audit/continuation. Native index
 qualification initially read the wrong stamp name; Pixin's already-successful
 APT service was not replayed, and the continuation consumed the native stamp.
-The durable commit/recovery coordinator and daily automatic-write activation
-remain unfinished. Keep automatic install/download/reboot/removal off and the
-original partial-coverage incident open until the complete path is exercised.
+The selected daily coordinator below now owns the narrow browser transaction
+and its automatic admission. Keep native APT periodic install/download and
+automatic reboot/removal off; this producer never enables those global controls.
+The original broader partial-coverage incident remains open.
 
 A single actual Pixin download-only qualification then exercised the same selected
 inspector against both real signed-index archives (123416336bytes total). Actual

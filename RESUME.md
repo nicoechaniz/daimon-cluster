@@ -65,9 +65,9 @@ or service changes defer. All4 selection bundle8517ed138d55 and policy remain
 installed; root-private current receipts are in the existing onboarding checkpoint.
 
 This component prepares a reviewed manifest/scoped guard configuration only for
-an actual upgrade, never installs. Durable commit/recovery, daily activation,
-broader advisory applicability and cleanup/availability remain unfinished; keep
-automatic writes off and the original coverage incident open. Social admission
+an actual upgrade, never installs. The current coordinator/cadence above now
+owns the reviewed browser commit path. Broader advisory applicability and
+cleanup/availability remain unfinished; keep the original coverage incident open. Social admission
 Matrix496/App452 remains first priority and separate; preserve paused goal53,
 all4 signed identities, current web/auth/grants and completed School/Drive work.
 See [daily observation](docs/operations/children-daily-observation.md).
@@ -310,8 +310,9 @@ The read-only package pre-install guard now has actual APT3.0.3 wire evidence
 on all four: the inert reviewed fixture is admitted, while extra service-package,
 active-browser and changed-archive fixtures stop before dpkg. Real package-status
 bytes remained unchanged and fixture payloads were retired. This is component
-qualification, not automatic-update activation; source/maintainer selection and
-the durable daily commit/recovery producer remain unfinished.
+qualification of the guard seam. The current signed selector and durable daily
+coordinator are adopted as described above; this historical fixture is not their
+activation proof.
 Broader automatic patch transactions, upstream/malicious-release advisories,
 activity-aware cleanup/browser reclamation and independent availability remain unfinished. Follow the
 maintained Shared Resources children-host-security handoff and preserve profiles,

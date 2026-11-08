@@ -1,7 +1,8 @@
 # Shared home login
 
-The optional shared login authority reuses existing Matrix human identities,
-pairings, session state and registered passkeys. Authentication never creates an
+The optional shared login authority reuses the registered Home human identities,
+pairings, session state and registered passkeys. These resource-access identities
+do not establish native Matrix human membership. Authentication never creates an
 artifact grant. A human authenticated in another owner's home remains a visitor;
 that home's `human`, `individual`, Tribe and VPN audiences keep their meanings.
 
@@ -26,6 +27,40 @@ Approve the central code through the existing command with
 `approve-browser --home dm.home-login/v1 --code CODE`. The authenticating owner
 credential identifies only its own currently paired human, irrespective of the
 destination home. Existing local-home approval remains compatible.
+
+## Humans without Telegram
+
+The gateway's existing `binding_source` can select an owner-only
+`dm.home-identities/v1` declaration instead of a human-Tribu host configuration.
+It contains exactly `schema`, `telegram_source` and `web`. `telegram_source` is
+the absolute path of the unchanged existing human-Tribu configuration, or `null`
+for an exclusively web deployment. The adapter reads no bot tokens. It never
+loads a Matrix runtime or changes native admission.
+
+`web` contains one to sixteen entries with exactly `being_ref`, `label`,
+`human_ref`, `human_name`, `origin`, `authority_file` and boolean `enabled`.
+Each `human_ref` is `human:local:` followed by a canonical lowercase UUID,
+registered explicitly by the authorized host operator for that person. It is
+stable across software updates and independent of email, paid provider login,
+Telegram identifiers and another person's Home identity. Reusing an adult
+identity for a child would reuse that adult's access and is not registration.
+Keep actual pairings and declarations in protected operator storage, not source.
+
+The existing native public-authority validator checks `being_ref` and active
+`origin` against the protected absolute `authority_file`. Duplicate beings or
+duplicate web human identities are refused. Web entries contain no bot ID,
+username, token or invented Telegram account. They project the existing human
+Actor and pairing contract; `bot()` returns unavailable for these homes.
+Legacy human revisions, bots and sessions retain their original interpretation.
+
+Use the same Home registration, owner credential, approved-browser and passkey
+routes described above. This declaration does not create a browser session,
+passkey, application grant, Drive authorization or provider credential. Each
+application must select the exact registered human reference and its current
+grant. Disabling the entry removes the current actor and pairing; normal current
+revision checks refuse its prior authentication. Preserve the declaration UUIDs,
+passkeys and original sessions when changing the selected code. Deployment and a
+real person's device acceptance are separate from adapter tests.
 
 Home sign-out revokes that home's session. Central sign-out revokes the shared
 session and its derived home sessions and private-content tickets. Sessions

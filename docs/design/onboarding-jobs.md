@@ -447,6 +447,25 @@ maintained admission service. Its signing key stays outside the worker and guest
 the registrar key stays outside the guest. A null visibility installation is
 accepted only for an explicitly configured disposable `qualify-` job.
 
+For an owner-selected production admission with outbound still closed, use
+`cluster-onboarding-managed-runtime/v2` with `mode: native-admission-only` and
+`visibility_installation: null`. All other authority, registrar, profile, state
+and registry fields remain the same. This selection refuses a messaging
+application, visibility installation, peer binding or group-admission binding;
+it cannot downgrade an already selected group. Keep the full group's original
+configuration and unfinished operation separately. The existing installer also
+refuses a different pre-existing guest unit instead of overwriting it.
+
+This path reuses the existing holder/profile and authenticated native lease,
+then adopts the same body/incarnation into the canonical registry. It performs
+no social enrollment, group publication, model call or messaging qualification.
+Signed Tribe membership and receive-side application selection are separate
+remaining effects; outbound visibility and delivery proof do not gate this
+native admission and are never inferred from it. Resume original retained jobs;
+do not recreate identities, replay uncertain enrollments or extend expired
+authorizations. Legacy v1 keeps its original visibility requirement.
+
+
 Once native V8 preparation is verified, the same worker stage reconciles its
 exact Incus admission proxy, enrolls the existing receiving holder and installs
 the persistent dedicated guest systemd unit. Every signed enrollment proposal is
@@ -457,7 +476,9 @@ remain unchanged. Publication never replaces the receiving identity or memory.
 
 Only authenticated native running status with a current shared lease permits
 atomic canonical registry adoption. A lost registry acknowledgement reuses that
-exact active incarnation. The observer checks service state and native daemon
+exact active incarnation. If the first readiness read is unconfirmed, the next
+execution observes the existing authenticated running body and adopts it without
+reinstalling its service. The observer checks service state and native daemon
 presence again; an existing registry row alone does not complete the stage. The
 unit is enabled for boot and renews admission independently of the Codex
 conversation or worker lifetime. Foreign proxies, units and registry origins

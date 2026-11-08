@@ -1469,25 +1469,47 @@ def test_remote_incus_host_carrier_retains_exact_source_and_native_consumers(mon
         'clusterctl/onboarding_managed.py': '1cee6ba681aa5ba6ed74fcd1f3f713694ffb32f7ff80d6991a9c6d7fd4a1c980',
         'clusterctl/vm_body.py': 'd3092b62dde2b47c34ee04d22610cd1e4bdd20660e62aa67c585d52e108c0fa1',
     }
-    payloads = {('previous:' + name).encode(): pin for name, pin in previous.items()}
+    # Exercise the historical exact carrier against a closed source fixture.
+    # Later legitimate edits to the live checkout must select full CI rather
+    # than break this historical predicate test or broaden its pinned hashes.
+    after = {
+        'clusterctl/onboarding_host.py': '0e5417b940e1c1643d4200f2fd1dac24142bbbf2088aaab620d137279bd28dfa',
+        'clusterctl/onboarding_managed.py': 'bc965fe0b490ac4f1594835db63720a054b503cba3c8607572a2f5e3ab25412c',
+        'clusterctl/vm_body.py': '8127fa6a479cec936ac9e5e176c53ccb75d8afbd9a61d0dc9d2b29de7197c19a',
+    }
+    carrier = tmp_path / 'exact-carrier'
+    for name in after:
+        path = carrier / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(('current:' + name).encode())
+    for name in (*ci_scope.NATIVE_RECEIVING_TESTS, 'tests/test_vm_body.py',
+                 'tests/test_onboarding_group_session.py', 'tests/test_onboarding_group_coordinator.py',
+                 'tests/test_onboarding_group_recovery.py'):
+        path = carrier / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('# Explicit selector fixture; never executed.\n')
+    payloads = {**{('previous:' + name).encode(): pin for name, pin in previous.items()},
+                **{('current:' + name).encode(): pin for name, pin in after.items()}}
+
     sha256 = ci_scope.hashlib.sha256
     monkeypatch.setattr(ci_scope.hashlib, 'sha256', lambda raw:
         SimpleNamespace(hexdigest=lambda: payloads[raw]) if raw in payloads else sha256(raw))
     monkeypatch.setattr(ci_scope.subprocess, 'run', lambda argv, **kwargs:
         SimpleNamespace(returncode=0, stdout=('previous:' + argv[2].split(':', 1)[1]).encode()))
-    profile, tests = select(changed, ROOT, base=base)
+    profile, tests = select(changed, carrier, base=base)
     assert profile == 'peer'
     assert set(ci_scope.NATIVE_RECEIVING_TESTS) | {'tests/test_vm_body.py',
         'tests/test_onboarding_group_session.py', 'tests/test_onboarding_group_coordinator.py',
         'tests/test_onboarding_group_recovery.py'} <= set(tests)
     assert select(changed, tmp_path, base=base) == ('full', ['tests'])
+    assert select(changed, ROOT, base=base) == ('full', ['tests'])
     for extra in ('clusterctl/onboarding_target.py', 'clusterctl/onboarding_custody.py',
                   'clusterctl/onboarding_group_admission.py', 'requirements.txt'):
-        assert select([*changed, extra], ROOT, base=base) == ('full', ['tests'])
+        assert select([*changed, extra], carrier, base=base) == ('full', ['tests'])
     monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *a, **k:
         SimpleNamespace(returncode=0, stdout=b'changed source'))
-    assert not ci_scope.remote_incus_source_only(ROOT, base)
-    assert select(changed, ROOT, base=base) == ('full', ['tests'])
+    assert not ci_scope.remote_incus_source_only(carrier, base)
+    assert select(changed, carrier, base=base) == ('full', ['tests'])
 
 
 def test_retained_owner_host_orchestration_keeps_focused_checks_with_its_runbook():

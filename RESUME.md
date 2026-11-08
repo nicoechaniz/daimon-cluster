@@ -1,3 +1,17 @@
+## Admission without Telegram —2026-11-08
+
+Nicolas selects all4 existing children for native/canonical and signed social
+admission without Telegram or Tribu viewing. Portable visibility Matrix496 is
+separate work and cannot block native admission. The explicit managed-runtime/v2
+native-admission-only selection uses the existing closed-outbound installer and
+original holder/profile/registry; it refuses selected group/peer/egress bindings.
+Keep original full-operation records and adult obligations; native admission
+never proves signed membership, group receiving, released messaging or family
+acceptance. See docs/design/onboarding-jobs.md. Actual deployment and all4
+receiving evidence belong in the maintained private checkpoint. Later human
+admission direction supersedes historical paused/dependency statements below;
+it does not automatically resume another goal or authorize reenrollment.
+
 ## Static FreeType component assessment —2026-11-08
 
 Optional application browser_components uses the existing guest read job to

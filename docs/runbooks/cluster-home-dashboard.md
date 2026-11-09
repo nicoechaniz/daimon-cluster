@@ -13,6 +13,14 @@ Each foreground refresh uses the granted native `/all` discovery view. Admission
 is not a model response or human acceptance. Unknown placements and expired
 leases remain explicit; discovery failure returns unavailable, never stopped.
 No inbox/history read, model activation, guest control or authority mutation occurs.
+An admission without operator placement remains in the instance inventory but
+does not create an extra host card named "Placement unverified". Register known
+placements by their observed embodiment IDs in the existing protected dashboard
+configuration, retaining the original reader allowlist and runtime binding.
+The first foreground read may await remote host/account observations. The client
+shows elapsed waiting time, preserves dated observations during refresh and
+releases the refresh button after a 55-second request deadline. A timeout never
+substitutes zero usage or stopped bodies.
 Unauthenticated and other-human requests are denied before native I/O. Browser
 identity is rechecked after discovery. Only sanitized rows reach the browser.
 

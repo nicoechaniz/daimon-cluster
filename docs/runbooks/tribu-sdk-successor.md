@@ -334,7 +334,13 @@ owner request files remain intact. Native operation IDs remain unchanged so an
 accepted revocation keeps its reservation until selection. The compatible owner
 CLI accepts an optional64-hex local request slot; select that public helper
 before using generation recovery. No daemon or SDK reload is required. Same-instance retries keep their original
-commands/deadlines. Other changes or the existing byte limit still refuse.
+commands/deadlines while they can still take effect. An expired select is
+retained unchanged in a superseded generation; fresh authenticated observations
+of the same vector allow a new local request slot under the same reserved native
+operation. This does not renew a credential, grant or resource contract. Before
+fresh selections, the completer refreshes a cohort proof that has less than one
+owner-call budget remaining, so serialized control work cannot spend another
+receiver's expired proof. Other changes or the existing byte limit still refuse.
 This adds no polling service, authority or lifecycle operation. Owner-route preflight
 failures identify the receiver and phase before code updates begin. Import failures
 use a closed public code; arbitrary stderr and credential material stay private.

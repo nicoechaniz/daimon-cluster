@@ -378,13 +378,20 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                     or not isinstance(saved.get('commands'), dict)):
                 raise OnboardingError('receiving_control_binding_conflict')
             legacy_generation = saved.get('reader_operation_id') not in {None,operation_id}
-            if compatible_restart(saved) or (legacy_generation and saved.get('binding') == binding):
+            expired_selection = saved.get('binding') == binding and any(
+                command.get('phase') == 'select'
+                and type(command.get('effect_not_after_ms')) is int
+                and command['effect_not_after_ms'] <= time.time_ns() // 1_000_000
+                for command in saved['commands'].values())
+            if compatible_restart(saved) or ((legacy_generation or expired_selection)
+                    and saved.get('binding') == binding):
                 history = saved.get('superseded_generations',[])
                 if not isinstance(history,list) or len(history) >= 4:
                     raise OnboardingError('receiving_control_binding_conflict')
-                # A new authenticated instance can change its loaded view. Only
-                # that field may change: selections, credentials and membership
-                # remain frozen. Keep old exact controls, including uncertainty.
+                # A replacement may change only its loaded view. An expired
+                # select cannot acquire a new effect; fresh native observations
+                # settle current readiness without changing its old deadline.
+                # Keep exact old controls, including uncertainty, in both cases.
                 history = [*history,{key:value for key,value in saved.items()
                     if key != 'superseded_generations'}]
                 saved = {
@@ -426,8 +433,18 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                 proofs, current = observe_all()
                 if current != vector:
                     raise OnboardingError('receiving_cohort_selection_changed')
-            for name, proof in proofs.items():
+            for name in tuple(proofs):
                 accept()
+                # Each independent owner RPC can consume much of the finite
+                # cohort proof horizon. Refresh the same vector before a fresh
+                # select instead of spending another receiver's expired proof.
+                if (phase == 'select' and name + ':select' not in saved['commands']
+                        and min(_reader_proof_expiry(row) for row in proofs.values())
+                            - time.time_ns() // 1_000_000 < 55_000):
+                    proofs, current = observe_all()
+                    if current != vector:
+                        raise OnboardingError('receiving_cohort_selection_changed')
+                proof = proofs[name]
                 if selected(proof, readers):
                     continue
                 owner, gate = owners[name], proof['gate']

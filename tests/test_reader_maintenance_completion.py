@@ -273,3 +273,45 @@ def test_restart_rebinds_only_loaded_view_and_preserves_old_generation(tmp_path,
         assert saved['superseded_generations'][0]['commands']['second:revoke']==pending[0]
         assert saved['commands']['second:select']['operation_id']==options['operation_id']
         assert len(saved['control_slot'])==64
+
+
+def test_expired_select_preserves_original_and_uses_fresh_same_operation_slot(tmp_path, monkeypatch):
+    import json
+    owners, options, _, _, _ = cohort(tmp_path, monkeypatch)
+    clock=[time.time_ns()]
+    monkeypatch.setattr(receiving.time,'time_ns',lambda:clock[0])
+    owner=owners['first']
+    original=owner.prepare_apply_control
+    pending=[]
+    def refuse(command,path):
+        if command['phase']=='select' and not pending:
+            pending.append(copy.deepcopy(command))
+            raise OnboardingError('receiving_control_not_accepted')
+        assert command.get('effect_not_after_ms',clock[0]//1_000_000+1)>clock[0]//1_000_000
+        return original(command,path)
+    owner.prepare_apply_control=refuse
+    with pytest.raises(OnboardingError,match='not_accepted'):
+        receiving.refresh_current_readers(owners,**options)
+    clock[0]+=61_000_000_000
+    result=receiving.refresh_current_readers(owners,**options)
+    assert result['receiving_readiness']=='qualified-local-projection'
+    saved=json.loads(options['checkpoint'].read_bytes())
+    assert saved['superseded_generations'][0]['commands']['first:select']==pending[0]
+    assert saved['commands']['first:select']['operation_id']==pending[0]['operation_id']
+    assert saved['commands']['first:select']['effect_not_after_ms']>pending[0]['effect_not_after_ms']
+    assert len(saved['control_slot'])==64
+
+
+def test_slow_serial_controls_refresh_cohort_before_next_fresh_select(tmp_path, monkeypatch):
+    owners, options, _, _, _ = cohort(tmp_path, monkeypatch)
+    clock=[time.time_ns()]
+    monkeypatch.setattr(receiving.time,'time_ns',lambda:clock[0])
+    for owner in owners.values():
+        original=owner.prepare_apply_control
+        def slow(command,path,original=original):
+            if command['phase']=='select':
+                assert command['effect_not_after_ms']-clock[0]//1_000_000>=55_000
+                clock[0]+=45_000_000_000
+            return original(command,path)
+        owner.prepare_apply_control=slow
+    assert receiving.refresh_current_readers(owners,**options)['receiving_readiness']=='qualified-local-projection'

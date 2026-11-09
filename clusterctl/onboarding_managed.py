@@ -188,6 +188,9 @@ class ManagedRuntime:
                 raise OnboardingError('native_code_update_identity_changed')
             if _code_update_group(current) != state.get('closed_group'):
                 raise OnboardingError('native_code_update_group_changed')
+            if receive_only_group and current.get('runtime_status', {}).get(
+                    'loaded_runtime', {}).get('qualified_startup', {}).get('code_digest') != candidate[1]:
+                raise OnboardingError('native_code_update_selection_changed')
             physical = self.backend._guest_service_call(plan, 'bootstrap-inspect', candidate=candidate,
                 timeout_seconds=remaining(), owner_observation={key: current[key]
                     for key in ('process', 'admission_parent')})

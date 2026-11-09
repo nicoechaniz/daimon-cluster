@@ -993,6 +993,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         runtime_sha256='original-bundle', responder_association='same-connection', group=None)
     if closed_group:
         current.update(group=dict(channel_id='tribe', application='/own/application'),
+            runtime_status=dict(loaded_runtime=dict(qualified_startup=dict(code_digest='old-code'))),
             group_runtime_status=dict(loaded_application=dict(application_sha256='c'*64,
                 publication_sha256='d'*64, visibility=dict(release_enabled=False, installation_sha256=None))))
     failures = [lost_start_ack]
@@ -1018,6 +1019,9 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
             if action not in prior:
                 pid = 10 + 10 * len(effects)
                 current.update(process={'pid': pid}, admission_parent={'pid': pid-1})
+                if closed_group:
+                    current['runtime_status']['loaded_runtime']['qualified_startup']['code_digest'] = request['argv'][
+                        request['argv'].index('--runtime-digest')+1]
                 prior[action] = dict(admission_parent=current['admission_parent'])
             if failures.pop() if failures else False:
                 raise OnboardingError('lost_start_ack')
@@ -1047,6 +1051,10 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     assert calls.count('bootstrap-select') == 1
     assert len(effects[options['operation_id']]) == 4
     if closed_group:
+        current['runtime_status']['loaded_runtime']['qualified_startup']['code_digest'] = 'stale-code'
+        with pytest.raises(OnboardingError, match='selection_changed'):
+            managed.update_native_code(plan, (tmp_path, 'a'*64), **options)
+        current['runtime_status']['loaded_runtime']['qualified_startup']['code_digest'] = 'a'*64
         current['group_runtime_status']['loaded_application']['application_sha256'] = 'e'*64
         original_calls = list(calls)
         with pytest.raises(OnboardingError, match='group_changed'):

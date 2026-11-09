@@ -314,6 +314,14 @@ class HostConfig:
             conversation_proxy_by_name = proxy_configuration(value['conversation_proxy_by_name'])
             if conversation_by_name is None or set(conversation_proxy_by_name) - set(conversation_by_name):
                 raise OnboardingError('conversation_proxy_configuration_required')
+            for name, listener in conversation_proxy_by_name.items():
+                vm = listener.get('vm')
+                if (vm is not None) != (value.get('instance_type', 'container') == 'virtual-machine'):
+                    raise OnboardingError('conversation_proxy_placement_unsupported')
+                if vm is not None:
+                    request = document(conversation_by_name[name][0])
+                    if request.get('listen_host') != vm['address']:
+                        raise OnboardingError('conversation_proxy_vm_network_required')
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
@@ -618,6 +626,13 @@ class HostBackend:
         row = rows[0]
         if row.get('type', 'container') != self.config.instance_type:
             return Observation('conflict', reason='observed_state_conflict')
+        listener = (self.config.conversation_proxy_by_name or {}).get(plan['name'], {})
+        vm = listener.get('vm')
+        if vm is not None:
+            nic = row.get('expanded_devices', {}).get(vm['nic'], {})
+            if (nic.get('type') != 'nic' or nic.get('network') != vm['network']
+                    or nic.get('ipv4.address') != vm['address']):
+                return Observation('conflict', reason='observed_state_conflict')
         config = row.get("config", {})
         expected_image = self.config.browser_image if plan["browser"] else self.config.native_image
         if (config.get("user.dm.onboarding-plan") != fingerprint
@@ -1083,11 +1098,17 @@ class HostBackend:
             limits = [] if 'resources' not in plan else [
                 '--config', 'limits.cpu=' + str(resources['cpu']),
                 '--config', 'limits.memory=' + str(resources['memory_gib']) + 'GiB']
+            listener = (self.config.conversation_proxy_by_name or {}).get(plan['name'], {})
+            vm = listener.get('vm')
+            if vm is not None and self.config.instance_type != 'virtual-machine':
+                raise OnboardingError('conversation_proxy_placement_unsupported')
+            nic_options = ([] if vm is None else
+                ['--device', vm['nic'] + ',ipv4.address=' + vm['address']])
             self._dispatch(plan, ["init", image, name,
                       *(['--vm'] if self.config.instance_type == 'virtual-machine' else []),
                       "--profile", self.config.profile,
                       "--storage", self.config.pool, "--device", "root,size=" + str(resources['root_gib']) + "GiB",
-                      *limits, "--config", "user.dm.onboarding-plan=" + fingerprint])
+                      *nic_options, *limits, "--config", "user.dm.onboarding-plan=" + fingerprint])
         if not any(row.get("name") == name + "-home" and row.get("type") == "custom" for row in volumes):
             self._dispatch(plan, ["storage", "volume", "create", self.config.pool, name + "-home",
                       "size=" + str(resources["home_gib"]) + "GiB", "user.dm.onboarding-plan=" + fingerprint])

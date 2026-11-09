@@ -909,6 +909,42 @@ must not be presented as a new VM's full onboarding acceptance. See
 [Incus instance creation](https://linuxcontainers.org/incus/docs/main/howto/instances_create/)
 and the existing [VM relocation route](../runbooks/native-host-relocation.md).
 
+### VM Conversation through the same private listener writer
+
+For an explicit VM, the existing `conversation_proxy_by_name` entry adds
+`vm: {nic: "eth0", network: "incusbr0", address: "10.100.0.10"}` beside its
+original private host listener/port. The own Conversation request/intent adds
+`listen_host: "10.100.0.10"`. The loader requires matching VM selection and
+request address; absent fields keep historical container/loopback bytes.
+Targets are explicit canonical private IPv4 addresses; no wildcard, public,
+loopback, automatic address choice or new public route is introduced.
+
+The original init applies the NIC's selected static address before VM boot,
+using its existing profile network. An existing different static NIC/address
+is a conflict, never hot-reconfigured. The same proxy writer selects `nat=true`
+and connects to that guest address; a foreign local or inherited listener stays
+untouched. Unknown/lost add replies reconcile the actual same device, without
+another add. Shared login and actor/private-access checks remain required.
+
+Before NAT installation or completion the worker verifies the selected static
+NIC, actual managed bridge gateway, live guest address and actual IPv4 default
+route through that host. The Incus NIC's actual MAC binds the live guest interface;
+the Incus device key is not assumed to be Linux's predictable interface name.
+The route read uses the existing guest agent with a10second bound and16KiB result.
+The existing instance/network metadata bound remains256KiB. No NIC, bridge,
+gateway, management route or existing proxy is rewritten for qualification.
+Conversation's own configured private IP is used consistently in its web unit,
+loaded-unit comparison and local readiness checks; those checks bypass ambient
+HTTP proxies. Native sockets/control and credentials are unchanged.
+
+Actual read-only qualification on the existing Oliva VM verified the static NIC,
+MAC-bound live address and host default gateway. It exposed an initial eth0 versus
+enp5s0 name mismatch, corrected in this adapter without a service restart. This
+is current existing-network read evidence, not a new NAT installation or newly
+provisioned companion. Blank VM boot/filesystem, live NAT/HTTPS/auth and full-command
+acceptance remain separate unfinished work. See the
+[Incus NAT contract](https://linuxcontainers.org/incus/docs/main/reference/devices_proxy/#nat-mode).
+
 ### Conversation-first companion candidate
 
 New `cluster-onboarding-plan/v2` jobs select `environment`, `context`, `memory`,

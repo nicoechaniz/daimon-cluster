@@ -1313,6 +1313,10 @@ class VMIncusFixture(IncusFixture):
             finally:
                 if self.instances:
                     self.instances[-1]['type'] = 'virtual-machine'
+                    for option in argv:
+                        if option.startswith('eth0,ipv4.address='):
+                            self.instances[-1]['expanded_devices']['eth0']=dict(type='nic',
+                                network='incusbr0', **{'ipv4.address': option.split('=',1)[1]})
         return super().__call__(argv)
 
 
@@ -1372,3 +1376,19 @@ def test_environment_never_adopts_or_mutates_a_different_instance_type(tmp_path,
     with pytest.raises(OnboardingError, match='^onboarding_environment_conflict$'):
         backend.execute(value, 'environment', 'original')
     assert run.calls == before
+
+
+def test_vm_static_nic_is_selected_at_original_init_and_foreign_address_is_preserved(tmp_path):
+    value,run,backend=vm_configured(tmp_path)
+    listener=dict(listen_host='10.20.30.40',listen_port=18741,
+        vm=dict(nic='eth0',network='incusbr0',address='10.100.0.10'))
+    backend=HostBackend(replace(backend.config,conversation_proxy_by_name={value['name']:listener}),run=run)
+    backend.execute(value,'environment','original')
+    assert backend.observe(value,'environment','original').state=='complete'
+    init=next(c for c in run.calls if c[0]=='init')
+    assert 'eth0,ipv4.address=10.100.0.10' in init
+    run.instances[0]['expanded_devices']['eth0']['ipv4.address']='10.100.0.11'
+    before=copy.deepcopy(run.calls)
+    with pytest.raises(OnboardingError,match='onboarding_environment_conflict'):
+        backend.execute(value,'environment','original')
+    assert run.calls==before

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -100,7 +101,7 @@ def selection(value, *, unresolved=False):
         keys.remove('being_ref')
     if (
         not isinstance(value, dict)
-        or set(value) != keys
+        or set(value) - {"listen_host"} != keys
         or value.get("schema") != (INTENT_SCHEMA if unresolved else SCHEMA)
         or not isinstance(value["name"], str)
         or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,30}", value["name"])
@@ -123,6 +124,8 @@ def selection(value, *, unresolved=False):
         or not 1024 <= value["port"] <= 65535
     ):
         fail("conversation_selection_required")
+    if 'listen_host' in value:
+        listen_host(value)
     try:
         if str(uuid.UUID(value["application_id"])) != value["application_id"]:
             raise ValueError
@@ -216,6 +219,20 @@ def selection(value, *, unresolved=False):
     return value
 
 
+def listen_host(value):
+    """Explicit private VM listener; absent field preserves loopback unit bytes."""
+    host = value.get('listen_host', '127.0.0.1')
+    try:
+        address = ipaddress.ip_address(host)
+        if (not isinstance(host, str) or str(address) != host or address.version != 4
+                or host != '127.0.0.1' and (not address.is_private or address.is_loopback
+                    or address.is_unspecified or address.is_multicast or address.is_link_local)):
+            raise ValueError
+    except (ValueError, TypeError):
+        fail('conversation_selection_required')
+    return host
+
+
 def prepare_intent(name, plan_digest, settings):
     """Derive stable app/Home references before the native identity exists.
 
@@ -224,7 +241,7 @@ def prepare_intent(name, plan_digest, settings):
     """
     static = {'human_ref', 'origin', 'label', 'human_id', 'chat_id', 'topic_id',
               'port', 'runtime', 'execution'}
-    if not isinstance(settings, dict) or set(settings) != static:
+    if not isinstance(settings, dict) or set(settings) - {'listen_host'} != static:
         fail('conversation_selection_required')
     value = dict(settings, schema=INTENT_SCHEMA, name=name, plan_digest=plan_digest,
         home_ref='home:'+uuid.uuid5(RESOURCE_NAMESPACE, 'home:'+str(plan_digest)).hex,
@@ -394,7 +411,7 @@ def unit_files(value):
         + "\n"
         + f"Environment=TELECODEX_DASHBOARD_CONFIG={STATE}/dashboard.toml\n"
         f"WorkingDirectory={runtime['web']}\nExecStart={runtime['python']} -B -m uvicorn "
-        f"dashboard.app:create_app --factory --host 127.0.0.1 --port {value['port']} "
+        f"dashboard.app:create_app --factory --host {listen_host(value)} --port {value['port']} "
         f"--no-access-log --limit-concurrency {WEB_HTTP_CONCURRENCY} --timeout-graceful-shutdown 3\n"
         "TimeoutStopSec=15\nMemoryMax=384M\nCPUQuota=100%\nTasksMax=64\n"
         "[Install]\nWantedBy=multi-user.target\n"
@@ -566,11 +583,11 @@ class Bootstrap:
             def redirect_request(self, request, fp, code, message, headers, new_url):
                 return None
 
-        opener = urllib.request.build_opener(NoRedirect())
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
         def get(path):
             request = urllib.request.Request(
-                f"http://127.0.0.1:{self.value['port']}" + path,
+                f"http://{listen_host(self.value)}:{self.value['port']}" + path,
                 headers={"Host": urlsplit(self.value["origin"]).netloc},
             )
             return opener.open(request, timeout=min(3, self.remaining()))
@@ -655,7 +672,7 @@ class Bootstrap:
             ),
             WEB_UNIT: (
                 self.value["runtime"]["python"] + " -B -m uvicorn "
-                "dashboard.app:create_app --factory --host 127.0.0.1 --port "
+                f"dashboard.app:create_app --factory --host {listen_host(self.value)} --port "
                 + str(self.value["port"])
                 + f" --no-access-log --limit-concurrency {WEB_HTTP_CONCURRENCY} --timeout-graceful-shutdown 3",
                 self.value["runtime"]["web"],

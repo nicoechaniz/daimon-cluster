@@ -431,3 +431,21 @@ class RuntimeEvidenceTests(unittest.TestCase):
             ),
         ):
             fixture.ready()
+
+
+def test_private_vm_listener_binds_units_and_preserves_resolved_intent():
+    value=request()
+    value['listen_host']='10.100.0.10'
+    assert conversation.selection(value)==value
+    units=conversation.unit_files(value)
+    assert b'--host 10.100.0.10 --port 8800' in units[conversation.WEB_UNIT]
+    settings={k:v for k,v in value.items() if k not in
+        ('schema','name','plan_digest','being_ref','home_ref','application_id')}
+    intent=conversation.prepare_intent(value['name'],value['plan_digest'],settings)
+    resolved=conversation.resolve_request(intent,value['being_ref'])
+    assert resolved['listen_host']==value['listen_host']
+    assert resolved['being_ref']==value['being_ref']
+    for host in ['0.0.0.0','8.8.8.8','::','::1','localhost','127.0.0.2','169.254.1.1',False]:
+        with unittest.TestCase().assertRaises(conversation.ConversationError):
+            conversation.selection({**value,'listen_host':host})
+    assert conversation.listen_host(request())=='127.0.0.1'

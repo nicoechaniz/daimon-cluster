@@ -1,3 +1,17 @@
+## VM Conversation NAT continuation —2026-11-09
+
+The existing Conversation listener now has an explicit VM NAT composition,
+using an own selected private IPv4 address in the retained request and host
+proxy entry. Original init selects the static NIC before boot; actual static
+NIC, managed host gateway, MAC-bound live guest address and default route are
+checked before the existing proxy writer. Container defaults stay unchanged.
+Actual read-only Oliva qualification exposed/fixed Incus device-key versus Linux
+interface naming (eth0/enp5s0); the corrected MAC binding passed with zero
+service/model/network mutation. New VM boot/filesystem and actual NAT/HTTPS/auth
+plus full-command acceptance remain unfinished. No held companion was created.
+See docs/design/onboarding-jobs.md; current private command checkpoint retains
+source/read evidence and full School/security/Emma scope.
+
 ## Explicit VM environment continuation —2026-11-09
 
 The maintained onboarding host now accepts optional `instance_type` with the

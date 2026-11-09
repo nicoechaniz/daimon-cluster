@@ -91,3 +91,85 @@ def test_duplicate_listener_and_boolean_port_refused():
         configuration({'eko':dict(listen_host='10.0.0.1',listen_port=True)})
     with pytest.raises(OnboardingError):
         configuration({name:dict(listen_host='10.0.0.1',listen_port=18741) for name in ['eko', 'other']})
+
+
+def vm_fixture():
+    backend, value, state, calls, _ = fixture()
+    listener = dict(listen_host='10.20.30.40', listen_port=18741,
+        vm=dict(nic='eth0', network='incusbr0', address='10.100.0.10'))
+    backend.config.conversation_proxy_by_name = {'eko': listener}
+    device = desired(listener, 8800)
+    state.update(type='virtual-machine', expanded_devices={'eth0': dict(type='nic',
+        network='incusbr0', name='eth0', hwaddr='00:16:3e:00:00:11', **{'ipv4.address':'10.100.0.10'})})
+    network = dict(managed=True, type='bridge', config={'ipv4.address':'10.100.0.1/24'})
+    live = dict(network={'ens3': dict(hwaddr='00:16:3e:00:00:11', addresses=[dict(family='inet',address='10.100.0.10')])})
+    routes = [dict(dst='default',gateway='10.100.0.1',dev='ens3')]
+    def dispatch(_plan, argv):
+        calls.append(argv)
+        if argv == ['query','/1.0/networks/incusbr0']:
+            return json.dumps(network)
+        if argv == ['query','/1.0/instances/dm-eko/state']:
+            return json.dumps(live)
+        if argv[0] == 'query':
+            return json.dumps(state)
+        assert argv[:5] == ['config','device','add','dm-eko','conversation-web']
+        state['devices']['conversation-web']=copy.deepcopy(device)
+        state['expanded_devices']['conversation-web']=copy.deepcopy(device)
+        return ''
+    def execute(plan, argv, **kwargs):
+        assert plan==value and argv==['/usr/sbin/ip','-j','-4','route','show','default']
+        assert kwargs==dict(uid=0,gid=0,timeout_seconds=10)
+        return json.dumps(routes)
+    backend._dispatch=dispatch
+    backend.execute_body=execute
+    request=dict(port=8800,listen_host='10.100.0.10')
+    return backend,value,state,calls,device,request,network,live,routes
+
+
+def test_vm_nat_reuses_proxy_writer_and_recovers_lost_reply_without_rewrite():
+    backend,value,state,calls,device,request,*_=vm_fixture()
+    assert device['nat']=='true' and device['connect']=='tcp:10.100.0.10:8800'
+    assert reconcile(backend,value,request,apply=False).state=='absent'
+    original=backend._dispatch
+    def lost(plan,argv):
+        result=original(plan,argv)
+        if argv[0]=='config':
+            raise TimeoutError('lost retained NAT add reply')
+        return result
+    backend._dispatch=lost
+    with pytest.raises(TimeoutError):
+        reconcile(backend,value,request,apply=True)
+    assert reconcile(backend,value,request,apply=True).state=='complete'
+    assert sum(c[0]=='config' for c in calls)==1
+
+
+@pytest.mark.parametrize('gap', ['nic','static','managed','gateway','route','live','listener','mac'])
+def test_vm_nat_requires_actual_own_static_nic_live_ip_and_host_gateway(gap):
+    backend,value,state,calls,_,request,network,live,routes=vm_fixture()
+    if gap=='nic':
+        state['expanded_devices']['eth0']['network']='foreign'
+    if gap=='static':
+        state['expanded_devices']['eth0'].pop('ipv4.address')
+    if gap=='managed':
+        network['managed']=False
+    if gap=='gateway':
+        network['config']['ipv4.dhcp.gateway']='10.100.0.2'
+    if gap=='route':
+        routes[0]['gateway']='10.100.0.2'
+    if gap=='live':
+        live['network']['ens3']['addresses']=[]
+    if gap=='listener':
+        request.pop('listen_host')
+    if gap=='mac':
+        live['network']['ens3']['hwaddr']='00:16:3e:00:00:22'
+    with pytest.raises(OnboardingError,match='conversation_proxy_vm_network_required'):
+        reconcile(backend,value,request,apply=True)
+    assert all(c[0]=='query' for c in calls) and state['devices']=={}
+
+
+@pytest.mark.parametrize('address',['127.0.0.1','0.0.0.0','8.8.8.8','10.20.30.40','fe80::1','::1'])
+def test_vm_nat_configuration_never_selects_loopback_public_or_wildcard_target(address):
+    backend,*_=vm_fixture()
+    backend.config.conversation_proxy_by_name['eko']['vm']['address']=address
+    with pytest.raises(OnboardingError,match='conversation_proxy_configuration_required'):
+        configuration(backend.config.conversation_proxy_by_name)

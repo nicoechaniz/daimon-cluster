@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import uuid
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -123,14 +124,29 @@ def _parallel(items, action):
 
 
 @contextmanager
-def preserved(owners, selected, *, journal, row, deadline_ns, validate, restore_only=False):
+def preserved(owners, selected, *, journal, row, deadline_ns, validate, restore_only=False,
+              phase='membership'):
     """All preparations/recoveries precede any pause; all writer exit precedes restore."""
+    if not isinstance(phase, str) or phase not in {'membership', 'receive'}:
+        raise OnboardingError('membership_maintenance_phase_required')
     selected = configuration(selected, owners)
     if set(selected['owners']) != set(owners):
         raise OnboardingError('membership_maintenance_configuration_required')
-    binding = digest({'operation_id': row['operation_id'], 'intent': row['intent'], 'recipe': selected})
-    retained = (row['runtime_observation'] or {}).get('membership_maintenance')
+    # Keep historical membership claims byte-identical. Receiving is a distinct
+    # phase of the original job, never a reuse of its already restored pause.
+    identity = {'operation_id': row['operation_id'], 'intent': row['intent'], 'recipe': selected}
+    parent = row['operation_id']
+    if phase == 'receive':
+        identity['phase'] = phase
+        parent = str(uuid.uuid5(uuid.NAMESPACE_URL, 'onboarding-receive-maintenance:'+parent))
+    binding = digest(identity)
+    field = phase+'_maintenance'
+    retained = (row['runtime_observation'] or {}).get(field)
     expected = dict(recipe=selected, binding=binding)
+    if phase == 'receive':
+        expected['operation_id'] = parent
+        if restore_only and retained is None:
+            raise OnboardingError('membership_maintenance_original_required')
     if retained is not None and retained != expected:
         raise OnboardingError('membership_maintenance_original_changed')
     previous = {name: (owner.deadline_ns, owner.maintenance) for name, owner in owners.items()}
@@ -140,7 +156,7 @@ def preserved(owners, selected, *, journal, row, deadline_ns, validate, restore_
             owner.deadline_ns = deadline_ns
         endpoints, errors = _parallel({name: (owner, selected['owners'][name]) for name, owner in owners.items()},
             lambda pair: Endpoint(pair[0], pair[1],
-            parent=row['operation_id'], binding=binding, deadline_ns=deadline_ns, validate=validate))
+            parent=parent, binding=binding, deadline_ns=deadline_ns, validate=validate))
         if errors:
             raise errors[0]
         _, errors = _parallel(endpoints, lambda endpoint: endpoint.recover())
@@ -152,7 +168,8 @@ def preserved(owners, selected, *, journal, row, deadline_ns, validate, restore_
         validate()
         if retained is None:
             current = journal.get(row['operation_id'])
-            observed = dict(current['runtime_observation'] or {}, membership_maintenance=expected)
+            observed = dict(current['runtime_observation'] or {})
+            observed[field] = expected
             journal.advance(row['operation_id'], current['state'], runtime_observation=observed,
                 expected_runtime_observation=current['runtime_observation'])
         sessions, errors = _parallel(endpoints, lambda endpoint: endpoint.open())

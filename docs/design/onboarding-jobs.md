@@ -1532,3 +1532,25 @@ boundaries and consumption by the native publication writer. No existing child
 key is regenerated or selected by this source change. Original coordinator
 resource transfer, receive lifecycle and current-reader integration remain
 unfinished; key preparation alone is not delivery or reader readiness.
+
+
+### Distinct receive-phase preservation in the original job
+
+`onboarding_membership_scope.preserved(..., phase="receive")` reuses the existing
+finite Matrix service guard for the later receiving publication/load phase.
+The default membership phase retains its historical binding and operation ID
+unchanged. Receive preservation instead derives one stable UUID from the same
+original job and records `receive_maintenance` alongside `membership_maintenance`.
+Its binding includes the phase, original intent and selected helper recipe.
+A restored membership claim therefore cannot authorize or appear to complete a
+receiving pause. This is a phase of the same job, not reenrollment or a new job.
+
+All selected owner preparations and exact claim recoveries still precede the
+first pause; native writers must exit before restoration. Receive restore-only
+refuses when its own retained claim is absent. Original phase retries retain the
+same claim, binding and owner state; changed recipes refuse before preparation.
+The original guard horizon, cleanup reserve and selected-helper limits remain.
+No timer, model attention, global Stop, outbound release or automatic goal
+resume is introduced. Coordinator publication/resource transfer and current
+reader selection still need composition and actual receiving qualification;
+this source primitive alone does not establish delivery.

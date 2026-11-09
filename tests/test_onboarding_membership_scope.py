@@ -46,7 +46,9 @@ def setup(tmp_path, monkeypatch):
             # Every recovery must finish before any new pause.
             assert {name for phase, name in events if phase == 'recover'} == set(owners)
             current = journal.get(row['operation_id'])
-            assert current['runtime_observation']['membership_maintenance']['recipe'] == selected
+            observed = current['runtime_observation']
+            assert any(observed.get(field, {}).get('recipe') == selected
+                for field in ('membership_maintenance', 'receive_maintenance'))
             events.append(('pause', self.name))
             if 'pause-' + self.name in failures:
                 raise OnboardingError('pause-failed')
@@ -78,12 +80,13 @@ def test_full_scope_prepares_recovers_pauses_and_restores_after_native_writer_ex
     assert sum(phase == 'pause' for phase, _ in events) == 2
 
 
+@pytest.mark.parametrize('maintenance_phase', ['membership', 'receive'])
 @pytest.mark.parametrize('phase', ['prepare', 'recover', 'pause', 'check', 'restore'])
-def test_partial_failure_restores_every_successful_guard_and_owner_fields(setup, phase):
+def test_partial_failure_restores_every_successful_guard_and_owner_fields(setup, phase, maintenance_phase):
     journal, row, owners, selected, events, failures = setup
     failures.add(phase + '-two')
     with pytest.raises(OnboardingError):
-        with run(setup):
+        with run(setup, phase=maintenance_phase):
             if phase in {'prepare', 'recover', 'pause', 'check'}:
                 pytest.fail('native effects admitted after failed preparation')
     paused = {name for step, name in events if step == 'pause'} - ({'two'} if phase == 'pause' else set())
@@ -209,3 +212,47 @@ def test_guest_base_observation_does_not_read_group_and_rechecks_current_public_
             target.base_running(deadline_ns=time.monotonic_ns()+1_000_000_000)
     else:
         assert target.base_running(deadline_ns=time.monotonic_ns()+1_000_000_000)['admission_parent']=={'pid':122}
+
+
+def test_receive_phase_retains_distinct_original_claim_and_recovers_without_membership_reuse(setup, monkeypatch):
+    journal, row, owners, selected, events, failures = setup
+    endpoint = scope.Endpoint
+    parents = []
+    def tracked(*args, **kwargs):
+        parents.append((kwargs['parent'], kwargs['binding']))
+        return endpoint(*args, **kwargs)
+    monkeypatch.setattr(scope, 'Endpoint', tracked)
+    with run(setup):
+        pass
+    membership = journal.get(row['operation_id'])['runtime_observation']['membership_maintenance']
+    original_parents = set(parents)
+    parents.clear()
+    # Restored membership cannot be misreported as receive-phase recovery.
+    with pytest.raises(OnboardingError, match='original_required'):
+        with run(setup, phase='receive', restore_only=True):
+            pytest.fail('missing receive claim recovered')
+    assert not parents
+    with run(setup, phase='receive'):
+        pass
+    observed = journal.get(row['operation_id'])['runtime_observation']
+    assert observed['membership_maintenance'] == membership
+    assert observed['receive_maintenance']['binding'] != membership['binding']
+    assert set(parents).isdisjoint(original_parents)
+    receive_parents = set(parents)
+    assert {parent for parent, _ in parents} == {observed['receive_maintenance']['operation_id']}
+    pauses = sum(step == 'pause' for step, _ in events)
+    parents.clear()
+    with run(setup, phase='receive', restore_only=True):
+        pass
+    assert set(parents) == receive_parents
+    assert sum(step == 'pause' for step, _ in events) == pauses
+    assert journal.get(row['operation_id'])['runtime_observation'] == observed
+
+
+@pytest.mark.parametrize('phase', ['', 'outbound', 'receive-other', None, [], {}])
+def test_unselected_maintenance_phase_cannot_prepare_or_pause(setup, phase):
+    *_, events, _failures = setup
+    with pytest.raises(OnboardingError, match='phase_required'):
+        with run(setup, phase=phase):
+            pytest.fail('unsupported phase admitted')
+    assert not events

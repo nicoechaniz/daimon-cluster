@@ -1059,23 +1059,16 @@ def complete_code_update_readers(value: dict, *, operation_id: str,
             if not row['require_admitted']))
 
 
-def run_code_update(spec: dict) -> dict:
-    """Reuse the owner/unit journals; never create a second batch effect journal."""
+def maintenance_backend(host_config: str, vm_qualification: str | None, names) -> tuple:
+    """Reuse current job placements for software and reader maintenance."""
     from .onboarding_host import HostBackend, HostConfig
-    spec = validate_code_update(spec)
-    deadline = time.monotonic_ns() + spec['max_seconds'] * 1_000_000_000
-    reader_routes = (load_code_update_readers(Path(spec['reader_completion']))
-        if spec.get('reader_completion') is not None else None)
-    if reader_routes is not None:
-        from .onboarding_receiving_update import preflight_reader_checkpoint
-        preflight_reader_checkpoint(Path(reader_routes['checkpoint']), spec['operation_id'])
-    config = HostConfig.load(Path(spec['host_config']))
+    config = HostConfig.load(Path(host_config))
     jobs = JobStore(config.jobs)
-    plans = {name: jobs._load(name)['plan'] for name in spec['targets']}
+    plans = {name: jobs._load(name)['plan'] for name in names}
     runner = None
-    if spec['vm_qualification'] is not None:
+    if vm_qualification is not None:
         from .vm_body import RemoteIncusRunner
-        qualification = Path(spec['vm_qualification'])
+        qualification = Path(vm_qualification)
         admitted = being_seed._read(qualification / 'receiving.json')
         placements = {name: (qualification / (name + '-placement.json'),
             admitted['results'][name]['placement_sha256']) for name in plans}
@@ -1083,6 +1076,19 @@ def run_code_update(spec: dict) -> dict:
             raise OnboardingError('native_code_maintenance_existing_body_required')
         runner = RemoteIncusRunner(placements, plans, publish=no_initial_publication)
     backend = HostBackend(config, run=runner)
+    return backend, plans
+
+
+def run_code_update(spec: dict) -> dict:
+    """Reuse the owner/unit journals; never create a second batch effect journal."""
+    spec = validate_code_update(spec)
+    deadline = time.monotonic_ns() + spec['max_seconds'] * 1_000_000_000
+    reader_routes = (load_code_update_readers(Path(spec['reader_completion']))
+        if spec.get('reader_completion') is not None else None)
+    if reader_routes is not None:
+        from .onboarding_receiving_update import preflight_reader_checkpoint
+        preflight_reader_checkpoint(Path(reader_routes['checkpoint']), spec['operation_id'])
+    backend, plans = maintenance_backend(spec['host_config'],spec['vm_qualification'],spec['targets'])
     if reader_routes is not None:
         # Resolve owning jobs/placements and probe their existing owner CLIs
         # before any lifecycle effect; signed rosters still qualify membership.
@@ -1143,20 +1149,85 @@ def run_code_update(spec: dict) -> dict:
             else 'unobserved', **({'reader_completion': readers} if readers is not None else {}))
 
 
+def run_native_profile_update(spec: dict, *, check_only: bool = False) -> dict:
+    """Compose the native H8 owner with the SAME current-reader completer."""
+    import json
+    from . import onboarding_release
+    from .rebirth_native import ProfileOwner, run_profile_maintenance
+    from .onboarding_owner_control import _selection
+    from .onboarding_receiving_update import preflight_reader_checkpoint, refresh_current_readers
+    extras = {'reader_completion','host_config','vm_qualification'}
+    core = {key:value for key,value in spec.items() if key not in extras}
+    if not 1 <= core.get('max_seconds',0) <= 180:
+        raise OnboardingError('native_code_maintenance_spec_required')
+    deadline = time.monotonic_ns()+core['max_seconds']*1_000_000_000
+    if spec.get('reader_completion') is None:
+        return run_profile_maintenance(core,check_only=check_only,deadline_ns=deadline)
+    routes = load_code_update_readers(Path(spec['reader_completion']))
+    if not check_only:
+        preflight_reader_checkpoint(Path(routes['checkpoint']),core['operation_id'])
+    names = {binding['job'] for binding in routes['owners'].values() if 'job' in binding}
+    if names:
+        backend, plans = maintenance_backend(spec['host_config'],spec.get('vm_qualification'),names)
+    else:
+        backend, plans = None, None
+    clients = code_update_reader_clients(routes,backend=backend,plans=plans)
+    profile = ProfileOwner(Path(core['profile']))
+    settings = json.loads(onboarding_release.regular(Path(profile.profile()['config']),uid=profile.uid))
+    updated = [name for name,client in clients.items() if str(client.root) == settings['runtime_root']]
+    if len(updated) != 1:
+        raise OnboardingError('receiving_current_reader_binding_required')
+    selections = {}
+    from .operation_journal import OperationJournal
+    retained_journal = OperationJournal.existing(Path(core['journal']))
+    retained = None if retained_journal is None else retained_journal.get(core['operation_id'])
+    for name,client in clients.items():
+        client.deadline_ns = deadline
+        observed = _selection(client._call(dict(action='status')))
+        expected = routes['owners'][name]['selection']
+        if (name == updated[0] and retained is not None
+                and retained['intent'].get('native_profile_maintenance') == core):
+            if retained.get('result') is not None:
+                expected = _selection(retained['result']['loaded'])
+            elif observed['receiving_code'] == core['candidate']['code_digest']:
+                expected = None  # The retained native operation revalidates this candidate below.
+        if expected is not None and observed != expected:
+            raise OnboardingError('receiving_cohort_selection_changed')
+        selections[name] = observed
+    result = run_profile_maintenance(core,check_only=check_only,deadline_ns=deadline)
+    if check_only:
+        return {**result,'reader_routes_observed':len(clients)}
+    selections[updated[0]] = _selection(result['loaded'])
+    result['reader_completion'] = refresh_current_readers(clients,selections=selections,
+        operation_id=core['operation_id'],release_digest=core['candidate']['code_digest'],
+        deadline_ns=deadline,checkpoint=Path(routes['checkpoint']),
+        nonadmitted=frozenset(name for name,binding in routes['owners'].items() if not binding['require_admitted']))
+    result['receiving_readiness'] = result['reader_completion']['receiving_readiness']
+    return result
+
+
 def main(argv=None) -> int:
     import argparse
     import os
     from .onboarding import refusal_diagnostic
     parser = argparse.ArgumentParser(description='Bounded code/SDK maintenance of existing admitted bodies')
     parser.add_argument('--spec', type=Path, required=True,
-        help='retained root-owned private cluster-native-code-maintenance/v1 JSON')
+        help='retained root-owned private code or native-profile maintenance JSON')
+    parser.add_argument('--check-only', action='store_true',
+        help='Inspect a native-profile maintenance request without lifecycle effects')
     args = parser.parse_args(argv)
     try:
         if os.geteuid() != 0:
             raise OnboardingError('native_code_maintenance_root_required')
-        result = run_code_update(being_seed._read(args.spec, limit=65536))
+        spec = being_seed._read(args.spec, limit=65536)
+        if spec.get('schema') == 'cluster-native-profile-maintenance/v1':
+            result = run_native_profile_update(spec,check_only=args.check_only)
+        else:
+            if args.check_only:
+                raise OnboardingError('native_code_maintenance_spec_required')
+            result = run_code_update(spec)
         print(json.dumps(result))
-        return 0 if result['complete'] else 1
+        return 0 if result.get('complete') or result.get('qualified') else 1
     except Exception as error:
         print(json.dumps(dict(schema='cluster-native-code-maintenance-result/v1', complete=False,
             failure=refusal_diagnostic(error, stage='native-code-maintenance'))))

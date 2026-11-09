@@ -376,6 +376,7 @@ class Source:
         from daimon_matrix.client import ClientConfig, LocalClient
         from daimon_matrix.operator_capabilities import host_capability_profile
         from .onboarding_target import document
+        from .onboarding_receiving_update import receiving_status_response
         from .owner_process import ConnectedProcessObserver
 
         connected = 'connection_observer' in getattr(LocalClient, '__dataclass_fields__', {})
@@ -399,7 +400,7 @@ class Source:
                     **({} if deadline_ns is None else {'deadline_ns': deadline_ns}), **options)
 
             native = client(self.root / 'matrix.sock', self.root / 'client.json', self.root / 'client.key')
-            base = native.runtime_status()[1]
+            base = receiving_status_response(native)
             if base.get('ok') is not True:
                 raise OnboardingError('onboarding_runtime_not_ready')
             bundle = document(self.root / 'runtime.json')
@@ -412,7 +413,7 @@ class Source:
                     directory = self.root / role['client_directory']
                     hosted = client(Path(group['socket']), directory / role['client_config_filename'],
                                     directory / role['client_key_filename'])
-                    response = hosted.runtime_status()[1]
+                    response = receiving_status_response(hosted)
                     if response.get('ok') is not True or response['server'] != base['server']:
                         raise OnboardingError('onboarding_daemon_origin_conflict')
                     application_status = response['result']

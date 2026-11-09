@@ -112,6 +112,15 @@ def refusal_diagnostic(error: Exception, *, stage: str) -> dict:
     elif isinstance(error, TimeoutError):
         code = 'local_operation_timed_out'
     elif isinstance(error, RuntimeError):
+        # Optional native-profile operators are not part of every closed guest
+        # helper. Inspect already-loaded typed errors without importing their
+        # wider H8 dependency closure into ordinary refusal reporting.
+        import sys
+        native = sys.modules.get('clusterctl.rebirth_native')
+        host = sys.modules.get('clusterctl.rebirth_host')
+        if (isinstance(error, getattr(host, 'RebirthHostError', ()))
+                and str(error) in getattr(native, 'PROFILE_ERRORS', ())):
+            code = str(error)
         # Matrix remains optional for ordinary Cluster commands. Only typed,
         # explicitly selected transport observations may cross this boundary.
         try:

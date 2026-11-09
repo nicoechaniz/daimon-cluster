@@ -197,8 +197,10 @@ preservation now invokes it automatically before selecting the successor and
 retains the receipt in the existing operation journal. Prepare the controller
 and successor with the same SDK so preservation can read the migrated catalogs;
 the maintained worker checks this before preparing lifecycle effects.
-Composition for the original Source/legacy receiving profiles remains
-unfinished; these primitives alone are not a complete original-cohort update. When a qualified
+The H8 native-profile route now composes these stages through the same fleet
+command; see [native-profile maintenance](rebirth-native-profile.md#routine-h8-maintenance-through-the-existing-fleet-command).
+Actual changed-profile adoption and the remaining legacy-profile composition
+remain distinct qualification work. When a qualified
 maintenance helper verifies an existing body, pass that body's selected code
 and owner to the existing-base verifier. The helper's own directory is not the
 body's SDK selection. Identity signatures and all existing bindings still apply.

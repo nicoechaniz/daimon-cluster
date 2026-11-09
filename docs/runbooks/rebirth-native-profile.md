@@ -54,8 +54,49 @@ successor and reconciles replacement before acknowledgment without rewriting it.
 The operation retains its original profile; this helper creates no growing series
 of backup files. Qualify the successor through `prepare` before the scoped stop.
 Selection alone does not stop/start a service, migrate catalogs, establish body
-admission or qualify readers. Full H8 fleet-command composition remains pending;
-do not substitute a manual chain and call that command complete.
+admission or qualify readers.
+
+## Routine H8 maintenance through the existing fleet command
+
+Use the same `python -B -m clusterctl.onboarding_managed --spec PATH` operator
+with an owner-private `cluster-native-profile-maintenance/v1` spec. Its required
+fields are `operation_id` (a canonical UUID), `profile`, `candidate` (the exact
+profile document above), `unit`, `journal` and `max_seconds` (1–180). The selected
+SDK/import generation must already be prepared. The service's existing owner is
+resolved from the private profile; no login, account or unit directive is changed.
+
+The command qualifies the successor reader against the serving body, binds its
+actual admission parent to the selected system unit, retains the operation, stops
+that Matrix unit, migrates through the successor SDK, selects the canonical
+profile and observes the successor. It preserves config/home, native identity,
+authority, history and unrelated harness/goal services. A matching profile is a
+no-op: observation does not justify a restart.
+
+Include `reader_completion` using the existing maintained reader-route contract
+to finish current cohort qualification in the same command. Job-backed reader
+routes reuse `host_config` and optional `vm_qualification`, exactly as ordinary
+managed-job maintenance. All routes are inspected before lifecycle effects; the
+updated body's expected selection comes from its actual receipt. Other owners
+retain their expected selections. The existing cohort completer performs any
+needed controls and distinguishes `qualified-local-projection` from message or
+model acceptance. Omit reader completion only for an explicitly code-only result,
+which reports `receiving_readiness: unobserved`.
+
+`--check-only` inspects the live owner, service and configured reader routes
+without creating an operation, selecting software or dispatching lifecycle or
+reader controls. Every owner call and the cohort share the invocation's single
+absolute deadline. Retry the same spec/operation: confirmed effects are retained.
+A lost start acknowledgment with an active candidate is observed, not started
+again. An inactive unit with an unresolved start intent stays explicitly
+unconfirmed; inspect the actual native start journal/service outcome through the
+existing recovery route before another startup, rather than guessing dispatch.
+
+Use a dedicated maintenance journal, retaining completed history and every
+uncertain effect. New operations stop before lifecycle admission at64records or
+when the64MiB working budget cannot reserve8MiB for each in-flight operation.
+Exact resumptions and unchanged-profile observation remain available. This is a
+bounded stop path, not automatic history deletion; never replace an unfinished
+journal or redirect an old operation to an empty one to bypass its outcome.
 
 Keep the serving configuration, code selection and startup result in the owning
 host record. Install the supervisor through the existing bounded service route;

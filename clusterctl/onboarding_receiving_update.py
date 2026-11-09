@@ -327,7 +327,19 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
 
     def selected(proof, readers):
         gate = proof['gate']
-        return gate.get('phase') == 'select' and gate.get('readers') == readers
+        prior = gate.get('readers')
+        if (gate.get('phase') != 'select' or not isinstance(prior,list)
+                or any(not isinstance(row,dict) for row in prior)):
+            return False
+        # Native reader_ready authorizes identity/validity/wire/authority, not
+        # a peer's historical process or package observation. Fresh owner proofs
+        # above still qualify every loaded receiver. Preserve another owner's
+        # live gate when ONLY these diagnostic hashes changed; identity,
+        # credential validity and complete advertised contracts stay identical.
+        def effective(rows):
+            return [{key:value for key,value in row.items()
+                if key not in {'loaded_view_sha256','receiving_selection_sha256'}} for row in rows]
+        return effective(prior) == effective(readers)
 
     # Existing adapters own process pins, transport timeouts and native request
     # retention. Keep their prior deadline after this finite call.
@@ -449,6 +461,8 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                 release_digest=release_digest, receiving_readiness='qualified-local-projection',
                 membership_basis_sha256=vector['membership_basis_sha256'],
                 readers=readers, changed=changed, proofs=final,
+                preserved_compatible=sorted(name for name,proof in final.items()
+                    if proof['gate']['readers'] != readers),
                 communication_acceptance='unobserved')
         if all(selected(proof, readers) for proof in proofs.values()):
             return completed(proofs)

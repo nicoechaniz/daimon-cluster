@@ -346,6 +346,17 @@ selection gate that expired inside an eight-minute operation. The checkpoint
 keeps four detailed superseded generations plus a rolling count/hash. It retires
 an oldest detail only when current native process/CAS or expiry proves that its
 controls cannot acquire another effect; owner-private originals stay intact. Other changes or the existing byte limit still refuse.
+A selected native gate already authorizes reader identity, credential validity,
+wire contracts and authority epochs; historical loaded-view/selection hashes are
+qualification observations. After fresh current owner qualification, the completer
+preserves another owner's selected gate when only those two hashes changed.
+Changes to identity, validity, authority or wire declarations still require new
+selection. Thus a compatible one-body update selects that body's gate without
+revoking healthy peers. Ordinary same-binding restart restoration already exists
+in Matrix and needs no new scheduler. The current operator still reads all required
+owners; unavailable-owner preflight and large-fleet convergence remain separate
+work, not claims of complete per-body/offline independence.
+
 New snapshots use a vector/process-bound local slot from their first control.
 If the closed owner refuses a filename binding before submission, the completer
 retains that refusal and allocates at most one alternate slot for the unchanged

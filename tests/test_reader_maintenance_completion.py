@@ -380,3 +380,47 @@ def test_legacy_filename_binding_conflict_uses_one_known_unattempted_slot(tmp_pa
     calls.clear()
     receiving.refresh_current_readers(owners,**options)
     assert calls==[]
+
+
+
+@pytest.mark.parametrize('changed_field',['loaded_view_sha256','receiving_selection_sha256'])
+def test_compatible_body_update_preserves_other_owners_live_gates(tmp_path,monkeypatch,changed_field):
+    owners,options,calls,_,vector=cohort(tmp_path,monkeypatch)
+    for row in vector['readers']:
+        row.update(loaded_view_sha256='1'*64,receiving_selection_sha256='2'*64,
+            credential_id=row['being_ref'],validity=dict(mode='until-revoked',not_before_ms=1),
+            wire_read=['wire/v1'],authority_epochs=['epoch'])
+    receiving.refresh_current_readers(owners,**options)
+    prior=copy.deepcopy(owners['first'].gate)
+    calls.clear()
+    options['operation_id']='0535495b-7592-4aa7-ae87-0a1db05cc464'
+    vector['readers'][1][changed_field]='3'*64
+    owners['second'].gate.update(phase='unselected',readers=[],head='7'*64,process_instance_id='updated')
+    result=receiving.refresh_current_readers(owners,**options)
+    assert calls==[('second','revoke'),('second','select')]
+    assert owners['first'].gate==prior
+    assert result['preserved_compatible']==['first']
+    calls.clear()
+    receiving.refresh_current_readers(owners,**options)
+    assert calls==[]
+
+
+@pytest.mark.parametrize('changed_field',[
+    'credential_id','authority_manifest_hash','validity','wire_read','authority_epochs',
+])
+def test_effective_reader_authority_or_contract_change_requires_fresh_selection(tmp_path,monkeypatch,changed_field):
+    owners,options,calls,_,vector=cohort(tmp_path,monkeypatch)
+    for row in vector['readers']:
+        row.update(loaded_view_sha256='1'*64,receiving_selection_sha256='2'*64,
+            credential_id=row['being_ref'],authority_manifest_hash='epoch',
+            validity=dict(mode='until-revoked',not_before_ms=1),wire_read=['wire/v1'],authority_epochs=['epoch'])
+    receiving.refresh_current_readers(owners,**options)
+    calls.clear()
+    options['operation_id']='0535495b-7592-4aa7-ae87-0a1db05cc464'
+    vector['readers'][1][changed_field]={
+        'credential_id':'new','authority_manifest_hash':'new',
+        'validity':dict(mode='until-revoked',not_before_ms=2),
+        'wire_read':['wire/v1','wire/v2'],'authority_epochs':['epoch','new'],
+    }[changed_field]
+    receiving.refresh_current_readers(owners,**options)
+    assert calls==[('first','revoke'),('second','revoke'),('first','select'),('second','select')]

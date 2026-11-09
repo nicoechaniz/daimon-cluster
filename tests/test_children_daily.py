@@ -398,6 +398,26 @@ if __name__ == '__main__':
 
 
 class CurrentPhaseEvidenceTests(unittest.TestCase):
+    def test_completed_observation_does_not_clear_pending_security_assessment(self):
+        result = {'coverage': 'partial', 'source': {'state': 'fresh'},
+            'targets': {'pixin': {'debian_advisories': 'matched',
+                'compiler_cleanup': {'status': 'complete'}, 'browser': {'state': 'standby'},
+                'applications': {'state': 'observed'}}},
+            'public_advisories': {'state': 'matched', 'needs_triage': True},
+            'known_exploitation': {'state': 'matched', 'needs_triage': True},
+            'unassessed': ['malicious-release-advisories']}
+        self.assertTrue(daily.observation_complete(result))
+        self.assertEqual(result['coverage'], 'partial')
+        self.assertTrue(result['known_exploitation']['needs_triage'])
+        for key in ('public_advisories', 'known_exploitation'):
+            result[key]['state'] = 'unavailable'
+            self.assertFalse(daily.observation_complete(result))
+            result[key]['state'] = 'matched'
+        result['targets']['pixin']['applications']['state'] = 'unavailable'
+        self.assertFalse(daily.observation_complete(result))
+        result['targets'] = {}
+        self.assertFalse(daily.observation_complete(result))
+
     def test_current_cleanup_and_browser_success_survive_pending_advisory_triage(self):
         names = ['pixin', 'calipso', 'c-137', 'noodles']
         config = {'targets': [{'id': 'host', 'instance': None}] +

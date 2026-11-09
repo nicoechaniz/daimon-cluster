@@ -529,6 +529,25 @@ class OwnerGroupClient:
             'command_sha256': digest(command)}
 
 
+def _base_observation(value: dict) -> dict:
+    """The qualified owner authenticated this exact base socket/process."""
+    from .owner_process import validate_process, PresenceError
+    try:
+        process = validate_process(value['process'])
+        if (value.get('schema') != 'cluster-receiving-base-observation/v1'
+                or value.get('receiving_readiness') != 'unobserved'
+                or not isinstance(value['server'], dict) or not value['server']
+                or value['runtime_status']['local_origin'] != value['server']
+                or value['runtime_status']['loaded_runtime']['process_id'] != process['pid']
+                or value['runtime_status']['loaded_runtime']['runtime_bundle_sha256'] != value['runtime_sha256']):
+            raise ValueError
+        if 'admission_parent' in value:
+            validate_process(value['admission_parent'])
+    except (KeyError, TypeError, ValueError, PresenceError):
+        raise OnboardingError('receiving_base_owner_observation_conflict') from None
+    return value
+
+
 class GuestGroupClient:
     """Host adapter to receiving-owner controls without opening guest custody.
 
@@ -568,6 +587,9 @@ class GuestGroupClient:
         if self.deadline_ns is not None and time.monotonic_ns() >= self.deadline_ns:
             raise OnboardingError('receiving_owner_deadline_expired')
         return result
+
+    def base_status(self) -> dict:
+        return _base_observation(self._call('admitted-running', maintenance=True, base_native=True))
 
     def status(self) -> dict:
         value = self._call('admitted-running', require_loaded=True, current_native=True)
@@ -815,6 +837,9 @@ class SourceGroupClient:
                 or not isinstance(status.get('loaded_application'), dict)):
             raise OnboardingError('receiving_source_owner_observation_conflict')
         return value
+
+    def base_status(self) -> dict:
+        return _base_observation(self._call(['--owner-base-status'], maintenance=True))
 
     def status(self) -> dict:
         return self._observation(self._call(['--owner-status']))

@@ -1517,6 +1517,7 @@ class HostBackend:
                      observation_timeout_seconds: float | None = None,
                      require_loaded: bool = False,
                      current_native: bool = False,
+                     base_native: bool = False,
                      bootstrap_request: dict | None = None,
                      bootstrap_ready_sha256: str | None = None,
                      bootstrap_timeout_seconds: float | None = None,
@@ -1535,6 +1536,9 @@ class HostBackend:
         A host timeout is uncertain observation, never proof of guest exit.
         """
         deadline_ns = None
+        if base_native and (action != 'admitted-running' or require_loaded or current_native
+                or candidate is None or observation_timeout_seconds is None):
+            raise OnboardingError('qualified_onboarding_target_observer_required')
         if current_native and (action != 'admitted-running' or not require_loaded
                 or candidate is None or observation_timeout_seconds is None):
             raise OnboardingError('qualified_onboarding_target_observer_required')
@@ -1652,6 +1656,8 @@ class HostBackend:
             *peer_args, *(['--public-profile-json', json.dumps(profile, separators=(',', ':'))] if profile is not None else [])]
         if require_loaded:
             arguments += ['--require-loaded']
+        if base_native:
+            arguments += ['--base-native']
         if current_native:
             arguments += ['--current-native']
         if control_file is not None:

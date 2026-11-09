@@ -75,8 +75,9 @@ class MembershipPause(_OwnedServicePause):
 
     Use only within the original admission operation and fixed-unit selection
     lock. A live coordinator must restore in finally; supervised callers must
-    also invoke recover on process exit. This class alone is not a crash-safe
-    command supervisor and is not yet wired into the provisioning worker.
+    use the finite root guard to survive coordinator loss. The original
+    coordinator selects that guard explicitly; this class alone is not a
+    crash-safe command supervisor.
     """
     def __init__(self, journal: OperationJournal, parent: str, binding: str,
                  manager: MembershipManager):
@@ -154,6 +155,13 @@ def _serve_scope(pause: MembershipPause, reader: int, writer: int, *, deadline_n
         # has a separate bounded reserve and does not re-author any membership.
         for number in previous_handlers:
             signal.signal(number, signal.SIG_IGN)
+        # A lost controller can leave separate native owner CLI processes
+        # holding writers until their original receiving deadlines. Explicit
+        # close follows their observed exit; EOF/TERM must first let that fixed
+        # horizon elapse. Never restart the daemon into a still-owned writer.
+        if held and not acknowledged:
+            while time.monotonic_ns() < deadline_ns:
+                time.sleep(min(.1, (deadline_ns - time.monotonic_ns()) / 1_000_000_000))
         manager.deadline_ns = time.monotonic_ns() + int(cleanup_seconds * 1_000_000_000)
         try:
             pause.restore()
@@ -210,7 +218,13 @@ def main(argv=None, *, manager_factory=MembershipManager) -> int:
             pause = MembershipPause(journal, args.operation_id, args.binding_sha256, manager)
             manager.deadline_ns = time.monotonic_ns() + 90_000_000_000
             pending = pause._latest_open() is not None
-            pause.recover()
+            previous_handlers = {number: signal.signal(number, signal.SIG_IGN)
+                for number in (signal.SIGTERM, signal.SIGHUP)}
+            try:
+                pause.recover()
+            finally:
+                for number, previous in previous_handlers.items():
+                    signal.signal(number, previous)
             if args.recover_only:
                 print(json.dumps(dict(schema='cluster-membership-maintenance-recovery/v1',
                     recovered=pending, receiving_readiness='unobserved')))

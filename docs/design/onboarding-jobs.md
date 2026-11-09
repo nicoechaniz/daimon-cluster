@@ -1265,9 +1265,9 @@ existing fixed-unit selection lock and keeps the original admission job/grant.
 
 The maintained maintenance artifact now includes an internal finite root helper
 (`clusterctl.onboarding_membership_maintenance`), not a new grant, timer or
-standalone recovery service. It is not yet wired into provisioning: compose it
-with the original coordinator and qualify the actual receiver routes before
-selecting the full worker. No production Matrix stop/restart or new membership
+standalone recovery service. It is composed through the original coordinator under the explicit protected
+`membership_maintenance` selection described below. Qualify the actual receiving
+helper/transport before selecting the full fleet worker. No production Matrix stop/restart or new membership
 dispatch was performed to qualify this building block.
 
 The current Source service's authenticated native child and actual manager parent
@@ -1326,3 +1326,70 @@ expired-deadline recovery and capacity refusal without pruning. Native transport
 qualification captured the original root/clock request but deliberately retained
 the test user's unprivileged UID; it is source/fixture evidence, not a real remote
 Matrix stop or full worker receiving acceptance.
+
+### Original coordinator composes membership preservation
+
+Optional `membership_maintenance[PLAN_DIGEST]` in the existing protected group
+policy selects `cluster-membership-maintenance/v1` with an `owners` map. Each
+exact required owner selects public helper `code`/`code_digest` and its own
+root-private `journal`. At most16 plan recipes/16 owners are admitted. The helper
+must be a verified successor of the original owner code and include both scope
+and maintenance modules. This is the existing operator's explicit interruption
+selection, not an extra human approval, new identity, remote grant or scheduler.
+Older operations with no selection retain their original external-maintenance
+route; they do not silently acquire stop effects from newer code.
+
+`advance_membership_only` retains the recipe and original-operation binding
+before the first new pause. Public code placement and original pending recovery
+finish for every participant before any fresh pause is requested. Per-body
+preparation/guard admission uses the existing finite worker pool (maximum16),
+not serial manual launchers. Source uses its existing local root execution;
+native/VM/Incus use their already granted, placement-bound root transport. Only
+the original protected plan/grant/consent, owner configuration and operation may
+proceed. Code placement prepares public files, never another selected runtime,
+identity/account, native model or invitation.
+
+The new own base observations use the existing authenticated `matrix.sock`
+reader and actual process association. Source `--owner-base-status` and guest
+`admitted-running --base-native` require qualified code/SDK and a finite deadline,
+compare actual loaded runtime/bundle and local origin, and recheck public bundle
+and original plan afterward. Neither requires a published group, loaded chat
+application, Telegram token or outbound installation. Guest observes its actual
+kernel parent; root maintenance separately verifies the same-unit cgroup. These
+observations are process/identity preparation, never group readiness.
+
+The same CohortController executes retained signed membership under its existing
+all-required native writer barrier. Guard admission/checks do not assert those
+writers: they only prove the fixed service is paused. Native writer sessions
+close before guard restoration and before coordinator completion. Lost controller
+EOF/TERM waits through the original execution horizon before restarting services,
+because separate native owner sessions may still hold writers until that horizon.
+Normal acknowledged close follows observed native exit and restores immediately.
+The close reserve remains<=90seconds after the original execution horizon; it
+cannot admit more calls or renew invitation/credential authority.
+
+A retained native membership result requests restoration only, never another
+pause or replay. A completed operation returns its verified original result
+before constructing owners or maintenance guards. If some guard admission fails,
+all successful guards are still closed/restored; unchanged owner runtime selector
+and deadline fields are restored on every path. A native error stays primary
+when restoration is also uncertain, with that recovery gap explicitly retained.
+A successful native phase with unobserved restoration does not complete the
+coordinator. Preserve its original journal and resume its recovery.
+
+The helper journal keeps its existing15MiB new-pause threshold plus1MiB cleanup
+reserve; check frames create no rows. Keep at most the selected16 recipes and
+own journals, with protected original operations at capacity. Remove a recipe
+to prevent fresh stops; retained original recovery remains necessary and cannot
+be replaced with a new journal. Public candidate preparation remains under the
+existing receiver512MiB cap/current+rollback policy. No automatic deletion of
+originals or child state is implied.
+
+Source/fixture validation covers partial prepare/recover/pause/check/restore
+failures, original recipe changes, close ordering, already-completed retry with
+no owner acquisition, base reads without a selected group and changed public
+identity refusal. This integration has not yet been selected on the current
+fleet or proved as a complete fresh-companion command. Actual receiving helper
+qualification, receive grants/current readers, explicit KVM creation/network and
+whole-command acceptance remain. Preserve the four completed enrollments and
+Emma hold; never reenroll them to exercise this path.

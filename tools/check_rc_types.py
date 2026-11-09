@@ -42,6 +42,7 @@ FILES = (
     "clusterctl/receiving_maintenance.py",
     "clusterctl/receiving_worker.py",
     "clusterctl/onboarding_membership_maintenance.py",
+    "clusterctl/onboarding_membership_scope.py",
     "clusterctl/onboarding_owner_control.py",
     "clusterctl/onboarding_target.py",
     "clusterctl/onboarding_existing.py",

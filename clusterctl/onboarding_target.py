@@ -791,6 +791,32 @@ class Target:
                 receiving_readiness='unobserved',
                 responder_association='same-connection' if connected else 'legacy-probe')
 
+    def base_running(self, *, deadline_ns: int | None) -> dict:
+        """Own admitted base observation independent of group publication."""
+        if type(deadline_ns) is not int or deadline_ns <= time.monotonic_ns():
+            raise OnboardingError('onboarding_observation_deadline_expired')
+        from .onboarding_receiving_update import OwnerGroupClient
+        from .owner_process import ParentProcessPresence
+        root = self.package / 'runtime'
+        binding = document(self.root / 'plan.json')
+        if binding != self._binding():
+            raise OnboardingError('current_onboarding_target_required')
+        bundle = self.document_bundle()
+        with OwnerGroupClient(root, root / 'matrix.sock', deadline_ns=deadline_ns) as owner:
+            current = owner.base_status()
+            loaded = current['runtime_status'].get('loaded_runtime')
+            if (current['server'] != bundle['local_origin']
+                    or current['runtime_status'].get('local_origin') != current['server']
+                    or not isinstance(loaded, dict)
+                    or loaded.get('runtime_bundle_sha256') != digest(bundle)
+                    or loaded.get('process_id') != current['process']['pid']):
+                raise OnboardingError('receiving_control_process_changed')
+            with ParentProcessPresence(current['process']) as parent:
+                if (self.document_bundle() != bundle or document(self.root / 'plan.json') != binding):
+                    raise OnboardingError('receiving_control_process_changed')
+                parent.verify()
+                return dict(current, admission_parent=parent.process, runtime_sha256=digest(bundle))
+
     def current_running(self, *, deadline_ns: int | None) -> dict:
         """Observe an admitted preservation update without replaying onboarding.
 
@@ -929,6 +955,7 @@ def main(argv: list[str] | None = None) -> int:
     visibility.add_argument("--visibility-installation", type=Path)
     parser.add_argument("--ready-fd", type=int)
     parser.add_argument('--require-loaded', action='store_true')
+    parser.add_argument('--base-native', action='store_true')
     parser.add_argument('--current-native', action='store_true',
         help='observe an already admitted qualified maintenance selection')
     parser.add_argument('--observation-timeout-seconds', type=float)
@@ -959,6 +986,9 @@ def main(argv: list[str] | None = None) -> int:
             expected_initial_context = initial_context(json.loads(args.initial_context_json))
         controlling = args.action in {'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply'}
         identity_query = args.action == 'receiving-identity'
+        if args.base_native and (args.action != 'admitted-running' or args.require_loaded or args.current_native
+                or args.observation_timeout_seconds is None and args.observation_deadline_ns is None):
+            raise OnboardingError('qualified_onboarding_target_observer_required')
         if args.current_native and (args.action != 'admitted-running' or not args.require_loaded
                 or args.observation_timeout_seconds is None and args.observation_deadline_ns is None):
             raise OnboardingError('qualified_onboarding_target_observer_required')
@@ -1212,7 +1242,8 @@ def main(argv: list[str] | None = None) -> int:
                                 ready_descriptor=args.ready_fd)
         if args.action in {"running", "admitted-running"}:
             stage = 'native-observation'
-            observed = (target.current_running(deadline_ns=observation_deadline_ns) if args.current_native
+            observed = (target.base_running(deadline_ns=observation_deadline_ns) if args.base_native
+                else target.current_running(deadline_ns=observation_deadline_ns) if args.current_native
                 else target.running(admitted=args.action == 'admitted-running',
                 require_loaded=args.require_loaded,
                 deadline_ns=observation_deadline_ns))

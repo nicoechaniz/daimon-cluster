@@ -181,8 +181,8 @@ def test_killed_controller_closes_pipe_and_guard_restores_same_owned_stop(tmp_pa
     controller = '''
 import json,subprocess,sys,time
 from clusterctl.onboarding_group_session import OwnerConversation
-argv=[sys.executable,'-B','-m','tests.membership_guard_fixture',sys.argv[1],str(time.monotonic_ns()+10_000_000_000),'0']
-with OwnerConversation(argv,{'observation':{'process':{'fixture':True}}},deadline_ns=time.monotonic_ns()+10_000_000_000,cleanup_seconds=3) as session:
+argv=[sys.executable,'-B','-m','tests.membership_guard_fixture',sys.argv[1],str(time.monotonic_ns()+1_500_000_000),'0']
+with OwnerConversation(argv,{'observation':{'process':{'fixture':True}}},deadline_ns=time.monotonic_ns()+1_500_000_000,cleanup_seconds=3) as session:
  print(json.dumps({'guard_pid':session.process.pid}),flush=True)
  time.sleep(30)
 '''
@@ -196,6 +196,10 @@ with OwnerConversation(argv,{'observation':{'process':{'fixture':True}}},deadlin
         assert json.loads((tmp_path / 'manager.json').read_text())['state']['state'] == 'inactive'
         parent.kill()  # No interpreting-turn finally or explicit release runs.
         assert parent.wait(timeout=5) == -signal.SIGKILL
+        # Separate native owner sessions may retain writers to the original
+        # horizon. Controller death must not restart into that bounded window.
+        assert not select.select([guard_fd], [], [], .15)[0]
+        assert json.loads((tmp_path / 'manager.json').read_text())['state']['state'] == 'inactive'
         assert select.select([guard_fd], [], [], 5)[0]
         value = json.loads((tmp_path / 'manager.json').read_text())
         assert value['state']['state'] == 'active' and value['stops'] == value['starts'] == 1
@@ -273,7 +277,7 @@ def test_scope_term_restores_before_process_exit(tmp_path):
     import sys
     import time
     from clusterctl.onboarding_group_session import OwnerConversation
-    deadline = time.monotonic_ns() + 5_000_000_000
+    deadline = time.monotonic_ns() + 1_000_000_000
     with OwnerConversation([sys.executable, '-B', '-m', 'tests.membership_guard_fixture',
             str(tmp_path), str(deadline), '0'], {'observation': {'process': {'fixture': True}}},
             deadline_ns=deadline, cleanup_seconds=3) as session:

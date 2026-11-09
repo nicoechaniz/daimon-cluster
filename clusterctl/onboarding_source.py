@@ -456,6 +456,23 @@ class Source:
                 raise OnboardingError('receiving_source_process_changed')
             return {**current, 'group': observed['group']}
 
+    def base_receiving_observation(self, *, deadline_ns: int) -> dict:
+        """Authenticate the own base runtime without a selected group."""
+        from .onboarding_receiving_update import OwnerGroupClient
+        from .onboarding_target import document
+        bundle = document(self.root / 'runtime.json')
+        with OwnerGroupClient(self.root, self.root / 'matrix.sock', deadline_ns=deadline_ns) as owner:
+            current = owner.base_status()
+            loaded = current['runtime_status'].get('loaded_runtime')
+            if (current['server'] != bundle['local_origin']
+                    or current['runtime_status'].get('local_origin') != current['server']
+                    or not isinstance(loaded, dict)
+                    or loaded.get('runtime_bundle_sha256') != digest(bundle)
+                    or loaded.get('process_id') != current['process']['pid']
+                    or document(self.root / 'runtime.json') != bundle):
+                raise OnboardingError('receiving_source_process_changed')
+            return dict(current, runtime_sha256=digest(bundle))
+
     def receiving_control(self, action: str, path: Path, *, command: dict | None = None,
                           deadline_ns: int | None = None) -> dict:
         from .onboarding_receiving_update import owner_control
@@ -586,6 +603,7 @@ def main(argv=None) -> int:
     control.add_argument('--prepare-apply-control', type=Path)
     parser.add_argument('--control-command', type=Path)
     parser.add_argument('--owner-status', action='store_true')
+    parser.add_argument('--owner-base-status', action='store_true')
     parser.add_argument('--qualified-identity', action='store_true')
     parser.add_argument('--identity-expires-at-ms', type=int)
     parser.add_argument('--native-tooling-json')
@@ -634,8 +652,8 @@ def main(argv=None) -> int:
         if args.native_tooling_json is not None and (not args.qualified_identity
                 or len(args.native_tooling_json.encode()) > 65536):
             raise OnboardingError('receiving_native_tooling_recipe_required')
-        receiving = args.owner_status or args.qualified_identity or controlling or lifecycle or grouping or preparing
-        if (sum((args.observe, args.owner_status, args.qualified_identity, controlling, lifecycle, grouping, preparing)) > 1
+        receiving = args.owner_status or args.owner_base_status or args.qualified_identity or controlling or lifecycle or grouping or preparing
+        if (sum((args.observe, args.owner_status, args.owner_base_status, args.qualified_identity, controlling, lifecycle, grouping, preparing)) > 1
                 or (lifecycle or preparing or args.group_session) != (args.operation_journal is not None)
                 or args.group_session and (not grouping or args.group_request != Path('-'))
                 or args.lifecycle_action is not None and not lifecycle
@@ -644,10 +662,10 @@ def main(argv=None) -> int:
                 or (lifecycle or preparing) and (args.ready_fd is not None or args.require_loaded)
                 or args.qualified_identity != (args.identity_expires_at_ms is not None)
                 or args.identity_expires_at_ms is not None and not 0 < args.identity_expires_at_ms < 2**53
-                or (args.owner_status or args.qualified_identity or grouping) and (args.ready_fd is not None or args.require_loaded)
+                or (args.owner_status or args.owner_base_status or args.qualified_identity or grouping) and (args.ready_fd is not None or args.require_loaded)
                 or args.observation_deadline_ns is not None and not receiving):
             raise OnboardingError('invalid_receiving_control_request')
-        if (args.owner_status or args.qualified_identity or lifecycle or grouping or preparing) and args.observation_deadline_ns is None:
+        if (args.owner_status or args.owner_base_status or args.qualified_identity or lifecycle or grouping or preparing) and args.observation_deadline_ns is None:
             args.observation_deadline_ns = time.monotonic_ns() + 30_000_000_000
         def accept_deadline():
             if args.observation_deadline_ns is not None and time.monotonic_ns() >= args.observation_deadline_ns:
@@ -770,6 +788,11 @@ def main(argv=None) -> int:
             accept_deadline()
             result = source.receiving_control(action, path, command=command,
                 **({} if args.observation_deadline_ns is None else {'deadline_ns': args.observation_deadline_ns}))
+            accept_deadline()
+            print(json.dumps(result))
+            return 0
+        if args.owner_base_status:
+            result = source.base_receiving_observation(deadline_ns=args.observation_deadline_ns)
             accept_deadline()
             print(json.dumps(result))
             return 0

@@ -139,8 +139,8 @@ class OwnerConversation:
         # window; it permits the existing close handshake to observe restoration.
         close_deadline = self.deadline_ns
         if self.cleanup_seconds:
-            close_deadline = max(close_deadline,
-                time.monotonic_ns() + int(self.cleanup_seconds * 1_000_000_000))
+            close_deadline = max(close_deadline, time.monotonic_ns()) + int(
+                self.cleanup_seconds * 1_000_000_000)
             if self.frames is not None:
                 self.frames.deadline_ns = close_deadline
         failed = False

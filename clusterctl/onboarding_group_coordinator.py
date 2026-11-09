@@ -322,7 +322,7 @@ def configuration(path: Path) -> dict:
     """
     value = being_seed._read(path, limit=being_seed.MAX_SELECTION)
     try:
-        if (set(value) - {'continuations', 'membership_requests', 'membership_preparations'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
+        if (set(value) - {'continuations', 'membership_requests', 'membership_preparations', 'membership_maintenance'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
                 or value['schema'] != SCHEMA or not _path(value['journal'])
                 or not isinstance(value['tribe_ref'], str) or not value['tribe_ref']
                 or not isinstance(value['owners'], dict) or len(value['owners']) > 256
@@ -389,6 +389,14 @@ def configuration(path: Path) -> dict:
                 raise ValueError
         if len({row['state'] for row in preparations.values()}) != len(preparations):
             raise ValueError
+        maintenance = value.get('membership_maintenance', {})
+        if not isinstance(maintenance, dict) or len(maintenance) > 16:
+            raise ValueError
+        from .onboarding_membership_scope import configuration as maintenance_configuration
+        for pin, selected in maintenance.items():
+            if (not isinstance(pin, str) or re.fullmatch('[0-9a-f]{64}', pin) is None):
+                raise ValueError
+            maintenance_configuration(selected, value['owners'])
     except (KeyError, TypeError, ValueError, AttributeError, OnboardingError):
         raise OnboardingError('onboarding_group_coordinator_configuration_required') from None
     return value
@@ -1586,12 +1594,11 @@ class GroupCoordinator:
                     **({'lifecycle_prepared': True} if lifecycles else {}))
 
     def advance_membership_only(self, name: str, *, timeout_seconds: float = 60) -> dict | None:
-        """Record signed membership using the existing original jobs/owners.
+        """Resume original signed membership, optionally owning finite Matrix preservation.
 
-        The protected operation explicitly selects this phase. It requires all
-        actual native writer sessions, so physical Matrix stop/start remains the
-        caller's scoped maintenance; no group, Telegram, controller issue or
-        outbound publication is introduced or inferred here.
+        Old operations gain no interruption by observing newer software. The
+        protected policy explicitly selects the helper recipe; completed native
+        membership never repeats a pause. Outbound publication remains separate.
         """
         if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 60:
             raise OnboardingError('receiving_host_deadline_required')
@@ -1602,18 +1609,50 @@ class GroupCoordinator:
             return None
         journal, row, admission = bound
         with journal.mutation_lock(row['operation_id']):
-            with self._job_scope(plan):
-                _journal, row, admission = self._binding(plan)
-                if row['intended_transition'].get('membership_only') != {
-                        'schema': 'cluster-native-membership-only/v1'}:
-                    raise OnboardingError('onboarding_group_membership_only_intent_required')
-                owners = self._owners(admission)
+            _journal, row, admission = self._binding(plan)
+            if row['intended_transition'].get('membership_only') != {
+                    'schema': 'cluster-native-membership-only/v1'}:
+                raise OnboardingError('onboarding_group_membership_only_intent_required')
             if row['state'] == 'completed':
-                return finish_membership_only(journal, row, row['result'])
+                with self._job_scope(plan):
+                    return finish_membership_only(journal, row, row['result'])
+            owners = self._owners(admission)
             from .onboarding_receiving_update import CohortController
-            result = CohortController(journal, row['operation_id'], owners).admit_membership_only(
-                deadline_ns=deadline)
-            return finish_membership_only(journal, journal.get(row['operation_id']), result)
+            from .onboarding_membership_scope import preserved
+            from contextlib import nullcontext
+            original_id = row['operation_id']
+            pin = digest(plan)
+            selected = self.settings.get('membership_maintenance', {}).get(pin)
+            retained = (row['runtime_observation'] or {}).get('membership_maintenance')
+            recipe = selected if retained is None else retained['recipe']
+            native_result = (row['runtime_observation'] or {}).get('membership_admission', {}).get('result')
+            def authorized():
+                # Independent guards validate concurrently. Atomic plan/grant
+                # files and original journal binding are read here; the caller
+                # retains the operation's mutation lock, never parallel jobs locks.
+                current = self.store._load(name)
+                if (current['plan'] != plan or not self.backend.authorize(plan, pin)
+                        or not self.backend._consented(plan, stage='matrix')
+                        or self.backend._decision(plan) is None or not self.backend._ceremony(plan).authorize(plan)):
+                    raise OnboardingError('host_authorization_required')
+                fresh = configuration(self.path)
+                if (fresh['admissions'].get(pin) != original_id
+                        or fresh.get('owners') != self.settings.get('owners')
+                        or fresh.get('tribe_ref') != self.settings.get('tribe_ref')
+                        or fresh.get('membership_maintenance', {}).get(pin) != selected):
+                    raise OnboardingError('membership_maintenance_original_changed')
+                if recipe is not None and selected != recipe and native_result is None:
+                    raise OnboardingError('membership_maintenance_original_changed')
+            # A previously retained result needs only outstanding restoration;
+            # do not pause services again merely to close its original row.
+            guarded = recipe is not None and (native_result is None or retained is not None)
+            scope = (preserved(owners, recipe, journal=journal, row=row, deadline_ns=deadline,
+                validate=authorized, restore_only=native_result is not None) if guarded else nullcontext(lambda: None))
+            with scope as check:
+                authorized()
+                check()
+                result = CohortController(journal, original_id, owners).admit_membership_only(deadline_ns=deadline)
+            return finish_membership_only(journal, journal.get(original_id), result)
 
     def _prepare_communication(self, plan, journal, row, admission, owner, *, deadline_ns: int) -> None:
         """Retain the entrant's schema phase after controller tree publication.

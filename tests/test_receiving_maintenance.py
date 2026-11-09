@@ -505,6 +505,22 @@ def test_source_worker_retains_validated_expansion_in_supported_route(tmp_path, 
     assert len(OperationJournal(spec['source']['journal']).list_all()) == 1
 
 
+def test_source_worker_rejects_old_schema_validator_before_lifecycle_preparation(tmp_path, monkeypatch):
+    import os
+    from pathlib import Path
+    spec = spec_fixture(tmp_path)
+    spec['candidate']['code'] = str(tmp_path / 'successor')
+    spec['source'].update(uid=os.geteuid(), gid=os.getegid())
+    monkeypatch.setattr(maintenance, '__file__', str(Path(spec['observer']['code']) / 'clusterctl/receiving_maintenance.py'))
+    monkeypatch.setattr(maintenance, '_sdk', lambda code, *_:
+        ({'matrix': 'old' if str(code) == spec['observer']['code'] else 'new'}, {}))
+    monkeypatch.setattr(maintenance, '_owner_paths', lambda *_args, **_kwargs:
+        pytest.fail('entered lifecycle preparation with an incompatible validator'))
+    with pytest.raises(OnboardingError, match='receiving_control_binding_conflict'):
+        maintenance.source_worker(spec, 'prepare')
+    assert not Path(spec['source']['journal']).exists()
+
+
 def test_source_adapter_drops_privileges_before_private_interpreter_and_never_reads_it(tmp_path, monkeypatch):
     import stat
     from pathlib import Path

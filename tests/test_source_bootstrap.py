@@ -4,6 +4,7 @@ Actual signed capability/visibility/native-process qualification is separate.
 """
 import copy
 import hashlib
+import json
 import os
 import time
 from contextlib import contextmanager
@@ -933,3 +934,75 @@ def test_wrong_admission_tribe_refuses_before_source_quiescence(fixture, monkeyp
     with pytest.raises(OnboardingError, match='admission_tribe_changed'):
         SourceBootstrapController(controller.journal, row['operation_id'], controller.source, manager).quiesce()
     assert manager.live and manager.stops == 0
+
+
+@pytest.mark.parametrize('failure', ['lost-response', 'wrong-binding', None])
+def test_source_catalog_migration_retains_exact_receipt_before_selection(fixture, monkeypatch, failure):
+    from clusterctl import onboarding_receiving_update as updates
+    source, manager, journal, identifier, _ = fixture
+    installation = {'document': {'policy': {'fixture': 'published policy'}}, 'binding': {}}
+    being_seed._write(source.visibility, installation)
+    controller = SourceBootstrapController(journal, identifier, source, manager)
+    frozen = journal.get(identifier)['expected_precondition']['source_bootstrap']
+    group = dict(selected={'visibility': str(source.visibility)}, application_sha256='1'*64,
+        publication_sha256='2'*64, installation_sha256=digest(installation['document']))
+    candidate = dict(argv=['/selected/sdk/python', '/selected/imports', 'clusterctl.onboarding_source'],
+        qualification={'group': group})
+    original_unit = manager.unit.read_bytes()
+    calls = []
+    def run(argv, **options):
+        calls.append(argv)
+        assert argv[:3] == candidate['argv']
+        assert argv[3:5] == ['--visibility-migration', '-']
+        assert 0 < options['timeout'] <= 30
+        request = json.loads(options['input'])
+        assert request['operation_id'] == identifier
+        assert request['origin'] == frozen['predecessor']['server']
+        if failure == 'lost-response' and len(calls) == 1:
+            raise updates.subprocess.TimeoutExpired(argv, options['timeout'])
+        result = {key:value for key,value in request.items() if key != 'origin'}
+        result.update(schema='cluster-native-visibility-migrated/v1', catalog_schema_version=2)
+        if failure == 'wrong-binding':
+            result['runtime_sha256'] = 'f'*64
+        return SimpleNamespace(returncode=0, stdout=json.dumps(result))
+    monkeypatch.setattr(updates, '_run_owner', run)
+    if failure:
+        with pytest.raises(OnboardingError, match='migration_'):
+            controller._migrate_catalogs(frozen, candidate, deadline_ns=time.monotonic_ns()+1_000_000_000)
+        assert 'catalogs_migrated' not in (journal.get(identifier)['runtime_observation'] or {}).get('source_bootstrap', {})
+        if failure == 'wrong-binding':
+            return
+    controller._migrate_catalogs(frozen, candidate, deadline_ns=time.monotonic_ns()+1_000_000_000)
+    count = len(calls)
+    controller._migrate_catalogs(frozen, candidate, deadline_ns=time.monotonic_ns()+1_000_000_000)
+    assert len(calls) == count  # A confirmed receipt never dispatches another child.
+    receipt = journal.get(identifier)['runtime_observation']['source_bootstrap']['catalogs_migrated']
+    assert receipt['catalog_schema_version'] == 2 and receipt['operation_id'] == identifier
+    assert manager.unit.read_bytes() == original_unit and manager.stops == 0
+
+
+def test_preserved_source_migration_failure_prevents_unit_selection(fixture, monkeypatch):
+    from clusterctl import onboarding_receiving_update as updates
+    source, manager, journal, _, _ = fixture
+    original = journal.list_all()[0]
+    before, after = copy.deepcopy(original['expected_precondition']), copy.deepcopy(original['intended_transition'])
+    frozen = before['source_bootstrap']
+    pins = dict(runtime_sha256=frozen['bundle_sha256'], origin=frozen['predecessor']['server'])
+    frozen.update(mode='preserve', preservation=pins)
+    after['source_bootstrap']['qualification'] = {'group': {}}
+    row = plan_update(journal, manifest_digest='a'*64, target='source:migration-before-selection',
+        expected_precondition=before, intended_transition=after, audit_identity={'actor':'fixture'})
+    controller = SourceBootstrapController(journal, row['operation_id'], source, manager)
+    monkeypatch.setattr(controller, '_qualify_candidate', lambda *_: {})
+    monkeypatch.setattr(updates, 'controller_preservation', lambda *_: pins)
+    monkeypatch.setattr(updates, 'preservation_authorization', lambda *_: None)
+    controller.quiesce()
+    original_unit = manager.unit.read_bytes()
+    def migration(*_, **__):
+        assert not manager.live
+        raise OnboardingError('native_code_update_migration_unconfirmed')
+    monkeypatch.setattr(controller, '_migrate_catalogs', migration)
+    with pytest.raises(OnboardingError, match='migration_unconfirmed'):
+        controller.publish()
+    assert manager.unit.read_bytes() == original_unit
+    assert 'unit_selected' not in journal.get(row['operation_id'])['runtime_observation']['source_bootstrap']

@@ -1087,6 +1087,10 @@ def test_source_preserves_real_native_controller_and_visibility(preserved_fixtur
         intended_transition={'source_bootstrap': candidate}, audit_identity={'actor': 'fixture'})
     controller = receiving_update.SourceBootstrapController(journal, row['operation_id'], source, manager)
     monkeypatch.setattr(controller, '_qualify_candidate', lambda *_: {'fixture': 'code qualification seam'})
+    # This test uses a fictional loader/visibility observation and verifies
+    # real native preservation. Signed cross-version migration is qualified
+    # separately in test_onboarding_source, not through this fake executable.
+    monkeypatch.setattr(controller, '_migrate_catalogs', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(receiving_update, 'source_bootstrap_group', lambda *_: copy.deepcopy(group))
     controller._record('quiesced', {'exit_observed': True})
     before, visible = files(root), visibility.read_bytes()

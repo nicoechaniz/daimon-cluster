@@ -74,6 +74,7 @@ _DIAGNOSTIC_CODES = frozenset({
     'seed_operation_in_progress', 'qualified_runtime_module_required',
     'native_code_maintenance_spec_required', 'native_code_maintenance_root_required',
     'native_code_maintenance_existing_body_required', 'receiving_host_deadline_expired',
+    'native_code_update_migration_unconfirmed', 'native_code_update_migration_binding_changed',
     'receiving_reader_owner_unavailable', 'receiving_reader_owner_import_unavailable',
     'receiving_current_reader_binding_required', 'receiving_code_update_receipt_required',
     'receiving_reader_checkpoint_unresolved',

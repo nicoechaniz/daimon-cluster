@@ -196,7 +196,7 @@ def source_worker(spec: dict, action: str) -> dict:
     observer, fingerprint = _artifact(spec['observer'])
     if Path(__file__).resolve().parents[1] != observer:
         raise OnboardingError('qualified_receiving_observer_required')
-    _sdk(observer, fingerprint)
+    observer_sdk, _ = _sdk(observer, fingerprint)
     if action == 'prepare-sdk':
         installed = set()
         for selection in (spec['observer'], candidate):
@@ -209,6 +209,12 @@ def source_worker(spec: dict, action: str) -> dict:
                 code_uid=0, **parameters)
             onboarding_sdk.runtime_imports(venv, code, code_uid=0, **parameters)
         return {'sdk_prepared': True, 'services_changed': 0}
+    # Publication validates the preserved runtime after catalog migration.
+    # Its controller must therefore use the same SDK as the selected successor,
+    # not an older validator which cannot read the newly migrated schema.
+    candidate_sdk, _ = _sdk(*_artifact({key: candidate[key] for key in ('code', 'code_digest')}))
+    if observer_sdk != candidate_sdk:
+        raise OnboardingError('receiving_control_binding_conflict')
     code, venv, imports = _owner_paths(spec, observer=True)
     _, parameters = _sdk(code, fingerprint)
     if Path(sys.prefix) != venv or not onboarding_sdk.startup_context(venv, imports, code):

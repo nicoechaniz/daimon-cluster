@@ -11,6 +11,7 @@ import copy
 import os
 import re
 import sys
+import stat
 import time
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
@@ -28,6 +29,7 @@ PUBLIC_ERRORS = frozenset({
     'receiving_control_binding_conflict', 'receiving_control_fresh_request_expired',
     'receiving_owner_scope_required', 'receiving_control_not_accepted',
     'receiving_control_completion_uncertain', 'receiving_group_socket_changed',
+    'receiving_control_superseded', 'receiving_control_auth_capacity', 'receiving_control_private_file_required',
     'invalid_receiving_control_request', 'daemon_response_truncated',
     'daemon_deadline_expired', 'daemon_timeout',
 })
@@ -219,6 +221,151 @@ def qualified_identity(owner: OwnerGroupClient, *, expected: dict[str, Any],
         return current
 
 
+
+
+def write_control_record(path: Path, value: dict, *, control_path: Path | None = None) -> None:
+    """Bound this control's records and interrupted atomic staging before write.
+
+    The existing private directory lock serializes publication. Unfinished
+    temporary files are counted and preserved; capacity refuses new data rather
+    than letting repeated hard-deadline interruptions accumulate without bound.
+    """
+    canonical = path if control_path is None else control_path
+    history = 'auth-'+digest(dict(control_file=canonical.name))+'.json'
+    raw = json.dumps(value, sort_keys=True).encode()
+    if len(raw) > being_seed.MAX_SELECTION:
+        raise OnboardingError('receiving_control_auth_capacity')
+    total = 0
+    for index, entry in enumerate(canonical.parent.iterdir()):
+        if index >= 4096:
+            raise OnboardingError('receiving_control_auth_capacity')
+        if any(entry.name == name or entry.name.startswith(name+'.') for name in (canonical.name, history)):
+            info = entry.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077
+                    or info.st_nlink != 1 or info.st_size > being_seed.MAX_SELECTION):
+                raise OnboardingError('receiving_control_private_file_required')
+            total += info.st_size
+    if total+len(raw) > 8*1024*1024:
+        raise OnboardingError('receiving_control_auth_capacity')
+    being_seed._write(path, value, limit=being_seed.MAX_SELECTION)
+
+def retained_control_request(owner, client, path: Path, retained: dict, observed: dict,
+                             *, renew: bool = False) -> tuple[dict, dict]:
+    """Resume one immutable native CAS with a bounded private auth history.
+
+    Caller holds the existing owner control-directory lock. A new authenticated
+    envelope never changes the command/process/head. Old and new envelopes race
+    on that same native CAS, so at most one can change the gate. Actual known
+    accepted hashes win recovery; uncertain envelopes remain retained privately.
+    """
+    from daimon_matrix.local_api import MAX_CLOCK_SKEW_MS, request_hash
+    def accept():
+        deadline = getattr(owner, 'deadline_ns', None)
+        if deadline is not None:
+            _accept(deadline)
+    command = retained['command']
+    original = retained['request']
+    binding = digest(dict(control_file=path.name, command=command,
+        process=retained['process'], server=retained['server']))
+    history_path = path.parent / ('auth-'+digest(dict(control_file=path.name))+'.json')
+    history = None
+    requests = [original]
+    if history_path.exists():
+        owner._durable_control(history_path)
+        history = being_seed._read(history_path, limit=being_seed.MAX_SELECTION)
+        if (set(history) != {'schema', 'binding_sha256', 'requests'}
+                or history['schema'] != 'cluster-receiving-control-auth/v1'
+                or history['binding_sha256'] != binding
+                or not isinstance(history['requests'], list) or not 1 <= len(history['requests']) <= 16):
+            raise OnboardingError('receiving_control_binding_conflict')
+        requests = history['requests']
+        if original not in requests:
+            raise OnboardingError('receiving_control_binding_conflict')
+    fingerprints = []
+    for request in requests:
+        if (not isinstance(request, dict) or request.get('method') != 'runtime.reader-selection'
+                or request.get('params') != command or request.get('client_id') != original.get('client_id')
+                or type(request.get('issued_at_ms')) is not int):
+            raise OnboardingError('receiving_control_binding_conflict')
+        fingerprints.append(request_hash(request))
+    if len(set(fingerprints)) != len(fingerprints):
+        raise OnboardingError('receiving_control_binding_conflict')
+    def choose(current):
+        if current['process'] != retained['process'] or current['server'] != retained['server']:
+            raise OnboardingError('receiving_control_process_changed')
+        gate = current['gate']
+        if gate.get('request_sha256') in fingerprints:
+            accepted = requests[fingerprints.index(gate['request_sha256'])]
+            if any(gate.get(key) != command.get(key) for key in
+                    ('process_instance_id', 'operation_id', 'release_digest', 'phase', 'readers')):
+                raise OnboardingError('receiving_control_completion_uncertain')
+            return accepted, True
+        if (gate.get('process_instance_id') != command.get('process_instance_id')
+                or gate.get('head') != command.get('expected_head')):
+            raise OnboardingError('receiving_control_superseded')
+        return requests[-1], False
+    request, accepted = choose(observed)
+    now = time.time_ns()//1_000_000
+    if renew and not accepted and now-request['issued_at_ms'] > MAX_CLOCK_SKEW_MS:
+        if getattr(owner, 'deadline_ns', None) is None:
+            raise OnboardingError('receiving_owner_deadline_binding_required')
+        accept()
+        # A stale retained coordinator observation never justifies a refresh.
+        current = owner.status()
+        if _selection(current) != _selection(observed):
+            raise OnboardingError('receiving_control_process_changed')
+        observed = current
+        request, accepted = choose(observed)
+        if not accepted and time.time_ns()//1_000_000-request['issued_at_ms'] > MAX_CLOCK_SKEW_MS:
+            if len(requests) >= 16:
+                raise OnboardingError('receiving_control_auth_capacity')
+            request = client.prepare('runtime.reader-selection', command)
+            if (request.get('method') != 'runtime.reader-selection' or request.get('params') != command
+                    or request.get('client_id') != original.get('client_id')
+                    or request_hash(request) in fingerprints):
+                raise OnboardingError('receiving_control_binding_conflict')
+            requests = [*requests, request]
+            history = dict(schema='cluster-receiving-control-auth/v1',binding_sha256=binding,requests=requests)
+            # Durable renewal intent precedes replacement of the active envelope.
+            if len(json.dumps(history).encode()) > being_seed.MAX_SELECTION:
+                raise OnboardingError('receiving_control_auth_capacity')
+            write_control_record(history_path, history, control_path=path)
+            owner._durable_control(history_path)
+    if request != original and not accepted:
+        accept()
+        write_control_record(path, {**retained, 'request': request})
+        owner._durable_control(path)
+    accept()
+    return request, observed
+
+
+def send_control_request(owner, client, path: Path, retained: dict, observed: dict, *, validate=lambda: None):
+    """Try exact native recovery before renewing any stale authentication.
+
+    A previously admitted, pending RPC can still execute with its original
+    envelope. Only a stale failed exchange reaches fresh native observation and
+    same-CAS renewal. Fresh failures remain uncertain and are never retried here.
+    """
+    from daimon_matrix.client import ClientError
+    from daimon_matrix.local_api import LocalApiError, MAX_CLOCK_SKEW_MS, request_hash
+    request, observed = retained_control_request(owner, client, path, retained, observed)
+    validate()
+    try:
+        return request, observed, client.send(request)
+    except (OSError, ClientError, LocalApiError):
+        if time.time_ns()//1_000_000-request['issued_at_ms'] <= MAX_CLOCK_SKEW_MS:
+            raise
+        previous = request
+        request, observed = retained_control_request(owner, client, path,
+            being_seed._read(path, limit=being_seed.MAX_SELECTION), owner.status(), renew=True)
+        if observed['gate'].get('request_sha256') == request_hash(request):
+            # Authenticated current gate, not an invented RPC acknowledgment.
+            return request, observed, None
+        if request == previous:
+            raise
+        validate()
+        return request, observed, client.send(request)
+
 def execute(owner: OwnerGroupClient, command: dict[str, Any], path: Path, *,
             expected: dict[str, Any], deadline_ns: int,
             observation: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -288,7 +435,7 @@ def execute(owner: OwnerGroupClient, command: dict[str, Any], path: Path, *,
             request = client.prepare('runtime.reader-selection', command)
             retained = dict(schema='cluster-receiving-owner-control/v1', command=command,
                 request=request, process=current['process'], server=current['server'])
-            being_seed._write(path, retained, limit=being_seed.MAX_SELECTION)
+            write_control_record(path, retained)
         else:
             retained = being_seed._read(path, limit=being_seed.MAX_SELECTION)
             if (set(retained) != {'schema', 'command', 'request', 'process', 'server'}
@@ -314,11 +461,29 @@ def execute(owner: OwnerGroupClient, command: dict[str, Any], path: Path, *,
         # LocalClient verifies the response MAC, request hash, runtime and server.
         # SDK0dc reconciles this method against its live CAS/physical fence even
         # on a cached request. A second status is not that stronger proof.
-        response = client.send(request)
+        def before_send():
+            _accept(deadline_ns)
+            if parent is not None:
+                parent.verify()
+            if presence is not None:
+                presence.verify()
+            elif owner._observer is not None:
+                owner._observer.verify()
+        request, current, response = send_control_request(owner, client, path,
+            being_seed._read(path, limit=being_seed.MAX_SELECTION), current, validate=before_send)
         _accept(deadline_ns)
-        if response.get('ok') is not True:
-            raise OnboardingError('receiving_control_not_accepted')
-        gate = response.get('result')
+        if response is None:
+            gate = current['gate']
+        elif response.get('ok') is not True:
+            # A late original envelope may have won the same native CAS.
+            # Reconcile that actual known hash; never reauthor another command.
+            request, current = retained_control_request(owner, client, path,
+                being_seed._read(path, limit=being_seed.MAX_SELECTION), owner.status(), renew=False)
+            if current['gate'].get('request_sha256') != request_hash(request):
+                raise OnboardingError('receiving_control_not_accepted')
+            gate = current['gate']
+        else:
+            gate = response.get('result')
         fingerprint = request_hash(request)
         if (not isinstance(gate, dict)
                 or gate.get('schema') != ('dm.receiving.reader-selection/v2'

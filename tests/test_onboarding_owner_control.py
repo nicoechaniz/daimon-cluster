@@ -546,3 +546,250 @@ def test_new_receiving_identity_uses_fresh_same_response_without_scope_projectio
     response['result']['body']['state'] = 'stopped'
     with pytest.raises(OnboardingError, match='admission_conflict'):
         OwnerGroupClient.identity(owner, require_admitted=True)
+
+
+@pytest.fixture(params=['optimized','classic'])
+def auth_native_control(tmp_path, monkeypatch, request):
+    """Real native HMAC/freshness and gate CAS; no child/model/daemon input."""
+    from daimon_matrix.local_api import authenticate_request
+    from daimon_matrix.native_egress import MandatoryEgressController, NativeEgressError
+    owner, first, expected, command, path, state, calls, listener = fixture(tmp_path)
+    clock=[time.time_ns()]
+    monkeypatch.setattr(time,'time_ns',lambda:clock[0])
+    native=MandatoryEgressController(policy={},proof_key=b'k'*32,transport=None)
+    native.register_reader_channel('tribe','3'*64,controlled=True)
+    state['gate']=native.reader_snapshot('tribe',deadline_ns=time.monotonic_ns()+5_000_000_000)
+    state['process']['pid']=state['gate']['process_id']
+    expected['process']=copy.deepcopy(state['process'])
+    command.update(schema='dm.runtime.reader-selection/v2', phase='revoke',readers=[],
+        expected_head=state['gate']['head'],process_instance_id=state['gate']['process_instance_id'])
+    capability=LocalCapability(dict(schema=CAPABILITY_SCHEMA,capability_id='test-cap',client_id='client:test',
+        key_id='test-key',methods=['runtime.reader-selection'],status='active',not_before_ms=0,
+        not_after_ms=2**53-1),b'x'*32)
+    admitted, sent, effects = set(), [], []
+    fault=[None]
+    class Client:
+        def prepare(self,*args): return first.prepare(*args)
+        def apply(self,request):
+            authenticated,fingerprint=authenticate_request(request,capability,now_ms=clock[0]//1_000_000,
+                allow_stale=request_hash(request) in admitted)
+            admitted.add(fingerprint)
+            before=state['gate']['head']
+            try:
+                accepted=native.select_readers({k:v for k,v in authenticated['params'].items()
+                    if k!='expected_roster_sha256'},request_sha256=fingerprint,
+                    deadline_ns=time.monotonic_ns()+5_000_000_000)
+            except NativeEgressError as error:
+                return dict(ok=False,error=dict(code=str(error)))
+            state['gate']=accepted
+            if accepted['head']!=before:
+                effects.append(fingerprint)
+            return dict(ok=True,result=copy.deepcopy(accepted))
+        def send(self,request):
+            sent.append(copy.deepcopy(request))
+            if fault[0]=='before':
+                fault[0]=None
+                raise OSError('lost before native admission')
+            if fault[0]=='pending':
+                fault[0]=None
+                _,fingerprint=authenticate_request(request,capability,now_ms=clock[0]//1_000_000)
+                admitted.add(fingerprint)
+                raise OSError('lost with native RPC pending before CAS')
+            if fault[0]=='stale-unavailable':
+                fault[0]='original-wins'
+                raise OSError('stale exchange unavailable before pending native CAS')
+            if fault[0]=='original-wins':
+                fault[0]=None
+                assert self.apply(sent[0])['ok'] is True
+            result=self.apply(request)
+            if fault[0]=='after':
+                fault[0]=None
+                raise OSError('lost after native CAS')
+            return result
+    client=Client()
+    owner._client=lambda role:client
+    def execute():
+        if request.param == 'classic':
+            from clusterctl.onboarding_receiving_update import OwnerGroupClient
+            owner._accept_deadline=lambda:control._accept(owner.deadline_ns)
+            owner._prepare_control=lambda c,p:OwnerGroupClient._prepare_control(owner,c,p)
+            owner._apply_control=lambda p:OwnerGroupClient._apply_control(owner,p)
+            return OwnerGroupClient.prepare_apply_control(owner,command,path)
+        return control.execute(owner,command,path,expected=expected,deadline_ns=owner.deadline_ns)
+    try:
+        yield SimpleNamespace(owner=owner,client=client,command=command,path=path,state=state,calls=calls,
+            clock=clock,fault=fault,sent=sent,effects=effects,execute=execute,capability=capability)
+    finally:
+        listener.close()
+
+
+def test_expired_unadmitted_envelope_renews_same_native_cas_without_losing_original(auth_native_control):
+    from daimon_matrix.local_api import authenticate_request,LocalApiError
+    from clusterctl import being_seed
+    f=auth_native_control
+    f.fault[0]='before'
+    with pytest.raises(OSError):
+        f.execute()
+    original=being_seed._read(f.path)
+    f.clock[0]+=31_000_000_000
+    with pytest.raises(LocalApiError,match='authentication_failed'):
+        authenticate_request(original['request'],f.capability,now_ms=f.clock[0]//1_000_000)
+    result=f.execute()
+    current=being_seed._read(f.path)
+    assert current['command']==original['command']==f.command
+    assert current['request']!=original['request']
+    histories=list(f.path.parent.glob('auth-*.json'))
+    assert len(histories)==1
+    assert being_seed._read(histories[0])['requests']==[original['request'],current['request']]
+    assert result['request_sha256']==request_hash(current['request'])
+    assert len(f.effects)==1 and f.calls.count('prepare')==2
+    assert f.execute()['request_sha256']==result['request_sha256'] and len(f.effects)==1
+
+
+def test_expired_native_accepted_envelope_keeps_original_authenticated_recovery(auth_native_control):
+    from clusterctl import being_seed
+    f=auth_native_control
+    f.fault[0]='after'
+    with pytest.raises(OSError):
+        f.execute()
+    raw=f.path.read_bytes()
+    original=being_seed._read(f.path)
+    f.clock[0]+=31_000_000_000
+    assert f.execute()['request_sha256']==request_hash(original['request'])
+    assert f.path.read_bytes()==raw and not list(f.path.parent.glob('auth-*.json'))
+    assert f.calls.count('prepare')==1 and len(f.effects)==1
+
+
+def test_late_original_and_renewal_can_change_native_gate_only_once(auth_native_control):
+    from clusterctl import being_seed
+    f=auth_native_control
+    f.fault[0]='pending'
+    with pytest.raises(OSError):
+        f.execute()
+    original=being_seed._read(f.path)['request']
+    f.clock[0]+=31_000_000_000
+    f.fault[0]='stale-unavailable'
+    result=f.execute()
+    assert result['request_sha256']==request_hash(original)
+    assert being_seed._read(f.path)['request']!=original
+    assert len(f.effects)==1 and f.calls.count('prepare')==2
+    assert len(being_seed._read(next(f.path.parent.glob('auth-*.json')))['requests'])==2
+
+
+@pytest.mark.parametrize('boundary',['history','active'])
+def test_lost_auth_publication_resumes_the_retained_envelope(auth_native_control,monkeypatch,boundary):
+    from clusterctl import being_seed
+    f=auth_native_control
+    f.fault[0]='before'
+    with pytest.raises(OSError):
+        f.execute()
+    original=being_seed._read(f.path)['request']
+    f.clock[0]+=31_000_000_000
+    write=being_seed._write
+    def lost(path,value,**kwargs):
+        write(path,value,**kwargs)
+        if (boundary=='history' and path.name.startswith('auth-')
+                or boundary=='active' and path==f.path):
+            raise OSError('lost auth publication acknowledgment')
+    with monkeypatch.context() as fault:
+        fault.setattr(being_seed,'_write',lost)
+        with pytest.raises(OSError,match='publication acknowledgment'):
+            f.execute()
+    history=being_seed._read(next(f.path.parent.glob('auth-*.json')))
+    assert history['requests'][0]==original and len(history['requests'])==2
+    assert f.execute()['request_sha256']==request_hash(history['requests'][-1])
+    assert f.calls.count('prepare')==2 and len(f.effects)==1
+
+
+def test_auth_history_capacity_preserves_every_original_request(auth_native_control,monkeypatch):
+    from clusterctl import being_seed
+    f=auth_native_control
+    def unavailable(request):
+        raise OSError('native exchange unavailable')
+    monkeypatch.setattr(f.client,'send',unavailable)
+    for _ in range(16):
+        with pytest.raises(OSError):
+            f.execute()
+        f.clock[0]+=31_000_000_000
+    history_path=next(f.path.parent.glob('auth-*.json'))
+    raw=history_path.read_bytes()
+    active=f.path.read_bytes()
+    assert len(being_seed._read(history_path)['requests'])==16
+    with pytest.raises(OnboardingError,match='auth_capacity'):
+        f.execute()
+    assert history_path.read_bytes()==raw and f.path.read_bytes()==active
+    assert f.calls.count('prepare')==16 and not f.effects
+
+
+@pytest.mark.parametrize('profile',['source','guest'])
+@pytest.mark.parametrize('maintenance',[False,True])
+def test_current_companion_controls_use_only_the_selected_qualified_helper(profile,maintenance):
+    from clusterctl.onboarding_receiving_update import SourceGroupClient,GuestGroupClient
+    owner=object.__new__(SourceGroupClient if profile=='source' else GuestGroupClient)
+    owner.maintenance=(Path('/qualified-helper'),'a'*64) if maintenance else None
+    calls=[]
+    owner._call=lambda *args,**kwargs:calls.append((args,kwargs)) or {'same':'receipt'}
+    command={'original':'control'}
+    path=Path('/own-runtime/receiving-control/original-select.json')
+    assert owner.prepare_apply_control(command,path)=={'same':'receipt'}
+    assert calls[0][1].get('maintenance',False) is maintenance
+    assert (calls[0][1]['command'] if profile=='source' else calls[0][1]['control_value'])==command
+
+
+def test_expired_pending_but_native_admitted_request_is_tried_without_renewal(auth_native_control):
+    from clusterctl import being_seed
+    f=auth_native_control
+    f.fault[0]='pending'
+    with pytest.raises(OSError):
+        f.execute()
+    original=being_seed._read(f.path)['request']
+    raw=f.path.read_bytes()
+    f.clock[0]+=31_000_000_000
+    result=f.execute()
+    assert result['request_sha256']==request_hash(original)
+    assert f.path.read_bytes()==raw and not list(f.path.parent.glob('auth-*.json'))
+    assert f.calls.count('prepare')==1 and len(f.effects)==1
+
+
+def fill_control_staging(path, remaining):
+    from clusterctl import being_seed
+    index=0
+    while remaining:
+        stage=path.with_name(path.name+'.'+format(index,'032x'))
+        with stage.open('wb') as stream:
+            stream.truncate(min(remaining,being_seed.MAX_SELECTION))
+        stage.chmod(0o600)
+        remaining-=stage.stat().st_size
+        index+=1
+
+
+def test_interrupted_initial_staging_is_bounded_before_another_publication(auth_native_control):
+    f=auth_native_control
+    from clusterctl import being_seed
+    f.owner._control_directory(f.path)
+    with being_seed._locked(f.path.parent):
+        pass
+    fill_control_staging(f.path,8*1024*1024)
+    before={p.name:p.stat().st_size for p in f.path.parent.iterdir()}
+    with pytest.raises(OnboardingError,match='auth_capacity'):
+        f.execute()
+    assert {p.name:p.stat().st_size for p in f.path.parent.iterdir()}==before
+    assert not f.path.exists() and not f.effects
+
+
+def test_known_accepted_envelope_recovers_at_full_staging_capacity(auth_native_control):
+    from clusterctl import being_seed
+    f=auth_native_control
+    f.fault[0]='pending'
+    with pytest.raises(OSError):
+        f.execute()
+    original=being_seed._read(f.path)['request']
+    f.clock[0]+=31_000_000_000
+    f.fault[0]='stale-unavailable'
+    assert f.execute()['request_sha256']==request_hash(original)
+    occupied=sum(p.stat().st_size for p in f.path.parent.iterdir())
+    fill_control_staging(f.path,8*1024*1024-occupied)
+    before={p.name:p.stat().st_size for p in f.path.parent.iterdir()}
+    assert f.execute()['request_sha256']==request_hash(original)
+    assert {p.name:p.stat().st_size for p in f.path.parent.iterdir()}==before
+    assert f.calls.count('prepare')==2 and len(f.effects)==1

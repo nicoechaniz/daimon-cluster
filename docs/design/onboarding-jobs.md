@@ -1684,8 +1684,8 @@ conflict, not silently adopted.
 
 Partial controls, lost replies and an exhausted foreground window preserve the
 same immutable commands, private request paths, membership result and reader
-vector. A later authorized invocation resumes retained admitted requests through
-the owner's exact recovery path; no invitation,
+vector. A later authorized invocation uses exact native recovery or the bounded
+CAS authentication renewal below; no invitation,
 reader validity or historical date is extended. Changed process, membership,
 credential, application or gate refuses rather than replacing uncertain work.
 The public observation retains only fixed commands and minimal actual gate/process
@@ -1697,10 +1697,39 @@ installation or outbound policy is changed by this composition.
 This publication/control/observation composition is source-qualified, not selected
 on the current four companions. Actual guarded receiving/network qualification,
 explicit KVM placement and coherent full-command acceptance remain unfinished.
-One remaining owner-client boundary is an authenticated request retained before
-its first native dispatch and resumed after the native freshness window. An
-already admitted request has exact retained recovery; an unseen expired envelope
-needs bounded owner-local renewal of the same command with native CAS and original
-provenance, rather than replacing the membership operation or discarding work.
-Do not treat the current native-gate fixtures as proof of that authentication
-boundary. Existing admitted children and adult policies remain intact.
+Reader-control authentication renewal is now composed by the existing owner
+writer, without changing the native freshness window or the semantic command.
+The owner first tries exact recovery, including an admitted RPC still pending
+before its native CAS. A stale failed exchange can then require fresh authenticated
+observation of the same process, complete loaded selection and original gate
+head. Fresh failures remain uncertain and are not retried by this path. Renewal uses
+the held client preparation API with identical method/parameters and a distinct
+RPC envelope ID. The original process-instance/head CAS permits at most one of
+these envelopes to change the gate; an old admitted envelope may still win.
+The actual known accepted request hash is reconciled rather than treating a
+later envelope's CAS refusal as another effect or changing the operation ID.
+Native effect horizons, capability validity, job/grant checks and caller deadlines
+are unchanged; renewing an envelope cannot extend a frozen authorization.
+
+Before replacing the active envelope, a protected owner-local
+`cluster-receiving-control-auth/v1` sidecar durably retains its original and new
+request bytes and binds them to the exact command/process/server/control path.
+A lost history or active-envelope acknowledgment resumes those retained bytes.
+An already accepted envelope keeps exact recovery and creates no new envelope.
+The latest-prepared file need not name the winner of a late-envelope race: the
+authenticated current gate and retained history identify the actual winning hash
+without another disk write, including at capacity.
+Each control retains at most16 envelopes and2MiB of history, alongside its
+existing2MiB latest-prepared control file. Before every publication, its related
+interrupted atomic staging is counted in an8MiB total bound, with a4096-entry
+scan limit. Unfinished staging is preserved rather than automatically deleted. Capacity failure preserves every original, and exact accepted recovery
+remains available. Referenced/unfinished history is not automatically deleted.
+No key, account, grant, signing capability, membership or model input is copied
+or recreated. A configured companion uses only its selected qualified helper for
+this owner RPC; loaded native processes and ordinary legacy routes stay selected.
+
+The HMAC freshness/native CAS fixtures prove stale unseen renewal, exact admitted
+recovery, original-versus-new envelope races, interrupted history publication and
+capacity preservation. They do not establish actual fleet/helper adoption or the
+whole-companion command. Existing admitted children and adult policies remain
+intact.

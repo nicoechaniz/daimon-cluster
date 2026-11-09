@@ -787,9 +787,12 @@ root. Existing body startup, lifecycle, SDK/authority and native catalogue evide
 remain independent and valid. The regular Target route remains available. Do not
 repeat its full running/admission qualification inside a control when that same
 bounded all-reader round already authenticated the process and parent. On an
-uncertain result retain the exact request and native CAS; never mint another
-positive request or widen the observation budget. Empty-clear authorization
-recovery is a separately reviewed negative-only operation, not a renewal policy.
+uncertain result retain the original request and native CAS. The owner-local
+reader-control authentication renewal described below may create another
+transport envelope for the identical command after fresh same-process/head
+observation; it does not create another positive semantic operation or widen
+its observation/authorization budget. Empty-clear authorization recovery stays
+a separate negative-only operation.
 
 Prepare expiring fixture controls immediately before their use. If an unrelated
 urgent repair intervenes, preserve the scenario and completed effects instead
@@ -1091,17 +1094,29 @@ its native authentication window before its first dispatch; do not increase that
 window or regenerate an uncertain request to conceal the delay.
 
 A truncated response alone does not establish a daemon exit. Check the actual
-service/process and parent supervision outcome first. For a retained local RPC
-whose authentication aged before admission, inspect its exact client/request ID
-in the current canonical native request journal, using a read-only connection
-and verifying the ledger identity. Absence proves non-admission only when that
-journal retains all admitted requests; a missing response file is insufficient.
-After proven non-admission, preserve the original prepared bytes and use the
-existing client preparation API with the SAME request ID, method and parameters
-to refresh authentication. Prepare and send in one owner process, then retain
-the response. Do not change the authentication window, capability or semantic
-operation. An admitted or uncertain request keeps its original recovery path;
-this is not permission to replay model/provider input or an uncertain effect.
+service/process and parent supervision outcome first. For native
+`runtime.reader-selection` controls, use the maintained owner executor's bounded
+authentication renewal. It preserves the exact command, process instance,
+expected head, operation/release/reader vector, capability and native effect
+horizon. Try exact native recovery first, including an admitted but pending RPC. Only
+a stale failed exchange reaches fresh authenticated same-process/selection/gate
+proof; fresh failures retain their uncertainty without an automatic retry. The
+held client can then prepare a distinct RPC envelope around that same native CAS. At most one envelope changes the gate; a late old envelope's
+actual accepted hash is recovered from the protected history. Original/new bytes
+are durable before the active-envelope pointer changes. The per-control private
+history is limited to16 envelopes/2MiB, with the original active file and atomic
+staging bounded to8MiB total. Exact accepted recovery remains available at
+capacity. Do not discard unfinished or referenced history. This removes manual
+canonical-ledger absence inspection for this CAS method only; another envelope
+is not another semantic operation and does not renew frozen authorization.
+
+For other local RPCs, retain the original admitted/uncertain recovery. A request
+known never admitted may be refreshed only after read-only exact client/request
+journal inspection verifies ledger identity and retained complete admission
+history. Preserve the original bytes and follow that method's supported recovery;
+a missing response file is insufficient. No authentication-window increase,
+capability change, model/provider input replay or uncertain effect duplication
+is authorized by either path.
 
 For an explicitly selected, already prepared qualified guest candidate, status,
 identity and control calls enter its existing closed SDK interpreter directly.

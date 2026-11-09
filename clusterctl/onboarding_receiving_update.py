@@ -471,15 +471,15 @@ class OwnerGroupClient:
             raise OnboardingError('receiving_control_binding_conflict')
         client = self._client('receiving-controller')
         request = client.prepare('runtime.reader-selection', command)
-        being_seed._write(path, dict(schema='cluster-receiving-owner-control/v1',
-            command=command, request=request, process=observed['process'], server=observed['server']),
-            limit=being_seed.MAX_SELECTION)
+        from .onboarding_owner_control import write_control_record
+        write_control_record(path, dict(schema='cluster-receiving-owner-control/v1',
+            command=command, request=request, process=observed['process'], server=observed['server']))
         self._durable_control(path)
         return dict(request_id=request['request_id'], request_sha256=request_hash(request),
                     command_sha256=digest(command))
 
     def apply_control(self, path: Path) -> dict:
-        """Exact retry or observed same-process completion; never re-author."""
+        """Resume an immutable control; retain bounded authentication renewals."""
         with being_seed._locked(self._control_directory(path)):
             result = self._apply_control(path)
             self._accept_deadline()
@@ -507,16 +507,22 @@ class OwnerGroupClient:
         observed = self.status()
         if observed['process'] != retained['process'] or observed['server'] != retained['server']:
             raise OnboardingError('receiving_control_process_changed')
+        from .onboarding_owner_control import retained_control_request, send_control_request
         expected_hash = request_hash(request)
         gate = observed['gate']
         if gate.get('request_sha256') != expected_hash:
-            if (gate['process_instance_id'] != command['process_instance_id']
-                    or gate['head'] != command['expected_head']):
-                raise OnboardingError('receiving_control_superseded')
-            response = self._client('receiving-controller').send(request)
-            if response.get('ok') is not True:
-                raise OnboardingError('receiving_control_not_accepted')
-            observed = self.status()
+            client = self._client('receiving-controller')
+            request, observed, response = send_control_request(self, client, path,
+                being_seed._read(path, limit=being_seed.MAX_SELECTION), observed, validate=self._accept_deadline)
+            expected_hash = request_hash(request)
+            if response is not None:
+                observed = self.status()
+            if response is not None and response.get('ok') is not True:
+                request, observed = retained_control_request(self, client, path,
+                    being_seed._read(path, limit=being_seed.MAX_SELECTION), observed, renew=False)
+                expected_hash = request_hash(request)
+                if observed['gate'].get('request_sha256') != expected_hash:
+                    raise OnboardingError('receiving_control_not_accepted')
             gate = observed['gate']
         if (gate.get('request_sha256') != expected_hash
                 or gate.get('phase') != command['phase']
@@ -684,7 +690,9 @@ class GuestGroupClient:
         return self._call('receiving-control-apply', control_file=path)
 
     def prepare_apply_control(self, command: dict, path: Path) -> dict:
-        return self._call('receiving-control-prepare-apply', control_file=path, control_value=command)
+        if self.maintenance is None:
+            return self._call('receiving-control-prepare-apply', control_file=path, control_value=command)
+        return self._call('receiving-control-prepare-apply', maintenance=True, control_file=path, control_value=command)
 
     def reconcile_tooling(self, operation_id: str, *, attachment: Path,
                          codex_home: Path, connections: tuple[Path, ...] = (),
@@ -960,7 +968,10 @@ class SourceGroupClient:
         return self._call(['--apply-control', str(path)])
 
     def prepare_apply_control(self, command: dict, path: Path) -> dict:
-        return self._call(['--prepare-apply-control', str(path), '--control-command', '-'], command=command)
+        arguments = ['--prepare-apply-control', str(path), '--control-command', '-']
+        if self.maintenance is None:
+            return self._call(arguments, command=command)
+        return self._call(arguments, maintenance=True, command=command)
 
     def reconcile_tooling(self, operation_id: str, *, attachment: Path,
                          codex_home: Path, connections: tuple[Path, ...] = (),

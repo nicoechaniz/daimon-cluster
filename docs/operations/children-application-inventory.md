@@ -189,3 +189,59 @@ history and no requested acknowledgment. It still records host Incus provenance,
 Python imports/dependency authenticity/exposure, malicious releases outside the
 selected public versions and current vendor applicability as pending. Healthy
 collection is not security clearance or family/device acceptance.
+
+
+## Read-only Incus package provenance
+
+`python3 tools/children_incus_provenance.py --state OWNER_STATE` prepares an
+ordinary `manifest.json` and a bounded `receipt.json` for the host Incus unit.
+It performs no package installation, service action, maintainer-script execution
+or source import from the archive. This is a foreground operator, not a new timer.
+
+The selector reads the exact installed `incus-base` version, reuses the existing
+native26hour APT-update/Release freshness check, verifies the security InRelease
+with the installed Debian archive keyring using Debian13's existing `sqv`, and compares the decoded
+Packages index against the signed SHA256/size entry. Only the exact amd64 package
+version in that authenticated security index is eligible. This read-only route
+supports the host's native mirror/deb822 index without widening the separate
+browser/library package-installation policy's legacy source restrictions.
+
+The archive is capped32MiB, fetched from one fixed HTTPS Debian security origin,
+and verified by the existing archive custody/size/SHA helper. Interrupted bytes
+remain in the same private state; a continuation appends only after an exact
+HTTP206Content-Range confirmation, then verifies the entire archive. Wrong ranges,
+oversize, hash mismatch and changed installed version preserve work and refuse a
+positive result. A non-overlapping state lock prevents concurrent archive writers.
+
+`dpkg-deb --fsys-tarfile` reads at most128MiB/40seconds; the tar reader hashes only
+regular declared Incus files, refusing traversal, symlinks, duplicates and excess
+entries. No archive contents are executed or extracted to live paths. The manifest
+pins the complete Incus public directory from signed package bytes, never the live
+filesystem; the existing daily observer must then bind its actual running image.
+Maintain one bounded current package cache/receipt; unknown partial work is not
+pruned. After receiving confirmation, only the byte-verified disposable archive
+may be retired while preserving provenance metadata and selected/rollback records.
+Cache admission stops at its fixed capacity; no blanket package/image cleanup.
+
+Debian13's `sqv --cleartext` requires a new output file and does not interpret
+`--output -` as stdout. Use its authenticated output in a disposable private
+directory, retaining only the bounded parsed metadata. The first receiving
+attempt lacked `gpgv`; the corrected existing-sqv route verified the actual
+signed index and17,590,192-byte installed package, yielding five source hashes.
+Neither attempt installed or restarted Incus. Keep source qualification distinct
+from the subsequent loaded-image observation.
+
+Source/fixture qualification does not establish real package provenance or a
+loaded fix. Record the actual signed-index/archive qualification and later daily
+observer outcome separately. Dependency authenticity, imported code and exposure
+remain distinct from this selected-package image association.
+
+Actual receiving bound all five declared Incus files to the existing running main
+image without restarting it. The complete daily occurrence verified13selected
+deployments on the host/four guests, with no unselected units, preserved all13
+service identities and finished in40seconds at234967040bytes peak. The collector,
+helper and existing timer were unchanged; only the host manifest reference was
+added under the existing configuration lock. The disposable17,590,192-byte archive
+was hash-verified and retired after receiving confirmation. Current/rollback and
+signature/provenance metadata remain. Coverage stays partial; the same coverage
+incident advanced to revision6 without replacing its original source/history.

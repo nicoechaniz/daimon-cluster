@@ -1,3 +1,19 @@
+## Read-only host Incus provenance continuation —2026-11-09
+
+The new foreground source selector reuses native APT freshness/archive checks,
+verifies the security Release signature and Packages digest, and selects only the
+exact installed incus-base archive. It hashes declared regular Incus files as data
+and emits the existing observer manifest. Downloads are bounded/resumable with
+strict Range and whole-archive SHA; no package/service action or payload execution.
+Actual signed-package qualification and existing observer receiving passed:
+five Incus files and the loaded main executable verified, all13 host/child
+deployments observed, all13 service identities preserved,40seconds/234967040bytes
+peak within existing limits. The17,590,192-byte disposable package was retired
+after readback; signature/provenance metadata and original failures remain.
+The same coverage incident advanced to revision6 and stays open for dependency,
+imported-exposure and vendor-applicability gaps. The full child/School/command goal and all
+explicit holds remain. See docs/operations/children-application-inventory.md.
+
 ## Daily native supervisor source binding —2026-11-09
 
 The application observer now supports an explicitly selected Python script

@@ -533,3 +533,32 @@ class SelectedMaliciousObservationTests(unittest.TestCase):
         failed = {'source': {'state': 'fresh'}, 'targets': {'pixin': {'debian_advisories': 'matched'}},
                   'phases': {'selected_public_python_malicious': {'state': 'incomplete'}}}
         self.assertFalse(daily.observation_complete(failed))
+
+
+class SelectedDeploymentPhaseTests(unittest.TestCase):
+    def test_selected_files_do_not_claim_unselected_units_or_healthy_changed_process(self):
+        config={'targets':[{'id':'pixin','instance':'dm-pixin'}], 'application_inventory':{
+            'units':{'pixin':['native.service','web.service','supervisor.service']},
+            'deployment_manifests':{'pixin':{'path':'/etc/children-maintenance/deployments.json','sha256':'a'*64}}}}
+        units={u:{'state':'observed','deployment':{'state':'verified'}} for u in ('native.service','web.service')}
+        app={'state':'observed','deployment_manifest_sha256':'a'*64,
+             'deployment_selection_units':['native.service','web.service'],'units':units}
+        report={'targets':{'pixin':{'applications':app}}}
+        phase=daily.phase_observations(config,report)['selected_deployments']
+        self.assertEqual(phase['state'],'observed')
+        self.assertEqual(phase['unselected_units'],['pixin:supervisor.service'])
+        self.assertIn('unassessed',phase['scope'])
+        units['web.service']['state']='unavailable'
+        self.assertEqual(daily.phase_observations(config,report)['selected_deployments']['state'],'incomplete')
+        units['web.service']['state']='observed'
+        app['deployment_manifest_sha256']='b'*64
+        self.assertEqual(daily.phase_observations(config,report)['selected_deployments']['state'],'incomplete')
+
+    def test_malformed_or_missing_selection_stays_unavailable_without_losing_other_phases(self):
+        config={'targets':[{'id':'pixin','instance':'dm-pixin'}], 'application_inventory':{
+            'units':{'pixin':['native.service']}, 'deployment_manifests':{'pixin':{'sha256':'a'*64}}}}
+        report={'targets':{'pixin':{'debian_advisories':'matched','applications':{
+            'state':'observed','deployment_selection_units':None}}}}
+        phase=daily.phase_observations(config,report)
+        self.assertEqual(phase['selected_deployments']['state'],'incomplete')
+        self.assertEqual(phase['debian_advisories']['state'],'observed')

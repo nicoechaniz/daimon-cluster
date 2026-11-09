@@ -41,6 +41,20 @@ complete supported invocation, including the work it starts, rather than only
 submission latency. Do not claim a measured duration or a working single-command
 interface from fixtures or an existing companion's earlier deployment.
 
+A foreground deadline must preserve the original job, completed stages, stable
+operation IDs and uncertain effects. The worker's finite owner surface is
+`python3 -m clusterctl.onboarding_worker --config OWNER_CONFIG --until NAME
+--timeout-seconds 600`. Add time with the same configuration/name and
+`--extend-seconds 600`: an active supervisor reads the extended deadline without
+launching another worker; an expired operator continues the original job from
+its next missing checkpoint. A plain retry cannot silently reset the deadline.
+The bounded record keeps its original start/deadline and aggregate extensions,
+not an unbounded attempt history. Extending wall time changes no native goal,
+token budget, pause or external effect receipt. If an operation was uncertain,
+the same existing observation/receipt route must reconcile it before execution.
+This finite worker surface does not by itself finish the still-incomplete
+Conversation stage integration or establish a newly provisioned companion.
+
 Each correction discovered during the four-child work belongs in that route and
 its consumed documentation/context. Current examples include authority-metadata
 renewal using held custody; parallel finite writer initialization; remote code

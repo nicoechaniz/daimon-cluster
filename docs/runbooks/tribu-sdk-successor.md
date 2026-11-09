@@ -207,6 +207,13 @@ recovery. Keep `reader_completion` for a genuinely required cohort qualification
 or changed contract/authority. It can use the same routes file, but local owner
 observation alone imposes no peer preflight or reader controls.
 
+If the unit automatically restarts after its initial start acknowledgement, the
+same command uses the existing root `bootstrap-recover-start` observation to
+qualify that exact successor. It retains the original start and recovery request,
+proves the original parent exited and the unit/selector is unchanged, and issues
+no further start. Lost recovery acknowledgements resume the retained request;
+a changed successor or expired unfinished recovery remains a precise refusal.
+
 For a change that requires cohort qualification, use the composed spec. For its
 managed `job` owners, `selection: null` derives digests from the exact native
 update results; do not transcribe six hashes per updated body. An updated

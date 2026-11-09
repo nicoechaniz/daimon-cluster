@@ -259,13 +259,52 @@ class ManagedRuntime:
                 timeout_seconds=remaining(), owner_observation={key: current[key]
                     for key in ('process', 'admission_parent')})
             if (physical['service']['unit_sha256'] != state['effects']['select']['selected_sha256']
-                    or physical['scope']['admission_parent'] != state['effects']['start']['admission_parent']
                     or store._load(plan['name']) != job):
                 raise OnboardingError('native_code_update_selection_changed')
             selected_override = state['effects']['select'].get('selector')
             if (selected_override is not None and physical['service'].get('entrypoint_selector') != dict(
                     path=selected_override['path'],sha256=selected_override['selected_sha256'])):
                 raise OnboardingError('native_code_update_selection_changed')
+            if physical['scope']['admission_parent'] != state['effects']['start']['admission_parent']:
+                # A successful start can fail readiness and be replaced by the
+                # existing unit's Restart policy. Reuse root's proved-successor
+                # observer; never issue another start or erase the first receipt.
+                successor = {**{key: current[key] for key in ('process', 'admission_parent')},
+                    'service': physical['service']}
+                recovery = state.get('start_recovery_request')
+                if recovery is None:
+                    recovery = dict(schema='cluster-guest-start-recovery/v1',
+                        operation_id=str(uuid.uuid5(uuid.UUID(operation_id), 'native-code-start-recovery')),
+                        bootstrap=state['request'], started_sha256=digest(state['effects']['start']),
+                        successor=successor, implementation_sha256=candidate[1],
+                        expires_at_ms=time.time_ns() // 1_000_000 + max(1,
+                            (deadline-time.monotonic_ns()) // 1_000_000))
+                    state['start_recovery_request'] = recovery
+                    save()
+                if (recovery.get('successor') != successor
+                        or recovery.get('bootstrap') != state['request']
+                        or recovery.get('started_sha256') != digest(state['effects']['start'])
+                        or recovery.get('implementation_sha256') != candidate[1]):
+                    raise OnboardingError('receiving_guest_start_recovery_conflict')
+                receipt = state.get('start_recovery_receipt')
+                if receipt is None:
+                    receipt = self.backend._guest_service_call(plan, 'bootstrap-recover-start',
+                        candidate=candidate, timeout_seconds=remaining(), request=recovery,
+                        implementation=candidate)
+                if (receipt.get('schema') != 'cluster-guest-start-successor/v1'
+                        or receipt.get('recovery_operation_id') != recovery['operation_id']
+                        or receipt.get('recovery_sha256') != digest(recovery)
+                        or receipt.get('bootstrap_sha256') != digest(state['request'])
+                        or receipt.get('started_sha256') != digest(state['effects']['start'])
+                        or receipt.get('implementation_sha256') != candidate[1]
+                        or receipt.get('predecessor_parent') != state['effects']['start']['admission_parent']
+                        or receipt.get('predecessor_exited') is not True
+                        or receipt.get('manager') != physical['service']['manager']
+                        or receipt.get('scope') != physical['scope']
+                        or receipt.get('unit_sha256') != state['effects']['select']['selected_sha256']):
+                    raise OnboardingError('receiving_guest_start_recovery_conflict')
+                state['start_recovery_receipt'] = receipt
+                save()
             state['result'] = dict(schema='cluster-native-code-updated/v1',
                 operation_id=operation_id, candidate_digest=candidate[1],
                 runtime_sha256=current['runtime_sha256'], origin=current['origin'],

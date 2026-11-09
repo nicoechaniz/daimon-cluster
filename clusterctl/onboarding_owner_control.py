@@ -82,8 +82,6 @@ class RetainedStatusOwner(OwnerGroupClient):
 
     def _status_response(self, client, *, params: dict | None = None) -> dict:
         if params is None:
-            if 'scope.me' not in client.config.capability.methods:
-                return RetainedStatusOwner._status_response(self, client, params={})
             response = RetainedStatusOwner._status_response(self, client, params={'view': 'receiving'})
             if response.get('ok') is False and response.get('error', {}).get('code') == 'invalid_params':
                 return RetainedStatusOwner._status_response(self, client, params={})

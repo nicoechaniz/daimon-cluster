@@ -199,8 +199,8 @@ and successor with the same SDK so preservation can read the migrated catalogs;
 the maintained worker checks this before preparing lifecycle effects.
 The H8 native-profile route now composes these stages through the same fleet
 command; see [native-profile maintenance](rebirth-native-profile.md#routine-h8-maintenance-through-the-existing-fleet-command).
-Actual changed-profile adoption and the remaining legacy-profile composition
-remain distinct qualification work. When a qualified
+Actual changed-profile adoption remains distinct receiving qualification work.
+Published legacy Target services use the same managed-job composition below. When a qualified
 maintenance helper verifies an existing body, pass that body's selected code
 and owner to the existing-base verifier. The helper's own directory is not the
 body's SDK selection. Identity signatures and all existing bindings still apply.
@@ -1696,6 +1696,19 @@ the old receive-only entrypoint refuses an installation once it exists.
 
 An already-published admitted guest uses the same
 `ManagedRuntime.update_native_code(..., published_group=True)` operation.
+This includes original completed jobs whose runtime predates
+`native-admission-only`; resolve their actual HostConfig and existing placement
+rather than searching only a newer cohort configuration or reenrolling them.
+Published maintenance verifies the current native registration and live group
+snapshot directly; it does not revisit historical publication coordination.
+
+When systemd selects the Target command through an existing Service-only
+`ExecStart` reset/command override, the same unit writer selects that effective
+file in the manager's load order. It changes only the qualified runtime code and
+digest pins, preserving the working interpreter, bootstrap and other arguments.
+The base fragment and other drop-ins remain frozen. A single replaceable
+`.previous` file supports exact lost-ACK recovery; do not append another override
+layer or replace a native Python environment with a generic interpreter.
 It freezes the actual group, signed application/publication, visibility
 installation and policy. After the existing quiesce step, its qualified owner
 preflights both base/group catalogs and performs the SDK's explicit versioned
@@ -1727,9 +1740,10 @@ absolute deadline. It stops on the first incomplete result, reports remaining
 names and reuses the same operation ID on exact retry. Existing per-body journals
 reconcile completed or uncertain effects; no duplicate batch effect journal,
 background retry or scheduler is introduced. Keep the spec unchanged for resume.
-The result's `receiving_readiness: unobserved` remains literal until the existing
-cohort reader qualification/selection finishes; this command is code maintenance,
-not the complete fleet provisioning or messaging acceptance workflow.
+Include the existing `reader_completion` section for the composed ordinary
+update above. Code-only specs retain `receiving_readiness: unobserved`; a
+successful composed run reports `qualified-local-projection`. Neither result
+claims full fleet provisioning, model uptake or a new message response.
 
 The original 120-second call bound and existing current/previous operation
 records remain. Catalog migration performs no provider/transport call or inbox

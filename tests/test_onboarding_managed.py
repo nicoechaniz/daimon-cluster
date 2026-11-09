@@ -961,13 +961,13 @@ def test_initial_managed_adopts_explicit_successor_without_replaying_start(tmp_p
 
 
 @pytest.mark.parametrize('lost_start_ack', [False, True])
-@pytest.mark.parametrize('group_mode', ['plain', 'closed', 'published'])
+@pytest.mark.parametrize('group_mode', ['plain', 'closed', 'published', 'legacy-published'])
 def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, group_mode):
     """Plain and closed-group bodies reuse their existing native unit writer."""
     closed_group = group_mode != 'plain'
-    published_group = group_mode == 'published'
+    published_group = group_mode in {'published','legacy-published'}
     managed = object.__new__(ManagedRuntime)
-    managed.settings = {'mode': 'native-admission-only'}
+    managed.settings = {} if group_mode == 'legacy-published' else {'mode': 'native-admission-only'}
     managed.state = tmp_path / 'state'
     managed.state.mkdir(mode=0o700)
     jobs = tmp_path / 'jobs'
@@ -983,7 +983,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         def _load(self, _):
             return copy.deepcopy(job)
     monkeypatch.setattr('clusterctl.onboarding_managed.JobStore', Store)
-    managed._selection = lambda _: (None, None)
+    managed._selection = (lambda _: pytest.fail('legacy software update consulted the historical publication coordinator')) if group_mode == 'legacy-published' else (lambda _: (None, None))
     managed._expected = lambda _: dict(body_ref='body', embodiment_id='embodiment', incarnation_id='incarnation')
     managed._registered = lambda _: True
     # Cold preparation and the physical transition share one finite envelope.

@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 from collections.abc import Callable
 
 from . import being_seed, onboarding_code_successor, onboarding_release
@@ -288,9 +289,12 @@ class MatrixNativeService(MatrixGuestService):
     def _guest_dropins(self, paths: str) -> dict:
         selected = [Path(path) for path in paths.split()]
         directory = self.unit.with_name(self.unit.name + '.d')
+        selectors = [path for path in selected if path.parent == directory
+            and entrypoint_override(onboarding_release.regular(path,uid=self._unit_uid))]
         native = [path for path in selected if path.parent == directory
-                  and re.fullmatch(r'99-native-[a-z0-9][a-z0-9-]*\.conf', path.name)]
-        result = super()._guest_dropins(' '.join(str(path) for path in selected if path not in native))
+                  and path not in selectors and re.fullmatch(r'99-native-[a-z0-9][a-z0-9-]*\.conf', path.name)]
+        result = super()._guest_dropins(' '.join(str(path) for path in selected
+            if path not in native and path not in selectors))
         if len(set(selected)) != len(selected):
             raise OnboardingError('receiving_matrix_service_scope_required')
         for path in native:
@@ -322,6 +326,19 @@ class MatrixNativeService(MatrixGuestService):
                 if not separator or not permitted:
                     raise OnboardingError('receiving_matrix_service_scope_required')
             result[str(path)] = hashlib.sha256(raw).hexdigest()
+        for path in selectors:
+            result[str(path)] = hashlib.sha256(onboarding_release.regular(path,uid=self._unit_uid)).hexdigest()
+        return result
+
+    def inspect(self, *, deadline_ns: int | None = None) -> dict:
+        result = super().inspect(deadline_ns=deadline_ns)
+        # DropInPaths is the manager's actual load order. The last reset/command
+        # slot wins; older overrides stay frozen rather than being deleted.
+        for name in result['manager']['DropInPaths'].split():
+            path = Path(name)
+            raw = onboarding_release.regular(path,uid=self._unit_uid)
+            if path.parent == self.unit.with_name(self.unit.name+'.d') and entrypoint_override(raw):
+                result['entrypoint_selector'] = dict(path=str(path),sha256=hashlib.sha256(raw).hexdigest())
         return result
 
 
@@ -379,7 +396,8 @@ class GuestServiceBootstrap:
 
     def _request(self, request: dict, *, existing: bool = False) -> tuple[Path, dict, bytes]:
         from .owner_process import validate_process
-        if (set(request) != {'schema', 'operation_id', 'plan_digest', 'predecessor', 'argv'}
+        if (set(request) - {'runtime_update'} != {'schema', 'operation_id', 'plan_digest', 'predecessor', 'argv'}
+                or 'runtime_update' in request and request['runtime_update'] is not True
                 or request['schema'] != 'cluster-guest-service-bootstrap/v1'
                 or not re.fullmatch(r'[0-9a-f]{64}', request['plan_digest'])
                 or str(uuid.UUID(request['operation_id'])) != request['operation_id']):
@@ -404,22 +422,36 @@ class GuestServiceBootstrap:
         if not re.fullmatch(r'[0-9a-f]{64}', original_hash):
             raise OnboardingError('receiving_guest_service_request_required')
         current = onboarding_release.regular(self.manager.unit, uid=self.manager._unit_uid)
-        # Bind on-disk additions before daemon-reload, not only their paths.
-        if previous['service'].get('dropins'):
-            if (not hasattr(self.manager, '_guest_dropins')
-                    or self.manager._guest_dropins(previous['service']['manager']['DropInPaths'])
-                    != previous['service']['dropins']):
+        selector = previous['service'].get('entrypoint_selector')
+        if request.get('runtime_update') and selector is None:
+            raise OnboardingError('receiving_guest_service_request_required')
+        if selector is not None:
+            if hashlib.sha256(current).hexdigest() != original_hash:
                 raise OnboardingError('receiving_guest_service_request_conflict')
-        retained = self.manager.unit.with_name(self.manager.unit.name+'.'+original_hash+'.previous')
-        original = current if hashlib.sha256(current).hexdigest() == original_hash else onboarding_release.regular(
-            retained, uid=self.manager._unit_uid)
-        if hashlib.sha256(original).hexdigest() != original_hash:
-            raise OnboardingError('receiving_guest_service_request_conflict')
-        candidate = entrypoint(original, request['argv'])
-        guest_execution_identity(original)
+            selected_path = selector_path(self.manager.unit,selector)
+            selected_raw = onboarding_release.regular(selected_path,uid=self.manager._unit_uid)
+            original = selected_raw if hashlib.sha256(selected_raw).hexdigest() == selector['sha256'] else onboarding_release.regular(
+                selected_path.with_name(selected_path.name+'.previous'),uid=self.manager._unit_uid)
+            if hashlib.sha256(original).hexdigest() != selector['sha256'] or not entrypoint_override(original):
+                raise OnboardingError('receiving_guest_service_request_conflict')
+            candidate = runtime_entrypoint(original,request['argv']) if request.get('runtime_update') else entrypoint(original,request['argv'])
+            if selected_raw not in (original,candidate):
+                raise OnboardingError('receiving_guest_service_request_conflict')
+        else:
+            retained = self.manager.unit.with_name(self.manager.unit.name+'.'+original_hash+'.previous')
+            original = current if hashlib.sha256(current).hexdigest() == original_hash else onboarding_release.regular(
+                retained, uid=self.manager._unit_uid)
+            if hashlib.sha256(original).hexdigest() != original_hash:
+                raise OnboardingError('receiving_guest_service_request_conflict')
+            candidate = entrypoint(original, request['argv'])
+            guest_execution_identity(original)
+            if current not in (original, candidate):
+                raise OnboardingError('receiving_guest_service_request_conflict')
         guest_execution_identity(current)
-        if current not in (original, candidate):
-            raise OnboardingError('receiving_guest_service_request_conflict')
+        if previous['service'].get('dropins'):
+            actual = self.manager._guest_dropins(previous['service']['manager']['DropInPaths'])
+            if actual not in (previous['service']['dropins'],selected_dropins(previous['service'],candidate)):
+                raise OnboardingError('receiving_guest_service_request_conflict')
         directory = private_directory(self.manager.unit.parent / ('.'+self.manager.unit.name+'.selection'))
         try:
             operations = private_directory(directory/'operations', create=not existing)
@@ -488,7 +520,8 @@ class GuestServiceBootstrap:
         inspected = self.manager.inspect(deadline_ns=deadline_ns)
         values = inspected['manager']
         if (inspected['unit_sha256'] not in {previous['service']['unit_sha256'], hashlib.sha256(candidate).hexdigest()}
-                or inspected.get('dropins', {}) != previous['service'].get('dropins', {})
+                or inspected.get('dropins', {}) not in (previous['service'].get('dropins', {}),
+                    selected_dropins(previous['service'],candidate))
                 or values['ActiveState'] != 'inactive' or values['SubState'] != 'dead'
                 or values['MainPID'] != '0' or values['InvocationID'] not in {'', previous['scope']['invocation_id']}):
             raise OnboardingError('receiving_guest_service_quiescence_required')
@@ -969,8 +1002,14 @@ class GuestServiceBootstrap:
             if action == 'select':
                 self._stopped(previous, candidate, deadline_ns=deadline_ns)
                 self._budget(deadline_ns)
+                selection_options: dict[str, Any] = {}
+                if 'entrypoint_selector' in previous['service']:
+                    selection_options['selector'] = previous['service']['entrypoint_selector']
+                if request.get('runtime_update'):
+                    selection_options['runtime_update'] = True
                 result = select_entrypoint(self.manager.unit, request['argv'],
-                    previous_sha256=previous['service']['unit_sha256'],pre_replace=fresh_effect)
+                    previous_sha256=previous['service']['unit_sha256'],pre_replace=fresh_effect,
+                    **selection_options)
                 result = self._record(root/'selected.json', result)
                 self._budget(deadline_ns)
                 return result
@@ -980,7 +1019,7 @@ class GuestServiceBootstrap:
             current = self.manager.inspect(deadline_ns=deadline_ns)
             if current['unit_sha256'] != selected['selected_sha256']:
                 raise OnboardingError('receiving_guest_service_candidate_changed')
-            if current.get('dropins', {}) != previous['service'].get('dropins', {}):
+            if current.get('dropins', {}) != selected_dropins(previous['service'],candidate):
                 raise OnboardingError('receiving_guest_service_candidate_changed')
             retained = self._retained(root, 'started')
             if retained is not None:
@@ -1012,7 +1051,7 @@ class GuestServiceBootstrap:
                 current = self.manager.inspect(deadline_ns=deadline_ns)
                 if current['unit_sha256'] != selected['selected_sha256']:
                     raise OnboardingError('receiving_guest_service_candidate_changed')
-                if current.get('dropins', {}) != previous['service'].get('dropins', {}):
+                if current.get('dropins', {}) != selected_dropins(previous['service'],candidate):
                     raise OnboardingError('receiving_guest_service_candidate_changed')
                 if current['manager']['ActiveState'] == 'active':
                     association = {key: current['manager'][key] for key in ('MainPID', 'InvocationID', 'ControlGroup')}
@@ -1090,17 +1129,30 @@ def entrypoint(original: bytes, argv: list[str]) -> bytes:
     if (not isinstance(argv, list) or not 1 <= len(argv) <= 100
             or any(not isinstance(arg, str) or '\0' in arg for arg in argv)
             or not Path(argv[0]).is_absolute() or len(json.dumps(argv).encode()) > 65536
-            or original.count(b'\nExecStart=') != 1 or original.startswith(b'ExecStart=')):
+            or original.startswith(b'ExecStart=')):
+        raise OnboardingError('qualified_matrix_entrypoint_required')
+    commands = [line.strip() for line in original.split(b'\n') if line.lstrip().startswith(b'ExecStart=')]
+    if (len(commands) != 1 or commands[0] == b'ExecStart=') and not entrypoint_override(original):
         raise OnboardingError('qualified_matrix_entrypoint_required')
     # JSON string quoting escapes CR/LF inside one physical ExecStart line.
     # The maintained -c launchers contain real newlines as argument data.
     encoded = ' '.join(json.dumps(arg.replace('%', '%%').replace('$', '$$')) for arg in argv)
-    return b'\n'.join(('ExecStart=' + encoded).encode() if line.startswith(b'ExecStart=') else line
+    return b'\n'.join(line[:len(line)-len(line.lstrip())]+('ExecStart=' + encoded).encode()
+                      if line.lstrip().startswith(b'ExecStart=') and line.strip() != b'ExecStart=' else line
                       for line in original.split(b'\n'))
 
 
+def entrypoint_override(raw: bytes) -> bool:
+    """Recognize only a reset and one command in a Service-only override."""
+    lines = [line.strip() for line in raw.splitlines() if line.strip() and not line.lstrip().startswith(b'#')]
+    return (len(lines) == 3 and lines[0] == b'[Service]' and lines[1] == b'ExecStart='
+        and lines[2].startswith(b'ExecStart=') and lines[2] != b'ExecStart='
+        and not lines[2].endswith(b'\\'))
+
+
 def select_entrypoint(unit: Path, argv: list[str], *, previous_sha256: str,
-                      pre_replace: Callable[[], None] | None = None) -> dict:
+                      pre_replace: Callable[[], None] | None = None,
+                      selector: dict | None = None, runtime_update: bool = False) -> dict:
     """CAS an approved Matrix unit under a persistent kernel selection lock.
 
     Called only with the protected operation's exact unit, predecessor and
@@ -1112,6 +1164,11 @@ def select_entrypoint(unit: Path, argv: list[str], *, previous_sha256: str,
     if (not isinstance(previous_sha256, str) or not re.fullmatch(r'[0-9a-f]{64}', previous_sha256)
             or unit.name != UNIT and not re.fullmatch(r'daimon-matrix-[a-z0-9-]+\.service', unit.name)):
         raise OnboardingError('qualified_matrix_entrypoint_required')
+    if type(runtime_update) is not bool or runtime_update and selector is None:
+        raise OnboardingError('qualified_matrix_entrypoint_required')
+    if selector is not None:
+        return select_override(unit,argv,previous_sha256=previous_sha256,
+            selector=selector,pre_replace=pre_replace,runtime_update=runtime_update)
     directory = unit.parent
     with selection_lock(unit):
         current = onboarding_release.regular(unit, uid=os.geteuid())
@@ -1154,6 +1211,111 @@ def select_entrypoint(unit: Path, argv: list[str], *, previous_sha256: str,
         finally:
             temporary.unlink(missing_ok=True)
         return result
+
+
+def select_override(unit: Path, argv: list[str], *, previous_sha256: str,
+                    selector: dict, pre_replace: Callable[[],None] | None = None,
+                    runtime_update: bool = False) -> dict:
+    """Select the existing effective override under the SAME unit writer lock."""
+    path = selector_path(unit,selector)
+    with selection_lock(unit):
+        fragment = onboarding_release.regular(unit,uid=os.geteuid())
+        if hashlib.sha256(fragment).hexdigest() != previous_sha256:
+            raise OnboardingError('existing_onboarding_service_preserved')
+        current = onboarding_release.regular(path,uid=os.geteuid())
+        mode = stat.S_IMODE(path.stat().st_mode)
+        if mode not in {0o600,0o640,0o644}:
+            raise OnboardingError('existing_onboarding_service_preserved')
+        retained = path.with_name(path.name+'.previous')
+        original = current if hashlib.sha256(current).hexdigest() == selector['sha256'] else onboarding_release.regular(
+            retained,uid=os.geteuid())
+        if hashlib.sha256(original).hexdigest() != selector['sha256'] or not entrypoint_override(original):
+            raise OnboardingError('existing_onboarding_service_preserved')
+        candidate = runtime_entrypoint(original,argv) if runtime_update else entrypoint(original,argv)
+        result = dict(previous_sha256=previous_sha256,selected_sha256=previous_sha256,selected=True,
+            loaded_readiness='unobserved',selector=dict(path=str(path),previous_sha256=selector['sha256'],
+                selected_sha256=hashlib.sha256(candidate).hexdigest()))
+        if current not in (original,candidate):
+            raise OnboardingError('existing_onboarding_service_preserved')
+        temporary = path.with_name('.onboarding-selector-'+uuid.uuid4().hex)
+        try:
+            if current != candidate:
+                # One previous selector, not another file for every update.
+                publish(temporary,original,mode=mode)
+                if retained.exists() or retained.is_symlink():
+                    onboarding_release.regular(retained,uid=os.geteuid())
+                os.replace(temporary,retained)
+                publish(temporary,candidate,mode=mode)
+                if pre_replace is not None:
+                    pre_replace()
+                if (onboarding_release.regular(path,uid=os.geteuid()) != original
+                        or onboarding_release.regular(unit,uid=os.geteuid()) != fragment):
+                    raise OnboardingError('existing_onboarding_service_preserved')
+                os.replace(temporary,path)
+            parent = os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:
+                os.fsync(parent)
+            finally:
+                os.close(parent)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return result
+
+
+def selector_path(unit: Path, selector: dict) -> Path:
+    if (not isinstance(selector,dict) or set(selector) != {'path','sha256'}
+            or not isinstance(selector['path'],str) or not isinstance(selector['sha256'],str)
+            or re.fullmatch('[0-9a-f]{64}',selector['sha256']) is None):
+        raise OnboardingError('qualified_matrix_entrypoint_required')
+    path = being_seed._path(Path(selector['path']))
+    if path.parent != unit.with_name(unit.name+'.d') or path.suffix != '.conf':
+        raise OnboardingError('qualified_matrix_entrypoint_required')
+    return path
+
+
+def selected_dropins(previous: dict, candidate: bytes) -> dict:
+    expected = dict(previous.get('dropins',{}))
+    selector = previous.get('entrypoint_selector')
+    if selector is not None:
+        expected[selector['path']] = hashlib.sha256(candidate).hexdigest()
+    return expected
+
+
+def runtime_entrypoint(original: bytes, requested: list[str]) -> bytes:
+    """Change only code/path pins in a working legacy Target command.
+
+    Keep its interpreter, bootstrap and all other options byte-for-byte. shlex
+    locates simple runtime pins only; it never executes or re-renders the script.
+    """
+    import shlex
+    if (not entrypoint_override(original) or not isinstance(requested,list) or not 1 <= len(requested) <= 100
+            or any(not isinstance(arg,str) or '\0' in arg for arg in requested)
+            or len(json.dumps(requested).encode()) > 65536):
+        raise OnboardingError('qualified_matrix_entrypoint_required')
+    try:
+        line = next(line.strip()[len(b'ExecStart='):] for line in original.splitlines()
+            if line.strip().startswith(b'ExecStart=') and line.strip() != b'ExecStart=')
+        current = shlex.split(line.decode())
+        if 'clusterctl.onboarding_target' not in current or 'clusterctl.onboarding_target' not in requested:
+            raise ValueError
+        def pin(args,flag):
+            if args.count(flag) != 1:
+                raise ValueError
+            return args[args.index(flag)+1]
+        old_path,new_path = pin(current,'--runtime-code'),pin(requested,'--runtime-code')
+        old_digest,new_digest = pin(current,'--runtime-digest'),pin(requested,'--runtime-digest')
+        if (any(re.fullmatch('[0-9a-f]{64}',value) is None for value in (old_digest,new_digest))
+                or any(not Path(value).is_absolute() or re.fullmatch(r'[A-Za-z0-9_./-]+',value) is None
+                    for value in (old_path,new_path))):
+            raise ValueError
+        candidate = original.replace(old_path.encode(),new_path.encode())
+        if old_digest != new_digest:
+            if candidate.count(old_digest.encode()) != 1:
+                raise ValueError
+            candidate = candidate.replace(old_digest.encode(),new_digest.encode())
+        return candidate
+    except (ValueError,IndexError,UnicodeError,StopIteration):
+        raise OnboardingError('qualified_matrix_entrypoint_required') from None
 
 
 def initial_context(value: dict) -> dict:

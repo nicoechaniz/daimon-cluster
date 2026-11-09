@@ -107,12 +107,12 @@ class ManagedRuntime:
         reconciliation and can never be replaced by a new operation.
         """
         from .onboarding_service import command
-        if (self.settings.get('mode') != 'native-admission-only'
-                or type(receive_only_group) is not bool or type(published_group) is not bool
+        if (type(receive_only_group) is not bool or type(published_group) is not bool
                 or receive_only_group and published_group
                 or str(uuid.UUID(operation_id)) != operation_id
                 or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 120
-                or self._selection(plan) != (None, None)):
+                or not published_group and (self.settings.get('mode') != 'native-admission-only'
+                    or self._selection(plan) != (None, None))):
             raise OnboardingError('native_code_update_requires_plain_admitted_body')
         with_group = receive_only_group or published_group
         deadline = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
@@ -198,6 +198,8 @@ class ManagedRuntime:
                 state = dict(pins=pins, runtime_sha256=before['runtime_sha256'], origin=before['origin'],
                     request=dict(schema='cluster-guest-service-bootstrap/v1', operation_id=operation_id,
                         plan_digest=digest(plan), predecessor=previous, argv=argv), effects={})
+                if previous['service'].get('entrypoint_selector') is not None:
+                    state['request']['runtime_update'] = True
                 if before.get('group') is not None:
                     state['closed_group'] = frozen_group
                 if previous_completed is not None:
@@ -249,6 +251,10 @@ class ManagedRuntime:
             if (physical['service']['unit_sha256'] != state['effects']['select']['selected_sha256']
                     or physical['scope']['admission_parent'] != state['effects']['start']['admission_parent']
                     or store._load(plan['name']) != job):
+                raise OnboardingError('native_code_update_selection_changed')
+            selected_override = state['effects']['select'].get('selector')
+            if (selected_override is not None and physical['service'].get('entrypoint_selector') != dict(
+                    path=selected_override['path'],sha256=selected_override['selected_sha256'])):
                 raise OnboardingError('native_code_update_selection_changed')
             state['result'] = dict(schema='cluster-native-code-updated/v1',
                 operation_id=operation_id, candidate_digest=candidate[1],

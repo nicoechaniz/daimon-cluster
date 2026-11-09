@@ -299,3 +299,115 @@ def test_profile_service_freezes_existing_owner_and_overrides_without_editing(tm
     assert calls[-1]==['systemctl','--no-block','stop',unit.name]
     with pytest.raises(OnboardingError,match='qualified_matrix_service_required'):
         service.MatrixProfileService(tmp_path/'database.service',user='debian',group='debian')
+
+
+@pytest.mark.parametrize("indent", [b"", b"  "])
+def test_effective_override_preserves_reset_and_refuses_foreign_directives(
+    tmp_path, indent
+):
+    from clusterctl import onboarding_service as service
+
+    original = (
+        b"# previous\n[Service]\n"
+        + indent
+        + b"ExecStart=\n"
+        + indent
+        + b"ExecStart=/old\n"
+    )
+    assert service.entrypoint_override(original)
+    candidate = service.entrypoint(original, ["/new", "argument"])
+    assert indent + b"ExecStart=\n" in candidate and b'ExecStart="/new"' in candidate
+    assert not service.entrypoint_override(original + b"User=another\n")
+    assert not service.entrypoint_override(original + b"ExecStart=/second\n")
+
+
+def test_override_cas_recovers_lost_return_and_keeps_one_previous(
+    tmp_path, monkeypatch
+):
+    import hashlib
+    import os
+    from clusterctl import onboarding_service as service
+
+    unit = tmp_path / service.UNIT
+    unit.write_bytes(b"[Service]\nUser=agent\nGroup=agent\nExecStart=/base\n")
+    unit.chmod(0o644)
+    directory = unit.with_name(unit.name + ".d")
+    directory.mkdir()
+    path = directory / "90-sdk.conf"
+    original = b"[Service]\nExecStart=\nExecStart=/old\n"
+    path.write_bytes(original)
+    path.chmod(0o644)
+    selector = dict(path=str(path), sha256=hashlib.sha256(original).hexdigest())
+    unit_digest = hashlib.sha256(unit.read_bytes()).hexdigest()
+    replace = os.replace
+    lost = [True]
+
+    def replace_lost(before, after):
+        replace(before, after)
+        if after == path and lost:
+            lost.pop()
+            raise OSError("lost selection acknowledgement")
+
+    monkeypatch.setattr(service.os, "replace", replace_lost)
+    with pytest.raises(OSError):
+        service.select_entrypoint(
+            unit, ["/new"], previous_sha256=unit_digest, selector=selector
+        )
+    result = service.select_entrypoint(
+        unit, ["/new"], previous_sha256=unit_digest, selector=selector
+    )
+    assert result["selected_sha256"] == unit_digest
+    assert path.with_name(path.name + ".previous").read_bytes() == original
+    assert (
+        service.select_entrypoint(
+            unit, ["/new"], previous_sha256=unit_digest, selector=selector
+        )
+        == result
+    )
+    second = dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    service.select_entrypoint(
+        unit, ["/later"], previous_sha256=unit_digest, selector=second
+    )
+    assert len(list(directory.glob("*.previous"))) == 1
+    before = path.read_bytes()
+    with pytest.raises(OnboardingError):
+        service.select_entrypoint(
+            unit, ["/new"], previous_sha256=unit_digest, selector=selector
+        )
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("hashed_path", [False, True])
+def test_runtime_pin_update_keeps_bootstrap_and_extra_options(hashed_path):
+    from clusterctl import onboarding_service as service
+
+    old = "/opt/runtime/" + ("a" * 64 if hashed_path else "old")
+    new = "/opt/runtime/" + "b" * 64
+    original = (
+        "[Service]\nExecStart=\nExecStart=/native/python -B "
+        + old
+        + " clusterctl.onboarding_target admitted-serve --runtime-code "
+        + old
+        + " --runtime-digest "
+        + "a" * 64
+        + ' --extra="keep me"\n'
+    ).encode()
+    argv = [
+        "/different/python",
+        "clusterctl.onboarding_target",
+        "admitted-serve",
+        "--runtime-code",
+        new,
+        "--runtime-digest",
+        "b" * 64,
+    ]
+    result = service.runtime_entrypoint(original, argv)
+    assert result == original.replace(old.encode(), new.encode()).replace(
+        b"--runtime-digest " + b"a" * 64, b"--runtime-digest " + b"b" * 64
+    )
+    assert b"/native/python" in result and b'--extra="keep me"' in result
+    with pytest.raises(OnboardingError):
+        service.runtime_entrypoint(
+            original,
+            [*argv[:-3], "--runtime-code", "relative", "--runtime-digest", "b" * 64],
+        )

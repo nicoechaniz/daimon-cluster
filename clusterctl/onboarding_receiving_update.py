@@ -23,6 +23,7 @@ from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from typing import Any
 
 from . import being_seed, onboarding_release, onboarding_sdk
 from .onboarding import JobStore, OnboardingError, digest, private_directory
@@ -2739,7 +2740,8 @@ class SourceBootstrapController:
         from .onboarding_service import select_entrypoint, selection_lock
         self._budget(deadline_ns)
         options = {} if deadline_ns is None else {'deadline_ns': deadline_ns}
-        selection_options = {} if deadline_ns is None else {'pre_replace': lambda: self._budget(deadline_ns)}
+        selection_options: dict[str, Any] = ({} if deadline_ns is None else
+            {'pre_replace': lambda: self._budget(deadline_ns)})
         with self.journal.mutation_lock(self.operation_id), selection_lock(self.manager.unit):
             row, frozen, candidate = self._row()
             if deadline_ns is not None and frozen.get('mode') != 'preserve':

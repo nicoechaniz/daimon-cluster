@@ -1448,7 +1448,7 @@ class GroupCoordinator:
         plan = record['plan']
         if record['stage'] == 'acceptance':
             if digest(plan) in self.settings.get('receive_preparations', {}):
-                return self.advance_receive_only(name, timeout_seconds=(deadline-time.monotonic_ns())/1_000_000_000)
+                return self.advance_receive_only(name, timeout_seconds=(deadline-time.monotonic_ns())/1_000_000_000, select_current=True)
             return None
         bound = self._binding(plan)
         if bound is None:
@@ -1463,7 +1463,7 @@ class GroupCoordinator:
         if 'membership_only' in bound[1]['intended_transition']:
             result = self.advance_membership_only(name, timeout_seconds=remaining())
             if result is not None and digest(plan) in self.settings.get('receive_preparations', {}):
-                return self.advance_receive_only(name, timeout_seconds=(deadline-time.monotonic_ns())/1_000_000_000)
+                return self.advance_receive_only(name, timeout_seconds=(deadline-time.monotonic_ns())/1_000_000_000, select_current=True)
             return result
         if plan['schema'] == CONVERSATION_PLAN_SCHEMA:
             if bound[1]['state'] == 'completed':
@@ -1670,14 +1670,16 @@ class GroupCoordinator:
                 result = CohortController(journal, original_id, owners).admit_membership_only(deadline_ns=deadline)
             return finish_membership_only(journal, journal.get(original_id), result)
 
-    def advance_receive_only(self, name: str, *, timeout_seconds: float = 60) -> dict | None:
+    def advance_receive_only(self, name: str, *, timeout_seconds: float = 60, select_current: bool = False) -> dict | None:
         """First receive publication after the original native membership is complete.
 
         This is explicitly configured per original plan. It never replaces the
         terminal enrollment or changes another owner's application/visibility.
         Current-reader selection remains a separate observed receiving effect.
         """
-        from .onboarding_receive_flow import publish
+        from .onboarding_receive_flow import publish, select_readers
+        if type(select_current) is not bool:
+            raise OnboardingError('companion_receive_preparation_required')
         if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 300:
             raise OnboardingError('receiving_host_deadline_required')
         deadline = time.monotonic_ns()+int(timeout_seconds*1_000_000_000)
@@ -1709,6 +1711,11 @@ class GroupCoordinator:
                         or fresh['tribe_ref'] != self.settings['tribe_ref']
                         or any(fresh['owners'].get(k) != self.settings['owners'][k] for k in admission['receivers'])):
                     raise OnboardingError('companion_receive_original_changed')
+            def finish(result):
+                if select_current:
+                    select_readers(plan=plan, selected=selected, row=journal.get(original_id), journal=journal,
+                        admission=admission, owners=self._owners(admission), validate=validate, deadline_ns=deadline)
+                return copy.deepcopy(result)
             validate()
             phase = (row['runtime_observation'] or {}).get('receive_application', {})
             snapshot = phase.get('snapshot', {}).get('result')
@@ -1719,7 +1726,7 @@ class GroupCoordinator:
                 if (not isinstance(snapshot, dict) or phase['restoration'] != restored(snapshot)
                         or phase.get('binding') != digest(dict(original_intent=row['intent'],preparation=selected))):
                     raise OnboardingError('companion_receive_original_changed')
-                return copy.deepcopy(snapshot)
+                return finish(snapshot)
             result = publish(plan=plan, selected=selected, journal=journal, row=row, admission=admission,
                 owners=self._owners(admission), validate=validate, deadline_ns=deadline)
             # publish returns only after the original guard's actual restoration.
@@ -1735,7 +1742,7 @@ class GroupCoordinator:
                 raise OnboardingError('companion_receive_capacity')
             journal.advance(original_id, latest['state'], runtime_observation=observed,
                 expected_runtime_observation=latest['runtime_observation'])
-            return result
+            return finish(result)
 
     def observe_receive(self, plan: dict) -> Observation:
         """Require actual current all-required readers, retaining old policies."""

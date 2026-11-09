@@ -1600,8 +1600,8 @@ exact retained recovery remains available at capacity. Keys/metadata stay with
 the original operation and current/rollback selection; no automatic retirement
 of referenced or unfinished work is added. Missing capacity is a retained failure,
 not authorization to discard work. The coordinator now composes the private
-resources with publication/selection and observed restoration. Automatic cohort
-control selection and actual fleet/full-command qualification remain unfinished.
+resources with publication/selection, observed restoration and native current-reader
+controls. Actual fleet/full-command qualification remains unfinished.
 
 The private CLI returns only a closed refusal schema and fixed public error code
 on failure. Arbitrary exception text, private paths and captured data are never
@@ -1669,7 +1669,38 @@ reported. Files, enrollment, partial audiences and unselected gates cannot stand
 in for that observation. This is reader qualification/selection evidence, not
 network delivery, outbound release or model uptake.
 
-This publication/observation composition is source-qualified, not selected on the
-current four companions. Automated cohort control selection, actual guarded
-receiving/network qualification and coherent full-command acceptance remain
-unfinished. Existing admitted children and adult policies remain intact.
+After actual restoration, the ordinary worker also composes the existing native
+reader controls. It first observes all current required readers and freezes that
+vector, their own process/selection pins and the original native gates in the same
+job observation. A stable control ID is derived from the original job/preparation;
+commands are recorded before dispatch and owner-private request files remain with
+the existing owner writer. The native mandatory revoke barrier is completed on
+every required owner before any positive selection. Each positive selection has
+a fresh all-required observation and uses that owner's actual local roster CAS.
+Completed controls are checked against their current gates; they are not revoked
+or authored again on retries. An already fully selected vector is observed without
+taking over its controller. Another unfinished revocation is preserved as a precise
+conflict, not silently adopted.
+
+Partial controls, lost replies and an exhausted foreground window preserve the
+same immutable commands, private request paths, membership result and reader
+vector. A later authorized invocation resumes retained admitted requests through
+the owner's exact recovery path; no invitation,
+reader validity or historical date is extended. Changed process, membership,
+credential, application or gate refuses rather than replacing uncertain work.
+The public observation retains only fixed commands and minimal actual gate/process
+receipts within the existing2MiB phase limit; each owner needs at most two native
+control files for this operation. Query-only acceptance remains separate and
+requires the final actual complete vector. No conversation input, model turn, visibility
+installation or outbound policy is changed by this composition.
+
+This publication/control/observation composition is source-qualified, not selected
+on the current four companions. Actual guarded receiving/network qualification,
+explicit KVM placement and coherent full-command acceptance remain unfinished.
+One remaining owner-client boundary is an authenticated request retained before
+its first native dispatch and resumed after the native freshness window. An
+already admitted request has exact retained recovery; an unseen expired envelope
+needs bounded owner-local renewal of the same command with native CAS and original
+provenance, rather than replacing the membership operation or discarding work.
+Do not treat the current native-gate fixtures as proof of that authentication
+boundary. Existing admitted children and adult policies remain intact.

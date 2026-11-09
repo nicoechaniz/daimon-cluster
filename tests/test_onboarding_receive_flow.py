@@ -303,6 +303,7 @@ def test_existing_worker_advances_receive_after_completed_membership_without_ree
         events.append('membership')
         return {'native':'retained'}
     def receive(*args,**kwargs):
+        assert kwargs['select_current'] is True
         events.append('receive')
         return {'receiving':'phase'}
     monkeypatch.setattr(coordinator,'advance_membership_only',membership)
@@ -367,3 +368,187 @@ def test_preparation_can_use_existing_outer_budget_without_extending_native_guar
     result=flow.publish(plan=f.plan,selected=f.selected,journal=f.journal,row=f.journal.get(f.row['operation_id']),
         admission=f.admission,owners=f.owners,validate=lambda:None,deadline_ns=time.monotonic_ns()+300_000_000_000)
     assert result['outbound_release'] is False
+
+
+@pytest.fixture
+def native_readers(fixture, monkeypatch, tmp_path):
+    """Use the real native gate CAS; no daemon/model or child identity is made."""
+    import os
+    from daimon_matrix.native_egress import MandatoryEgressController
+    f = fixture
+    snapshot = run(f)
+    row = f.journal.get(f.row['operation_id'])
+    observed = copy.deepcopy(row['runtime_observation'])
+    observed['receive_application']['restoration'] = dict(schema='cluster-companion-receive-restored/v1',
+        operation_id=row['operation_id'], snapshot_sha256=digest(snapshot), preparation_sha256=digest(f.selected))
+    f.journal.advance(row['operation_id'], row['state'], runtime_observation=observed)
+    controllers = {name:MandatoryEgressController(policy={}, proof_key=b'k'*32, transport=None)
+        for name in f.owners}
+    for native in controllers.values():
+        native.register_reader_channel('tribe', 'a'*64, controlled=True)
+    requests, effects, lost = {}, [], []
+    readers = [dict(schema='dm.receiving.reader/v2',being_ref=name,embodiment_id='body-'+name,
+        incarnation_id='incarnation-'+name,credential_id='credential-'+name,authority_manifest_hash='a'*64,
+        receiving_selection_sha256='b'*64,loaded_view_sha256='c'*64,
+        validity=dict(mode='until-revoked',not_before_ms=0),wire_read=['dm.tribe.conversation/v1'],
+        authority_epochs=['a'*64]) for name in sorted(f.owners)]
+    def gate(name):
+        return controllers[name].reader_snapshot('tribe',deadline_ns=time.monotonic_ns()+5_000_000_000)
+    def collect(**options):
+        options['validate']()
+        return {name:dict(reader=copy.deepcopy(next(r for r in readers if r['being_ref']==name)),
+            gate=gate(name),roster=dict(roster_sha256=digest(name)),
+            expected=dict(process=dict(pid=os.getpid()),server=dict(embodiment_id='body-'+name),selection={}))
+            for name in f.owners}, dict(readers=copy.deepcopy(readers),membership_basis_sha256='d'*64)
+    monkeypatch.setattr(flow,'_collect',collect)
+    for name,owner in f.owners.items():
+        owner.root = tmp_path/name
+        def apply(command,path,*,name=name):
+            key=(name,str(path))
+            if key in requests:
+                assert requests[key] == command, 'immutable private request changed'
+            else:
+                requests[key]=copy.deepcopy(command)
+            marker=name+'-'+command['phase']
+            if lost and lost[0]==marker+'-before':
+                lost.pop(0)
+                raise OSError('lost before native dispatch')
+            if command['phase']=='select':
+                assert all(gate(n)['phase'] in {'revoke','select'}
+                    and gate(n)['operation_id']==command['operation_id'] for n in f.owners)
+            before=gate(name)
+            # The actual owner API verifies local signed-roster CAS separately.
+            assert command['expected_roster_sha256']==digest(name)
+            native_command={k:v for k,v in command.items() if k!='expected_roster_sha256'}
+            accepted=controllers[name].select_readers(native_command,request_sha256=digest(dict(key=key,command=command)),
+                deadline_ns=time.monotonic_ns()+5_000_000_000)
+            if accepted['head']!=before['head']:
+                effects.append(marker)
+            if lost and lost[0]==marker+'-after':
+                lost.pop(0)
+                raise OSError('lost after native acceptance')
+            return dict(schema='cluster-receiving-owner-control-observation/v1',gate=accepted,
+                process=dict(pid=os.getpid()),server=dict(embodiment_id='body-'+name),
+                request_sha256=accepted['request_sha256'],command_sha256=digest(command))
+        owner.prepare_apply_control=apply
+    def select(validate=lambda:None):
+        return flow.select_readers(plan=f.plan,selected=f.selected,row=f.journal.get(f.row['operation_id']),
+            journal=f.journal,admission=f.admission,owners=f.owners,validate=validate,
+            deadline_ns=time.monotonic_ns()+10_000_000_000)
+    return SimpleNamespace(f=f,controllers=controllers,requests=requests,effects=effects,lost=lost,
+        readers=readers,gate=gate,select=select)
+
+
+@pytest.mark.parametrize('lost',[None,'new-revoke-before','new-revoke-after','old-revoke-after',
+    'new-select-before','new-select-after','old-select-after'])
+def test_current_native_barrier_resumes_same_original_controls_and_preserves_membership(native_readers,lost):
+    f=native_readers
+    if lost is not None:
+        f.lost.append(lost)
+        with pytest.raises(OSError,match='lost'):
+            f.select()
+    assert f.select()==dict(tribe_reader_selection_verified=True)
+    row=f.f.journal.get(f.f.row['operation_id'])
+    assert row['state']=='completed' and row['result']=={'original-membership':'complete'}
+    assert f.effects==['new-revoke','old-revoke','new-select','old-select']
+    assert all(f.gate(n)['readers']==f.readers for n in f.f.owners)
+    requests=copy.deepcopy(f.requests)
+    assert f.select()==dict(tribe_reader_selection_verified=True)
+    assert f.requests==requests and len(f.effects)==4
+    assert all(o.deadline_ns is None and o.maintenance is None for o in f.f.owners.values())
+
+
+def test_current_native_barrier_keeps_partial_work_across_foreground_window(native_readers):
+    f=native_readers
+    def expires():
+        if len(f.effects)==1:
+            raise OnboardingError('receiving_host_deadline_expired')
+    with pytest.raises(OnboardingError,match='deadline_expired'):
+        f.select(expires)
+    assert f.effects==['new-revoke']
+    assert f.select()==dict(tribe_reader_selection_verified=True)
+    assert f.effects==['new-revoke','old-revoke','new-select','old-select']
+
+
+def test_changed_current_vector_cannot_enable_partial_cohort(native_readers):
+    f=native_readers
+    f.lost.append('old-revoke-after')
+    with pytest.raises(OSError):
+        f.select()
+    f.readers[0]['loaded_view_sha256']='e'*64
+    before=copy.deepcopy(f.effects)
+    with pytest.raises(OnboardingError,match='reader_control_changed'):
+        f.select()
+    assert f.effects==before and all(f.gate(n)['phase']=='revoke' for n in f.f.owners)
+
+
+def test_current_selection_requires_actual_original_restoration(native_readers):
+    f=native_readers
+    row=f.f.journal.get(f.f.row['operation_id'])
+    observed=copy.deepcopy(row['runtime_observation'])
+    del observed['receive_application']['restoration']
+    f.f.journal.advance(row['operation_id'],row['state'],runtime_observation=observed)
+    with pytest.raises(OnboardingError,match='restoration_required'):
+        f.select()
+    assert not f.requests
+
+
+def test_worker_current_controls_begin_only_after_retained_restoration(fixture, monkeypatch, tmp_path):
+    from clusterctl import onboarding_group_coordinator as module
+    f=fixture
+    coordinator=object.__new__(module.GroupCoordinator)
+    pin=digest(f.plan)
+    coordinator.path=tmp_path/'configuration.json'
+    coordinator.store=SimpleNamespace(_load=lambda n:dict(plan=f.plan,stage='acceptance'))
+    coordinator.settings=dict(receive_preparations={pin:f.selected},admissions={pin:f.row['operation_id']},
+        owners={name:{'binding':name} for name in f.owners},tribe_ref='tribe')
+    coordinator.backend=SimpleNamespace(authorize=lambda *a:True,_consented=lambda *a,**kw:True,
+        _decision=lambda p:True,_ceremony=lambda p:SimpleNamespace(authorize=lambda p:True))
+    monkeypatch.setattr(coordinator,'_binding',lambda p:(f.journal,f.journal.get(f.row['operation_id']),f.admission))
+    monkeypatch.setattr(coordinator,'_owners',lambda a:f.owners)
+    monkeypatch.setattr(module,'configuration',lambda p:coordinator.settings)
+    monkeypatch.setattr(module,'finish_membership_only',lambda j,r,result:result)
+    calls=[]
+    def select(**options):
+        assert f.events[-1]==('new','restore')
+        state=options['row']['runtime_observation']['receive_application']
+        assert state['restoration']['snapshot_sha256']==digest(state['snapshot']['result'])
+        options['validate']()
+        calls.append(options['row']['operation_id'])
+        return dict(tribe_reader_selection_verified=True)
+    monkeypatch.setattr(flow,'select_readers',select)
+    result=coordinator.advance_receive_only('new', select_current=True)
+    assert calls==[f.row['operation_id']] and result['outbound_release'] is False
+    assert f.journal.get(f.row['operation_id'])['result']=={'original-membership':'complete'}
+
+
+def test_other_native_revocation_is_preserved_without_takeover(native_readers):
+    f=native_readers
+    before=f.gate('old')
+    command=dict(schema='dm.runtime.reader-selection/v2',channel_id='tribe',
+        process_instance_id=before['process_instance_id'],expected_head=before['head'],
+        operation_id=str(uuid.uuid4()),release_digest='f'*64,phase='revoke',readers=[])
+    f.controllers['old'].select_readers(command,request_sha256=digest(command),
+        deadline_ns=time.monotonic_ns()+5_000_000_000)
+    foreign=f.gate('old')
+    with pytest.raises(OnboardingError,match='reader_control_changed'):
+        f.select()
+    assert f.gate('old')==foreign and not f.requests
+    assert f.gate('new')['phase']=='unselected'
+
+
+def test_unobserved_control_reply_keeps_exact_native_recovery(native_readers,monkeypatch):
+    f=native_readers
+    owner=f.f.owners['new']
+    native=owner.prepare_apply_control
+    def bad(command,path):
+        result=native(command,path)
+        result['command_sha256']='0'*64
+        return result
+    monkeypatch.setattr(owner,'prepare_apply_control',bad)
+    with pytest.raises(OnboardingError,match='reader_control_unobserved'):
+        f.select()
+    assert f.effects==['new-revoke']
+    monkeypatch.setattr(owner,'prepare_apply_control',native)
+    assert f.select()==dict(tribe_reader_selection_verified=True)
+    assert f.effects==['new-revoke','old-revoke','new-select','old-select']

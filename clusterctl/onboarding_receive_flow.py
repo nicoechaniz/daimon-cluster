@@ -277,15 +277,14 @@ def publish(*, plan: dict, selected: dict, journal, row: dict, admission: dict,
 
 
 
-def observe(*, plan, selected, row, admission, owners, validate, deadline_ns):
-    """Read every current required reader; publication cannot satisfy this check."""
-    from .onboarding import Observation
+def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, prepare=True):
+    """Observe a complete current vector without changing any native gate."""
     from .onboarding_receiving_update import observe_current_reader, conversation_cohort, _reader_active
     selected = configuration(selected, owners)
     entry = (row['runtime_observation'] or {}).get('receive_application', {})
     if (entry.get('binding') != digest(dict(original_intent=row['intent'], preparation=selected))
             or not isinstance(entry.get('snapshot', {}).get('result'), dict)):
-        return Observation('waiting', reason='group_admission_pending')
+        raise OnboardingError('onboarding_group_admission_pending')
     snapshot = entry['snapshot']['result']
     name = plan['name']
     expected = copy.deepcopy(entry['reader_baselines'])
@@ -299,8 +298,9 @@ def observe(*, plan, selected, row, admission, owners, validate, deadline_ns):
         for key, owner in owners.items():
             validate()
             owner.deadline_ns = deadline_ns
-            Endpoint(owner, selected['helpers']['owners'][key], parent=row['operation_id'],
-                binding=entry['binding'], deadline_ns=deadline_ns, validate=validate)
+            if prepare:
+                Endpoint(owner, selected['helpers']['owners'][key], parent=row['operation_id'],
+                    binding=entry['binding'], deadline_ns=deadline_ns, validate=validate)
         proofs = {}
         expires = time.time_ns()//1_000_000+max(1, min(60_000, (deadline_ns-time.monotonic_ns())//1_000_000))
         for key, owner in sorted(owners.items()):
@@ -321,10 +321,161 @@ def observe(*, plan, selected, row, admission, owners, validate, deadline_ns):
         if required != observed:
             raise OnboardingError('receiving_current_required_reader_missing')
         validate()
-        if any(proof['gate'].get('phase') != 'select'
-                or proof['gate'].get('readers') != cohort['readers'] for proof in proofs.values()):
-            return Observation('waiting', reason='group_admission_pending')
-        return Observation('complete', dict(tribe_reader_selection_verified=True))
+        return proofs, cohort
+    finally:
+        for key, owner in owners.items():
+            owner.deadline_ns, owner.maintenance = previous[key]
+
+
+def observe(**options):
+    """Read every current required reader; publication cannot satisfy this check."""
+    from .onboarding import Observation
+    entry = (options['row']['runtime_observation'] or {}).get('receive_application', {})
+    if not isinstance(entry.get('snapshot', {}).get('result'), dict):
+        return Observation('waiting', reason='group_admission_pending')
+    proofs, cohort = _collect(**options)
+    if any(proof['gate'].get('phase') != 'select'
+            or proof['gate'].get('readers') != cohort['readers'] for proof in proofs.values()):
+        return Observation('waiting', reason='group_admission_pending')
+    return Observation('complete', dict(tribe_reader_selection_verified=True))
+
+
+def select_readers(*, plan, selected, row, journal, admission, owners, validate, deadline_ns):
+    """Compose existing native revoke/select controls under the original job.
+
+    All readers are observed before the barrier and before each positive effect.
+    Commands and owner-private request files are immutable; a later foreground
+    invocation continues them without resetting membership, dates or reader data.
+    The caller holds the original journal lock. No application/visibility changes.
+    """
+    import uuid
+    selected = configuration(selected, owners)
+    parent = row['operation_id']
+    binding = digest(dict(original_intent=row['intent'], preparation=selected))
+    def current():
+        return journal.get(parent)
+    def phase():
+        return (current()['runtime_observation'] or {}).get('receive_application', {})
+    def check():
+        if time.monotonic_ns() >= deadline_ns:
+            raise OnboardingError('receiving_host_deadline_expired')
+        validate()
+        state = phase()
+        snapshot = state.get('snapshot', {}).get('result')
+        if (state.get('binding') != binding or not isinstance(snapshot, dict)
+                or state.get('restoration') != dict(schema='cluster-companion-receive-restored/v1',
+                    operation_id=parent, snapshot_sha256=digest(snapshot), preparation_sha256=digest(selected))):
+            raise OnboardingError('companion_receive_restoration_required')
+    def collect():
+        check()
+        return _collect(plan=plan, selected=selected, row=current(), admission=admission,
+            owners=owners, validate=check, deadline_ns=deadline_ns, prepare=False)
+    def save(value):
+        check()
+        latest = current()
+        observed = copy.deepcopy(latest['runtime_observation'])
+        observed['receive_application']['reader_selection'] = value
+        if len(json.dumps(observed['receive_application']).encode()) > being_seed.MAX_SELECTION-1024:
+            raise OnboardingError('companion_receive_capacity')
+        journal.advance(parent, latest['state'], runtime_observation=observed,
+            expected_runtime_observation=latest['runtime_observation'])
+    previous = {key:(owner.deadline_ns, owner.maintenance) for key,owner in owners.items()}
+    try:
+        check()
+        for key, owner in owners.items():
+            owner.deadline_ns = deadline_ns
+            Endpoint(owner, selected['helpers']['owners'][key], parent=parent,
+                binding=binding, deadline_ns=deadline_ns, validate=check)
+        proofs, cohort = collect()
+        state = phase().get('reader_selection')
+        if state is None:
+            if all(p['gate'].get('phase') == 'select' and p['gate'].get('readers') == cohort['readers']
+                    for p in proofs.values()):
+                # Already selected elsewhere: observe that fact, never replace its owner.
+                return dict(tribe_reader_selection_verified=True)
+            state = dict(schema='cluster-companion-current-readers/v1',
+                readers=cohort['readers'], membership_basis_sha256=cohort['membership_basis_sha256'],
+                expected={name:p['expected'] for name,p in proofs.items()},
+                initial_gates={name:p['gate'] for name,p in proofs.items()}, controls={})
+            # A different in-progress barrier is not ours to take over.
+            if any(p['gate'].get('phase') == 'revoke' for p in proofs.values()):
+                raise OnboardingError('companion_receive_reader_control_changed')
+            save(state)
+        control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'companion-readers:'+parent+':'+binding))
+        release = digest(dict(original=parent, binding=binding, readers=state['readers'],
+            membership_basis_sha256=state['membership_basis_sha256']))
+        def unchanged(proofs, cohort):
+            if (state.get('schema') != 'cluster-companion-current-readers/v1'
+                    or state['readers'] != cohort['readers']
+                    or state['membership_basis_sha256'] != cohort['membership_basis_sha256']
+                    or state['expected'] != {name:p['expected'] for name,p in proofs.items()}):
+                raise OnboardingError('companion_receive_reader_control_changed')
+        unchanged(proofs, cohort)
+        for mode in ('revoke', 'select'):
+            for name in sorted(owners):
+                key = mode+'-'+name
+                old = state['controls'].get(key)
+                # Once select starts, already selected owners remain selected.
+                # Never replay a revocation on a completed retry.
+                if mode == 'revoke' and 'select-'+name in state['controls']:
+                    continue
+                gate = proofs[name]['gate']
+                before = (state['initial_gates'][name] if mode == 'revoke'
+                    else state['controls']['revoke-'+name]['result']['gate'])
+                command = (old['command'] if old is not None else dict(
+                    schema='dm.runtime.reader-selection/v2', channel_id='tribe',
+                    process_instance_id=before['process_instance_id'], expected_head=before['head'],
+                    operation_id=control_id, release_digest=release, phase=mode,
+                    readers=[] if mode == 'revoke' else state['readers'],
+                    expected_roster_sha256=proofs[name]['roster']['roster_sha256']))
+                if old is not None and old.get('result') is not None:
+                    if gate != old['result']['gate']:
+                        raise OnboardingError('companion_receive_reader_control_changed')
+                    continue
+                if mode == 'select':
+                    # Positive controls need a fresh all-required round. Cached
+                    # completed controls and revocations need no duplicate cold
+                    # observer round; native local CAS still checks their gates.
+                    proofs, cohort = collect()
+                    unchanged(proofs, cohort)
+                    gate = proofs[name]['gate']
+                    for other,p in proofs.items():
+                        done = state['controls'].get('select-'+other, {}).get('result')
+                        required = (done or state['controls']['revoke-'+other]['result'])['gate']
+                        pending_own = (other == name and old is not None and old.get('result') is None
+                            and all(p['gate'].get(k) == command[k] for k in
+                                ('process_instance_id','operation_id','release_digest','phase','readers')))
+                        if p['gate'] != required and not pending_own:
+                            raise OnboardingError('companion_receive_reader_control_changed')
+                # A pending exact request can already have changed this gate.
+                # The owner reconciles its retained private request and hash.
+                if old is None:
+                    if gate != before:
+                        raise OnboardingError('companion_receive_reader_control_changed')
+                    state['controls'][key] = dict(command=command, result=None)
+                    save(state)
+                check()
+                path = owners[name].root/'receiving-control'/(control_id+'-'+mode+'.json')
+                result = owners[name].prepare_apply_control(command, path)
+                if (result.get('schema') != 'cluster-receiving-owner-control-observation/v1'
+                        or result.get('command_sha256') != digest(command)
+                        or not isinstance(result.get('request_sha256'), str) or len(result['request_sha256']) != 64
+                        or result.get('process') != state['expected'][name]['process']
+                        or result.get('server') != state['expected'][name]['server']
+                        or result.get('gate', {}).get('phase') != mode
+                        or result['gate'].get('readers') != command['readers']
+                        or result['gate'].get('operation_id') != control_id
+                        or result['gate'].get('release_digest') != release
+                        or result['gate'].get('request_sha256') != result.get('request_sha256')):
+                    raise OnboardingError('companion_receive_reader_control_unobserved')
+                state['controls'][key]['result'] = {k:result[k] for k in ('gate','process','server','request_sha256')}
+                proofs[name]['gate'] = result['gate']
+                save(state)
+        proofs, cohort = collect()
+        unchanged(proofs, cohort)
+        if any(p['gate'] != state['controls']['select-'+name]['result']['gate'] for name,p in proofs.items()):
+            raise OnboardingError('companion_receive_reader_control_changed')
+        return dict(tribe_reader_selection_verified=True)
     finally:
         for key, owner in owners.items():
             owner.deadline_ns, owner.maintenance = previous[key]

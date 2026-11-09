@@ -124,6 +124,8 @@ _DIAGNOSTIC_CODES = frozenset({
     'companion_receive_preparation_required', 'companion_receive_original_changed',
     'companion_receive_capacity', 'companion_receive_source_changed',
     'companion_receive_publication_unobserved', 'companion_receive_resource_names_conflict',
+    'companion_receive_restoration_required', 'companion_receive_reader_control_changed',
+    'companion_receive_reader_control_unobserved',
     'companion_receive_existing_application_preserved', 'receiving_current_required_reader_missing',
 })
 

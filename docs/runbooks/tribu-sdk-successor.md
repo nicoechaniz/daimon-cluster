@@ -1893,3 +1893,14 @@ a cold receiver can still be loading. Observe its actual child/listeners and the
 qualify the current reader. Preserve any exhausted-start-limit refusal; after the
 completed publication is verified, clear that unit's failed state and start the
 same supported unit. Never substitute a global Stop or replay message input.
+
+### Status-only maintenance observers
+
+The compact `runtime.status(view="receiving")` read requires the existing
+`runtime.status` grant. Do not infer its availability from a separate `scope.me`
+permission. Use the compact read for current identity, loaded startup and reader
+qualification, with fallback only after the authenticated `invalid_params`
+unsupported-view refusal. Permission/availability errors do not authorize fallback.
+Retained owner reads preserve exact compact request bytes and fresh native output;
+existing ordinary-read requests keep their distinct binding/prefix. This avoids
+projecting full retained history during routine health/maintenance deadlines.

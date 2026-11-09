@@ -546,8 +546,6 @@ def _reader_proof_expiry(record: dict) -> int:
 
 def receiving_status_response(client) -> dict:
     """Use current metadata, falling back only for an authenticated old view."""
-    if 'scope.me' not in client.config.capability.methods:
-        return client.runtime_status()[1]
     response = client.invoke('runtime.status', {'view': 'receiving'})[1]
     if response.get('ok') is False and response.get('error', {}).get('code') == 'invalid_params':
         return client.runtime_status()[1]

@@ -1230,8 +1230,9 @@ def test_explicit_remaining_steady_authority_preserves_expired_original(initial,
 
 @pytest.mark.parametrize("runtime_update", [False, True])
 def test_existing_override_is_selected_and_started_without_touching_other_layers(
-    fixture, tmp_path, runtime_update
+    fixture, tmp_path, runtime_update, monkeypatch
 ):
+    from clusterctl.onboarding import digest
     controller, manager, request = fixture[:3]
     directory = manager.unit.with_name(manager.unit.name + ".d")
     directory.mkdir()
@@ -1308,3 +1309,37 @@ def test_existing_override_is_selected_and_started_without_touching_other_layers
     first = controller.execute("start", request, deadline_ns=deadline())
     assert controller.execute("start", request, deadline_ns=deadline()) == first
     assert manager.starts == manager.stops == 1
+    # An automatic restart must prove the selected override, not compare its
+    # bytes to the unchanged primary unit's digest.
+    parent = {**first['admission_parent'],'pid':322,'start_ticks':19}
+    child = {**parent,'pid':333,'start_ticks':20}
+    manager.exited[first['admission_parent']['pid']] = True
+    manager.invocation = 'override-successor'
+    original_inspect = manager.inspect
+    def successor_inspect(**options):
+        value = original_inspect(**options)
+        value['manager']['MainPID'] = str(parent['pid'])
+        return value
+    manager.inspect = successor_inspect
+    class Family:
+        def __init__(self, observed):
+            assert observed == child
+            self.process = dict(parent)
+        def __enter__(self):
+            return self
+        def __exit__(self,*_):
+            pass
+        def verify(self):
+            pass
+    monkeypatch.setattr(owner_process,'ParentProcessPresence',Family)
+    recovery = dict(schema='cluster-guest-start-recovery/v1',operation_id=str(uuid.uuid4()),
+        bootstrap=request,started_sha256=digest(first),
+        successor=dict(process=child,admission_parent=parent,service=manager.inspect()),
+        implementation_sha256='b'*64,expires_at_ms=time.time_ns()//1_000_000+60000)
+    recovered = controller.recover_start(recovery,deadline_ns=deadline())
+    assert recovered['predecessor_exited'] is True
+    assert controller.recover_start(recovery,deadline_ns=deadline()) == recovered
+    assert manager.starts == manager.stops == 1
+    selected.write_bytes(original_selected)
+    with pytest.raises(OnboardingError,match='successor_changed'):
+        controller.recover_start(recovery,deadline_ns=deadline())

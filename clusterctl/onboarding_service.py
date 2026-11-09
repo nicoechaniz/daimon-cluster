@@ -583,9 +583,11 @@ class GuestServiceBootstrap:
                 if self._retained(root, 'quiesced') is None:
                     raise OnboardingError('receiving_guest_start_recovery_conflict')
             selected = self._retained(root, 'selected')
+            selected_bytes_sha256 = (None if selected is None else
+                selected.get('selector', {}).get('selected_sha256', selected['selected_sha256']))
             if (started is None or selected is None
                     or digest(started) != recovery['started_sha256']
-                    or selected['selected_sha256'] != hashlib.sha256(candidate).hexdigest()):
+                    or selected_bytes_sha256 != hashlib.sha256(candidate).hexdigest()):
                 raise OnboardingError('receiving_guest_start_recovery_conflict')
             old = started['admission_parent']
             if (successor['admission_parent'] == old
@@ -598,10 +600,16 @@ class GuestServiceBootstrap:
                 values = current['manager']
                 original = started['service']['manager'] if initial else started['manager']
                 stable = set(original) - {'MainPID', 'InvocationID', 'Result'}
+                expected_dropins = (selected_dropins(previous_service,candidate)
+                    if previous_service.get('entrypoint_selector') is not None else
+                    previous_service.get('dropins', {}))
+                selector = selected.get('selector')
                 if (presence.process != successor['admission_parent']
                         or current != successor['service']
                         or current['unit_sha256'] != selected['selected_sha256']
-                        or current.get('dropins', {}) != previous_service.get('dropins', {})
+                        or current.get('dropins', {}) != expected_dropins
+                        or selector is not None and current.get('entrypoint_selector') != dict(
+                            path=selector['path'],sha256=selector['selected_sha256'])
                         or values['ActiveState'] != 'active' or values['SubState'] != 'running'
                         or set(values) != set(original)
                         or any(values[key] != original[key] for key in stable)

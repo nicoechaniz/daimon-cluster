@@ -250,6 +250,36 @@ def _reader_active(reader: dict, now: int) -> bool:
     return reader['expires_at_ms'] > now
 
 
+def reader_checkpoint_completed(row) -> bool:
+    return (isinstance(row, dict) and row.get('schema') == 'cluster-current-reader-completion/v1'
+        and isinstance(row.get('binding'), dict) and isinstance(row.get('commands'), dict)
+        and isinstance(row.get('completed'), dict)
+        and row['completed'].get('binding_sha256') == digest(row['binding'])
+        and row['completed'].get('receiving_readiness') == 'qualified-local-projection'
+        and type(row['completed'].get('observed_at_ms')) is int
+        and row['completed']['observed_at_ms'] >= 0
+        and isinstance(row['binding'].get('selections'), dict)
+        and isinstance(row['completed'].get('gate_heads'), dict)
+        and set(row['completed']['gate_heads']) == set(row['binding']['selections'])
+        and all(isinstance(head, str) and re.fullmatch('[0-9a-f]{64}', head) is not None
+            for head in row['completed']['gate_heads'].values()))
+
+
+def preflight_reader_checkpoint(checkpoint: Path, operation_id: str) -> None:
+    """Refuse unresolved predecessors before any new software lifecycle work."""
+    with being_seed._locked(checkpoint.parent):
+        if not checkpoint.exists():
+            return
+        row = being_seed._read(checkpoint, limit=being_seed.MAX_SELECTION)
+        if (row.get("schema") != "cluster-current-reader-completion/v1"
+                or not isinstance(row.get("binding"), dict) or not isinstance(row.get("commands"), dict)
+                or row["binding"].get("operation_id") != operation_id and not reader_checkpoint_completed(row)):
+            raise OnboardingError("receiving_reader_checkpoint_unresolved")
+        previous = checkpoint.with_name(checkpoint.stem + ".previous" + checkpoint.suffix)
+        if previous.exists() and not reader_checkpoint_completed(being_seed._read(previous, limit=being_seed.MAX_SELECTION)):
+            raise OnboardingError("receiving_reader_checkpoint_unresolved")
+
+
 def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: str,
                             release_digest: str, deadline_ns: int, checkpoint: Path,
                             nonadmitted: frozenset[str] = frozenset()) -> dict:
@@ -304,30 +334,17 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
         readers = vector['readers']
         binding = dict(operation_id=operation_id, release_digest=release_digest,
             selections=selections, nonadmitted=sorted(nonadmitted), vector=vector)
-        def finished(row):
-            return (isinstance(row, dict) and row.get('schema') == 'cluster-current-reader-completion/v1'
-                and isinstance(row.get('binding'), dict) and isinstance(row.get('commands'), dict)
-                and isinstance(row.get('completed'), dict)
-                and row['completed'].get('binding_sha256') == digest(row['binding'])
-                and row['completed'].get('receiving_readiness') == 'qualified-local-projection'
-                and type(row['completed'].get('observed_at_ms')) is int
-                and row['completed']['observed_at_ms'] >= 0
-                and isinstance(row['binding'].get('selections'), dict)
-                and isinstance(row['completed'].get('gate_heads'), dict)
-                and set(row['completed']['gate_heads']) == set(row['binding']['selections'])
-                and all(isinstance(head, str) and re.fullmatch('[0-9a-f]{64}', head) is not None
-                    for head in row['completed']['gate_heads'].values()))
         if checkpoint.exists():
             saved = being_seed._read(checkpoint, limit=being_seed.MAX_SELECTION)
             if (saved.get('schema') != 'cluster-current-reader-completion/v1'
                     or not isinstance(saved.get('commands'), dict)):
                 raise OnboardingError('receiving_control_binding_conflict')
             if saved.get('binding') != binding:
-                if (not finished(saved)
+                if (not reader_checkpoint_completed(saved)
                         or saved['binding'].get('operation_id') == operation_id):
                     raise OnboardingError('receiving_control_binding_conflict')
                 previous = checkpoint.with_name(checkpoint.stem + '.previous' + checkpoint.suffix)
-                if previous.exists() and not finished(being_seed._read(previous, limit=being_seed.MAX_SELECTION)):
+                if previous.exists() and not reader_checkpoint_completed(being_seed._read(previous, limit=being_seed.MAX_SELECTION)):
                     raise OnboardingError('receiving_control_binding_conflict')
                 # One completed predecessor, never a directory per release.
                 # If interrupted between writes, the same predecessor can be

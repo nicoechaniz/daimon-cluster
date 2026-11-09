@@ -110,10 +110,10 @@ def test_remote_cohort_uses_existing_placement_pins_without_initial_publication(
     assert seen['plans'] == {'first': {'name': 'first'}}
 
 
-def test_reader_route_failure_precedes_any_update_or_backend_creation(tmp_path, monkeypatch):
+def test_reader_route_failure_precedes_any_update(tmp_path, monkeypatch):
     selected = spec()
     selected['reader_completion'] = str(tmp_path/'readers.json')
-    monkeypatch.setattr(managed, 'load_code_update_readers', lambda _: dict(owners={'current':{}}))
+    monkeypatch.setattr(managed, 'load_code_update_readers', lambda _: dict(checkpoint=str(tmp_path/'reader-progress.json'), owners={'current':{}}))
     class Client:
         def __init__(self, _):
             pass
@@ -157,7 +157,7 @@ def test_reader_command_is_bounded_json_rpc_with_exact_control(tmp_path, monkeyp
 def test_reader_failure_keeps_update_complete_and_resumes_same_native_effects(tmp_path, monkeypatch):
     selected=spec()
     selected['reader_completion']=str(tmp_path/'readers.json')
-    routes=dict(owners={'current':{}})
+    routes=dict(checkpoint=str(tmp_path/'reader-progress.json'), owners={'current':{}})
     monkeypatch.setattr(managed,'load_code_update_readers',lambda _:routes)
     monkeypatch.setattr(managed,'ReaderCommandClient',lambda _:SimpleNamespace(_call=lambda _:dict(ready=True)))
     config=SimpleNamespace(jobs=tmp_path/'jobs')
@@ -247,3 +247,25 @@ def test_updated_job_selection_is_derived_from_its_exact_receipt(tmp_path, monke
             managed.complete_code_update_readers(value,**options)
     else:
         assert managed.complete_code_update_readers(value,**options)==dict(ready=True)
+
+
+def test_pending_reader_predecessor_refuses_before_software_work(tmp_path, monkeypatch):
+    selected = spec()
+    selected['reader_completion'] = str(tmp_path/'routes.json')
+    checkpoint = tmp_path/'reader-progress.json'
+    being_seed._write(checkpoint, dict(schema='cluster-current-reader-completion/v1',
+        binding=dict(operation_id='previous-operation'), commands={}))
+    monkeypatch.setattr(managed, 'load_code_update_readers', lambda _:dict(
+        checkpoint=str(checkpoint), owners={'current':{}}))
+    monkeypatch.setattr(onboarding_host.HostConfig, 'load',
+        lambda _:pytest.fail('software work began with an unresolved predecessor'))
+    with pytest.raises(OnboardingError, match='receiving_reader_checkpoint_unresolved'):
+        managed.run_code_update(selected)
+
+
+def test_pending_reader_checkpoint_keeps_same_operation_resumable(tmp_path):
+    from clusterctl.onboarding_receiving_update import preflight_reader_checkpoint
+    checkpoint = tmp_path/'reader-progress.json'
+    being_seed._write(checkpoint, dict(schema='cluster-current-reader-completion/v1',
+        binding=dict(operation_id=spec()['operation_id']), commands={}))
+    preflight_reader_checkpoint(checkpoint, spec()['operation_id'])

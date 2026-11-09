@@ -239,7 +239,9 @@ For unchanged/legacy owners, `selection` pins the six current-reader digests use
 above; only the
 visibility installation digest may be null for explicitly closed receiving.
 
-The command checks all owner CLI routes before any Matrix lifecycle action.
+The command refuses an unresolved predecessor checkpoint and checks all owner CLI
+routes before any Matrix lifecycle action. A same-operation pending checkpoint
+remains resumable; a completed predecessor needs no separate retirement command.
 After the native updates, it calls the same reader completer within the original
 batch deadline. The bridge exposes only current status/proof and the existing
 reader controls; it provides no lifecycle/model/general-command RPC. RPC bounds

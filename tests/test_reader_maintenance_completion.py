@@ -57,6 +57,7 @@ def test_ordinary_completion_and_repeat_are_no_lifecycle_and_read_only(tmp_path,
     assert calls == [('first','revoke'),('second','revoke'),('first','select'),('second','select')]
     assert all(owner.gate['readers'] == vector['readers'] and owner.deadline_ns is None for owner in owners.values())
     calls.clear()
+    receiving.preflight_reader_checkpoint(options['checkpoint'], 'next-operation')
     receiving.refresh_current_readers(owners, **options)
     assert calls == []
 

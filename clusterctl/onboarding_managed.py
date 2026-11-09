@@ -1066,6 +1066,9 @@ def run_code_update(spec: dict) -> dict:
     deadline = time.monotonic_ns() + spec['max_seconds'] * 1_000_000_000
     reader_routes = (load_code_update_readers(Path(spec['reader_completion']))
         if spec.get('reader_completion') is not None else None)
+    if reader_routes is not None:
+        from .onboarding_receiving_update import preflight_reader_checkpoint
+        preflight_reader_checkpoint(Path(reader_routes['checkpoint']), spec['operation_id'])
     config = HostConfig.load(Path(spec['host_config']))
     jobs = JobStore(config.jobs)
     plans = {name: jobs._load(name)['plan'] for name in spec['targets']}

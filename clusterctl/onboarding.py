@@ -76,6 +76,7 @@ _DIAGNOSTIC_CODES = frozenset({
     'native_code_maintenance_existing_body_required', 'receiving_host_deadline_expired',
     'receiving_reader_owner_unavailable', 'receiving_reader_owner_import_unavailable',
     'receiving_current_reader_binding_required', 'receiving_code_update_receipt_required',
+    'receiving_reader_checkpoint_unresolved',
     'qualified_runtime_imports_required', 'qualified_runtime_context_required',
     'qualified_receiving_interpreter_required', 'private_onboarding_sdk_required',
     'installed_onboarding_sdk_changed', 'onboarding_sdk_digest_mismatch',

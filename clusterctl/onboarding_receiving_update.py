@@ -1672,7 +1672,7 @@ def bootstrap_group(target, bundle: dict, *, socket_root: Path | None = None) ->
     absent = not visibility_path.exists() and not visibility_path.is_symlink()
     visibility = None if absent else being_seed._read(visibility_path, limit=being_seed.MAX_SELECTION)
     return dict(selected=group, application_sha256=config_digest(application), publication_sha256=config_digest(publication),
-        installation_sha256=None if absent else config_digest(visibility['document']),
+        installation_sha256=None if visibility is None else config_digest(visibility['document']),
         hashes={key: None if key == 'visibility' and absent else hashlib.sha256(onboarding_release.regular(
         path, uid=os.geteuid())).hexdigest() for key, path in paths.items()})
 

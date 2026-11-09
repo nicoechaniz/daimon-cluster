@@ -66,11 +66,20 @@ counter or a fabricated current window. Keep observation timestamps visible.
 Each usage command is bounded to 12 seconds with four concurrent workers; the
 collector service has a 45-second deadline and the consumer a 42-second socket
 deadline, preserving the existing process/memory/output limits. Preserve current
-account selections and native work. Software delivery changes only a new Fleet
+account selections and native work. If the existing native control socket resolves
+into a private temporary directory, retain `PrivateTmp` and bind only that exact
+owner socket directory read-only into the collector unit through its local
+service configuration. Verify the resolved receiving socket, not a historical
+path; do not expose all of the host temporary filesystem. Software delivery changes only a new Fleet
 collector release/config selector and a new Home release overlay containing the
 dashboard files. Reload only the Home gateway, preserving all authentication,
-sessions, owner keys, Homemaker and data stores. Rollback selects prior code and
-the prior collector config; it never restores databases or clears native work.
+sessions, owner keys, Homemaker and data stores. Before selecting an overlay,
+verify directory traversal and imports from its working directory as the actual
+gateway service user. A root-created copy can preserve mode 0700 while changing
+the directory owner, making a byte-identical release unusable. Correct ownership
+of newly created directories only; recursive chown would also mutate hardlinked
+predecessor files. Rollback selects prior code and the prior collector config;
+it never restores databases or clears native work.
 
 ## Children's host continuation
 

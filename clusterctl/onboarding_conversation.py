@@ -42,6 +42,9 @@ SYSTEMD = Path("/etc/systemd/system")
 JOURNAL = Path("/var/lib/daimon-conversation-bootstrap")
 NATIVE_UNIT = "children-conversation-native.service"
 WEB_UNIT = "children-conversation-web.service"
+# A cold browser requests the complete deferred module graph concurrently.
+# Sixteen rejects startup assets before the application can become usable.
+WEB_HTTP_CONCURRENCY = 64
 SHA = re.compile(r"[a-f0-9]{64}\Z")
 SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]+\Z")
 
@@ -392,7 +395,7 @@ def unit_files(value):
         + f"Environment=TELECODEX_DASHBOARD_CONFIG={STATE}/dashboard.toml\n"
         f"WorkingDirectory={runtime['web']}\nExecStart={runtime['python']} -B -m uvicorn "
         f"dashboard.app:create_app --factory --host 127.0.0.1 --port {value['port']} "
-        "--no-access-log --limit-concurrency 16 --timeout-graceful-shutdown 3\n"
+        f"--no-access-log --limit-concurrency {WEB_HTTP_CONCURRENCY} --timeout-graceful-shutdown 3\n"
         "TimeoutStopSec=15\nMemoryMax=384M\nCPUQuota=100%\nTasksMax=64\n"
         "[Install]\nWantedBy=multi-user.target\n"
     )
@@ -654,7 +657,7 @@ class Bootstrap:
                 self.value["runtime"]["python"] + " -B -m uvicorn "
                 "dashboard.app:create_app --factory --host 127.0.0.1 --port "
                 + str(self.value["port"])
-                + " --no-access-log --limit-concurrency 16 --timeout-graceful-shutdown 3",
+                + f" --no-access-log --limit-concurrency {WEB_HTTP_CONCURRENCY} --timeout-graceful-shutdown 3",
                 self.value["runtime"]["web"],
             ),
         }

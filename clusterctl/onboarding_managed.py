@@ -1098,6 +1098,32 @@ def maintenance_backend(host_config: str, vm_qualification: str | None, names) -
     return backend, plans
 
 
+def code_update_owned_stops(backend, plans: dict, spec: dict) -> set[str]:
+    """Find exact retained operations that may own an unavailable reader."""
+    admission = getattr(getattr(backend,'config',None),'admission',None)
+    if admission is None:
+        return set()
+    settings = being_seed._read(admission)
+    state = Path(settings['state'])
+    if not state.is_absolute() or '..' in state.parts:
+        raise OnboardingError('invalid_onboarding_managed_configuration')
+    owned = set()
+    for name,plan in plans.items():
+        path = state/name/'native-code-update.json'
+        if not path.exists():
+            continue
+        retained = being_seed._read(path)
+        pins = retained.get('pins',{})
+        if (pins.get('operation_id') == spec['operation_id']
+                and pins.get('candidate_digest') == spec['candidate']['code_digest']
+                and pins.get('plan_digest') == digest(plan)
+                and retained.get('result') is None
+                and ('quiesce' in retained.get('effects',{})
+                    or retained.get('dispatching') in {'quiesce','migrate','select','start'})):
+            owned.add(name)
+    return owned
+
+
 def run_code_update(spec: dict) -> dict:
     """Reuse the owner/unit journals; never create a second batch effect journal."""
     spec = validate_code_update(spec)
@@ -1111,8 +1137,11 @@ def run_code_update(spec: dict) -> dict:
     if reader_routes is not None:
         # Resolve owning jobs/placements and probe their existing owner CLIs
         # before any lifecycle effect; signed rosters still qualify membership.
+        owned_stops = code_update_owned_stops(backend,plans,spec)
         for name, client in code_update_reader_clients(reader_routes, backend=backend, plans=plans).items():
             client.deadline_ns = deadline
+            if reader_routes['owners'][name].get('job',name) in owned_stops:
+                continue  # Its native bootstrap revalidates and restores this exact operation.
             try:
                 client._call(dict(action='status'))
             except Exception as error:

@@ -193,6 +193,9 @@ explicit owner route with the same target name also derives its successor
 selection from the exact receipt, validating current process, origin and bundle. Reuse the same
 spec and `operation_id` after an incomplete result. Completed native effects are
 retained and an unresolved reader operation is continued rather than replaced.
+If that exact operation owns a stopped guest, its retained plan/candidate/quiesce
+record admits native recovery before probing its unavailable reader; unrelated
+readers are still checked. Another operation cannot claim that exemption.
 A separate manual reader round is for an already completed code-only update,
 not an extra step after a successful composed command.
 

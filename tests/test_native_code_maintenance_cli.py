@@ -462,3 +462,29 @@ def test_reader_registry_is_independent_of_updated_jobs(tmp_path, monkeypatch):
         being_seed._write(path,{**routes,**changes})
         with pytest.raises(OnboardingError,match='current_reader_binding_required'):
             managed.load_code_update_readers(path)
+
+
+@pytest.mark.parametrize('same_operation',[False,True])
+def test_exact_owned_guest_stop_can_resume_before_its_reader(tmp_path, monkeypatch, same_operation):
+    selected=spec();selected['targets']=['eko'];selected['reader_completion']=str(tmp_path/'routes')
+    admission=tmp_path/'admission';state=tmp_path/'state';being_seed._write(admission,{'state':str(state)})
+    plan={'name':'eko'};directory=state/'eko';directory.mkdir(parents=True)
+    being_seed._write(directory/'native-code-update.json',dict(pins=dict(
+        operation_id=selected['operation_id'] if same_operation else 'other',
+        candidate_digest=selected['candidate']['code_digest'],plan_digest=managed.digest(plan)),
+        effects={'quiesce':{}},dispatching='migrate'))
+    backend=SimpleNamespace(config=SimpleNamespace(admission=admission),runtime_available=lambda *_,**__:True)
+    monkeypatch.setattr(managed,'maintenance_backend',lambda *_,**__:(backend,{'eko':plan}))
+    routes=dict(checkpoint=str(tmp_path/'readers'),owners={'eko':{}})
+    monkeypatch.setattr(managed,'load_code_update_readers',lambda _:routes)
+    def unavailable(_):
+        raise OnboardingError('receiving_reader_owner_unavailable')
+    monkeypatch.setattr(managed,'code_update_reader_clients',lambda *_,**__:{'eko':SimpleNamespace(_call=unavailable)})
+    calls=[]
+    def update(*_,**__):
+        calls.append('native-resume');return {'complete':True}
+    monkeypatch.setattr(managed,'ManagedRuntime',lambda _:SimpleNamespace(update_native_code=update))
+    monkeypatch.setattr(managed,'complete_code_update_readers',lambda *_,**__:dict(receiving_readiness='qualified-local-projection'))
+    result=managed.run_code_update(selected)
+    assert result['complete'] is same_operation
+    assert calls==(['native-resume'] if same_operation else [])

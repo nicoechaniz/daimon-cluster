@@ -1733,3 +1733,13 @@ recovery, original-versus-new envelope races, interrupted history publication an
 capacity preservation. They do not establish actual fleet/helper adoption or the
 whole-companion command. Existing admitted children and adult policies remain
 intact.
+
+A code-only helper predecessor may already contain current `being_seed.py` pins
+while its captured executable tools still belong to an older bundle. Successor
+construction compares the complete declared bundle with the actual captured
+files, rather than using module-byte change as its only trigger. An unchanged
+module can therefore repair its missing or mismatched declared assets. The
+complete literal pins/provenance are verified before sealing and at successor
+validation; arbitrary tool edits and unrelated frozen context still refuse.
+Installed-module verification exercises that repaired closure. The predecessor
+is preserved, and package preparation selects no service or identity.

@@ -933,3 +933,32 @@ def test_selected_sdk_preserves_an_already_qualified_telegram_binary(tmp_path, m
     before = json.loads((current / 'runtime-successor.json').read_bytes())
     after = json.loads((output / 'runtime-successor.json').read_bytes())
     assert {k: before[k] for k in ('previous_telegram_digest', 'telegram_digest')} == {k: after[k] for k in ('previous_telegram_digest', 'telegram_digest')}
+
+
+@pytest.mark.parametrize('missing_protected',[False,True])
+def test_unchanged_seed_module_repairs_its_declared_legacy_asset_bundle(tmp_path,missing_protected):
+    """A code-only helper can already contain new pins but older frozen assets."""
+    from pathlib import Path
+    base,_,_,profile=fixture(tmp_path)
+    module=Path(being_seed.__file__)
+    (base/'clusterctl/being_seed.py').write_bytes(module.read_bytes())
+    if missing_protected:
+        (base/'support/being-seed-tools/tools/protected_being.py').unlink()
+    (base/'release.json').unlink()
+    original=onboarding_release.seal(base,profile)
+    retained={row['path']:(base/row['path']).read_bytes()
+        for row in onboarding_release.verify(base,original,uid=os.geteuid())['files']}
+    output=tmp_path/'coherent-successor'
+    result=build(base,original,module.parent,('being_seed.py',),output)
+    checked=subprocess.run([sys.executable,'-B','-I','-c',
+        'import sys;sys.path.insert(0,sys.argv[1]);from clusterctl.being_seed import verified_tools;verified_tools()',
+        str(output)],capture_output=True,text=True,timeout=10)
+    assert checked.returncode==0,checked.stderr
+    assert (output/'clusterctl/being_seed.py').read_bytes()==retained['clusterctl/being_seed.py']
+    assert all((base/name).read_bytes()==raw for name,raw in retained.items())
+    assert verify(output,result['runtime_digest'],base,original,uid=os.geteuid())
+    (output/'support/being-seed-tools/tools/export_being.py').write_bytes(b'foreign tool')
+    (output/'release.json').unlink()
+    changed=onboarding_release.seal(output,profile)
+    with pytest.raises(OnboardingError,match='seed_tool_bundle_required'):
+        verify(output,changed,base,original,uid=os.geteuid())

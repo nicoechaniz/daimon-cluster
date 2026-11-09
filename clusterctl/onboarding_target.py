@@ -16,6 +16,7 @@ import socket
 import struct
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -195,6 +196,64 @@ class Target:
                 effect_not_after_ms=effect_not_after_ms,
                 remaining_execution=remaining_execution,
                 snapshot=lambda: bootstrap_group(self, self.document_bundle()))
+
+    def migrate_visibility(self, request: dict, *, deadline_ns: int) -> dict:
+        """Upgrade retained local catalogs under the existing native writer.
+
+        The caller freezes the already published group, not a new installation.
+        Exact retry preserves originals and performs no publication or transport.
+        """
+        from daimon_matrix.chat_host import application_view
+        from daimon_matrix.native_egress import VISIBILITY_SCHEMA_VERSION
+        from .onboarding_peer import approved_group_authorities
+        from .onboarding_group_admission import load_owner_runtime
+        from .onboarding_receiving_update import bootstrap_group
+
+        def budget():
+            if time.monotonic_ns() >= deadline_ns:
+                raise OnboardingError('onboarding_observation_deadline_expired')
+        try:
+            if (not isinstance(request, dict)
+                    or set(request) != {'operation_id', 'runtime_sha256', 'origin', 'group'}
+                    or str(uuid.UUID(request['operation_id'])) != request['operation_id']
+                    or not isinstance(request['group'], dict)):
+                raise ValueError
+        except (ValueError, TypeError, AttributeError, KeyError):
+            raise OnboardingError('native_code_update_migration_binding_required') from None
+        budget()
+        with being_seed._locked(self.root), self._runtime_writer():
+            bundle = self.document_bundle()
+            group = bootstrap_group(self, bundle)
+            expected = request['group']
+            if (digest(bundle) != request['runtime_sha256']
+                    or bundle['local_origin'] != request['origin']
+                    or expected.get('outbound_release') is not True
+                    or any(group.get(key) != expected.get(key) for key in (
+                        'selected', 'application_sha256', 'publication_sha256', 'installation_sha256'))):
+                raise OnboardingError('native_code_update_migration_binding_changed')
+            runtime_root = self.package / 'runtime'
+            authorities = approved_group_authorities(runtime_root, self.root / 'tribe', bundle)
+            hosted = load_owner_runtime(runtime_root, self._reader, authorities=authorities,
+                qualified_startup=self.qualified_startup)
+            view = application_view(hosted, Path(group['selected']['application']),
+                Path(group['selected']['visibility']), catalog_mode='migrate')
+            if view.egress.policy_digest != expected['policy_sha256']:
+                raise OnboardingError('native_code_update_migration_binding_changed')
+            # Preflight both existing composers before the first catalog DDL.
+            for controller in (hosted.egress, view.egress):
+                for catalog_id, catalog in controller._catalogs.items():
+                    budget()
+                    controller._preflight_migration(catalog.path, catalog_id)
+            for controller in (hosted.egress, view.egress):
+                budget()
+                controller.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+                controller.validate_registered_catalogs()
+            if bootstrap_group(self, self.document_bundle()) != group:
+                raise OnboardingError('native_code_update_migration_binding_changed')
+            budget()
+            return dict(schema='cluster-native-visibility-migrated/v1',
+                operation_id=request['operation_id'], runtime_sha256=request['runtime_sha256'],
+                group=expected, catalog_schema_version=VISIBILITY_SCHEMA_VERSION)
 
     def prepare(self) -> dict:
         from daimon_matrix import canonical, keystore, operator_first_embodiment as first
@@ -901,7 +960,7 @@ class Target:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("sdk-observe", "sdk-prepare", "prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept", "group-relationship", "group-publication", "group-session", "receiving-control-prepare", "receiving-control-apply", "receiving-control-prepare-apply", "receiving-identity", "receiving-bootstrap-freeze", "receiving-bootstrap-stage", "receiving-bootstrap-publish"))
+    parser.add_argument("action", choices=("sdk-observe", "sdk-prepare", "visibility-migrate", "prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept", "group-relationship", "group-publication", "group-session", "receiving-control-prepare", "receiving-control-apply", "receiving-control-prepare-apply", "receiving-identity", "receiving-bootstrap-freeze", "receiving-bootstrap-stage", "receiving-bootstrap-publish"))
     parser.add_argument("--diagnostics", action="store_true", help="write bounded nonsecret refusal detail to stderr")
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
@@ -916,6 +975,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--peer-packet", type=Path)
     parser.add_argument("--peer-packet-sha256")
     parser.add_argument("--peer-being-ref")
+    parser.add_argument("--visibility-migration-json")
     parser.add_argument("--messaging-application", type=Path)
     visibility = parser.add_mutually_exclusive_group()
     visibility.add_argument("--receive-only", action="store_true")
@@ -969,6 +1029,11 @@ def main(argv: list[str] | None = None) -> int:
             raise OnboardingError('invalid_receiving_identity_request')
         if identity_query and not 0 < args.identity_expires_at_ms < 2**53:
             raise OnboardingError('invalid_receiving_identity_request')
+        migrating = args.action == 'visibility-migrate'
+        if (migrating != (args.visibility_migration_json is not None)
+                or migrating and (len(args.visibility_migration_json.encode()) > 16384
+                    or args.observation_timeout_seconds is None or args.ready_fd is not None)):
+            raise OnboardingError('native_code_update_migration_binding_required')
         bootstrapping = args.action.startswith('receiving-bootstrap-')
         if bootstrapping:
             if (args.bootstrap_timeout_seconds is None or not math.isfinite(args.bootstrap_timeout_seconds)
@@ -988,7 +1053,7 @@ def main(argv: list[str] | None = None) -> int:
                     or not 0 < args.authorization_expires_at_ms < 2**53)
                 or admitting and ((timeout is None) != (args.authorization_expires_at_ms is None))):
             raise OnboardingError('invalid_receiving_observation_timeout')
-        if timeout is not None and (args.action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
+        if timeout is not None and (args.action not in {'observe', 'sdk-observe', 'sdk-prepare', 'visibility-migrate', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
                 or not math.isfinite(timeout) or not 0 < timeout <= 60):
             raise OnboardingError('invalid_receiving_observation_timeout')
         if bootstrapping:
@@ -1022,7 +1087,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime = onboarding_code_successor.selection(args.runtime_code, args.runtime_digest,
             args.code, plan['release_digest'], uid=0)
         sdk_parameters = onboarding_code_successor.sdk_parameters(runtime)
-        if (controlling or identity_query or bootstrapping or grouping or args.require_loaded
+        if (migrating or controlling or identity_query or bootstrapping or grouping or args.require_loaded
                 or admitting and timeout is not None) and not sdk_parameters:
             raise OnboardingError('qualified_onboarding_target_observer_required')
         matrix_commit = sdk_parameters.get('matrix_commit', onboarding_sdk.MATRIX_COMMIT)
@@ -1110,6 +1175,10 @@ def main(argv: list[str] | None = None) -> int:
                 result = owner.execute(args.action.removeprefix('receiving-bootstrap-'),
                     deadline_ns=deadline_ns, ready_sha256=args.bootstrap_ready_sha256)
             print(json.dumps(result))
+            return 0
+        if migrating:
+            print(json.dumps(target.migrate_visibility(json.loads(args.visibility_migration_json),
+                deadline_ns=observation_deadline_ns)))
             return 0
         if controlling:
             if args.control_command == Path('-'):

@@ -376,3 +376,60 @@ def test_daemon_requires_explicit_visibility_and_current_authority(tmp_path):
         target.serve(receive_only=True, visibility_installation=tmp_path / "unselected.json")
     with pytest.raises(OnboardingError, match="current_onboarding_target_required"):
         target.serve(receive_only=True)
+
+
+def test_visibility_migration_requires_frozen_group_and_native_writer(tmp_path, monkeypatch):
+    """No catalog DDL until exact publication and both composers are checked."""
+    import copy
+    import time
+    from types import SimpleNamespace
+    from clusterctl import onboarding_group_admission as social, onboarding_peer
+    from clusterctl import onboarding_receiving_update as receiving_update
+    from daimon_matrix import chat_host
+
+    target = object.__new__(Target)
+    target.root = tmp_path / 'owner'
+    target.root.mkdir(mode=0o700)
+    target.package = target.root / 'package'
+    (target.package / 'runtime').mkdir(parents=True, mode=0o700)
+    target.qualified_startup = None
+    target._reader = lambda: bytearray(b'unused')
+    bundle = dict(local_origin=dict(body_ref='own', embodiment_id='own-body'))
+    target.document_bundle = lambda: copy.deepcopy(bundle)
+    selected = dict(application=str(target.root/'tribe/application'), visibility=str(target.root/'tribe/visibility'))
+    frozen = dict(selected=selected, application_sha256='a'*64, publication_sha256='b'*64,
+        installation_sha256='c'*64, hashes={'retained': 'd'*64})
+    group = {key: frozen[key] for key in ('selected', 'application_sha256', 'publication_sha256', 'installation_sha256')}
+    group.update(outbound_release=True, policy_sha256='e'*64)
+    request = dict(operation_id='367f49ca-f791-48cb-a1c6-688f2260e4b2',
+        runtime_sha256=digest(bundle), origin=bundle['local_origin'], group=group)
+    calls = []
+    class Controller:
+        def __init__(self, name):
+            self.name = name
+            self._catalogs = {'catalog': SimpleNamespace(path=tmp_path/name)}
+            self.policy_digest = 'e'*64
+        def _preflight_migration(self, *_):
+            calls.append(self.name+'-preflight')
+        def migrate_registered_catalogs(self, *, version):
+            calls.append(self.name+'-migrate')
+        def validate_registered_catalogs(self):
+            calls.append(self.name+'-validate')
+    base, app = Controller('base'), Controller('app')
+    monkeypatch.setattr(receiving_update, 'bootstrap_group', lambda *_: copy.deepcopy(frozen))
+    monkeypatch.setattr(onboarding_peer, 'approved_group_authorities', lambda *_: {})
+    monkeypatch.setattr(social, 'load_owner_runtime', lambda *_, **__: SimpleNamespace(egress=base))
+    monkeypatch.setattr(chat_host, 'application_view', lambda *_, **__: SimpleNamespace(egress=app))
+    with target._runtime_writer(), pytest.raises(BlockingIOError):
+        target.migrate_visibility(request, deadline_ns=time.monotonic_ns()+5_000_000_000)
+    assert not calls
+    changed = copy.deepcopy(request)
+    changed['group']['publication_sha256'] = 'f'*64
+    with pytest.raises(OnboardingError, match='migration_binding_changed'):
+        target.migrate_visibility(changed, deadline_ns=time.monotonic_ns()+5_000_000_000)
+    assert not calls
+    result = target.migrate_visibility(request, deadline_ns=time.monotonic_ns()+5_000_000_000)
+    assert result['group'] == group
+    assert calls[:2] == ['base-preflight', 'app-preflight']
+    assert calls[2:] == ['base-migrate', 'base-validate', 'app-migrate', 'app-validate']
+    assert target.document_bundle() == bundle and result['runtime_sha256'] == digest(bundle)

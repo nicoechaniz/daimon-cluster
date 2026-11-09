@@ -1434,3 +1434,47 @@ This proves the compiler's compatibility, not automatic receive publication or
 reader selection. Compose it with the existing original-job writer/secret intent,
 closed-outbound loading and current-reader qualification before claiming the
 full one-command delivery. Do not rerun the completed four child publications.
+
+### Owner-local first receive publication
+
+The existing Source/Target `group-publication` route accepts the explicit new
+`receive-application` action. Its parameters are the selected `tribe_ref`,
+`policy`, `listen`, `intake`, `roster`, `stores`, `secret_sources` and optional
+complete `authority_order` (null selects stable sorting). The owner native writer
+and original context/operation journal remain mandatory. There is no new control
+socket, timer, scheduler, peer attention or human approval surface.
+
+Under that writer the action reads bounded own canonical governance through the
+existing preparation preview, compiles the receive specification against the
+actual runtime/public authority closure and records one derived specification
+before calling the existing native first-publication writer. Resource keys stay
+in the existing owner-private source files: requests contain references, never
+key values. No key generator or replacement path is added; the native writer
+issues its normal application client only on first publication.
+
+A retry uses the frozen specification's exact signed governance and selected
+order, revalidates it against the same command/runtime/closure, and checks that
+it still equals the retained object before reaching the writer. This prevents a
+changed derived file from replacing selected policy/store/routing choices. The
+existing SDK reconciles a lost publication reply with the same already-published
+application and client. A fresh command cannot adopt an unrelated existing
+application. Changed command, context, application or derived metadata refuses
+without overwriting the predecessor. Dependent selection's application guard can
+reference the genuine receipt of either `application` or `receive-application`;
+its actual signed publication check is unchanged.
+
+One derived file per operation uses the existing2MiB selection bound and the
+original bounded journal/operation retention. Canonical preview still admits at
+most256 events/1MiB with its3second read bound; the request's existing finite
+execution horizon also applies. Capacity exhaustion preserves original work.
+The ordinary selection action, service startup, current-reader qualification and
+own resource-key preparation remain separate supported effects inside the eventual
+one-command worker. This action alone neither selects a service nor installs
+visibility, releases outbound speech or proves live receiving/model readiness.
+
+Source/guest native fixtures exercise first publication, a lost reply after the
+SDK effect, exact retry with the same client, changed intent refusal and modified
+derived metadata refusal. No production application or current child installation
+was replayed. The compiler's separate actual-four compatibility evidence remains
+read-only. Current coordinator automatic key intent/publication/selection and
+reader integration still require completion before full-command acceptance.

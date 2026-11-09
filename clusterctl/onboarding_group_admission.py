@@ -28,6 +28,8 @@ PUBLICATIONS = {
     'preparation-preview': {'tribe_ref'},
     'membership-authorities': {'tribe_ref', 'expected_selection_sha256'},
     'communication-prepare': {'expected_plan_sha256', 'expires_at_ms'},
+    'receive-application': {'tribe_ref', 'policy', 'listen', 'intake', 'roster',
+                            'stores', 'secret_sources', 'authority_order'},
     'application': {'expected_application_sha256', 'specification', 'additions',
                     'admitted_being_refs', 'secret_sources'},
     'visibility-disclosure': {'approved_destination', 'issued_at_ms'},
@@ -903,6 +905,15 @@ def publication_command(value: dict) -> dict:
                     or not isinstance(guard['installation_sha256'], str)
                     or re.fullmatch('[0-9a-f]{64}', guard['installation_sha256']) is None):
                 raise ValueError
+        if value['action'] == 'receive-application':
+            if (not isinstance(params['tribe_ref'], str) or not 1 <= len(params['tribe_ref']) <= 256
+                    or not isinstance(params['secret_sources'], dict)
+                    or not 1 <= len(params['secret_sources']) <= 64
+                    or any(not isinstance(name, str) or Path(name).name != name
+                        or not isinstance(path, str) or not Path(path).is_absolute()
+                        or '..' in Path(path).parts for name,path in params['secret_sources'].items())
+                    or params['authority_order'] is not None and not isinstance(params['authority_order'], list)):
+                raise ValueError
         if value['action'] == 'application':
             from daimon_matrix.messaging_config import APPLICATION_SCHEMA_V3
             first = params['expected_application_sha256'] is None
@@ -1252,6 +1263,55 @@ def _publish_application(hosted, directory: Path, params: dict) -> dict:
                 publication_sha256=config_digest(read_document(directory / 'publication.json')))
 
 
+
+def _publish_receive_application(hosted, group_root: Path, operation: Path, value: dict,
+                                 closure: dict, *, deadline_ns: int | None) -> dict:
+    """Compile and retain once before the existing first-publication writer.
+
+    The public command never contains private resource-key values. Exact own
+    source files remain with the established operator_messaging writer. The
+    caller already holds the native writer and original owner-context journal.
+    """
+    from .onboarding_membership_preparation import preview
+    from .onboarding_receive_specification import compile_specification
+    from daimon_matrix.operator_rebirth import AUTHORITY_SCHEMA
+    params = value['params']
+    bundle = being_seed._read(hosted.state_root / 'runtime.json', limit=being_seed.MAX_SELECTION)
+    own_ref = bundle['manifest']['being_ref']
+    own_public = dict(authority=dict(schema=AUTHORITY_SCHEMA, **{key:bundle[key] for key in
+        ('manifest', 'control_artifacts', 'control_head', 'credentials', 'incarnations')}),
+        history=bundle['authority_history'])
+    all_authorities = {**closure, own_ref: own_public}
+    def compile(events):
+        return compile_specification(runtime=bundle, runtime_root=str(hosted.state_root),
+            authorities=all_authorities, governance=events, at_ms=hosted.service.clock(),
+            **{key:params[key] for key in ('tribe_ref', 'policy', 'listen', 'intake', 'roster',
+                                          'stores', 'authority_order')})
+    selected = operation / 'receive-specification.json'
+    command_pin = digest(value)
+    if selected.exists():
+        prepared = being_seed._read(selected, limit=being_seed.MAX_SELECTION)
+        if (set(prepared) != {'schema', 'command_sha256', 'specification'}
+                or prepared['schema'] != 'cluster-owner-receive-specification/v1'
+                or prepared['command_sha256'] != command_pin):
+            raise OnboardingError('onboarding_group_publication_intent_conflict')
+        if compile(prepared['specification']['relationship_events']) != prepared['specification']:
+            raise OnboardingError('onboarding_group_publication_intent_conflict')
+    else:
+        public = preview(hosted.state_root, operation_id=value['operation_id'],
+            tribe_ref=params['tribe_ref'], deadline_ns=deadline_ns)
+        if digest(bundle) != public['runtime_bundle_sha256']:
+            raise OnboardingError('onboarding_group_owner_context_conflict')
+        specification = compile(public['governance'])
+        prepared = dict(schema='cluster-owner-receive-specification/v1',
+            command_sha256=command_pin, specification=specification)
+        being_seed._write(selected, prepared, limit=being_seed.MAX_SELECTION)
+        _sync(operation)
+    result = _publish_application(hosted, group_root / 'application',
+        dict(expected_application_sha256=None, specification=prepared['specification'],
+             additions=None, admitted_being_refs=[], secret_sources=params['secret_sources']))
+    return dict(result, receive_specification_sha256=digest(prepared['specification']))
+
 def _publication_snapshot(hosted, group_root: Path, operation: Path, value: dict,
                           context: dict, snapshot: Callable[[], dict] | None) -> dict:
     """Correlate a fresh signed group view with this owner's actual effects.
@@ -1382,6 +1442,9 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
         return dict(migration=result)
     if action == 'snapshot':
         return _publication_snapshot(hosted, group_root, operation, value, context, snapshot)
+    if action == 'receive-application':
+        return _publish_receive_application(hosted, group_root, operation, value, closure,
+            deadline_ns=deadline_ns)
     if action == 'application':
         return _publish_application(hosted, directory, params)
     if action == 'visibility-disclosure':
@@ -1476,7 +1539,9 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
         else:
             if bound is not None and time.time_ns()//1_000_000 >= bound and selected['action']!='snapshot':
                 raise OnboardingError('onboarding_group_continuation_fresh_effect_required')
-            if (selected['action'] == 'application' and selected['params']['expected_application_sha256'] is None
+            if (selected['action'] in {'application', 'receive-application'}
+                    and (selected['action'] == 'receive-application'
+                         or selected['params']['expected_application_sha256'] is None)
                     and (group_root / 'application').exists()):
                 raise OnboardingError('onboarding_group_publication_changed')
             retained = {**intent, 'result': None}
@@ -1516,7 +1581,7 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
             application_result = application.get('result')
             if (application.get('owner_context_sha256') != digest(context)
                     or application.get('command', {}).get('operation_id') != selected['operation_id']
-                    or application['command'].get('action') != 'application'
+                    or application['command'].get('action') not in {'application', 'receive-application'}
                     or application['command'].get('step') != guard['application_step']
                     or not isinstance(application_result, dict) or application_result.get('status') != 'recorded'
                     or application_result.get('schema') != 'cluster-group-publication-result/v1'

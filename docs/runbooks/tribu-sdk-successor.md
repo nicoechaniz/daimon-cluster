@@ -1726,3 +1726,13 @@ Confirm authenticated reader readiness and recovery of the same Alerts incident
 at a higher revision. Notification delivery and automatic heartbeat attention
 remain separate effects. See Cluster #232 for the demonstrated incident and the
 remaining entrant messaging/current-reader completion.
+### Status-only maintenance observers
+
+The compact `runtime.status(view="receiving")` read requires the existing
+`runtime.status` grant. Do not infer its availability from a separate `scope.me`
+permission. Use the compact read for current identity, loaded startup and reader
+qualification, with fallback only after the authenticated `invalid_params`
+unsupported-view refusal. Permission/availability errors do not authorize fallback.
+Retained owner reads preserve exact compact request bytes and fresh native output;
+existing ordinary-read requests keep their distinct binding/prefix. This avoids
+projecting full retained history during routine health/maintenance deadlines.

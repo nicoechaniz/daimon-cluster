@@ -482,6 +482,20 @@ class Application:
                     home=targets[0], origin=payload["origin"], subject=owner
                 )
             }
+        if operation == "entry-link":
+            if set(payload) not in ({"return"}, {"return", "ttl"}):
+                raise ValueError("invalid_home_entry_link")
+            destination = return_target(payload["return"])
+            pair = self.authority.actor(self.authority.paired_human(home))
+            if not pair or pair.kind != "human" or not pair.enabled:
+                raise ValueError("home_pairing_unavailable")
+            origin = self.homes[home]["public_url"]
+            request, proof = self.sessions.request(home=home, origin=origin,
+                ttl=payload.get("ttl", 7 * 86400))
+            self.sessions.approve(home=home, code=request["code"], subject=pair)
+            return {"schema": "dm.home-entry-link/v1", "expires_at": request["expires_at"],
+                "url": origin + "/access/entry#" + urlencode({
+                    "code": request["code"], "proof": proof, "return": destination})}
         if operation == "approve-browser":
             if set(payload) != {"home", "code"} or (payload["home"] not in self.homes and
                     not (self.sso and payload['home']==self.sso.context)):
@@ -1101,6 +1115,11 @@ def handler(app, *, owner=False):
                     request,proof=app.sso.begin(home,origin,destinations[0])
                     self.respond(303,b'',cookies=(f'__Host-home-sso={proof}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=300',),
                         headers=(('Location',app.sso.origin+'/signin?'+urlencode({'request':request})),))
+                elif path == "/access/entry.js":
+                    self.respond(200, (Path(__file__).parent / "assets" / "entry.js").read_bytes(),
+                        "text/javascript; charset=utf-8")
+                elif path == "/access/entry":
+                    self.respond(200, b'''<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><link rel="stylesheet" href="/home.css"><title>Entrar</title><main><h1>Tu conversacion</h1><p id="entry-status">Abriendo tu espacio...</p><button id="entry-retry" hidden>Volver a intentar</button></main><script src="/access/entry.js" defer></script></html>''', "text/html; charset=utf-8")
                 elif path == "/access":
                     destinations = parse_qs(urlsplit(self.path).query).get('return', ['/'])
                     if len(destinations) != 1:
@@ -1361,6 +1380,21 @@ def handler(app, *, owner=False):
                 if self.headers.get("Origin") != origin:
                     raise ValueError("home_post_requires_exact_origin")
                 path = urlsplit(self.path).path
+                if path == "/access/entry":
+                    payload = json.loads(data)
+                    if (not isinstance(payload, dict) or set(payload) != {"code", "proof", "return"}
+                            or not all(isinstance(v, str) and len(v) <= 2048 for v in payload.values())
+                            or self.headers.get("Authorization") or vpn):
+                        raise ValueError("invalid_preapproved_browser_claim")
+                    destination = return_target(payload["return"])
+                    status, credential = app.sessions.claim(home=home, origin=origin,
+                        code=payload["code"], proof=payload["proof"], current_actor=app.policy.current)
+                    if not credential:
+                        raise ValueError("entry_link_not_approved")
+                    self.respond(200, {"status": "approved", "return": destination}, cookies=(
+                        f"__Host-home={credential}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800",
+                        f"__Host-home-proof={payload['proof']}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=900"))
+                    return
                 if path.startswith('/access/passkeys/') and app.passkeys:
                     if self.headers.get('Authorization') or vpn:
                         raise ValueError('passkeys_require_browser_cookie')

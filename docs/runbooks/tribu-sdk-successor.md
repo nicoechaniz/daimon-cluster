@@ -337,10 +337,15 @@ before using generation recovery. No daemon or SDK reload is required. Same-inst
 commands/deadlines while they can still take effect. An expired select is
 retained unchanged in a superseded generation; fresh authenticated observations
 of the same vector allow a new local request slot under the same reserved native
-operation. This does not renew a credential, grant or resource contract. Before
-fresh selections, the completer refreshes a cohort proof that has less than one
-owner-call budget remaining, so serialized control work cannot spend another
-receiver's expired proof. Other changes or the existing byte limit still refuse.
+operation. This does not renew a credential, grant or resource contract. The finite observation horizon does not grant maintenance authority or
+replace the original operation deadline. Fresh selections keep their effect
+inside that deadline and actual signed finite credential validity; native
+physical-process, CAS, roster and credential checks remain authoritative. Each
+owner call retains its60-second limit. This removes the former one-minute
+selection gate that expired inside an eight-minute operation. The checkpoint
+keeps four detailed superseded generations plus a rolling count/hash. It retires
+an oldest detail only when current native process/CAS or expiry proves that its
+controls cannot acquire another effect; owner-private originals stay intact. Other changes or the existing byte limit still refuse.
 This adds no polling service, authority or lifecycle operation. Owner-route preflight
 failures identify the receiver and phase before code updates begin. Import failures
 use a closed public code; arbitrary stderr and credential material stay private.

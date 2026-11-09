@@ -386,8 +386,24 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
             if compatible_restart(saved) or ((legacy_generation or expired_selection)
                     and saved.get('binding') == binding):
                 history = saved.get('superseded_generations',[])
-                if not isinstance(history,list) or len(history) >= 4:
+                if not isinstance(history,list) or len(history) > 4:
                     raise OnboardingError('receiving_control_binding_conflict')
+                retired = saved.get('retired_generations',dict(count=0,chain_sha256='0'*64))
+                if len(history) == 4:
+                    oldest = history[0]
+                    # Retire only controls that cannot acquire another effect:
+                    # their process/CAS is obsolete or their select has expired.
+                    for key,command in oldest['commands'].items():
+                        gate = proofs[key.split(':')[0]]['gate']
+                        expired = (command.get('phase') == 'select'
+                            and type(command.get('effect_not_after_ms')) is int
+                            and command['effect_not_after_ms'] <= time.time_ns() // 1_000_000)
+                        if (not expired and gate['process_instance_id'] == command['process_instance_id']
+                                and gate['head'] == command['expected_head']):
+                            raise OnboardingError('receiving_reader_checkpoint_unresolved')
+                    retired = dict(count=retired['count']+1,
+                        chain_sha256=digest(dict(previous=retired['chain_sha256'],generation=oldest)))
+                    history = history[1:]
                 # A replacement may change only its loaded view. An expired
                 # select cannot acquire a new effect; fresh native observations
                 # settle current readiness without changing its old deadline.
@@ -395,7 +411,7 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                 history = [*history,{key:value for key,value in saved.items()
                     if key != 'superseded_generations'}]
                 saved = {
-                    **initial(),'superseded_generations':history,
+                    **initial(),'superseded_generations':history,'retired_generations':retired,
                     'control_slot':digest(dict(vector=vector,instances=instances,generation=len(history)))}
                 being_seed._write(checkpoint,saved,limit=being_seed.MAX_SELECTION)
             elif saved.get('binding') != binding:
@@ -435,15 +451,6 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                     raise OnboardingError('receiving_cohort_selection_changed')
             for name in tuple(proofs):
                 accept()
-                # Each independent owner RPC can consume much of the finite
-                # cohort proof horizon. Refresh the same vector before a fresh
-                # select instead of spending another receiver's expired proof.
-                if (phase == 'select' and name + ':select' not in saved['commands']
-                        and min(_reader_proof_expiry(row) for row in proofs.values())
-                            - time.time_ns() // 1_000_000 < 55_000):
-                    proofs, current = observe_all()
-                    if current != vector:
-                        raise OnboardingError('receiving_cohort_selection_changed')
                 proof = proofs[name]
                 if selected(proof, readers):
                     continue
@@ -467,7 +474,16 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                     command = saved['commands'][key]
                 else:
                     if phase == 'select':
-                        command['effect_not_after_ms'] = min(_reader_proof_expiry(row) for row in proofs.values())
+                        # A read's freshness window is not the authority for
+                        # this already-authorized maintenance operation. Native
+                        # selection rechecks physical/CAS/credential/roster
+                        # fences; keep its effect inside the ORIGINAL operation
+                        # deadline and actual signed finite credential validity.
+                        remaining_ms = max(0,(deadline_ns-time.monotonic_ns())//1_000_000)
+                        effect_end = time.time_ns()//1_000_000 + remaining_ms
+                        finite = [row['validity']['not_after_ms'] for row in readers
+                            if row.get('validity',{}).get('mode') == 'finite']
+                        command['effect_not_after_ms'] = min([effect_end,*finite])
                     saved['commands'][key] = command
                     being_seed._write(checkpoint, saved, limit=being_seed.MAX_SELECTION)
                 suffix = '' if saved.get('control_slot') is None else '-' + saved['control_slot']

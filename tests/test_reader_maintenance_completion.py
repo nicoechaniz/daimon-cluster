@@ -302,7 +302,7 @@ def test_expired_select_preserves_original_and_uses_fresh_same_operation_slot(tm
     assert len(saved['control_slot'])==64
 
 
-def test_slow_serial_controls_refresh_cohort_before_next_fresh_select(tmp_path, monkeypatch):
+def test_serial_controls_use_original_operation_deadline_not_read_freshness(tmp_path, monkeypatch):
     owners, options, _, _, _ = cohort(tmp_path, monkeypatch)
     clock=[time.time_ns()]
     monkeypatch.setattr(receiving.time,'time_ns',lambda:clock[0])
@@ -315,3 +315,42 @@ def test_slow_serial_controls_refresh_cohort_before_next_fresh_select(tmp_path, 
             return original(command,path)
         owner.prepare_apply_control=slow
     assert receiving.refresh_current_readers(owners,**options)['receiving_readiness']=='qualified-local-projection'
+
+
+
+def test_select_effect_is_bounded_by_actual_finite_credential(tmp_path, monkeypatch):
+    owners, options, _, _, vector = cohort(tmp_path, monkeypatch)
+    limit=time.time_ns()//1_000_000+20_000
+    vector['readers'][0]['validity']=dict(mode='finite',not_before_ms=1,not_after_ms=limit)
+    original=owners['first'].prepare_apply_control
+    def apply(command,path):
+        if command['phase']=='select':
+            assert command['effect_not_after_ms']==limit
+        return original(command,path)
+    owners['first'].prepare_apply_control=apply
+    receiving.refresh_current_readers(owners,**options)
+
+
+def test_expired_generations_roll_bounded_detail_without_rewriting_originals(tmp_path, monkeypatch):
+    import json
+    owners, options, _, _, _ = cohort(tmp_path, monkeypatch)
+    clock=[time.time_ns()]
+    monkeypatch.setattr(receiving.time,'time_ns',lambda:clock[0])
+    original=owners['first'].prepare_apply_control
+    failures=[]
+    def fail(command,path):
+        if command['phase']=='select' and len(failures)<6:
+            failures.append(copy.deepcopy(command))
+            raise OnboardingError('receiving_control_not_accepted')
+        return original(command,path)
+    owners['first'].prepare_apply_control=fail
+    for _ in range(6):
+        with pytest.raises(OnboardingError,match='not_accepted'):
+            receiving.refresh_current_readers(owners,**options)
+        clock[0]+=61_000_000_000
+    receiving.refresh_current_readers(owners,**options)
+    saved=json.loads(options['checkpoint'].read_bytes())
+    assert len(saved['superseded_generations'])==4
+    assert saved['retired_generations']['count']==2
+    assert len(saved['retired_generations']['chain_sha256'])==64
+    assert failures[0]['effect_not_after_ms']<failures[-1]['effect_not_after_ms']

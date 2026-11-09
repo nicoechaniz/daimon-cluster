@@ -101,6 +101,7 @@ class HostConfig:
     group_admission: Path | None = None
     cold_pool: str | None = None
     conversation_by_name: dict[str, tuple[Path, str]] | None = None
+    conversation_proxy_by_name: dict[str, dict] | None = None
 
     @classmethod
     def load(cls, path: Path, *, expected_value: dict | None = None) -> HostConfig:
@@ -111,7 +112,7 @@ class HostConfig:
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
         telegram_keys = {"telegram_code", "telegram_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name", "conversation_proxy_by_name"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -305,10 +306,16 @@ class HostConfig:
                 if request['name'] != name or digest(request) != row['request_digest']:
                     raise OnboardingError('conversation_selection_changed')
                 conversation_by_name[name] = (Path(row['request']), row['request_digest'])
+        conversation_proxy_by_name = None
+        if 'conversation_proxy_by_name' in value:
+            from .onboarding_conversation_proxy import configuration as proxy_configuration
+            conversation_proxy_by_name = proxy_configuration(value['conversation_proxy_by_name'])
+            if conversation_by_name is None or set(conversation_proxy_by_name) - set(conversation_by_name):
+                raise OnboardingError('conversation_proxy_configuration_required')
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission, cold_pool, conversation_by_name)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission, cold_pool, conversation_by_name, conversation_proxy_by_name)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -642,6 +649,10 @@ class HostBackend:
         request = self._conversation_request(plan)
         if request is None:
             return Observation('waiting', reason='connection_data_required')
+        from .onboarding_conversation_proxy import reconcile
+        proxy = reconcile(self, plan, request, apply=apply)
+        if proxy is not None and proxy.state != 'complete':
+            return proxy
         _, base, mounts = self._guest_paths(plan)
         code, _, runtime_mounts = self._runtime_paths(plan, base)
         mounts.update(runtime_mounts)

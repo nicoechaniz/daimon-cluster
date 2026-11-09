@@ -1001,3 +1001,28 @@ owning configuration; native work, keys, account state and existing receipts sta
 The actual all4 gateway client/paired-endpoint reads passed with configuration,
 identity source and Home process unchanged; no service reload or enrollment was
 performed by that qualification. Fresh companion delivery remains unproven.
+
+The same Conversation stage can select `conversation_proxy_by_name` in its
+protected Host configuration. Each key must already have an exact pinned
+Conversation request; its value contains only `listen_host` and `listen_port`.
+The host address must be an explicit private, non-loopback/non-wildcard IP and
+the external port is 1024–65535. Selected listeners are unique. The guest port
+comes from the already pinned Conversation request, not from caller input.
+
+This composes the existing Home `ensure_proxy` Incus writer for the one device
+`conversation-web`, binding the selected host listener to the guest's loopback
+web port. Observation is read-only; a missing device makes the existing stage
+executable. Execution rechecks the original plan grant, creates only an absent
+device, and reads it back. A lost add reply is reconciled from the actual same
+device on the next attempt. Different local or inherited devices are preserved;
+a matching inherited profile device is not overridden. There is one device per
+selected body, at most64 selected names and no new state history or daemon.
+
+Unselected old jobs keep their original contract. The adapter explicitly supports
+current Incus containers; full KVM network forwarding has different semantics
+and requires its own qualified placement integration. This network receipt is
+not public HTTPS/shared-login readiness. The maintained gateway route compiler,
+membership-only operation compilation, KVM creation and whole-command receiving
+qualification remain necessary before claiming a fresh full companion delivery.
+All four current devices were reconciled read-only, including a real wrong-port
+refusal, without changing their jobs, configuration, processes or native inputs.

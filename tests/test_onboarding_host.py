@@ -110,7 +110,8 @@ def test_guest_conversation_failure_preserves_only_closed_public_code(monkeypatc
 
 
 @pytest.mark.parametrize('unresolved',[False,True])
-def test_conversation_stage_binds_own_plan_and_does_not_fabricate_login(tmp_path, monkeypatch, unresolved):
+@pytest.mark.parametrize('with_proxy',[False,True])
+def test_conversation_stage_binds_own_plan_and_does_not_fabricate_login(tmp_path, monkeypatch, unresolved, with_proxy):
     from tests.test_onboarding_conversation import request
     from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA
     config, value, _, _ = configured(tmp_path)
@@ -125,6 +126,16 @@ def test_conversation_stage_binds_own_plan_and_does_not_fabricate_login(tmp_path
     path = tmp_path/'conversation.json'
     being_seed._write(path, supplied)
     backend = HostBackend(replace(config, conversation_by_name={value['name']: (path, digest(supplied))}))
+    proxy_reads = []
+    if with_proxy:
+        from clusterctl.onboarding_conversation_proxy import desired
+        listener = dict(listen_host='10.20.30.40', listen_port=18741)
+        backend.config = replace(backend.config, conversation_proxy_by_name={value['name']:listener})
+        def dispatch(_plan, argv):
+            proxy_reads.append(argv)
+            assert argv == ['query','/1.0/instances/'+backend.instance(value)]
+            return json.dumps(dict(type='container',devices={'conversation-web':desired(listener,selected['port'])}))
+        backend._dispatch = dispatch
     backend.authorize = lambda p, pin: True
     backend._ceremony = lambda p: SimpleNamespace(admission_coordinates=lambda p: {'being_ref': selected['being_ref']})
     backend._guest_paths = lambda p: (tmp_path, Path('/qualified/base'), {})
@@ -153,6 +164,7 @@ def test_conversation_stage_binds_own_plan_and_does_not_fabricate_login(tmp_path
     with pytest.raises(OnboardingError, match='conversation_selection_changed'):
         backend.observe(value, 'conversation', 'retained-operation')
     assert len(calls) == 2
+    assert len(proxy_reads) == (2 if with_proxy else 0)
 
 
 def test_identity_stage_retains_native_transaction_without_social_start(tmp_path):

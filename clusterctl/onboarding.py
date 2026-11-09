@@ -109,6 +109,8 @@ _DIAGNOSTIC_CODES = frozenset({
     'companion_gateway_operation_unconfirmed',
     'companion_gateway_service_unobserved', 'companion_gateway_service_binding_changed',
     'companion_gateway_reload_unconfirmed',
+    'conversation_proxy_configuration_required', 'conversation_proxy_observation_unavailable',
+    'conversation_proxy_placement_unsupported', 'existing_conversation_proxy_preserved',
 })
 
 

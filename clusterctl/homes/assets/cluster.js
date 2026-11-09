@@ -39,7 +39,10 @@
   function map(data) {
     const observation = data.observability || {}, targets = observation.health?.targets || [];
     const names = new Set(targets.map(t => t.label));
-    for (const row of [...data.instances, ...data.planned]) names.add(row.host);
+    for (const row of [...data.instances, ...data.planned]) {
+      // An unknown placement is a missing field, never another physical host.
+      if (row.host && row.host !== 'Placement unverified') names.add(row.host);
+    }
     if (!selectedHost || !names.has(selectedHost)) selectedHost = [...names][0];
     const cards = [...names].map(name => {
       const target = targets.find(t => t.label === name), reading = target?.reading;
@@ -132,8 +135,17 @@
   async function refresh() {
     if (busy || document.hidden) return;
     busy = true; byId('refresh').disabled = true;
+    const started = Date.now(), controller = new AbortController();
+    const loading = () => {
+      const seconds = Math.floor((Date.now() - started) / 1000);
+      byId('status').textContent = (last ? 'Updating current observations' : 'Checking hosts and account usage')
+        + ' · ' + seconds + ' s' + (seconds >= 5 ? ' · remote reads can take a few seconds' : '');
+    };
+    loading();
+    const progress = setInterval(loading, 1000);
+    const deadline = setTimeout(() => controller.abort(), 55000);
     try {
-      const response = await fetch('/cluster/api/fleet', {credentials:'same-origin', cache:'no-store', headers:{Accept:'application/json'}});
+      const response = await fetch('/cluster/api/fleet', {credentials:'same-origin', cache:'no-store', headers:{Accept:'application/json'}, signal:controller.signal});
       byId('signin').hidden = response.status !== 401;
       if ([401,403].includes(response.status)) { last = null; for (const id of ['hosts','host-detail','alerts','usage-daimons','usage-accounts']) byId(id).replaceChildren(); byId('alert-status').textContent = ''; byId('instances').replaceChildren(); byId('planned').replaceChildren(); byId('count').textContent = ''; }
       if (response.status === 401) throw new Error('Sign in with our shared login to view the inventory.');
@@ -141,8 +153,13 @@
       if (!response.ok) throw new Error('Inventory unavailable. Previous observations may have expired.');
       last = await response.json(); render(last); byId('status').textContent = 'Connected · updates every 10 seconds while visible';
     } catch (error) {
-      if (last) render(last); byId('status').textContent = error.message;
-    } finally { busy = false; byId('refresh').disabled = false; }
+      if (last) render(last);
+      byId('status').textContent = controller.signal.aborted
+        ? 'The inventory read timed out. Refresh to try again; previous observations retain their dates.' : error.message;
+    } finally {
+      clearInterval(progress); clearTimeout(deadline);
+      busy = false; byId('refresh').disabled = false;
+    }
   }
   byId('refresh').addEventListener('click', refresh);
   byId('signin').addEventListener('click', async () => {

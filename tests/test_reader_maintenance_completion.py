@@ -357,3 +357,26 @@ def test_expired_generations_roll_bounded_detail_without_rewriting_originals(tmp
     assert len([path for path in retained if '-select' in path])==7
     assert len(saved['retired_generations']['chain_sha256'])==64
     assert failures[0]['effect_not_after_ms']<failures[-1]['effect_not_after_ms']
+
+
+
+def test_legacy_filename_binding_conflict_uses_one_known_unattempted_slot(tmp_path,monkeypatch):
+    import json
+    owners,options,calls,_,_=cohort(tmp_path,monkeypatch)
+    original=owners['first'].prepare_apply_control
+    attempts=[]
+    def existing_file(command,path):
+        attempts.append((copy.deepcopy(command),path))
+        if len(attempts)==1:
+            raise OnboardingError('receiving_control_binding_conflict')
+        return original(command,path)
+    owners['first'].prepare_apply_control=existing_file
+    receiving.refresh_current_readers(owners,**options)
+    assert attempts[0][0]==attempts[1][0]
+    assert attempts[0][1]!=attempts[1][1]
+    assert calls.count(('first','revoke'))==1
+    saved=json.loads(options['checkpoint'].read_bytes())
+    assert len(saved['local_request_slots'])==1
+    calls.clear()
+    receiving.refresh_current_readers(owners,**options)
+    assert calls==[]

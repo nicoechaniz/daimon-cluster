@@ -346,6 +346,11 @@ selection gate that expired inside an eight-minute operation. The checkpoint
 keeps four detailed superseded generations plus a rolling count/hash. It retires
 an oldest detail only when current native process/CAS or expiry proves that its
 controls cannot acquire another effect; owner-private originals stay intact. Other changes or the existing byte limit still refuse.
+New snapshots use a vector/process-bound local slot from their first control.
+If the closed owner refuses a filename binding before submission, the completer
+retains that refusal and allocates at most one alternate slot for the unchanged
+command bytes and deadline. An unknown dispatch or ACK never takes that path.
+Closed owner refusal codes remain visible in the ordinary maintenance result.
 This adds no polling service, authority or lifecycle operation. Owner-route preflight
 failures identify the receiver and phase before code updates begin. Import failures
 use a closed public code; arbitrary stderr and credential material stay private.

@@ -343,7 +343,8 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
         instances = {name:proof['gate']['process_instance_id'] for name,proof in proofs.items()}
         def initial():
             return dict(schema='cluster-current-reader-completion/v1',binding=binding,
-                gate_instances=instances,commands={})
+                gate_instances=instances,commands={},
+                control_slot=digest(dict(vector=vector,instances=instances,generation=0)))
         def compatible_restart(saved):
             old = saved.get('binding',{})
             if ({key:value for key,value in old.items() if key != 'vector'}
@@ -495,11 +496,24 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                         command['effect_not_after_ms'] = min([effect_end,*finite])
                     saved['commands'][key] = command
                     being_seed._write(checkpoint, saved, limit=being_seed.MAX_SELECTION)
-                suffix = '' if saved.get('control_slot') is None else '-' + saved['control_slot']
-                path = owner.root / 'receiving-control' / (command['operation_id'] + '-' + phase + suffix + '.json')
-                # Native CAS and owner-retained request identity are authoritative.
-                # A lost ACK leaves these files intact; never synthesize success.
-                result = owner.prepare_apply_control(command, path)
+                def control_path(slot):
+                    suffix = '' if slot is None else '-' + slot
+                    return owner.root / 'receiving-control' / (command['operation_id'] + '-' + phase + suffix + '.json')
+                slots = saved.get('local_request_slots',{})
+                path = control_path(slots.get(key,saved.get('control_slot')))
+                # A binding conflict is the closed owner's PRE-SEND refusal:
+                # this filename belongs to another exact retained request.
+                # Allocate at most one distinct local slot for these unchanged
+                # command bytes. Unknown dispatch/ACK outcomes never enter here.
+                try:
+                    result = owner.prepare_apply_control(command, path)
+                except OnboardingError as error:
+                    if str(error) != 'receiving_control_binding_conflict' or key in slots:
+                        raise
+                    slot = digest(dict(binding=binding,command=command,purpose='known-unattempted-local-slot'))
+                    saved['local_request_slots'] = {**slots,key:slot}
+                    being_seed._write(checkpoint,saved,limit=being_seed.MAX_SELECTION)
+                    result = owner.prepare_apply_control(command,control_path(slot))
                 proofs[name] = {**proof, 'gate': result['gate']}
                 changed.append(dict(name=name, phase=phase))
         final, current = observe_all()

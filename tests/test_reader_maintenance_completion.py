@@ -338,7 +338,9 @@ def test_expired_generations_roll_bounded_detail_without_rewriting_originals(tmp
     monkeypatch.setattr(receiving.time,'time_ns',lambda:clock[0])
     original=owners['first'].prepare_apply_control
     failures=[]
+    retained={}
     def fail(command,path):
+        assert retained.setdefault(path.name,copy.deepcopy(command))==command
         if command['phase']=='select' and len(failures)<6:
             failures.append(copy.deepcopy(command))
             raise OnboardingError('receiving_control_not_accepted')
@@ -352,5 +354,6 @@ def test_expired_generations_roll_bounded_detail_without_rewriting_originals(tmp
     saved=json.loads(options['checkpoint'].read_bytes())
     assert len(saved['superseded_generations'])==4
     assert saved['retired_generations']['count']==2
+    assert len([path for path in retained if '-select' in path])==7
     assert len(saved['retired_generations']['chain_sha256'])==64
     assert failures[0]['effect_not_after_ms']<failures[-1]['effect_not_after_ms']

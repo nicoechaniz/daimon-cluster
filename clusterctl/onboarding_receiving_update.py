@@ -383,7 +383,15 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                 and type(command.get('effect_not_after_ms')) is int
                 and command['effect_not_after_ms'] <= time.time_ns() // 1_000_000
                 for command in saved['commands'].values())
-            if compatible_restart(saved) or ((legacy_generation or expired_selection)
+            # Older bounded-history code used the retained list length as
+            # the slot generation. After retirement that could reuse a private
+            # request filename. Preserve its commands and derive a new slot.
+            retired_count = saved.get('retired_generations',{}).get('count',0)
+            slot_generation = len(saved.get('superseded_generations',[]))+retired_count
+            legacy_slot = (saved.get('control_slot') is not None
+                and saved['control_slot'] != digest(dict(vector=vector,
+                    instances=instances,generation=slot_generation)))
+            if compatible_restart(saved) or ((legacy_generation or expired_selection or legacy_slot)
                     and saved.get('binding') == binding):
                 history = saved.get('superseded_generations',[])
                 if not isinstance(history,list) or len(history) > 4:
@@ -412,7 +420,8 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                     if key != 'superseded_generations'}]
                 saved = {
                     **initial(),'superseded_generations':history,'retired_generations':retired,
-                    'control_slot':digest(dict(vector=vector,instances=instances,generation=len(history)))}
+                    'control_slot':digest(dict(vector=vector,instances=instances,
+                        generation=len(history)+retired['count']))}
                 being_seed._write(checkpoint,saved,limit=being_seed.MAX_SELECTION)
             elif saved.get('binding') != binding:
                 if (not reader_checkpoint_completed(saved)

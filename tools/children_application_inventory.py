@@ -198,8 +198,10 @@ def validate_deployments(value, units):
             or not set(value['units']) <= set(units)):
         raise ValueError('selected_deployment_manifest_shape')
     total = 0
+    trees = []
     for row in value['units'].values():
-        if (not isinstance(row, dict) or set(row) != {'root', 'bind', 'source_ref', 'files'}
+        if (not isinstance(row, dict) or not {'root', 'bind', 'source_ref', 'files'} <= set(row)
+                or set(row) - {'root', 'bind', 'source_ref', 'files', 'components', 'pythonpath'}
                 or row['bind'] not in {'cwd', 'executable', 'python-script'}
                 or not isinstance(row['source_ref'], str)
                 or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9:/#._-]{0,255}', row['source_ref']) is None
@@ -208,6 +210,33 @@ def validate_deployments(value, units):
                 or not any(Path(row['root']).is_relative_to(p) for p in PUBLIC_ROOTS)
                 or not isinstance(row['files'], dict) or not row['files']):
             raise ValueError('selected_deployment_manifest_shape')
+        trees.append(row)
+        if 'components' in row or 'pythonpath' in row:
+            if (row['bind'] != 'cwd' or not isinstance(row.get('components'), list)
+                    or not 1 <= len(row['components']) <= 3
+                    or not isinstance(row.get('pythonpath'), list)
+                    or len(row['pythonpath']) != len(row['components']) + 1
+                    or any(not isinstance(v, str) for v in row['pythonpath'])
+                    or len(set(row['pythonpath'])) != len(row['pythonpath'])):
+                raise ValueError('selected_deployment_components_shape')
+            roots = [row['root']]
+            for component in row['components']:
+                if (not isinstance(component, dict) or set(component) != {'root', 'source_ref', 'files'}
+                        or not isinstance(component['root'], str)
+                        or not Path(component['root']).is_absolute()
+                        or '..' in Path(component['root']).parts
+                        or not any(Path(component['root']).is_relative_to(p) for p in PUBLIC_ROOTS)
+                        or not isinstance(component['source_ref'], str)
+                        or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9:/#._-]{0,255}', component['source_ref']) is None
+                        or not isinstance(component['files'], dict) or not component['files']):
+                    raise ValueError('selected_deployment_components_shape')
+                roots.append(component['root'])
+                trees.append(component)
+            if len(set(roots)) != len(roots) or set(roots) != set(row['pythonpath']):
+                raise ValueError('selected_deployment_component_roots')
+    for row in trees:
+        if len(row['files']) > 1024:
+            raise ValueError('selected_deployment_file_capacity')
         for name, pin in row['files'].items():
             if (not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9_./-]{1,240}', name)
                     or name.startswith('/') or any(p in {'', '.', '..', '__pycache__'} for p in name.split('/'))
@@ -215,7 +244,7 @@ def validate_deployments(value, units):
                     or re.fullmatch('[a-f0-9]{64}', pin) is None):
                 raise ValueError('selected_deployment_file_shape')
             total += 1
-            if total > 1024:
+            if total > 4096:
                 raise ValueError('selected_deployment_file_capacity')
     return value
 
@@ -294,24 +323,17 @@ def python_script_entrypoint(process, image, root, files):
     return str(script.relative_to(root))
 
 
-def verify_deployment(row, process, image, hashed, check):
+def verify_tree(row, hashed, check):
+    """Compare the complete selected public tree without importing its packages."""
     root = Path(row['root'])
     if root.resolve() != root:
         raise ValueError('selected_deployment_symlink')
     for parent in (root, *root.parents):
         info = parent.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != TRUSTED_UID or info.st_mode & 0o022):
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != TRUSTED_UID or info.st_mode & 0o022:
             raise ValueError('selected_deployment_directory_custody')
         if parent in PUBLIC_ROOTS:
             break
-    entrypoint = None
-    if row['bind'] == 'python-script':
-        entrypoint = python_script_entrypoint(process, image, root, row['files'])
-    elif row['bind'] == 'cwd':
-        if (process/'cwd').resolve() != root:
-            raise ValueError('selected_deployment_cwd_changed')
-    elif not image.is_relative_to(root) or str(image.relative_to(root)) not in row['files']:
-        raise ValueError('selected_deployment_executable_changed')
     if deployment_files(root, check) != set(row['files']):
         raise ValueError('selected_deployment_file_set_changed')
     identities = {}
@@ -334,11 +356,43 @@ def verify_deployment(row, process, image, hashed, check):
         check()
         if image_identity((root/name).stat()) != identity:
             raise ValueError('selected_deployment_file_changed')
+
+
+def verify_deployment(row, process, image, hashed, check):
+    root = Path(row['root'])
+    if root.resolve() != root:
+        raise ValueError('selected_deployment_symlink')
+    for parent in (root, *root.parents):
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != TRUSTED_UID or info.st_mode & 0o022):
+            raise ValueError('selected_deployment_directory_custody')
+        if parent in PUBLIC_ROOTS:
+            break
+    entrypoint = None
+    if row['bind'] == 'python-script':
+        entrypoint = python_script_entrypoint(process, image, root, row['files'])
+    elif row['bind'] == 'cwd':
+        if (process/'cwd').resolve() != root:
+            raise ValueError('selected_deployment_cwd_changed')
+    elif not image.is_relative_to(root) or str(image.relative_to(root)) not in row['files']:
+        raise ValueError('selected_deployment_executable_changed')
+    verify_tree(row, hashed, check)
     if row['bind'] == 'cwd' and (process/'cwd').resolve() != root:
         raise ValueError('selected_deployment_cwd_changed')
     if row['bind'] == 'python-script' and python_script_entrypoint(process, image, root, row['files']) != entrypoint:
         raise ValueError('selected_deployment_python_script_changed')
+    components = []
+    if 'components' in row:
+        if [str(p) for p in declared_python_paths(process)] != row['pythonpath']:
+            raise ValueError('selected_deployment_pythonpath_changed')
+        for component in row['components']:
+            verify_tree(component, hashed, check)
+            components.append({'state': 'verified', 'source_ref': component['source_ref'],
+                               'files': len(component['files'])})
+        if [str(p) for p in declared_python_paths(process)] != row['pythonpath']:
+            raise ValueError('selected_deployment_pythonpath_changed')
     return {'state': 'verified', 'source_ref': row['source_ref'], 'bind': row['bind'],
+            **({'components': components, 'pythonpath_verified': True} if components else {}),
             'files': len(row['files']), 'loaded_main_executable': row['bind'] == 'executable',
             **({'python_entrypoint': entrypoint} if entrypoint is not None else {}),
             'meaning': 'Selected files and process association; Python imported modules, dependency authenticity and exposure remain unassessed'}
@@ -439,6 +493,11 @@ def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=Fa
                         Path(deployments['units'][unit]['root']), deployments['units'][unit]['files'])
                         != value['deployment']['python_entrypoint']):
                 raise ValueError('selected_deployment_python_script_changed')
+            if (deployments is not None and unit in deployments['units']
+                    and 'components' in deployments['units'][unit]
+                    and [str(p) for p in declared_python_paths(process)]
+                    != deployments['units'][unit]['pythonpath']):
+                raise ValueError('selected_deployment_pythonpath_changed')
             value['state']='observed'
         except (OSError,ValueError,KeyError,subprocess.SubprocessError) as error:
             value.update(state='unavailable',reason=str(error) if type(error) is ValueError else type(error).__name__)

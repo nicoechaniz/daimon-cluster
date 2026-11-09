@@ -432,3 +432,61 @@ def test_same_pid_final_script_change_is_not_current_binding(selected_python_scr
     result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
     assert result['units']['own.service']['state']=='unavailable'
     assert result['units']['own.service']['reason']=='selected_deployment_python_script_changed'
+
+
+@pytest.fixture
+def selected_components(selected_deployment):
+    root, proc, target, source, manifest = selected_deployment
+    dependency = root.parent/'qualified-dependency'
+    dependency.mkdir()
+    module = dependency/'package.py'
+    module.write_text('raise RuntimeError("dependency must never execute")\n')
+    row = manifest['units']['own.service']
+    row['components'] = [dict(root=str(dependency), source_ref='published-wheel-sha256',
+        files={'package.py':hashlib.sha256(module.read_bytes()).hexdigest()})]
+    row['pythonpath'] = [str(dependency), str(root)]
+    (proc/'3/environ').write_bytes(('PRIVATE=must-not-retain\0PYTHONPATH='+':'.join(row['pythonpath'])+'\0').encode())
+    return root, proc, dependency, module, manifest
+
+
+def test_complete_selected_python_paths_are_hashed_without_importing_packages(selected_components):
+    _root, proc, _dependency, _module, manifest = selected_components
+    result = inventory.collect(['own.service'], proc=proc, deployments=manifest)
+    row = result['units']['own.service']
+    assert row['state'] == 'observed'
+    assert row['deployment']['pythonpath_verified'] is True
+    assert row['deployment']['components'] == [dict(state='verified',
+        source_ref='published-wheel-sha256',files=1)]
+    assert 'must-not-retain' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('change', ['changed-file','extra-file','symlink','writable','reordered-path','unselected-path'])
+def test_component_or_selected_path_change_cannot_report_verified(selected_components, change):
+    root, proc, dependency, module, manifest = selected_components
+    if change == 'changed-file':
+        module.write_text('changed')
+    elif change == 'extra-file':
+        (dependency/'unexpected.py').write_text('extra')
+    elif change == 'symlink':
+        module.unlink()
+        module.symlink_to(root/'app.py')
+    elif change == 'writable':
+        module.chmod(0o666)
+    else:
+        paths=[str(root),str(dependency)] if change=='reordered-path' else [str(root)]
+        (proc/'3/environ').write_bytes(('PYTHONPATH='+':'.join(paths)+'\0').encode())
+    result = inventory.collect(['own.service'], proc=proc, deployments=manifest)
+    assert result['units']['own.service']['state'] == 'unavailable'
+    assert 'deployment' not in result['units']['own.service']
+
+
+def test_component_read_rechecks_actual_process_search_path(selected_components, monkeypatch):
+    root, proc, dependency, _module, manifest = selected_components
+    verify = inventory.verify_tree
+    def change_after_read(row, hashed, check):
+        verify(row, hashed, check)
+        if row['root']==str(dependency):
+            (proc/'3/environ').write_bytes(('PYTHONPATH='+str(root)+'\0').encode())
+    monkeypatch.setattr(inventory,'verify_tree',change_after_read)
+    result = inventory.collect(['own.service'], proc=proc, deployments=manifest)
+    assert result['units']['own.service']['reason']=='selected_deployment_pythonpath_changed'

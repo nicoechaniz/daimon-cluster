@@ -180,6 +180,11 @@ class Target:
         root = self.package / 'runtime'
         group = self.root / 'tribe'
         journal = self.root / 'group-admission'
+        if value['action'] == 'receive-route-preview':
+            if authority_closure or expected_context_sha256 is not None or remaining_execution is not None:
+                raise OnboardingError('onboarding_group_owner_context_conflict')
+            from .onboarding_receive_keys import route_preview
+            return route_preview(self.package/'runtime', self.root/'tribe', value['operation_id'], deadline_ns=deadline_ns)
         if value['action'] == 'preparation-preview':
             if authority_closure or expected_context_sha256 is not None or remaining_execution is not None:
                 raise OnboardingError('onboarding_group_owner_context_conflict')

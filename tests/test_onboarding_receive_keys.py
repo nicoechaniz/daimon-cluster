@@ -315,6 +315,12 @@ def test_existing_owner_private_pipe_exports_only_actual_own_resource_key(group_
         route = pub['params']['specification']['intake']
         source = dict(kind='application', application_sha256=result['application_sha256'],
             publication_sha256=result['publication_sha256'])
+        preview = owner.group_publication(dict(operation_id=pub['operation_id'],
+            step='route-preview',action='receive-route-preview',params={}),authority_closure={},
+            deadline_ns=time.monotonic_ns()+5_000_000_000)
+        assert preview['route'] == route
+        assert preview['source'] == source
+        assert 'key_hex' not in preview
     context = being_seed._read(journal/pub['operation_id']/'owner/context.json')
     packet = dict(schema='cluster-private-receive-resource/v1', action='export',
         operation_id=pub['operation_id'], owner_context_sha256=digest(context), route=route, source=source)
@@ -324,7 +330,7 @@ def test_existing_owner_private_pipe_exports_only_actual_own_resource_key(group_
     if kind == 'prepared':
         # The existing native publisher consumes the transferred source without
         # another key, identity, application client or model turn.
-        imported = owner.private_resource(dict(packet, action='import', source=exported),
+        owner.private_resource(dict(packet, action='import', source=exported),
             deadline_ns=time.monotonic_ns()+5_000_000_000)
         from daimon_matrix.messaging_config import read_publication
         original = _source._load(signed=False)
@@ -334,13 +340,12 @@ def test_existing_owner_private_pipe_exports_only_actual_own_resource_key(group_
         for row in roster:
             if row['embodiment_id'] == own['embodiment_id']:
                 row['route'] = route
-        resource_path = journal/pub['operation_id']/imported['secret_source']
         published = dict(operation_id=pub['operation_id'], step='transferred-application',
             action='receive-application', params=dict(tribe_ref=app['tribe']['policy']['tribe_ref'],
                 policy={k:app['tribe']['policy'][k] for k in ('classification', 'max_ttl_ms')},
                 listen=app['listen'], intake=route, roster=roster, stores=app['stores'],
                 authority_order=[row['manifest']['being_ref'] for row in app['authorities']],
-                secret_sources={route['secret_file']:str(resource_path)}))
+                secret_sources={route['secret_file']:dict(receive_import=digest(route))}))
         actual = owner.group_publication(published, authority_closure=closure(peer_bundle))
         assert actual['application_sha256']
         assert owner.group_publication(published, authority_closure=closure(peer_bundle)) == actual
@@ -444,3 +449,25 @@ def test_existing_owner_clients_keep_private_transfer_on_their_selected_pipe(mon
     else:
         assert args == ('group-resource',)
         assert options['group_request'] == request
+
+
+@pytest.mark.parametrize('change',['filename','context','slot'])
+def test_import_reference_is_resolved_only_inside_its_original_owner_operation(resource_import,change):
+    from clusterctl.onboarding import digest
+    *_,operation,packet=resource_import
+    transfer(resource_import)
+    route=packet['route']
+    references={route['secret_file']:dict(receive_import=digest(route))}
+    result=keys.resolve_sources(operation,references)
+    assert list(result)==[route['secret_file']]
+    assert Path(result[route['secret_file']]).read_bytes()==b'k'*32
+    if change=='filename':
+        references={'other.key':references[route['secret_file']]}
+    elif change=='slot':
+        references[route['secret_file']]['receive_import']='../outside'
+    else:
+        context=being_seed._read(operation/'owner/context.json')
+        context['identity']['runtime_bundle_sha256']='f'*64
+        being_seed._write(operation/'owner/context.json',context)
+    with pytest.raises(OnboardingError):
+        keys.resolve_sources(operation,references)

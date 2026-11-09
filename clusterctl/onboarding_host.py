@@ -769,6 +769,14 @@ class HostBackend:
         # or synthetic inference. Home's isolated technical login is the sole
         # write here and has its own exact, retained receipt.
         facts = {}
+        from .onboarding_group_coordinator import GroupCoordinator
+        if self.config.group_admission is not None:
+            coordinator = GroupCoordinator(self)
+            if digest(plan) in coordinator.settings.get('receive_preparations', {}):
+                receiving = coordinator.observe_receive(plan)
+                if receiving.state != 'complete':
+                    return receiving
+                facts.update(receiving.facts)
         from .onboarding_accounts import ManagedAccount
         for query in (lambda: self._companion_matrix(plan, apply=False),
                       lambda: self._conversation(plan, apply=False),

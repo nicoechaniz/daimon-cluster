@@ -44,7 +44,7 @@ FACTS = frozenset({
     "telegram_ready", "telegram_verified", "welcome_delivered", "human_contact_verified",
     "steering_verified", "topics_verified", "restart_verified", "cli_resume_verified",
     "matrix_delivery_verified", "browser_code_verified",
-    "conversation_ready", "conversation_verified", "shared_login_verified", "native_running_verified", "tribe_membership_verified",
+    "conversation_ready", "conversation_verified", "shared_login_verified", "native_running_verified", "tribe_membership_verified", "tribe_reader_selection_verified",
 })
 ACCEPTANCE = frozenset({
     "identity_verified", "ssh_verified", "provider_verified", "telegram_verified",
@@ -121,6 +121,10 @@ _DIAGNOSTIC_CODES = frozenset({
     'conversation_route_validation_refused',
     'conversation_route_maintenance_required', 'conversation_route_maintenance_unavailable',
     'conversation_route_maintenance_lost', 'conversation_route_voice_active',
+    'companion_receive_preparation_required', 'companion_receive_original_changed',
+    'companion_receive_capacity', 'companion_receive_source_changed',
+    'companion_receive_publication_unobserved', 'companion_receive_resource_names_conflict',
+    'companion_receive_existing_application_preserved', 'receiving_current_required_reader_missing',
 })
 
 
@@ -129,8 +133,9 @@ def refusal_diagnostic(error: Exception, *, stage: str) -> dict:
     code = 'unclassified_refusal'
     if isinstance(error, (OnboardingError, being_seed.SeedError)):
         from .onboarding_conversation import PUBLIC_CODES
+        from .onboarding_receive_keys import PRIVATE_ERRORS
         candidate = str(error)
-        if candidate in _DIAGNOSTIC_CODES | PUBLIC_CODES | {
+        if candidate in _DIAGNOSTIC_CODES | PUBLIC_CODES | PRIVATE_ERRORS | {
                 'explicit_native_admission_configuration_required',
                 'explicit_membership_only_operation_required', 'onboarding_group_membership_compilation_required', 'onboarding_group_preparation_unavailable', 'conversation_selection_changed',
                 'conversation_selection_required', 'conversation_access_unconfirmed',

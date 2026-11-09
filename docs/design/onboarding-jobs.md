@@ -1476,8 +1476,9 @@ Source/guest native fixtures exercise first publication, a lost reply after the
 SDK effect, exact retry with the same client, changed intent refusal and modified
 derived metadata refusal. No production application or current child installation
 was replayed. The compiler's separate actual-four compatibility evidence remains
-read-only. Current coordinator automatic key intent/publication/selection and
-reader integration still require completion before full-command acceptance.
+read-only. The original coordinator now composes explicitly selected key intent, private
+resource relay, publication and selection as described below. Automatic cohort
+control selection and actual receiving/full-command qualification remain.
 
 
 ### Closed-outbound receive publication observation
@@ -1529,9 +1530,9 @@ all originals. Keys remain with their original operation and selected/rollback
 application; this path neither retires them automatically nor exports private
 bytes in receipts. Fixture qualification covers interrupted intent/file/result
 boundaries and consumption by the native publication writer. No existing child
-key is regenerated or selected by this source change. Original coordinator
-resource transfer, receive lifecycle and current-reader integration remain
-unfinished; key preparation alone is not delivery or reader readiness.
+key is regenerated or selected by this source change. The original coordinator now composes resource transfer and receive publication
+through its retained phase. Actual guarded lifecycle qualification, automatic
+cohort control selection and full-command receiving remain unfinished.
 
 
 ### Distinct receive-phase preservation in the original job
@@ -1551,9 +1552,9 @@ refuses when its own retained claim is absent. Original phase retries retain the
 same claim, binding and owner state; changed recipes refuse before preparation.
 The original guard horizon, cleanup reserve and selected-helper limits remain.
 No timer, model attention, global Stop, outbound release or automatic goal
-resume is introduced. Coordinator publication/resource transfer and current
-reader selection still need composition and actual receiving qualification;
-this source primitive alone does not establish delivery.
+resume is introduced. The original coordinator now composes publication/resource transfer through this
+phase. Automatic current-reader control selection and actual receiving
+qualification remain; this source primitive alone does not establish delivery.
 
 
 ### Private receive-resource transfer through existing owner transports
@@ -1598,8 +1599,9 @@ operations are limited to16 per original owner journal with a256-entry scan;
 exact retained recovery remains available at capacity. Keys/metadata stay with
 the original operation and current/rollback selection; no automatic retirement
 of referenced or unfinished work is added. Missing capacity is a retained failure,
-not authorization to discard work. Coordinator-wide resource/publication/load
-composition and actual fleet qualification remain unfinished.
+not authorization to discard work. The coordinator now composes the private
+resources with publication/selection and observed restoration. Automatic cohort
+control selection and actual fleet/full-command qualification remain unfinished.
 
 The private CLI returns only a closed refusal schema and fixed public error code
 on failure. Arbitrary exception text, private paths and captured data are never
@@ -1607,3 +1609,67 @@ serialized. Existing owner clients translate that typed refusal back into the
 original operation's failure without replacing its private input. Unknown errors
 remain unavailable; neither a failed relay nor a lost response authorizes minting
 a replacement key or retrying another operation.
+
+### Original coordinator receive publication and current-reader observation
+
+Optional protected `receive_preparations[PLAN_DIGEST]` selects one
+`cluster-companion-receive-preparation/v1` with the existing qualified owner
+`helpers`, explicit own `key` route parameters, `policy`, `listen`,
+`intake_endpoint`, `stores` and nullable `authority_order`. Up to16 preparations
+of64KiB each fit the existing bounded host configuration. Helpers must cover the
+exact original admission participants. The key endpoint is the selected transport
+route; the intake endpoint must match the actual own numeric listener. Group
+stores are the maintained records/envelopes/opaque-evidence/opaque-message set;
+bilateral store names are not a group application configuration.
+
+After the original membership-only result is complete, the existing worker
+advances this receive phase under the same original plan/journal/grants. A separate
+`receive_application` observation retains public commands/results and import
+receipts; terminal membership state/result never changes. Existing members provide
+signed intake metadata via `receive-route-preview` and their private resource pipe;
+their application, visibility and service are unchanged. Public helper preparation
+uses the already granted deployment route. Only the entrant Matrix service enters
+the original-job receive maintenance scope.
+
+A retained original pause is recovered before fresh base-service observation.
+First-publication preflight refuses an already selected unrelated application
+before any pause/key generation. Under that scope,
+`receive-communication-prepare` first uses the existing native migration plan
+and retained physical-store journal. It requires a current native deadline of
+at most60seconds, retains the exact original plan across interruptions, and can
+continue with a later explicit foreground window. The historical
+`communication-prepare` action keeps its original fixed-expiry contract. Then
+the native owner prepares its retained key,
+relays the selected resources, compiles/publishes its own receive application,
+selects it and records the closed-outbound snapshot. Every command is journaled
+before dispatch; a missing result is pending, never completion. Lost owner or host
+acknowledgments reconcile the same original steps and native effects. A separate
+restoration receipt is retained only after actual guard restoration; confirmed
+retries acquire no owners and open no new pause. Expiry preserves all work.
+
+Preparation uses the existing outer coordinator bound (at most300seconds).
+Each owner call and actual Matrix guard remains at most60seconds with the existing
+separate cleanup reserve. Publication observations reserve space for restoration
+within the original2MiB phase bound. The phase creates no enrollment, scheduler,
+provider call or outbound installation. Native import sources may use an explicit
+`{"receive_import": "ROUTE_DIGEST"}` reference; the owner resolves only its own
+original import metadata/context and verified key file. Existing absolute-source
+references remain compatible. No private path needs to be constructed by the
+controller or included in its public publication command.
+
+For configured receive phases, acceptance reads every actual required current
+reader through the existing `observe_current_reader` operator and compares their
+native membership basis with `conversation_cohort`. It pins prior members' own
+loaded application/software selections and actual visibility modes, and pins the
+entrant to the retained publication plus its unchanged native code/bundle. Every
+required native audience body must be observed; finite observation/credential
+validity is rechecked after collection, and every actual gate must select
+that exact fresh reader vector. Only then is `tribe_reader_selection_verified`
+reported. Files, enrollment, partial audiences and unselected gates cannot stand
+in for that observation. This is reader qualification/selection evidence, not
+network delivery, outbound release or model uptake.
+
+This publication/observation composition is source-qualified, not selected on the
+current four companions. Automated cohort control selection, actual guarded
+receiving/network qualification and coherent full-command acceptance remain
+unfinished. Existing admitted children and adult policies remain intact.

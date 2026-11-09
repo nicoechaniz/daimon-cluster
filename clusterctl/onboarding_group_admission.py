@@ -25,9 +25,11 @@ METHODS = frozenset({'tribe.invite', 'tribe.membership.accept', 'relationship.ev
                      'relationship.snapshot'})
 PUBLICATIONS = {
     'context-preview': set(),
+    'receive-route-preview': set(),
     'preparation-preview': {'tribe_ref'},
     'membership-authorities': {'tribe_ref', 'expected_selection_sha256'},
     'communication-prepare': {'expected_plan_sha256', 'expires_at_ms'},
+    'receive-communication-prepare': {'expected_plan_sha256'},
     'receive-key': {'provider_ref', 'route_ref', 'key_ref', 'endpoint', 'secret_file'},
     'receive-application': {'tribe_ref', 'policy', 'listen', 'intake', 'roster',
                             'stores', 'secret_sources', 'authority_order'},
@@ -883,6 +885,10 @@ def publication_command(value: dict) -> dict:
                     not isinstance(params['expected_selection_sha256'], str)
                     or re.fullmatch('[0-9a-f]{64}', params['expected_selection_sha256']) is None)):
             raise ValueError
+        if value['action'] == 'receive-communication-prepare' and (
+                not isinstance(params['expected_plan_sha256'], str)
+                or re.fullmatch('[0-9a-f]{64}', params['expected_plan_sha256']) is None):
+            raise ValueError
         if value['action'] == 'communication-prepare' and (
                 not isinstance(params['expected_plan_sha256'], str)
                 or re.fullmatch('[0-9a-f]{64}', params['expected_plan_sha256']) is None
@@ -891,7 +897,7 @@ def publication_command(value: dict) -> dict:
             raise ValueError
         if 'application_precondition' in value:
             guard = value['application_precondition']
-            if (value['action'] in {'application', 'receive-application', 'receive-key', 'context-preview', 'preparation-preview', 'communication-prepare', 'membership-authorities'}
+            if (value['action'] in {'application', 'receive-application', 'receive-key', 'context-preview', 'receive-route-preview', 'preparation-preview', 'communication-prepare', 'receive-communication-prepare', 'membership-authorities'}
                     or not isinstance(guard, dict) or set(guard) != {'application_step', 'application_sha256'}
                     or not isinstance(guard['application_step'], str)
                     or re.fullmatch('[a-z][a-z0-9-]{0,79}', guard['application_step']) is None
@@ -915,8 +921,10 @@ def publication_command(value: dict) -> dict:
                     or not isinstance(params['secret_sources'], dict)
                     or not 1 <= len(params['secret_sources']) <= 64
                     or any(not isinstance(name, str) or Path(name).name != name
-                        or not isinstance(path, str) or not Path(path).is_absolute()
-                        or '..' in Path(path).parts for name,path in params['secret_sources'].items())
+                        or not (isinstance(path, str) and Path(path).is_absolute() and '..' not in Path(path).parts
+                            or isinstance(path, dict) and set(path) == {'receive_import'}
+                            and isinstance(path['receive_import'], str)
+                            and re.fullmatch('[0-9a-f]{64}', path['receive_import']) is not None) for name,path in params['secret_sources'].items())
                     or params['authority_order'] is not None and not isinstance(params['authority_order'], list)):
                 raise ValueError
         if value['action'] == 'application':
@@ -1317,9 +1325,10 @@ def _publish_receive_application(hosted, group_root: Path, operation: Path, valu
             command_sha256=command_pin, specification=specification)
         being_seed._write(selected, prepared, limit=being_seed.MAX_SELECTION)
         _sync(operation)
+    from .onboarding_receive_keys import resolve_sources
     result = _publish_application(hosted, group_root / 'application',
         dict(expected_application_sha256=None, specification=prepared['specification'],
-             additions=None, admitted_being_refs=[], secret_sources=params['secret_sources']))
+             additions=None, admitted_being_refs=[], secret_sources=resolve_sources(operation, params['secret_sources'])))
     return dict(result, receive_specification_sha256=digest(prepared['specification']))
 
 def _publication_snapshot(hosted, group_root: Path, operation: Path, value: dict,
@@ -1424,7 +1433,11 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
         return retain_membership_authorities(hosted, group_root,
             operation_id=value['operation_id'], tribe_ref=params['tribe_ref'],
             authority_closure=closure, expected_selection_sha256=params['expected_selection_sha256'])
-    if action == 'communication-prepare':
+    if action in {'communication-prepare', 'receive-communication-prepare'}:
+        receiving = action == 'receive-communication-prepare'
+        if receiving and (type(deadline_ns) is not int
+                or not 0 < deadline_ns-time.monotonic_ns() <= 60_000_000_000):
+            raise OnboardingError('receive_resource_deadline_required')
         from daimon_matrix import operator_communication_migration as migration
         from .onboarding_service import GuestServiceBootstrap
         store = hosted.service.communication
@@ -1461,13 +1474,13 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
                 raise OnboardingError('onboarding_group_communication_schema_unsupported')
             if current['plan_sha256'] != params['expected_plan_sha256']:
                 raise migration.MigrationError('migration_plan_changed')
-            if time.time_ns() // 1_000_000 >= params['expires_at_ms']:
+            if not receiving and time.time_ns() // 1_000_000 >= params['expires_at_ms']:
                 raise OnboardingError('receiving_preservation_authorization_expired')
             private_directory(preparation, create=True)
             original = GuestServiceBootstrap._record(preview_path, current)
         if not original['steps']:
             return dict(migration=original)
-        if current['steps']:
+        if current['steps'] and not receiving:
             now = time.time_ns() // 1_000_000
             if now >= params['expires_at_ms']:
                 raise OnboardingError('receiving_preservation_authorization_expired')
@@ -1524,7 +1537,7 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
     not bypass current publication checks or prove receiving readiness.
     """
     selected = publication_command(value)
-    if selected['action'] == 'context-preview':
+    if selected['action'] in {'context-preview', 'receive-route-preview'}:
         raise OnboardingError('onboarding_group_context_preview_is_read_only')
     def check_deadline():
         if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:

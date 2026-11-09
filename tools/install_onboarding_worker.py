@@ -19,7 +19,7 @@ UNIT = 'daimon-onboarding-worker.service'
 PREFLIGHT = (
     'from clusterctl import onboarding_worker, onboarding_host, onboarding_homes, '
     'onboarding_conversation, onboarding_conversation_proxy, onboarding_conversation_routes, onboarding_membership_intent, '
-    'onboarding_conversation_maintenance, onboarding_membership_preparation, onboarding_membership_collection, onboarding_group_coordinator, onboarding_companion_homes; '
+    'onboarding_conversation_maintenance, onboarding_membership_preparation, onboarding_membership_collection, onboarding_group_coordinator, onboarding_receive_flow, onboarding_companion_homes; '
     'from clusterctl.matrix_host import _matrix_api; _matrix_api()'
 )
 

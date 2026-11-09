@@ -280,17 +280,8 @@ def _export_resource(runtime, group, operation, bundle, context, route, source):
             raise OnboardingError('receive_resource_source_required')
         source_hash = digest(receipt)
     elif source.get('kind') == 'application' and set(source) == {'kind', 'application_sha256', 'publication_sha256'}:
-        import time
-        from daimon_matrix.canonical import unb64url
-        from daimon_matrix.messaging_config import (_public_identity, _read_verified_publication,
-            verify_public_binding, config_digest)
-        from daimon_matrix.operator_rebirth import authority_from_runtime_bundle
-        authority = authority_from_runtime_bundle(bundle)
-        identity = _public_identity(authority, bundle['local_origin'], bundle['runtime_id'],
-            bundle['runtime_label'], time.time_ns()//1_000_000)
-        key = unb64url(authority.credentials[identity['credential_id']]['body']['signing_key']['public'])
-        app, _metadata, publication = _read_verified_publication(group/'application',
-            lambda value, signature: verify_public_binding(identity, key, value, signature))
+        from daimon_matrix.messaging_config import config_digest
+        app, publication = _signed_application(bundle, group)
         if (config_digest(app) != source['application_sha256']
                 or config_digest(publication) != source['publication_sha256'] or app.get('intake') != route):
             raise OnboardingError('receive_resource_source_required')
@@ -378,3 +369,67 @@ def private_result(value: dict) -> dict:
     if 'error' in value:
         raise OnboardingError('receive_resource_unavailable')
     return value
+
+
+
+def _signed_application(bundle, group):
+    import time
+    from daimon_matrix.canonical import unb64url
+    from daimon_matrix.messaging_config import (_public_identity, _read_verified_publication,
+        verify_public_binding)
+    from daimon_matrix.operator_rebirth import authority_from_runtime_bundle
+    authority = authority_from_runtime_bundle(bundle)
+    identity = _public_identity(authority, bundle['local_origin'], bundle['runtime_id'],
+        bundle['runtime_label'], time.time_ns()//1_000_000)
+    key = unb64url(authority.credentials[identity['credential_id']]['body']['signing_key']['public'])
+    app, _metadata, publication = _read_verified_publication(group/'application',
+        lambda value, signature: verify_public_binding(identity, key, value, signature))
+    return app, publication
+
+
+def route_preview(runtime: Path, group: Path, operation_id: str, *, deadline_ns: int | None) -> dict:
+    """Current signed own intake metadata only; no private key or native writer."""
+    import copy
+    import time
+    from daimon_matrix.messaging_config import config_digest
+    if deadline_ns is None or time.monotonic_ns() >= deadline_ns:
+        raise OnboardingError('receive_resource_deadline_required')
+    bundle = being_seed._read(runtime/'runtime.json', limit=being_seed.MAX_SELECTION)
+    app, publication = _signed_application(bundle, group)
+    route = app['intake']
+    parameters({key:route[key] for key in FIELDS})
+    if (time.monotonic_ns() >= deadline_ns
+            or being_seed._read(runtime/'runtime.json', limit=being_seed.MAX_SELECTION) != bundle):
+        raise OnboardingError('receive_resource_owner_changed')
+    return dict(schema='cluster-receive-route-preview/v1', operation_id=operation_id,
+        runtime_bundle_sha256=digest(bundle), being_ref=bundle['manifest']['being_ref'],
+        origin=copy.deepcopy(bundle['local_origin']),
+        route=copy.deepcopy(route), source=dict(kind='application',
+            application_sha256=config_digest(app), publication_sha256=config_digest(publication)))
+
+
+
+def resolve_sources(operation: Path, sources: dict) -> dict:
+    """Resolve original-operation import references inside the existing writer."""
+    result = {}
+    for filename, source in sources.items():
+        if isinstance(source, str):
+            result[filename] = source
+            continue
+        if (not isinstance(source, dict) or set(source) != {'receive_import'}
+                or not isinstance(source['receive_import'], str)
+                or re.fullmatch('[0-9a-f]{64}', source['receive_import']) is None):
+            raise OnboardingError('receive_resource_source_required')
+        slot = source['receive_import']
+        context = being_seed._read(operation/'owner/context.json', limit=being_seed.MAX_SELECTION)
+        metadata = being_seed._read(operation/'receive-imports'/(slot+'.json'), limit=4096)
+        route = metadata.get('route')
+        if (metadata.get('schema') != 'cluster-receive-resource-import/v1'
+                or metadata.get('owner_context_sha256') != digest(context)
+                or not isinstance(route, dict) or digest(route) != slot
+                or route.get('secret_file') != filename):
+            raise OnboardingError('receive_resource_source_required')
+        path = operation/'receive-imports'/(slot+'.key')
+        _private_key(path, route['secret_sha256'])
+        result[filename] = str(path)
+    return result

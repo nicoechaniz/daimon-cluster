@@ -897,7 +897,7 @@ class ManagedRuntime:
 def validate_code_update(spec: dict) -> dict:
     """One bounded operator request over existing jobs, placements and effects."""
     try:
-        if (not isinstance(spec, dict) or set(spec) != {
+        if (not isinstance(spec, dict) or set(spec) - {'reader_completion'} != {
                 'schema', 'host_config', 'vm_qualification', 'candidate', 'targets', 'group', 'operation_id', 'max_seconds'}
                 or spec['schema'] != 'cluster-native-code-maintenance/v1'
                 or type(spec['max_seconds']) is not int or not 1 <= spec['max_seconds'] <= 480
@@ -910,7 +910,8 @@ def validate_code_update(spec: dict) -> dict:
                 or not isinstance(spec['host_config'], str)
                 or not isinstance(spec['candidate']['code'], str)):
             raise ValueError
-        for path in (spec['host_config'], spec['candidate']['code'], spec['vm_qualification']):
+        for path in (spec['host_config'], spec['candidate']['code'], spec['vm_qualification'],
+                     spec.get('reader_completion')):
             if path is not None and (not isinstance(path, str) or not Path(path).is_absolute()
                     or '..' in Path(path).parts):
                 raise ValueError
@@ -924,11 +925,108 @@ def validate_code_update(spec: dict) -> dict:
     return spec
 
 
+class ReaderCommandClient:
+    """Reuse protected owner CLI routes; no network listener or new authority."""
+
+    def __init__(self, binding: dict):
+        self.root = Path(binding['root'])
+        self.command = binding['command']
+        self.deadline_ns: int | None = None
+        self.expected: dict | None = None
+
+    def _call(self, value: dict) -> dict:
+        import subprocess
+        from .onboarding_receiving_update import _run_owner
+        if self.deadline_ns is None:
+            raise OnboardingError('receiving_owner_deadline_binding_required')
+        remaining = min(55.0, (self.deadline_ns - time.monotonic_ns()) / 1_000_000_000)
+        if remaining <= 0:
+            raise OnboardingError('receiving_owner_deadline_expired')
+        try:
+            result = _run_owner([*self.command, '--reader-rpc', '--max-seconds', str(remaining)],
+                input=json.dumps(value), text=True, capture_output=True, timeout=remaining)
+            if time.monotonic_ns() >= self.deadline_ns:
+                raise OnboardingError('receiving_owner_deadline_expired')
+            if result.returncode or len(result.stdout.encode()) > being_seed.MAX_SELECTION:
+                raise ValueError
+            observed = json.loads(result.stdout)
+            if not isinstance(observed, dict) or 'error' in observed:
+                raise ValueError
+            return observed
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            raise OnboardingError('receiving_reader_owner_unavailable') from None
+
+    def current_reader(self, **options):
+        proof = self._call(dict(action='observe', options=options))
+        if proof.get('expected', {}).get('selection') != options['expected_selection']:
+            raise OnboardingError('receiving_cohort_selection_changed')
+        self.expected = proof['expected']
+        return proof
+
+    def prepare_apply_control(self, command: dict, path: Path):
+        if (self.expected is None or path != self.root / 'receiving-control' /
+                (command['operation_id'] + '-' + command['phase'] + '.json')):
+            raise OnboardingError('receiving_control_binding_conflict')
+        return self._call(dict(action='control', command=command, expected=self.expected))
+
+
+def load_code_update_readers(path: Path) -> dict:
+    """Locators select existing owner CLIs; native signed rosters select members."""
+    value = being_seed._read(path, limit=being_seed.MAX_SELECTION)
+    if (not isinstance(value, dict) or set(value) != {'schema', 'checkpoint', 'owners'}
+            or value.get('schema') != 'cluster-maintenance-reader-routes/v1'
+            or not isinstance(value['owners'], dict) or not 1 <= len(value['owners']) <= 256):
+        raise OnboardingError('receiving_current_reader_binding_required')
+    checkpoint = Path(value['checkpoint'])
+    if not checkpoint.is_absolute() or '..' in checkpoint.parts:
+        raise OnboardingError('receiving_current_reader_binding_required')
+    fields = {'receiving_code', 'matrix_sdk', 'runtime_bundle_sha256', 'application_sha256',
+        'publication_sha256', 'visibility_installation_sha256'}
+    for name, binding in value['owners'].items():
+        if (re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', name) is None
+                or not isinstance(binding, dict)
+                or set(binding) != {'root', 'command', 'selection', 'require_admitted'}
+                or type(binding['require_admitted']) is not bool
+                or not isinstance(binding['root'], str) or not Path(binding['root']).is_absolute()
+                or '..' in Path(binding['root']).parts
+                or not isinstance(binding['command'], list) or not 1 <= len(binding['command']) <= 64
+                or any(not isinstance(arg, str) or not 1 <= len(arg) <= 16384 or '\0' in arg
+                    for arg in binding['command'])
+                or not isinstance(binding['selection'], dict) or set(binding['selection']) != fields
+                or any((item is not None or key != 'visibility_installation_sha256')
+                    and (not isinstance(item, str) or re.fullmatch('[0-9a-f]{64}', item) is None)
+                    for key, item in binding['selection'].items())):
+            raise OnboardingError('receiving_current_reader_binding_required')
+    return value
+
+
+def complete_code_update_readers(value: dict, *, operation_id: str,
+                                 release_digest: str, deadline_ns: int) -> dict:
+    """Resolve existing owner routes once, then use the native cohort completer."""
+    from .onboarding_receiving_update import refresh_current_readers
+    return refresh_current_readers({name: ReaderCommandClient(binding)
+        for name, binding in value['owners'].items()},
+        selections={name: row['selection'] for name, row in value['owners'].items()},
+        operation_id=operation_id, release_digest=release_digest, deadline_ns=deadline_ns,
+        checkpoint=Path(value['checkpoint']), nonadmitted=frozenset(name for name, row in value['owners'].items()
+            if not row['require_admitted']))
+
+
 def run_code_update(spec: dict) -> dict:
     """Reuse the owner/unit journals; never create a second batch effect journal."""
     from .onboarding_host import HostBackend, HostConfig
     spec = validate_code_update(spec)
     deadline = time.monotonic_ns() + spec['max_seconds'] * 1_000_000_000
+    reader_routes = (load_code_update_readers(Path(spec['reader_completion']))
+        if spec.get('reader_completion') is not None else None)
+    if reader_routes is not None:
+        # Detect unavailable maintenance clients before any Matrix lifecycle
+        # effect. This reads current owners; it neither selects readers nor
+        # assumes post-update software is already installed.
+        for binding in reader_routes['owners'].values():
+            client = ReaderCommandClient(binding)
+            client.deadline_ns = deadline
+            client._call(dict(action='status'))
     config = HostConfig.load(Path(spec['host_config']))
     jobs = JobStore(config.jobs)
     plans = {name: jobs._load(name)['plan'] for name in spec['targets']}
@@ -973,10 +1071,20 @@ def run_code_update(spec: dict) -> dict:
                 phase=phase, failure=refusal_diagnostic(error, stage='native-code-maintenance')))
             break
     complete = len(results) == len(spec['targets']) and all(row['status'] == 'updated' for row in results)
+    readers = None
+    if complete and reader_routes is not None:
+        try:
+            readers = complete_code_update_readers(reader_routes,
+                operation_id=spec['operation_id'], release_digest=candidate[1], deadline_ns=deadline)
+        except Exception as error:
+            from .onboarding import refusal_diagnostic
+            readers = dict(failure=refusal_diagnostic(error, stage='current-readers'))
+            complete = False
     return dict(schema='cluster-native-code-maintenance-result/v1', complete=complete,
         candidate_digest=candidate[1], targets=results,
         pending=spec['targets'][len(results):],
-        receiving_readiness='unobserved')
+        receiving_readiness=readers['receiving_readiness'] if readers is not None and 'failure' not in readers
+            else 'unobserved', **({'reader_completion': readers} if readers is not None else {}))
 
 
 def main(argv=None) -> int:

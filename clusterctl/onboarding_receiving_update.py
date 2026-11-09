@@ -277,11 +277,12 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
         proofs = {}
         for name, owner in owners.items():
             accept()
-            proofs[name] = observe_current_reader(owner,
-                expected_selection=selections[name],
+            options = dict(expected_selection=selections[name],
                 expires_at_ms=time.time_ns() // 1_000_000 + 59_000,
                 require_admitted=name not in nonadmitted,
                 receive_only=selections[name]['visibility_installation_sha256'] is None)
+            remote = getattr(owner, 'current_reader', None)
+            proofs[name] = remote(**options) if callable(remote) else observe_current_reader(owner, **options)
         vector = conversation_cohort(proofs)
         now = time.time_ns() // 1_000_000
         if any(_reader_proof_expiry(proof) <= now for proof in proofs.values()):
@@ -309,7 +310,15 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                 raise OnboardingError('receiving_control_binding_conflict')
         else:
             saved = dict(schema='cluster-current-reader-completion/v1', binding=binding, commands={})
-        changed = []
+        changed: list[dict] = []
+        def completed(final):
+            return dict(schema='cluster-current-reader-completion/v1', operation_id=operation_id,
+                release_digest=release_digest, receiving_readiness='qualified-local-projection',
+                membership_basis_sha256=vector['membership_basis_sha256'],
+                readers=readers, changed=changed, proofs=final,
+                communication_acceptance='unobserved')
+        if all(selected(proof, readers) for proof in proofs.values()):
+            return completed(proofs)
         for phase in ('revoke', 'select'):
             if phase == 'select':
                 # Revocation can take time. Renew observations, never the
@@ -348,11 +357,7 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
         final, current = observe_all()
         if current != vector or any(not selected(proof, readers) for proof in final.values()):
             raise OnboardingError('receiving_cohort_selection_changed')
-        return dict(schema='cluster-current-reader-completion/v1', operation_id=operation_id,
-            release_digest=release_digest, receiving_readiness='qualified-local-projection',
-            membership_basis_sha256=vector['membership_basis_sha256'],
-            readers=readers, changed=changed, proofs=final,
-            communication_acceptance='unobserved')
+        return completed(final)
 
 
 def _reader_proof_expiry(record: dict) -> int:

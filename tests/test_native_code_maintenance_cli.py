@@ -108,3 +108,71 @@ def test_remote_cohort_uses_existing_placement_pins_without_initial_publication(
     assert managed.run_code_update(selected)['complete']
     assert seen['placements'] == {'first': (tmp_path/'first-placement.json', 'b'*64)}
     assert seen['plans'] == {'first': {'name': 'first'}}
+
+
+def test_reader_route_failure_precedes_any_update_or_backend_creation(tmp_path, monkeypatch):
+    selected = spec()
+    selected['reader_completion'] = str(tmp_path/'readers.json')
+    monkeypatch.setattr(managed, 'load_code_update_readers', lambda _: dict(owners={'current':{}}))
+    class Client:
+        def __init__(self, _):
+            pass
+        def _call(self, value):
+            assert value == {'action':'status'}
+            raise OnboardingError('receiving_reader_owner_unavailable')
+    monkeypatch.setattr(managed, 'ReaderCommandClient', Client)
+    monkeypatch.setattr(onboarding_host.HostConfig, 'load', lambda _:pytest.fail('update began before route preflight'))
+    with pytest.raises(OnboardingError, match='owner_unavailable'):
+        managed.run_code_update(selected)
+
+
+def test_reader_command_is_bounded_json_rpc_with_exact_control(tmp_path, monkeypatch):
+    from clusterctl import onboarding_receiving_update as receiving
+    import time
+    client = managed.ReaderCommandClient(dict(root=str(tmp_path), command=['/held/owner']))
+    client.deadline_ns = time.monotonic_ns()+30_000_000_000
+    seen = []
+    expected = dict(selection={'current':'selected'},process={'pid':42})
+    def run(argv, **options):
+        assert argv[0] == '/held/owner' and argv[1:3] == ['--reader-rpc','--max-seconds']
+        assert 0 < float(argv[3]) <= options['timeout'] <= 30
+        value=json.loads(options['input'])
+        seen.append(value)
+        return SimpleNamespace(returncode=0,stdout=json.dumps(dict(expected=expected)))
+    monkeypatch.setattr(receiving,'_run_owner',run)
+    assert client.current_reader(expected_selection=expected['selection'])['expected'] == expected
+    command=dict(operation_id=spec()['operation_id'],phase='select',expected_head='a'*64,readers=[])
+    client.prepare_apply_control(command,tmp_path/'receiving-control'/(spec()['operation_id']+'-select.json'))
+    assert seen[-1] == dict(action='control',command=command,expected=expected)
+    with pytest.raises(OnboardingError,match='binding_conflict'):
+        client.prepare_apply_control(command,tmp_path/'foreign.json')
+
+
+def test_reader_failure_keeps_update_complete_and_resumes_same_native_effects(tmp_path, monkeypatch):
+    selected=spec()
+    selected['reader_completion']=str(tmp_path/'readers.json')
+    routes=dict(owners={'current':{}})
+    monkeypatch.setattr(managed,'load_code_update_readers',lambda _:routes)
+    monkeypatch.setattr(managed,'ReaderCommandClient',lambda _:SimpleNamespace(_call=lambda _:dict(ready=True)))
+    config=SimpleNamespace(jobs=tmp_path/'jobs')
+    monkeypatch.setattr(onboarding_host.HostConfig,'load',lambda _:config)
+    monkeypatch.setattr(managed,'JobStore',lambda _:SimpleNamespace(_load=lambda name:dict(plan=dict(name=name))))
+    monkeypatch.setattr(onboarding_host,'HostBackend',lambda *_,**__:SimpleNamespace(runtime_available=lambda *_,**__:True))
+    effects={}
+    def update(plan,*_,**options):
+        return effects.setdefault((options['operation_id'],plan['name']),dict(loaded=True))
+    monkeypatch.setattr(managed,'ManagedRuntime',lambda _:SimpleNamespace(update_native_code=update))
+    first=[True]
+    def finish(value,**options):
+        assert value is routes and options['operation_id'] == selected['operation_id']
+        if first:
+            first.pop()
+            raise OnboardingError('receiving_control_completion_uncertain')
+        return dict(receiving_readiness='qualified-local-projection',communication_acceptance='unobserved')
+    monkeypatch.setattr(managed,'complete_code_update_readers',finish)
+    result=managed.run_code_update(selected)
+    assert not result['complete'] and result['pending'] == [] and len(effects)==3
+    assert all(row['status']=='updated' for row in result['targets'])
+    result=managed.run_code_update(selected)
+    assert result['complete'] and result['receiving_readiness']=='qualified-local-projection'
+    assert len(effects)==3

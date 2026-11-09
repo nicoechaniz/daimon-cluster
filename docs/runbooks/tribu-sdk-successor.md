@@ -212,8 +212,31 @@ This helper does not discover placements, replace owner adapters, restart servic
 reenroll members or send test speech. Membership/process/selection changes refuse
 rather than repurpose the old operation. `qualified-local-projection` establishes
 the final current reader vector; communication acceptance remains explicitly
-unobserved. The native-code CLI still needs its existing mixed-cohort owner binding
-wired to this helper before its one-command fleet readiness can be claimed.
+unobserved. The native-code command accepts an optional `reader_completion` path in its
+existing private maintenance spec. The referenced root-owned JSON has schema
+`cluster-maintenance-reader-routes/v1`, `checkpoint` (one absolute private path)
+and `owners` (the required current receiving owners, at most256). Each owner has
+`root`, `command`, `selection` and `require_admitted`. `command` is the existing
+trusted local/remote owner CLI argv prefix, running
+`clusterctl.onboarding_owner_control` with that body's `--root` and `--socket`
+through its configured owner interpreter and qualified maintenance code. It
+contains locators, never credential values. Reuse actual placement/owner routes;
+this is an operator binding, not another membership or resource catalog.
+`selection` pins the six current-reader selection digests used above; only the
+visibility installation digest may be null for explicitly closed receiving.
+
+The command checks all owner CLI routes before any Matrix lifecycle action.
+After the native updates, it calls the same reader completer within the original
+batch deadline. The bridge exposes only current status/proof and the existing
+reader controls; it provides no lifecycle/model/general-command RPC. RPC bounds
+are measured on each receiving owner's clock, with the caller's remaining timeout
+also enforced. Native requests remain under each actual owner and never cross the
+stdio boundary. A reader failure leaves successful native updates retained and
+returns incomplete with the exact remaining reader failure. Reuse the same spec
+and operation to continue; do not create replacement lifecycle operations.
+Without a reader binding, the legacy code-only command keeps reporting receiving
+readiness as unobserved. A compatible maintenance helper can be staged separately
+from the daemon: do not reload a healthy runtime merely to update its owner CLI.
 
 A new software deployment still uses its normal preparation and lifecycle controls.
 This current-state path finishes reader confirmation after observed completed

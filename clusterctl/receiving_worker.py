@@ -26,13 +26,15 @@ JOURNAL = Path('/var/lib/daimon-cluster-receiving-maintenance/operations')
 PUBLIC_ERRORS = frozenset({'receiving_worker_binding_required', 'receiving_worker_manager_unavailable',
     'receiving_worker_configuration_changed', 'receiving_worker_state_uncertain',
     'receiving_worker_other_operation_pending', 'receiving_worker_drain_uncertain',
-    'receiving_worker_restore_uncertain'})
+    'receiving_worker_restore_uncertain', 'receiving_worker_deadline_expired'})
 
 
 class WorkerManager:
     unit_name = UNIT
     execution_identity: dict[str, str] | None = None
     extra_fields: frozenset[str] = frozenset()
+    deadline_ns: int | None = None
+    accepted_stop_exits = frozenset({('1', '0')})
 
     def __init__(self, *, config_path: Path | None = None):
         if os.geteuid() != 0:
@@ -40,10 +42,18 @@ class WorkerManager:
         self.unit = Path('/etc/systemd/system') / self.unit_name
         self.config_path = config_path
 
+    def _remaining(self) -> float:
+        remaining = 45.0 if self.deadline_ns is None else min(45.0,
+            (self.deadline_ns - time.monotonic_ns()) / 1_000_000_000)
+        if remaining <= 0:
+            raise OnboardingError('receiving_worker_deadline_expired')
+        return remaining
+
     def _run(self, *arguments: str, bus: bool = False) -> str:
+        remaining = self._remaining()
         try:
             result = subprocess.run(['/usr/bin/busctl' if bus else '/usr/bin/systemctl', *arguments], capture_output=True,
-                text=True, timeout=45, env={'PATH': os.defpath, 'LANG': 'C.UTF-8'})
+                text=True, timeout=remaining, env={'PATH': os.defpath, 'LANG': 'C.UTF-8'})
         except (OSError, subprocess.TimeoutExpired):
             raise OnboardingError('receiving_worker_manager_unavailable') from None
         if result.returncode or len(result.stdout.encode()) > 65536:
@@ -122,7 +132,7 @@ class WorkerManager:
         self._run('--no-block', 'start', self.unit_name)
 
     def wait(self, baseline: dict, *, active: bool) -> dict:
-        deadline = time.monotonic() + 45
+        deadline = time.monotonic() + self._remaining()
         while True:
             current = self.inspect()
             if current['definition'] != baseline['definition']:
@@ -131,8 +141,8 @@ class WorkerManager:
                 if active and current['state'] == 'active' and current['pid'] != '0':
                     return current
                 if not active and current['state'] == 'inactive' and current['pid'] == '0':
-                    if (current['substate'], current['result'], current['exit_code'], current['exit_status']) != (
-                            'dead', 'success', '1', '0'):
+                    if ((current['substate'], current['result']) != ('dead', 'success')
+                            or (current['exit_code'], current['exit_status']) not in self.accepted_stop_exits):
                         raise OnboardingError('receiving_worker_drain_uncertain')
                     return current
                 if current['state'] == 'failed':

@@ -1247,7 +1247,10 @@ unit/drop-ins, a loaded control-group service and typed static ExecStart metadat
 Only hashes of commands/files are retained. Before stopping an active service,
 the caller must supply its genuine authenticated own native observation. The
 existing kernel process/parent and same-unit cgroup checks bind it to the manager;
-PID or invocation replacement refuses before StopUnit. Source base observations
+PID or invocation replacement refuses before StopUnit. The Matrix profile pins
+KillSignal=SIGTERM and accepts a successful normal exit or SIGTERM service stop;
+forced SIGKILL/timeout remains uncertain. The old worker profile continues to
+require its normal exit0, rather than inheriting Matrix signal semantics. Source base observations
 omit the guest adapter's `admission_parent`: this profile derives that tuple from
 the actual kernel parent. The existing guest bootstrap contract still requires
 and revalidates its explicitly retained parent.
@@ -1260,14 +1263,12 @@ started again. Recovery itself needs no new native observation or membership
 request, and must run before candidate/deadline preflight. The caller holds the
 existing fixed-unit selection lock and keeps the original admission job/grant.
 
-These are maintenance helper APIs included in the maintained maintenance artifact,
-not a new command, grant, timer or standalone recovery service. They are not yet
-wired into the provisioning worker. A `finally` block alone does not cover a
-killed interpreter: integrate restoration with the existing bounded command/service
-supervisor before enabling automatic native admission. Keep the owning command's finite execution and storage bounds and reuse its original
-journal; never create a per-status journal or erase
-unfinished pause claims to free capacity. No production Matrix stop/restart or
-new membership dispatch was performed to qualify this building block.
+The maintained maintenance artifact now includes an internal finite root helper
+(`clusterctl.onboarding_membership_maintenance`), not a new grant, timer or
+standalone recovery service. It is not yet wired into provisioning: compose it
+with the original coordinator and qualify the actual receiver routes before
+selecting the full worker. No production Matrix stop/restart or new membership
+dispatch was performed to qualify this building block.
 
 The current Source service's authenticated native child and actual manager parent
 were successfully bound without effects. The first attempt's refusal is retained:
@@ -1276,3 +1277,52 @@ read used the actual kernel parent, with separate negative process/cgroup and
 configuration-change tests. This does not establish full command receiving,
 reader convergence, model uptake or new companion admission. Preserve the four
 completed child enrollments and the Emma hold.
+
+### Finite membership guard survives controller loss
+
+The internal root helper accepts the original UUID/binding digest and protected
+journal, fixed Source/guest profile and remote-rebased execution deadline. It
+holds the existing unit selection lock across recovery, pause, hold and restore.
+Use its `--recover-only` action before obtaining fresh owner status; this restores
+the same pending owned stop even if the old execution deadline has expired. A
+lost command must not discard its original job, signed result or native requests.
+Recovery does not extend a membership authoring window or wake a model.
+
+The existing owner-frame process is started in its independent session. The
+receiving guard detects stdin EOF, TERM/HUP or its execution deadline and restores
+only the original owned stop. Close is acknowledged after actual restoration.
+The process ignores further TERM/HUP only during its finite cleanup reserve;
+SIGKILL of the guard itself or loss of the host still leaves the durable claim
+for the original operation's next recovery. Do not claim immediate restoration
+in those cases or turn missing cleanup output into a rollback receipt.
+
+Root execution remains at most60seconds; manager subprocess and wait budgets
+share that original deadline. Restoration has a separate reserve at most90seconds.
+The existing `OwnerConversation` gets that reserve only when explicitly selected;
+ordinary relationship callers retain zero extra cleanup time. Calls still refuse
+at their original deadline. `NativeBody.membership_maintenance_conversation`
+reuses the existing authenticated placement/root execution and remote clock
+translation; VM/Incus bodies inherit the same route. It is a transport API, not
+new interruption authority or proof of a held native runtime writer. Root guard
+sessions set `native_writer=False`; actual membership still needs its separate
+continuously held native writer barrier. The coordinator must validate its original job/grant
+and selected public helper before launch and each call.
+
+The initial observation accepts only process/parent coordinates, never a copied
+status/history document. Frames keep the existing2MiB bound; manager output is64KiB and no commands or
+credential values are journaled. The root helper checks aggregate existing journal
+directory bytes before a new pause, refusing at15MiB and reserving one MiB for
+that bounded cycle and recovery. Existing larger/protected state remains intact;
+recovery runs before capacity/deadline preflight. Check messages add no journal
+rows. Keep the same journal across retries and never prune originals to admit a
+new pause. The task-owned process exits after closure/deadline; no listener,
+background poller, scheduler or service unit is installed.
+
+Real disposable-process qualification killed the controller with SIGKILL while
+its guard held a simulated service paused. Pipe closure restored that same service
+once and closed the original durable claim without any controller finally block.
+Separate cases cover TERM, execution expiry, slow restoration after expiry,
+expired-deadline recovery and capacity refusal without pruning. Native transport
+qualification captured the original root/clock request but deliberately retained
+the test user's unprivileged UID; it is source/fixture evidence, not a real remote
+Matrix stop or full worker receiving acceptance.

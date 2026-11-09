@@ -83,7 +83,12 @@ class Frames:
 
 class OwnerConversation:
     """Join the local invocation; retain uncertainty if remote exit is unseen."""
-    def __init__(self, argv, packet, *, deadline_ns, validate=lambda: None, **options):
+    def __init__(self, argv, packet, *, deadline_ns, validate=lambda: None,
+                 cleanup_seconds=0, native_writer=True, **options):
+        if (type(cleanup_seconds) not in {int, float} or not 0 <= cleanup_seconds <= 90
+                or type(native_writer) is not bool):
+            raise OnboardingError('receiving_owner_cleanup_bound_required')
+        self.cleanup_seconds, self.native_writer = cleanup_seconds, native_writer
         self.argv, self.packet, self.deadline_ns = argv, packet, deadline_ns
         self.validate, self.options = validate, options
         self.process = self.frames = None
@@ -108,6 +113,8 @@ class OwnerConversation:
             raise
 
     def call(self, packet):
+        if not self.ready:
+            raise OnboardingError('receiving_owner_session_closed')
         self.validate()
         self.sequence += 1
         self.frames.write(dict(sequence=self.sequence, packet=packet))
@@ -119,7 +126,7 @@ class OwnerConversation:
     def writer_held(self):
         """The pinned owner CLI acknowledged entry under its native writer."""
         self.validate()
-        return (self.ready and self.process is not None and self.process.poll() is None
+        return (self.native_writer and self.ready and self.process is not None and self.process.poll() is None
                 and time.monotonic_ns() < self.deadline_ns)
 
     def __exit__(self, exc_type, _error, _traceback):
@@ -127,13 +134,22 @@ class OwnerConversation:
         if self.process is None:
             return
         process, self.process = self.process, None
+        # Only explicitly selected root preservation sessions reserve cleanup
+        # time. This changes no call/admission deadline and no remote authoring
+        # window; it permits the existing close handshake to observe restoration.
+        close_deadline = self.deadline_ns
+        if self.cleanup_seconds:
+            close_deadline = max(close_deadline,
+                time.monotonic_ns() + int(self.cleanup_seconds * 1_000_000_000))
+            if self.frames is not None:
+                self.frames.deadline_ns = close_deadline
         failed = False
         try:
             if process.poll() is None and self.frames is not None:
                 self.frames.write({'close': True})
                 if self.frames.read() != {'closed': True}:
                     raise OnboardingError('receiving_owner_session_unavailable')
-            process.wait(timeout=max(.1, (self.deadline_ns-time.monotonic_ns())/1_000_000_000))
+            process.wait(timeout=max(.1, (close_deadline-time.monotonic_ns())/1_000_000_000))
             failed = process.returncode != 0
         except (OSError, ValueError, OnboardingError, subprocess.TimeoutExpired):
             failed = True
@@ -145,6 +161,8 @@ class OwnerConversation:
                 pass
             process.wait()
         finally:
+            if self.frames is not None:
+                self.frames.deadline_ns = self.deadline_ns
             process.stdin.close()
             process.stdout.close()
         if failed and exc_type is None:

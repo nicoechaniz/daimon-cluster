@@ -335,6 +335,7 @@ MAINTENANCE_FILES = {'tests/test_current_reader_refresh.py', 'clusterctl/receivi
     'clusterctl/onboarding_worker.py', 'tests/test_onboarding_progress.py',
     'clusterctl/receiving_worker.py', 'tests/test_receiving_worker.py',
     'clusterctl/onboarding_membership_maintenance.py', 'tests/test_onboarding_membership_maintenance.py',
+    'tests/membership_guard_fixture.py',
     'tools/build_receiving_maintenance.py', 'tools/check_rc_types.py',
     'clusterctl/onboarding_owner_control.py', 'tests/test_onboarding_owner_control.py', 'tests/test_receiving_cohort_control.py',
     'clusterctl/onboarding_owner_client.py', 'tests/test_onboarding_owner_client.py',

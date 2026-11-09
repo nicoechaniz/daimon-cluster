@@ -28,6 +28,7 @@ PUBLICATIONS = {
     'preparation-preview': {'tribe_ref'},
     'membership-authorities': {'tribe_ref', 'expected_selection_sha256'},
     'communication-prepare': {'expected_plan_sha256', 'expires_at_ms'},
+    'receive-key': {'provider_ref', 'route_ref', 'key_ref', 'endpoint', 'secret_file'},
     'receive-application': {'tribe_ref', 'policy', 'listen', 'intake', 'roster',
                             'stores', 'secret_sources', 'authority_order'},
     'application': {'expected_application_sha256', 'specification', 'additions',
@@ -890,7 +891,7 @@ def publication_command(value: dict) -> dict:
             raise ValueError
         if 'application_precondition' in value:
             guard = value['application_precondition']
-            if (value['action'] in {'application', 'receive-application', 'context-preview', 'preparation-preview', 'communication-prepare', 'membership-authorities'}
+            if (value['action'] in {'application', 'receive-application', 'receive-key', 'context-preview', 'preparation-preview', 'communication-prepare', 'membership-authorities'}
                     or not isinstance(guard, dict) or set(guard) != {'application_step', 'application_sha256'}
                     or not isinstance(guard['application_step'], str)
                     or re.fullmatch('[a-z][a-z0-9-]{0,79}', guard['application_step']) is None
@@ -906,6 +907,9 @@ def publication_command(value: dict) -> dict:
                     or not isinstance(guard['installation_sha256'], str)
                     or re.fullmatch('[0-9a-f]{64}', guard['installation_sha256']) is None):
                 raise ValueError
+        if value['action'] == 'receive-key':
+            from .onboarding_receive_keys import parameters
+            parameters(params)
         if value['action'] == 'receive-application':
             if (not isinstance(params['tribe_ref'], str) or not 1 <= len(params['tribe_ref']) <= 256
                     or not isinstance(params['secret_sources'], dict)
@@ -1475,6 +1479,9 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
     if action in {'snapshot', 'receive-snapshot'}:
         return _publication_snapshot(hosted, group_root, operation, value, context, snapshot,
             deadline_ns=deadline_ns)
+    if action == 'receive-key':
+        from .onboarding_receive_keys import prepare
+        return prepare(hosted, group_root, operation, value)
     if action == 'receive-application':
         return _publish_receive_application(hosted, group_root, operation, value, closure,
             deadline_ns=deadline_ns)

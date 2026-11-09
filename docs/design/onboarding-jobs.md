@@ -1501,3 +1501,34 @@ visibility artifact invalidates the closed-outbound observation rather than
 reusing its cached result. This path creates no Telegram credential, outbound
 installation, daemon restart, model turn, or child speech. Its new behavior is
 source/guest fixture-qualified, not selected on the current four receivers.
+
+### Original-operation receive resource key
+
+The owner-local `receive-key` action prepares one own intake resource key under
+an original publication operation. Parameters are the explicit public
+`provider_ref`, `route_ref`, `key_ref`, numeric HTTP `endpoint` and leaf
+`secret_file`. They contain no key value or identity credential. This uses the
+same native owner writer, protected operation journal, finite execution horizon
+and private atomic-file writer as publication; it adds no custody service,
+account, scheduler, identity, enrollment or outbound visibility.
+
+A private intent pins the exact command, current runtime bundle and group root
+before materializing its 32-byte resource key. Only the public route metadata and
+its hash are returned. The following `receive-application` can consume that
+retained owner-local source through its existing `secret_sources` contract.
+Lost intent/file/result replies resume the same bytes; changed commands, exposed
+or changed files, symlinks and hardlinks are refused without replacement. A new
+key intent refuses an existing application or selector. Original intent recovery
+remains available after that operation's publication, without minting a new key.
+
+Resource bounds: at most16 key intents per owner publication journal, at most256
+journal entries inspected for a new intent, and16KiB per key directory including
+bounded atomic staging. Exact retained recovery bypasses the new-intent count
+limit. Capacity exhaustion stops before generating another key and preserves
+all originals. Keys remain with their original operation and selected/rollback
+application; this path neither retires them automatically nor exports private
+bytes in receipts. Fixture qualification covers interrupted intent/file/result
+boundaries and consumption by the native publication writer. No existing child
+key is regenerated or selected by this source change. Original coordinator
+resource transfer, receive lifecycle and current-reader integration remain
+unfinished; key preparation alone is not delivery or reader readiness.

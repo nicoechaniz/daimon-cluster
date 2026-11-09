@@ -79,7 +79,8 @@ class ManagedRuntime:
             raise OnboardingError('invalid_onboarding_managed_configuration')
 
     def update_native_code(self, plan: dict, candidate: tuple[Path, str], *,
-                           operation_id: str, timeout_seconds: float = 60) -> dict:
+                           operation_id: str, timeout_seconds: float = 60,
+                           receive_only_group: bool = False) -> dict:
         """Select code for an admitted body through its existing unit writer.
 
         No group publication or controller renewal is involved. The durable
@@ -92,6 +93,7 @@ class ManagedRuntime:
         """
         from .onboarding_service import command
         if (self.settings.get('mode') != 'native-admission-only'
+                or type(receive_only_group) is not bool
                 or str(uuid.UUID(operation_id)) != operation_id
                 or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 60
                 or self._selection(plan) != (None, None)):
@@ -120,18 +122,22 @@ class ManagedRuntime:
             code, _args, _mounts = self.backend._runtime_paths(plan, base, candidate=candidate)
             argv = command(base, receive_only=True, runtime_code=code, runtime_digest=candidate[1])
             path = directory / 'native-code-update.json'
-            pins = dict(schema='cluster-native-code-update/v1', operation_id=operation_id,
+            pins: dict = dict(schema='cluster-native-code-update/v1', operation_id=operation_id,
                 plan_digest=digest(plan), candidate_digest=candidate[1], argv=argv)
+            if receive_only_group:
+                pins['receive_only_group'] = True
             def save():
                 if len(json.dumps(state).encode()) > 65536:
                     raise OnboardingError('native_code_update_record_limit')
                 being_seed._write(path, state)
             def observe():
                 value = self.backend._target_call(plan, 'admitted-running', candidate=candidate,
-                    observation_timeout_seconds=remaining())
+                    observation_timeout_seconds=remaining(),
+                    **({'current_native': True, 'require_loaded': True} if receive_only_group else {}))
                 if (value.get('responder_association') != 'same-connection'
                         or any(value['origin'].get(key) != expected[key]
-                            for key in ('body_ref', 'embodiment_id', 'incarnation_id'))):
+                            for key in ('body_ref', 'embodiment_id', 'incarnation_id'))
+                        or (value.get('group') is not None) != receive_only_group):
                     raise OnboardingError('native_code_update_identity_changed')
                 _code_update_group(value)
                 return value

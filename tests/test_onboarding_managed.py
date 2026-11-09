@@ -998,6 +998,8 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     failures = [lost_start_ack]
     def owner(_plan, action, **_):
         assert action == 'admitted-running'
+        assert _.get('current_native', False) is closed_group
+        assert _.get('require_loaded', False) is closed_group
         return copy.deepcopy(current)
     def root(_plan, action, **options):
         calls.append(action)
@@ -1028,7 +1030,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         runtime_available=lambda *_, **__: True, _receiving_base=lambda _: Path('/original/base'),
         _runtime_paths=lambda *_, **__: (Path('/approved/candidate'), [], []),
         _target_call=owner, _guest_service_call=root)
-    options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bc')
+    options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bc', receive_only_group=closed_group)
     if lost_start_ack:
         with pytest.raises(OnboardingError, match='lost_start_ack'):
             managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
@@ -1036,7 +1038,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         original_calls = list(calls)
         with pytest.raises(OnboardingError, match='operation_conflict'):
             managed.update_native_code(plan, (tmp_path, 'b'*64),
-                operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd')
+                operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd', receive_only_group=closed_group)
         assert calls == original_calls
     result = managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
     assert result['runtime_sha256'] == 'original-bundle'
@@ -1054,7 +1056,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     with pytest.raises(OnboardingError, match='operation_conflict'):
         managed.update_native_code(plan, (tmp_path, 'b' * 64), **options)
     completed = being_seed._read(managed.state / 'newcomer/native-code-update.json')
-    next_options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd')
+    next_options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd', receive_only_group=closed_group)
     if closed_group:
         current['group_runtime_status']['loaded_application']['visibility']['release_enabled'] = True
         with pytest.raises(OnboardingError, match='closed_group_required'):

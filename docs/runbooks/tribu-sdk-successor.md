@@ -1550,7 +1550,9 @@ reader selection, message delivery or model action.
 
 A subsequent public code/SDK update of a plain or already closed-group admitted
 guest uses `ManagedRuntime.update_native_code` and the existing bootstrap unit
-writer. Its authenticated predecessor observation freezes the existing group
+writer. Select `receive_only_group=True` for an existing group: it uses the
+current native/loaded observation independently of the original enrollment
+ceremony. Its authenticated predecessor observation freezes the existing group
 coordinates and signed application/publication hashes. The same closed group
 must remain after startup; a published outbound adapter cannot use this path.
 Do not rerun enrollment, controller issuance or group publication to update code.

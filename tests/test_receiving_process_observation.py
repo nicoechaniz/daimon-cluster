@@ -356,9 +356,10 @@ def test_exit_observation_rejects_invalid_bound_without_signal(timeout):
             right.close()
 
 
+@pytest.mark.parametrize('reader_rpc', [False, True])
 @pytest.mark.parametrize('fault', [None, 'base-process', 'base-runtime', 'application', 'loaded-bundle',
                                   'binding', 'bundle', 'group', 'socket', 'expired'])
-def test_current_maintenance_observation_never_reconstructs_birth_or_pair_history(tmp_path, monkeypatch, fault):
+def test_current_maintenance_observation_never_reconstructs_birth_or_pair_history(tmp_path, monkeypatch, fault, reader_rpc):
     """Authenticated RPC seam; real protected files, socket inodes and parent pin.
 
     Existing owner-client tests cover HMAC/credential validity. This checks that
@@ -392,14 +393,15 @@ def test_current_maintenance_observation_never_reconstructs_birth_or_pair_histor
         verified_identity=dict(runtime_bundle_sha256=digest(bundle)),
         runtime_status=dict(loaded_runtime=loaded, loaded_application=application))
     native = copy.deepcopy(current)
-    selected = dict(channel_id='tribe', socket=str(root / 'tribe.sock'))
+    selected = dict(tribe_ref='tribe', directory='/application', visibility='/visibility', socket='tribe.sock')
     checks = []
-    monkeypatch.setattr(onboarding_peer, 'observed_group', lambda *_: copy.deepcopy(selected))
+    monkeypatch.setattr(onboarding_peer, '_group_selection_from_bundle', lambda *_: copy.deepcopy(selected))
     target.observe = lambda: pytest.fail('maintenance reopened birth/custody/pair history')
     class Owner:
         def __init__(self, _root, path, **options):
             assert options['deadline_ns'] > time.monotonic_ns()
             self.path = path
+            self.root = _root
             self._observer = SimpleNamespace(verify=lambda: checks.append('verified'))
         def __enter__(self): return self
         def __exit__(self, *args): pass
@@ -413,7 +415,7 @@ def test_current_maintenance_observation_never_reconstructs_birth_or_pair_histor
             if fault == 'bundle':
                 being_seed._write(root / 'runtime.json', {'changed': True})
             if fault == 'group':
-                selected['changed'] = True
+                selected['directory'] = '/changed-application'
             if fault == 'socket':
                 (root / 'tribe.sock').unlink()
                 replacement = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -442,14 +444,23 @@ def test_current_maintenance_observation_never_reconstructs_birth_or_pair_histor
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             listener.bind(str(root / name))
             listeners.append(listener)
+        def read():
+            if reader_rpc:
+                from clusterctl.onboarding_owner_control import reader_rpc as call
+                monkeypatch.setattr(Target, '__init__', lambda *a,**k: pytest.fail('cold target startup'))
+                return call(Owner(root,root / 'tribe.sock',deadline_ns=deadline),
+                    {'action':'native-current','plan_digest':digest(target.plan)},deadline_ns=deadline)
+            return target.current_running(deadline_ns=deadline)
         if fault:
             with pytest.raises(OnboardingError):
-                target.current_running(deadline_ns=deadline)
+                read()
         else:
-            result = target.current_running(deadline_ns=deadline)
+            result = read()
             assert result['admission_parent']['pid'] == os.getppid()
             assert result['runtime_sha256'] == digest(bundle)
-            assert result['group'] == selected and result['receiving_readiness'] == 'unobserved'
+            assert result['group'] == dict(channel_id='tribe',tribe_ref='tribe',
+                application='/application',visibility='/visibility',socket=str(root / 'tribe.sock'))
+            assert result['receiving_readiness'] == 'unobserved'
             assert checks == ['verified', 'verified']
     finally:
         for listener in listeners:

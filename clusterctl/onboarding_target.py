@@ -62,6 +62,85 @@ def profile(plan: dict) -> dict:
                 advertised_endpoint="http://127.0.0.1:8687/dm-peer/v1", targets=[])
 
 
+def observe_current_native_target(root: Path, *, expected_plan_digest: str,
+                                  deadline_ns: int, owner_type=None,
+                                  expected_binding: dict | None = None) -> dict:
+    """Read an admitted target through its existing owner, without cold startup.
+
+    Current credentials, runtime bundle, signed group, both actual socket peers,
+    process parent and protected plan binding are checked in this invocation.
+    The historical constructor/genesis path remains available for onboarding;
+    this read neither loads a runtime writer nor mints a serving boot proof.
+    """
+    from daimon_matrix.canonical import canonical_bytes
+    from .onboarding_peer import _group_selection_from_bundle
+    from .onboarding_receiving_update import OwnerGroupClient
+    from .owner_process import ParentProcessPresence
+    if type(deadline_ns) is not int or deadline_ns <= time.monotonic_ns():
+        raise OnboardingError('onboarding_observation_deadline_expired')
+    if (root.name != 'runtime' or root.parent.name != 'package'
+            or root.parent.parent.name != 'matrix'):
+        raise OnboardingError('current_onboarding_target_required')
+    matrix = root.parent.parent
+    binding = document(matrix / 'plan.json')
+    if (set(binding) != {'schema','plan_digest','genesis_digest'}
+            or binding['schema'] != 'cluster-onboarding-target/v1'
+            or binding['plan_digest'] != expected_plan_digest
+            or expected_binding is not None and binding != expected_binding):
+        raise OnboardingError('current_onboarding_target_required')
+    bundle = document(root / 'runtime.json')
+    def group_selection():
+        selected = _group_selection_from_bundle(matrix / 'tribe', bundle)
+        if selected is None:
+            return None
+        return dict(tribe_ref=selected['tribe_ref'], application=selected['directory'],
+            visibility=selected['visibility'], socket=str(root / selected['socket']), channel_id='tribe')
+    group = group_selection()
+    if group is None:
+        raise OnboardingError('qualified_onboarding_group_required')
+    paths = (root / 'matrix.sock', Path(group['socket']))
+    sockets = [_socket_identity(path, deadline_ns) for path in paths]
+    horizon = time.time_ns() // 1_000_000 + max(1, (deadline_ns - time.monotonic_ns()) // 1_000_000)
+    factory = OwnerGroupClient if owner_type is None else owner_type
+    with factory(root, paths[1], deadline_ns=deadline_ns) as owner, \
+            factory(root, paths[0], deadline_ns=deadline_ns) as base:
+        current = owner.qualified_identity(expires_at_ms=horizon, require_admitted=True)
+        native = base.base_status()
+        loaded = current['runtime_status'].get('loaded_runtime')
+        application = current['runtime_status'].get('loaded_application')
+        if (current['process'] != native['process'] or current['server'] != native['server']
+                or not isinstance(loaded, dict)
+                or loaded.get('runtime_bundle_sha256') != digest(bundle)
+                or current.get('verified_identity', {}).get('runtime_bundle_sha256') != digest(bundle)
+                or native['runtime_status'].get('loaded_runtime') != loaded
+                or not isinstance(loaded.get('qualified_startup'), dict)
+                or not isinstance(application, dict)
+                or application.get('loaded_base_sha256') != hashlib.sha256(canonical_bytes(loaded)).hexdigest()):
+            raise OnboardingError('receiving_control_process_changed')
+        with ParentProcessPresence(current['process']) as parent:
+            if (document(root / 'runtime.json') != bundle
+                    or document(matrix / 'plan.json') != binding
+                    or group_selection() != group
+                    or any((before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+                        for before, after in zip(sockets, (path.lstat() for path in paths)))):
+                raise OnboardingError('receiving_bootstrap_public_preimage_changed')
+            if owner._observer is None or base._observer is None:
+                raise OnboardingError('receiving_owner_scope_required')
+            owner._observer.verify()
+            base._observer.verify()
+            parent.verify()
+            if time.monotonic_ns() >= deadline_ns:
+                raise OnboardingError('onboarding_observation_deadline_expired')
+            return dict(schema='cluster-onboarding-runtime-presence/v1',
+                plan_digest=expected_plan_digest, origin=current['server'], process=current['process'],
+                admission_parent=parent.process, runtime_id=loaded['runtime_id'],
+                runtime_sha256=digest(bundle), runtime_status=native['runtime_status'],
+                group=group, group_runtime_status=current['runtime_status'],
+                receiving_identity=current['identity'], receiving_readiness='unobserved',
+                responder_association='same-connection',
+                observation_method='authenticated-current-owner-base-and-group')
+
+
 class Target:
     def __init__(self, home: Path, plan: dict, genesis: dict, *, code: Path | None = None,
                  code_uid: int = 0, code_digest: str | None = None,
@@ -823,67 +902,12 @@ class Target:
                 responder_association='same-connection' if connected else 'legacy-probe')
 
     def current_running(self, *, deadline_ns: int | None) -> dict:
-        """Observe an admitted preservation update without replaying onboarding.
-
-        This is the current authenticated public bundle and signed group, not
-        proof of the original enrollment ceremony. The maintenance controller
-        still compares the result with its frozen identity/artifact selection.
-        No custody, archived pair history or runtime writer lock is opened.
-        """
-        from daimon_matrix.canonical import canonical_bytes
-        from .onboarding_peer import observed_group
-        from .onboarding_receiving_update import OwnerGroupClient
-        from .owner_process import ParentProcessPresence
-        if type(deadline_ns) is not int or deadline_ns <= time.monotonic_ns():
+        """Observe current admission while retaining this Target's exact binding."""
+        if type(deadline_ns) is not int:
             raise OnboardingError('onboarding_observation_deadline_expired')
-        root = self.package / 'runtime'
-        binding = document(self.root / 'plan.json')
-        if binding != self._binding():
-            raise OnboardingError('current_onboarding_target_required')
-        bundle = self.document_bundle()
-        group = observed_group(self, bundle)
-        if group is None:
-            raise OnboardingError('qualified_onboarding_group_required')
-        paths = (root / 'matrix.sock', Path(group['socket']))
-        sockets = [_socket_identity(path, deadline_ns) for path in paths]
-        horizon = time.time_ns() // 1_000_000 + max(1, (deadline_ns - time.monotonic_ns()) // 1_000_000)
-        with OwnerGroupClient(root, paths[1], deadline_ns=deadline_ns) as owner, \
-                OwnerGroupClient(root, paths[0], deadline_ns=deadline_ns) as base:
-            current = owner.qualified_identity(expires_at_ms=horizon, require_admitted=True)
-            native = base.base_status()
-            loaded = current['runtime_status'].get('loaded_runtime')
-            application = current['runtime_status'].get('loaded_application')
-            if (current['process'] != native['process'] or current['server'] != native['server']
-                    or not isinstance(loaded, dict)
-                    or loaded.get('runtime_bundle_sha256') != digest(bundle)
-                    or current.get('verified_identity', {}).get('runtime_bundle_sha256') != digest(bundle)
-                    or native['runtime_status'].get('loaded_runtime') != loaded
-                    or not isinstance(loaded.get('qualified_startup'), dict)
-                    or not isinstance(application, dict)
-                    or application.get('loaded_base_sha256') != hashlib.sha256(canonical_bytes(loaded)).hexdigest()):
-                raise OnboardingError('receiving_control_process_changed')
-            with ParentProcessPresence(current['process']) as parent:
-                if (self.document_bundle() != bundle
-                        or document(self.root / 'plan.json') != binding
-                        or observed_group(self, bundle) != group
-                        or any((before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
-                            for before, after in zip(sockets, (path.lstat() for path in paths)))):
-                    raise OnboardingError('receiving_bootstrap_public_preimage_changed')
-                if owner._observer is None or base._observer is None:
-                    raise OnboardingError('receiving_owner_scope_required')
-                owner._observer.verify()
-                base._observer.verify()
-                parent.verify()
-                if time.monotonic_ns() >= deadline_ns:
-                    raise OnboardingError('onboarding_observation_deadline_expired')
-                return dict(schema='cluster-onboarding-runtime-presence/v1',
-                    plan_digest=digest(self.plan), origin=current['server'], process=current['process'],
-                    admission_parent=parent.process, runtime_id=loaded['runtime_id'],
-                    runtime_sha256=digest(bundle), runtime_status=native['runtime_status'],
-                    group=group, group_runtime_status=current['runtime_status'],
-                    receiving_identity=current['identity'], receiving_readiness='unobserved',
-                    responder_association='same-connection',
-                    observation_method='authenticated-current-owner-base-and-group')
+        return observe_current_native_target(self.package / 'runtime',
+            expected_plan_digest=digest(self.plan), expected_binding=self._binding(),
+            deadline_ns=deadline_ns)
 
     @staticmethod
     def _bootstrap_public_identity(bundle: dict, config) -> dict:

@@ -90,7 +90,8 @@ class ManagedRuntime:
 
     def update_native_code(self, plan: dict, candidate: tuple[Path, str], *,
                            operation_id: str, timeout_seconds: float = 120,
-                           receive_only_group: bool = False, published_group: bool = False) -> dict:
+                           receive_only_group: bool = False, published_group: bool = False,
+                           current_observer=None, recovery_implementation=None) -> dict:
         """Select code for an admitted body through its existing unit writer.
 
         No group publication or controller renewal is involved. The durable
@@ -115,6 +116,8 @@ class ManagedRuntime:
                     or self._selection(plan) != (None, None))):
             raise OnboardingError('native_code_update_requires_plain_admitted_body')
         with_group = receive_only_group or published_group
+        if current_observer is not None and not with_group:
+            raise OnboardingError('qualified_onboarding_group_required')
         deadline = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
         def remaining():
             seconds = (deadline - time.monotonic_ns()) / 1_000_000_000
@@ -151,9 +154,16 @@ class ManagedRuntime:
                     raise OnboardingError('native_code_update_record_limit')
                 being_seed._write(path, state)
             def observe():
-                value = self.backend._target_call(plan, 'admitted-running', candidate=candidate,
-                    observation_timeout_seconds=remaining(),
-                    **({'current_native': True, 'require_loaded': True} if with_group else {}))
+                if current_observer is None:
+                    value = self.backend._target_call(plan, 'admitted-running', candidate=candidate,
+                        observation_timeout_seconds=remaining(),
+                        **({'current_native': True, 'require_loaded': True} if with_group else {}))
+                else:
+                    current_observer.deadline_ns = min(deadline,
+                        time.monotonic_ns() + 60_000_000_000)
+                    value = current_observer._call(dict(action='native-current', plan_digest=digest(plan)))
+                    if value.get('plan_digest') != digest(plan):
+                        raise OnboardingError('current_onboarding_target_required')
                 if (value.get('responder_association') != 'same-connection'
                         or any(value['origin'].get(key) != expected[key]
                             for key in ('body_ref', 'embodiment_id', 'incarnation_id'))
@@ -249,18 +259,77 @@ class ManagedRuntime:
                 timeout_seconds=remaining(), owner_observation={key: current[key]
                     for key in ('process', 'admission_parent')})
             if (physical['service']['unit_sha256'] != state['effects']['select']['selected_sha256']
-                    or physical['scope']['admission_parent'] != state['effects']['start']['admission_parent']
                     or store._load(plan['name']) != job):
                 raise OnboardingError('native_code_update_selection_changed')
             selected_override = state['effects']['select'].get('selector')
             if (selected_override is not None and physical['service'].get('entrypoint_selector') != dict(
                     path=selected_override['path'],sha256=selected_override['selected_sha256'])):
                 raise OnboardingError('native_code_update_selection_changed')
+            if physical['scope']['admission_parent'] != state['effects']['start']['admission_parent']:
+                # A successful start can fail readiness and be replaced by the
+                # existing unit's Restart policy. Reuse root's proved-successor
+                # observer; never issue another start or erase the first receipt.
+                successor = {**{key: current[key] for key in ('process', 'admission_parent')},
+                    'service': physical['service']}
+                implementation = candidate if recovery_implementation is None else recovery_implementation
+                recovery = state.get('start_recovery_request')
+                if recovery is not None and (recovery.get('successor') != successor
+                        or recovery.get('implementation_sha256') != implementation[1]
+                        or state.get('start_recovery_receipt') is None
+                            and recovery.get('expires_at_ms',0) <= time.time_ns() // 1_000_000):
+                    # This is a fresh observation of an existing automatic
+                    # successor, never renewal of start/input authority. Keep
+                    # the old request/uncertain result under the same65KiB cap.
+                    state.setdefault('start_recovery_history',[]).append(dict(
+                        request=recovery, receipt=state.pop('start_recovery_receipt',None)))
+                    recovery = None
+                if recovery is None:
+                    recovery = dict(schema='cluster-guest-start-recovery/v1',
+                        operation_id=str(uuid.uuid5(uuid.UUID(operation_id),
+                            'native-code-start-recovery:'+implementation[1]+':'+digest(successor)+':'+
+                            str(len(state.get('start_recovery_history',[]))))),
+                        bootstrap=state['request'], started_sha256=digest(state['effects']['start']),
+                        successor=successor, implementation_sha256=implementation[1],
+                        expires_at_ms=time.time_ns() // 1_000_000 + max(1,
+                            (deadline-time.monotonic_ns()) // 1_000_000))
+                    state['start_recovery_request'] = recovery
+                    save()
+                if (recovery.get('successor') != successor
+                        or recovery.get('bootstrap') != state['request']
+                        or recovery.get('started_sha256') != digest(state['effects']['start'])
+                        or recovery.get('implementation_sha256') != implementation[1]):
+                    raise OnboardingError('receiving_guest_start_recovery_conflict')
+                receipt = state.get('start_recovery_receipt')
+                if receipt is None:
+                    receipt = self.backend._guest_service_call(plan, 'bootstrap-recover-start',
+                        candidate=candidate, timeout_seconds=remaining(), request=recovery,
+                        implementation=implementation)
+                if (receipt.get('schema') != 'cluster-guest-start-successor/v1'
+                        or receipt.get('recovery_operation_id') != recovery['operation_id']
+                        or receipt.get('recovery_sha256') != digest(recovery)
+                        or receipt.get('bootstrap_sha256') != digest(state['request'])
+                        or receipt.get('started_sha256') != digest(state['effects']['start'])
+                        or receipt.get('implementation_sha256') != implementation[1]
+                        or receipt.get('predecessor_parent') != state['effects']['start']['admission_parent']
+                        or receipt.get('predecessor_exited') is not True
+                        or receipt.get('manager') != physical['service']['manager']
+                        or receipt.get('scope') != physical['scope']
+                        or receipt.get('unit_sha256') != state['effects']['select']['selected_sha256']):
+                    raise OnboardingError('receiving_guest_start_recovery_conflict')
+                state['start_recovery_receipt'] = receipt
+                save()
             state['result'] = dict(schema='cluster-native-code-updated/v1',
                 operation_id=operation_id, candidate_digest=candidate[1],
                 runtime_sha256=current['runtime_sha256'], origin=current['origin'],
                 process=current['process'], admission_parent=current['admission_parent'],
                 unit_sha256=physical['service']['unit_sha256'], receiving_readiness='unobserved')
+            receiving = (current.get('group_runtime_status') or {}).get('receiving', {})
+            gate = receiving.get('channels', {}).get('tribe', {})
+            if gate.get('process_id') == current['process'].get('pid') and gate.get('phase') in {'select','revoke'}:
+                recovery = receiving.get('recovery', {}).get('tribe', {}).get('state')
+                if recovery not in {'recovered','expired','disabled','invalidated','unavailable','unsupported'}:
+                    recovery = 'unobserved'
+                state['result']['local_reader'] = dict(channel_id='tribe', phase=gate['phase'], recovery=recovery)
             save()
             return state['result']
 
@@ -903,7 +972,7 @@ class ManagedRuntime:
 def validate_code_update(spec: dict) -> dict:
     """One bounded operator request over existing jobs, placements and effects."""
     try:
-        if (not isinstance(spec, dict) or set(spec) - {'reader_completion'} != {
+        if (not isinstance(spec, dict) or set(spec) - {'reader_completion','owner_observation','recovery_implementation'} != {
                 'schema', 'host_config', 'vm_qualification', 'candidate', 'targets', 'group', 'operation_id', 'max_seconds'}
                 or spec['schema'] != 'cluster-native-code-maintenance/v1'
                 or type(spec['max_seconds']) is not int or not 1 <= spec['max_seconds'] <= 480
@@ -916,8 +985,16 @@ def validate_code_update(spec: dict) -> dict:
                 or not isinstance(spec['host_config'], str)
                 or not isinstance(spec['candidate']['code'], str)):
             raise ValueError
+        implementation = spec.get('recovery_implementation')
+        if implementation is not None and (not isinstance(implementation,dict)
+                or set(implementation) != {'code','code_digest'}
+                or not isinstance(implementation['code'],str)
+                or not isinstance(implementation['code_digest'],str)
+                or re.fullmatch('[0-9a-f]{64}',implementation['code_digest']) is None):
+            raise ValueError
         for path in (spec['host_config'], spec['candidate']['code'], spec['vm_qualification'],
-                     spec.get('reader_completion')):
+                     spec.get('reader_completion'), spec.get('owner_observation'),
+                     None if implementation is None else implementation['code']):
             if path is not None and (not isinstance(path, str) or not Path(path).is_absolute()
                     or '..' in Path(path).parts):
                 raise ValueError
@@ -1151,6 +1228,21 @@ def run_code_update(spec: dict) -> dict:
         from .onboarding_receiving_update import preflight_reader_checkpoint
         preflight_reader_checkpoint(Path(reader_routes['checkpoint']), spec['operation_id'])
     backend, plans = maintenance_backend(spec['host_config'],spec['vm_qualification'],spec['targets'])
+    observers = {}
+    if spec.get('owner_observation') is not None:
+        if spec['group'] == 'none':
+            raise OnboardingError('qualified_onboarding_group_required')
+        routes = load_code_update_readers(Path(spec['owner_observation']))
+        selected = {}
+        for name in spec['targets']:
+            matches = [(key,binding) for key,binding in routes['owners'].items()
+                       if binding.get('job',key) == name]
+            if len(matches) != 1:
+                raise OnboardingError('receiving_current_reader_binding_required')
+            key,binding = matches[0]
+            selected[key] = binding
+        clients = code_update_reader_clients({**routes,'owners':selected}, backend=backend, plans=plans)
+        observers = {binding.get('job',key):clients[key] for key,binding in selected.items()}
     if reader_routes is not None:
         # Resolve owning jobs/placements and probe their existing owner CLIs
         # before any lifecycle effect; signed rosters still qualify membership.
@@ -1183,12 +1275,21 @@ def run_code_update(spec: dict) -> dict:
                     deadline_ns=target_deadline):
                 raise OnboardingError('qualified_onboarding_candidate_mount_required')
             phase = 'update'
+            implementation = spec.get('recovery_implementation')
+            recovery_code = None
+            if implementation is not None:
+                recovery_code = (Path(implementation['code']),implementation['code_digest'])
+                if not backend.runtime_available(plans[name],recovery_code,prepare=True,
+                        deadline_ns=target_deadline):
+                    raise OnboardingError('qualified_onboarding_candidate_mount_required')
             remaining = (target_deadline - time.monotonic_ns()) / 1_000_000_000
             if remaining <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
             value = owner.update_native_code(plans[name], candidate,
                 operation_id=spec['operation_id'], timeout_seconds=min(300.0, remaining),
-                receive_only_group=spec['group'] == 'closed', published_group=spec['group'] == 'published')
+                receive_only_group=spec['group'] == 'closed', published_group=spec['group'] == 'published',
+                **({'current_observer':observers[name]} if name in observers else {}),
+                **({'recovery_implementation':recovery_code} if recovery_code is not None else {}))
             results.append(dict(name=name, operation_id=spec['operation_id'], status='updated', result=value))
         except Exception as error:
             # A retained failure may include partial effects. Keep the original

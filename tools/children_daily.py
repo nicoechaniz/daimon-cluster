@@ -217,8 +217,9 @@ print(json.dumps(value))
 
 def validate_application_selection(selection):
     if (not isinstance(selection,dict) or not {'helper','sha256','units'}<=set(selection)
-            or set(selection)-{'helper','sha256','units','browser_components','deployment_manifests'}
-            or type(selection.get('browser_components',False)) is not bool):
+            or set(selection)-{'helper','sha256','units','browser_components','deployment_manifests','network_listeners'}
+            or type(selection.get('browser_components',False)) is not bool
+            or type(selection.get('network_listeners',False)) is not bool):
         raise ValueError('explicit_application_selection_required')
     validate_browser_selection({k:selection[k] for k in ('helper','sha256')})
     units=selection['units']
@@ -256,6 +257,7 @@ if hashlib.sha256(p.read_bytes()).hexdigest()!=selection['sha256']:raise ValueEr
 spec=importlib.util.spec_from_file_location('selected_application_reader',p)
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 options={'include_browser_components':True} if selection.get('browser_components') and name!='lordoftheflies' else {}
+if selection.get('network_listeners'):options['include_network_listeners']=True
 reference=selection.get('deployment_manifests',{}).get(name)
 if reference is not None:options['deployments']=m.load_deployments(reference['path'],reference['sha256'],selection['units'][name])
 value=m.collect(selection['units'][name],**options)
@@ -539,6 +541,22 @@ def phase_observations(config, report):
     phases['selected_public_python_malicious'] = (
         selected_malicious_observation(report.get('public_advisories', {}))
         if config.get('public_advisories') else {'state': 'not-selected'})
+    network_selected = config.get('application_inventory', {}).get('network_listeners', False)
+    network_observed = []
+    for name in targets if network_selected else []:
+        app = report['targets'].get(name, {}).get('applications', {})
+        units = app.get('units', {})
+        required = config['application_inventory']['units'][name]
+        if (app.get('state') == 'observed' and isinstance(units, dict) and set(units) == set(required)
+                and all(isinstance(v, dict) and v.get('state') == 'observed'
+                    and isinstance(v.get('network_listeners'), dict)
+                    and v['network_listeners'].get('state') == 'observed' for v in units.values())):
+            network_observed.append(name)
+    phases['selected_main_process_listeners'] = {
+        'state': 'not-selected' if not network_selected else 'observed' if targets and set(network_observed) == targets else 'incomplete',
+        'observed_targets': sorted(network_observed),
+        'unavailable_targets': sorted(targets-set(network_observed)) if network_selected else [],
+        'scope': 'Selected main-process TCP listeners/bound UDP; not worker descendants or external reachability'}
     return phases
 
 
@@ -676,6 +694,7 @@ def observation_complete(result):
         result.get('public_advisories',{}).get('state','matched')=='matched' and
         result.get('known_exploitation',{}).get('state','matched')=='matched' and
         result.get('phases',{}).get('selected_public_python_malicious',{}).get('state')!='incomplete' and
+        result.get('phases',{}).get('selected_main_process_listeners',{}).get('state')!='incomplete' and
         result.get('phases',{}).get('selected_deployments',{}).get('state')!='incomplete')
 
 

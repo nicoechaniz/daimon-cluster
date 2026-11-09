@@ -10,6 +10,8 @@ import re
 import subprocess
 import time
 import stat
+import ipaddress
+import sys
 
 MAX_FILE=128*1024*1024
 MAX_METADATA=65536
@@ -28,6 +30,66 @@ def process_start(process):
     if len(raw)>4096 or len(fields)<20 or not fields[19].isdigit() or int(fields[19])<=0:
         raise ValueError('process_identity_unavailable')
     return int(fields[19])
+
+
+def process_listeners(process, check=lambda: None):
+    """Read this main process's sockets; never connect or inspect remote peers."""
+    def sockets():
+        result = set()
+        with os.scandir(process/'fd') as entries:
+            for count, entry in enumerate(entries, 1):
+                check()
+                if count > 1024:
+                    raise ValueError('network_descriptor_capacity')
+                target = os.readlink(entry.path)
+                match = re.fullmatch(r'socket:\[(\d+)\]', target)
+                if match:
+                    result.add(int(match[1]))
+        return result
+    owned = sockets()
+    listeners, matched = [], set()
+    for table, protocol, family in (('tcp', 'tcp', 4), ('tcp6', 'tcp', 6),
+                                    ('udp', 'udp', 4), ('udp6', 'udp', 6)):
+        check()
+        with (process/'net'/table).open('rb') as stream:
+            raw = stream.read(128*1024+1)
+        if len(raw) > 128*1024:
+            raise ValueError('network_table_capacity')
+        lines = raw.decode('ascii').splitlines()
+        if not lines or 'local_address' not in lines[0] or len(lines) > 2049:
+            raise ValueError('network_table_shape')
+        for line in lines[1:]:
+            check()
+            fields = line.split()
+            if len(fields) < 10 or not fields[9].isdigit():
+                raise ValueError('network_table_shape')
+            inode = int(fields[9])
+            if inode not in owned:
+                continue
+            matched.add(inode)
+            if protocol == 'tcp' and fields[3] != '0A':
+                continue
+            address, port = fields[1].split(':')
+            if (re.fullmatch('[0-9A-Fa-f]{8}' if family == 4 else '[0-9A-Fa-f]{32}', address) is None
+                    or re.fullmatch('[0-9A-Fa-f]{4}', port) is None):
+                raise ValueError('network_local_address_shape')
+            packed = bytes.fromhex(address)
+            if sys.byteorder == 'little':
+                packed = b''.join(packed[i:i+4][::-1] for i in range(0, len(packed), 4))
+            ip = ipaddress.ip_address(packed)
+            scope = ('wildcard' if ip.is_unspecified else 'loopback' if ip.is_loopback
+                     else 'link-local' if ip.is_link_local else 'private' if ip.is_private
+                     else 'global' if ip.is_global else 'other')
+            if int(port, 16):
+                listeners.append(dict(protocol=protocol, family=family, port=int(port, 16), bind_scope=scope))
+            if len(listeners) > 128:
+                raise ValueError('network_listener_capacity')
+    if sockets() != owned:
+        raise ValueError('network_descriptors_changed_during_observation')
+    return dict(state='observed', scope='selected-main-process-owned-TCP-listeners-and-bound-UDP',
+        listeners=sorted(listeners, key=lambda v: (v['protocol'], v['family'], v['port'], v['bind_scope'])),
+        unmatched_socket_count=len(owned-matched),
+        unassessed=['worker-descendants', 'non-TCP-UDP-sockets', 'firewall-NAT-and-peer-reachability'])
 
 
 def browser_components(check=lambda:None, root=Path('/'), owner_uid=0, run=subprocess.run, budget=4*1024*1024):
@@ -282,7 +344,8 @@ def verify_deployment(row, process, image, hashed, check):
             'meaning': 'Selected files and process association; Python imported modules, dependency authenticity and exposure remain unassessed'}
 
 
-def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=False, deployments=None):
+def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=False, deployments=None,
+            include_network_listeners=False):
     if not 1<=len(units)<=8 or len(set(units))!=len(units):
         raise ValueError('bounded_unique_service_selection_required')
     if deployments is not None:
@@ -357,6 +420,8 @@ def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=Fa
             if deployments is not None and unit in deployments['units']:
                 value['deployment'] = verify_deployment(deployments['units'][unit], process,
                     Path(target), hashed, check)
+            if include_network_listeners:
+                value['network_listeners'] = process_listeners(process, check)
             latest=properties(unit)
             if latest.get('MainPID')!=str(pid) or latest.get('ActiveState')!='active':
                 raise ValueError('service_changed_during_observation')
@@ -388,6 +453,7 @@ def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=Fa
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--units',nargs='+',required=True)
     p.add_argument('--browser-components',action='store_true')
+    p.add_argument('--network-listeners',action='store_true')
     p.add_argument('--deployment-manifest',type=Path)
     p.add_argument('--deployment-manifest-sha256')
     args=p.parse_args()
@@ -396,7 +462,8 @@ def main():
             raise ValueError('selected_deployment_manifest_pin')
         deployments = (load_deployments(args.deployment_manifest,args.deployment_manifest_sha256,args.units)
             if args.deployment_manifest is not None else None)
-        report=collect(args.units,include_browser_components=args.browser_components,deployments=deployments)
+        report=collect(args.units,include_browser_components=args.browser_components,deployments=deployments,
+                       include_network_listeners=args.network_listeners)
         print(json.dumps(report,sort_keys=True))
         return 0 if all(v.get('state')=='observed' for v in report['units'].values()) and report.get('browser_components',{}).get('state','observed')=='observed' else 2
     except (OSError,ValueError,subprocess.SubprocessError) as error:

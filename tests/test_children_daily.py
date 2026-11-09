@@ -223,6 +223,16 @@ class ApplicationObservationTests(unittest.TestCase):
     selection={'helper':'/opt/children-maintenance/qualified/reader.py','sha256':'a'*64,
                'units':{n:['own.service'] for n in ['lordoftheflies','pixin','calipso','c-137','noodles']}}
 
+    def test_network_selection_is_explicit_and_reaches_existing_reader(self):
+        chosen=dict(self.selection,network_listeners=True)
+        daily.validate_application_selection(chosen)
+        value={'schema':'children-application-inventory/v1','units':{'own.service':{'state':'observed'}}}
+        with patch.object(daily,'command',return_value=json.dumps(value).encode()) as call:
+            daily.application_inventory('pixin','dm-pixin',chosen)
+        self.assertIn("options['include_network_listeners']=True",call.call_args.args[0][-1])
+        with self.assertRaises(ValueError):
+            daily.validate_application_selection(dict(self.selection,network_listeners='yes'))
+
     def test_selected_components_cannot_hide_missing_data_or_require_host_browser(self):
         value={'schema':'children-application-inventory/v1','units':{'own.service':{'state':'observed'}}}
         chosen=dict(self.selection,browser_components=True)
@@ -536,6 +546,22 @@ class SelectedMaliciousObservationTests(unittest.TestCase):
 
 
 class SelectedDeploymentPhaseTests(unittest.TestCase):
+    def test_selected_network_requires_every_main_process_and_preserves_unknown_exposure(self):
+        config={'targets':[{'id':'pixin','instance':'dm-pixin'}], 'application_inventory':{
+            'network_listeners':True,'units':{'pixin':['web.service','native.service']}}}
+        units={name:{'state':'observed','network_listeners':{'state':'observed','listeners':[]}}
+            for name in ('web.service','native.service')}
+        report={'targets':{'pixin':{'applications':{'state':'observed','units':units}}}}
+        self.assertEqual(daily.phase_observations(config,report)['selected_main_process_listeners']['state'],'observed')
+        for gap in (None,{},'unavailable'):
+            units['native.service']['network_listeners']=gap
+            self.assertEqual(daily.phase_observations(config,report)['selected_main_process_listeners']['state'],'incomplete')
+        del config['application_inventory']['network_listeners']
+        self.assertEqual(daily.phase_observations(config,report)['selected_main_process_listeners']['state'],'not-selected')
+        failed={'source':{'state':'fresh'},'targets':{'pixin':{'debian_advisories':'matched'}},
+                'phases':{'selected_main_process_listeners':{'state':'incomplete'}}}
+        self.assertFalse(daily.observation_complete(failed))
+
     def test_selected_files_do_not_claim_unselected_units_or_healthy_changed_process(self):
         config={'targets':[{'id':'pixin','instance':'dm-pixin'}], 'application_inventory':{
             'units':{'pixin':['native.service','web.service','supervisor.service']},

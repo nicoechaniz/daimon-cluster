@@ -50,6 +50,7 @@ FILES = (
     "clusterctl/onboarding_runtime.py",
     "clusterctl/onboarding_views.py",
     "clusterctl/onboarding_service.py",
+    "clusterctl/onboarding_conversation.py",
     "clusterctl/onboarding_ssh.py",
     "clusterctl/onboarding_ingress.py",
     "clusterctl/onboarding_provider.py",

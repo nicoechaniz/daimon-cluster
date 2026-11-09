@@ -446,9 +446,11 @@ class ProfileOwner:
     """Existing private owner and qualified Source CLI, entered after UID drop."""
 
     def __init__(self, path: Path):
+        import pwd
         self.path = path
         info = path.lstat()
-        self.uid, self.gid = info.st_uid, info.st_gid
+        self.uid = info.st_uid
+        self.gid = pwd.getpwuid(self.uid).pw_gid
         self.profile()
 
     def profile(self) -> dict:
@@ -546,7 +548,6 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
     import grp
     import pwd
     import time
-    import uuid
     from .onboarding_service import MatrixProfileService
     from .operation_journal import OperationJournal
     from .owner_process import ParentProcessPresence
@@ -555,7 +556,8 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
     if (not isinstance(spec,dict) or set(spec) != fields
             or spec['schema'] != 'cluster-native-profile-maintenance/v1'
             or type(spec['max_seconds']) is not int or not 1 <= spec['max_seconds'] <= 180
-            or str(uuid.UUID(spec['operation_id'])) != spec['operation_id']
+            or not isinstance(spec['operation_id'],str)
+            or re.fullmatch(r'[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}',spec['operation_id']) is None
             or any(not isinstance(spec[key],str) or not Path(spec[key]).is_absolute()
                 or '..' in Path(spec[key]).parts for key in ('profile','unit','journal'))
             or os.geteuid() != 0):

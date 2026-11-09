@@ -62,6 +62,13 @@ public/known-exploitation advisory reads separately. Only the current selected
 resources count: a missing or failed target keeps its phase incomplete, and an
 unselected adapter is not observed success. Successful source collection with
 pending applicability remains visibly pending; no empty result clears exposure.
+The finite command now reports `observation_complete` and `needs_triage`
+separately. Successful advisory reads with pending findings return0 for execution
+health, while `coverage=partial`, findings and the daily-security coverage
+incident remain open. A missing source/target, failed selected adapter or empty
+inventory still returns2. Do not reinterpret the scheduled-job observer's
+recovery as vulnerability remediation or completion of the separate coverage
+incident.
 
 Package transactions and incident delivery/missed-run supervision are marked as
 external producers, because they have their own invocation/effect receipts.

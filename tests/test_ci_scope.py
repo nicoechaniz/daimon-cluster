@@ -1630,3 +1630,15 @@ def test_public_advisory_phase_has_closed_scope():
         'tests/test_children_daily.py','tests/test_children_application_inventory.py',
         'tests/test_children_browser.py','tests/test_ci_scope.py','tests/test_ci_workflow.py'])
     assert select(changed+['clusterctl/admission.py'],ROOT)==('full',['tests'])
+
+
+def test_read_only_incus_provenance_keeps_signed_index_and_archive_consumers(tmp_path):
+    changed=['tools/children_incus_provenance.py','tests/test_children_incus_provenance.py',
+        'tools/ci_scope.py','tests/test_ci_scope.py','docs/operations/children-application-inventory.md','RESUME.md']
+    profile,tests=select(changed,ROOT)
+    assert profile=='peer'
+    assert {'tests/test_children_incus_provenance.py','tests/test_children_package_selection.py',
+        'tests/test_children_package_guard.py','tests/test_children_application_inventory.py',
+        'tests/test_children_daily.py'}<=set(tests)
+    assert select(changed,tmp_path)==('full',['tests'])
+    assert select([*changed,'clusterctl/admission.py'],ROOT)==('full',['tests'])

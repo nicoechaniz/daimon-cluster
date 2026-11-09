@@ -1058,6 +1058,16 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
             and set(changed) <= advisory_files | CI_FILES | RUNBOOK_DOCS
             and all((root / name).is_file() for name in advisory_tests)):
         return 'peer', advisory_tests
+    incus_provenance_files = {'tools/children_incus_provenance.py',
+        'tests/test_children_incus_provenance.py', 'docs/operations/children-application-inventory.md'}
+    incus_provenance_tests = ['tests/test_children_incus_provenance.py',
+        'tests/test_children_package_selection.py', 'tests/test_children_package_guard.py',
+        'tests/test_children_application_inventory.py', 'tests/test_children_daily.py',
+        'tests/test_ci_scope.py', 'tests/test_ci_workflow.py']
+    if (set(changed) & {'tools/children_incus_provenance.py', 'tests/test_children_incus_provenance.py'}
+            and set(changed) <= incus_provenance_files | CI_FILES | RUNBOOK_DOCS
+            and all((root/name).is_file() for name in incus_provenance_tests)):
+        return 'peer', incus_provenance_tests
     application_files = {'tools/children_application_inventory.py',
         'tests/test_children_application_inventory.py','tools/children_daily.py',
         'tests/test_children_daily.py','docs/operations/children-application-inventory.md',

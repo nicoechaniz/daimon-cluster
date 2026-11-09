@@ -55,6 +55,9 @@ def initial_publication(group_source, profile):
 def test_initial_portable_visibility_adopts_existing_closed_catalogs(group_source):
     """First publication must open already initialized receive-only catalogs."""
     import sqlite3
+    from daimon_matrix import native_egress
+    if not hasattr(native_egress, 'PORTABLE_VISIBILITY_SCOPE_RISKS'):
+        pytest.skip('Selected legacy SDK lacks portable Conversation visibility; successor qualification runs this journey')
     from daimon_matrix.canonical import b64url
     from daimon_matrix.messaging_config import load_application
     from daimon_matrix.native_egress import VISIBILITY_SCHEMA_VERSION

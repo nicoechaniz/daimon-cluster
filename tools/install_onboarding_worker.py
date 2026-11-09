@@ -18,7 +18,7 @@ from clusterctl.onboarding_service import publish
 UNIT = 'daimon-onboarding-worker.service'
 PREFLIGHT = (
     'from clusterctl import onboarding_worker, onboarding_host, onboarding_homes, '
-    'onboarding_conversation, onboarding_group_coordinator; '
+    'onboarding_conversation, onboarding_group_coordinator, onboarding_companion_homes; '
     'from clusterctl.matrix_host import _matrix_api; _matrix_api()'
 )
 

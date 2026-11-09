@@ -102,6 +102,13 @@ _DIAGNOSTIC_CODES = frozenset({
     'onboarding_group_remaining_frontier_required', 'onboarding_group_remaining_authorization_required',
     'onboarding_group_remaining_reference_required', 'onboarding_group_remaining_frontier_changed',
     'onboarding_group_continuation_fresh_effect_required',
+    'companion_home_configuration_changed', 'companion_home_configuration_required',
+    'companion_home_state_capacity', 'existing_companion_home_job_preserved',
+    'companion_home_committed_identity_required', 'companion_gateway_owner_required',
+    'companion_gateway_input_capacity', 'companion_gateway_operation_refused',
+    'companion_gateway_operation_unconfirmed',
+    'companion_gateway_service_unobserved', 'companion_gateway_service_binding_changed',
+    'companion_gateway_reload_unconfirmed',
 })
 
 

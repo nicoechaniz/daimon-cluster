@@ -437,7 +437,15 @@ class ExistingEnrollment:
             return result
 
     def admission_coordinates(self, plan: dict) -> dict:
+        return self._admission_public(plan)[0]
+
+    def public_identity(self, plan: dict) -> dict:
+        """Export the accepted existing being's public proof, never its custody."""
+        return self._admission_public(plan)[1]
+
+    def _admission_public(self, plan: dict) -> tuple[dict, dict]:
         from daimon_matrix import identity
+        from daimon_matrix.operator_rebirth import AUTHORITY_SCHEMA
 
         root = self._path(plan)
         with being_seed._locked(root):
@@ -462,7 +470,7 @@ class ExistingEnrollment:
                 current.state,
                 at_ms=now,
             )
-            return dict(
+            coordinates = dict(
                 being_ref=current.manifest.being_ref,
                 body_ref=origin["body_ref"],
                 embodiment_id=origin["embodiment_id"],
@@ -473,3 +481,8 @@ class ExistingEnrollment:
                 credential_id=credential["artifact_id"],
                 manifest_hash=current.manifest.digest,
             )
+            base = onboarding_existing.public_base_bundle(document(root/'genesis.json'),plan)
+            authority = dict(schema=AUTHORITY_SCHEMA,control_artifacts=base['control_artifacts'],
+                control_head=current.state.head,manifest=current.manifest.value,
+                credentials=list(current.credentials.values()),incarnations=list(current.incarnations.values()))
+            return coordinates,dict(authority=authority,origin=origin)

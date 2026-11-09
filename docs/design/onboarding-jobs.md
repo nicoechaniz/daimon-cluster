@@ -909,9 +909,9 @@ receipts permit local reconciliation without another HTTP submission.
 Worker installation must preflight the coherent worker, host, Home, guest and
 group-coordinator imports in the selected release, alongside its selected Matrix
 SDK. The old small Home-worker overlay is insufficient for this graph. These are
-candidate source capabilities, not a deployed complete companion command: wiring
-the registration/request primitives into the worker and HTTPS route, and the
-explicit KVM placement path, still require integration. Do not provision the held next companion
+candidate source capabilities, not a deployed complete companion command: HTTPS
+routing, membership-intent preparation and explicit KVM placement still require
+integration and full-command qualification. Do not provision the held next companion
 to test them. Exact private failure diagnostics and stage checkpoints remain with
 the original job; timeout extensions continue that same job and preserve work.
 
@@ -935,8 +935,8 @@ its protected public proof directory refuses growth beyond64MiB/17 files plus
 its lock and retains conflicting/unfinished evidence. Ordinary source backups
 use the existing protected replacement writer. Registration does not create a
 Home, app route, owner credential or membership. The composed Home registration
-operation below adds those Home/owner writes, while worker and HTTPS integration
-remain unfinished.
+operation below adds those Home/owner writes, and the worker hook below connects
+them to committed identity. HTTPS integration remains unfinished.
 
 For a new job, `onboarding_conversation.prepare_intent` derives stable Home and
 application resource IDs from the approved plan digest. The explicit
@@ -961,9 +961,43 @@ entries and1MiB of retained bytes; unfinished intents and keys are never evicted
 
 This internal registration operation returns `receiving_state=unobserved`.
 It creates no guest, restarts no service, publishes no HTTPS route and sends no
-model input. The host command still needs to wire registration, conditional
-gateway loading and the existing guest/HTTPS routing writers into its same job.
+model input. The existing host worker now wires it through the hook below;
+guest/HTTPS routing still needs complete end-to-end qualification.
 Actual all4 existing Home registrations and preidentity request resolution were
 reconciled without source/config changes, added owner credentials, new keys or
 Home process changes. That is compatibility evidence, not a completed fresh
 companion delivery or permission to provision the held next companion.
+
+The same worker's `--home-placements` flag also accepts
+`dm.home-companion-onboarding/v1`. Its closed fields are `state`, `gateway`, and
+`pairs`. Gateway selects its existing `config` and Python interpreter; the client
+uses the same coherent worker release, not a separate code overlay. Each named
+pair selects `owner`, `plan_digest`, `human_name`, and `vpn_url`. Its own request
+and native public origin are derived after committed identity. The old
+`dm.home-onboarding.host/v1` artifact-publisher hook remains unchanged.
+
+The new hook runs only after the same worker-owned progress has committed the v2
+identity stage and rechecks the actual original job/grant under its job lock.
+It registers Home under the gateway configuration's actual owner UID, then reads
+the existing owner's paired-human endpoint. An already-loaded pair requires no
+reload. A newly registered but unloaded Home may reload only the existing
+`daimon-home-access.service`, after verifying its actual process explicitly uses
+the selected configuration. Reload intent is durable before dispatch; an
+unconfirmed reload is never dispatched again. The next cadence observes the
+existing process/endpoint and retains the original job if it remains unknown.
+Later grant revocation, changed selection or missing completed registration does
+not authorize restoring it. This hook starts no native process or model.
+
+Final technical access reuses the existing isolated HTTPS browser qualification,
+after a fresh own-pair endpoint read. It revokes only its technical cookie and
+retires that journal after retaining the signed-out result. A completed Home hook
+reuses its terminal receipt without periodic gateway polling; current availability
+belongs to the existing observer. Final access still checks its own pair afresh.
+The private area reserves at most64 retained files and4MiB including atomic staging
+across at most16 selected pairs, with no growing per-run archive
+and no background service. Capacity preserves unfinished records and refuses
+new work. Stop only its future work by removing the selected pair/flag in the
+owning configuration; native work, keys, account state and existing receipts stay.
+The actual all4 gateway client/paired-endpoint reads passed with configuration,
+identity source and Home process unchanged; no service reload or enrollment was
+performed by that qualification. Fresh companion delivery remains unproven.

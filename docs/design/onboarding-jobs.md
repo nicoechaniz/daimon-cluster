@@ -914,3 +914,25 @@ Home/request registration from newly committed identity and the explicit KVM
 placement path still require integration. Do not provision the held next companion
 to test them. Exact private failure diagnostics and stage checkpoints remain with
 the original job; timeout extensions continue that same job and preserve work.
+
+The first-identity ceremony now exports `public_identity(plan)` from its existing
+signed activation and credential succession. It returns only the native public
+authority and structured origin, under the same held plan grant; no holder or
+runtime is opened. The gateway's `homes.host register-identity` operation appends
+that web pair to its existing `dm.home-identities/v1` source using the source's
+exact previous digest and the maintained NativeAuthority validators. The row
+contains the actual local human reference, display names, native being and origin;
+the separate `--authority` input contains the native public authority. `--reference`
+must equal the row's being reference; `--previous-digest` selects the identity
+source revision for this operation. This operator surface is internal to command
+composition, not a new family login step or approval.
+
+This append-only operation preserves existing rows, proof locations, Home config,
+keys and sessions. An exact retry returns the original current actor revision,
+including registrations made before this adapter. A conflicting pair or proof
+cannot be overwritten by a retry. Identity input is capped at256KiB/16 web rows;
+its protected public proof directory refuses growth beyond64MiB/17 files plus
+its lock and retains conflicting/unfinished evidence. Ordinary source backups
+use the existing protected replacement writer. Registration does not create a
+Home, app route, owner credential or membership: automatic composition of those
+remaining existing writers and the guest request remains unfinished.

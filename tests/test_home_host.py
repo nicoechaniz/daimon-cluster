@@ -10,6 +10,88 @@ from clusterctl.homes.provision import install_service, sha
 from clusterctl.homes.policy import Actor
 
 
+def test_signed_companion_identity_registers_once_without_keys_sessions_or_runtime(tmp_path):
+    import uuid
+    from clusterctl.homes.host import register_identity
+    from clusterctl.homes.authority import NativeAuthority
+    from tests.test_onboarding_target import receiving, files
+    ceremony, plan, target = receiving(tmp_path)
+    target.activate(ceremony.authorize_target(plan,target.prepare()))
+    target.apply_credential(ceremony.authorize_credential(plan,target.credential_request()))
+    public = ceremony.public_identity(plan)
+    native_before = files(ceremony.root)
+    gateway = tmp_path/'gateway'
+    config = configuration(gateway)
+    config_path = gateway/'config.json'
+    write(config_path,json.dumps(config).encode())
+    source = gateway/'identities.json'
+    initial = dict(schema='dm.home-identities/v1',telegram_source=None,web=[])
+    write(source,json.dumps(initial).encode())
+    write(gateway/'public-proofs.json',json.dumps(target.document_bundle()).encode())
+    row = dict(being_ref=public['authority']['manifest']['being_ref'], label='Companion',
+        human_ref='human:local:'+str(uuid.uuid4()),human_name='Paired human',
+        origin=public['origin'],enabled=True)
+    original_config = config_path.read_bytes()
+    with pytest.raises(ValueError,match='concurrent_home_identity'):
+        register_identity(config_path,row,public['authority'],previous_source_digest='stale')
+    assert json.loads(source.read_bytes())==initial
+    result = register_identity(config_path,row,public['authority'],previous_source_digest=sha(source.read_bytes()))
+    assert result['status']=='identity-registered'
+    resolver=NativeAuthority(source,gateway/'relationships.db',config['homes'],
+        authority_source=gateway/'public-proofs.json')
+    assert resolver.actor(row['being_ref']).revision==result['revision']
+    assert resolver.actor(row['human_ref']).kind=='human'
+    retained=source.read_bytes()
+    assert register_identity(config_path,row,public['authority'],previous_source_digest='lost-ack')['status']=='unchanged'
+    with pytest.raises(ValueError,match='existing_home_identity_preserved'):
+        register_identity(config_path,{**row,'human_ref':'human:local:'+str(uuid.uuid4())},
+            public['authority'],previous_source_digest=sha(retained))
+    assert source.read_bytes()==retained and config_path.read_bytes()==original_config
+    assert files(ceremony.root)==native_before
+    assert not (gateway/'state').exists()  # no session/owner registration yet
+    assert len(list((gateway/'registered-home-identities').glob('*.json')))==1
+    # Earlier supported installations keep their own proof location and byte
+    # formatting. Reconciliation compares public meaning without moving it.
+    legacy = gateway/'earlier-public-proof.json'
+    write(legacy,json.dumps(public['authority'],indent=2).encode())
+    prior = json.loads(source.read_bytes())
+    prior['web'][0]['authority_file']=str(legacy)
+    write(source,json.dumps(prior).encode())
+    retained=source.read_bytes()
+    repeated=register_identity(config_path,row,public['authority'],previous_source_digest='lost-ack')
+    assert repeated['status']=='unchanged' and repeated['revision']==result['revision']
+    assert source.read_bytes()==retained and json.loads(source.read_bytes())['web'][0]['authority_file']==str(legacy)
+
+
+def test_unverified_companion_identity_never_changes_selected_source(tmp_path):
+    from clusterctl.homes.host import register_identity
+    from tests.test_onboarding_target import receiving
+    ceremony, plan, target=receiving(tmp_path)
+    target.activate(ceremony.authorize_target(plan,target.prepare()))
+    target.apply_credential(ceremony.authorize_credential(plan,target.credential_request()))
+    public=ceremony.public_identity(plan)
+    gateway=tmp_path/'gateway'
+    config=configuration(gateway)
+    config_path=gateway/'config.json'
+    write(config_path,json.dumps(config).encode())
+    source=gateway/'identities.json'
+    raw=json.dumps(dict(schema='dm.home-identities/v1',telegram_source=None,web=[])).encode()
+    write(source,raw)
+    row=dict(being_ref=public['authority']['manifest']['being_ref'],label='Companion',
+        human_ref='human:telegram:123',human_name='Human',origin=public['origin'],enabled=True)
+    write(gateway/'public-proofs.json',json.dumps(target.document_bundle()).encode())
+    # The public proof is real, but a new web pair cannot manufacture a
+    # Telegram identity. The maintained NativeAuthority validator refuses it.
+    with pytest.raises(ValueError,match='home_identity_source_invalid'):
+        register_identity(config_path,row,public['authority'],previous_source_digest=sha(raw))
+    assert source.read_bytes()==raw
+    forged=deepcopy(public['authority'])
+    forged['control_head']='forged'
+    with pytest.raises(ValueError):
+        register_identity(config_path,row,forged,previous_source_digest=sha(raw))
+    assert source.read_bytes()==raw
+
+
 def write(path, raw):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)

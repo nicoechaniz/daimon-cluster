@@ -119,6 +119,121 @@ def register(config_path, reference, home, *, previous_digest, withdraw=False):
     return {"status": "withdrawn" if withdraw else "registered", "digest": sha(raw)}
 
 
+def register_identity(config_path, row, authority, *, previous_source_digest):
+    """Append one operator-selected web pair using its signed native proof.
+
+    This is the existing gateway identity source, not a parallel login store.
+    It creates no Home, session, account, key, model input or Tribe membership.
+    Existing pairings and public proof revisions cannot be replaced here.
+    """
+    import fcntl
+    import os
+    import tempfile
+    from daimon_matrix.operator_rebirth import authority_from_document, RebirthError
+    from .authority import NativeAuthority
+    from .provision import directory
+
+    if not isinstance(row, dict) or set(row) != {
+            'being_ref', 'label', 'human_ref', 'human_name', 'origin', 'enabled'}:
+        raise ValueError('home_web_identity_required')
+    encoded = (json.dumps(authority, sort_keys=True) + '\n').encode()
+    if len(encoded) > 4*1024*1024:
+        raise ValueError('home_public_identity_capacity')
+    try:
+        verified = authority_from_document(authority)
+        verified.validate_origin(row['origin'], require_active=True)
+    except (RebirthError, ValueError, KeyError, TypeError):
+        raise ValueError('home_native_identity_refused') from None
+    if verified.manifest.being_ref != row['being_ref'] or row['enabled'] is not True:
+        raise ValueError('home_identity_source_mismatch')
+    config_raw = regular(config_path)
+    if Path(config_path).stat().st_mode & 0o077:
+        raise ValueError('private_gateway_configuration_required')
+    config = validate_config(json.loads(config_raw))
+    source = Path(config['binding_source'])
+    def current_source():
+        original = regular(source)
+        if len(original)>256*1024:
+            raise ValueError('home_identity_source_capacity')
+        declaration = json.loads(original)
+        if (not isinstance(declaration, dict)
+                or set(declaration) != {'schema', 'telegram_source', 'web'}
+                or declaration['schema'] != 'dm.home-identities/v1'
+                or not isinstance(declaration['web'], list)
+                or any(not isinstance(item,dict) for item in declaration['web'])):
+            raise ValueError('selected_web_identity_source_required')
+        return original, declaration
+
+    def retained(original, declaration):
+        old = [item for item in declaration['web'] if item.get('being_ref') == row['being_ref']]
+        if not old:
+            return None
+        if (len(old) != 1 or {k:v for k,v in old[0].items() if k != 'authority_file'} != row
+                or json.loads(regular(Path(old[0]['authority_file']))) != authority):
+            raise ValueError('existing_home_identity_preserved')
+        resolver = NativeAuthority(source, Path(config['relationship_store']),
+            config['homes'], authority_source=Path(config['authority_source']))
+        actor = resolver.actor(row['being_ref'])
+        if actor is None or actor.kind != 'being':
+            raise ValueError('current_home_identity_binding_required')
+        if regular(source) != original or regular(config_path) != config_raw:
+            raise ValueError('concurrent_home_identity_source_preserved')
+        return dict(status='unchanged', digest=sha(original), actor=actor.ref, revision=actor.revision)
+
+    original, declaration = current_source()
+    result = retained(original,declaration)
+    if result is not None:
+        return result  # Existing registrations reconcile without even a lock file.
+    if sha(original) != previous_source_digest:
+        raise ValueError('concurrent_home_identity_source_preserved')
+    root = source.parent
+    storage = root/'registered-home-identities'
+    directory(storage, root)
+    lock_path = storage/'registration.lock'
+    fd = os.open(lock_path, os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'a+b') as lock:
+        regular(lock_path)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        original, declaration = current_source()
+        result = retained(original,declaration)
+        if result is not None:
+            return result
+        proof = storage/(sha(encoded)+'.json')
+        candidate = {**row, 'authority_file': str(proof)}
+        if sha(original) != previous_source_digest:
+            raise ValueError('concurrent_home_identity_source_preserved')
+        if len(declaration['web']) >= 16:
+            raise ValueError('home_identity_source_capacity')
+        proofs = list(storage.iterdir())
+        if (any(p.is_symlink() or not p.is_file() for p in proofs)
+                or len(proofs) >= 18
+                or sum(p.stat().st_size for p in proofs)+len(encoded) > 64*1024*1024):
+            raise ValueError('home_public_identity_capacity')
+        backups = root/'previous'
+        directory(backups, root)
+        replace(proof, encoded, previous=None, home=root, backups=backups)
+        proposed = {**declaration, 'web': [*declaration['web'], candidate]}
+        raw = (json.dumps(proposed, sort_keys=True, indent=2)+'\n').encode()
+        if len(raw)>256*1024:
+            raise ValueError('home_identity_source_capacity')
+        # Reuse the maintained exact human/origin/authority validation before
+        # changing the selected source. A failed proposal leaves it unchanged.
+        with tempfile.TemporaryDirectory(prefix='.home-identity-', dir=root) as temporary:
+            pending = Path(temporary)/'identities.json'
+            pending.write_bytes(raw)
+            pending.chmod(0o600)
+            resolver = NativeAuthority(pending, Path(config['relationship_store']),
+                config['homes'], authority_source=Path(config['authority_source']))
+            actor = resolver.actor(row['being_ref'])
+            if actor is None or actor.kind != 'being':
+                raise ValueError('current_home_identity_binding_required')
+        if regular(config_path) != config_raw:
+            raise ValueError('concurrent_gateway_configuration_preserved')
+        replace(source, raw, previous=previous_source_digest, home=root, backups=backups)
+        return dict(status='identity-registered', digest=sha(raw),
+                    actor=actor.ref, revision=actor.revision)
+
+
 def accept_owner_authority(config_path, reference, *, previous_digest):
     """Explicit host operation; retain key bytes, actor, home and base revision."""
     from .authority import NativeAuthority
@@ -151,13 +266,25 @@ def accept_owner_authority(config_path, reference, *, previous_digest):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("register", "withdraw", "accept-owner-authority"))
+    parser.add_argument("operation", choices=("register", "withdraw", "accept-owner-authority", "register-identity"))
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--reference", required=True)
     parser.add_argument("--row", type=Path)
+    parser.add_argument("--authority", type=Path)
     parser.add_argument("--previous-digest", required=True)
     args = parser.parse_args()
     try:
+        if args.operation == 'register-identity':
+            if args.row is None or args.authority is None:
+                raise ValueError('home_web_identity_required')
+            row = json.loads(regular(args.row))
+            if row.get('being_ref') != args.reference:
+                raise ValueError('home_identity_source_mismatch')
+            print(json.dumps(register_identity(args.config, row,
+                json.loads(regular(args.authority)), previous_source_digest=args.previous_digest)))
+            return
+        if args.authority is not None:
+            raise ValueError('home_identity_source_operation_required')
         if args.operation == "accept-owner-authority":
             if args.row is not None:
                 raise ValueError("owner_authority_uses_existing_home")

@@ -112,7 +112,8 @@ def verify_receiving_identity(bundle: dict, observed: dict, *, expires_at_ms: in
 
 
 def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: int,
-                           require_admitted: bool = True, native_tooling: dict | None = None) -> dict:
+                           require_admitted: bool = True, native_tooling: dict | None = None,
+                           receive_only: bool = False) -> dict:
     """Qualify an already installed reader without replaying its lifecycle.
 
     The operator pins the approved current software/application selection.
@@ -127,8 +128,20 @@ def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: in
     now = time.time_ns() // 1_000_000
     if type(expires_at_ms) is not int or not now < expires_at_ms <= now + 60_000:
         raise OnboardingError('receiving_identity_horizon_expired')
-    observed = owner.qualified_identity(expires_at_ms=expires_at_ms,
-        require_admitted=require_admitted, **({'native_tooling': native_tooling} if native_tooling is not None else {}))
+    for attempt in range(3):
+        observed = owner.qualified_identity(expires_at_ms=expires_at_ms,
+            require_admitted=require_admitted, **({'native_tooling': native_tooling} if native_tooling is not None else {}))
+        pending = observed['runtime_status'].get('receiving', {}).get('rosters', {}).get('tribe', {})
+        deadline = getattr(owner, 'deadline_ns', None)
+        if (pending.get('schema') == 'dm.runtime.tribe-roster-unavailable/v1'
+                and pending.get('retryable') is True and attempt < 2
+                and type(deadline) is int and deadline - time.monotonic_ns() > 50_000_000
+                and expires_at_ms - time.time_ns() // 1_000_000 > 50):
+            # Only an explicitly retryable native observation, within the same
+            # owner/process pin and original proof/deadline. Never retry control.
+            time.sleep(.05)
+            continue
+        break
     status, identity = observed['runtime_status'], observed['identity']
     verified = observed['verified_identity']
     loaded, application = status['loaded_runtime'], status['loaded_application']
@@ -156,14 +169,19 @@ def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: in
             or observed['gate'].get('controlled') is not True
             or roster.get('schema') != 'dm.runtime.tribe-roster/v1'):
         raise OnboardingError('receiving_cohort_roster_unready')
-    if (visibility.get('catalog_mode') != 'validate'
-            or visibility.get('catalog_validation') != 'validated'
-            or visibility.get('release_enabled') is not True
+    # Intake readiness does not depend on a sender's outbound publication client.
+    # The explicit closed mode never qualifies an installed visibility adapter.
+    closed = (receive_only is True and visibility.get('release_enabled') is False
+        and visibility.get('installation_sha256') is None)
+    published = (receive_only is False and visibility.get('catalog_mode') == 'validate'
+        and visibility.get('catalog_validation') == 'validated'
+        and visibility.get('release_enabled') is True
+        and visibility.get('catalog_schema_version') in contract['store_versions'].get('visibility_catalog', []))
+    if (type(receive_only) is not bool or not (closed or published)
             or application.get('shared_relationships') is not True
             or application.get('communication_store_role') != 'ledger'
             or application.get('shared_stores', {}).get('ledger', {}).get('schema_versions', {}).get('communication')
-                not in contract['store_versions'].get('communication', [])
-            or visibility.get('catalog_schema_version') not in contract['store_versions'].get('visibility_catalog', [])):
+                not in contract['store_versions'].get('communication', [])):
         raise OnboardingError('receiving_cohort_store_unready')
     coordinate = (identity['being_ref'], observed['server']['embodiment_id'], identity['credential_ref'])
     if not any((item['being_ref'], item['embodiment_id'], item['credential_id']) == coordinate
@@ -175,6 +193,10 @@ def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: in
     validity = validate_validity(validity)
     epochs = set(loaded['authority_epoch']['accepted_manifest_hashes'])
     for authority in application['authorities'].values():
+        epochs.update(authority['accepted_manifest_hashes'])
+    # A native context may include admitted peers before app enrollment. Use
+    # only the actual loaded verifier's report, never the roster as its proof.
+    for authority in loaded.get('relationship_authorities', {}).values():
         epochs.update(authority['accepted_manifest_hashes'])
     if not set(roster['required_authority_epochs']) <= epochs:
         raise OnboardingError('receiving_cohort_authority_unready')
@@ -189,8 +211,36 @@ def observe_current_reader(owner, *, expected_selection: dict, expires_at_ms: in
     return dict(reader=reader, expected=dict(process=observed['process'], server=observed['server'],
         selection=selection), gate=observed['gate'], roster=roster,
         observed_at_ms=now, identity_expires_at_ms=verified['expires_at_ms'],
-        **({'native_tooling': observed['native_tooling']} if native_tooling is not None else {}))
+        **({'native_tooling': observed['native_tooling']} if native_tooling is not None else {}),
+        **({'qualification_mode':'native-receive-only','outbound_release':False} if receive_only else {}))
 
+
+
+def conversation_cohort(proofs: dict[str, dict]) -> dict:
+    """Compare messaging membership while retaining each receiver's full CAS.
+
+    Tribe lineage also hashes resource grants. Those grants need not be disclosed
+    or synchronized merely to converse. Actual native audience, membership proofs
+    and authority coverage must agree; no native roster hash is rewritten.
+    """
+    if not isinstance(proofs, dict) or not 1 <= len(proofs) <= 256:
+        raise OnboardingError('receiving_cohort_membership_conflict')
+    fields = ('schema', 'tribe_ref', 'audience', 'membership_proofs', 'required_authority_epochs')
+    try:
+        rosters = {name: proof['roster'] for name,proof in proofs.items()}
+        if any(roster['schema'] != 'dm.runtime.tribe-roster/v1' for roster in rosters.values()):
+            raise ValueError
+        bases = {digest({key: roster[key] for key in fields}) for roster in rosters.values()}
+        if len(bases) != 1:
+            raise ValueError
+        readers = sorted((proof['reader'] for proof in proofs.values()),
+            key=lambda row:(row['being_ref'],row['embodiment_id']))
+        if len({(row['being_ref'],row['embodiment_id']) for row in readers}) != len(readers):
+            raise ValueError
+        return dict(membership_basis_sha256=next(iter(bases)), readers=readers,
+            local_roster_sha256={name:roster['roster_sha256'] for name,roster in rosters.items()})
+    except (KeyError, TypeError, ValueError):
+        raise OnboardingError('receiving_cohort_membership_conflict') from None
 
 def _reader_active(reader: dict, now: int) -> bool:
     """Check selected validity without converting indefinite authority to a date."""
@@ -258,7 +308,13 @@ class OwnerGroupClient:
         return LocalClient(self.socket, config, **options)
 
     def _observe_status(self) -> dict:
-        before = self.socket.lstat()
+        # A service start acknowledgement can precede group socket publication.
+        # Spend only the caller's existing deadline; do not start/restart a body.
+        if self.deadline_ns is None:
+            before = self.socket.lstat()
+        else:
+            from .onboarding_target import _socket_identity
+            before = _socket_identity(self.socket, self.deadline_ns)
         client = self._client('status')
         # First read-start in this owner scope, never response completion or a
         # cached response's timestamp. Include request retention/dispatch cost.
@@ -583,6 +639,10 @@ class GuestGroupClient:
         code, code_digest = self.maintenance or self.candidate
         return supported_scope(self, code, uid=os.geteuid(), code_digest=code_digest)
 
+    def relationship_writer_held(self):
+        current = self._relationship_process
+        return current is not None and current.writer_held()
+
     def group_publication(self, command: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None,
                           remaining_execution=None) -> dict:
@@ -803,6 +863,10 @@ class SourceGroupClient:
         from .onboarding_group_session import supported_scope
         code, code_digest = self.maintenance or (self.code, self.code_digest)
         return supported_scope(self, code, uid=self.code_uid, code_digest=code_digest)
+
+    def relationship_writer_held(self):
+        current = self._relationship_process
+        return current is not None and current.writer_held()
 
     def _relationship_conversation(self, packet):
         from .onboarding_group_session import OwnerConversation
@@ -1602,10 +1666,14 @@ def bootstrap_group(target, bundle: dict, *, socket_root: Path | None = None) ->
     paths = dict(selection=target.root / 'tribe/selection.json',
         publication=Path(group['application']) / 'publication.json',
         application=metadata / 'application.json', binding=metadata / 'binding.json', visibility=Path(group['visibility']))
-    visibility = being_seed._read(Path(group['visibility']), limit=being_seed.MAX_SELECTION)
+    # A selected receiving application can deliberately have no outbound
+    # adapter. Freeze that absence explicitly; never invent publication evidence.
+    visibility_path = paths['visibility']
+    absent = not visibility_path.exists() and not visibility_path.is_symlink()
+    visibility = None if absent else being_seed._read(visibility_path, limit=being_seed.MAX_SELECTION)
     return dict(selected=group, application_sha256=config_digest(application), publication_sha256=config_digest(publication),
-        installation_sha256=config_digest(visibility['document']),
-        hashes={key: hashlib.sha256(onboarding_release.regular(
+        installation_sha256=None if visibility is None else config_digest(visibility['document']),
+        hashes={key: None if key == 'visibility' and absent else hashlib.sha256(onboarding_release.regular(
         path, uid=os.geteuid())).hexdigest() for key, path in paths.items()})
 
 
@@ -3761,6 +3829,17 @@ class CohortController:
         from .onboarding_group_admission import admit_membership
         with self.journal.mutation_lock(self.operation_id), self._observation_scope():
             return admit_membership(self, deadline_ns=deadline_ns)
+
+    def admit_membership_only(self, *, deadline_ns: int) -> dict:
+        """Run the same signed phase under all owners' exclusive native writers.
+
+        Only an explicit protected admission-only intent selects this path.
+        It neither publishes a group nor discharges existing outbound policy.
+        The physical caller owns scoped Matrix stop/start and forward recovery.
+        """
+        from .onboarding_group_admission import admit_membership
+        with self.journal.mutation_lock(self.operation_id), self._observation_scope():
+            return admit_membership(self, deadline_ns=deadline_ns, native_only=True)
 
     def publish_admission_group(self, *, deadline_ns: int) -> dict:
         """Publish only the protected post-membership offline group phase."""

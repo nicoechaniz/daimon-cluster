@@ -1493,3 +1493,165 @@ This profile exposes the methods in its selected existing client. It does not
 make base observer authority into Source author/import/promote authority. Those
 existing purpose-specific clients and their real operating policies remain
 separate; preserve the full foundation workflow gaps until actually accepted.
+
+### Native profile serialization
+
+The H8 `dm.cluster.rebirth-native-profile/v1` selector is an owner-private
+**canonical JSON** artifact. Use the existing `rebirth._atomic_json` writer and
+`rebirth._read_json` reader; ordinary indented or space-separated `json.dumps`
+bytes are refused even when they decode to the same object. Retain the exact
+predecessor and compare it before replacement. Check the actual native parent
+and its selected profile from the receiving placement; a historical user unit
+must not substitute for the living system service or its admission supervisor.
+
+The supported `rebirth_native.prepare` is a preparation-only check. It can verify
+the selected code, unchanged SDK/config/home and private password through the
+existing owner route without acquiring admission or starting a body. A profile
+refusal occurs before native start-record/admission dispatch. Inspect the actual
+exception and journal before deciding whether a corrected retry is known absent
+or uncertain; never re-enroll, replace keys or blindly replay startup.
+
+When reading systemd properties, fetch `ExecStart` separately with
+`systemctl show --property=ExecStart --value`. Its launcher argument can contain
+real newlines; splitting a combined property response into `key=value` lines
+then fails. Keep the owned unit/configuration selection distinct from a cached
+PID: an automatic restart can replace the process between inspection and a
+scoped stop. Native writer acquisition still proves quiescence for signed work.
+
+
+### Native verification context in current-reader observation
+
+A messaging application's enrolled authorities may be older or narrower than the
+native relationship verifier. The additive loaded-base field
+`relationship_authorities` reports that verifier's actual active/accepted public
+manifest hashes, frozen to its loaded process. Current-reader qualification uses
+those reported epochs alongside existing local/application observations. It still
+refuses every required roster epoch that has no observed verifier coverage; it
+never copies the roster's requirements into the reader proof. Older runtimes
+without this field retain the previous conservative check. This changes no grant,
+application enrollment, route, publication, attention or message identity.
+
+For an already-authorized change, the component's current source and retained
+operation are the continuation route. Do not wait for another conversation or
+model review to confer the human's authority again. Repair a procedural dependency
+through the existing administrative writers and keep the actual effects honest.
+
+### Native parent startup health
+
+The admitted Matrix parent uses the authenticated compact receiving status for
+its post-READY process and loaded-group check. A full historical ledger audit
+is an explicit inspection, not a service-start availability prerequisite. Both
+base and group remain associated with the actual responder and must report the
+same loaded base. Only an authenticated unsupported-view refusal from an older
+SDK permits the legacy full-status fallback. Readiness still does not prove
+reader selection, message delivery or model action.
+
+### Receive-only members and control provisioning
+
+A subsequent public code/SDK update of a plain or already closed-group admitted
+guest uses `ManagedRuntime.update_native_code` and the existing bootstrap unit
+writer. Select `receive_only_group=True` for an existing group: it uses the
+current native/loaded observation independently of the original enrollment
+ceremony. The command first completes the existing idempotent `sdk-prepare`
+stage as the actual owner; public file availability alone does not prove the
+owner interpreter or closed imports exist. The complete update has one 120-second
+default/maximum envelope, including cold preparation; every individual call
+remains at most 60 seconds and cannot extend that original envelope. Its authenticated predecessor
+observation freezes the existing group
+coordinates and signed application/publication hashes. The same closed group
+must remain after startup; a published outbound adapter cannot use this path.
+Do not rerun enrollment, controller issuance or group publication to update code.
+The owner retains one current and one previous completed record, at most64KiB
+each; a new operation can replace only a completed receipt. An unfinished or
+uncertain operation must reconcile its original bootstrap request. Exact retries
+and changed group/application refusals preserve their actual effects.
+
+A native receive-only application can be installed without an outbound visibility
+adapter. `bootstrap_group` freezes that adapter's absence as explicit null hashes;
+it still verifies the signed application and freezes its selection/publication.
+Appearance or removal of an adapter changes the frozen group. Use the existing
+owner optional-controller `issue` stage/publication for the retained body; this
+adds the control role, not human authorization, a new enrollment or outbound release.
+
+For this explicit closed composition, `observe_current_reader(receive_only=True)`
+checks actual process, identity, controlled roster, wire/store compatibility and
+loaded authority coverage. It reports `native-receive-only` and
+`outbound_release=false`, and refuses an installed/outbound-enabled adapter in that
+mode. The default qualification still requires validated outbound visibility.
+Native receiving selection, actual cross-body intake, native tool/model use and
+reply publication remain separate observed effects.
+
+A native service `start` acknowledgement can precede group-socket publication.
+Bounded owner status uses the existing socket wait within its original monotonic
+deadline, then performs one authenticated RPC. It starts or restarts nothing and
+never obtains a fresh observation budget by waiting. Keep the original failed
+observation distinct from later authenticated readiness; an unclassified remote
+nonzero status does not establish a lower-level cause.
+
+For a messaging cohort, compare `conversation_cohort`'s membership basis, not
+whole Tribe lineage equality. The native lineage hash also contains resource
+grants; differing legitimate grants must not require disclosure or convergence
+merely to communicate. Audience, signed membership proofs and required authority
+epochs must agree. Retain each receiver's actual full `roster_sha256` separately
+for its native CAS; never replace it with the membership-basis digest. This
+helper changes no native wire schema, local roster, grant or publication policy.
+
+Admission timing is an existing `cluster-onboarding-admission-profile/v1`
+configuration: `lease_ttl_s` remains within the holder's supported3..300seconds,
+and the RPC timeout is bounded by both the client default and TTL/10. A timing
+change preserves the independent pre-expiry watchdog and original signed holder
+enrollment. It does not establish a network cause or permanent acceptance.
+Provisioning files can be immutable mounts: prepare and verify an owner-private
+writable operational profile before quiescence, then select it through the
+existing `--admission-profile` argument. Preserve the selected admission path
+and all other existing arguments during later SDK/application maintenance;
+never remount or edit provisioning inputs, recreate a holder or leave a failed
+pre-effect configuration attempt with its service stopped.
+
+Current-reader qualification permits at most three read-only observations only
+when the native roster explicitly reports `retryable=true`. The same owner
+connection/process pin, proof horizon and original monotonic deadline remain;
+missing/invalid authority, nonretryable refusals and controls are not retried.
+This avoids turning a brief reported store-busy observation into a manual
+operator chain while retaining its exact failure when the bound is exhausted.
+
+For a completed signed membership admission whose application still has the
+earlier audience, prepare current-member visibility acceptances **before** the
+application cutover. The trusted offline-owner helper
+`prepare_current_group_visibility` derives the existing disclosure contract from
+the actual signed membership and currently verified Root context, under that
+owner's normal writer. Use only the destination frozen from the already approved
+owner configuration. Each owner can attest that exact document with its existing
+`create_binding` capability; this is metadata approval, not speech, an installed
+publication policy or a human-delivery receipt. Keep one exact protected intent
+and the original bindings for the bounded operation.
+
+The normal native application/visibility publisher must still validate the
+prepared document against the fully published current application and complete
+acceptance set before selection. A changed membership or authority must refuse;
+do not amend old signed bytes or replay an unknown publication. This lets the
+short final cutover use bindings already available instead of leaving serving
+applications stopped while another owner signs. It adds no model attention,
+Telegram account prerequisite or additional human approval round.
+
+Run publication with an SDK and operator-code candidate that pin each other.
+A qualified maintenance candidate can publish a compatible application without
+replacing a newer serving candidate. Mixing its SDK with the serving candidate's
+operator code fails the existing native peer qualification; retain both selections
+and use the matching maintenance package. Run each owner's client as its actual
+body user. These checks identify the supported executable context; they do not
+request another owner's permission.
+
+`group_publication` returns the recorded result fields directly, including
+`status` and `application_sha256`; it does not wrap them in `result`. Retain each
+acknowledged step and continue only the missing steps after a wrapper failure.
+Use the native application and visibility preconditions for subsequent selection.
+Do not republish an acknowledged application to repair a local result parser.
+
+For service preservation, compare configuration/argv rather than the complete
+`systemctl show ExecStart` presentation, which also contains changing PID and
+start/exit timestamps. A successful start request is not authenticated readiness:
+a cold receiver can still be loading. Observe its actual child/listeners and then
+qualify the current reader. Preserve any exhausted-start-limit refusal; after the
+completed publication is verified, clear that unit's failed state and start the
+same supported unit. Never substitute a global Stop or replay message input.

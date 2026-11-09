@@ -83,26 +83,31 @@ engine readiness, canonical Matrix running admission, Tribe membership and human
 device acceptance retain distinct evidence. Full social admission, a publication
 broker, Escuela, Drive and voice workshops do not gate basic Conversation.
 
-## Social visibility remains a separate receiving dependency
+## Outbound visibility remains separate from admission
 
 Current `onboarding_group_admission.publication_recipe` requires a new group
 participant's first visibility installation to contain Telegram token/proof-key
 references and an actual `dm.messaging.telegram-qualification/v1` probe. The
 selected Matrix loader checks those references and constructs a Telegram
 transport. A downstream App text projection or registered web Home does not
-satisfy that native proof. Do not copy an adult bot credential, fabricate bot or
-probe identifiers, drop the native barrier, or report a signed holder as an
-admitted group participant.
+satisfy that native proof. These checks belong to the existing outbound
+publication path, not signed membership or base native admission. Do not copy
+an adult bot credential, fabricate bot or probe identifiers, or report outbound
+messaging as released merely because membership was signed.
 
 The existing portable successor is owned by
 [Matrix496](https://github.com/AlterMundi/daimon-matrix/issues/496) and
 [App452](https://github.com/AlterMundi/DaimonApp/issues/452). Its actual
-first-install publication/proof contract must be integrated into this same
+first-install publication/proof contract must be integrated into the outbound
 cohort route and qualified on the required receiving readers. Preserve existing
-adult policies, pending originals and old proofs. Keep prepared unsigned social
-intent within its original validity window; expiration is not permission to
-extend an accepted operation or replay a partially executed one. Basic web
-Conversation remains independent of this unfinished dependency.
+adult policies, pending originals and old proofs. Neither that implementation
+nor a child's ability to view Telegram/Tribu gates admission. Use the explicit
+membership-only path below for the original identities and jobs; after its
+observed completion, continue actual receive-side application grants/readers
+and outbound publication as separate effects. Keep prepared unsigned intent
+within its original validity window; expiration is not permission to extend an
+accepted operation or replay a partially executed one. Basic web Conversation
+remains independent of this unfinished publication work.
 
 ## Finite School preparation in an existing companion
 
@@ -284,3 +289,201 @@ or VM placement and plan authorization. Use that owner backend for lifecycle
 preparation and finish; never copy adult administrative grants into child state.
 Omitting both fields retains the original primary-host behavior. This repairs
 the full Tribe coordinator; it is not a prerequisite for basic web Conversation.
+
+## Remote Incus public-code transfer dependency
+
+The existing `IncusBody` carrier sends a verified public code generation through
+host SSH and `incus exec ... rsync`. The **receiving guest** needs the `rsync`
+executable; having it only on the controller or Incus host is insufficient.
+Include it in the guest's normal Debian tooling baseline. If an existing guest
+lacks it, inspect its actual package state and signed-repository install plan,
+then install the selected package through the normal native package writer.
+Preserve active package operations and companion services; a disconnected
+observer must not kill dpkg or cause an uncertain install to be replayed.
+The rsync daemon is unnecessary for this carrier; preserve an existing service
+selection, and keep newly introduced daemon service inactive for a CLI-only tool.
+
+After correcting the dependency, resume `prepare_code` with its retained
+fingerprint and stage ID. Inspect the actual partial candidate before retrying;
+never create another identity, enrollment or transfer generation to hide failure.
+`HostBackend.runtime_available` resolves the same registered physical carrier
+for a remote Incus placement and uses its `prepare_code` / verified-file route;
+a controller-local Incus code mount is not an availability prerequisite. This
+code-placement resolution preserves the original guest service profile.
+Keep candidate installation, normal own-UID CLI qualification, live code selection
+and signed social admission as separate observations. Retire only the consumed
+private package download cache; preserve the original job and native journals.
+
+## Plain admitted Matrix code update
+
+`ManagedRuntime.update_native_code` selects an already installed immutable code
+candidate for an explicit `native-admission-only` body. Use the original host,
+job, admission profile and a single retained operation UUID. Its 120-second overall
+bound includes cold SDK preparation, with each owner/physical call capped
+at 60 seconds under the same deadline; no phase renews it. It takes the existing
+job locks, authenticates the current admitted process, freezes its exact unit and
+runtime-bundle preimage, and delegates validate/quiesce/select/start to the
+existing `GuestServiceBootstrap` unit writer. It changes only Matrix ExecStart;
+Conversation, credentials, identity, native stores and controller grants stay in
+place. There is no group, visibility or Telegram prerequisite and no enrollment
+or grant renewal. An unfinished operation/candidate must be reconciled under
+its original identity. A later operation may rotate only a completed receipt;
+one current and one previous record remain bounded at64KiB each.
+
+Lost effects are resumed under the same root bootstrap request. The final
+observation verifies the unchanged runtime bundle, admitted origin, selected
+unit and actual successor process. This proves code selection and native
+presence only, not signed membership, readable group selection, messaging
+release, device acceptance or model reading. Keep these later observations
+separate, and never use a code update to extend an expired social recipe.
+
+## Signed membership without messaging publication
+
+For an already admitted original body, a protected receiving operation may
+select exactly `membership_only: {"schema":"cluster-native-membership-only/v1"}`
+in its intended transition. Keep its original job/plan and owner bindings,
+verified public authority closure, current native governance and fixed social
+recipe. `GroupCoordinator.advance` then calls `advance_membership_only`, which
+reuses `CohortController.admit_membership_only` and the existing signed native
+invite/accept/ingest sequence. It does not enter controller bootstrap, group
+publication, native-conversation priming, Telegram or technical speech.
+
+The physical caller owns scoped maintenance of the actual Matrix units and
+forward recovery. Before governance mutation, the coordinator opens every
+required owner's qualified finite CLI under that owner's existing exclusive
+native writer. A running Matrix daemon refuses that same kernel lock. The
+coordinator keeps all writer sessions alive throughout the signed phase and
+checks their liveness before every missing effect. Historical stopped receipts
+cannot replace these writers. The original full messaging path keeps its old
+revocation/lifecycle/publication requirements; unmarked old preparation intents
+cannot acquire admission-only effects. Admission-only rejects publication or
+communication scopes in the same intent.
+
+Native requests and fixed acceptance timestamps remain in their original
+journals across lost acknowledgements. A completed social result is historical,
+with receiving readiness unobserved; it does not reopen writers or repeat
+signatures. Preserve expired/unattempted social drafts rather than extending or
+replaying them. Use actual current native state for the next authorized missing
+admission, and retain an uncertain original under its exact request identity.
+
+After signed membership, retain each owner's approved public verification
+context with the existing `membership-authorities` owner operation. Complete
+actual serving-code/context adoption and receive-side grants separately. Group
+receiving qualification, outbound visibility and messaging release retain their
+own truthful states and obligations. No child Telegram account is required.
+
+A current shared application's bootstrap `relationship_events` can include
+signed history for retired Tribe refs. Select governance by the **actual
+selected target `tribe_ref`**, then verify that subset and its current membership.
+Keep other histories in their owning original artifacts. Do not relax
+`membership_recipe` to accept unrelated Tribe events, extend an invalid draft's
+expiry, or invent a new invitation to hide a preparation error.
+
+An explicitly selected membership-only operation becomes terminal once its
+retained native signed result is verified. This frees the same Tribe target for
+the next original entrant. It does not complete general onboarding or assert
+running readers/visibility; an exact completed retry returns that same result
+without opening writers or issuing another invitation.
+
+The independent read-only writer initializations run concurrently (at most
+eight), within the same finite owner lifetime. Every actual writer must be held
+before any governance mutation. Serial bootstrap otherwise spends the first
+owner's lifetime loading later owners as the small cohort grows; increasing
+ceremony or replacing an already signed invitation does not resolve that cost.
+
+For a plain admitted body, use the existing `admitted-running` observation and
+compare its authenticated base `loaded_runtime.qualified_startup` with the
+selected code. `--current-native --require-loaded` is the preserved **group**
+observer: it requires an actual signed group selection. Requiring it for a plain
+body would reintroduce the group-publication dependency admission just removed.
+Serialize ordinary host approval lookups that share the protected approval
+store; this is separate from concurrent native writer initialization.
+
+### Receiving a signed group with outbound closed
+
+For an owner-approved group application with no visibility installation yet,
+the receiving runtime can use `receive_only_application_view`. It verifies the
+ordinary signed application and retains its native incoming transport, canonical
+relationships and scoped client. Under the existing native writer, initialize
+only the closed controller's registered catalogs through the SDK's explicit
+versioned migration, then validate their authentication before listener startup.
+Loading an application alone does not perform that catalog migration.
+
+This mode never installs visibility or enables outbound release. A retained
+visibility installation, an already released base controller, or additional
+outbound applications must not be silently downgraded into this mode. Preserve
+the early/late signed-selection comparison and current owner-context guards.
+Receiving readiness still requires actual installed application grants, native
+listener startup and authenticated reads; a fixture result is not deployment.
+
+Prepare each owner's application from its existing signed Tribe history and
+current public authorities, keeping only the explicitly shared social events.
+Use the actual current body roster; a retired body's historical roster row is
+not a receiving route. Transport keys belong to this group resource, not the
+human's web login, provider account or Telegram bot. Keep their handoff private
+and verify each installed copy as its actual receiving user.
+
+Use the existing owner `communication-prepare`, `application` and `selection`
+operations under one scoped native maintenance window. Pin the communication
+migration's actual read-only plan and retain its original journal. Quiesce only
+that owner's Matrix unit, then select/start the qualified runtime through the
+existing root bootstrap writer. Retain every dispatched request and effect;
+forward recovery must inspect them instead of reissuing membership or grants.
+Keep Conversation/Codex process identities unchanged and verify them afterward.
+
+A root service-start acknowledgement precedes socket readiness. Wait within one
+finite deadline for the same process's signed group socket, then authenticate
+an own `messaging.inbox` read and compare its responder with an own status read.
+Do not restart a healthy process to fix an early observation. Channel listing
+is the existing chat binding's local `channels` operation; `messaging.channels`
+is not a native wire method. Preserve first probe failures as observations.
+An authenticated inbox read proves own access, not a cross-body delivery,
+receiving-cohort release, outbound visibility or family device acceptance.
+
+Install the actual own messaging MCP role through the maintained installer and
+Codex config writer, preserving provider/auth, unrelated configuration and
+running Conversation processes. Reuse the published group client; do not mint
+another identity or copy an adult client. Exercise the exact configured stdio
+command, its tool catalog and one authorized own inbox read without a model turn.
+Use the Codex handshake supported by the selected SDK: a generic MCP client's
+newer default can be rejected even though the registered native profile works.
+Keep installed/configured state distinct from receiving-model use. A configured
+outgoing channel is not proof of native outbound release.
+
+Use the existing owner client's `--prepare-group-attachment` operation for a
+receiving-only application too. Its versioned request
+`cluster-group-chat-attachment/v2` adds the explicit boolean `receive_only` to
+the v1 fields. With `receive_only: true`, retain the
+`group.installation_sha256` field as JSON `null`; the authenticated current
+native status must report both `release_enabled: false` and no installation.
+The same signed application/publication, runtime identity and preimage checks
+still run before and after the existing installer. The retained result marks
+`qualification_mode: native-receive-only` and `outbound_release: false`; catalog,
+inbox and model uptake remain separate observations. A real installed outbound
+adapter cannot be silently converted to this path. V1 requests and v2 requests
+with `receive_only: false` still require their exact installation hash.
+This extends the maintained attachment operation; it is not the complete
+single-command companion delivery promised by the design contract.
+
+### Keep the receiving context current
+
+Nicolas's explicit requested outcome supplies the operational authorization.
+Apply the existing owner writers and held signing/grant route directly; an owner
+conversation's response or a review quorum is not another admission prerequisite.
+If a procedural adapter demands that repeated approval, repair it. Missing
+verification metadata and expired profiles remain technical work with truthful
+signatures and effects; they are not requests for the human to authorize again.
+
+After genuine native admission and signed membership have been observed, carry
+each body's own dated observation into its existing mutable operational context.
+Do not rerun the original context/memory stage or rewrite its selected SOUL.
+Preserve the entire installed instruction prefix and compare its exact digest
+before appending one bounded replaceable status block. Bind the observation to
+that body's actual runtime bundle/origin and original acceptance; this is a
+local context pointer, never another identity registry, authority or grant.
+
+Read back the resulting private files as the actual receiving user. Preserve
+the runtime bundle and running Conversation/Codex process identities. Installed
+guidance is not proof of model reading: no model turn, service restart, peer
+attention or recording activation is needed to deliver this context update.
+Keep group readers/outbound release and real family/device acceptance explicit.

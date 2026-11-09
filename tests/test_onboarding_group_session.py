@@ -37,7 +37,9 @@ def conversation(tmp_path, seconds=4):
 
 def test_actual_process_reuses_one_owner_and_closes_after_writer_release(tmp_path):
     owner, marker = conversation(tmp_path)
+    assert not owner.writer_held()
     with owner as session:
+        assert owner.writer_held()
         process = session.process
         assert session.call({'first': True}) == {'echo': {'first': True}}
         assert not marker.exists()
@@ -48,6 +50,7 @@ def test_actual_process_reuses_one_owner_and_closes_after_writer_release(tmp_pat
             'echo': {'original-invite': True}, 'inspect_only': True}
         assert session.process is process
     assert marker.read_text() == 'released' and process.poll() == 0
+    assert not owner.writer_held()
 
 
 def test_owner_enforces_deadline_without_host_close(tmp_path):
@@ -57,6 +60,7 @@ def test_owner_enforces_deadline_without_host_close(tmp_path):
     # No host input or renewal: the child releases its writer and exits itself.
     process.wait(timeout=5)
     assert marker.read_text() == 'released' and process.returncode != 0
+    assert not owner.writer_held()
     with pytest.raises(OnboardingError, match='exit_unobserved'):
         owner.__exit__(None, None, None)
 

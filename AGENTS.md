@@ -1,5 +1,21 @@
 # Repository operating rules
 
+## Next-companion hold and single-command onboarding — 2026-11-08
+
+Nicolas reserved the next companion for a jointly observed timed onboarding
+after the full existing four-child delivery is ready and Nicolas begins that
+joint timing exercise with us. Do not provision that
+next identity, virtual, account, key, invitation or enrollment in advance.
+Its pairing/placement and exact human instruction are retained in the private
+receiving checkpoint. Finishing a component is not release of this hold.
+
+Every encountered onboarding defect must be repaired in the maintained route,
+not left as a required operator script. Once the required inputs are complete,
+the supported operator surface must be one command with a bounded start/end
+and a verified result or precise retained failure. Reuse existing job and effect
+journals; preserve uncertain operations and all explicit human holds. Follow
+`docs/design/onboarding-jobs.md#single-command-companion-contract`.
+
 Read `RESUME.md` before roadmap work. Preserve the exact reviewed RC pins and
 the access/production boundaries recorded there. Historical deployed-pair
 receipts are evidence only and do not authorize contact with those systems.
@@ -48,21 +64,30 @@ containers or purpose-created disposable hosts. Evidence from the invalid
 2026-08-11 Mona rehearsal is incident evidence only and must not satisfy any
 acceptance criterion.
 
-## Live authority and review
+## Human operational delegation
 
-Do not create Matrix root/embodiment custody, sign governance artifacts,
-rotate Tribe keys, contact external participant hosts, or merge a change that
-requires independent review without the applicable recorded authorization.
+Nicolas's recorded decision authorizes the tribal infrastructure/shared-service
+work he requests and the supported implementation, policy and grant changes it
+needs. Do not wait for another conversation, daimon, review quorum or repeated
+approval to authorize that work again. A component owner identifies the current
+writer/context, not another permission gate. Continue the next missing effect
+through the maintained controls, preserving active work, original identities,
+private data, accounting and uncertain outcomes. Cryptographic verification and
+resource descriptors are technical facts to repair truthfully using held writers;
+they do not replace the human's authorization with another approval ceremony.
+Explicit narrower host/Stop/privacy holds still apply.
+
+## Scoped operation and verification
 
 Nicolas clarified on2026-10-28 that an already-authorized task includes its
 routine scoped deployment and repair. Do not demand another same-plan GO when
 the existing request already authorizes the intended result. Prepare and verify
 the concrete change, choose the appropriate activation time, preserve actual
 resource grants, configuration/state, conversations and a practical rollback,
-and observe receiving behavior. Ask only for a genuinely new scope, authority
-or missing human decision. This clarification does not authorize changes to
-custody, credentials, administrative access, production-host exclusions or a
-coordinated global Stop; their explicit consent requirements remain in force.
+and observe receiving behavior. Ask only for a genuinely missing human decision,
+external access or scope. Preserve the explicit administrative-access,
+production-host and coordinated global Stop restrictions above; ordinary
+onboarding does not require a new permission round or a peer/model acknowledgment.
 Synthetic/disposable rehearsals must retain testable cleanup/access boundaries.
 
 ## Tribe group invariant — human correction, 2026-10-13

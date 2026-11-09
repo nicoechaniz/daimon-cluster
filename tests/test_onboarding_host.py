@@ -380,6 +380,44 @@ def candidate_call_fixture(tmp_path, monkeypatch):
     return backend, value, run, candidate, calls
 
 
+def test_remote_candidate_uses_verified_physical_code_not_controller_mounts(tmp_path, monkeypatch):
+    backend, value, _run, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    original = backend.run
+    expected = Path('/opt/daimon-onboarding-runtime') / candidate[1]
+    available, checks, preparations = [False], [], []
+    class Body:
+        def code_available(self, path, pin, **options):
+            assert path == expected and pin == candidate[1]
+            checks.append(options)
+            return available[0]
+        def prepare_code(self, path, pin, **options):
+            assert (path, pin) == candidate
+            preparations.append(options)
+            available[0] = True
+            return expected
+    body = Body()
+    class Carrier:
+        def body_for(self, plan):
+            assert plan == value
+            return body
+        def __call__(self, *args, **options):
+            return original(*args, **options)
+    backend.run = Carrier()
+    monkeypatch.setattr(backend, '_mounted', lambda *a, **k: pytest.fail('controller-local mounts used for remote code'))
+    assert backend.native_body(value) is None  # Keep the existing guest service profile.
+    assert backend._runtime_paths(value, Path('/unused-base'), candidate=candidate)[2] == {}
+    with pytest.raises(OnboardingError, match='candidate_mount_required'):
+        backend._target_call(value, 'admitted-running', candidate=candidate, observation_timeout_seconds=5)
+    assert not calls
+    assert backend.runtime_available(value, candidate, prepare=True, deadline_ns=123)
+    assert preparations == [{'deadline_ns': 123}]
+    assert backend._target_call(value, 'admitted-running', candidate=candidate,
+        observation_timeout_seconds=5) == {'observed': True}
+    assert len(calls) == 1 and len(checks) == 2
+    assert all(row['deadline_ns'] is not None for row in checks)
+    assert calls[0][0][:6] == ['exec', 'dm-eko', '--user', '1000', '--group', '1000']
+
+
 @pytest.mark.parametrize('current_native', [False, True])
 def test_host_probes_exact_mounted_candidate_without_selecting_it(tmp_path, monkeypatch, current_native):
     backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)

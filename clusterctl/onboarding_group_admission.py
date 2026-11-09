@@ -14,6 +14,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -24,6 +25,7 @@ METHODS = frozenset({'tribe.invite', 'tribe.membership.accept', 'relationship.ev
                      'relationship.snapshot'})
 PUBLICATIONS = {
     'context-preview': set(),
+    'membership-authorities': {'tribe_ref', 'expected_selection_sha256'},
     'communication-prepare': {'expected_plan_sha256', 'expires_at_ms'},
     'application': {'expected_application_sha256', 'specification', 'additions',
                     'admitted_being_refs', 'secret_sources'},
@@ -172,12 +174,13 @@ def admission_owner_contexts(row: dict, social: dict) -> dict:
     return contexts
 
 
-def admit_membership(cohort, *, deadline_ns: int) -> dict:
+def admit_membership(cohort, *, deadline_ns: int, native_only: bool = False) -> dict:
     """Resume the fixed native social phase; never publish or enable a group.
 
-    The physical caller still owns preparing/binding every old lifecycle and
-    stopping its Matrix service. This phase requires their observed quiescence,
-    uses only the operation's protected recipe and retains commands before RPC.
+    The physical caller owns scoped Matrix maintenance. The full path retains
+    its old lifecycle/revocation barrier; explicit membership-only intent instead
+    holds every actual native writer continuously. Both paths use the same fixed
+    signed sequence and retain commands before RPC.
     """
     from daimon_matrix.relationships import (
         MEMBERSHIP_ACCEPTANCE_SCHEMA, relationship_event_subject, validate_relationship_event_payload,
@@ -192,6 +195,12 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
 
     with cohort.journal.mutation_lock(cohort.operation_id), ExitStack() as scope:
         row = cohort._row()
+        if (type(native_only) is not bool or native_only and (
+                row['intended_transition'].get('membership_only') != {
+                    'schema': 'cluster-native-membership-only/v1'}
+                or any(key in row['intended_transition'] for key in (
+                    'admission_publications', 'admission_communication', 'cohort_activation')))):
+            raise OnboardingError('onboarding_group_membership_only_intent_required')
         admission = cohort._admission(row)
         portal = row['intended_transition'].get('portal_admission', {})
         if admission is None or portal.get('schema') != 'cluster-portal-group-admission/v2':
@@ -221,9 +230,41 @@ def admit_membership(cohort, *, deadline_ns: int) -> dict:
             if callable(session):
                 scope.enter_context(session())
         contexts = admission_owner_contexts(row, recipe)
+        writers_opened = False
 
         def barrier():
+            nonlocal writers_opened
             budget()
+            if native_only:
+                # Opening each qualified finite CLI acquires that owner's
+                # existing native writer before any governance mutation. A
+                # running daemon refuses the same kernel lock. Keep ALL these
+                # sessions alive across the complete signed phase; a historical
+                # service stop receipt alone cannot authorize it.
+                if not writers_opened:
+                    def open_writer(name, owner):
+                        options = dict(authority_closure={ref: value
+                            for ref, value in recipe['authority_closure'].items()
+                            if ref != admission['receivers'][name]['being_ref']},
+                            expected_context_sha256=contexts[name])
+                        if admission['receivers'][name]['recipe']['profile'] == 'source':
+                            options['offline'] = True
+                        owner.group_relationship(dict(operation_id=recipe['operation_id'],
+                            step='membership-writer-observation', method='relationship.snapshot',
+                            params=dict(tribe_ref=admission['tribe_ref'], at_ms=None)), **options)
+                    # These independent read-only initializations need not
+                    # consume each other's finite writer lifetime. No signed
+                    # mutation can run before every owner has acknowledged.
+                    with ThreadPoolExecutor(max_workers=min(8, len(cohort.owners))) as pool:
+                        futures = [pool.submit(open_writer, name, owner)
+                            for name, owner in sorted(cohort.owners.items())]
+                        for future in futures:
+                            future.result()
+                    writers_opened = True
+                if any(not callable(getattr(owner, 'relationship_writer_held', None))
+                        or not owner.relationship_writer_held() for owner in cohort.owners.values()):
+                    raise OnboardingError('onboarding_group_membership_quiescence_required')
+                return
             recovery.attached(cohort.journal, row)
             proof = cohort.require_revocation_barrier()
             if (proof.get('schema') != 'cluster-receiving-admission-barrier/v1'
@@ -828,6 +869,12 @@ def publication_command(value: dict) -> dict:
                     and set(value['params']) - PUBLICATIONS['snapshot'] <= {'expected_stores', 'expected_preservation'})):
             raise ValueError
         params = value['params']
+        if value['action'] == 'membership-authorities' and (
+                not isinstance(params['tribe_ref'], str) or not 1 <= len(params['tribe_ref']) <= 256
+                or params['expected_selection_sha256'] is not None and (
+                    not isinstance(params['expected_selection_sha256'], str)
+                    or re.fullmatch('[0-9a-f]{64}', params['expected_selection_sha256']) is None)):
+            raise ValueError
         if value['action'] == 'communication-prepare' and (
                 not isinstance(params['expected_plan_sha256'], str)
                 or re.fullmatch('[0-9a-f]{64}', params['expected_plan_sha256']) is None
@@ -836,7 +883,7 @@ def publication_command(value: dict) -> dict:
             raise ValueError
         if 'application_precondition' in value:
             guard = value['application_precondition']
-            if (value['action'] in {'application', 'context-preview', 'communication-prepare'}
+            if (value['action'] in {'application', 'context-preview', 'communication-prepare', 'membership-authorities'}
                     or not isinstance(guard, dict) or set(guard) != {'application_step', 'application_sha256'}
                     or not isinstance(guard['application_step'], str)
                     or re.fullmatch('[a-z][a-z0-9-]{0,79}', guard['application_step']) is None
@@ -1084,6 +1131,78 @@ def _ledger_identity(runtime_root: Path, bundle: dict) -> dict:
     return dict(filename=name, file_identity=list(LoadedStoreBinding.file_identity(runtime_root / name)))
 
 
+def prepare_current_group_visibility(hosted, directory: Path, *,
+                                     approved_destination: dict, issued_at_ms: int,
+                                     local_being_ref: str | None = None) -> dict:
+    """Prepare disclosure from actual membership before application publication.
+
+    Trusted offline owner only, under its existing native writer. The current
+    signed application can lag a completed membership admission. Preparing this
+    public document changes no application, visibility installation or reader;
+    create_binding can attest it using this owner's existing custody. The native
+    publisher must subsequently validate the exact document/bindings against the
+    fully published application before selecting visibility. This is not an
+    alternative release proof or a way to accept a peer-selected destination.
+    """
+    from daimon_matrix.authority_epochs import RootHistoryAuthority
+    from daimon_matrix.messaging_config import read_publication
+    from daimon_matrix.native_egress import VISIBILITY_SCOPE_RISKS
+    from daimon_matrix.operator_rebirth import authority_from_document
+    from daimon_matrix.telegram_mirror import REPRESENTATIONS
+    from daimon_matrix.weave import RootAuthority
+
+    application, _ = read_publication(hosted, directory)
+    ordinary = hosted.service.relationships
+    own = hosted.service.ledger.authority
+    if isinstance(own, RootHistoryAuthority):
+        own = own.active
+    if (not isinstance(own, RootAuthority) or ordinary is None
+            or ordinary.authority_resolver is None
+            or application['relationship_mode'] != dict(mode='shared',
+                runtime_id=hosted.service.runtime_id, state_root=str(hosted.state_root),
+                store_filename=ordinary.store.path.name)
+            or ordinary.store.path != hosted.state_root / ordinary.store.path.name):
+        raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    with ordinary.store.authorization_view(at_ms=hosted.service.clock(),
+            card_verifier=ordinary.card_verifier) as view:
+        snapshot = view.snapshot(application['tribe']['policy']['tribe_ref'])
+    members = {row['principal_id']:row for row in snapshot.value['members'] if row['state']=='active'}
+    owner = own.manifest.being_ref
+    pinned = {row['manifest']['being_ref']:authority_from_document(row) for row in application['authorities']}
+    if (len(pinned) != len(application['authorities']) or not set(pinned) <= set(members)
+            or pinned.get(owner) != own or owner not in members
+            or application['tribe']['policy']['membership_ref'] != members[owner]['membership_ref']):
+        raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    for ref in members:
+        current = ordinary.authority_resolver(ref)
+        if isinstance(current, RootHistoryAuthority):
+            current = current.active
+        if not isinstance(current, RootAuthority) or (ref in pinned and pinned[ref] != current):
+            raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    destination = copy.deepcopy(approved_destination)
+    if (set(destination) != {'bot_id','chat_id','topic_id','representation'}
+            or type(destination['bot_id']) is not int or not 0 < destination['bot_id'] < 2**52
+            or type(destination['chat_id']) is not int or not 0 < abs(destination['chat_id']) < 2**52
+            or destination['topic_id'] is not None and (type(destination['topic_id']) is not int
+                or not 0 < destination['topic_id'] < 2**52)
+            or destination['representation'] not in REPRESENTATIONS
+            or type(issued_at_ms) is not int or not 0 <= issued_at_ms <= hosted.service.clock()
+            or issued_at_ms >= 2**52):
+        raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    local = owner if local_being_ref is None else local_being_ref
+    if not isinstance(local, str) or local not in members:
+        raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    participants = sorted(members)
+    scope = dict(mode='all-inter-daimon-communications', channels=[dict(
+        channel_id=application['tribe']['channel_id'], direction='group', local_being_ref=local,
+        tribe_ref=application['tribe']['policy']['tribe_ref'],
+        membership_ref=members[local]['membership_ref'], participants=participants)],
+        projected_content='complete-plaintext-content-and-metadata')
+    return dict(schema='dm.messaging.visibility-disclosure/v1', issued_at_ms=issued_at_ms,
+        destination=destination, scope=scope, scope_sha256=digest(scope), participants=participants,
+        risk=VISIBILITY_SCOPE_RISKS['all-inter-daimon-communications'])
+
+
 def _publish_application(hosted, directory: Path, params: dict) -> dict:
     from daimon_matrix import operator_messaging
     from daimon_matrix.messaging_config import (
@@ -1200,6 +1319,11 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
     params = value['params']
     directory = group_root / 'application'
     action = value['action']
+    if action == 'membership-authorities':
+        from .onboarding_peer import retain_membership_authorities
+        return retain_membership_authorities(hosted, group_root,
+            operation_id=value['operation_id'], tribe_ref=params['tribe_ref'],
+            authority_closure=closure, expected_selection_sha256=params['expected_selection_sha256'])
     if action == 'communication-prepare':
         from daimon_matrix import operator_communication_migration as migration
         from .onboarding_service import GuestServiceBootstrap

@@ -109,3 +109,106 @@ def test_current_reader_option_reads_native_catalog_through_same_qualified_owner
         native_tooling=native)
     assert calls == [dict(expires_at_ms=horizon, require_admitted=True, native_tooling=native)]
     assert result['native_tooling'] == receipt
+
+
+def test_native_relationship_context_covers_peers_outside_application_enrollment():
+    owner, data, selection, _ = fixture()
+    loaded = data['runtime_status']['loaded_runtime']
+    loaded['relationship_authorities'] = {
+        'being:new-member': dict(active_manifest_hash='9'*64,
+            accepted_manifest_hashes=['8'*64, '9'*64]),
+    }
+    data['runtime_status']['receiving']['rosters']['tribe']['required_authority_epochs'] += ['8'*64, '9'*64]
+    result = observe_current_reader(owner, expected_selection=selection,
+        expires_at_ms=time.time_ns()//1_000_000+30_000)
+    assert result['reader']['authority_epochs'] == ['8'*64, '9'*64, 'a'*64]
+    assert data['runtime_status']['loaded_application']['authorities'] == {}
+    assert result['expected']['selection'] == selection
+
+
+def test_native_relationship_context_does_not_substitute_for_missing_epoch():
+    owner, data, selection, _ = fixture()
+    data['runtime_status']['loaded_runtime']['relationship_authorities'] = {
+        'being:new-member': dict(active_manifest_hash='8'*64,
+            accepted_manifest_hashes=['8'*64]),
+    }
+    data['runtime_status']['receiving']['rosters']['tribe']['required_authority_epochs'] += ['9'*64]
+    with pytest.raises(OnboardingError, match='authority_unready'):
+        observe_current_reader(owner, expected_selection=selection,
+            expires_at_ms=time.time_ns()//1_000_000+30_000)
+
+
+def test_receive_only_qualification_keeps_outbound_closed_and_checks_real_intake():
+    owner, data, selection, _ = fixture()
+    view = data['runtime_status']['loaded_application']['visibility']
+    view.update(installation_sha256=None, release_enabled=False, catalog_mode='migrate',
+        catalog_validation='pending', catalog_schema_version=None)
+    selection['visibility_installation_sha256'] = None
+    horizon = time.time_ns()//1_000_000+30_000
+    with pytest.raises(OnboardingError, match='store_unready'):
+        observe_current_reader(owner, expected_selection=selection, expires_at_ms=horizon)
+    result = observe_current_reader(owner, expected_selection=selection, expires_at_ms=horizon,
+        receive_only=True)
+    assert result['qualification_mode'] == 'native-receive-only'
+    assert result['outbound_release'] is False
+    assert result['expected']['selection']['visibility_installation_sha256'] is None
+    data['runtime_status']['receiving']['rosters']['tribe']['required_authority_epochs'] = ['9'*64]
+    with pytest.raises(OnboardingError, match='authority_unready'):
+        observe_current_reader(owner, expected_selection=selection, expires_at_ms=horizon, receive_only=True)
+    data['runtime_status']['receiving']['rosters']['tribe']['required_authority_epochs'] = ['a'*64]
+    data['gate']['controlled'] = False
+    with pytest.raises(OnboardingError, match='roster_unready'):
+        observe_current_reader(owner, expected_selection=selection, expires_at_ms=horizon, receive_only=True)
+
+
+def test_receive_only_mode_cannot_reclassify_an_existing_publication_adapter():
+    owner, _, selection, _ = fixture()
+    with pytest.raises(OnboardingError, match='store_unready'):
+        observe_current_reader(owner, expected_selection=selection,
+            expires_at_ms=time.time_ns()//1_000_000+30_000, receive_only=True)
+
+
+def test_conversation_cohort_does_not_require_shared_private_resource_grants():
+    from clusterctl.onboarding_receiving_update import conversation_cohort
+    roster = dict(schema='dm.runtime.tribe-roster/v1', tribe_ref='tribe:one',
+        audience=[{'being_ref':'being:one'}], membership_proofs=[{'membership_ref':'member:one'}],
+        required_authority_epochs=['a'*64], lineage_head_ref='lineage:resource-grant-one', roster_sha256='b'*64)
+    other = copy.deepcopy(roster)
+    other.update(lineage_head_ref='lineage:different-resource-grants',roster_sha256='c'*64)
+    proofs = {'one':dict(roster=roster,reader=dict(being_ref='being:one',embodiment_id='body:one')),
+        'two':dict(roster=other,reader=dict(being_ref='being:two',embodiment_id='body:two'))}
+    actual = conversation_cohort(proofs)
+    assert actual['local_roster_sha256'] == {'one':'b'*64,'two':'c'*64}
+    assert [r['being_ref'] for r in actual['readers']] == ['being:one','being:two']
+    assert roster['lineage_head_ref'] != other['lineage_head_ref']
+    for field in ('tribe_ref','audience','membership_proofs','required_authority_epochs'):
+        changed=copy.deepcopy(proofs)
+        changed['two']['roster'][field] = 'changed' if field=='tribe_ref' else []
+        with pytest.raises(OnboardingError,match='membership_conflict'):
+            conversation_cohort(changed)
+
+
+@pytest.mark.parametrize('retryable', [False, True])
+def test_explicitly_retryable_roster_observation_reuses_original_budget(retryable):
+    owner, _, selection, calls = fixture()
+    owner.deadline_ns = time.monotonic_ns()+2_000_000_000
+    deadline = owner.deadline_ns
+    observe = owner.qualified_identity
+    def pending(**options):
+        value=observe(**options)
+        if len(calls) <= 2:
+            value['runtime_status']['receiving']['rosters']['tribe'] = dict(
+                schema='dm.runtime.tribe-roster-unavailable/v1',error='reader_roster_unavailable',retryable=retryable)
+        return value
+    owner.qualified_identity = pending
+    horizon=time.time_ns()//1_000_000+30_000
+    if retryable:
+        result=observe_current_reader(owner,expected_selection=selection,expires_at_ms=horizon)
+        assert result['identity_expires_at_ms']==horizon
+        assert len(calls)==3
+    else:
+        with pytest.raises(OnboardingError,match='roster_unready'):
+            observe_current_reader(owner,expected_selection=selection,expires_at_ms=horizon)
+        assert len(calls)==1
+    assert owner.deadline_ns==deadline
+    assert all(x['expires_at_ms']==horizon for x in calls)

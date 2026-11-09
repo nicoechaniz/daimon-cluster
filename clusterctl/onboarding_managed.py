@@ -19,6 +19,22 @@ from .onboarding_service import UNIT
 from .production_fences import ed25519_fingerprint
 
 
+def _code_update_group(value: dict) -> dict | None:
+    """Freeze an existing intake-only group; code updates cannot release it."""
+    group = value.get('group')
+    if group is None:
+        return None
+    app = (value.get('group_runtime_status') or {}).get('loaded_application')
+    if (not isinstance(group, dict) or not isinstance(app, dict)
+            or app.get('visibility', {}).get('release_enabled') is not False
+            or app.get('visibility', {}).get('installation_sha256') is not None
+            or any(not isinstance(app.get(key), str) or re.fullmatch('[0-9a-f]{64}', app[key]) is None
+                for key in ('application_sha256', 'publication_sha256'))):
+        raise OnboardingError('native_code_update_closed_group_required')
+    return dict(selected=group, application_sha256=app['application_sha256'],
+        publication_sha256=app['publication_sha256'], outbound_release=False)
+
+
 class ManagedRuntime:
     def __init__(self, backend):
         self.backend = backend
@@ -61,6 +77,143 @@ class ManagedRuntime:
                 or not Path(app).is_absolute() or '..' in Path(app).parts
                 or not Path(app).is_relative_to('/home/agent')):
             raise OnboardingError('invalid_onboarding_managed_configuration')
+
+    def update_native_code(self, plan: dict, candidate: tuple[Path, str], *,
+                           operation_id: str, timeout_seconds: float = 120,
+                           receive_only_group: bool = False) -> dict:
+        """Select code for an admitted body through its existing unit writer.
+
+        No group publication or controller renewal is involved. The durable
+        request binds the actual admitted predecessor and changes only ExecStart;
+        root's existing bootstrap journal reconciles lost stop/select/start ACKs.
+        Identity, credentials, native stores and Conversation are preserved.
+        The complete operation includes cold SDK preparation within 120 seconds;
+        each owner/physical request remains capped at 60 seconds and shares the
+        original overall deadline. No internal deadline is renewed.
+        An existing closed group is frozen across the update. Retain one current
+        and one previous completed receipt; unfinished effects require exact
+        reconciliation and can never be replaced by a new operation.
+        """
+        from .onboarding_service import command
+        if (self.settings.get('mode') != 'native-admission-only'
+                or type(receive_only_group) is not bool
+                or str(uuid.UUID(operation_id)) != operation_id
+                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 120
+                or self._selection(plan) != (None, None)):
+            raise OnboardingError('native_code_update_requires_plain_admitted_body')
+        deadline = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
+        def remaining():
+            seconds = (deadline - time.monotonic_ns()) / 1_000_000_000
+            if seconds <= 0:
+                raise OnboardingError('receiving_host_deadline_expired')
+            return min(60.0, seconds)
+        directory = private_directory(self.state / plan['name'], create=True)
+        with being_seed._locked(directory), ExitStack() as locks:
+            jobs = private_directory(self.backend.config.jobs)
+            locks.enter_context(being_seed._locked(jobs))
+            store = JobStore(jobs)
+            locks.enter_context(being_seed._locked(private_directory(store.directory(plan['name']))))
+            job = store._load(plan['name'])
+            if job['plan'] != plan or not self.backend.authorize(plan, digest(plan)):
+                raise OnboardingError('receiving_initial_plan_changed')
+            expected = self._expected(plan)
+            if not self._registered(expected):
+                raise OnboardingError('native_code_update_requires_plain_admitted_body')
+            if not self.backend.runtime_available(plan, candidate, deadline_ns=deadline):
+                raise OnboardingError('qualified_onboarding_candidate_mount_required')
+            base = self.backend._receiving_base(plan)
+            code, _args, _mounts = self.backend._runtime_paths(plan, base, candidate=candidate)
+            argv = command(base, receive_only=True, runtime_code=code, runtime_digest=candidate[1])
+            path = directory / 'native-code-update.json'
+            pins: dict = dict(schema='cluster-native-code-update/v1', operation_id=operation_id,
+                plan_digest=digest(plan), candidate_digest=candidate[1], argv=argv)
+            if receive_only_group:
+                pins['receive_only_group'] = True
+            def save():
+                if len(json.dumps(state).encode()) > 65536:
+                    raise OnboardingError('native_code_update_record_limit')
+                being_seed._write(path, state)
+            def observe():
+                value = self.backend._target_call(plan, 'admitted-running', candidate=candidate,
+                    observation_timeout_seconds=remaining(),
+                    **({'current_native': True, 'require_loaded': True} if receive_only_group else {}))
+                if (value.get('responder_association') != 'same-connection'
+                        or any(value['origin'].get(key) != expected[key]
+                            for key in ('body_ref', 'embodiment_id', 'incarnation_id'))
+                        or (value.get('group') is not None) != receive_only_group):
+                    raise OnboardingError('native_code_update_identity_changed')
+                _code_update_group(value)
+                return value
+            previous_completed = None
+            if path.exists():
+                state = being_seed._read(path)
+                if state.get('pins') != pins:
+                    prior_pins, prior_result = state.get('pins', {}), state.get('result', {})
+                    if (prior_pins.get('operation_id') == operation_id
+                            or state.get('dispatching') is not None
+                            or len(json.dumps(state).encode()) > 65536
+                            or set(state.get('effects', {})) != {'validate', 'quiesce', 'select', 'start'}
+                            or prior_result.get('operation_id') != prior_pins.get('operation_id')
+                            or prior_result.get('candidate_digest') != prior_pins.get('candidate_digest')
+                            or prior_result.get('schema') != 'cluster-native-code-updated/v1'):
+                        raise OnboardingError('native_code_update_operation_conflict')
+                    previous_completed = state
+            # Mounted public code is not an installed owner interpreter. This
+            # existing idempotent stage also prepares its closed import tree.
+            sdk = self.backend._target_call(plan, 'sdk-prepare', candidate=candidate,
+                observation_timeout_seconds=remaining())
+            if sdk.get('ready') is not True:
+                raise OnboardingError('native_code_update_sdk_unready')
+            if not path.exists() or previous_completed is not None:
+                before = observe()
+                previous = {key: before[key] for key in ('process', 'admission_parent')}
+                physical = self.backend._guest_service_call(plan, 'bootstrap-inspect', candidate=candidate,
+                    timeout_seconds=remaining(), owner_observation=previous)
+                previous.update(service=physical['service'], scope=physical['scope'])
+                state = dict(pins=pins, runtime_sha256=before['runtime_sha256'],
+                    request=dict(schema='cluster-guest-service-bootstrap/v1', operation_id=operation_id,
+                        plan_digest=digest(plan), predecessor=previous, argv=argv), effects={})
+                if before.get('group') is not None:
+                    state['closed_group'] = _code_update_group(before)
+                if previous_completed is not None:
+                    # The native bootstrap journal retains the exact historical
+                    # effects. These two bounded owner records are observations.
+                    being_seed._write(directory / 'native-code-update.previous.json', previous_completed)
+                    state['previous_completed_sha256'] = digest(previous_completed)
+                save()
+            for action in ('validate', 'quiesce', 'select', 'start'):
+                if action in state['effects']:
+                    continue
+                # Retain the exact request before dispatch. Root's bootstrap
+                # reconciles this same operation; never mint a replacement ID.
+                state['dispatching'] = action
+                save()
+                state['effects'][action] = self.backend._guest_service_call(plan, 'bootstrap-' + action,
+                    candidate=candidate, timeout_seconds=remaining(), request=state['request'])
+                state.pop('dispatching', None)
+                save()
+            current = observe()
+            if current['runtime_sha256'] != state['runtime_sha256']:
+                raise OnboardingError('native_code_update_identity_changed')
+            if _code_update_group(current) != state.get('closed_group'):
+                raise OnboardingError('native_code_update_group_changed')
+            if receive_only_group and current.get('runtime_status', {}).get(
+                    'loaded_runtime', {}).get('qualified_startup', {}).get('code_digest') != candidate[1]:
+                raise OnboardingError('native_code_update_selection_changed')
+            physical = self.backend._guest_service_call(plan, 'bootstrap-inspect', candidate=candidate,
+                timeout_seconds=remaining(), owner_observation={key: current[key]
+                    for key in ('process', 'admission_parent')})
+            if (physical['service']['unit_sha256'] != state['effects']['select']['selected_sha256']
+                    or physical['scope']['admission_parent'] != state['effects']['start']['admission_parent']
+                    or store._load(plan['name']) != job):
+                raise OnboardingError('native_code_update_selection_changed')
+            state['result'] = dict(schema='cluster-native-code-updated/v1',
+                operation_id=operation_id, candidate_digest=candidate[1],
+                runtime_sha256=current['runtime_sha256'], origin=current['origin'],
+                process=current['process'], admission_parent=current['admission_parent'],
+                unit_sha256=physical['service']['unit_sha256'], receiving_readiness='unobserved')
+            save()
+            return state['result']
 
     def _ready(self, plan: dict) -> bool:
         return self.settings.get('mode') == 'native-admission-only' or self._selection(plan)[1] is not None or (

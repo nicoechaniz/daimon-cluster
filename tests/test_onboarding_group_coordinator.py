@@ -874,3 +874,28 @@ def test_old_guest_uses_its_pinned_host_and_original_grant(tmp_path, monkeypatch
     with pytest.raises(OnboardingError, match='onboarding_group_owner_host_changed'):
         caller._guest_backend('old-member')
     assert calls == ['load-selected-host'], 'changed configuration must fail before constructing a backend'
+
+
+def test_explicit_membership_only_intent_skips_publication_pipeline(fixture, monkeypatch, tmp_path):
+    f = fixture
+    after = copy.deepcopy(f.row['intended_transition'])
+    after['membership_only'] = {'schema': 'cluster-native-membership-only/v1'}
+    journal = OperationJournal(tmp_path / "membership-only")
+    row = plan_update(journal, manifest_digest=digest(after),
+        target=f.row['target'], expected_precondition=f.row['expected_precondition'],
+        intended_transition=after, audit_identity={'actor': 'synthetic-host'})
+    selected = copy.deepcopy(f.selected)
+    selected["journal"] = str(journal.path.parent)
+    selected['admissions'][digest(f.plans['newcomer'])] = row['operation_id']
+    being_seed._write(f.path, selected)
+    seen = []
+    def join(self, name, *, timeout_seconds):
+        seen.append((name, timeout_seconds))
+        return {'signed_membership': 'only', 'receiving_readiness': 'unobserved'}
+    monkeypatch.setattr(GroupCoordinator, 'advance_membership_only', join)
+    monkeypatch.setattr(GroupCoordinator, '_prepare_body', lambda *a, **k: pytest.fail('controller bootstrap'))
+    monkeypatch.setattr(GroupCoordinator, '_prepare_communication', lambda *a, **k: pytest.fail('communication preparation'))
+    result = GroupCoordinator(f.backend).advance('newcomer', timeout_seconds=300)
+    assert result == {'signed_membership': 'only', 'receiving_readiness': 'unobserved'}
+    assert seen == [('newcomer', 60)] and f.calls == []
+    assert f.body['registered'] is False

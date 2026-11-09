@@ -451,3 +451,29 @@ def test_history_reader_preserves_the_provided_native_chain_and_rejects_truncati
         approved_group_authorities(source.root, source.outputs / 'tribe', native)
     assert (source.root / 'runtime.json').read_bytes() == before
     assert not (source.root / 'historical-peer.sqlite').exists()
+
+
+def test_receive_only_group_reads_verified_application_without_visibility(group_source):
+    """Actual SDK publication/client/egress; no native or model child is started."""
+    from daimon_matrix import daemon
+    from daimon_matrix.client import ClientConfig, LocalClient
+    from daimon_matrix.messaging_config import protected_read, read_publication
+    from clusterctl.onboarding_runtime import receive_only_application_view
+
+    source, *_ = group_source
+    application = source.outputs / 'tribe/application'
+    visibility = source.outputs / 'tribe/visibility/installation.json'
+    assert not visibility.exists()
+    base = source._load(signed=False)
+    view = receive_only_application_view(base, application)
+    view.egress.validate_registry(daemon._enabled_egress_paths(view))
+    _document, metadata = read_publication(base, application)
+    config = ClientConfig.load(metadata / 'client.json', bytearray(protected_read(application / 'client.key')))
+    client = LocalClient(base.state_root / 'tribe.sock', config)
+    inbox = view.service.handle(client.prepare('messaging.inbox', dict(channel_id='tribe', after=0, limit=10)))
+    assert inbox['ok'] is True
+    assert inbox['result']['items'] == []
+    outgoing = view.service.handle(client.prepare('messaging.send', dict(channel_id='tribe',
+        send_id=str(uuid.uuid4()), thread_id=str(uuid.uuid4()), text='Closed native fixture')))
+    assert outgoing['ok'] is False, outgoing
+    assert not visibility.exists()

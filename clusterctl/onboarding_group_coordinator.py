@@ -30,6 +30,34 @@ COMMUNICATION_SCHEMA = 'cluster-admission-communication/v1'
 COMPLETION_SCHEMA = 'cluster-portal-group-completion/v1'
 
 
+def finish_membership_only(journal, row: dict, result: dict) -> dict:
+    """Close only the explicitly selected signed phase, freeing its target.
+
+    Completion is backed by the native phase's retained result. It claims no
+    channel selection, running reader, visibility or general onboarding finish.
+    """
+    after = row['intended_transition']
+    retained = (row['runtime_observation'] or {}).get('membership_admission', {})
+    social = after.get('portal_admission', {}).get('social', {})
+    if (after.get('membership_only') != {'schema': 'cluster-native-membership-only/v1'}
+            or any(key in after for key in (
+                'admission_publications', 'admission_communication', 'cohort_activation'))
+            or not isinstance(result, dict)
+            or result.get('schema') != 'cluster-native-membership-admission/v1'
+            or result.get('operation_id') != social.get('operation_id')
+            or result.get('receiving_readiness') != 'unobserved'
+            or retained.get('recipe_sha256') != digest(social)
+            or retained.get('result') != result or retained.get('result_sha256') != digest(result)):
+        raise OnboardingError('onboarding_group_membership_completion_required')
+    if row['state'] == 'completed':
+        if row['result'] != result:
+            raise OnboardingError('onboarding_group_membership_completion_required')
+    else:
+        journal.advance(row['operation_id'], 'completed', result=result,
+            expected_runtime_observation=row['runtime_observation'])
+    return copy.deepcopy(result)
+
+
 def _path(value) -> bool:
     return isinstance(value, str) and Path(value).is_absolute() and '..' not in Path(value).parts
 
@@ -1259,6 +1287,10 @@ class GroupCoordinator:
         bound = self._binding(plan)
         if bound is None:
             return None
+        # An explicit protected membership-only intent bypasses the historical
+        # controller/publication/communication pipeline, never its authorization.
+        if 'membership_only' in bound[1]['intended_transition']:
+            return self.advance_membership_only(name, timeout_seconds=min(timeout_seconds, 60))
         journal, row, admission = bound
         current = journal.get(row['operation_id'])
         if 'communication_followup' in (current['runtime_observation'] or {}):
@@ -1395,6 +1427,36 @@ class GroupCoordinator:
                 return dict(operation_id=row['operation_id'], native_prepared=True,
                     physical_prepared=True, controller_prepared=True, receiving_readiness='unobserved',
                     **({'lifecycle_prepared': True} if lifecycles else {}))
+
+    def advance_membership_only(self, name: str, *, timeout_seconds: float = 60) -> dict | None:
+        """Record signed membership using the existing original jobs/owners.
+
+        The protected operation explicitly selects this phase. It requires all
+        actual native writer sessions, so physical Matrix stop/start remains the
+        caller's scoped maintenance; no group, Telegram, controller issue or
+        outbound publication is introduced or inferred here.
+        """
+        if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 60:
+            raise OnboardingError('receiving_host_deadline_required')
+        deadline = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
+        plan = self.store._load(name)['plan']
+        bound = self._binding(plan)
+        if bound is None:
+            return None
+        journal, row, admission = bound
+        with journal.mutation_lock(row['operation_id']):
+            with self._job_scope(plan):
+                _journal, row, admission = self._binding(plan)
+                if row['intended_transition'].get('membership_only') != {
+                        'schema': 'cluster-native-membership-only/v1'}:
+                    raise OnboardingError('onboarding_group_membership_only_intent_required')
+                owners = self._owners(admission)
+            if row['state'] == 'completed':
+                return finish_membership_only(journal, row, row['result'])
+            from .onboarding_receiving_update import CohortController
+            result = CohortController(journal, row['operation_id'], owners).admit_membership_only(
+                deadline_ns=deadline)
+            return finish_membership_only(journal, journal.get(row['operation_id']), result)
 
     def _prepare_communication(self, plan, journal, row, admission, owner, *, deadline_ns: int) -> None:
         """Retain the entrant's schema phase after controller tree publication.

@@ -121,14 +121,18 @@ class ConversationTests(unittest.TestCase):
             started.start()
             self.addCleanup(started.stop)
 
-    def test_actual_pair_ids_and_no_telegram_are_rendered_without_new_permissions(self):
+    def test_actual_pair_ids_private_files_and_no_telegram_are_rendered(self):
         value = request()
         files = conversation.configurations(value)
         native = tomllib.loads(files[conversation.STATE / "receiver.toml"].decode())
         web = tomllib.loads(files[conversation.STATE / "dashboard.toml"].decode())
         self.assertEqual(native["startup_admin_ids"], [9])
         self.assertEqual(
-            native["interaction"], {"human_id": 9, "chat_id": 11, "topic_id": 17}
+            native["interaction"], {"human_id": 9, "chat_id": 11, "topic_id": 17,
+                "artifact_store": {
+                    "directory": "/home/agent/.local/share/daimon-conversation/generated-files",
+                    "retention_hours": 24, "max_file_bytes": 67108864,
+                    "max_total_bytes": 536870912}}
         )
         self.assertEqual(native["telegram"], {"enabled": False})
         self.assertTrue(native["codex"]["shared_app_server"])
@@ -136,7 +140,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(native["codex"]["default_approval"], "on-request")
         self.assertEqual(web["shared_auth"]["human_ref"], value["human_ref"])
         self.assertEqual(web["application_id"], value["application_id"])
-        self.assertFalse(web["shared_auth"]["artifact_access"])
+        self.assertTrue(web["shared_auth"]["artifact_access"])
         self.assertFalse(web["shared_auth"]["workspace_access"])
         self.assertNotIn("bot_id", web)
         self.assertNotIn("targets", native)

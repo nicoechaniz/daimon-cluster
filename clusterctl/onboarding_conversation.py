@@ -301,6 +301,11 @@ human_id = {value["human_id"]}
 human_id = {value["human_id"]}
 chat_id = {value["chat_id"]}
 topic_id = {value["topic_id"]}
+[interaction.artifact_store]
+directory = "{HOME}/.local/share/daimon-conversation/generated-files"
+retention_hours = 24
+max_file_bytes = 67108864
+max_total_bytes = 536870912
 '''
     web = f'''receiver_config = "{STATE}/receiver.toml"
 native_home = "{HOME}/.codex"
@@ -318,7 +323,7 @@ enabled = true
 home_origin = {quote(value["origin"])}
 human_ref = {quote(value["human_ref"])}
 entry_path = "/interaction/"
-artifact_access = false
+artifact_access = true
 workspace_access = false
 '''
     return {

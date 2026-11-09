@@ -1250,9 +1250,14 @@ def test_maintenance_composition_keeps_changed_contracts_and_exact_host_delta(mo
     import subprocess
     from tools import ci_scope
     host = 'clusterctl/onboarding_host.py'
-    current = (ROOT / host).read_bytes()
-    assert current.count(ci_scope.OWNER_CLIENT_DIAGNOSTIC_ADDITION) == 1
-    previous = current.replace(ci_scope.OWNER_CLIENT_DIAGNOSTIC_ADDITION, b'', 1)
+    # Exercise the historical, exact diagnostic-only delta independently of
+    # later Host features. Conversation bootstrap intentionally adds different
+    # behavior and must not silently widen this maintenance-only boundary.
+    previous = b'def preserved_host():\n    return "unchanged administration"\n'
+    current = previous + ci_scope.OWNER_CLIENT_DIAGNOSTIC_ADDITION
+    original_read = Path.read_bytes
+    monkeypatch.setattr(Path, 'read_bytes', lambda path:
+        current if path == ROOT / host else original_read(path))
     monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *_a, **_k:
         subprocess.CompletedProcess([], 0, previous))
     changed = sorted(ci_scope.MAINTENANCE_FILES | {host, 'tests/test_onboarding_host.py',
@@ -1426,10 +1431,12 @@ def test_owner_client_diagnostic_extension_matches_only_the_exact_covered_delta(
     import subprocess
     from tools import ci_scope
     host = 'clusterctl/onboarding_host.py'
-    current = (ROOT/host).read_bytes()
-    previous = current.replace(ci_scope.OWNER_CLIENT_DIAGNOSTIC_ADDITION,
-        ci_scope.OWNER_DIAGNOSTIC_ADDITION, 1)
-    assert previous != current
+    prefix = b'def preserved_host():\n    return "unchanged administration"\n'
+    current = prefix + ci_scope.OWNER_CLIENT_DIAGNOSTIC_ADDITION
+    previous = prefix + ci_scope.OWNER_DIAGNOSTIC_ADDITION
+    original_read = Path.read_bytes
+    monkeypatch.setattr(Path, 'read_bytes', lambda path:
+        current if path == ROOT / host else original_read(path))
     monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *a, **kw: subprocess.CompletedProcess([],0,previous))
     assert ci_scope.owner_diagnostics_only(ROOT, 'a'*40)
     monkeypatch.setattr(ci_scope.subprocess, 'run', lambda *a, **kw:

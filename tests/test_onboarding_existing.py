@@ -452,6 +452,13 @@ keystore.EncryptedKeystore.create(destination.with_name('mixed-body.json'),
     coordinates = ceremony.admission_coordinates(target.plan)
     assert coordinates["being_ref"] == target.genesis["expected_being_ref"]
     assert coordinates["manifest_hash"] != target._base().manifest.digest
+    from daimon_matrix.operator_rebirth import authority_from_document
+    public = ceremony.public_identity(target.plan)
+    authority = authority_from_document(public['authority'])
+    authority.validate_origin(public['origin'],require_active=True)
+    assert authority.manifest.digest == coordinates['manifest_hash']
+    assert set(public['authority']) == {'schema','control_artifacts','control_head',
+        'manifest','credentials','incarnations'}
     assert (
         len(target.document_bundle()["authority_history"])
         == len(original.document_bundle()["authority_history"]) + 2

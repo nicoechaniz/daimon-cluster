@@ -1,3 +1,117 @@
+## Current remaining work and actual runtime observation —2026-11-09
+
+Nicolas replaced the active goal with only three remaining items: actual School
+mission/workspace/canonical return and reopened display, the reusable finite
+companion command, and concrete outstanding daily security coverage. Completed
+provisioning, signed/native admission, Conversation, configured voice, Drive,
+skills and dashboard are not new prerequisites. Preserve the later joint Emma
+hold and original accounting. Historical planning below does not reinstate old
+approval gates or reopen completed work.
+
+The guest verifier now accepts hardlinked, root-owned, non-writable public runtime
+files only when their exact pinned hashes and complete component inventory match.
+Private requests/configuration/manifests remain single-link. The actual first
+Pixin refusal identified a zero-byte public module with15links; the corrected
+read passed. Calipso then exposed an incomplete observation descriptor: its
+qualified publication814 component and Python-path order must remain selected.
+All161component bytes matched maintained common815 plus the retained three-file
+publication overlay. A versioned descriptor corrected the observation, retaining
+both refusals and the original positive Pixin result without repeating that read.
+All four actual current native/web observations now pass with unchanged per-read
+process/configuration identities and zero model/provider/input/lifecycle effects.
+212affected tests plus6subtests,104-source typing and Ruff passed. Published
+predecessor7b0d91b exact CI42704824367 completed successfully; it does not qualify
+this later source edit. Capture/select the final complete worker source next;
+the current worker/environment/config and original jobs remain preserved.
+
+## Deterministic terminal entry receipt —2026-11-09
+
+The v2 foreground command now returns the authorized Conversation HTTPS entry,
+companion/human pairing and explicit technical-versus-device/inference status.
+Fresh completion and completed-job retry share the same read-only result path;
+current grant/request changes refuse without changing historical completed work.
+The completed-job fast path now records its terminal foreground outcome, and the
+parent measures the whole invocation with its monotonic clock. The published
+predecessor reproduced missing entry output; corrected source returned it with
+unchanged job bytes/effects.178affected tests,104-source typing and Ruff passed.
+This is source qualification, not a fresh-companion benchmark or fleet adoption.
+Emma remains held for the later joint exercise after full four-child delivery.
+School's current App record still explicitly lacks retained mission/workspace/
+canonical return/display; prior export or kit installation does not close it.
+
+## Current receivers versus full signed roster —2026-11-09
+
+Actual current-reader observation found ten signed audience entries for seven
+configured receivers; three were other Source/Oliva embodiments. Native signatures
+and complete roster agreement passed, but a body-for-body equality wrongly required
+reviving those unconfigured bodies. Coverage now requires every exact protected
+receiver/body and every represented being, preserving full signed rosters and
+explicit unobserved sibling metadata. Missing distinct beings or configured sibling
+bodies still refuse. The regression failed before repair. The original zero-effect
+reader-restoration operation completed with all seven already selected, unchanged
+original jobs/configuration and zero gate/service/membership/model/message changes.
+The earlier isolated Eko unselected observation is retained; its later selection
+change is not attributed to this operation. Current selection does not prove
+message delivery, human reading or complete-command acceptance.
+
+## Actual blank VM environment and private NAT —2026-11-09
+
+Actual disposable VM qualification reused the existing pinned Debian13 KVM image
+and host environment adapter. It exposed two corrected defects: raw type/image
+strings violated JobStore's closed facts contract; Incus start completed before
+its guest agent served the volume check. Boolean verification facts and a bounded
+60second actual agent observation now let the original retained environment job
+advance to context, without recreating its VM/plan/operation. Native guest/home/cold
+mounts and private NAT through the existing proxy writer passed; technical HTTP200
+marker bytes/hash matched. The empty task VM and its two volumes were retired and
+absence verified. No identity/account/provider/model/public route or held companion
+was created. This does not establish fresh companion/HTTPS/login acceptance or
+effective filesystem quotas on the selected directory pool; those remain.
+
+## Complete qualification runtime —2026-11-09
+
+Actual run42681213684 passed the guest owner490s, native admission consumers1059s,
+and reported3539 default tests passing1971s, then GitHub cancelled the job at its
+60minute aggregate limit. The explicit annotation confirms timeout; no test failure
+or production expiry was inferred. The job now permits75minutes while preserving
+all checks and their individual owner/effect limits. Receiving and complete-command
+qualification remain unfinished; prior outputs and original job identities stay.
+
+## VM Conversation NAT continuation —2026-11-09
+
+The existing Conversation listener now has an explicit VM NAT composition,
+using an own selected private IPv4 address in the retained request and host
+proxy entry. Original init selects the static NIC before boot; actual static
+NIC, managed host gateway, MAC-bound live guest address and default route are
+checked before the existing proxy writer. Container defaults stay unchanged.
+Actual read-only Oliva qualification exposed/fixed Incus device-key versus Linux
+interface naming (eth0/enp5s0); the corrected MAC binding passed with zero
+service/model/network mutation. Later blank VM boot/filesystem/private NAT passed
+as recorded above; HTTPS/auth and full-command acceptance remain unfinished.
+No held companion was created.
+See docs/design/onboarding-jobs.md; current private command checkpoint retains
+source/read evidence and full School/security/Emma scope.
+
+## Explicit VM environment continuation —2026-11-09
+
+The maintained onboarding host now accepts optional `instance_type` with the
+existing container default or explicit `virtual-machine`. Before VM mutation,
+its fixed bounded Incus image query verifies the selected local fingerprint and
+VM type; existing instance type must match. It reuses original init/volume/start
+steps and plan journals, preserving a lost creation reply and refusing another
+type without replacement. Existing plans and all4 active children are unchanged.
+Actual existing Oliva image metadata passed the supported JSON query; no VM was
+created or modified in that metadata observation. Later disposable blank VM/agent/
+filesystem/private NAT receiving passed as above; full-command qualification
+remains unfinished. Emma stays held. See docs/design/onboarding-jobs.md.
+
+All7 original bodies now passed own original/prepared helper base observation
+with unchanged process, runtime bundle, jobs and policy. Twelve actual CLI reads
+covered six receivers, reusing the earlier Root proof; no service, membership,
+provider/model effects. Prepared public code is not fleet worker adoption or
+actual guarded receiving/complete-command acceptance. Exact receipts and remaining
+School/security work stay in the existing private companion command checkpoint.
+
 ## Four-child receiving clients and next-companion hold —2026-11-08
 
 All4 existing children have signed/native membership and their own signed

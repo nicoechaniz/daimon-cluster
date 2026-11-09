@@ -10,7 +10,7 @@ from clusterctl.operation_journal import OperationJournal
 from tests.test_receiving_maintenance import spec_fixture
 
 
-class Manager:
+class Manager(worker.WorkerManager):
     wait = worker.WorkerManager.wait
 
     def __init__(self, root, *, active=True):

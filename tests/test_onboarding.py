@@ -199,3 +199,223 @@ def test_access_readiness_advances_to_listener_but_does_not_prove_real_owner_ssh
     assert result['active'] is False
     assert ob.STAGE_FACTS['access'] == dict(ssh_ready=True, provider_verified=True)
     assert 'ssh_verified' in ob.ACCEPTANCE
+
+
+def test_conversation_job_has_distinct_technical_completion_without_telegram(tmp_path, monkeypatch, capsys):
+    from clusterctl.onboarding_progress import validate
+    value=plan(browser=False)
+    value['schema']=ob.CONVERSATION_PLAN_SCHEMA
+    class WebBackend(FixtureBackend):
+        def observe(self, plan, stage, operation_id):
+            result=super().observe(plan,stage,operation_id)
+            if result.state=='complete' and stage in {'access', 'acceptance'}:
+                result.facts['provider_configured'] = True
+            if result.state=='complete' and stage=='acceptance':
+                result.facts.update(conversation_verified=True,shared_login_verified=True,
+                    native_running_verified=True,tribe_membership_verified=True)
+            return result
+    backend=WebBackend()
+    store=ob.JobStore(tmp_path/'jobs')
+    store.submit(value,backend)
+    for _ in ob.CONVERSATION_STAGES:
+        result=validate(store.tick('eko',backend))
+    assert result['schema']==ob.CONVERSATION_JOB_SCHEMA and result['state']=='complete'
+    assert result['completed_steps']==list(ob.CONVERSATION_STAGES)
+    assert [stage for _,stage,_ in backend.calls]==list(ob.CONVERSATION_STAGES)
+    assert 'telegram' not in store._load('eko')['steps']
+    assert not ob.JobStore.accepted(value,dict.fromkeys(ob.ACCEPTANCE,True))
+    assert store.tick('eko',backend)==result
+    from clusterctl.onboarding_worker import Worker, completed_result
+    import time
+    entry = {'url':'https://fixture.example.org/interaction/?view=conversation&client=standalone'}
+    backend.companion_entry = lambda selected: entry
+    before = (store.directory('eko')/'job.json').read_bytes()
+    effects = list(backend.calls)
+    status, finished = Worker(store, lambda:backend).until('eko',deadline=time.monotonic()+2)
+    assert status == 0 and finished['entry'] == entry
+    assert (store.directory('eko')/'job.json').read_bytes() == before and backend.calls == effects
+    def unavailable(selected):
+        raise ob.OnboardingError('private secret /private/credential')
+    backend.companion_entry = unavailable
+    status, failed = completed_result(store,backend,'eko',result)
+    assert status == 3 and failed['job']['state'] == 'complete'
+    assert failed['diagnostic']['code'] == 'unclassified_refusal'
+    assert 'private secret' not in json.dumps(failed)
+    assert (store.directory('eko')/'job.json').read_bytes() == before
+    # Exercise the actual completed-job CLI fast path: it must not launch a
+    # worker/re-enroll merely to return entry coordinates and a terminal receipt.
+    from types import SimpleNamespace
+    from clusterctl import onboarding_host, onboarding_worker, being_seed
+    grants = tmp_path/'grants'
+    grants.mkdir(mode=0o700)
+    being_seed._write(grants/'eko.json',{'plan':value})
+    config = SimpleNamespace(jobs=store.root,grants=grants)
+    monkeypatch.setattr(onboarding_host,'CurrentHostConfig',lambda p:SimpleNamespace(current=lambda:config))
+    monkeypatch.setattr(onboarding_host,'HostBackend',lambda c:backend)
+    monkeypatch.setattr(onboarding_worker,'supervise',lambda *a,**k:(_ for _ in ()).throw(AssertionError('No new worker')))
+    backend.companion_entry = lambda selected:entry
+    assert onboarding_worker.main(['--config',str(tmp_path/'config.json'),'--until','eko']) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output['result']['entry'] == entry and output['elapsed_seconds'] >= 0
+    retained = json.loads((store.directory('eko')/'foreground/current.json').read_text())
+    assert retained['phase'] == 'complete' and retained['result']['result']['entry'] == entry
+    assert (store.directory('eko')/'job.json').read_bytes() == before and backend.calls == effects
+
+
+def test_existing_job_cannot_be_reinterpreted_as_conversation_or_change_old_receipts(tmp_path):
+    store,backend=setup(tmp_path)
+    advance(store,backend)
+    path=store.directory('eko')/'job.json'
+    before=path.read_bytes()
+    changed=plan()
+    changed['schema']=ob.CONVERSATION_PLAN_SCHEMA
+    with pytest.raises(ob.OnboardingError,match='onboarding_plan_conflict'):
+        store.submit(changed,backend)
+    assert path.read_bytes()==before
+    assert store.status('eko',owner='sai')['schema']==ob.SCHEMA
+
+
+def test_conversation_progress_rejects_legacy_stage_or_mixed_prefix():
+    from clusterctl.onboarding_progress import validate
+    value=plan()
+    value['schema']=ob.CONVERSATION_PLAN_SCHEMA
+    row={'schema':ob.CONVERSATION_JOB_SCHEMA,'name':'eko','owner':'sai',
+        'plan_digest':ob.digest(value),'state':'ready','stage':'identity','reason':None,
+        'completed_steps':['environment','context','memory'],'active':False,'updated_ms':1}
+    assert validate(row)==row
+    for steps,next_stage in [(['environment','context','memory','matrix'],'access'),
+                             (['environment','context','memory','identity','access','telegram'],'welcome')]:
+        with pytest.raises(ob.OnboardingError):
+            validate({**row,'completed_steps':steps,'stage':next_stage})
+
+
+def test_finite_worker_finishes_only_selected_original_job(tmp_path):
+    import time
+    from clusterctl.onboarding_worker import Worker
+    store, backend = setup(tmp_path)
+    peer = plan()
+    peer['name'] = 'peer'
+    store.submit(peer, backend)
+    peer_before = (store.directory('peer')/'job.json').read_bytes()
+    worker = Worker(store, lambda: backend,
+        plans=lambda: (_ for _ in ()).throw(AssertionError('No unrelated intake')))
+    status, result = worker.until('eko', deadline=time.monotonic()+2)
+    assert status == 0 and result['state'] == 'complete'
+    assert (store.directory('peer')/'job.json').read_bytes() == peer_before
+    assert all(name == 'eko' for name, _, _ in backend.calls)
+
+
+def test_finite_worker_returns_missing_input_without_polling_it(tmp_path):
+    import time
+    from clusterctl.onboarding_worker import Worker
+    store, backend = setup(tmp_path)
+    backend.wait = 'context'
+    status, result = Worker(store, lambda: backend).until('eko', deadline=time.monotonic()+2)
+    assert status == 2 and result['stage'] == 'context'
+    assert result['reason'] == 'human_contact_required'
+    assert len(backend.calls) == 1
+
+
+def test_foreground_process_deadline_preserves_retained_intent(tmp_path):
+    import sys
+    from clusterctl.onboarding_worker import supervise
+    marker = tmp_path/'retained-original-intent'
+    code = 'from pathlib import Path;import time;Path('+repr(str(marker))+').write_text("same-operation");time.sleep(20)'
+    status, result = supervise([sys.executable, '-c', code], seconds=.3)
+    assert status == 2 and result['reason'] == 'foreground_deadline_expired'
+    assert 'external effects may continue' in result['effect']
+    assert marker.read_text() == 'same-operation'
+    assert result['elapsed_seconds'] < 4
+
+
+def test_explicit_time_extension_resumes_original_checkpoints(tmp_path):
+    import time
+    from clusterctl.onboarding_worker import ForegroundRun, Worker
+    store, backend = setup(tmp_path)
+    original = store._load('eko')
+    control = ForegroundRun(store, 'eko', original['plan_digest'])
+    initial = control.prepare(.02)
+    backend.wait = 'context'
+    status, result = Worker(store, lambda: backend).until('eko', deadline=time.monotonic()+1)
+    assert status == 2 and result['completed_steps'] == ['environment']
+    environment = store._load('eko')['steps']['environment'].copy()
+    # Expiry changes no native job state, facts or effect identity.
+    control.update(deadline_epoch=time.time()-1, phase='attention-required')
+    same = control.prepare(600)
+    assert same['deadline_epoch'] < time.time(), 'Ordinary retry cannot silently add time'
+    extended = control.prepare(600, extend=10)
+    assert extended['started_epoch'] == initial['started_epoch']
+    assert extended['original_deadline_epoch'] == initial['original_deadline_epoch']
+    assert extended['added_seconds'] == 10 and extended['extension_count'] == 1
+    backend.wait = None
+    status, result = Worker(store, lambda: backend).until('eko',
+        deadline=lambda: time.monotonic()+control.remaining())
+    assert status == 0 and result['state'] == 'complete'
+    assert store._load('eko')['steps']['environment'] == environment
+    assert sum(stage == 'environment' for _, stage, _ in backend.calls) == 1
+    assert all(step['operation_id'] == original['steps'][stage]['operation_id']
+               for stage, step in store._load('eko')['steps'].items())
+
+
+def test_live_extension_changes_deadline_of_same_supervised_process(tmp_path):
+    import sys
+    import threading
+    import time
+    from clusterctl.onboarding_worker import ForegroundRun, supervise
+    store, _ = setup(tmp_path)
+    control = ForegroundRun(store, 'eko', store._load('eko')['plan_digest'])
+    control.prepare(.3)
+    pid_file = tmp_path/'only-worker'
+    code = ('from pathlib import Path;import os,time,json;Path('+repr(str(pid_file))+').write_text(str(os.getpid()));'
+            'time.sleep(.6);print(json.dumps({"schema":"cluster-onboarding-foreground/v1","state":"complete"}))')
+    def extend():
+        time.sleep(.1)
+        control.prepare(600, extend=2)
+    extension = threading.Thread(target=extend)
+    extension.start()
+    status, result = supervise([sys.executable, '-c', code], seconds=.3,
+        remaining=control.remaining, started_child=control.child_started)
+    extension.join(timeout=3)
+    assert status == 0 and result['state'] == 'complete'
+    assert int(pid_file.read_text()) == control.read()['child']['pid']
+    assert control.read()['extension_count'] == 1
+
+
+def test_time_extension_racing_expiry_keeps_single_continuation_owner(tmp_path):
+    import os
+    import time
+    from clusterctl.onboarding_worker import ForegroundRun
+    store, _ = setup(tmp_path)
+    control = ForegroundRun(store, 'eko', store._load('eko')['plan_digest'])
+    control.prepare(.01)
+    lease = control.claim()
+    assert lease is not None
+    control.update(deadline_epoch=time.time()-1)
+    result = {'state': 'attention-required', 'reason': 'foreground_deadline_expired'}
+    control.prepare(600, extend=10)
+    assert control.finish(result, lease) is False
+    assert control.claim() is None, 'The original supervisor still owns continuation'
+    control.update(deadline_epoch=time.time()-1)
+    assert control.finish(result, lease) is True
+    replacement = control.claim()
+    assert replacement is not None
+    os.close(replacement)
+    assert control.read()['extension_count'] == 1
+
+
+def test_foreground_failure_keeps_exact_operation_and_redacts_private_error(tmp_path):
+    import json
+    import time
+    from clusterctl.onboarding_worker import Worker
+    store, backend = setup(tmp_path)
+    reason = 'conversation_native_engine_unconfirmed'
+    def execute(*args):
+        raise ob.OnboardingError(reason)
+    backend.execute = execute
+    status, result = Worker(store, lambda: backend).until('eko', deadline=time.monotonic()+2)
+    assert status == 3 and result['diagnostic']['code'] == reason
+    assert result['diagnostic']['operation_id'] == store._load('eko')['steps']['environment']['operation_id']
+    reason = 'private-secret /private/source'
+    status, result = Worker(store, lambda: backend).until('eko', deadline=time.monotonic()+2)
+    assert result['diagnostic']['code'] == 'unclassified_refusal'
+    assert 'private-secret' not in json.dumps(result)

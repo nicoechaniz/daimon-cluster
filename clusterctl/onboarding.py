@@ -19,7 +19,17 @@ from . import being_seed
 
 SCHEMA = "cluster-onboarding-job/v1"
 PLAN_SCHEMA = "cluster-onboarding-plan/v1"
+CONVERSATION_PLAN_SCHEMA = "cluster-onboarding-plan/v2"
+CONVERSATION_JOB_SCHEMA = "cluster-onboarding-job/v2"
 STAGES = ("environment", "context", "memory", "matrix", "access", "telegram", "welcome", "acceptance")
+CONVERSATION_STAGES = ("environment", "context", "memory", "identity", "access", "conversation", "matrix", "acceptance")
+
+def stages(plan: dict) -> tuple[str, ...]:
+    return CONVERSATION_STAGES if plan.get("schema") == CONVERSATION_PLAN_SCHEMA else STAGES
+
+def job_schema(plan: dict) -> str:
+    return CONVERSATION_JOB_SCHEMA if plan.get("schema") == CONVERSATION_PLAN_SCHEMA else SCHEMA
+
 REASONS = frozenset({
     'group_admission_required', 'group_admission_pending',
     "host_authorization_required", "capacity_required", "connection_data_required",
@@ -29,11 +39,13 @@ REASONS = frozenset({
     "telegram_idle_required",
 })
 FACTS = frozenset({
+    "virtual_machine_verified", "vm_image_verified",
     "verified", "root_gib", "home_gib", "cold_gib", "cpu", "memory_gib", "memory_stores", "memory_chapters", "skills",
-    "identity_verified", "context_verified", "ssh_ready", "ssh_verified", "provider_verified", "browser_verified",
+    "identity_verified", "context_verified", "ssh_ready", "ssh_verified", "provider_verified", "provider_configured", "browser_verified",
     "telegram_ready", "telegram_verified", "welcome_delivered", "human_contact_verified",
     "steering_verified", "topics_verified", "restart_verified", "cli_resume_verified",
     "matrix_delivery_verified", "browser_code_verified",
+    "conversation_ready", "conversation_verified", "shared_login_verified", "native_running_verified", "tribe_membership_verified", "tribe_reader_selection_verified",
 })
 ACCEPTANCE = frozenset({
     "identity_verified", "ssh_verified", "provider_verified", "telegram_verified",
@@ -45,6 +57,8 @@ STAGE_FACTS: dict[str, dict[str, Any]] = {
     "context": {"context_verified": True},
     "memory": {},
     "matrix": {"identity_verified": True},
+    "identity": {"identity_verified": True},
+    "conversation": {"conversation_ready": True},
     "access": {"ssh_ready": True, "provider_verified": True},
     "telegram": {"telegram_ready": True},
     "welcome": {"welcome_delivered": True},
@@ -71,6 +85,7 @@ class OnboardingError(ValueError):
 # Explicit public operational codes only. Exception strings, paths, payloads and
 # unknown future codes never become CLI diagnostics by matching a text pattern.
 _DIAGNOSTIC_CODES = frozenset({
+    'onboarding_vm_image_required', 'onboarding_vm_agent_unavailable', 'conversation_proxy_vm_network_required',
     'seed_operation_in_progress', 'qualified_runtime_module_required',
     'qualified_runtime_imports_required', 'qualified_runtime_context_required',
     'qualified_receiving_interpreter_required', 'private_onboarding_sdk_required',
@@ -89,6 +104,31 @@ _DIAGNOSTIC_CODES = frozenset({
     'onboarding_group_remaining_frontier_required', 'onboarding_group_remaining_authorization_required',
     'onboarding_group_remaining_reference_required', 'onboarding_group_remaining_frontier_changed',
     'onboarding_group_continuation_fresh_effect_required',
+    'companion_home_configuration_changed', 'companion_home_configuration_required',
+    'companion_home_state_capacity', 'existing_companion_home_job_preserved',
+    'companion_home_committed_identity_required', 'companion_gateway_owner_required',
+    'companion_gateway_input_capacity', 'companion_gateway_operation_refused',
+    'companion_gateway_operation_unconfirmed',
+    'companion_gateway_service_unobserved', 'companion_gateway_service_binding_changed',
+    'companion_gateway_reload_unconfirmed',
+    'conversation_proxy_configuration_required', 'conversation_proxy_observation_unavailable',
+    'conversation_proxy_placement_unsupported', 'existing_conversation_proxy_preserved',
+    'conversation_route_configuration_required', 'conversation_route_capacity',
+    'existing_conversation_route_preserved', 'conversation_route_anchor_changed',
+    'conversation_route_service_unobserved', 'conversation_route_service_binding_changed',
+    'conversation_route_service_changed', 'conversation_route_admin_unobserved',
+    'conversation_route_operation_pending', 'conversation_route_reload_unconfirmed',
+    'conversation_route_runtime_unconfirmed', 'conversation_route_checkpoint_changed',
+    'conversation_route_concurrent_configuration_preserved', 'conversation_route_home_backend_required',
+    'conversation_route_validation_refused',
+    'conversation_route_maintenance_required', 'conversation_route_maintenance_unavailable',
+    'conversation_route_maintenance_lost', 'conversation_route_voice_active',
+    'companion_receive_preparation_required', 'companion_receive_original_changed',
+    'companion_receive_capacity', 'companion_receive_source_changed',
+    'companion_receive_publication_unobserved', 'companion_receive_resource_names_conflict',
+    'companion_receive_restoration_required', 'companion_receive_reader_control_changed',
+    'companion_receive_reader_control_unobserved', 'receiving_control_auth_capacity',
+    'companion_receive_existing_application_preserved', 'receiving_current_required_reader_missing',
 })
 
 
@@ -96,8 +136,14 @@ def refusal_diagnostic(error: Exception, *, stage: str) -> dict:
     """Opt-in local CLI detail; never serialize arbitrary exception contents."""
     code = 'unclassified_refusal'
     if isinstance(error, (OnboardingError, being_seed.SeedError)):
+        from .onboarding_conversation import PUBLIC_CODES
+        from .onboarding_receive_keys import PRIVATE_ERRORS
         candidate = str(error)
-        if candidate in _DIAGNOSTIC_CODES:
+        if candidate in _DIAGNOSTIC_CODES | PUBLIC_CODES | PRIVATE_ERRORS | {
+                'explicit_native_admission_configuration_required',
+                'explicit_membership_only_operation_required', 'onboarding_group_membership_compilation_required', 'onboarding_group_preparation_unavailable', 'conversation_selection_changed',
+                'conversation_selection_required', 'conversation_access_unconfirmed',
+                'conversation_browser_checkpoint_changed', 'conversation_access_receipt_changed'}:
             code = candidate
     elif isinstance(error, FileNotFoundError):
         code = 'local_input_or_socket_missing'
@@ -135,7 +181,9 @@ def validate_resources(value: Any) -> dict:
 
 def validate_plan(value: Any) -> dict:
     expected = {"schema", "name", "owner", "seed_digest", "release_digest", "account_profile", "browser"}
-    if not isinstance(value, dict) or set(value) - {"resources"} != expected or value.get("schema") != PLAN_SCHEMA:
+    if (not isinstance(value, dict) or set(value) - {"resources"} != expected
+            or not isinstance(value.get("schema"), str)
+            or value.get("schema") not in {PLAN_SCHEMA, CONVERSATION_PLAN_SCHEMA}):
         raise OnboardingError("invalid_onboarding_plan")
     for name in ("name", "owner", "account_profile"):
         if not isinstance(value[name], str) or not being_seed.NAME.fullmatch(value[name]):
@@ -203,17 +251,17 @@ class JobStore:
         plan = validate_plan(record.get("plan"))
         if (set(record) != {"schema", "plan", "plan_digest", "state", "stage", "reason",
                             "created_ms", "updated_ms", "steps"}
-                or record.get("schema") != SCHEMA or plan["name"] != name
+                or record.get("schema") != job_schema(plan) or plan["name"] != name
                 or record.get("plan_digest") != digest(plan)
                 or not isinstance(record.get("steps"), dict)
-                or set(record["steps"]) != set(STAGES)
+                or set(record["steps"]) != set(stages(plan))
                 or record.get("state") not in STATES
                 or record.get("reason") is not None and record["reason"] not in REASONS
                 or any(type(record.get(key)) is not int or record[key] < 0
                        for key in ("created_ms", "updated_ms"))):
             raise OnboardingError("invalid_onboarding_job")
         pending = False
-        for stage in STAGES:
+        for stage in stages(plan):
             step = record["steps"][stage]
             if not isinstance(step, dict):
                 raise OnboardingError("invalid_onboarding_job")
@@ -231,7 +279,7 @@ class JobStore:
                 if set(step) != {"state", "operation_id"} or pending and step["state"] != "pending":
                     raise OnboardingError("invalid_onboarding_job")
                 pending = True
-        first = next((s for s in STAGES if record["steps"][s]["state"] != "complete"), None)
+        first = next((s for s in stages(plan) if record["steps"][s]["state"] != "complete"), None)
         if record["stage"] != first or (record["state"] == "complete") != (first is None):
             raise OnboardingError("invalid_onboarding_job")
         return record
@@ -259,11 +307,11 @@ class JobStore:
                 return self.project(record)
             private_directory(directory, create=True)
             record = {
-                "schema": SCHEMA, "plan": plan, "plan_digest": fingerprint,
-                "state": "ready", "stage": STAGES[0], "reason": None,
+                "schema": job_schema(plan), "plan": plan, "plan_digest": fingerprint,
+                "state": "ready", "stage": stages(plan)[0], "reason": None,
                 "created_ms": int(time.time() * 1000), "updated_ms": int(time.time() * 1000),
                 "steps": {stage: {"state": "pending", "operation_id": self.operation_id(fingerprint, stage)}
-                          for stage in STAGES},
+                          for stage in stages(plan)},
             }
             being_seed._write(directory / "job.json", record)
         return self.project(record)
@@ -285,7 +333,7 @@ class JobStore:
                 record.update(state="waiting", reason="host_authorization_required")
                 self._save(directory, record)
                 return self.project(record)
-            stage = next(stage for stage in STAGES if record["steps"][stage]["state"] != "complete")
+            stage = next(stage for stage in stages(record["plan"]) if record["steps"][stage]["state"] != "complete")
             step = record["steps"][stage]
             record.update(stage=stage, reason=None)
             try:
@@ -304,13 +352,16 @@ class JobStore:
                 if observed.state == "complete":
                     self.validate_completion(record["plan"], stage, observed.facts)
                     step.update(state="complete", facts=observed.facts, completed_ms=int(time.time() * 1000))
-                    next_stage = next((s for s in STAGES if record["steps"][s]["state"] != "complete"), None)
+                    next_stage = next((s for s in stages(record["plan"]) if record["steps"][s]["state"] != "complete"), None)
                     record.update(state="complete" if next_stage is None else "ready", stage=next_stage, reason=None)
                 else:
                     record.update(state="waiting" if observed.state in {"waiting", "absent"} else "attention-required",
                                   reason=observed.reason or ("observed_state_conflict" if observed.state == "conflict"
                                                             else "verification_failed"))
             except OnboardingError as error:
+                being_seed._write(directory/'failure.json', dict(
+                    plan_digest=record['plan_digest'], operation_id=step['operation_id'],
+                    **refusal_diagnostic(error, stage=stage)))
                 record.update(state="attention-required", reason='existing_identity_conflict'
                               if str(error) == 'existing_identity_conflict' else "verification_failed")
             except Exception:
@@ -323,6 +374,8 @@ class JobStore:
     @staticmethod
     def validate_completion(plan: dict, stage: str, facts: dict) -> None:
         expected = plan['resources'] if stage == 'environment' and 'resources' in plan else STAGE_FACTS[stage]
+        if plan['schema'] == CONVERSATION_PLAN_SCHEMA and stage == 'access':
+            expected = {'ssh_ready': True, 'provider_configured': True}
         if any(type(facts.get(key)) is not type(value) or facts[key] != value
                for key, value in expected.items()):
             raise OnboardingError("verification_failed")
@@ -334,16 +387,20 @@ class JobStore:
 
     @staticmethod
     def accepted(plan: dict, facts: dict) -> bool:
-        required = ACCEPTANCE | ({"browser_verified"} if plan["browser"] else set())
+        required = ({"identity_verified", "provider_configured", "conversation_verified",
+                     "shared_login_verified", "native_running_verified", "tribe_membership_verified"}
+                    if plan["schema"] == CONVERSATION_PLAN_SCHEMA else ACCEPTANCE)
+        required |= ({"browser_code_verified"} if plan["schema"] == CONVERSATION_PLAN_SCHEMA
+                     else {"browser_verified"}) if plan["browser"] else set()
         return all(facts.get(key) is True for key in required)
 
     @staticmethod
     def project(record: dict) -> dict:
         return {
-            "schema": SCHEMA, "name": record["plan"]["name"], "owner": record["plan"]["owner"],
+            "schema": job_schema(record["plan"]), "name": record["plan"]["name"], "owner": record["plan"]["owner"],
             "plan_digest": record["plan_digest"], "state": record["state"], "stage": record["stage"],
             "reason": record["reason"] if record["reason"] in REASONS else None,
-            "completed_steps": [stage for stage in STAGES if record["steps"][stage]["state"] == "complete"],
+            "completed_steps": [stage for stage in stages(record["plan"]) if record["steps"][stage]["state"] == "complete"],
             "active": record["state"] == "complete", "updated_ms": record["updated_ms"],
         }
 

@@ -159,6 +159,13 @@ class Target:
                 offline=hosted, deadline_ns=deadline_ns, membership_precondition=membership_precondition,
                 effect_not_after_ms=effect_not_after_ms)
 
+    def private_resource(self, value: dict, *, deadline_ns: int) -> dict:
+        """Private owner transport under the unchanged original guest binding."""
+        from .onboarding_receive_keys import private_transfer
+        self._binding()
+        return private_transfer(self.package/'runtime', self.root/'tribe', self.root/'group-admission',
+            value, deadline_ns=deadline_ns)
+
     def group_publication(self, value: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None,
                           effect_not_after_ms: int | None = None,
@@ -173,6 +180,18 @@ class Target:
         root = self.package / 'runtime'
         group = self.root / 'tribe'
         journal = self.root / 'group-admission'
+        if value['action'] == 'receive-route-preview':
+            if authority_closure or expected_context_sha256 is not None or remaining_execution is not None:
+                raise OnboardingError('onboarding_group_owner_context_conflict')
+            from .onboarding_receive_keys import route_preview
+            return route_preview(self.package/'runtime', self.root/'tribe', value['operation_id'], deadline_ns=deadline_ns)
+        if value['action'] == 'preparation-preview':
+            if authority_closure or expected_context_sha256 is not None or remaining_execution is not None:
+                raise OnboardingError('onboarding_group_owner_context_conflict')
+            from .onboarding_membership_preparation import preview
+            return preview(root, operation_id=value['operation_id'],
+                           tribe_ref=value['params']['tribe_ref'], deadline_ns=deadline_ns,
+                           qualified_startup=self.qualified_startup)
         if remaining_execution is not None:
             if value['action'] == 'context-preview':
                 raise OnboardingError('onboarding_group_remaining_owner_context_required')
@@ -784,6 +803,32 @@ class Target:
                 receiving_readiness='unobserved',
                 responder_association='same-connection' if connected else 'legacy-probe')
 
+    def base_running(self, *, deadline_ns: int | None) -> dict:
+        """Own admitted base observation independent of group publication."""
+        if type(deadline_ns) is not int or deadline_ns <= time.monotonic_ns():
+            raise OnboardingError('onboarding_observation_deadline_expired')
+        from .onboarding_receiving_update import OwnerGroupClient
+        from .owner_process import ParentProcessPresence
+        root = self.package / 'runtime'
+        binding = document(self.root / 'plan.json')
+        if binding != self._binding():
+            raise OnboardingError('current_onboarding_target_required')
+        bundle = self.document_bundle()
+        with OwnerGroupClient(root, root / 'matrix.sock', deadline_ns=deadline_ns) as owner:
+            current = owner.base_status()
+            loaded = current['runtime_status'].get('loaded_runtime')
+            if (current['server'] != bundle['local_origin']
+                    or current['runtime_status'].get('local_origin') != current['server']
+                    or not isinstance(loaded, dict)
+                    or loaded.get('runtime_bundle_sha256') != digest(bundle)
+                    or loaded.get('process_id') != current['process']['pid']):
+                raise OnboardingError('receiving_control_process_changed')
+            with ParentProcessPresence(current['process']) as parent:
+                if (self.document_bundle() != bundle or document(self.root / 'plan.json') != binding):
+                    raise OnboardingError('receiving_control_process_changed')
+                parent.verify()
+                return dict(current, admission_parent=parent.process, runtime_sha256=digest(bundle))
+
     def current_running(self, *, deadline_ns: int | None) -> dict:
         """Observe an admitted preservation update without replaying onboarding.
 
@@ -901,7 +946,7 @@ class Target:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("sdk-observe", "sdk-prepare", "prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept", "group-relationship", "group-publication", "group-session", "receiving-control-prepare", "receiving-control-apply", "receiving-control-prepare-apply", "receiving-identity", "receiving-bootstrap-freeze", "receiving-bootstrap-stage", "receiving-bootstrap-publish"))
+    parser.add_argument("action", choices=("sdk-observe", "sdk-prepare", "prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept", "group-relationship", "group-publication", "group-resource", "group-session", "receiving-control-prepare", "receiving-control-apply", "receiving-control-prepare-apply", "receiving-identity", "receiving-bootstrap-freeze", "receiving-bootstrap-stage", "receiving-bootstrap-publish"))
     parser.add_argument("--diagnostics", action="store_true", help="write bounded nonsecret refusal detail to stderr")
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
@@ -922,6 +967,7 @@ def main(argv: list[str] | None = None) -> int:
     visibility.add_argument("--visibility-installation", type=Path)
     parser.add_argument("--ready-fd", type=int)
     parser.add_argument('--require-loaded', action='store_true')
+    parser.add_argument('--base-native', action='store_true')
     parser.add_argument('--current-native', action='store_true',
         help='observe an already admitted qualified maintenance selection')
     parser.add_argument('--observation-timeout-seconds', type=float)
@@ -952,15 +998,19 @@ def main(argv: list[str] | None = None) -> int:
             expected_initial_context = initial_context(json.loads(args.initial_context_json))
         controlling = args.action in {'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply'}
         identity_query = args.action == 'receiving-identity'
+        if args.base_native and (args.action != 'admitted-running' or args.require_loaded or args.current_native
+                or args.observation_timeout_seconds is None and args.observation_deadline_ns is None):
+            raise OnboardingError('qualified_onboarding_target_observer_required')
         if args.current_native and (args.action != 'admitted-running' or not args.require_loaded
                 or args.observation_timeout_seconds is None and args.observation_deadline_ns is None):
             raise OnboardingError('qualified_onboarding_target_observer_required')
-        grouping = args.action in {'group-relationship', 'group-publication', 'group-session'}
+        grouping = args.action in {'group-relationship', 'group-publication', 'group-resource', 'group-session'}
         if ((args.remaining_execution is None) != (args.remaining_execution_sha256 is None)
                 or args.remaining_execution is not None and (args.action != 'group-publication'
                     or args.remaining_execution.parent != args.home/'.onboarding-matrix')):
             raise OnboardingError('onboarding_group_remaining_owner_input_required')
-        if grouping != (args.group_request is not None) or grouping and args.ready_fd is not None:
+        if (grouping != (args.group_request is not None) or grouping and args.ready_fd is not None
+                or args.action == 'group-resource' and args.group_request != Path('-')):
             raise OnboardingError('onboarding_group_relationship_command_required')
         if args.native_tooling_json is not None and (not identity_query
                 or len(args.native_tooling_json.encode()) > 65536):
@@ -988,7 +1038,7 @@ def main(argv: list[str] | None = None) -> int:
                     or not 0 < args.authorization_expires_at_ms < 2**53)
                 or admitting and ((timeout is None) != (args.authorization_expires_at_ms is None))):
             raise OnboardingError('invalid_receiving_observation_timeout')
-        if timeout is not None and (args.action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
+        if timeout is not None and (args.action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
                 or not math.isfinite(timeout) or not 0 < timeout <= 60):
             raise OnboardingError('invalid_receiving_observation_timeout')
         if bootstrapping:
@@ -1155,6 +1205,14 @@ def main(argv: list[str] | None = None) -> int:
                 packet = json.loads(raw)
             else:
                 packet = being_seed._read(args.group_request, limit=being_seed.MAX_SELECTION)
+            if args.action == 'group-resource':
+                if observation_deadline_ns is None:
+                    raise OnboardingError('receive_resource_deadline_required')
+                from .onboarding_receive_keys import private_response
+                result = private_response(lambda: target.private_resource(packet,
+                    deadline_ns=observation_deadline_ns))
+                print(json.dumps(result))
+                return 0
             packet = request_packet(packet)
             if (not packet['offline']
                     or (args.action == 'group-publication') != ('action' in packet['command'])):
@@ -1205,7 +1263,8 @@ def main(argv: list[str] | None = None) -> int:
                                 ready_descriptor=args.ready_fd)
         if args.action in {"running", "admitted-running"}:
             stage = 'native-observation'
-            observed = (target.current_running(deadline_ns=observation_deadline_ns) if args.current_native
+            observed = (target.base_running(deadline_ns=observation_deadline_ns) if args.base_native
+                else target.current_running(deadline_ns=observation_deadline_ns) if args.current_native
                 else target.running(admitted=args.action == 'admitted-running',
                 require_loaded=args.require_loaded,
                 deadline_ns=observation_deadline_ns))

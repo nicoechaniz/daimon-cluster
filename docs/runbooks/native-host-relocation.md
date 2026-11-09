@@ -150,8 +150,9 @@ pool on the data filesystem. Reuse `clusterctl create` with a pinned **local VM
 image**, followed by the ordinary journaled `start` when a blank guest may boot.
 Incus derives the virtual-machine type from a local image's metadata; an absent
 `--vm` flag in Cluster's adapter does not prove a missing creation capability.
-Confirm the imported image fingerprint and type before creating, and independently
-read the created instance type afterward. A named alias alone is insufficient.
+Confirm the imported image fingerprint and type before creating with the supported
+JSON query `incus query /1.0/images/FINGERPRINT`; Incus6.0.4 does not accept
+`image info --format=json`. Independently read the created instance type afterward. A named alias alone is insufficient.
 Use an existing profile for explicit CPU, memory, disk and autostart bounds.
 Keep the receiving resource operation journal; creating a blank generic resource
 is not Matrix enrollment, identity adoption or control-plane migration.

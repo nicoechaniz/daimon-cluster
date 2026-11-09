@@ -193,15 +193,7 @@ class MatrixUserService:
         self._execute([*self._manager_prefix, '--no-block', 'stop', self.unit.name], deadline_ns)
 
     def bind_process(self, process: dict, inspected: dict) -> dict:
-        values = inspected['manager']
-        if (values['ActiveState'] != 'active' or int(values['MainPID']) != process['pid']
-                or not values['ControlGroup']):
-            raise OnboardingError('receiving_matrix_process_scope_required')
-        lines = (Path('/proc') / str(process['pid']) / 'cgroup').read_text().splitlines()
-        if '0::' + values['ControlGroup'] not in lines:
-            raise OnboardingError('receiving_matrix_process_scope_required')
-        return dict(process=process, control_group=values['ControlGroup'],
-                    invocation_id=values['InvocationID'])
+        return bind_service_parent_process(process, inspected)
 
     def start(self, *, deadline_ns: int | None = None) -> None:
         self._execute([*self._manager_prefix, 'daemon-reload'], deadline_ns)
@@ -266,20 +258,41 @@ class MatrixGuestService(MatrixUserService):
         admission. Those remain the receiving observation's separate evidence.
         Re-pin both retained tuples and require their actual same-unit cgroup.
         """
-        from .owner_process import ParentProcessPresence, PresenceError
-        try:
-            with ParentProcessPresence(observed['process']) as family:
-                if family.process != observed['admission_parent']:
-                    raise OnboardingError('receiving_matrix_process_scope_required')
-                binding = self.bind_process(family.process, inspected)
-                lines = (Path('/proc') / str(observed['process']['pid']) / 'cgroup').read_text().splitlines()
-                if '0::' + binding['control_group'] not in lines:
-                    raise OnboardingError('receiving_matrix_process_scope_required')
-                family.verify()
-                return dict(process=dict(observed['process']), admission_parent=family.process,
-                    control_group=binding['control_group'], invocation_id=binding['invocation_id'])
-        except (OSError, ValueError, KeyError, TypeError, PresenceError):
-            raise OnboardingError('receiving_matrix_process_scope_required') from None
+        return bind_admitted_service_process(observed, inspected, bind_process=self.bind_process)
+
+
+def bind_service_parent_process(process: dict, inspected: dict) -> dict:
+    """Bind an observed service parent to its actual manager cgroup."""
+    values = inspected['manager']
+    if (values['ActiveState'] != 'active' or int(values['MainPID']) != process['pid']
+            or not values['ControlGroup']):
+        raise OnboardingError('receiving_matrix_process_scope_required')
+    lines = (Path('/proc') / str(process['pid']) / 'cgroup').read_text().splitlines()
+    if '0::' + values['ControlGroup'] not in lines:
+        raise OnboardingError('receiving_matrix_process_scope_required')
+    return dict(process=process, control_group=values['ControlGroup'],
+                invocation_id=values['InvocationID'])
+
+
+def bind_admitted_service_process(observed: dict, inspected: dict, *,
+                                  bind_process: Callable[[dict, dict], dict],
+                                  derive_parent: bool = False) -> dict:
+    """Reuse actual parent/cgroup binding; only base-status callers derive parent."""
+    from .owner_process import ParentProcessPresence, PresenceError
+    try:
+        with ParentProcessPresence(observed['process']) as family:
+            if (not derive_parent or 'admission_parent' in observed) and family.process != observed['admission_parent']:
+                raise OnboardingError('receiving_matrix_process_scope_required')
+            binding = bind_process(family.process, inspected)
+            lines = (Path('/proc') / str(observed['process']['pid']) / 'cgroup').read_text().splitlines()
+            if '0::' + binding['control_group'] not in lines:
+                raise OnboardingError('receiving_matrix_process_scope_required')
+            family.verify()
+            return dict(process=dict(observed['process']), admission_parent=family.process,
+                control_group=binding['control_group'], invocation_id=binding['invocation_id'])
+    except (OSError, ValueError, KeyError, TypeError, PresenceError):
+        raise OnboardingError('receiving_matrix_process_scope_required') from None
+
 
 
 class MatrixNativeService(MatrixGuestService):

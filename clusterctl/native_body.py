@@ -250,20 +250,35 @@ if result!=0 and ctypes.get_errno()!=errno.EEXIST:raise OSError(ctypes.get_errno
         command = [str(self.python), '-B', '-I', '-c', REMOTE_LAUNCH, json.dumps(request)]
         return command, remaining
 
-    def relationship_conversation(self, argv: list[str], packet: dict, *,
-                                  deadline_ns: int, validate):
-        """Use the same pinned transport and remote clock for a finite CLI session.
-
-        The receiving owner enforces its rebased deadline independently of SSH.
-        Closing the local transport does not prove remote writer release.
-        """
+    def _framed_conversation(self, argv: list[str], packet: dict, *,
+                             deadline_ns: int, validate, maintenance: bool):
         from .onboarding_group_session import OwnerConversation
         validate()
         command, remaining = self._launch_request(argv, deadline_ns=deadline_ns,
-            timeout_seconds=60, owner_clock=True)
+            timeout_seconds=60, owner_clock=True, uid=0 if maintenance else 1000,
+            gid=0 if maintenance else 1000)
         transport = self._transport_command(command, timeout_seconds=remaining)
         return OwnerConversation(transport, packet, deadline_ns=deadline_ns,
-            validate=validate, env={'PATH': os.defpath, 'LANG': 'C.UTF-8'})
+            validate=validate, cleanup_seconds=90 if maintenance else 0, native_writer=not maintenance,
+            env={'PATH': os.defpath, 'LANG': 'C.UTF-8'})
+
+    def relationship_conversation(self, argv: list[str], packet: dict, *,
+                                  deadline_ns: int, validate):
+        """Existing finite owner CLI and native clock, without root cleanup."""
+        return self._framed_conversation(argv, packet, deadline_ns=deadline_ns,
+            validate=validate, maintenance=False)
+
+    def membership_maintenance_conversation(self, argv: list[str], packet: dict, *,
+                                           deadline_ns: int, validate):
+        """Root maintenance through the same granted body transport.
+
+        The owning caller must check its original job/grant and selected public
+        helper before construction and every call. This adds no authority: the
+        existing execute route already permits that caller's root execution.
+        Only restoration gets the separate close reserve, never membership.
+        """
+        return self._framed_conversation(argv, packet, deadline_ns=deadline_ns,
+            validate=validate, maintenance=True)
 
     def execute(self, argv: list[str], *, uid: int = 1000, gid: int = 1000,
                 env: dict | None = None, input_data: str | None = None,

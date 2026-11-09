@@ -471,15 +471,15 @@ class OwnerGroupClient:
             raise OnboardingError('receiving_control_binding_conflict')
         client = self._client('receiving-controller')
         request = client.prepare('runtime.reader-selection', command)
-        being_seed._write(path, dict(schema='cluster-receiving-owner-control/v1',
-            command=command, request=request, process=observed['process'], server=observed['server']),
-            limit=being_seed.MAX_SELECTION)
+        from .onboarding_owner_control import write_control_record
+        write_control_record(path, dict(schema='cluster-receiving-owner-control/v1',
+            command=command, request=request, process=observed['process'], server=observed['server']))
         self._durable_control(path)
         return dict(request_id=request['request_id'], request_sha256=request_hash(request),
                     command_sha256=digest(command))
 
     def apply_control(self, path: Path) -> dict:
-        """Exact retry or observed same-process completion; never re-author."""
+        """Resume an immutable control; retain bounded authentication renewals."""
         with being_seed._locked(self._control_directory(path)):
             result = self._apply_control(path)
             self._accept_deadline()
@@ -507,16 +507,22 @@ class OwnerGroupClient:
         observed = self.status()
         if observed['process'] != retained['process'] or observed['server'] != retained['server']:
             raise OnboardingError('receiving_control_process_changed')
+        from .onboarding_owner_control import retained_control_request, send_control_request
         expected_hash = request_hash(request)
         gate = observed['gate']
         if gate.get('request_sha256') != expected_hash:
-            if (gate['process_instance_id'] != command['process_instance_id']
-                    or gate['head'] != command['expected_head']):
-                raise OnboardingError('receiving_control_superseded')
-            response = self._client('receiving-controller').send(request)
-            if response.get('ok') is not True:
-                raise OnboardingError('receiving_control_not_accepted')
-            observed = self.status()
+            client = self._client('receiving-controller')
+            request, observed, response = send_control_request(self, client, path,
+                being_seed._read(path, limit=being_seed.MAX_SELECTION), observed, validate=self._accept_deadline)
+            expected_hash = request_hash(request)
+            if response is not None:
+                observed = self.status()
+            if response is not None and response.get('ok') is not True:
+                request, observed = retained_control_request(self, client, path,
+                    being_seed._read(path, limit=being_seed.MAX_SELECTION), observed, renew=False)
+                expected_hash = request_hash(request)
+                if observed['gate'].get('request_sha256') != expected_hash:
+                    raise OnboardingError('receiving_control_not_accepted')
             gate = observed['gate']
         if (gate.get('request_sha256') != expected_hash
                 or gate.get('phase') != command['phase']
@@ -527,6 +533,25 @@ class OwnerGroupClient:
         return {**observed, 'schema': 'cluster-receiving-owner-control-observation/v1',
             'request_id': request['request_id'], 'request_sha256': expected_hash,
             'command_sha256': digest(command)}
+
+
+def _base_observation(value: dict) -> dict:
+    """The qualified owner authenticated this exact base socket/process."""
+    from .owner_process import validate_process, PresenceError
+    try:
+        process = validate_process(value['process'])
+        if (value.get('schema') != 'cluster-receiving-base-observation/v1'
+                or value.get('receiving_readiness') != 'unobserved'
+                or not isinstance(value['server'], dict) or not value['server']
+                or value['runtime_status']['local_origin'] != value['server']
+                or value['runtime_status']['loaded_runtime']['process_id'] != process['pid']
+                or value['runtime_status']['loaded_runtime']['runtime_bundle_sha256'] != value['runtime_sha256']):
+            raise ValueError
+        if 'admission_parent' in value:
+            validate_process(value['admission_parent'])
+    except (KeyError, TypeError, ValueError, PresenceError):
+        raise OnboardingError('receiving_base_owner_observation_conflict') from None
+    return value
 
 
 class GuestGroupClient:
@@ -568,6 +593,9 @@ class GuestGroupClient:
         if self.deadline_ns is not None and time.monotonic_ns() >= self.deadline_ns:
             raise OnboardingError('receiving_owner_deadline_expired')
         return result
+
+    def base_status(self) -> dict:
+        return _base_observation(self._call('admitted-running', maintenance=True, base_native=True))
 
     def status(self) -> dict:
         value = self._call('admitted-running', require_loaded=True, current_native=True)
@@ -643,6 +671,11 @@ class GuestGroupClient:
         current = self._relationship_process
         return current is not None and current.writer_held()
 
+    def private_resource(self, request: dict) -> dict:
+        """Machine-private bytes; callers must not journal the export result."""
+        from .onboarding_receive_keys import private_result
+        return private_result(self._call('group-resource', maintenance=True, group_request=request))
+
     def group_publication(self, command: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None,
                           remaining_execution=None) -> dict:
@@ -657,7 +690,9 @@ class GuestGroupClient:
         return self._call('receiving-control-apply', control_file=path)
 
     def prepare_apply_control(self, command: dict, path: Path) -> dict:
-        return self._call('receiving-control-prepare-apply', control_file=path, control_value=command)
+        if self.maintenance is None:
+            return self._call('receiving-control-prepare-apply', control_file=path, control_value=command)
+        return self._call('receiving-control-prepare-apply', maintenance=True, control_file=path, control_value=command)
 
     def reconcile_tooling(self, operation_id: str, *, attachment: Path,
                          codex_home: Path, connections: tuple[Path, ...] = (),
@@ -783,6 +818,10 @@ class SourceGroupClient:
             if result.returncode or len(result.stdout.encode()) > being_seed.MAX_SELECTION:
                 raise OnboardingError('receiving_source_owner_unavailable')
             value = json.loads(result.stdout)
+            if (module == 'clusterctl.onboarding_source' and '--private-resource' in arguments
+                    and isinstance(value, dict) and value.get('schema') == 'cluster-private-receive-resource-refusal/v1'):
+                from .onboarding_receive_keys import private_result
+                private_result(value)
             if (not isinstance(value, dict)
                     or (not native_response and 'error' in value)
                     or native_response and (module != 'clusterctl.onboarding_owner_client'
@@ -815,6 +854,9 @@ class SourceGroupClient:
                 or not isinstance(status.get('loaded_application'), dict)):
             raise OnboardingError('receiving_source_owner_observation_conflict')
         return value
+
+    def base_status(self) -> dict:
+        return _base_observation(self._call(['--owner-base-status'], maintenance=True))
 
     def status(self) -> dict:
         return self._observation(self._call(['--owner-status']))
@@ -894,6 +936,12 @@ class SourceGroupClient:
             user=self.owner_uid, group=self.owner_gid, extra_groups=(),
             env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'})
 
+    def private_resource(self, request: dict) -> dict:
+        """Machine-private bytes through the existing UID/config-bound pipe."""
+        from .onboarding_receive_keys import private_result
+        return private_result(self._call(['--group-request', '-', '--private-resource'],
+            maintenance=True, command=request))
+
     def group_publication(self, command: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None,
                           remaining_execution=None) -> dict:
@@ -920,7 +968,10 @@ class SourceGroupClient:
         return self._call(['--apply-control', str(path)])
 
     def prepare_apply_control(self, command: dict, path: Path) -> dict:
-        return self._call(['--prepare-apply-control', str(path), '--control-command', '-'], command=command)
+        arguments = ['--prepare-apply-control', str(path), '--control-command', '-']
+        if self.maintenance is None:
+            return self._call(arguments, command=command)
+        return self._call(arguments, maintenance=True, command=command)
 
     def reconcile_tooling(self, operation_id: str, *, attachment: Path,
                          codex_home: Path, connections: tuple[Path, ...] = (),
@@ -3683,6 +3734,19 @@ class CohortController:
 
     def _admission(self, row: dict) -> dict | None:
         """Validate the frozen physical after-set, independently of late effects."""
+        if 'cohort_admission' not in row['intended_transition']:
+            return None
+        locations = {name: dict(root=str(owner.root), socket=str(owner.socket))
+                     for name, owner in self.owners.items()}
+        return self.validate_admission(row, locations, self._senders(row))
+
+    @staticmethod
+    def validate_admission(row: dict, owner_locations: dict, senders: list) -> dict | None:
+        """Same admission contract, usable during model-free intent compilation.
+
+        This pure validation opens no owner/client, journal or native writer.
+        Execution separately validates its live owners and original grants.
+        """
         transition = row['intended_transition']
         if 'cohort_admission' not in transition:
             return None
@@ -3693,12 +3757,12 @@ class CohortController:
                 or row['target'] != 'receiving:' + value['tribe_ref']
                 or row['expected_precondition'].get('tribe_ref') != value['tribe_ref']
                 or not isinstance(value['receivers'], dict) or not 1 <= len(value['receivers']) <= 256
-                or sorted(value['receivers']) != sorted(self.owners)):
+                or sorted(value['receivers']) != sorted(owner_locations)):
             raise OnboardingError('receiving_cohort_admission_required')
-        before = {item['name']: item for item in self._senders(row)}
-        added = set(self.owners) - set(before)
+        before = {item['name']: item for item in senders}
+        added = set(owner_locations) - set(before)
         if (not added or not isinstance(row['expected_precondition'].get('receiver_selections'), dict)
-                or sorted(row['expected_precondition']['receiver_selections']) != sorted(self.owners)):
+                or sorted(row['expected_precondition']['receiver_selections']) != sorted(owner_locations)):
             raise OnboardingError('receiving_cohort_admission_required')
         identities = set()
         for name, receiver in value['receivers'].items():
@@ -3706,7 +3770,7 @@ class CohortController:
                     'being_ref', 'embodiment_id', 'root', 'socket', 'candidate', 'recipe'}
                     or any(not isinstance(receiver[key], str) or not receiver[key]
                            for key in ('being_ref', 'embodiment_id', 'root', 'socket'))
-                    or (receiver['root'], receiver['socket']) != (str(self.owners[name].root), str(self.owners[name].socket))):
+                    or (receiver['root'], receiver['socket']) != (owner_locations[name]['root'], owner_locations[name]['socket'])):
                 raise OnboardingError('receiving_cohort_admission_receiver_changed')
             identity = receiver['being_ref'], receiver['embodiment_id']
             if identity in identities:

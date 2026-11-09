@@ -93,6 +93,183 @@ def configured(tmp_path):
     return config, value, run, HostBackend(config, run=run)
 
 
+@pytest.mark.parametrize('reason,expected', [
+    ('conversation_native_engine_unconfirmed', 'conversation_native_engine_unconfirmed'),
+    ('private-secret: /private/context', 'onboarding_host_operation_failed'),
+    ({'private': 'secret'}, 'onboarding_host_operation_failed'),
+])
+def test_guest_conversation_failure_preserves_only_closed_public_code(monkeypatch, reason, expected):
+    import subprocess
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=1,
+        stdout=json.dumps(dict(schema='cluster-conversation-observation/v1', state='refused', reason=reason)),
+        stderr='private-secret must never become diagnostics'))
+    with pytest.raises(OnboardingError) as error:
+        HostBackend._run(['exec', 'dm-fixture', '--', 'python3',
+            '/opt/qualified/clusterctl/onboarding_conversation.py', '--request-stdin'])
+    assert str(error.value) == expected
+
+
+@pytest.mark.parametrize('unresolved',[False,True])
+@pytest.mark.parametrize('with_proxy',[False,True])
+def test_conversation_stage_binds_own_plan_and_does_not_fabricate_login(tmp_path, monkeypatch, unresolved, with_proxy):
+    from tests.test_onboarding_conversation import request
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA
+    config, value, _, _ = configured(tmp_path)
+    value['schema'] = CONVERSATION_PLAN_SCHEMA
+    selected = request()
+    selected.update(name=value['name'], plan_digest=digest(value))
+    supplied = dict(selected)
+    if unresolved:
+        from clusterctl.onboarding_conversation import INTENT_SCHEMA
+        supplied.pop('being_ref')
+        supplied['schema'] = INTENT_SCHEMA
+    path = tmp_path/'conversation.json'
+    being_seed._write(path, supplied)
+    backend = HostBackend(replace(config, conversation_by_name={value['name']: (path, digest(supplied))}))
+    proxy_reads = []
+    if with_proxy:
+        from clusterctl.onboarding_conversation_proxy import desired
+        listener = dict(listen_host='10.20.30.40', listen_port=18741)
+        backend.config = replace(backend.config, conversation_proxy_by_name={value['name']:listener})
+        def dispatch(_plan, argv):
+            proxy_reads.append(argv)
+            assert argv == ['query','/1.0/instances/'+backend.instance(value)]
+            return json.dumps(dict(type='container',devices={'conversation-web':desired(listener,selected['port'])}))
+        backend._dispatch = dispatch
+    backend.authorize = lambda p, pin: True
+    backend._ceremony = lambda p: SimpleNamespace(admission_coordinates=lambda p: {'being_ref': selected['being_ref']})
+    backend._guest_paths = lambda p: (tmp_path, Path('/qualified/base'), {})
+    backend._runtime_paths = lambda p, base: (Path('/qualified/current'), [], {})
+    backend._mounted = lambda p, mounts: True
+    backend.body_python = lambda p: Path('/usr/bin/python3')
+    backend._telegram_command = lambda p, action: {'native_state': 'active'}
+    calls = []
+    def execute(p, argv, **options):
+        calls.append((argv, options))
+        return json.dumps(dict(schema='cluster-conversation-observation/v1', state='ready',
+            native_control=True, web_health=True, anonymous_private_api_denied=True))
+    backend.execute_body = execute
+    observed = backend.observe(value, 'conversation', 'retained-operation')
+    assert observed.state == 'complete'
+    assert observed.facts == {'conversation_ready': True}
+    assert '--apply' not in calls[0][0]
+    assert calls[0][1]['uid'] == 0
+    assert json.loads(calls[0][1]['input_data']) == selected
+    backend.execute(value, 'conversation', 'retained-operation')
+    assert '--apply' in calls[-1][0]
+    # A changed pairing request cannot be sent to the guest, even when its
+    # declared owner/name is unchanged. No guest-side effect is attempted.
+    supplied['human_ref'] = 'human:local:33333333-3333-4333-8333-333333333333'
+    being_seed._write(path, supplied)
+    with pytest.raises(OnboardingError, match='conversation_selection_changed'):
+        backend.observe(value, 'conversation', 'retained-operation')
+    assert len(calls) == 2
+    assert len(proxy_reads) == (2 if with_proxy else 0)
+
+
+def test_completed_companion_entry_uses_own_authorized_request_without_bootstrap_secrets(tmp_path):
+    from tests.test_onboarding_conversation import request
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA
+    config, value, _, _ = configured(tmp_path)
+    value['schema'] = CONVERSATION_PLAN_SCHEMA
+    selected = request()
+    selected.update(name=value['name'], plan_digest=digest(value))
+    path = tmp_path/'conversation.json'
+    being_seed._write(path, selected)
+    backend = HostBackend(replace(config, conversation_by_name={value['name']:(path,digest(selected))}))
+    granted = [True]
+    backend.authorize = lambda p, pin: granted[0]
+    backend._ceremony = lambda p: SimpleNamespace(admission_coordinates=lambda p:{'being_ref':selected['being_ref']})
+    entry = backend.companion_entry(value)
+    assert entry['url'] == selected['origin']+'/interaction/?view=conversation&client=standalone'
+    assert entry['being_ref'] == selected['being_ref'] and entry['human_ref'] == selected['human_ref']
+    assert not {'runtime','execution','chat_id','human_id','topic_id','home_ref'} & set(entry)
+    assert entry['current_health'] == 'not-refreshed'
+    assert entry['human_device_acceptance'] == 'not-established-by-command'
+    granted[0] = False
+    with pytest.raises(OnboardingError,match='host_authorization_required'):
+        backend.companion_entry(value)
+    granted[0] = True
+    selected['origin'] = 'https://foreign.example.org'
+    being_seed._write(path,selected)
+    with pytest.raises(OnboardingError,match='conversation_selection_changed'):
+        backend.companion_entry(value)
+
+
+def test_identity_stage_retains_native_transaction_without_social_start(tmp_path):
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA
+    config, value, _, _ = configured(tmp_path)
+    value['schema'] = CONVERSATION_PLAN_SCHEMA
+    backend = HostBackend(replace(config, custody=tmp_path/'custody',
+        custody_grants=tmp_path/'custody-grants', code=tmp_path/'code', views=tmp_path/'views',
+        group_admission=tmp_path/'not-opened-group'))
+    backend.authorize = lambda p, pin: True
+    backend._consented = lambda p, stage: stage == 'matrix'
+    backend._decision = lambda p: {'matrix_identity_mode': 'new'}
+    effects = []
+    ceremony = SimpleNamespace(authorize=lambda p: True, observe=lambda p: None,
+        prepare=lambda p, identity_mode: effects.append(('prepare', identity_mode)),
+        admission_coordinates=lambda p: effects.append(('verified', p['name'])))
+    backend._ceremony = lambda p: ceremony
+    backend._matrix_execute = lambda p, c: effects.append(('native-identity', c)) or True
+    backend._matrix_command = lambda p, action: {'phase': 'v8'}
+    before = backend.observe(value, 'identity', 'same-retained-operation')
+    assert before.state == 'absent' and before.safe_to_execute
+    assert effects == []
+    backend.execute(value, 'identity', 'same-retained-operation')
+    assert effects == [('prepare', 'new'), ('native-identity', ceremony), ('verified', value['name'])]
+    # Identity observation cannot borrow a group completion or merely trust the
+    # requested label: the actual target signature coordinates are required.
+    ceremony.observe = lambda p: {'ready': True}
+    backend._guest_paths = lambda p: (tmp_path, tmp_path/'guest', {})
+    backend._runtime_paths = lambda p, base: (base, [], {})
+    backend._matrix_mount = lambda p: {}
+    backend._mounted = lambda p, mounts: True
+    backend._sdk_successor = lambda p: False
+    observed = backend.observe(value, 'identity', 'same-retained-operation')
+    assert observed.facts == {'identity_verified': True}
+
+
+def test_companion_native_admission_does_not_wait_for_outbound_visibility(tmp_path, monkeypatch):
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA, Observation
+    from clusterctl import onboarding_managed, onboarding_group_coordinator
+    config, value, _, _ = configured(tmp_path)
+    value['schema'] = CONVERSATION_PLAN_SCHEMA
+    backend = HostBackend(replace(config, admission=tmp_path/'admission',
+        group_admission=tmp_path/'membership', peer=tmp_path/'retained-legacy-peer'))
+    backend.authorize = lambda p, pin: True
+    backend._identity = lambda p, apply: Observation('complete', {'identity_verified': True})
+    effects = []
+    state = {'running': False, 'membership': False}
+    class Native:
+        settings = {'mode': 'native-admission-only'}
+        def __init__(self, owner):
+            assert owner.config.group_admission is None and owner.config.peer is None
+            assert owner.config.admission == config.admission or owner.config.admission == tmp_path/'admission'
+        def observe(self, selected):
+            return Observation('complete') if state['running'] else Observation('absent', safe_to_execute=True)
+        def execute(self, selected):
+            state['running'] = True
+            effects.append('native-start')
+    class Group:
+        def __init__(self, owner):
+            assert owner is backend
+        def observe_membership(self, selected):
+            return (Observation('complete', {'tribe_membership_verified': True}) if state['membership']
+                    else Observation('waiting', reason='group_admission_pending'))
+    monkeypatch.setattr(onboarding_managed, 'ManagedRuntime', Native)
+    monkeypatch.setattr(onboarding_group_coordinator, 'GroupCoordinator', Group)
+    assert backend.observe(value, 'matrix', 'original').state == 'absent'
+    backend.execute(value, 'matrix', 'original')
+    assert effects == ['native-start']
+    assert backend.observe(value, 'matrix', 'original').reason == 'group_admission_pending'
+    state['membership'] = True
+    observed = backend.observe(value, 'matrix', 'original')
+    assert observed.facts == {'identity_verified': True, 'native_running_verified': True,
+                              'tribe_membership_verified': True}
+    assert effects == ['native-start']
+
+
 @pytest.mark.parametrize('action', ['native-install', 'native-observe', 'probe', 'prepare', 'install'])
 def test_native_harness_commands_do_not_require_bot_connections(tmp_path, action):
     from clusterctl.onboarding import Observation
@@ -1122,3 +1299,161 @@ def test_host_public_matrix_publisher_reuses_local_validation_and_remote_operato
     with pytest.raises(OnboardingError, match='host_authorization_required'):
         backend.prepare_matrix_public(plan, documents)
     assert len(published) == 1
+
+
+def test_private_resource_uses_existing_qualified_owner_stdin_and_never_argv(tmp_path, monkeypatch):
+    import uuid
+    backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    packet = dict(schema='cluster-private-receive-resource/v1', action='import',
+        operation_id=str(uuid.uuid4()), owner_context_sha256='a'*64,
+        route=dict(provider_ref='native', route_ref='own', key_ref='resource',
+            endpoint='http://127.0.0.1:1234/dm-messaging/v1/message', secret_file='own.key', secret_sha256='b'*64),
+        source={'private':'machine-only'})
+    backend._target_call(value, 'group-resource', candidate=candidate,
+        group_request=packet, observation_timeout_seconds=5)
+    argv, options = calls[0]
+    assert 'group-resource' in argv
+    assert '--group-request' in argv
+    assert '--observation-deadline-ns' in argv
+    assert json.loads(options['input_data']) == packet
+    assert 'machine-only' not in ' '.join(argv)
+    assert packet['operation_id'] not in argv
+    with pytest.raises(OnboardingError):
+        backend._target_call(value, 'group-resource', candidate=candidate, group_request=packet)
+    assert len(calls) == 1
+
+
+class VMIncusFixture(IncusFixture):
+    def __init__(self):
+        super().__init__()
+        self.image_metadata = dict(fingerprint='4' * 64, type='virtual-machine')
+        self.image_reads = []
+
+    def __call__(self, argv, **kwargs):
+        if argv[:1] == ['query'] and argv[1].startswith('/1.0/images/'):
+            self.image_reads.append(list(argv))
+            return json.dumps(self.image_metadata)
+        if argv[:1] == ['query'] and argv[1].endswith('/state'):
+            return json.dumps(dict(status='Running', processes=10, os_info={'os':'Debian'}))
+        if argv[0] == 'init':
+            assert argv[3] == '--vm'
+            # Existing fixture executes the same container/volume operations;
+            # retain the exact actual VM type after the creation effect.
+            try:
+                return super().__call__(argv[:3] + argv[4:])
+            finally:
+                if self.instances:
+                    self.instances[-1]['type'] = 'virtual-machine'
+                    for option in argv:
+                        if option.startswith('eth0,ipv4.address='):
+                            self.instances[-1]['expanded_devices']['eth0']=dict(type='nic',
+                                network='incusbr0', **{'ipv4.address': option.split('=',1)[1]})
+        return super().__call__(argv)
+
+
+def vm_configured(tmp_path):
+    config, value, _, _ = configured(tmp_path)
+    run = VMIncusFixture()
+    return value, run, HostBackend(replace(config, instance_type='virtual-machine'), run=run)
+
+
+def test_vm_environment_reuses_pinned_image_and_existing_journaled_steps(tmp_path):
+    value, run, backend = vm_configured(tmp_path)
+    assert backend.observe(value, 'environment', 'original').state == 'absent'
+    backend.execute(value, 'environment', 'original')
+    assert backend.observe(value, 'environment', 'original').state == 'complete'
+    effects = copy.deepcopy(run.calls)
+    backend.execute(value, 'environment', 'original')
+    assert run.calls == effects
+    assert run.instances[0]['type'] == 'virtual-machine'
+    observed = backend.observe(value, 'environment', 'original')
+    observed.validate()
+    assert observed.facts['virtual_machine_verified'] and observed.facts['vm_image_verified']
+    assert all(call == ['query', '/1.0/images/' + '4' * 64] for call in run.image_reads)
+
+
+def test_vm_environment_advances_the_real_job_store_contract(tmp_path):
+    value, run, backend = vm_configured(tmp_path)
+    store = JobStore(backend.config.jobs)
+    store.submit(value, backend)
+    result = store.tick(value['name'], backend)
+    assert result['state'] == 'ready' and result['stage'] == 'context'
+    assert store._load(value['name'])['steps']['environment']['state'] == 'complete'
+
+
+def test_vm_waits_for_actual_agent_metadata_without_restarting(tmp_path, monkeypatch):
+    from clusterctl import onboarding_host
+    value, run, backend = vm_configured(tmp_path)
+    reads, sleeps = [], []
+    def delayed(argv, **kwargs):
+        assert argv == ['query', '/1.0/instances/dm-eko/state']
+        assert 0 < kwargs['timeout_seconds'] <= 10
+        reads.append(argv)
+        return json.dumps(dict(status='Running', processes=0 if len(reads) == 1 else 10,
+            os_info={} if len(reads) == 1 else {'os':'Debian'}))
+    backend.run = delayed
+    monkeypatch.setattr(onboarding_host.time, 'sleep', sleeps.append)
+    backend._wait_vm_agent(value)
+    assert len(reads) == 2 and sleeps == [0.25] and run.calls == []
+
+
+def test_expired_vm_agent_wait_dispatches_nothing(tmp_path):
+    value, run, backend = vm_configured(tmp_path)
+    with pytest.raises(OnboardingError, match='^onboarding_vm_agent_unavailable$'):
+        backend._wait_vm_agent(value, deadline_ns=1)
+    assert run.calls == []
+
+
+@pytest.mark.parametrize('metadata', [
+    dict(fingerprint='4' * 64, type='container'),
+    dict(fingerprint='3' * 64, type='virtual-machine'),
+    dict(fingerprint='4' * 64), [], None,
+    dict(fingerprint='4' * 64, type='virtual-machine', properties={'oversized': 'x' * 65536}),
+])
+def test_vm_environment_rejects_wrong_actual_image_before_any_mutation(tmp_path, metadata):
+    value, run, backend = vm_configured(tmp_path)
+    run.image_metadata = metadata
+    with pytest.raises(OnboardingError, match='^onboarding_vm_image_required$'):
+        backend.execute(value, 'environment', 'original')
+    assert run.calls == [] and run.instances == [] and run.volumes == []
+
+
+def test_vm_environment_preserves_partial_original_creation(tmp_path):
+    value, run, backend = vm_configured(tmp_path)
+    run.fail_after = 1
+    with pytest.raises(RuntimeError, match='transport disconnected'):
+        backend.execute(value, 'environment', 'original')
+    assert len(run.instances) == 1 and run.instances[0]['type'] == 'virtual-machine'
+    run.fail_after = None
+    backend.execute(value, 'environment', 'original')
+    assert backend.observe(value, 'environment', 'original').state == 'complete'
+    assert sum(call[0] == 'init' for call in run.calls) == 1
+
+
+@pytest.mark.parametrize('requested,actual', [('virtual-machine','container'), ('container','virtual-machine')])
+def test_environment_never_adopts_or_mutates_a_different_instance_type(tmp_path, requested, actual):
+    value, run, backend = vm_configured(tmp_path)
+    backend.execute(value, 'environment', 'original')
+    run.instances[0]['type'] = actual
+    backend = HostBackend(replace(backend.config, instance_type=requested), run=run)
+    before = copy.deepcopy(run.calls)
+    assert backend.observe(value, 'environment', 'original').state == 'conflict'
+    with pytest.raises(OnboardingError, match='^onboarding_environment_conflict$'):
+        backend.execute(value, 'environment', 'original')
+    assert run.calls == before
+
+
+def test_vm_static_nic_is_selected_at_original_init_and_foreign_address_is_preserved(tmp_path):
+    value,run,backend=vm_configured(tmp_path)
+    listener=dict(listen_host='10.20.30.40',listen_port=18741,
+        vm=dict(nic='eth0',network='incusbr0',address='10.100.0.10'))
+    backend=HostBackend(replace(backend.config,conversation_proxy_by_name={value['name']:listener}),run=run)
+    backend.execute(value,'environment','original')
+    assert backend.observe(value,'environment','original').state=='complete'
+    init=next(c for c in run.calls if c[0]=='init')
+    assert 'eth0,ipv4.address=10.100.0.10' in init
+    run.instances[0]['expanded_devices']['eth0']['ipv4.address']='10.100.0.11'
+    before=copy.deepcopy(run.calls)
+    with pytest.raises(OnboardingError,match='onboarding_environment_conflict'):
+        backend.execute(value,'environment','original')
+    assert run.calls==before

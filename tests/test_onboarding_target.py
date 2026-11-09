@@ -246,6 +246,20 @@ def test_receiving_credential_upgrade_keeps_origin_memory_and_runtime_reload(tmp
                           clock=lambda: time.time_ns() // 1_000_000)
     assert hosted.service.ledger.local_origin == before["receipt"]["origin"]
     assert document(target.package / "runtime/runtime.json")["authority_history"]
+    # Home admission derives its public binding from the same completed native
+    # ceremony. Export must not reopen writers or include runtime/custody data.
+    from daimon_matrix.operator_rebirth import authority_from_document
+    retained = files(ceremony.root)
+    ceremony.run = lambda *_a, **_k: pytest.fail('public identity reopened a holder')
+    public = ceremony.public_identity(plan)
+    actual = authority_from_document(public['authority'])
+    actual.validate_origin(public['origin'], require_active=True)
+    assert actual.manifest.digest == ceremony.admission_coordinates(plan)['manifest_hash']
+    assert public['origin'] == complete['receipt']['origin']
+    assert set(public) == {'authority', 'origin'}
+    assert set(public['authority']) == {'schema', 'control_artifacts', 'control_head',
+        'manifest', 'credentials', 'incarnations'}
+    assert files(ceremony.root) == retained
 
 
 @pytest.mark.parametrize("phase", ["response", "candidate", "runtime", "receipt"])

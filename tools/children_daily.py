@@ -559,6 +559,22 @@ def collect(config):
         return report
 
 
+def observation_complete(result):
+    """Collection health is independent of pending vulnerability assessment.
+
+    Exit success never resolves the separate daily-security coverage incident.
+    Findings, needs_triage and the explicit partial assessment remain retained.
+    """
+    return (result['source']['state'] == 'fresh' and bool(result['targets']) and all(
+        value.get('debian_advisories') == 'matched'
+        and value.get('compiler_cleanup',{}).get('status','complete')=='complete'
+        and value.get('browser',{}).get('state','standby') in ('standby','ready')
+        and value.get('applications',{}).get('state','observed')=='observed'
+        for value in result['targets'].values()) and
+        result.get('public_advisories',{}).get('state','matched')=='matched' and
+        result.get('known_exploitation',{}).get('state','matched')=='matched')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
@@ -566,17 +582,11 @@ def main():
     os.umask(0o077)
     result = collect(json.loads(args.config.read_text()))
     print(json.dumps({'coverage': result['coverage'], 'source': result['source']['state'],
+                      'observation_complete': observation_complete(result),
+                      'needs_triage': any(result.get(key,{}).get('needs_triage') is True
+                          for key in ('public_advisories', 'known_exploitation')),
                       'targets': {k: v.get('debian_advisories') for k, v in result['targets'].items()}}))
-    return 0 if result['source']['state'] == 'fresh' and all(
-        value.get('debian_advisories') == 'matched'
-        and value.get('compiler_cleanup',{}).get('status','complete')=='complete'
-        and value.get('browser',{}).get('state','standby') in ('standby','ready')
-        and value.get('applications',{}).get('state','observed')=='observed'
-        for value in result['targets'].values()) and (
-        result.get('public_advisories',{}).get('state','matched')=='matched'
-        and result.get('public_advisories',{}).get('needs_triage',False) is False
-        and result.get('known_exploitation',{}).get('state','matched')=='matched'
-        and result.get('known_exploitation',{}).get('needs_triage',False) is False) else 2
+    return 0 if observation_complete(result) else 2
 
 
 if __name__ == '__main__':

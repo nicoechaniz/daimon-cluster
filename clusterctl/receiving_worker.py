@@ -26,20 +26,34 @@ JOURNAL = Path('/var/lib/daimon-cluster-receiving-maintenance/operations')
 PUBLIC_ERRORS = frozenset({'receiving_worker_binding_required', 'receiving_worker_manager_unavailable',
     'receiving_worker_configuration_changed', 'receiving_worker_state_uncertain',
     'receiving_worker_other_operation_pending', 'receiving_worker_drain_uncertain',
-    'receiving_worker_restore_uncertain'})
+    'receiving_worker_restore_uncertain', 'receiving_worker_deadline_expired'})
 
 
 class WorkerManager:
+    unit_name = UNIT
+    execution_identity: dict[str, str] | None = None
+    extra_fields: frozenset[str] = frozenset()
+    deadline_ns: int | None = None
+    accepted_stop_exits = frozenset({('1', '0')})
+
     def __init__(self, *, config_path: Path | None = None):
         if os.geteuid() != 0:
             raise OnboardingError('receiving_worker_binding_required')
-        self.unit = Path('/etc/systemd/system') / UNIT
+        self.unit = Path('/etc/systemd/system') / self.unit_name
         self.config_path = config_path
 
+    def _remaining(self) -> float:
+        remaining = 45.0 if self.deadline_ns is None else min(45.0,
+            (self.deadline_ns - time.monotonic_ns()) / 1_000_000_000)
+        if remaining <= 0:
+            raise OnboardingError('receiving_worker_deadline_expired')
+        return remaining
+
     def _run(self, *arguments: str, bus: bool = False) -> str:
+        remaining = self._remaining()
         try:
             result = subprocess.run(['/usr/bin/busctl' if bus else '/usr/bin/systemctl', *arguments], capture_output=True,
-                text=True, timeout=45, env={'PATH': os.defpath, 'LANG': 'C.UTF-8'})
+                text=True, timeout=remaining, env={'PATH': os.defpath, 'LANG': 'C.UTF-8'})
         except (OSError, subprocess.TimeoutExpired):
             raise OnboardingError('receiving_worker_manager_unavailable') from None
         if result.returncode or len(result.stdout.encode()) > 65536:
@@ -49,15 +63,18 @@ class WorkerManager:
     def inspect(self) -> dict:
         fields = {'Id', 'LoadState', 'ActiveState', 'SubState', 'MainPID', 'InvocationID', 'Job',
             'Result', 'ExecMainCode', 'ExecMainStatus', 'FragmentPath', 'DropInPaths',
-            'User', 'Group', 'KillMode', 'TimeoutStopUSec'}
-        lines = [line.split('=', 1) for line in self._run('show', UNIT, '--no-pager', '--all',
+            'User', 'Group', 'KillMode', 'TimeoutStopUSec'} | self.extra_fields
+        lines = [line.split('=', 1) for line in self._run('show', self.unit_name, '--no-pager', '--all',
             '--property=' + ','.join(sorted(fields))).splitlines()]
         if (len(lines) != len(fields) or any(len(row) != 2 for row in lines)
                 or {row[0] for row in lines} != fields):
             raise OnboardingError('receiving_worker_manager_unavailable')
         values = dict(lines)
-        if (values['Id'] != UNIT or values['LoadState'] != 'loaded'
+        if (values['Id'] != self.unit_name or values['LoadState'] != 'loaded'
                 or values['FragmentPath'] != str(self.unit) or values['KillMode'] != 'control-group'):
+            raise OnboardingError('receiving_worker_binding_required')
+        if self.execution_identity is not None and any(
+                values[key] != value for key, value in self.execution_identity.items()):
             raise OnboardingError('receiving_worker_binding_required')
         files = [self.unit, *map(Path, values['DropInPaths'].split())]
         hashes = {str(path): hashlib.sha256(onboarding_release.regular(path, uid=0)).hexdigest()
@@ -68,7 +85,7 @@ class WorkerManager:
         try:
             commands = json.loads(self._run('--system', '--json=short', 'get-property',
                 'org.freedesktop.systemd1',
-                '/org/freedesktop/systemd1/unit/daimon_2donboarding_2dworker_2eservice',
+                '/org/freedesktop/systemd1/unit/' + self.unit_name.replace('-', '_2d').replace('.', '_2e'),
                 'org.freedesktop.systemd1.Service', 'ExecStart', bus=True))
             rows = commands['data']
             if (commands['type'] != 'a(sasbttttuii)' or not isinstance(rows, list) or not rows
@@ -89,7 +106,7 @@ class WorkerManager:
                     raise OnboardingError('receiving_worker_binding_required')
             environment_files = json.loads(self._run('--system', '--json=short', 'get-property',
                 'org.freedesktop.systemd1',
-                '/org/freedesktop/systemd1/unit/daimon_2donboarding_2dworker_2eservice',
+                '/org/freedesktop/systemd1/unit/' + self.unit_name.replace('-', '_2d').replace('.', '_2e'),
                 'org.freedesktop.systemd1.Service', 'EnvironmentFiles', bus=True))
             if environment_files != {'type': 'a(sb)', 'data': []}:
                 raise OnboardingError('receiving_worker_binding_required')
@@ -100,19 +117,22 @@ class WorkerManager:
         # Retain only hashes, never raw command/environment text.
         execution = {key: values[key] for key in ('User', 'Group', 'KillMode',
             'TimeoutStopUSec', 'FragmentPath', 'DropInPaths')}
-        return dict(definition=digest({'files': hashes, 'execution': execution, 'commands': static_commands}),
+        observed = dict(definition=digest({'files': hashes, 'execution': execution, 'commands': static_commands}),
             state=values['ActiveState'], substate=values['SubState'], pid=values['MainPID'],
             invocation=values['InvocationID'], job=values['Job'] or '0', result=values['Result'],
             exit_code=values['ExecMainCode'], exit_status=values['ExecMainStatus'])
+        if 'ControlGroup' in self.extra_fields:
+            observed['control_group'] = values['ControlGroup']
+        return observed
 
     def stop(self) -> None:
-        self._run('--no-block', 'stop', UNIT)
+        self._run('--no-block', 'stop', self.unit_name)
 
     def start(self) -> None:
-        self._run('--no-block', 'start', UNIT)
+        self._run('--no-block', 'start', self.unit_name)
 
     def wait(self, baseline: dict, *, active: bool) -> dict:
-        deadline = time.monotonic() + 45
+        deadline = time.monotonic() + self._remaining()
         while True:
             current = self.inspect()
             if current['definition'] != baseline['definition']:
@@ -121,8 +141,8 @@ class WorkerManager:
                 if active and current['state'] == 'active' and current['pid'] != '0':
                     return current
                 if not active and current['state'] == 'inactive' and current['pid'] == '0':
-                    if (current['substate'], current['result'], current['exit_code'], current['exit_status']) != (
-                            'dead', 'success', '1', '0'):
+                    if ((current['substate'], current['result']) != ('dead', 'success')
+                            or (current['exit_code'], current['exit_status']) not in self.accepted_stop_exits):
                         raise OnboardingError('receiving_worker_drain_uncertain')
                     return current
                 if current['state'] == 'failed':
@@ -132,13 +152,15 @@ class WorkerManager:
             time.sleep(.1)
 
 
-class WorkerPause:
-    """Use inside the fixed unit selection lock; never hold an outer jobs lock."""
-    def __init__(self, journal: OperationJournal, parent: str, binding: str, manager=None):
+class _OwnedServicePause:
+    """Private shared journal algorithm; callers fix the unit and effect profile."""
+    def __init__(self, journal: OperationJournal, parent: str, binding: str, manager, *,
+                 unit_name: str, prefix: str, profile: str, actor: str):
         self.journal, self.parent, self.binding = journal, parent, binding
-        self.manager = manager or WorkerManager()
-        self.target = 'receiving-worker:' + UNIT
-        self.claim_digest = digest({'unit': UNIT, 'profile': 'scoped-worker-preservation/v1'})
+        self.manager = manager
+        self.unit_name, self.prefix, self.profile, self.actor = unit_name, prefix, profile, actor
+        self.target = prefix + ':' + unit_name
+        self.claim_digest = digest({'unit': unit_name, 'profile': profile})
         self.row: dict | None = None
 
     def _claim(self):
@@ -180,15 +202,15 @@ class WorkerPause:
         if before['job'] != '0' or before['state'] not in {'active', 'inactive', 'failed'}:
             raise OnboardingError('receiving_worker_state_uncertain')
         claim = plan_update(self.journal, target=self.target, manifest_digest=self.claim_digest,
-            expected_precondition={'unit': UNIT}, intended_transition={'profile': 'scoped-worker-preservation/v1'},
-            audit_identity={'actor': 'receiving-maintenance-worker'})
+            expected_precondition={'unit': self.unit_name}, intended_transition={'profile': self.profile},
+            audit_identity={'actor': self.actor})
         selected = claim['runtime_observation'] or {}
         cycle = selected.get('cycle', 0) + 1
-        self.row = plan_update(self.journal, target='receiving-worker-cycle:' + UNIT + ':' + str(cycle) + ':' + str(uuid.uuid4()),
+        self.row = plan_update(self.journal, target=self.prefix + '-cycle:' + self.unit_name + ':' + str(cycle) + ':' + str(uuid.uuid4()),
             manifest_digest=digest({'parent': self.parent, 'binding': self.binding}),
             expected_precondition=dict(parent=self.parent, binding=self.binding, cycle=cycle, baseline=before),
             intended_transition={'restore_active': before['state'] == 'active'},
-            audit_identity={'actor': 'receiving-maintenance-worker'})
+            audit_identity={'actor': self.actor})
         # Publish the single fixed-unit claim BEFORE stop intent/dispatch. A
         # crash before this CAS can leave only an inert child, never a pause.
         self.journal.advance(claim['operation_id'], claim['state'],
@@ -229,6 +251,14 @@ class WorkerPause:
             # Preserve an external start; do not stop another process to restore.
             raise OnboardingError('receiving_worker_restore_uncertain')
         self._record('restored', {'observed': current, 'original_active': before['state'] == 'active'})
+
+
+class WorkerPause(_OwnedServicePause):
+    """Use inside the fixed unit selection lock; never hold an outer jobs lock."""
+    def __init__(self, journal: OperationJournal, parent: str, binding: str, manager=None):
+        super().__init__(journal, parent, binding, manager or WorkerManager(), unit_name=UNIT,
+            prefix='receiving-worker', profile='scoped-worker-preservation/v1',
+            actor='receiving-maintenance-worker')
 
 
 def recover_before_preflight(spec: dict) -> None:

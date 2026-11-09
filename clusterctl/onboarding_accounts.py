@@ -201,7 +201,7 @@ class ManagedAccount:
         Actions(self.config.progress, worker_uid=os.geteuid()).publish(dict(schema=ACTION_SCHEMA,
             name=plan['name'], owner=plan['owner'], plan_digest=digest(plan), action=action))
 
-    def observe(self, plan: dict) -> Observation:
+    def observe(self, plan: dict, *, probe: bool = True) -> Observation:
         try:
             profile = self.profile(plan)
         except FileNotFoundError:
@@ -217,6 +217,11 @@ class ManagedAccount:
                     else Observation('absent', safe_to_execute=True))
         if value.get('account_id') != profile['account_id']:
             return Observation('waiting', reason='account_authorization_required')
+        if not probe:
+            # An actual authorized account/profile is enough to bootstrap a
+            # human's Conversation. Do not manufacture a model turn as an
+            # enrollment condition or mislabel configured login as inference.
+            return Observation('complete', dict(ssh_ready=True, provider_configured=True))
         receipt = value.get('probe_receipt')
         if receipt is None:
             return Observation('absent', safe_to_execute=True)
@@ -228,7 +233,7 @@ class ManagedAccount:
         # requires an actual owner SSH/native Codex session.
         return Observation('complete', dict(verified=True, ssh_ready=True, provider_verified=True))
 
-    def execute(self, plan: dict) -> None:
+    def execute(self, plan: dict, *, probe: bool = True) -> None:
         profile, mount = self.profile(plan), self.mount(plan)
         source = Path(mount['source'])
         being_seed._path(source)
@@ -246,7 +251,8 @@ class ManagedAccount:
         if value.get('authorized'):
             if value.get('account_id') != profile['account_id']:
                 raise OnboardingError('account_authorization_required')
-            self.command(plan, 'probe')
+            if probe:
+                self.command(plan, 'probe')
         else:
             shared = self.shared(plan, profile)
             if shared is not None:
@@ -254,6 +260,9 @@ class ManagedAccount:
                 observed = self.command(plan, 'observe')
                 if not observed.get('authorized') or observed.get('account_id') != profile['account_id']:
                     raise OnboardingError('account_authorization_required')
-                self.command(plan, 'probe')
+                if probe:
+                    self.command(plan, 'probe')
             else:
+                if not probe:
+                    raise OnboardingError('account_authorization_required')
                 self.command(plan, 'install')

@@ -7,6 +7,7 @@ completed receiving acceptance. No inbox attention, model or extra queue exists.
 from __future__ import annotations
 
 import copy
+import json
 import math
 import os
 import re
@@ -17,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import being_seed
-from .onboarding import JobStore, Observation, OnboardingError, digest, private_directory, validate_plan
+from .onboarding import JobStore, Observation, OnboardingError, digest, private_directory, validate_plan, CONVERSATION_PLAN_SCHEMA
 from .operation_journal import JournalConflict, OperationJournal
 
 SCHEMA = 'cluster-onboarding-group-coordinator/v1'
@@ -322,7 +323,7 @@ def configuration(path: Path) -> dict:
     """
     value = being_seed._read(path, limit=being_seed.MAX_SELECTION)
     try:
-        if (set(value) - {'continuations'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
+        if (set(value) - {'continuations', 'membership_requests', 'membership_preparations', 'membership_maintenance', 'receive_preparations'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
                 or value['schema'] != SCHEMA or not _path(value['journal'])
                 or not isinstance(value['tribe_ref'], str) or not value['tribe_ref']
                 or not isinstance(value['owners'], dict) or len(value['owners']) > 256
@@ -370,7 +371,42 @@ def configuration(path: Path) -> dict:
                     or not isinstance(ref['intent_sha256'], str)
                     or re.fullmatch('[0-9a-f]{64}', ref['intent_sha256']) is None):
                 raise ValueError
-    except (KeyError, TypeError, ValueError, AttributeError):
+        requests = value.get('membership_requests', {})
+        if not isinstance(requests, dict) or len(requests) > 256:
+            raise ValueError
+        for pin, ref in requests.items():
+            if (not isinstance(pin, str) or re.fullmatch('[0-9a-f]{64}', pin) is None
+                    or not isinstance(ref, dict) or set(ref) != {'path', 'sha256'}
+                    or not _path(ref['path']) or not isinstance(ref['sha256'], str)
+                    or re.fullmatch('[0-9a-f]{64}', ref['sha256']) is None):
+                raise ValueError
+        preparations = value.get('membership_preparations', {})
+        if not isinstance(preparations, dict) or len(preparations) > 16:
+            raise ValueError
+        from .onboarding_membership_collection import configuration as prepare_configuration
+        for pin, template in preparations.items():
+            if (not isinstance(pin, str) or re.fullmatch('[0-9a-f]{64}', pin) is None
+                    or not set(prepare_configuration(template)['participants']) <= set(value['owners'])):
+                raise ValueError
+        if len({row['state'] for row in preparations.values()}) != len(preparations):
+            raise ValueError
+        maintenance = value.get('membership_maintenance', {})
+        if not isinstance(maintenance, dict) or len(maintenance) > 16:
+            raise ValueError
+        from .onboarding_membership_scope import configuration as maintenance_configuration
+        for pin, selected in maintenance.items():
+            if (not isinstance(pin, str) or re.fullmatch('[0-9a-f]{64}', pin) is None):
+                raise ValueError
+            maintenance_configuration(selected, value['owners'])
+        receives = value.get('receive_preparations', {})
+        if not isinstance(receives, dict) or len(receives) > 16:
+            raise ValueError
+        from .onboarding_receive_flow import configuration as receive_configuration
+        for pin, selected in receives.items():
+            if not isinstance(pin, str) or re.fullmatch('[0-9a-f]{64}', pin) is None:
+                raise ValueError
+            receive_configuration(selected, value['owners'])
+    except (KeyError, TypeError, ValueError, AttributeError, OnboardingError):
         raise OnboardingError('onboarding_group_coordinator_configuration_required') from None
     return value
 
@@ -397,6 +433,107 @@ class GroupCoordinator:
         self.path = backend.config.group_admission
         self.settings = configuration(self.path)
         self.store = JobStore(backend.config.jobs)
+
+    def prepare_membership_request(self, name: str, *, deadline_ns: int) -> dict | None:
+        """Collect missing public inputs after real identity, without native effects."""
+        from .onboarding_membership_collection import collect
+        plan = self.store._load(name)['plan']
+        pin = digest(plan)
+        if pin in self.settings.get('membership_requests', {}):
+            return self.settings['membership_requests'][pin]
+        template = self.settings.get('membership_preparations', {}).get(pin)
+        if template is None:
+            return None
+        selection_lock = private_directory(self.path.with_name('.'+self.path.name+'-selection'), create=True)
+        with self._job_scope(plan) as record, being_seed._locked(selection_lock):
+            if record['stage'] != 'matrix':
+                raise OnboardingError('onboarding_group_membership_compilation_required')
+            def authorize():
+                return (configuration(self.path) == self.settings
+                    and self.backend.authorize(plan, pin)
+                    and self.backend._consented(plan, stage='matrix')
+                    and self.backend._decision(plan) is not None
+                    and self.backend._ceremony(plan).authorize(plan))
+            if not authorize():
+                raise OnboardingError('host_authorization_required')
+            identity = self.backend._ceremony(plan).admission_coordinates(plan)
+            owners = {owner: self._owner_client(owner) for owner in template['participants']}
+            ref = collect(plan=plan, selected=self.settings['owners'], template=template, owners=owners,
+                identity=identity, tribe_ref=self.settings['tribe_ref'], deadline_ns=deadline_ns,
+                authorize=authorize)
+            if not authorize():
+                raise OnboardingError('host_authorization_required')
+            selected = copy.deepcopy(self.settings)
+            selected.setdefault('membership_requests', {})[pin] = ref
+            being_seed._write(self.path, selected, limit=being_seed.MAX_SELECTION)
+            self.settings = selected
+            return ref
+
+    def bind_membership_request(self, name: str) -> dict | None:
+        """Bind a fixed owner-selected recipe after the original identity exists.
+
+        This is the missing worker preparation step, not native execution. A
+        crash after journal planning resumes that exact row; existing bindings
+        and their effects cannot be replaced. No draft extension is implicit.
+        """
+        from .onboarding_custody import document
+        from .onboarding_membership_intent import compile_request
+        from .onboarding_code_successor import plan_update
+
+        plan = self.store._load(name)['plan']
+        pin = digest(plan)
+        ref = self.settings.get('membership_requests', {}).get(pin)
+        if ref is None:
+            return None
+        selection_lock = private_directory(self.path.with_name('.'+self.path.name+'-selection'), create=True)
+        with self._job_scope(plan) as record, being_seed._locked(selection_lock):
+            if configuration(self.path) != self.settings:
+                raise OnboardingError('onboarding_group_coordinator_configuration_changed')
+            value = document(Path(ref['path']))
+            if digest(value) != ref['sha256']:
+                raise OnboardingError('onboarding_group_membership_compilation_required')
+            try:
+                after = value['after']
+                admission = after['cohort_admission']
+                social = after['portal_admission']['social']
+                compiled = compile_request(plan=plan,
+                    owners={owner: self.settings['owners'][owner] for owner in admission['receivers']},
+                    admission=admission, senders=value['before']['senders'],
+                    governance=social['governance'], authority_closure=social['authority_closure'],
+                    owner_contexts=social['owner_contexts'], invitation=social['invitation'],
+                    operation_id=social['operation_id'], founder_owner=social['founder_owner'],
+                    source=value['source'], acceptance_not_after_ms=social['acceptance_not_after_ms'])
+                identity = self.backend._ceremony(plan).admission_coordinates(plan)
+                entrant = admission['receivers'][name]
+                if (compiled != value or admission['tribe_ref'] != self.settings['tribe_ref']
+                        or admission['activation']['manifest_path'] != ref['path']
+                        or admission['activation']['manifest_uid'] != os.geteuid()
+                        or any(identity[key] != entrant[key] for key in ('being_ref', 'embodiment_id'))):
+                    raise ValueError
+            except (KeyError, TypeError, ValueError, AttributeError):
+                raise OnboardingError('onboarding_group_membership_compilation_required') from None
+            journal = OperationJournal(Path(self.settings['journal']))
+            previous = self.settings['admissions'].get(pin)
+            if previous is not None:
+                row = journal.get(previous)
+                if (row is None or row['expected_precondition'] != value['before']
+                        or row['intended_transition'] != value['after']
+                        or row['intent']['runtime_call']['manifest_digest'] != digest(value)):
+                    raise OnboardingError('onboarding_group_admission_binding_changed')
+                return row
+            if record['stage'] != 'matrix' or len(self.settings['admissions']) >= 256:
+                raise OnboardingError('onboarding_group_membership_compilation_required')
+            row = plan_update(journal, manifest_digest=digest(value),
+                target='receiving:'+self.settings['tribe_ref'],
+                expected_precondition=value['before'], intended_transition=value['after'],
+                audit_identity={'actor': 'authorized-existing-onboarding-worker'})
+            selected = copy.deepcopy(self.settings)
+            selected['admissions'][pin] = row['operation_id']
+            if configuration(self.path) != self.settings or digest(document(Path(ref['path']))) != ref['sha256']:
+                raise OnboardingError('onboarding_group_coordinator_configuration_changed')
+            being_seed._write(self.path, selected, limit=being_seed.MAX_SELECTION)
+            self.settings = selected
+            return row
 
     def _guest_host(self, name: str) -> tuple[Path, dict] | None:
         """Resolve a retained old owner's existing host without copying its grants.
@@ -529,6 +666,29 @@ class GroupCoordinator:
             raise OnboardingError('onboarding_group_completion_unobserved')
         return Observation('complete', dict(verified=True, identity_verified=True))
 
+    def observe_membership(self, plan: dict) -> Observation:
+        """Observe signed membership without borrowing outbound readiness.
+
+        This accepts only the explicit membership-only native transaction or
+        the already completed full transaction. A prepared publication, daemon
+        process or participant name cannot stand in for membership evidence.
+        """
+        selected = self._binding(plan)
+        if selected is None:
+            return Observation('waiting', reason='group_admission_required')
+        journal, row, _admission = selected
+        if row['state'] != 'completed':
+            return Observation('waiting', reason='group_admission_pending')
+        if 'membership_only' in row['intended_transition']:
+            # In completed state this only validates the retained native result;
+            # it never advances, publishes or recreates an enrollment.
+            finish_membership_only(journal, row, row['result'])
+        else:
+            observed = self.observe(plan)
+            if observed.state != 'complete':
+                return observed
+        return Observation('complete', {'tribe_membership_verified': True})
+
     def selection(self, plan: dict) -> tuple[dict, dict, dict]:
         """A locator is usable only after this admission's complete closure."""
         bound = self._binding(plan)
@@ -543,18 +703,20 @@ class GroupCoordinator:
             raise OnboardingError('receiving_native_tooling_group_changed')
         return row, approved, group
 
-    def _owners(self, admission: dict) -> dict:
+    def _owner_client(self, name: str):
         from .onboarding_receiving_update import GuestGroupClient, SourceGroupClient
-        owners: dict[str, GuestGroupClient | SourceGroupClient] = {}
+        row = self.settings['owners'][name]
+        if row['profile'] == 'source':
+            options: dict = {key: Path(row[key]) if key in SOURCE_PATHS else row[key] for key in SOURCE_FIELDS}
+            return SourceGroupClient(**options)
+        return GuestGroupClient(self._guest_backend(name), row['plan'],
+            (Path(row['candidate']['code']), row['candidate']['digest']), root=Path(row['root']))
+
+    def _owners(self, admission: dict) -> dict:
+        owners = {}
         for name in sorted(admission['receivers']):
-            owner: GuestGroupClient | SourceGroupClient
             row = self.settings['owners'][name]
-            if row['profile'] == 'source':
-                options: dict = {key: Path(row[key]) if key in SOURCE_PATHS else row[key] for key in SOURCE_FIELDS}
-                owner = SourceGroupClient(**options)
-            else:
-                owner = GuestGroupClient(self._guest_backend(name), row['plan'],
-                    (Path(row['candidate']['code']), row['candidate']['digest']), root=Path(row['root']))
+            owner = self._owner_client(name)
             approved = admission['receivers'][name]
             selected_code = row['code'] if row['profile'] == 'source' else row['candidate']['code']
             selected_digest = row['code_digest'] if row['profile'] == 'source' else row['candidate']['digest']
@@ -1281,16 +1443,35 @@ class GroupCoordinator:
                 raise OnboardingError('receiving_host_deadline_expired')
             return min(value, 60)
         record = self.store._load(name)
-        if record['stage'] != 'matrix':
+        if record['stage'] not in {'matrix', 'acceptance'}:
             return None
         plan = record['plan']
+        if record['stage'] == 'acceptance':
+            if digest(plan) in self.settings.get('receive_preparations', {}):
+                return self.advance_receive_only(name, timeout_seconds=(deadline-time.monotonic_ns())/1_000_000_000, select_current=True)
+            return None
         bound = self._binding(plan)
         if bound is None:
-            return None
+            self.prepare_membership_request(name, deadline_ns=deadline)
+            if self.bind_membership_request(name) is None:
+                return None
+            bound = self._binding(plan)
+            if bound is None:
+                raise OnboardingError('onboarding_group_admission_binding_changed')
         # An explicit protected membership-only intent bypasses the historical
         # controller/publication/communication pipeline, never its authorization.
         if 'membership_only' in bound[1]['intended_transition']:
-            return self.advance_membership_only(name, timeout_seconds=min(timeout_seconds, 60))
+            result = self.advance_membership_only(name, timeout_seconds=remaining())
+            if result is not None and digest(plan) in self.settings.get('receive_preparations', {}):
+                return self.advance_receive_only(name, timeout_seconds=(deadline-time.monotonic_ns())/1_000_000_000, select_current=True)
+            return result
+        if plan['schema'] == CONVERSATION_PLAN_SCHEMA:
+            if bound[1]['state'] == 'completed':
+                self.observe_membership(plan)
+                return bound[1]['result']
+            # Do not reinterpret a pending full publication transaction as a
+            # different job, nor silently run outbound effects for web entry.
+            raise OnboardingError('explicit_membership_only_operation_required')
         journal, row, admission = bound
         current = journal.get(row['operation_id'])
         if 'communication_followup' in (current['runtime_observation'] or {}):
@@ -1429,12 +1610,11 @@ class GroupCoordinator:
                     **({'lifecycle_prepared': True} if lifecycles else {}))
 
     def advance_membership_only(self, name: str, *, timeout_seconds: float = 60) -> dict | None:
-        """Record signed membership using the existing original jobs/owners.
+        """Resume original signed membership, optionally owning finite Matrix preservation.
 
-        The protected operation explicitly selects this phase. It requires all
-        actual native writer sessions, so physical Matrix stop/start remains the
-        caller's scoped maintenance; no group, Telegram, controller issue or
-        outbound publication is introduced or inferred here.
+        Old operations gain no interruption by observing newer software. The
+        protected policy explicitly selects the helper recipe; completed native
+        membership never repeats a pause. Outbound publication remains separate.
         """
         if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 60:
             raise OnboardingError('receiving_host_deadline_required')
@@ -1445,18 +1625,151 @@ class GroupCoordinator:
             return None
         journal, row, admission = bound
         with journal.mutation_lock(row['operation_id']):
-            with self._job_scope(plan):
-                _journal, row, admission = self._binding(plan)
-                if row['intended_transition'].get('membership_only') != {
-                        'schema': 'cluster-native-membership-only/v1'}:
-                    raise OnboardingError('onboarding_group_membership_only_intent_required')
-                owners = self._owners(admission)
+            _journal, row, admission = self._binding(plan)
+            if row['intended_transition'].get('membership_only') != {
+                    'schema': 'cluster-native-membership-only/v1'}:
+                raise OnboardingError('onboarding_group_membership_only_intent_required')
             if row['state'] == 'completed':
-                return finish_membership_only(journal, row, row['result'])
+                with self._job_scope(plan):
+                    return finish_membership_only(journal, row, row['result'])
+            owners = self._owners(admission)
             from .onboarding_receiving_update import CohortController
-            result = CohortController(journal, row['operation_id'], owners).admit_membership_only(
-                deadline_ns=deadline)
-            return finish_membership_only(journal, journal.get(row['operation_id']), result)
+            from .onboarding_membership_scope import preserved
+            from contextlib import nullcontext
+            original_id = row['operation_id']
+            pin = digest(plan)
+            selected = self.settings.get('membership_maintenance', {}).get(pin)
+            retained = (row['runtime_observation'] or {}).get('membership_maintenance')
+            recipe = selected if retained is None else retained['recipe']
+            native_result = (row['runtime_observation'] or {}).get('membership_admission', {}).get('result')
+            def authorized():
+                # Independent guards validate concurrently. Atomic plan/grant
+                # files and original journal binding are read here; the caller
+                # retains the operation's mutation lock, never parallel jobs locks.
+                current = self.store._load(name)
+                if (current['plan'] != plan or not self.backend.authorize(plan, pin)
+                        or not self.backend._consented(plan, stage='matrix')
+                        or self.backend._decision(plan) is None or not self.backend._ceremony(plan).authorize(plan)):
+                    raise OnboardingError('host_authorization_required')
+                fresh = configuration(self.path)
+                if (fresh['admissions'].get(pin) != original_id
+                        or fresh.get('owners') != self.settings.get('owners')
+                        or fresh.get('tribe_ref') != self.settings.get('tribe_ref')
+                        or fresh.get('membership_maintenance', {}).get(pin) != selected):
+                    raise OnboardingError('membership_maintenance_original_changed')
+                if recipe is not None and selected != recipe and native_result is None:
+                    raise OnboardingError('membership_maintenance_original_changed')
+            # A previously retained result needs only outstanding restoration;
+            # do not pause services again merely to close its original row.
+            guarded = recipe is not None and (native_result is None or retained is not None)
+            scope = (preserved(owners, recipe, journal=journal, row=row, deadline_ns=deadline,
+                validate=authorized, restore_only=native_result is not None) if guarded else nullcontext(lambda: None))
+            with scope as check:
+                authorized()
+                check()
+                result = CohortController(journal, original_id, owners).admit_membership_only(deadline_ns=deadline)
+            return finish_membership_only(journal, journal.get(original_id), result)
+
+    def advance_receive_only(self, name: str, *, timeout_seconds: float = 60, select_current: bool = False) -> dict | None:
+        """First receive publication after the original native membership is complete.
+
+        This is explicitly configured per original plan. It never replaces the
+        terminal enrollment or changes another owner's application/visibility.
+        Current-reader selection remains a separate observed receiving effect.
+        """
+        from .onboarding_receive_flow import publish, select_readers
+        if type(select_current) is not bool:
+            raise OnboardingError('companion_receive_preparation_required')
+        if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 300:
+            raise OnboardingError('receiving_host_deadline_required')
+        deadline = time.monotonic_ns()+int(timeout_seconds*1_000_000_000)
+        plan = self.store._load(name)['plan']
+        pin = digest(plan)
+        selected = self.settings.get('receive_preparations', {}).get(pin)
+        if selected is None:
+            return None
+        bound = self._binding(plan)
+        if bound is None:
+            raise OnboardingError('onboarding_group_admission_pending')
+        journal, row, admission = bound
+        with journal.mutation_lock(row['operation_id']):
+            row = journal.get(row['operation_id'])
+            if row['state'] != 'completed':
+                raise OnboardingError('onboarding_group_admission_pending')
+            finish_membership_only(journal, row, row['result'])
+            original_id = row['operation_id']
+            def validate():
+                record = self.store._load(name)
+                fresh = configuration(self.path)
+                if (record['plan'] != plan or record['stage'] not in {'matrix', 'acceptance'}
+                        or not self.backend.authorize(plan, pin)
+                        or not self.backend._consented(plan, stage='matrix')
+                        or self.backend._decision(plan) is None or not self.backend._ceremony(plan).authorize(plan)):
+                    raise OnboardingError('host_authorization_required')
+                if (fresh['admissions'].get(pin) != original_id
+                        or fresh.get('receive_preparations', {}).get(pin) != selected
+                        or fresh['tribe_ref'] != self.settings['tribe_ref']
+                        or any(fresh['owners'].get(k) != self.settings['owners'][k] for k in admission['receivers'])):
+                    raise OnboardingError('companion_receive_original_changed')
+            def finish(result):
+                if select_current:
+                    select_readers(plan=plan, selected=selected, row=journal.get(original_id), journal=journal,
+                        admission=admission, owners=self._owners(admission), validate=validate, deadline_ns=deadline)
+                return copy.deepcopy(result)
+            validate()
+            phase = (row['runtime_observation'] or {}).get('receive_application', {})
+            snapshot = phase.get('snapshot', {}).get('result')
+            def restored(result):
+                return dict(schema='cluster-companion-receive-restored/v1', operation_id=original_id,
+                    snapshot_sha256=digest(result), preparation_sha256=digest(selected))
+            if phase.get('restoration') is not None:
+                if (not isinstance(snapshot, dict) or phase['restoration'] != restored(snapshot)
+                        or phase.get('binding') != digest(dict(original_intent=row['intent'],preparation=selected))):
+                    raise OnboardingError('companion_receive_original_changed')
+                return finish(snapshot)
+            result = publish(plan=plan, selected=selected, journal=journal, row=row, admission=admission,
+                owners=self._owners(admission), validate=validate, deadline_ns=deadline)
+            # publish returns only after the original guard's actual restoration.
+            # Keep that receiving fact separate from membership's terminal result.
+            validate()
+            latest = journal.get(original_id)
+            observed = copy.deepcopy(latest['runtime_observation'])
+            phase = observed['receive_application']
+            if phase['snapshot']['result'] != result:
+                raise OnboardingError('companion_receive_original_changed')
+            phase['restoration'] = restored(result)
+            if len(json.dumps(phase).encode()) > being_seed.MAX_SELECTION:
+                raise OnboardingError('companion_receive_capacity')
+            journal.advance(original_id, latest['state'], runtime_observation=observed,
+                expected_runtime_observation=latest['runtime_observation'])
+            return finish(result)
+
+    def observe_receive(self, plan: dict) -> Observation:
+        """Require actual current all-required readers, retaining old policies."""
+        from .onboarding_receive_flow import observe
+        selected = self.settings.get('receive_preparations', {}).get(digest(plan))
+        if selected is None:
+            return Observation('waiting', reason='group_admission_required')
+        bound = self._binding(plan)
+        if bound is None:
+            return Observation('waiting', reason='group_admission_pending')
+        _journal, row, admission = bound
+        if row['state'] != 'completed':
+            return Observation('waiting', reason='group_admission_pending')
+        finish_membership_only(_journal, row, row['result'])
+        def validate():
+            fresh = configuration(self.path)
+            pin = digest(plan)
+            if not self.backend.authorize(plan, pin):
+                raise OnboardingError('host_authorization_required')
+            if (fresh['admissions'].get(pin) != row['operation_id']
+                    or fresh.get('receive_preparations', {}).get(pin) != selected
+                    or fresh['tribe_ref'] != self.settings['tribe_ref']
+                    or any(fresh['owners'].get(k) != self.settings['owners'][k] for k in admission['receivers'])):
+                raise OnboardingError('companion_receive_original_changed')
+        validate()
+        return observe(plan=plan, selected=selected, row=row, admission=admission,
+            owners=self._owners(admission), validate=validate, deadline_ns=time.monotonic_ns()+60_000_000_000)
 
     def _prepare_communication(self, plan, journal, row, admission, owner, *, deadline_ns: int) -> None:
         """Retain the entrant's schema phase after controller tree publication.

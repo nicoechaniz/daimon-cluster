@@ -38,6 +38,16 @@ The operator exposes only bounded outcome metadata, not account details or token
 If the source also needs device login, report that actual missing human action;
 `codex login status` alone does not prove a token is accepted by the provider.
 
+An explicitly authorized account change is distinct from same-account renewal.
+Compare the persisted selection with the running native `account/read` result;
+`refreshToken:true` does not establish that a different account was adopted.
+If the daemon still selects the previous account, use scoped native service
+maintenance after observing that no native threads are loaded. Preserve existing
+sessions, goals and pending output, then verify the new native account and actual
+rate-limit response. Update the private renewal binding to the selected account
+so subsequent same-account renewal remains usable. Never consume a provider's
+reset credit merely to inspect the available quota.
+
 ## Slow native startup
 
 The native daemon CLI has its own short readiness deadline. A timed-out `start`

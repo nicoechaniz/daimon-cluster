@@ -714,3 +714,14 @@ def test_native_profile_maintenance_resumes_real_journal_without_replaying_start
         "retained_completion"
     ]
     assert calls == previous_calls
+
+
+def test_profile_owner_uses_actual_closed_helper_entrypoint(tmp_path):
+    previous = dict(schema='dm.cluster.rebirth-native-profile/v1',config='/owner/config',home='/owner/home',
+        code='/qualified/old',code_digest='a'*64)
+    candidate = {**previous,'code':'/qualified/new','code_digest':'b'*64}
+    path = private(tmp_path/'profile.json',previous)
+    owner = rebirth_native.ProfileOwner(path)
+    result = owner.select(candidate,previous=previous,deadline_ns=time.monotonic_ns()+10_000_000_000)
+    assert result['selected'] is True and owner.profile()==candidate
+    assert owner.select(candidate,previous=previous,deadline_ns=time.monotonic_ns()+10_000_000_000)==result

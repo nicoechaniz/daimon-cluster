@@ -629,7 +629,7 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
     return ProfileMaintenance(journal,spec['operation_id'],owner,manager,candidate).run(deadline_ns=deadline)
 
 
-def profile_selection_main(argv=None) -> int:
+def main(argv=None) -> int:
     """Owner-side file selection only; lifecycle stays with the root operator."""
     import argparse
     import json
@@ -650,4 +650,4 @@ def profile_selection_main(argv=None) -> int:
 
 
 if __name__ == '__main__':
-    raise SystemExit(profile_selection_main())
+    raise SystemExit(main())

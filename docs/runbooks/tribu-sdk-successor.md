@@ -244,7 +244,14 @@ returns incomplete with the exact remaining reader failure. Reuse the same spec
 and operation to continue; do not create replacement lifecycle operations.
 Without a reader binding, the legacy code-only command keeps reporting receiving
 readiness as unobserved. A compatible maintenance helper can be staged separately
-from the daemon: do not reload a healthy runtime merely to update its owner CLI.
+from the daemon: do not reload a healthy runtime merely to update its owner CLI. Before
+using a staged helper, reuse the public-code transfer/normalization route and
+verify imports as the actual receiving owner, including traversal of every parent
+directory. An inherited private umask can leave an otherwise byte-correct public
+package unreadable. Keep private/shared parents private and select the existing
+public-code destination; do not widen unrelated directories. Owner-route preflight
+failures identify the receiver and phase before code updates begin. Import failures
+use a closed public code; arbitrary stderr and credential material stay private.
 
 A new software deployment still uses its normal preparation and lifecycle controls.
 This current-state path finishes reader confirmation after observed completed

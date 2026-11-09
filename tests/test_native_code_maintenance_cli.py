@@ -125,8 +125,11 @@ def test_reader_route_failure_precedes_any_update_or_backend_creation(tmp_path, 
     monkeypatch.setattr(managed,'JobStore',lambda _:SimpleNamespace(_load=lambda name:dict(plan=dict(name=name))))
     monkeypatch.setattr(onboarding_host,'HostBackend',lambda *_,**__:SimpleNamespace())
     monkeypatch.setattr(managed,'ManagedRuntime',lambda _:pytest.fail('update began before route preflight'))
-    with pytest.raises(OnboardingError, match='owner_unavailable'):
-        managed.run_code_update(selected)
+    result=managed.run_code_update(selected)
+    assert not result['complete'] and result['targets']==[] and result['pending']==selected['targets']
+    assert result['reader_completion']['name']=='current'
+    assert result['reader_completion']['phase']=='owner-preflight'
+    assert result['reader_completion']['failure']['code']=='receiving_reader_owner_unavailable'
 
 
 def test_reader_command_is_bounded_json_rpc_with_exact_control(tmp_path, monkeypatch):
@@ -197,6 +200,18 @@ def test_job_reader_reuses_owning_placement_executor(tmp_path, monkeypatch):
         job='current',command=['/body/owner'])}),backend=backend,plans={'current':plan})
     clients['current'].deadline_ns=time.monotonic_ns()+1_000_000_000
     assert clients['current']._call(dict(action='status'))=={'current':'owner'}
+
+
+def test_owner_import_failure_is_public_code_without_arbitrary_stderr(tmp_path, monkeypatch):
+    from clusterctl import onboarding_receiving_update as receiving
+    import time
+    client=managed.ReaderCommandClient(dict(root=str(tmp_path),command=['/held/owner']))
+    client.deadline_ns=time.monotonic_ns()+1_000_000_000
+    monkeypatch.setattr(receiving,'_run_owner',lambda *_,**__:SimpleNamespace(returncode=1,
+        stdout='',stderr="private diagnostic must stay private\nModuleNotFoundError: No module named 'clusterctl'\n"))
+    with pytest.raises(OnboardingError) as caught:
+        client._call(dict(action='status'))
+    assert str(caught.value)=='receiving_reader_owner_import_unavailable'
 
 
 @pytest.mark.parametrize('tamper',[None,'process','code','bundle'])

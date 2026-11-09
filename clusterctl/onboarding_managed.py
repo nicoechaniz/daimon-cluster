@@ -955,12 +955,17 @@ class ReaderCommandClient:
                     capture_output=True, timeout=remaining)
             if time.monotonic_ns() >= self.deadline_ns:
                 raise OnboardingError('receiving_owner_deadline_expired')
+            if result.returncode and any(line.startswith('ModuleNotFoundError:')
+                    for line in getattr(result, 'stderr', '').splitlines()):
+                raise OnboardingError('receiving_reader_owner_import_unavailable')
             if result.returncode or len(result.stdout.encode()) > being_seed.MAX_SELECTION:
                 raise ValueError
             observed = json.loads(result.stdout)
             if not isinstance(observed, dict) or 'error' in observed:
                 raise ValueError
             return observed
+        except OnboardingError:
+            raise
         except (OSError, ValueError, subprocess.TimeoutExpired):
             raise OnboardingError('receiving_reader_owner_unavailable') from None
 
@@ -1078,9 +1083,16 @@ def run_code_update(spec: dict) -> dict:
     if reader_routes is not None:
         # Resolve owning jobs/placements and probe their existing owner CLIs
         # before any lifecycle effect; signed rosters still qualify membership.
-        for client in code_update_reader_clients(reader_routes, backend=backend, plans=plans).values():
+        for name, client in code_update_reader_clients(reader_routes, backend=backend, plans=plans).items():
             client.deadline_ns = deadline
-            client._call(dict(action='status'))
+            try:
+                client._call(dict(action='status'))
+            except Exception as error:
+                from .onboarding import refusal_diagnostic
+                return dict(schema='cluster-native-code-maintenance-result/v1', complete=False,
+                    candidate_digest=spec['candidate']['code_digest'], targets=[], pending=spec['targets'],
+                    receiving_readiness='unobserved', reader_completion=dict(name=name,
+                        phase='owner-preflight', failure=refusal_diagnostic(error, stage='current-readers')))
     owner = ManagedRuntime(backend)
     candidate = (Path(spec['candidate']['code']), spec['candidate']['code_digest'])
     results = []

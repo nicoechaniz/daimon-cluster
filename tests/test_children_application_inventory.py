@@ -8,6 +8,98 @@ import pytest
 from tools import children_application_inventory as inventory
 
 
+def listener_fixture(root):
+    process = root / "42"
+    (process / "fd").mkdir(parents=True)
+    (process / "net").mkdir()
+    (process / "fd/7").symlink_to("socket:[123]")
+    for table in ("tcp", "tcp6", "udp", "udp6"):
+        (process / "net" / table).write_text(
+            "sl local_address rem_address st tx_queue tr retrnsmt uid timeout inode\n"
+        )
+    return process
+
+
+def socket_row(address="0100007F", port="1F90", state="0A", inode="123"):
+    return f"0: {address}:{port} 00000000:0000 {state} 00000000:00000000 00:00000000 00000000 1000 0 {inode}\n"
+
+
+def test_listener_binding_excludes_foreign_and_connected_peer_data(tmp_path):
+    process = listener_fixture(tmp_path)
+    p = process / "net/tcp"
+    with p.open("a") as f:
+        f.write(socket_row())
+        f.write(socket_row(inode="999"))
+        f.write(socket_row(state="01"))
+    result = inventory.process_listeners(process)
+    assert result["listeners"] == [
+        dict(protocol="tcp", family=4, port=8080, bind_scope="loopback")
+    ]
+    assert "remote" not in json.dumps(result) and result["unassessed"]
+
+
+def test_ipv6_wildcard_and_bound_udp_are_distinct(tmp_path):
+    process = listener_fixture(tmp_path)
+    for table, address, state in [("tcp6", "0" * 32, "0A"), ("udp", "00000000", "07")]:
+        with (process / "net" / table).open("a") as f:
+            f.write(socket_row(address=address, state=state))
+    result = inventory.process_listeners(process)
+    assert {
+        (v["protocol"], v["family"], v["bind_scope"]) for v in result["listeners"]
+    } == {("tcp", 6, "wildcard"), ("udp", 4, "wildcard")}
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        "missing-table",
+        "oversized-table",
+        "malformed-table",
+        "descriptor-race",
+        "descriptor-cap",
+        "listener-cap",
+    ],
+)
+def test_incomplete_listener_observation_refuses_healthy_empty_result(tmp_path, gap):
+    process = listener_fixture(tmp_path)
+    p = process / "net/tcp"
+    if gap == "missing-table":
+        p.unlink()
+    elif gap == "oversized-table":
+        p.write_bytes(b"x" * (128 * 1024 + 1))
+    elif gap == "malformed-table":
+        p.write_text("no kernel table here\n")
+    elif gap == "descriptor-cap":
+        for i in range(1024):
+            (process / "fd" / str(100 + i)).symlink_to("/dev/null")
+    elif gap == "listener-cap":
+        with p.open("a") as f:
+            f.write(socket_row() * 129)
+    with (
+        patch.object(
+            inventory.os, "readlink", side_effect=["socket:[123]", "socket:[124]"]
+        )
+        if gap == "descriptor-race"
+        else patch.object(inventory, "MAX_OUTPUT", inventory.MAX_OUTPUT)
+    ):
+        with pytest.raises((ValueError, OSError)):
+            inventory.process_listeners(process)
+
+
+def test_actual_loopback_listener_is_observed_without_a_connection():
+    import socket
+
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        result = inventory.process_listeners(Path("/proc") / str(os.getpid()))
+    assert (
+        dict(protocol="tcp", family=4, port=port, bind_scope="loopback")
+        in result["listeners"]
+    )
+
+
 def component_fixture(root):
     binary=root/'usr/lib/chromium/chromium';binary.parent.mkdir(parents=True);binary.write_bytes(b'ELF fixture only')
     library=root/'usr/lib/x86_64-linux-gnu/libfreetype.so.6.20.2';library.parent.mkdir(parents=True);library.write_bytes(b'library fixture; never load')

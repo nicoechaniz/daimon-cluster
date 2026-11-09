@@ -52,6 +52,27 @@ the existing bounded daily state; do not upload paths, package lists or env data
 
 ## Existing daily route
 
+Optional `application_inventory.network_listeners=true` uses the same selected
+helper, service list and bounded native read job. It associates actual main-process
+socket descriptors with that process's kernel TCP/TCP6/UDP/UDP6 tables, retaining
+only protocol, IP family, local port and bind scope. TCP connections and foreign
+socket rows do not become listeners; no remote peer, raw address, socket path or
+process arguments are retained. No connection, port scan or application start is
+performed. Standalone use accepts `--network-listeners`.
+
+Each process permits1024descriptors,128listeners and128KiB/2048rows per table,
+within the existing deadline/output limits. Missing or malformed tables, exhausted
+bounds or changed socket ownership remain unavailable. The original process/image
+checks still run afterward. The same daily receipt exposes the separate
+`selected_main_process_listeners` phase; a selected incomplete read fails collection
+health rather than becoming a healthy empty list. Unselected installations remain
+compatible. Disable only that flag to omit the phase, preserving other observations.
+
+This is main-process socket binding evidence, not external reachability. Worker
+descendants, other socket families, firewall/NAT effects and IPv6 dual-stack policy
+remain unassessed. A wildcard bind does not by itself establish public exposure,
+and an empty main-process list does not prove its workers have no listeners.
+
 The optional private `application_inventory` object selects `helper`, `sha256`
 and `units`, keyed by exactly the existing host and four companions. The helper
 must be a root-owned, non-writable, regular absolute file with verified ancestry

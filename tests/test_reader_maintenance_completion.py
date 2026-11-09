@@ -22,7 +22,8 @@ def cohort(tmp_path, monkeypatch):
 
     def observe(owner, **options):
         assert options['expected_selection'] in selections.values()
-        return dict(reader={}, gate=copy.deepcopy(owner.gate),
+        return dict(reader=copy.deepcopy(next(row for row in vector['readers']
+            if row['being_ref']==owner.root.name)), gate=copy.deepcopy(owner.gate),
             identity_expires_at_ms=options['expires_at_ms'])
     monkeypatch.setattr(receiving, 'observe_current_reader', observe)
     monkeypatch.setattr(receiving, 'conversation_cohort', lambda _:copy.deepcopy(vector))
@@ -213,7 +214,7 @@ def test_process_replacement_keeps_old_command_and_binds_new_control(tmp_path, m
         receiving.refresh_current_readers(owners,**options)
     assert receiving.refresh_current_readers(owners,**options)['receiving_readiness']=='qualified-local-projection'
     saved=json.loads(options['checkpoint'].read_bytes())
-    assert any(row['command']==replaced[0] for row in saved['superseded_commands'])
+    assert saved['superseded_generations'][0]['commands']['second:'+phase]==replaced[0]
     revoke=saved['commands']['second:revoke']
     select=saved['commands']['second:select']
     assert revoke['operation_id']==select['operation_id']!=options['operation_id']
@@ -222,3 +223,46 @@ def test_process_replacement_keeps_old_command_and_binds_new_control(tmp_path, m
     calls.clear()
     receiving.refresh_current_readers(owners,**options)
     assert calls==[]
+
+
+@pytest.mark.parametrize('authority_change',[False,True])
+def test_restart_rebinds_only_loaded_view_and_preserves_old_generation(tmp_path, monkeypatch, authority_change):
+    import json
+    owners, options, calls, _, vector = cohort(tmp_path, monkeypatch)
+    def current_vector(_):
+        return {**vector,'readers':[dict(being_ref=name,embodiment_id=name,
+            loaded_view_sha256=receiving.digest(owner.gate['process_instance_id']),
+            credential_id=('changed' if authority_change and name=='second'
+                and owner.gate['process_instance_id']=='replacement' else name))
+            for name,owner in owners.items()]}
+    monkeypatch.setattr(receiving,'conversation_cohort',current_vector)
+    original_observe=receiving.observe_current_reader
+    def observe(owner,**kwargs):
+        result=original_observe(owner,**kwargs)
+        result['reader']=next(row for row in current_vector(None)['readers']
+            if row['being_ref']==owner.root.name)
+        return result
+    monkeypatch.setattr(receiving,'observe_current_reader',observe)
+    owner=owners['second']
+    original=owner.prepare_apply_control
+    pending=[]
+    def restart(command,path):
+        if command['phase']=='revoke' and not pending:
+            pending.append(copy.deepcopy(command))
+            owner.gate.update(phase='unselected',readers=[],head='7'*64,process_instance_id='replacement')
+            raise OnboardingError('receiving_control_completion_uncertain')
+        return original(command,path)
+    owner.prepare_apply_control=restart
+    with pytest.raises(OnboardingError,match='completion_uncertain'):
+        receiving.refresh_current_readers(owners,**options)
+    if authority_change:
+        calls.clear()
+        with pytest.raises(OnboardingError,match='control_binding_conflict'):
+            receiving.refresh_current_readers(owners,**options)
+        assert calls==[]
+    else:
+        assert receiving.refresh_current_readers(owners,**options)['receiving_readiness']=='qualified-local-projection'
+        saved=json.loads(options['checkpoint'].read_bytes())
+        assert saved['binding']['operation_id']==options['operation_id']
+        assert saved['superseded_generations'][0]['commands']['second:revoke']==pending[0]
+        assert saved['reader_operation_id']!=options['operation_id']

@@ -340,12 +340,58 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
         readers = vector['readers']
         binding = dict(operation_id=operation_id, release_digest=release_digest,
             selections=selections, nonadmitted=sorted(nonadmitted), vector=vector)
+        instances = {name:proof['gate']['process_instance_id'] for name,proof in proofs.items()}
+        def initial():
+            return dict(schema='cluster-current-reader-completion/v1',binding=binding,
+                gate_instances=instances,commands={})
+        def compatible_restart(saved):
+            old = saved.get('binding',{})
+            if ({key:value for key,value in old.items() if key != 'vector'}
+                    != {key:value for key,value in binding.items() if key != 'vector'}):
+                return False
+            old_instances = saved.get('gate_instances',{}) or {
+                key.split(':')[0]:command['process_instance_id']
+                for key,command in saved['commands'].items()}
+            replaced = {name for name,instance in old_instances.items()
+                if name in instances and instances[name] != instance}
+            if not replaced:
+                return False
+            before = old.get('vector',{})
+            if ({key:value for key,value in before.items() if key != 'readers'}
+                    != {key:value for key,value in vector.items() if key != 'readers'}):
+                return False
+            old_readers = {(row['being_ref'],row['embodiment_id']):row for row in before.get('readers',[])}
+            if len(old_readers) != len(proofs):
+                return False
+            for name,proof in proofs.items():
+                reader = proof['reader']
+                prior = old_readers.get((reader['being_ref'],reader['embodiment_id']))
+                if prior is None or ({key:value for key,value in prior.items() if key != 'loaded_view_sha256'}
+                        != {key:value for key,value in reader.items() if key != 'loaded_view_sha256'}):
+                    return False
+                if prior != reader and name not in replaced:
+                    return False
+            return True
         if checkpoint.exists():
             saved = being_seed._read(checkpoint, limit=being_seed.MAX_SELECTION)
             if (saved.get('schema') != 'cluster-current-reader-completion/v1'
                     or not isinstance(saved.get('commands'), dict)):
                 raise OnboardingError('receiving_control_binding_conflict')
-            if saved.get('binding') != binding:
+            if compatible_restart(saved):
+                history = saved.get('superseded_generations',[])
+                if not isinstance(history,list) or len(history) >= 4:
+                    raise OnboardingError('receiving_control_binding_conflict')
+                # A new authenticated instance can change its loaded view. Only
+                # that field may change: selections, credentials and membership
+                # remain frozen. Keep old exact controls, including uncertainty.
+                history = [*history,{key:value for key,value in saved.items()
+                    if key != 'superseded_generations'}]
+                saved = {
+                    **initial(),'superseded_generations':history,
+                    'reader_operation_id':str(uuid.uuid5(uuid.UUID(operation_id),
+                        digest(dict(vector=vector,instances=instances))))}
+                being_seed._write(checkpoint,saved,limit=being_seed.MAX_SELECTION)
+            elif saved.get('binding') != binding:
                 if (not reader_checkpoint_completed(saved)
                         or saved['binding'].get('operation_id') == operation_id):
                     raise OnboardingError('receiving_control_binding_conflict')
@@ -356,10 +402,10 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                 # If interrupted between writes, the same predecessor can be
                 # retained again without any native effect or new request ID.
                 being_seed._write(previous, saved, limit=being_seed.MAX_SELECTION)
-                saved = dict(schema='cluster-current-reader-completion/v1', binding=binding, commands={})
+                saved = initial()
                 being_seed._write(checkpoint, saved, limit=being_seed.MAX_SELECTION)
         else:
-            saved = dict(schema='cluster-current-reader-completion/v1', binding=binding, commands={})
+            saved = initial()
         changed: list[dict] = []
         def completed(final):
             saved['completed'] = dict(binding_sha256=digest(binding),
@@ -385,15 +431,7 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                 if selected(proof, readers):
                     continue
                 owner, gate = owners[name], proof['gate']
-                prior_commands = [saved['commands'][key] for key in (name+':revoke',name+':select')
-                    if key in saved['commands']]
-                current_ids = {command['operation_id'] for command in prior_commands
-                    if command['process_instance_id'] == gate['process_instance_id']}
-                if len(current_ids) > 1:
-                    raise OnboardingError('receiving_control_binding_conflict')
-                owner_operation = (next(iter(current_ids)) if current_ids else
-                    str(uuid.uuid5(uuid.UUID(operation_id),name+':'+gate['process_instance_id']))
-                    if prior_commands else operation_id)
+                owner_operation = saved.get('reader_operation_id',operation_id)
                 if (phase == 'revoke' and gate.get('phase') == 'revoke'
                         and gate.get('operation_id') == owner_operation
                         and gate.get('release_digest') == release_digest):
@@ -404,22 +442,9 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                     expected_roster_sha256=vector['local_roster_sha256'][name],
                     readers=[] if phase == 'revoke' else readers)
                 key = name + ':' + phase
-                retained_command = saved['commands'].get(key)
-                if (retained_command is not None
-                        and retained_command['process_instance_id'] == gate['process_instance_id']):
-                    command = retained_command
+                if key in saved['commands']:
+                    command = saved['commands'][key]
                 else:
-                    if retained_command is not None:
-                        superseded = saved.setdefault('superseded_commands',[])
-                        if not isinstance(superseded,list) or len(superseded) >= 32:
-                            raise OnboardingError('receiving_control_binding_conflict')
-                        # The authenticated current gate is a different instance.
-                        # Preserve the old exact/possibly uncertain command; it
-                        # is never resubmitted against the replacement instance.
-                        superseded.append(dict(name=name,command=retained_command,
-                            replacement_process_instance_id=gate['process_instance_id'],
-                            observed_process=proof.get('expected',{}).get('process'),
-                            observed_at_ms=time.time_ns()//1_000_000))
                     if phase == 'select':
                         command['effect_not_after_ms'] = min(_reader_proof_expiry(row) for row in proofs.values())
                     saved['commands'][key] = command

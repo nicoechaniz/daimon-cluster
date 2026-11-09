@@ -1,3 +1,22 @@
+## Explicit VM environment continuation —2026-11-09
+
+The maintained onboarding host now accepts optional `instance_type` with the
+existing container default or explicit `virtual-machine`. Before VM mutation,
+its fixed bounded Incus image query verifies the selected local fingerprint and
+VM type; existing instance type must match. It reuses original init/volume/start
+steps and plan journals, preserving a lost creation reply and refusing another
+type without replacement. Existing plans and all4 active children are unchanged.
+Actual existing Oliva image metadata passed the supported JSON query; no VM was
+created or modified. Blank VM/agent/filesystem/NAT and full-command receiving
+qualification remain unfinished. Emma stays held. See docs/design/onboarding-jobs.md.
+
+All7 original bodies now passed own original/prepared helper base observation
+with unchanged process, runtime bundle, jobs and policy. Twelve actual CLI reads
+covered six receivers, reusing the earlier Root proof; no service, membership,
+provider/model effects. Prepared public code is not fleet worker adoption or
+actual guarded receiving/complete-command acceptance. Exact receipts and remaining
+School/security work stay in the existing private companion command checkpoint.
+
 ## Four-child receiving clients and next-companion hold —2026-11-08
 
 All4 existing children have signed/native membership and their own signed

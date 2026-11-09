@@ -286,7 +286,8 @@ def test_telegram_successor_refuses_resealed_unqualified_binary_and_extra_assets
         verify(output, replacement, base, original, uid=os.geteuid())
 
 
-def test_telegram_selection_does_not_select_a_new_matrix_runtime(tmp_path, monkeypatch):
+@pytest.mark.parametrize('instance_type', [None, 'container', 'virtual-machine'])
+def test_telegram_selection_does_not_select_a_new_matrix_runtime(tmp_path, monkeypatch, instance_type):
     from pathlib import Path
     from clusterctl.onboarding_host import HostBackend, HostConfig
     from tests.test_onboarding import plan
@@ -301,8 +302,16 @@ def test_telegram_selection_does_not_select_a_new_matrix_runtime(tmp_path, monke
         directory.mkdir(mode=0o700)
         value[key] = str(directory)
     config = tmp_path / 'host.json'
+    if instance_type is not None:
+        value['instance_type'] = instance_type
     being_seed._write(config, value)
     loaded = HostConfig.load(config)
+    assert loaded.instance_type == (instance_type or 'container')
+    for bad in ('vm', '', None, [], False):
+        being_seed._write(config, {**value, 'instance_type': bad})
+        with pytest.raises(OnboardingError, match='invalid_onboarding_host_configuration'):
+            HostConfig.load(config)
+    being_seed._write(config, value)
     backend = HostBackend(loaded)
     body_plan = {**plan(), 'release_digest': original}
     guest, args, mounts = backend._telegram_paths(body_plan, Path('/original'))

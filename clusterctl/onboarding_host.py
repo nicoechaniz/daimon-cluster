@@ -102,6 +102,7 @@ class HostConfig:
     cold_pool: str | None = None
     conversation_by_name: dict[str, tuple[Path, str]] | None = None
     conversation_proxy_by_name: dict[str, dict] | None = None
+    instance_type: str = 'container'
 
     @classmethod
     def load(cls, path: Path, *, expected_value: dict | None = None) -> HostConfig:
@@ -112,14 +113,15 @@ class HostConfig:
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
         telegram_keys = {"telegram_code", "telegram_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name", "conversation_proxy_by_name"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name", "conversation_proxy_by_name", "instance_type"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
                 or any(not isinstance(value[key], str) or not being_seed.NAME.fullmatch(value[key])
                        for key in ("pool", "profile"))
                 or type(value["concurrency"]) is not int or not 1 <= value["concurrency"] <= 8
-                or type(value.get("qualification", False)) is not bool):
+                or type(value.get("qualification", False)) is not bool
+                or value.get("instance_type", "container") not in ("container", "virtual-machine")):
             raise OnboardingError("invalid_onboarding_host_configuration")
         cold_pool = value.get('cold_pool')
         if cold_pool is not None and (not isinstance(cold_pool, str)
@@ -315,7 +317,8 @@ class HostConfig:
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission, cold_pool, conversation_by_name, conversation_proxy_by_name)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission, cold_pool, conversation_by_name, conversation_proxy_by_name,
+                   value.get("instance_type", "container"))
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -566,7 +569,25 @@ class HostBackend:
     def _environment(self, plan: dict, *, deadline_ns: int | None = None) -> Observation:
         if self.native_body(plan) is not None:
             raise OnboardingError('native_receiving_initial_enrollment_unsupported')
+        if self.config.instance_type not in ('container', 'virtual-machine'):
+            raise OnboardingError('invalid_onboarding_host_configuration')
         resources = plan.get('resources', {'root_gib': 8, 'home_gib': 22})
+        if self.config.instance_type == 'virtual-machine':
+            # A pinned local VM image reuses Incus creation. Verify its actual
+            # metadata before any environment mutation, including volume creation.
+            image = self.config.browser_image if plan['browser'] else self.config.native_image
+            raw = self._dispatch(plan, ['query', '/1.0/images/' + image],
+                timeout_seconds=20, deadline_ns=deadline_ns)
+            if len(raw.encode()) > 65536:
+                raise OnboardingError('onboarding_vm_image_required')
+            try:
+                metadata = json.loads(raw)
+                matched = (metadata.get('fingerprint') == image
+                    and metadata.get('type') == 'virtual-machine')
+            except (ValueError, AttributeError):
+                matched = False
+            if not matched:
+                raise OnboardingError('onboarding_vm_image_required')
         if 'cold_gib' in resources and self.config.cold_pool is None:
             return Observation('waiting', reason='capacity_required')
         instances, volumes = (self._inventory() if deadline_ns is None
@@ -595,6 +616,8 @@ class HostBackend:
         if not rows:
             return Observation("absent", safe_to_execute=True)
         row = rows[0]
+        if row.get('type', 'container') != self.config.instance_type:
+            return Observation('conflict', reason='observed_state_conflict')
         config = row.get("config", {})
         expected_image = self.config.browser_image if plan["browser"] else self.config.native_image
         if (config.get("user.dm.onboarding-plan") != fingerprint
@@ -626,7 +649,9 @@ class HostBackend:
         if 'cold_gib' in resources and not all(self._volume_access(plan, volume, 'observe', deadline_ns=deadline_ns)
                 for volume in ('home', 'cold')):
             return Observation('absent', safe_to_execute=True)
-        return Observation("complete", {"verified": True, **resources})
+        return Observation("complete", {"verified": True, **resources,
+            **({'instance_type': 'virtual-machine', 'image_fingerprint': expected_image}
+               if self.config.instance_type == 'virtual-machine' else {})})
 
     def _conversation_request(self, plan: dict) -> dict | None:
         from .onboarding_conversation import resolve_request
@@ -1058,7 +1083,9 @@ class HostBackend:
             limits = [] if 'resources' not in plan else [
                 '--config', 'limits.cpu=' + str(resources['cpu']),
                 '--config', 'limits.memory=' + str(resources['memory_gib']) + 'GiB']
-            self._dispatch(plan, ["init", image, name, "--profile", self.config.profile,
+            self._dispatch(plan, ["init", image, name,
+                      *(['--vm'] if self.config.instance_type == 'virtual-machine' else []),
+                      "--profile", self.config.profile,
                       "--storage", self.config.pool, "--device", "root,size=" + str(resources['root_gib']) + "GiB",
                       *limits, "--config", "user.dm.onboarding-plan=" + fingerprint])
         if not any(row.get("name") == name + "-home" and row.get("type") == "custom" for row in volumes):

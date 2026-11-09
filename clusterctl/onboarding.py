@@ -84,6 +84,7 @@ class OnboardingError(ValueError):
 # Explicit public operational codes only. Exception strings, paths, payloads and
 # unknown future codes never become CLI diagnostics by matching a text pattern.
 _DIAGNOSTIC_CODES = frozenset({
+    'onboarding_vm_image_required',
     'seed_operation_in_progress', 'qualified_runtime_module_required',
     'qualified_runtime_imports_required', 'qualified_runtime_context_required',
     'qualified_receiving_interpreter_required', 'private_onboarding_sdk_required',

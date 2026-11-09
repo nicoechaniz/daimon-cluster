@@ -1292,3 +1292,83 @@ def test_private_resource_uses_existing_qualified_owner_stdin_and_never_argv(tmp
     with pytest.raises(OnboardingError):
         backend._target_call(value, 'group-resource', candidate=candidate, group_request=packet)
     assert len(calls) == 1
+
+
+class VMIncusFixture(IncusFixture):
+    def __init__(self):
+        super().__init__()
+        self.image_metadata = dict(fingerprint='4' * 64, type='virtual-machine')
+        self.image_reads = []
+
+    def __call__(self, argv, **kwargs):
+        if argv[:1] == ['query'] and argv[1].startswith('/1.0/images/'):
+            self.image_reads.append(list(argv))
+            return json.dumps(self.image_metadata)
+        if argv[0] == 'init':
+            assert argv[3] == '--vm'
+            # Existing fixture executes the same container/volume operations;
+            # retain the exact actual VM type after the creation effect.
+            try:
+                return super().__call__(argv[:3] + argv[4:])
+            finally:
+                if self.instances:
+                    self.instances[-1]['type'] = 'virtual-machine'
+        return super().__call__(argv)
+
+
+def vm_configured(tmp_path):
+    config, value, _, _ = configured(tmp_path)
+    run = VMIncusFixture()
+    return value, run, HostBackend(replace(config, instance_type='virtual-machine'), run=run)
+
+
+def test_vm_environment_reuses_pinned_image_and_existing_journaled_steps(tmp_path):
+    value, run, backend = vm_configured(tmp_path)
+    assert backend.observe(value, 'environment', 'original').state == 'absent'
+    backend.execute(value, 'environment', 'original')
+    assert backend.observe(value, 'environment', 'original').state == 'complete'
+    effects = copy.deepcopy(run.calls)
+    backend.execute(value, 'environment', 'original')
+    assert run.calls == effects
+    assert run.instances[0]['type'] == 'virtual-machine'
+    assert backend.observe(value, 'environment', 'original').facts['image_fingerprint'] == '4' * 64
+    assert all(call == ['query', '/1.0/images/' + '4' * 64] for call in run.image_reads)
+
+
+@pytest.mark.parametrize('metadata', [
+    dict(fingerprint='4' * 64, type='container'),
+    dict(fingerprint='3' * 64, type='virtual-machine'),
+    dict(fingerprint='4' * 64), [], None,
+    dict(fingerprint='4' * 64, type='virtual-machine', properties={'oversized': 'x' * 65536}),
+])
+def test_vm_environment_rejects_wrong_actual_image_before_any_mutation(tmp_path, metadata):
+    value, run, backend = vm_configured(tmp_path)
+    run.image_metadata = metadata
+    with pytest.raises(OnboardingError, match='^onboarding_vm_image_required$'):
+        backend.execute(value, 'environment', 'original')
+    assert run.calls == [] and run.instances == [] and run.volumes == []
+
+
+def test_vm_environment_preserves_partial_original_creation(tmp_path):
+    value, run, backend = vm_configured(tmp_path)
+    run.fail_after = 1
+    with pytest.raises(RuntimeError, match='transport disconnected'):
+        backend.execute(value, 'environment', 'original')
+    assert len(run.instances) == 1 and run.instances[0]['type'] == 'virtual-machine'
+    run.fail_after = None
+    backend.execute(value, 'environment', 'original')
+    assert backend.observe(value, 'environment', 'original').state == 'complete'
+    assert sum(call[0] == 'init' for call in run.calls) == 1
+
+
+@pytest.mark.parametrize('requested,actual', [('virtual-machine','container'), ('container','virtual-machine')])
+def test_environment_never_adopts_or_mutates_a_different_instance_type(tmp_path, requested, actual):
+    value, run, backend = vm_configured(tmp_path)
+    backend.execute(value, 'environment', 'original')
+    run.instances[0]['type'] = actual
+    backend = HostBackend(replace(backend.config, instance_type=requested), run=run)
+    before = copy.deepcopy(run.calls)
+    assert backend.observe(value, 'environment', 'original').state == 'conflict'
+    with pytest.raises(OnboardingError, match='^onboarding_environment_conflict$'):
+        backend.execute(value, 'environment', 'original')
+    assert run.calls == before

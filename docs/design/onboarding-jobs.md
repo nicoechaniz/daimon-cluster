@@ -880,6 +880,35 @@ default can support incoming existing beings while the hosted body's actual
 unit, mount, SDK generation and receiving writes remain in place. Partial,
 foreign or unqualified selections are refused; HTTP cannot change this config.
 
+### Explicit Incus virtual-machine environment
+
+The existing host configuration accepts `instance_type: "virtual-machine"`;
+its absent/default value remains `container`, preserving historical plans and
+job identities. Select a pinned local VM image through the existing
+`native_image`/`browser_image` fields and a VM-compatible profile/pool. No new
+identity, resource create API or remote image alias is introduced.
+
+Before environment mutation the owner reads `incus query /1.0/images/FINGERPRINT` with a20second call bound and64KiB accepted metadata, requiring
+both the exact fingerprint and actual `virtual-machine` type. Creation reuses
+`incus init` with `--vm`, original plan ownership, resource limits and volume
+steps. An existing instance of another type is a conflict, never adopted,
+replaced or deleted. A lost creation reply reconciles the same plan and existing
+VM before proceeding. The completion observation retains actual instance type
+and image fingerprint; running alone is not guest-agent or application readiness.
+Changing the host instance type uses the existing configuration lifecycle;
+a warm worker cannot silently reinterpret its fixed settings.
+
+The metadata query also passed against the actual pinned local image of the
+existing Oliva VM, with no mutation. Incus6.0.4 does not support
+`image info --format=json`; the supported query returns the actual image object.
+This proves the metadata adapter only. Actual blank VM creation,
+agent/filesystem visibility, NAT forwarding and complete companion execution
+still require receiving qualification. The held next companion is not a test
+target. Existing VM placement/read/control support and container network proofs
+must not be presented as a new VM's full onboarding acceptance. See
+[Incus instance creation](https://linuxcontainers.org/incus/docs/main/howto/instances_create/)
+and the existing [VM relocation route](../runbooks/native-host-relocation.md).
+
 ### Conversation-first companion candidate
 
 New `cluster-onboarding-plan/v2` jobs select `environment`, `context`, `memory`,

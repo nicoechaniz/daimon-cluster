@@ -93,6 +93,136 @@ def configured(tmp_path):
     return config, value, run, HostBackend(config, run=run)
 
 
+@pytest.mark.parametrize('reason,expected', [
+    ('conversation_native_engine_unconfirmed', 'conversation_native_engine_unconfirmed'),
+    ('private-secret: /private/context', 'onboarding_host_operation_failed'),
+    ({'private': 'secret'}, 'onboarding_host_operation_failed'),
+])
+def test_guest_conversation_failure_preserves_only_closed_public_code(monkeypatch, reason, expected):
+    import subprocess
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=1,
+        stdout=json.dumps(dict(schema='cluster-conversation-observation/v1', state='refused', reason=reason)),
+        stderr='private-secret must never become diagnostics'))
+    with pytest.raises(OnboardingError) as error:
+        HostBackend._run(['exec', 'dm-fixture', '--', 'python3',
+            '/opt/qualified/clusterctl/onboarding_conversation.py', '--request-stdin'])
+    assert str(error.value) == expected
+
+
+def test_conversation_stage_binds_own_plan_and_does_not_fabricate_login(tmp_path, monkeypatch):
+    from tests.test_onboarding_conversation import request
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA
+    config, value, _, _ = configured(tmp_path)
+    value['schema'] = CONVERSATION_PLAN_SCHEMA
+    selected = request()
+    selected.update(name=value['name'], plan_digest=digest(value))
+    path = tmp_path/'conversation.json'
+    being_seed._write(path, selected)
+    backend = HostBackend(replace(config, conversation_by_name={value['name']: (path, digest(selected))}))
+    backend.authorize = lambda p, pin: True
+    backend._ceremony = lambda p: SimpleNamespace(admission_coordinates=lambda p: {'being_ref': selected['being_ref']})
+    backend._guest_paths = lambda p: (tmp_path, Path('/qualified/base'), {})
+    backend._runtime_paths = lambda p, base: (Path('/qualified/current'), [], {})
+    backend._mounted = lambda p, mounts: True
+    backend.body_python = lambda p: Path('/usr/bin/python3')
+    backend._telegram_command = lambda p, action: {'native_state': 'active'}
+    calls = []
+    def execute(p, argv, **options):
+        calls.append((argv, options))
+        return json.dumps(dict(schema='cluster-conversation-observation/v1', state='ready',
+            native_control=True, web_health=True, anonymous_private_api_denied=True))
+    backend.execute_body = execute
+    observed = backend.observe(value, 'conversation', 'retained-operation')
+    assert observed.state == 'complete'
+    assert observed.facts == {'conversation_ready': True}
+    assert '--apply' not in calls[0][0]
+    assert calls[0][1]['uid'] == 0
+    assert json.loads(calls[0][1]['input_data']) == selected
+    backend.execute(value, 'conversation', 'retained-operation')
+    assert '--apply' in calls[-1][0]
+    # A changed pairing request cannot be sent to the guest, even when its
+    # declared owner/name is unchanged. No guest-side effect is attempted.
+    selected['human_ref'] = 'human:local:33333333-3333-4333-8333-333333333333'
+    being_seed._write(path, selected)
+    with pytest.raises(OnboardingError, match='conversation_selection_changed'):
+        backend.observe(value, 'conversation', 'retained-operation')
+    assert len(calls) == 2
+
+
+def test_identity_stage_retains_native_transaction_without_social_start(tmp_path):
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA
+    config, value, _, _ = configured(tmp_path)
+    value['schema'] = CONVERSATION_PLAN_SCHEMA
+    backend = HostBackend(replace(config, custody=tmp_path/'custody',
+        custody_grants=tmp_path/'custody-grants', code=tmp_path/'code', views=tmp_path/'views',
+        group_admission=tmp_path/'not-opened-group'))
+    backend.authorize = lambda p, pin: True
+    backend._consented = lambda p, stage: stage == 'matrix'
+    backend._decision = lambda p: {'matrix_identity_mode': 'new'}
+    effects = []
+    ceremony = SimpleNamespace(authorize=lambda p: True, observe=lambda p: None,
+        prepare=lambda p, identity_mode: effects.append(('prepare', identity_mode)),
+        admission_coordinates=lambda p: effects.append(('verified', p['name'])))
+    backend._ceremony = lambda p: ceremony
+    backend._matrix_execute = lambda p, c: effects.append(('native-identity', c)) or True
+    backend._matrix_command = lambda p, action: {'phase': 'v8'}
+    before = backend.observe(value, 'identity', 'same-retained-operation')
+    assert before.state == 'absent' and before.safe_to_execute
+    assert effects == []
+    backend.execute(value, 'identity', 'same-retained-operation')
+    assert effects == [('prepare', 'new'), ('native-identity', ceremony), ('verified', value['name'])]
+    # Identity observation cannot borrow a group completion or merely trust the
+    # requested label: the actual target signature coordinates are required.
+    ceremony.observe = lambda p: {'ready': True}
+    backend._guest_paths = lambda p: (tmp_path, tmp_path/'guest', {})
+    backend._runtime_paths = lambda p, base: (base, [], {})
+    backend._matrix_mount = lambda p: {}
+    backend._mounted = lambda p, mounts: True
+    backend._sdk_successor = lambda p: False
+    observed = backend.observe(value, 'identity', 'same-retained-operation')
+    assert observed.facts == {'identity_verified': True}
+
+
+def test_companion_native_admission_does_not_wait_for_outbound_visibility(tmp_path, monkeypatch):
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA, Observation
+    from clusterctl import onboarding_managed, onboarding_group_coordinator
+    config, value, _, _ = configured(tmp_path)
+    value['schema'] = CONVERSATION_PLAN_SCHEMA
+    backend = HostBackend(replace(config, admission=tmp_path/'admission',
+        group_admission=tmp_path/'membership', peer=tmp_path/'retained-legacy-peer'))
+    backend.authorize = lambda p, pin: True
+    backend._identity = lambda p, apply: Observation('complete', {'identity_verified': True})
+    effects = []
+    state = {'running': False, 'membership': False}
+    class Native:
+        settings = {'mode': 'native-admission-only'}
+        def __init__(self, owner):
+            assert owner.config.group_admission is None and owner.config.peer is None
+            assert owner.config.admission == config.admission or owner.config.admission == tmp_path/'admission'
+        def observe(self, selected):
+            return Observation('complete') if state['running'] else Observation('absent', safe_to_execute=True)
+        def execute(self, selected):
+            state['running'] = True
+            effects.append('native-start')
+    class Group:
+        def __init__(self, owner):
+            assert owner is backend
+        def observe_membership(self, selected):
+            return (Observation('complete', {'tribe_membership_verified': True}) if state['membership']
+                    else Observation('waiting', reason='group_admission_pending'))
+    monkeypatch.setattr(onboarding_managed, 'ManagedRuntime', Native)
+    monkeypatch.setattr(onboarding_group_coordinator, 'GroupCoordinator', Group)
+    assert backend.observe(value, 'matrix', 'original').state == 'absent'
+    backend.execute(value, 'matrix', 'original')
+    assert effects == ['native-start']
+    assert backend.observe(value, 'matrix', 'original').reason == 'group_admission_pending'
+    state['membership'] = True
+    observed = backend.observe(value, 'matrix', 'original')
+    assert observed.facts == {'identity_verified': True, 'native_running_verified': True,
+                              'tribe_membership_verified': True}
+    assert effects == ['native-start']
+
+
 @pytest.mark.parametrize('action', ['native-install', 'native-observe', 'probe', 'prepare', 'install'])
 def test_native_harness_commands_do_not_require_bot_connections(tmp_path, action):
     from clusterctl.onboarding import Observation

@@ -61,6 +61,37 @@ def test_missing_root_profile_is_recoverable_waiting(tmp_path, monkeypatch):
     assert account.observe(plan()).reason == 'account_authorization_required'
 
 
+def test_conversation_login_does_not_prime_provider_or_claim_inference(tmp_path, monkeypatch):
+    value = dict(authorized=True, account_id='selected-fixture', action=None)
+    account = manager(tmp_path, monkeypatch, value)
+    calls = []
+    (account.config.views/digest(plan())).mkdir(mode=0o700)
+    def command(selected, action):
+        calls.append(action)
+        return value
+    monkeypatch.setattr(account, 'command', command)
+    account.execute(plan(), probe=False)
+    observed = account.observe(plan(), probe=False)
+    assert calls == ['observe', 'observe']
+    assert observed.state == 'complete'
+    assert observed.facts == {'ssh_ready': True, 'provider_configured': True}
+    # The legacy mode still requires its real retained provider receipt.
+    assert account.observe(plan()).state == 'absent'
+    value['account_id'] = 'foreign-fixture'
+    assert account.observe(plan(), probe=False).state == 'waiting'
+
+
+def test_conversation_never_starts_missing_account_device_enrollment(tmp_path, monkeypatch):
+    value = dict(authorized=False, login_running=False, action=None)
+    account = manager(tmp_path, monkeypatch, value)
+    (account.config.views/digest(plan())).mkdir(mode=0o700)
+    calls = []
+    monkeypatch.setattr(account, 'command', lambda p, action: calls.append(action) or value)
+    with pytest.raises(OnboardingError, match='account_authorization_required'):
+        account.execute(plan(), probe=False)
+    assert calls == ['observe']
+
+
 @pytest.mark.parametrize('existing_private_directory', [False, True])
 def test_account_profile_reaches_receiving_agent_under_private_worker_umask(tmp_path, monkeypatch, existing_private_directory):
     import os

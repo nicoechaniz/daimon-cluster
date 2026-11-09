@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import being_seed
-from .onboarding import JobStore, Observation, OnboardingError, digest, private_directory, validate_plan
+from .onboarding import JobStore, Observation, OnboardingError, digest, private_directory, validate_plan, CONVERSATION_PLAN_SCHEMA
 from .operation_journal import JournalConflict, OperationJournal
 
 SCHEMA = 'cluster-onboarding-group-coordinator/v1'
@@ -528,6 +528,29 @@ class GroupCoordinator:
                 or (row['runtime_observation'] or {}).get('portal_admission', {}).get('completed') != row['result']):
             raise OnboardingError('onboarding_group_completion_unobserved')
         return Observation('complete', dict(verified=True, identity_verified=True))
+
+    def observe_membership(self, plan: dict) -> Observation:
+        """Observe signed membership without borrowing outbound readiness.
+
+        This accepts only the explicit membership-only native transaction or
+        the already completed full transaction. A prepared publication, daemon
+        process or participant name cannot stand in for membership evidence.
+        """
+        selected = self._binding(plan)
+        if selected is None:
+            return Observation('waiting', reason='group_admission_required')
+        journal, row, _admission = selected
+        if row['state'] != 'completed':
+            return Observation('waiting', reason='group_admission_pending')
+        if 'membership_only' in row['intended_transition']:
+            # In completed state this only validates the retained native result;
+            # it never advances, publishes or recreates an enrollment.
+            finish_membership_only(journal, row, row['result'])
+        else:
+            observed = self.observe(plan)
+            if observed.state != 'complete':
+                return observed
+        return Observation('complete', {'tribe_membership_verified': True})
 
     def selection(self, plan: dict) -> tuple[dict, dict, dict]:
         """A locator is usable only after this admission's complete closure."""
@@ -1291,6 +1314,13 @@ class GroupCoordinator:
         # controller/publication/communication pipeline, never its authorization.
         if 'membership_only' in bound[1]['intended_transition']:
             return self.advance_membership_only(name, timeout_seconds=min(timeout_seconds, 60))
+        if plan['schema'] == CONVERSATION_PLAN_SCHEMA:
+            if bound[1]['state'] == 'completed':
+                self.observe_membership(plan)
+                return bound[1]['result']
+            # Do not reinterpret a pending full publication transaction as a
+            # different job, nor silently run outbound effects for web entry.
+            raise OnboardingError('explicit_membership_only_operation_required')
         journal, row, admission = bound
         current = journal.get(row['operation_id'])
         if 'communication_followup' in (current['runtime_observation'] or {}):

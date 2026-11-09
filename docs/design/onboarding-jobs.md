@@ -879,3 +879,38 @@ Each selection is verified against the same immutable context artifact. A newer
 default can support incoming existing beings while the hosted body's actual
 unit, mount, SDK generation and receiving writes remain in place. Partial,
 foreign or unqualified selections are refused; HTTP cannot change this config.
+
+### Conversation-first companion candidate
+
+New `cluster-onboarding-plan/v2` jobs select `environment`, `context`, `memory`,
+`identity`, `access`, `conversation`, `matrix`, and `acceptance`. Existing v1 jobs
+keep their original graph, bytes and operation IDs. Identity commits the native
+signed ceremony before Conversation or Home registration; it neither publishes
+outbound visibility nor invents a Telegram destination. Access checks the selected
+existing provider account without a model probe. Matrix requires the explicit
+native-admission-only runtime and an explicit membership-only transaction; a
+pending legacy publication operation cannot silently become admission-only.
+
+The private `conversation_by_name` selection pins the request and its digest to
+the exact approved plan and signed being. Guest preparation preserves existing
+native work and starts only an actually absent native engine. Final technical
+acceptance verifies own native control, web health, exact paired-human shared
+login, signed membership and unauthorized-access denials. It sends no model input
+and does not claim family microphone, speech or device acceptance.
+
+Home qualification uses a distinct private technical entry link, never the
+family handoff. Its bounded owner-only journal retains the exact proof and cookie
+before uncertain HTTP effects. A resumed operator reuses that same claim/session
+and logs it out; it creates no replacement approval. The actual receiving trial
+recovered an operator process terminated after claim using the retained cookie
+with the owner API disabled, then verified the same session's logout. Terminal
+receipts permit local reconciliation without another HTTP submission.
+
+Worker installation must preflight the coherent worker, host, Home, guest and
+group-coordinator imports in the selected release, alongside its selected Matrix
+SDK. The old small Home-worker overlay is insufficient for this graph. These are
+candidate source capabilities, not a deployed complete companion command: automatic
+Home/request registration from newly committed identity and the explicit KVM
+placement path still require integration. Do not provision the held next companion
+to test them. Exact private failure diagnostics and stage checkpoints remain with
+the original job; timeout extensions continue that same job and preserve work.

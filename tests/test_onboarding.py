@@ -201,6 +201,59 @@ def test_access_readiness_advances_to_listener_but_does_not_prove_real_owner_ssh
     assert 'ssh_verified' in ob.ACCEPTANCE
 
 
+def test_conversation_job_has_distinct_technical_completion_without_telegram(tmp_path):
+    from clusterctl.onboarding_progress import validate
+    value=plan(browser=False)
+    value['schema']=ob.CONVERSATION_PLAN_SCHEMA
+    class WebBackend(FixtureBackend):
+        def observe(self, plan, stage, operation_id):
+            result=super().observe(plan,stage,operation_id)
+            if result.state=='complete' and stage in {'access', 'acceptance'}:
+                result.facts['provider_configured'] = True
+            if result.state=='complete' and stage=='acceptance':
+                result.facts.update(conversation_verified=True,shared_login_verified=True,
+                    native_running_verified=True,tribe_membership_verified=True)
+            return result
+    backend=WebBackend()
+    store=ob.JobStore(tmp_path/'jobs')
+    store.submit(value,backend)
+    for _ in ob.CONVERSATION_STAGES:
+        result=validate(store.tick('eko',backend))
+    assert result['schema']==ob.CONVERSATION_JOB_SCHEMA and result['state']=='complete'
+    assert result['completed_steps']==list(ob.CONVERSATION_STAGES)
+    assert [stage for _,stage,_ in backend.calls]==list(ob.CONVERSATION_STAGES)
+    assert 'telegram' not in store._load('eko')['steps']
+    assert not ob.JobStore.accepted(value,dict.fromkeys(ob.ACCEPTANCE,True))
+    assert store.tick('eko',backend)==result
+
+
+def test_existing_job_cannot_be_reinterpreted_as_conversation_or_change_old_receipts(tmp_path):
+    store,backend=setup(tmp_path)
+    advance(store,backend)
+    path=store.directory('eko')/'job.json'
+    before=path.read_bytes()
+    changed=plan()
+    changed['schema']=ob.CONVERSATION_PLAN_SCHEMA
+    with pytest.raises(ob.OnboardingError,match='onboarding_plan_conflict'):
+        store.submit(changed,backend)
+    assert path.read_bytes()==before
+    assert store.status('eko',owner='sai')['schema']==ob.SCHEMA
+
+
+def test_conversation_progress_rejects_legacy_stage_or_mixed_prefix():
+    from clusterctl.onboarding_progress import validate
+    value=plan()
+    value['schema']=ob.CONVERSATION_PLAN_SCHEMA
+    row={'schema':ob.CONVERSATION_JOB_SCHEMA,'name':'eko','owner':'sai',
+        'plan_digest':ob.digest(value),'state':'ready','stage':'identity','reason':None,
+        'completed_steps':['environment','context','memory'],'active':False,'updated_ms':1}
+    assert validate(row)==row
+    for steps,next_stage in [(['environment','context','memory','matrix'],'access'),
+                             (['environment','context','memory','identity','access','telegram'],'welcome')]:
+        with pytest.raises(ob.OnboardingError):
+            validate({**row,'completed_steps':steps,'stage':next_stage})
+
+
 def test_finite_worker_finishes_only_selected_original_job(tmp_path):
     import time
     from clusterctl.onboarding_worker import Worker
@@ -313,3 +366,21 @@ def test_time_extension_racing_expiry_keeps_single_continuation_owner(tmp_path):
     assert replacement is not None
     os.close(replacement)
     assert control.read()['extension_count'] == 1
+
+
+def test_foreground_failure_keeps_exact_operation_and_redacts_private_error(tmp_path):
+    import json
+    import time
+    from clusterctl.onboarding_worker import Worker
+    store, backend = setup(tmp_path)
+    reason = 'conversation_native_engine_unconfirmed'
+    def execute(*args):
+        raise ob.OnboardingError(reason)
+    backend.execute = execute
+    status, result = Worker(store, lambda: backend).until('eko', deadline=time.monotonic()+2)
+    assert status == 3 and result['diagnostic']['code'] == reason
+    assert result['diagnostic']['operation_id'] == store._load('eko')['steps']['environment']['operation_id']
+    reason = 'private-secret /private/source'
+    status, result = Worker(store, lambda: backend).until('eko', deadline=time.monotonic()+2)
+    assert result['diagnostic']['code'] == 'unclassified_refusal'
+    assert 'private-secret' not in json.dumps(result)

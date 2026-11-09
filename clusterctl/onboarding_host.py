@@ -15,13 +15,13 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
 from . import being_seed, onboarding_code_successor, onboarding_consent, onboarding_input, onboarding_mounts, onboarding_release
 from .onboarding_custody import FirstCustody, document
-from .onboarding import Observation, OnboardingError, digest, private_directory, validate_plan
+from .onboarding import Observation, OnboardingError, digest, private_directory, validate_plan, CONVERSATION_PLAN_SCHEMA
 from .onboarding_progress import Progress
 
 
@@ -100,6 +100,7 @@ class HostConfig:
     native_by_name: dict[str, tuple[Path, str]] | None = None
     group_admission: Path | None = None
     cold_pool: str | None = None
+    conversation_by_name: dict[str, tuple[Path, str]] | None = None
 
     @classmethod
     def load(cls, path: Path, *, expected_value: dict | None = None) -> HostConfig:
@@ -110,7 +111,7 @@ class HostConfig:
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
         telegram_keys = {"telegram_code", "telegram_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -286,10 +287,28 @@ class HostConfig:
                 raise OnboardingError('invalid_onboarding_host_configuration')
             group_admission = Path(value['group_admission'])
             configuration(group_admission)
+        conversation_by_name = None
+        if 'conversation_by_name' in value:
+            from .onboarding_conversation import selection
+            selected = value['conversation_by_name']
+            if not isinstance(selected, dict) or not 1 <= len(selected) <= 64:
+                raise OnboardingError('conversation_selection_required')
+            conversation_by_name = {}
+            for name, row in selected.items():
+                if (not isinstance(name, str) or not being_seed.NAME.fullmatch(name)
+                        or not isinstance(row, dict) or set(row) != {'request', 'request_digest'}
+                        or not isinstance(row['request'], str) or not Path(row['request']).is_absolute()
+                        or not sha(row['request_digest'])):
+                    raise OnboardingError('conversation_selection_required')
+                request = document(Path(row['request']))
+                selection(request)
+                if request['name'] != name or digest(request) != row['request_digest']:
+                    raise OnboardingError('conversation_selection_changed')
+                conversation_by_name[name] = (Path(row['request']), row['request_digest'])
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
-                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission, cold_pool)
+                   consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission, cold_pool, conversation_by_name)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -312,10 +331,11 @@ class HostConfig:
 
 class HostBackend:
     def __init__(self, config: HostConfig, *, run: Callable | None = None, input_cache=None,
-                 custody_run: Callable | None = None):
+                 custody_run: Callable | None = None, home_access: Callable | None = None):
         self.config = config
         self.run = run or self._run
         self.custody_run = custody_run
+        self.home_access = home_access
         self.input_cache = input_cache if input_cache is not None else onboarding_input.VerificationCache()
 
     def native_body(self, plan: dict):
@@ -439,6 +459,18 @@ class HostBackend:
             raise OnboardingError("onboarding_host_operation_failed") from None
         if result.returncode:
             public_errors: frozenset[str] = frozenset()
+            if argv[0] == 'exec' and any(part.endswith('/clusterctl/onboarding_conversation.py') for part in argv):
+                from .onboarding_conversation import PUBLIC_CODES
+                try:
+                    observed = json.loads(result.stdout)
+                except ValueError:
+                    observed = {}
+                if (isinstance(observed, dict)
+                        and observed.get('schema') == 'cluster-conversation-observation/v1'
+                        and observed.get('state') == 'refused'
+                        and isinstance(observed.get('reason'), str)
+                        and observed.get('reason') in PUBLIC_CODES):
+                    raise OnboardingError(observed['reason'])
             if argv[0] == 'exec' and 'clusterctl.onboarding_owner_control' in argv:
                 from .onboarding_owner_control import PUBLIC_ERRORS
                 public_errors = PUBLIC_ERRORS
@@ -589,9 +621,173 @@ class HostBackend:
             return Observation('absent', safe_to_execute=True)
         return Observation("complete", {"verified": True, **resources})
 
+    def _conversation(self, plan: dict, *, apply: bool) -> Observation:
+        """Use the qualified guest adapter with an exact owner-selected pairing.
+
+        Guest readiness is technical only; it never supplies a browser login,
+        family acceptance, social membership or released messaging receipt.
+        """
+        from .onboarding_conversation import selection
+        selected = (self.config.conversation_by_name or {}).get(plan['name'])
+        if selected is None:
+            return Observation('waiting', reason='connection_data_required')
+        request = document(selected[0])
+        selection(request)
+        if (digest(request) != selected[1] or request['name'] != plan['name']
+                or request['plan_digest'] != digest(plan)
+                or request['being_ref'] != self._ceremony(plan).admission_coordinates(plan)['being_ref']):
+            raise OnboardingError('conversation_selection_changed')
+        _, base, mounts = self._guest_paths(plan)
+        code, _, runtime_mounts = self._runtime_paths(plan, base)
+        mounts.update(runtime_mounts)
+        if not self._mounted(plan, mounts):
+            # The existing context stage owns code mounting. A missing mount
+            # must not turn observation into an infrastructure mutation.
+            return Observation('waiting', reason='backend_unavailable')
+        # Reuse the supported token-free native supervisor path. Never run its
+        # model probe, create a thread, or restart an existing inactive engine.
+        engine = self._telegram_command(plan, 'native-observe').get('native_state')
+        if engine == 'absent':
+            if not apply:
+                return Observation('absent', safe_to_execute=True)
+            self._telegram_command(plan, 'native-install')
+            engine = self._telegram_command(plan, 'native-observe').get('native_state')
+        if engine != 'active':
+            return Observation('waiting', reason='backend_unavailable')
+        result = json.loads(self.execute_body(plan, [str(self.body_python(plan)),
+            str(code / 'clusterctl/onboarding_conversation.py'), '--request-stdin',
+            '--timeout-seconds', '55', *(['--apply'] if apply else [])],
+            uid=0, gid=0, input_data=json.dumps(request), timeout_seconds=60))
+        if (result.get('schema') == 'cluster-conversation-observation/v1'
+                and result.get('state') == 'absent' and result.get('safe_to_execute') is True):
+            return Observation('absent', safe_to_execute=True)
+        if (result.get('schema') != 'cluster-conversation-observation/v1'
+                or result.get('state') != 'ready'
+                or any(result.get(key) is not True for key in
+                    ('native_control', 'web_health', 'anonymous_private_api_denied'))):
+            return Observation('waiting', reason='verification_failed')
+        return Observation('complete', {'conversation_ready': True})
+
+    def _identity(self, plan: dict, *, apply: bool) -> Observation:
+        """Install this body's signed identity without starting social services.
+
+        Home/Conversation need the real identity, not an outbound visibility
+        installation or an already-running Matrix daemon. Reuse the exact same
+        custody/target transaction as legacy matrix enrollment.
+        """
+        decision = self._decision(plan)
+        if (self.config.custody is None or self.config.custody_grants is None
+                or not self._consented(plan, stage='matrix')
+                or decision is None):
+            return Observation('waiting', reason='identity_authorization_required')
+        ceremony = self._ceremony(plan)
+        if not ceremony.authorize(plan):
+            return Observation('waiting', reason='identity_authorization_required')
+        prior = ceremony.observe(plan)
+        if prior is not None and prior.get('waiting'):
+            return Observation('waiting', reason='identity_authorization_required')
+        ready = prior is not None and prior.get('ready', prior.get('backup_restore_verified', False))
+        if not ready:
+            if not apply:
+                return Observation('absent', safe_to_execute=True)
+            ceremony.prepare(plan, identity_mode=decision['matrix_identity_mode'])
+        if self.config.code is None or self.config.views is None:
+            return Observation('waiting', reason='backend_unavailable')
+        if apply:
+            if not self._matrix_execute(plan, ceremony):
+                return Observation('waiting', reason='identity_authorization_required')
+        else:
+            _, base, mounts = self._guest_paths(plan)
+            mounts.update(self._runtime_paths(plan, base)[2])
+            mounts['onboarding-matrix-public'] = self._matrix_mount(plan)
+            if not self._mounted(plan, mounts):
+                return Observation('absent', safe_to_execute=True)
+            if self._sdk_successor(plan) and not self._target_call(plan, 'sdk-observe')['ready']:
+                return Observation('absent', safe_to_execute=True)
+        if self._matrix_command(plan, 'observe')['phase'] not in {'v8', 'peer-published'}:
+            return Observation('absent', safe_to_execute=True)
+        # These coordinates are native signature-verified, not names supplied
+        # by a plan or a portal. No runtime/membership/visibility claim follows.
+        ceremony.admission_coordinates(plan)
+        return Observation('complete', {'identity_verified': True})
+
+    def _companion_matrix(self, plan: dict, *, apply: bool) -> Observation:
+        """Compose existing native admission and signed membership separately.
+
+        The explicit v2 job does not enter the legacy outbound-publication
+        pipeline. Full adult operations and their obligations are unchanged.
+        """
+        if plan['schema'] != CONVERSATION_PLAN_SCHEMA:
+            raise OnboardingError('conversation_plan_required')
+        if self.config.admission is None or self.config.group_admission is None:
+            return Observation('waiting', reason='group_admission_required')
+        identity = self._identity(plan, apply=False)
+        if identity.state != 'complete':
+            return identity
+        from .onboarding_managed import ManagedRuntime
+        from .onboarding_group_coordinator import GroupCoordinator
+        # The same held registrar/identity owns this closed-outbound body. The
+        # group coordinator still uses its original protected membership job;
+        # it is not a prerequisite for starting the native body.
+        native_backend = HostBackend(replace(self.config, group_admission=None, peer=None),
+            run=self.run, input_cache=self.input_cache, custody_run=self.custody_run)
+        managed = ManagedRuntime(native_backend)
+        if managed.settings.get('mode') != 'native-admission-only':
+            raise OnboardingError('explicit_native_admission_configuration_required')
+        native = managed.observe(plan)
+        if native.state == 'absent' and native.safe_to_execute and apply:
+            managed.execute(plan)
+            native = managed.observe(plan)
+        if native.state != 'complete':
+            return native
+        membership = GroupCoordinator(self).observe_membership(plan)
+        if membership.state != 'complete':
+            return membership
+        return Observation('complete', dict(identity_verified=True,
+            native_running_verified=True, tribe_membership_verified=True))
+
+    def _companion_acceptance(self, plan: dict, *, apply: bool) -> Observation:
+        if self.home_access is None or self.config.accounts is None:
+            return Observation('waiting', reason='connection_data_required')
+        # All checks are current technical reads, not human/device acceptance
+        # or synthetic inference. Home's isolated technical login is the sole
+        # write here and has its own exact, retained receipt.
+        facts = {}
+        from .onboarding_accounts import ManagedAccount
+        for query in (lambda: self._companion_matrix(plan, apply=False),
+                      lambda: self._conversation(plan, apply=False),
+                      lambda: ManagedAccount(self).observe(plan, probe=False)):
+            observation = query()
+            if observation.state != 'complete':
+                return observation
+            facts.update(observation.facts)
+        if plan['browser']:
+            from .onboarding_browser import Browser
+            browser = Browser(self).observe(plan)
+            if browser.state != 'complete':
+                return browser
+            facts.update(browser.facts)
+        assert self.config.conversation_by_name is not None
+        request = document(self.config.conversation_by_name[plan['name']][0])
+        if digest(request) != self.config.conversation_by_name[plan['name']][1]:
+            raise OnboardingError('conversation_selection_changed')
+        observed = self.home_access(plan, request, apply)
+        if observed.state != 'complete':
+            return observed
+        facts.update(observed.facts)
+        return Observation('complete', facts)
+
     def observe(self, plan: dict, stage: str, operation_id: str) -> Observation:
         if not self.authorize(plan, digest(plan)):
             return Observation("waiting", reason="host_authorization_required")
+        if stage == 'conversation':
+            return self._conversation(plan, apply=False)
+        if stage == 'identity':
+            return self._identity(plan, apply=False)
+        if stage == 'matrix' and plan['schema'] == CONVERSATION_PLAN_SCHEMA:
+            return self._companion_matrix(plan, apply=False)
+        if stage == 'acceptance' and plan['schema'] == CONVERSATION_PLAN_SCHEMA:
+            return self._companion_acceptance(plan, apply=False)
         if stage == 'acceptance' and self.config.group_admission is not None:
             from .onboarding_group_coordinator import GroupCoordinator
             receiving = GroupCoordinator(self).observe(plan)
@@ -660,7 +856,7 @@ class HostBackend:
                     return Observation('absent', safe_to_execute=True)
             if self.config.accounts is not None:
                 from .onboarding_accounts import ManagedAccount
-                return ManagedAccount(self).observe(plan)
+                return ManagedAccount(self).observe(plan, probe=plan['schema'] != CONVERSATION_PLAN_SCHEMA)
             # A listening sshd is not a successful human login or a provider
             # turn. The access stage remains pending until both are observed.
             return Observation('waiting', reason='account_authorization_required')
@@ -722,6 +918,18 @@ class HostBackend:
     def execute(self, plan: dict, stage: str, operation_id: str) -> None:
         if not self.authorize(plan, digest(plan)):
             raise OnboardingError("host_authorization_required")
+        if stage == 'conversation':
+            self._conversation(plan, apply=True)
+            return
+        if stage == 'identity':
+            self._identity(plan, apply=True)
+            return
+        if stage == 'matrix' and plan['schema'] == CONVERSATION_PLAN_SCHEMA:
+            self._companion_matrix(plan, apply=True)
+            return
+        if stage == 'acceptance' and plan['schema'] == CONVERSATION_PLAN_SCHEMA:
+            self._companion_acceptance(plan, apply=True)
+            return
         if stage == 'acceptance' and self.config.group_admission is not None:
             from .onboarding_group_coordinator import GroupCoordinator
             if GroupCoordinator(self).observe(plan).state != 'complete':
@@ -771,7 +979,7 @@ class HostBackend:
                 Ingress(self).execute(plan, self._ssh_command(plan, 'observe', key))
             if self.config.accounts is not None:
                 from .onboarding_accounts import ManagedAccount
-                ManagedAccount(self).execute(plan)
+                ManagedAccount(self).execute(plan, probe=plan['schema'] != CONVERSATION_PLAN_SCHEMA)
             return
         if stage == 'telegram' and self.config.code and self.config.consent_state:
             supplied = self._telegram_connections(plan)

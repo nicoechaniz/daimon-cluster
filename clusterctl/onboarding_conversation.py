@@ -19,6 +19,7 @@ import re
 import selectors
 import stat
 import subprocess
+import sys
 import time
 import tomllib
 import urllib.error
@@ -599,6 +600,19 @@ class Bootstrap:
     def observe(self):
         runtime = self.preflight()
         services = self.services()
+        missing = [path for path in (*configurations(self.value),
+                    *(SYSTEMD / unit for unit in (NATIVE_UNIT, WEB_UNIT)))
+                   if not path.exists()]
+        if missing:
+            # This is the same adapter's absent-file bootstrap, not authority
+            # to restart an existing inactive selection or replace a service.
+            # apply() rechecks all preimages and its retained effect journal.
+            return {
+                'schema': 'cluster-conversation-observation/v1',
+                'state': 'absent', 'safe_to_execute': True,
+                'missing_files': len(missing), 'runtime': runtime,
+                'model_calls': 0,
+            }
         expected = {
             NATIVE_UNIT: (
                 self.value["runtime"]["binary"] + " " + str(STATE / "receiver.toml"),
@@ -934,7 +948,10 @@ PUBLIC_CODES = frozenset(
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--request", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--request", type=Path)
+    source.add_argument("--request-stdin", action="store_true",
+                        help="Read the bounded selection from the host-owned execution pipe")
     parser.add_argument("--timeout-seconds", type=float, default=120)
     parser.add_argument(
         "--apply",
@@ -947,9 +964,15 @@ def main(argv=None):
     try:
         if os.geteuid() != 0:
             fail("conversation_guest_operator_required")
-        if args.request.stat().st_mode & 0o077:
-            fail("conversation_private_selection_required")
-        value = json.loads(read(args.request, uid=0))
+        if args.request_stdin:
+            raw = sys.stdin.buffer.read(65537)
+            if len(raw) > 65536:
+                fail("conversation_input_capacity")
+            value = json.loads(raw)
+        else:
+            if args.request.stat().st_mode & 0o077:
+                fail("conversation_private_selection_required")
+            value = json.loads(read(args.request, uid=0))
         bootstrap = Bootstrap(value, seconds=args.timeout_seconds)
         result = bootstrap.apply() if args.apply else bootstrap.observe()
         print(json.dumps(result))

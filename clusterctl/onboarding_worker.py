@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import being_seed
-from .onboarding import Backend, JobStore, OnboardingError
+from .onboarding import Backend, JobStore, OnboardingError, refusal_diagnostic
 
 
 class ForegroundRun:
@@ -171,9 +171,10 @@ class Worker:
             if self.homes:
                 self.homes(result)
             return result
-        except (OnboardingError, being_seed.SeedError, OSError, ValueError, TypeError, KeyError):
+        except (OnboardingError, being_seed.SeedError, OSError, ValueError, TypeError, KeyError) as error:
             # Do not print name/content/exception from an invalid private record.
-            return {"state": "attention-required", "reason": "verification_failed"}
+            return {"state": "attention-required", "reason": "verification_failed",
+                    "diagnostic": refusal_diagnostic(error, stage='host-preparation')}
         except Exception:
             return {"state": "attention-required", "reason": "backend_unavailable"}
 
@@ -197,6 +198,15 @@ class Worker:
             if value['state'] == 'complete':
                 return 0, value
             if value['state'] == 'attention-required':
+                failure = self.store.directory(name)/'failure.json'
+                if failure.exists():
+                    detail = being_seed._read(failure)
+                    stage = value.get('stage')
+                    if (isinstance(stage, str)
+                            and detail.get('plan_digest') == value.get('plan_digest')
+                            and detail.get('stage') == stage
+                            and detail.get('operation_id') == self.store.operation_id(value['plan_digest'], stage)):
+                        value = {**value, 'diagnostic': detail}
                 return 3, value
             if value['state'] == 'waiting':
                 return 2, value
@@ -357,8 +367,10 @@ def main(argv: list[str] | None = None) -> int:
         config = selections.current()
         from .onboarding_input import VerificationCache
         inputs = VerificationCache()
+        homes = None
         def backend():
-            return HostBackend(selections.current(), input_cache=inputs)
+            return HostBackend(selections.current(), input_cache=inputs,
+                home_access=homes.conversation_access if homes else None)
         from .onboarding_progress import Progress
 
         progress = Progress(config.progress, worker_uid=os.geteuid()) if config.progress else None
@@ -372,7 +384,6 @@ def main(argv: list[str] | None = None) -> int:
                     or not owner.authorize(record['plan'], record['plan_digest'])):
                 raise OnboardingError('native_receiving_completed_enrollment_required')
             return store.project(record)
-        homes=None
         if args.home_placements:
             if progress is None:
                 raise OnboardingError('trusted_home_progress_required')

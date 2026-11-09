@@ -1177,6 +1177,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result))
             return 0
         if migrating:
+            if observation_deadline_ns is None:
+                raise OnboardingError('native_code_update_migration_binding_required')
             print(json.dumps(target.migrate_visibility(json.loads(args.visibility_migration_json),
                 deadline_ns=observation_deadline_ns)))
             return 0

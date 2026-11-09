@@ -190,6 +190,8 @@ class ManagedRuntime:
                 previous.update(service=physical['service'], scope=physical['scope'])
                 frozen_group = _code_update_group(before, published=published_group)
                 if published_group:
+                    if frozen_group is None:
+                        raise OnboardingError('native_code_update_migration_binding_required')
                     argv = command(base, receive_only=False, runtime_code=code, runtime_digest=candidate[1],
                         visibility=Path(frozen_group['selected']['visibility']),
                         messaging_application=Path(frozen_group['selected']['application']))

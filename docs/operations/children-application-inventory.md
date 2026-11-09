@@ -9,7 +9,14 @@ Each complete tree retains the existing ownership, mode, symlink, file-set, hash
 and mutation checks. No package is imported or started. A mismatching component
 or changed search path makes that unit unavailable, preserving other observations.
 
-The existing private deployment-manifest writer owns these fields. Use retained
+The existing private deployment-manifest writer owns these fields. Receiving
+references must stay under `/etc/children-maintenance`; candidate files in a
+temporary qualification directory are not production selection references.
+Before replacing the daily configuration, run the selected collector's existing
+`validate(config)` against the complete proposal, not only the helper's manifest
+validator. Retain an earlier refused configuration and its failed invocation;
+continue with the same verified manifest bytes through the maintained writer.
+Use retained
 maintainer/component/wheel manifests, never hashes learned from an unknown live
 tree. Keep at most1024files per tree and4096 across the complete manifest; the
 existing256KiB manifest,128MiB shared byte-hash budget and finite read-job bounds

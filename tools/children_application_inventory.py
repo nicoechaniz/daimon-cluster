@@ -16,6 +16,20 @@ MAX_METADATA=65536
 MAX_OUTPUT=256*1024
 
 
+def image_identity(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def process_start(process):
+    # comm may contain spaces and parentheses; only its final delimiter ends it.
+    with (process/'stat').open('rb') as stream:
+        raw = stream.read(4097)
+    fields = raw.rpartition(b') ')[2].split()
+    if len(raw)>4096 or len(fields)<20 or not fields[19].isdigit() or int(fields[19])<=0:
+        raise ValueError('process_identity_unavailable')
+    return int(fields[19])
+
+
 def browser_components(check=lambda:None, root=Path('/'), owner_uid=0, run=subprocess.run, budget=4*1024*1024):
     """Inspect dynamic metadata and a standard library file, never run Chromium/ldd."""
     binary=root/'usr/lib/chromium/chromium';before=binary.stat()
@@ -125,10 +139,12 @@ def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=Fa
         try:
             check();props=properties(unit);pid=int(props.get('MainPID','0'))
             if props.get('ActiveState')!='active' or pid<=0:raise ValueError('selected_service_not_running')
-            image=proc/str(pid)/'exe';target=str(image.readlink());value.update(pid=pid,executable=target)
+            process=proc/str(pid);started=process_start(process)
+            image=process/'exe';target=str(image.readlink())
+            value.update(pid=pid,process_start_ticks=started,executable=target)
             with image.open('rb') as stream:
                 before=os.fstat(stream.fileno())
-                identity=(before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns)
+                identity=image_identity(before)
                 if identity in images:hex_digest=images[identity]
                 else:
                     if before.st_size>remaining:raise ValueError('executable_hash_capacity')
@@ -141,7 +157,7 @@ def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=Fa
                         digest.update(chunk)
                     hex_digest=digest.hexdigest();images[identity]=hex_digest
                 after=os.fstat(stream.fileno())
-                if (before.st_dev,before.st_ino,before.st_size)!=(after.st_dev,after.st_ino,after.st_size):
+                if identity!=image_identity(after):
                     raise ValueError('executable_changed_during_read')
             value.update(executable_sha256=hex_digest,executable_bytes=before.st_size)
             with (proc/str(pid)/'cmdline').open('rb') as stream:command=stream.read(4097)
@@ -171,6 +187,10 @@ def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=Fa
             latest=properties(unit)
             if latest.get('MainPID')!=str(pid) or latest.get('ActiveState')!='active':
                 raise ValueError('service_changed_during_observation')
+            if process_start(process)!=started:
+                raise ValueError('process_changed_during_observation')
+            if image_identity(image.stat())!=identity or str(image.readlink())!=target:
+                raise ValueError('executable_changed_during_observation')
             value['state']='observed'
         except (OSError,ValueError,KeyError,subprocess.SubprocessError) as error:
             value.update(state='unavailable',reason=str(error) if type(error) is ValueError else type(error).__name__)

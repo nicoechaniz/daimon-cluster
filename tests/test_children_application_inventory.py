@@ -1,6 +1,7 @@
 """Actual metadata parsing without package execution and live-image binding."""
 import hashlib
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 import pytest
@@ -75,6 +76,7 @@ def test_metadata_refuses_symlinks_and_oversized_or_invalid_identity(tmp_path):
 def fixture_process(root,pid,entry):
     image=root/'running-image';image.write_bytes(b'actual selected executable fixture')
     process=root/str(pid);process.mkdir();(process/'exe').symlink_to(image)
+    (process/'stat').write_bytes(str(pid).encode()+b' (fixture process) S '+b'0 '*18+b'100 0\n')
     (process/'environ').write_bytes(b'PRIVATE_TOKEN=PRIVATE-MUST-NOT-BE-RETAINED\0')
     (process/'cmdline').write_bytes(str(entry).encode()+b'\0--token\0PRIVATE-MUST-NOT-BE-RETAINED\0')
     return image
@@ -105,6 +107,55 @@ def test_changed_process_and_hash_capacity_are_unavailable_not_empty_green(tmp_p
         result=inventory.collect(['own.service'],proc=tmp_path)
     assert result['units']['own.service']['reason']=='executable_hash_capacity'
     assert image.read_bytes()==b'actual selected executable fixture'
+
+
+@pytest.mark.parametrize('change', ['same-size-write', 'new-executable', 'reused-pid'])
+def test_same_pid_does_not_prove_image_or_process_stayed_current(tmp_path, change):
+    image=fixture_process(tmp_path,3,tmp_path/'python')
+    original=image.read_bytes()
+    def paths(process):
+        if change=='same-size-write':
+            before=image.stat()
+            image.write_bytes(b'x'*len(original))
+            # Keep the race deterministic even on filesystems whose timestamp
+            # resolution coalesces immediate writes into the same tick.
+            os.utime(image,ns=(before.st_atime_ns,before.st_mtime_ns+1_000_000_000))
+        elif change=='new-executable':
+            other=tmp_path/'replacement';other.write_bytes(original)
+            (process/'exe').unlink();(process/'exe').symlink_to(other)
+        else:
+            (process/'stat').write_bytes(b'3 (different process) S '+b'0 '*18+b'200 0\n')
+        return []
+    with patch.object(inventory,'properties',return_value={'ActiveState':'active','MainPID':'3'}), \
+            patch.object(inventory,'declared_python_paths',side_effect=paths):
+        result=inventory.collect(['own.service'],proc=tmp_path)
+    unit=result['units']['own.service']
+    assert unit['state']=='unavailable'
+    assert unit['reason']==('process_changed_during_observation' if change=='reused-pid'
+                            else 'executable_changed_during_observation')
+
+
+def test_same_size_mutation_during_hash_is_not_accepted(tmp_path):
+    image=fixture_process(tmp_path,3,tmp_path/'python');original=Path.open
+    class ChangedStream:
+        def __enter__(self):
+            self.stream=original(tmp_path/'3/exe','rb');self.changed=False
+            return self
+        def __exit__(self,*args):self.stream.close()
+        def fileno(self):return self.stream.fileno()
+        def read(self,count):
+            raw=self.stream.read(count)
+            if raw and not self.changed:
+                self.changed=True;before=image.stat();image.write_bytes(b'x'*len(raw))
+                os.utime(image,ns=(before.st_atime_ns,before.st_mtime_ns+1_000_000_000))
+            return raw
+    def opened(path,*args,**kwargs):
+        return ChangedStream() if path==tmp_path/'3/exe' else original(path,*args,**kwargs)
+    with patch.object(inventory,'properties',return_value={'ActiveState':'active','MainPID':'3'}), \
+            patch.object(Path,'open',opened):
+        result=inventory.collect(['own.service'],proc=tmp_path)
+    assert result['units']['own.service']['state']=='unavailable'
+    assert result['units']['own.service']['reason']=='executable_changed_during_read'
 
 
 def test_invalid_service_never_becomes_a_shell_command():

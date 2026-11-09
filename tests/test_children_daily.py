@@ -456,3 +456,80 @@ class CurrentPhaseEvidenceTests(unittest.TestCase):
         result = daily.phase_observations(config, report)
         self.assertEqual(result['compiler_cleanup']['unavailable_targets'], ['pixin'])
         self.assertEqual(result['public_advisories']['applicability'], 'unavailable')
+
+
+class SelectedMaliciousObservationTests(unittest.TestCase):
+    def public_result(self, *, malicious=True, withdrawn=None, alias=False):
+        from tools import children_public_advisories as advisory
+        package = {'name': 'selected-public-package', 'version': '1.2', 'direct_url_present': False}
+        inventory = {'schema': 'children-application-inventory/v1', 'state': 'observed',
+                     'environments': {'private-path-never-sent': {'packages': [package]}}}
+        identifier = 'GHSA-example' if alias or not malicious else 'MAL-2026-1'
+        record = {'id': identifier, 'aliases': ['MAL-2026-1'] if alias else [],
+                  'modified': '2026-11-09T00:00:00Z', 'withdrawn': withdrawn,
+                  'summary': 'Ordinary text is not a malicious classification',
+                  'affected': [{'package': {'ecosystem': 'PyPI', 'name': package['name']},
+                                'ranges': [{'type': 'ECOSYSTEM', 'events': [{'introduced': '0'}]}]}]}
+        calls = []
+        def transport(path, payload=None):
+            calls.append((path, payload))
+            return {'results': [{'vulns': [{'id': identifier}]}]} if path == 'querybatch' else record
+        result = advisory.match([inventory], [package['name']], transport)
+        return result, calls
+
+    def test_existing_non_cve_no_fix_report_is_actionable_without_more_queries(self):
+        public, calls = self.public_result()
+        before = list(calls)
+        phase = daily.selected_malicious_observation(public)
+        self.assertEqual(calls, before)
+        self.assertEqual(phase['state'], 'observed')
+        self.assertEqual(phase['active_record_ids'], ['MAL-2026-1'])
+        self.assertEqual(phase['applicability'], 'pending')
+        self.assertTrue(phase['needs_triage'])
+        self.assertEqual(phase['query_sha256'], public['query_sha256'])
+        self.assertNotIn('private-path', json.dumps(phase))
+        self.assertEqual(public['records'][0]['affected'][0]['fix_events_listed'], [])
+
+    def test_alias_and_withdrawal_remain_attributed_not_remediation(self):
+        public, _ = self.public_result(alias=True)
+        phase = daily.selected_malicious_observation(public)
+        self.assertEqual(phase['active_alias_groups'], [['GHSA-example']])
+        public, _ = self.public_result(withdrawn='2026-11-09T01:00:00Z')
+        phase = daily.selected_malicious_observation(public)
+        self.assertEqual(phase['active_record_ids'], [])
+        self.assertEqual(phase['withdrawn_record_ids'], ['MAL-2026-1'])
+        self.assertEqual(phase['applicability'], 'no-selected-triage')
+
+    def test_empty_selected_result_is_observation_not_global_clearance(self):
+        public, _ = self.public_result(malicious=False)
+        phase = daily.selected_malicious_observation(public)
+        self.assertFalse(phase['needs_triage'])
+        self.assertEqual(phase['scope'], 'selected-public-PyPI-versions')
+        self.assertIn('unassessed', phase['meaning'])
+        public['records'][0]['summary'] = 'malicious malware MAL-2026-2'
+        self.assertEqual(daily.selected_malicious_observation(public), phase)
+
+    def test_unavailable_changed_query_or_incomplete_record_never_clears(self):
+        import copy
+        public, _ = self.public_result()
+        cases = [None, {'state': 'unavailable', 'last_success_checked': public['checked']},
+                 {**public, 'public_queries': []}, {**public, 'query_sha256': '0'*64},
+                 {**public, 'active_alias_groups': []}, {**public, 'records': [{}]}]
+        for invalid in cases:
+            with self.subTest(invalid=list(invalid) if isinstance(invalid, dict) else None):
+                self.assertEqual(daily.selected_malicious_observation(invalid)['state'], 'incomplete')
+        malformed = copy.deepcopy(public)
+        malformed['records'][0]['withdrawn'] = 'not-a-timestamp'
+        self.assertEqual(daily.selected_malicious_observation(malformed)['state'], 'incomplete')
+        duplicate = copy.deepcopy(public)
+        duplicate['active_alias_groups'].append(duplicate['active_alias_groups'][0])
+        self.assertEqual(daily.selected_malicious_observation(duplicate)['state'], 'incomplete')
+
+    def test_phase_scope_and_execution_health_do_not_hide_missing_assessment(self):
+        public, _ = self.public_result()
+        phase = daily.phase_observations({'targets': [], 'public_advisories': {'selected': True}},
+                                         {'targets': {}, 'public_advisories': public})
+        self.assertEqual(phase['selected_public_python_malicious']['state'], 'observed')
+        failed = {'source': {'state': 'fresh'}, 'targets': {'pixin': {'debian_advisories': 'matched'}},
+                  'phases': {'selected_public_python_malicious': {'state': 'incomplete'}}}
+        self.assertFalse(daily.observation_complete(failed))

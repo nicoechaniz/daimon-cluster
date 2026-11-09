@@ -1749,12 +1749,24 @@ reader through the existing `observe_current_reader` operator and compares their
 native membership basis with `conversation_cohort`. It pins prior members' own
 loaded application/software selections and actual visibility modes, and pins the
 entrant to the retained publication plus its unchanged native code/bundle. Every
-required native audience body must be observed; finite observation/credential
+protected current receiver/body and every represented being must be observed; finite observation/credential
 validity is rechecked after collection, and every actual gate must select
 that exact fresh reader vector. Only then is `tribe_reader_selection_verified`
 reported. Files, enrollment, partial audiences and unselected gates cannot stand
 in for that observation. This is reader qualification/selection evidence, not
 network delivery, outbound release or model uptake.
+
+The full signed native roster can retain additional embodiments of a represented
+being. Those entries do not establish current placement or require reviving retired
+bodies. Qualify every exact receiver/body selected in the protected admission,
+while also requiring coverage of every distinct being in the common signed roster.
+An unconfigured different being still refuses, as does an omitted explicitly
+selected sibling body. Keep the full roster and unobserved sibling coordinates
+visible; never rewrite membership/history or claim those bodies were observed.
+Actual receiving exposed ten signed audience entries for seven current receivers,
+including three additional Source/Oliva embodiments. The old body-for-body equality
+refused before any native control. The regression failed before this correction;
+the configured-body, missing-being and fresh-proof checks remain enforced.
 
 After actual restoration, the ordinary worker also composes the existing native
 reader controls. It first observes all current required readers and freezes that

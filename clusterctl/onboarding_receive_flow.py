@@ -277,6 +277,29 @@ def publish(*, plan: dict, selected: dict, journal, row: dict, admission: dict,
 
 
 
+def require_current_reader_coverage(proofs: dict, receivers: dict) -> dict:
+    """Cover every protected receiver/body and every represented Tribe being.
+
+    Signed rosters can retain other embodiments of an already covered being.
+    Their presence is not evidence of current placement or an instruction to
+    revive retired bodies. Keep them visible without inventing reader proofs.
+    """
+    required = {(r['being_ref'], r['embodiment_id']) for r in receivers.values()}
+    observed = {(p['reader']['being_ref'], p['reader']['embodiment_id']) for p in proofs.values()}
+    beings = {being for being, _body in observed}
+    if (not receivers or len(required) != len(receivers) or len(observed) != len(proofs)
+            or set(proofs) != set(receivers) or required != observed
+            or any((p['reader']['being_ref'], p['reader']['embodiment_id']) !=
+                (receivers[name]['being_ref'], receivers[name]['embodiment_id']) for name,p in proofs.items())
+            or any({r['being_ref'] for r in p['roster']['audience']} != beings for p in proofs.values())):
+        raise OnboardingError('receiving_current_required_reader_missing')
+    audience = {(r['being_ref'], r['embodiment_id']) for p in proofs.values() for r in p['roster']['audience']}
+    if not observed <= audience:
+        raise OnboardingError('receiving_current_required_reader_missing')
+    return dict(coverage='authorized-current-receivers', unobserved_sibling_bodies=[
+        dict(being_ref=being, embodiment_id=body) for being,body in sorted(audience-observed)])
+
+
 def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, prepare=True):
     """Observe a complete current vector without changing any native gate."""
     from .onboarding_receiving_update import observe_current_reader, conversation_cohort, _reader_active
@@ -316,10 +339,7 @@ def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, p
         if (time.monotonic_ns() >= deadline_ns
                 or any(p['identity_expires_at_ms'] <= now or not _reader_active(p['reader'], now) for p in proofs.values())):
             raise OnboardingError('receiving_cohort_observation_expired')
-        required = {(r['being_ref'],r['embodiment_id']) for r in proofs[name]['roster']['audience']}
-        observed = {(r['being_ref'],r['embodiment_id']) for r in cohort['readers']}
-        if required != observed:
-            raise OnboardingError('receiving_current_required_reader_missing')
+        require_current_reader_coverage(proofs, admission['receivers'])
         validate()
         return proofs, cohort
     finally:

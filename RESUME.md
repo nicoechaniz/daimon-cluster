@@ -1,3 +1,18 @@
+## Current receivers versus full signed roster —2026-11-09
+
+Actual current-reader observation found ten signed audience entries for seven
+configured receivers; three were other Source/Oliva embodiments. Native signatures
+and complete roster agreement passed, but a body-for-body equality wrongly required
+reviving those unconfigured bodies. Coverage now requires every exact protected
+receiver/body and every represented being, preserving full signed rosters and
+explicit unobserved sibling metadata. Missing distinct beings or configured sibling
+bodies still refuse. The regression failed before repair. The original zero-effect
+reader-restoration operation completed with all seven already selected, unchanged
+original jobs/configuration and zero gate/service/membership/model/message changes.
+The earlier isolated Eko unselected observation is retained; its later selection
+change is not attributed to this operation. Current selection does not prove
+message delivery, human reading or complete-command acceptance.
+
 ## Actual blank VM environment and private NAT —2026-11-09
 
 Actual disposable VM qualification reused the existing pinned Debian13 KVM image

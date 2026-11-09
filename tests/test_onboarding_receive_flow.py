@@ -200,7 +200,7 @@ def test_invalid_configuration_cannot_prepare_helpers_or_keys(fixture,field,valu
     assert not f.events
 
 
-@pytest.mark.parametrize('gap',[None,'entrant-unselected','old-unselected','missing-reader','wrong-being','membership','unobserved-member','expired-proof','expired-credential'])
+@pytest.mark.parametrize('gap',[None,'entrant-unselected','old-unselected','missing-reader','wrong-being','membership','unobserved-member','unobserved-sibling-body','expired-proof','expired-credential'])
 def test_observation_requires_fresh_all_required_readers_and_preserves_old_visibility(fixture,monkeypatch,gap):
     from clusterctl import onboarding_receiving_update as receiving
     f=fixture
@@ -212,6 +212,8 @@ def test_observation_requires_fresh_all_required_readers_and_preserves_old_visib
         membership_proofs=[],required_authority_epochs=[],roster_sha256='c'*64)
     if gap=='unobserved-member':
         roster['audience']=roster['audience']+[dict(being_ref='another',embodiment_id='body-another')]
+    if gap=='unobserved-sibling-body':
+        roster['audience']=roster['audience']+[dict(being_ref='old',embodiment_id='historical-body-old')]
     calls=[]
     def proof(owner,*,expected_selection,expires_at_ms,receive_only):
         name=owner.name
@@ -245,8 +247,8 @@ def test_observation_requires_fresh_all_required_readers_and_preserves_old_visib
             observe()
     else:
         result=observe()
-        assert result.state==('complete' if gap is None else 'waiting')
-        if gap is None:
+        assert result.state==('complete' if gap in (None,'unobserved-sibling-body') else 'waiting')
+        if gap in (None,'unobserved-sibling-body'):
             assert result.facts=={'tribe_reader_selection_verified':True}
     assert calls==['new','old']
     assert f.journal.get(f.row['operation_id'])==before
@@ -262,6 +264,16 @@ def test_pending_snapshot_reply_cannot_satisfy_receiving_observation(fixture):
     result=flow.observe(plan=f.plan,selected=f.selected,row=f.journal.get(f.row['operation_id']),
         admission=f.admission,owners=f.owners,validate=lambda:None,deadline_ns=time.monotonic_ns()+5_000_000_000)
     assert result.state=='waiting' and not f.events
+
+
+def test_explicit_current_sibling_receiver_cannot_be_omitted():
+    proof=dict(reader=dict(being_ref='member',embodiment_id='current'),
+        roster=dict(audience=[dict(being_ref='member',embodiment_id='current'),
+                              dict(being_ref='member',embodiment_id='second-current')]))
+    receivers={'first':dict(being_ref='member',embodiment_id='current'),
+               'second':dict(being_ref='member',embodiment_id='second-current')}
+    with pytest.raises(OnboardingError,match='current_required_reader_missing'):
+        flow.require_current_reader_coverage({'first':proof},receivers)
 
 
 def test_original_scope_recovery_precedes_fresh_base_status(fixture,monkeypatch):

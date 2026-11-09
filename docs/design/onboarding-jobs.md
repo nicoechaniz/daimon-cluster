@@ -55,6 +55,20 @@ the same existing observation/receipt route must reconcile it before execution.
 This finite worker surface does not by itself finish the still-incomplete
 Conversation stage integration or establish a newly provisioned companion.
 
+Successful v2 foreground outcomes now include `entry` with the exact authorized
+Conversation HTTPS URL, companion and paired-human references. The current held
+grant, original completed job and pinned pairing request must still match; a
+missing/changed entry returns a scoped operator refusal without changing completed
+native stages. Legacy v1 results remain compatible. The receipt explicitly marks
+technical verification at job completion, current health as not refreshed and
+human-device/provider-inference acceptance as not established by this command.
+It exposes no account data, credentials, runtime paths or bootstrap IDs. Both a
+fresh completion and a completed-job retry use the same result path; the original
+job is neither reenrolled nor reexecuted merely to print its usable entry. Parent
+`elapsed_seconds` measures the complete invocation, including input/configuration
+preparation, using the monotonic clock. A later actual benchmark remains the joint
+held exercise; these receipts do not invent its duration.
+
 Each correction discovered during the four-child work belongs in that route and
 its consumed documentation/context. Current examples include authority-metadata
 renewal using held custody; parallel finite writer initialization; remote code

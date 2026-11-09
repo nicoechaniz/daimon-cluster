@@ -167,6 +167,35 @@ def test_conversation_stage_binds_own_plan_and_does_not_fabricate_login(tmp_path
     assert len(proxy_reads) == (2 if with_proxy else 0)
 
 
+def test_completed_companion_entry_uses_own_authorized_request_without_bootstrap_secrets(tmp_path):
+    from tests.test_onboarding_conversation import request
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA
+    config, value, _, _ = configured(tmp_path)
+    value['schema'] = CONVERSATION_PLAN_SCHEMA
+    selected = request()
+    selected.update(name=value['name'], plan_digest=digest(value))
+    path = tmp_path/'conversation.json'
+    being_seed._write(path, selected)
+    backend = HostBackend(replace(config, conversation_by_name={value['name']:(path,digest(selected))}))
+    granted = [True]
+    backend.authorize = lambda p, pin: granted[0]
+    backend._ceremony = lambda p: SimpleNamespace(admission_coordinates=lambda p:{'being_ref':selected['being_ref']})
+    entry = backend.companion_entry(value)
+    assert entry['url'] == selected['origin']+'/interaction/?view=conversation&client=standalone'
+    assert entry['being_ref'] == selected['being_ref'] and entry['human_ref'] == selected['human_ref']
+    assert not {'runtime','execution','chat_id','human_id','topic_id','home_ref'} & set(entry)
+    assert entry['current_health'] == 'not-refreshed'
+    assert entry['human_device_acceptance'] == 'not-established-by-command'
+    granted[0] = False
+    with pytest.raises(OnboardingError,match='host_authorization_required'):
+        backend.companion_entry(value)
+    granted[0] = True
+    selected['origin'] = 'https://foreign.example.org'
+    being_seed._write(path,selected)
+    with pytest.raises(OnboardingError,match='conversation_selection_changed'):
+        backend.companion_entry(value)
+
+
 def test_identity_stage_retains_native_transaction_without_social_start(tmp_path):
     from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA
     config, value, _, _ = configured(tmp_path)

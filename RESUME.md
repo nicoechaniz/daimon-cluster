@@ -1,3 +1,18 @@
+## Deterministic terminal entry receipt —2026-11-09
+
+The v2 foreground command now returns the authorized Conversation HTTPS entry,
+companion/human pairing and explicit technical-versus-device/inference status.
+Fresh completion and completed-job retry share the same read-only result path;
+current grant/request changes refuse without changing historical completed work.
+The completed-job fast path now records its terminal foreground outcome, and the
+parent measures the whole invocation with its monotonic clock. The published
+predecessor reproduced missing entry output; corrected source returned it with
+unchanged job bytes/effects.178affected tests,104-source typing and Ruff passed.
+This is source qualification, not a fresh-companion benchmark or fleet adoption.
+Emma remains held for the later joint exercise after full four-child delivery.
+School's current App record still explicitly lacks retained mission/workspace/
+canonical return/display; prior export or kit installation does not close it.
+
 ## Current receivers versus full signed roster —2026-11-09
 
 Actual current-reader observation found ten signed audience entries for seven

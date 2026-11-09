@@ -201,7 +201,7 @@ def test_access_readiness_advances_to_listener_but_does_not_prove_real_owner_ssh
     assert 'ssh_verified' in ob.ACCEPTANCE
 
 
-def test_conversation_job_has_distinct_technical_completion_without_telegram(tmp_path):
+def test_conversation_job_has_distinct_technical_completion_without_telegram(tmp_path, monkeypatch, capsys):
     from clusterctl.onboarding_progress import validate
     value=plan(browser=False)
     value['schema']=ob.CONVERSATION_PLAN_SCHEMA
@@ -225,6 +225,41 @@ def test_conversation_job_has_distinct_technical_completion_without_telegram(tmp
     assert 'telegram' not in store._load('eko')['steps']
     assert not ob.JobStore.accepted(value,dict.fromkeys(ob.ACCEPTANCE,True))
     assert store.tick('eko',backend)==result
+    from clusterctl.onboarding_worker import Worker, completed_result
+    import time
+    entry = {'url':'https://fixture.example.org/interaction/?view=conversation&client=standalone'}
+    backend.companion_entry = lambda selected: entry
+    before = (store.directory('eko')/'job.json').read_bytes()
+    effects = list(backend.calls)
+    status, finished = Worker(store, lambda:backend).until('eko',deadline=time.monotonic()+2)
+    assert status == 0 and finished['entry'] == entry
+    assert (store.directory('eko')/'job.json').read_bytes() == before and backend.calls == effects
+    def unavailable(selected):
+        raise ob.OnboardingError('private secret /private/credential')
+    backend.companion_entry = unavailable
+    status, failed = completed_result(store,backend,'eko',result)
+    assert status == 3 and failed['job']['state'] == 'complete'
+    assert failed['diagnostic']['code'] == 'unclassified_refusal'
+    assert 'private secret' not in json.dumps(failed)
+    assert (store.directory('eko')/'job.json').read_bytes() == before
+    # Exercise the actual completed-job CLI fast path: it must not launch a
+    # worker/re-enroll merely to return entry coordinates and a terminal receipt.
+    from types import SimpleNamespace
+    from clusterctl import onboarding_host, onboarding_worker, being_seed
+    grants = tmp_path/'grants'
+    grants.mkdir(mode=0o700)
+    being_seed._write(grants/'eko.json',{'plan':value})
+    config = SimpleNamespace(jobs=store.root,grants=grants)
+    monkeypatch.setattr(onboarding_host,'CurrentHostConfig',lambda p:SimpleNamespace(current=lambda:config))
+    monkeypatch.setattr(onboarding_host,'HostBackend',lambda c:backend)
+    monkeypatch.setattr(onboarding_worker,'supervise',lambda *a,**k:(_ for _ in ()).throw(AssertionError('No new worker')))
+    backend.companion_entry = lambda selected:entry
+    assert onboarding_worker.main(['--config',str(tmp_path/'config.json'),'--until','eko']) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output['result']['entry'] == entry and output['elapsed_seconds'] >= 0
+    retained = json.loads((store.directory('eko')/'foreground/current.json').read_text())
+    assert retained['phase'] == 'complete' and retained['result']['result']['entry'] == entry
+    assert (store.directory('eko')/'job.json').read_bytes() == before and backend.calls == effects
 
 
 def test_existing_job_cannot_be_reinterpreted_as_conversation_or_change_old_receipts(tmp_path):

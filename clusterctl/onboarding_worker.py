@@ -21,7 +21,27 @@ from pathlib import Path
 from typing import Callable
 
 from . import being_seed
-from .onboarding import Backend, JobStore, OnboardingError, refusal_diagnostic
+from .onboarding import Backend, JobStore, OnboardingError, refusal_diagnostic, CONVERSATION_JOB_SCHEMA
+
+
+def completed_result(store: JobStore, backend: Backend, name: str, value: dict) -> tuple[int, dict]:
+    """A terminal v2 command includes its own authorized entry, not another job."""
+    if value.get('schema') != CONVERSATION_JOB_SCHEMA:
+        return 0, value
+    try:
+        record = store._load(name)
+        if (record['state'] != 'complete' or store.project(record) != value
+                or not store.accepted(record['plan'], record['steps']['acceptance'].get('facts', {}))):
+            raise OnboardingError('verification_failed')
+        entry = getattr(backend, 'companion_entry', None)
+        if entry is None:
+            raise OnboardingError('conversation_selection_required')
+        return 0, dict(value, entry=entry(record['plan']))
+    except (OnboardingError, being_seed.SeedError, OSError, ValueError, TypeError, KeyError) as error:
+        # Keep a completed native job intact when its current entry/config is
+        # unavailable. The operator failed, not its preserved historical work.
+        return 3, dict(state='attention-required', reason='verification_failed', job=value,
+            diagnostic=refusal_diagnostic(error, stage='completed-entry'))
 
 
 class ForegroundRun:
@@ -196,7 +216,7 @@ class Worker:
                 break
             value = self._tick(name)
             if value['state'] == 'complete':
-                return 0, value
+                return completed_result(self.store, self.backend(), name, value)
             if value['state'] == 'attention-required':
                 failure = self.store.directory(name)/'failure.json'
                 if failure.exists():
@@ -300,6 +320,7 @@ def supervise(argv: list[str], *, seconds: float,
 
 
 def main(argv: list[str] | None = None) -> int:
+    invocation_started = time.monotonic()
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
@@ -333,7 +354,8 @@ def main(argv: list[str] | None = None) -> int:
             if lease is None:
                 print(json.dumps(dict(schema='cluster-onboarding-foreground/v1',
                     state='extension-recorded' if args.extend_seconds is not None else 'running',
-                    deadline_epoch=record['deadline_epoch'], effect='existing-supervisor; no duplicate launch')))
+                    deadline_epoch=record['deadline_epoch'], effect='existing-supervisor; no duplicate launch',
+                    elapsed_seconds=time.monotonic()-invocation_started)))
                 return 0
             try:
                 if control.child_alive():
@@ -341,8 +363,10 @@ def main(argv: list[str] | None = None) -> int:
                         effect='original-worker-still-running; no duplicate launch')
                     status = 2
                 elif original['state'] == 'complete':
-                    result = dict(schema='cluster-onboarding-foreground/v1', state='complete', result=original)
-                    status = 0
+                    status, completed = completed_result(store, HostBackend(config), args.until, original)
+                    result = dict(schema='cluster-onboarding-foreground/v1', state=completed['state'], result=completed)
+                    if control.finish(result, lease):
+                        lease = None
                 elif control.remaining() <= 0:
                     result = dict(schema='cluster-onboarding-foreground/v1', state='attention-required',
                         reason='foreground_deadline_expired', resume='use --extend-seconds with this same --until name',
@@ -356,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
                         if control.finish(result, lease):
                             lease = None
                             break
+                result['elapsed_seconds'] = time.monotonic()-invocation_started
                 print(json.dumps(result))
             finally:
                 if lease is not None:

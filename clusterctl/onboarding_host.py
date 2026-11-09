@@ -702,6 +702,20 @@ class HostBackend:
         identity = self._ceremony(plan).admission_coordinates(plan)
         return resolve_request(value, identity['being_ref'])
 
+    def companion_entry(self, plan: dict) -> dict:
+        """Return only the authorized entry coordinates, never bootstrap material."""
+        if plan['schema'] != CONVERSATION_PLAN_SCHEMA or not self.authorize(plan, digest(plan)):
+            raise OnboardingError('host_authorization_required')
+        request = self._conversation_request(plan)
+        if request is None:
+            raise OnboardingError('conversation_selection_required')
+        return dict(schema='cluster-companion-entry/v1', name=plan['name'],
+            owner=plan['owner'], being_ref=request['being_ref'], human_ref=request['human_ref'],
+            url=request['origin']+'/interaction/?view=conversation&client=standalone',
+            technical_readiness='verified-at-job-completion', current_health='not-refreshed',
+            human_device_acceptance='not-established-by-command',
+            provider_inference='not-requested-by-command')
+
     def _conversation(self, plan: dict, *, apply: bool) -> Observation:
         """Use the qualified guest adapter with an exact owner-selected pairing.
 

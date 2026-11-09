@@ -961,9 +961,11 @@ def test_initial_managed_adopts_explicit_successor_without_replaying_start(tmp_p
 
 
 @pytest.mark.parametrize('lost_start_ack', [False, True])
-@pytest.mark.parametrize('closed_group', [False, True])
-def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, closed_group):
+@pytest.mark.parametrize('group_mode', ['plain', 'closed', 'published'])
+def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, group_mode):
     """Plain and closed-group bodies reuse their existing native unit writer."""
+    closed_group = group_mode != 'plain'
+    published_group = group_mode == 'published'
     managed = object.__new__(ManagedRuntime)
     managed.settings = {'mode': 'native-admission-only'}
     managed.state = tmp_path / 'state'
@@ -1001,10 +1003,14 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     current = dict(process=process, admission_parent=parent, origin=managed._expected(plan),
         runtime_sha256='original-bundle', responder_association='same-connection', group=None)
     if closed_group:
-        current.update(group=dict(channel_id='tribe', application='/own/application'),
+        current.update(group=dict(channel_id='tribe', application='/own/application', visibility='/own/visibility'),
             runtime_status=dict(loaded_runtime=dict(qualified_startup=dict(code_digest='old-code'))),
             group_runtime_status=dict(loaded_application=dict(application_sha256='c'*64,
                 publication_sha256='d'*64, visibility=dict(release_enabled=False, installation_sha256=None))))
+    if published_group:
+        current['group_runtime_status']['loaded_application']['visibility'].update(
+            release_enabled=True, installation_sha256='e'*64, policy_sha256='f'*64,
+            catalog_validation='validated', catalog_schema_version=2)
     failures = [lost_start_ack]
     def owner(_plan, action, **_):
         assert 0 < _['observation_timeout_seconds'] <= 60
@@ -1013,6 +1019,20 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
                 offset[0] += 55_000_000_000
             assert 'current_native' not in _
             return dict(ready=True)
+        if action == 'visibility-migrate':
+            assert published_group
+            request = _['visibility_migration']
+            state = being_seed._read(managed.state / 'newcomer/native-code-update.json')
+            assert state['dispatching'] == 'migrate' and 'quiesce' in state['effects']
+            assert request['runtime_sha256'] == current['runtime_sha256']
+            assert request['group']['installation_sha256'] == 'e'*64
+            calls.append(action)
+            if failures and failures[0] == 'migration':
+                failures.pop()
+                raise OnboardingError('lost_migration_ack')
+            return dict(schema='cluster-native-visibility-migrated/v1',
+                operation_id=request['operation_id'], runtime_sha256=request['runtime_sha256'],
+                group=request['group'], catalog_schema_version=2)
         assert action == 'admitted-running'
         assert _.get('current_native', False) is closed_group
         assert _.get('require_loaded', False) is closed_group
@@ -1027,8 +1047,9 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
                 scope=dict(admission_parent=current['admission_parent']))
         request = options['request']
         assert request['operation_id'] in {'68d4481f-9ade-4b1c-a08d-cfa3f962f5bc', '68d4481f-9ade-4b1c-a08d-cfa3f962f5bd'}
-        assert '--receive-only' in request['argv']
-        assert '--visibility-installation' not in request['argv']
+        assert ('--receive-only' in request['argv']) is not published_group
+        assert ('--visibility-installation' in request['argv']) is published_group
+        assert ('--messaging-application' in request['argv']) is published_group
         state = being_seed._read(managed.state / 'newcomer/native-code-update.json')
         assert state['dispatching'] == action.removeprefix('bootstrap-')
         prior = effects.setdefault(request['operation_id'], {})
@@ -1051,15 +1072,15 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         runtime_available=lambda *_, **__: True, _receiving_base=lambda _: Path('/original/base'),
         _runtime_paths=lambda *_, **__: (Path('/approved/candidate'), [], []),
         _target_call=owner, _guest_service_call=root)
-    options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bc', receive_only_group=closed_group)
+    options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bc', receive_only_group=closed_group and not published_group, published_group=published_group)
     if lost_start_ack:
-        with pytest.raises(OnboardingError, match='lost_start_ack'):
+        with pytest.raises(OnboardingError, match='lost_migration_ack' if lost_start_ack == 'migration' else 'lost_start_ack'):
             managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
-        assert calls.count('bootstrap-start') == 1
+        assert calls.count('bootstrap-start') == (0 if lost_start_ack == 'migration' else 1)
         original_calls = list(calls)
         with pytest.raises(OnboardingError, match='operation_conflict'):
             managed.update_native_code(plan, (tmp_path, 'b'*64),
-                operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd', receive_only_group=closed_group)
+                operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd', receive_only_group=closed_group and not published_group, published_group=published_group)
         assert calls == original_calls
     result = managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
     assert result['runtime_sha256'] == 'original-bundle'
@@ -1081,8 +1102,8 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     with pytest.raises(OnboardingError, match='operation_conflict'):
         managed.update_native_code(plan, (tmp_path, 'b' * 64), **options)
     completed = being_seed._read(managed.state / 'newcomer/native-code-update.json')
-    next_options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd', receive_only_group=closed_group)
-    if closed_group:
+    next_options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd', receive_only_group=closed_group and not published_group, published_group=published_group)
+    if closed_group and not published_group:
         current['group_runtime_status']['loaded_application']['visibility']['release_enabled'] = True
         with pytest.raises(OnboardingError, match='closed_group_required'):
             managed.update_native_code(plan, (tmp_path, 'b'*64), **next_options)
@@ -1097,5 +1118,11 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     assert calls.count('bootstrap-quiesce') == 2
     if closed_group:
         assert latest['closed_group']['application_sha256'] == 'c'*64
-        assert latest['closed_group']['outbound_release'] is False
+        assert latest['closed_group']['outbound_release'] is published_group
+        assert calls.count('visibility-migrate') == (2 + (lost_start_ack == 'migration') if published_group else 0)
     assert job == {'plan': plan, 'original': 'retained'}
+
+
+def test_published_native_update_recovers_lost_migration_ack_without_new_stop(tmp_path, monkeypatch):
+    test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(
+        tmp_path, monkeypatch, 'migration', 'published')

@@ -1581,6 +1581,25 @@ Do not rebuild every SDK, reenroll the body or recreate pending messages for thi
 storage-key transition. Prepare the full-visibility entrypoint before publishing:
 the old receive-only entrypoint refuses an installation once it exists.
 
+An already-published admitted guest uses the same
+`ManagedRuntime.update_native_code(..., published_group=True)` operation.
+It freezes the actual group, signed application/publication, visibility
+installation and policy. After the existing quiesce step, its qualified owner
+preflights both base/group catalogs and performs the SDK's explicit versioned
+migration under the native writer; selection/start then preserve those exact
+bindings. It does not repeat enrollment, participant acceptances, publication,
+controller renewal or human approval. A lost migration reply resumes the same
+operation and idempotent migration, without another stop or any message replay.
+Read-only schema loading stays unchanged. Schema migration can require forward
+recovery: do not select a predecessor unable to read the upgraded catalogs.
+
+The original 120-second call bound and existing current/previous operation
+records remain. Catalog migration performs no provider/transport call or inbox
+attention. The result deliberately retains `receiving_readiness=unobserved`:
+finish the existing current-reader cohort qualification/selection before claiming
+messaging availability. This per-body update primitive is not the complete fleet
+CLI or a guarantee of cross-body/model action.
+
 For this explicit closed composition, `observe_current_reader(receive_only=True)`
 checks actual process, identity, controlled roster, wire/store compatibility and
 loaded authority coverage. It reports `native-receive-only` and

@@ -164,7 +164,11 @@ sufficient; discard replaced disposable preparation after its cohort completes.
 ## Ordinary update: one command, two explicit outcomes
 
 For a new update of existing admitted bodies, use the maintained command with
-the retained protected maintenance spec:
+the retained protected maintenance spec. Run it in the controller's existing
+qualified operator environment with its Matrix SDK; host custody/registration
+uses that SDK even when remote lifecycle helpers use stdlib-only launchers.
+A bare `-I -S` launcher omits it. Reuse the environment rather than creating
+one per invocation; this does not select the receiving body's SDK.
 
 ```sh
 python -B -m clusterctl.onboarding_managed --spec "$maintenance_spec"

@@ -1393,3 +1393,44 @@ fleet or proved as a complete fresh-companion command. Actual receiving helper
 qualification, receive grants/current readers, explicit KVM creation/network and
 whole-command acceptance remain. Preserve the four completed enrollments and
 Emma hold; never reenroll them to exercise this path.
+
+### Receive specification preparation from signed originals
+
+`onboarding_receive_specification.compile_specification` replaces the manual
+assembly of an entrant's first receiving application. It is pure preparation:
+pass the actual own public runtime bundle/root, the owner-approved public
+authority/history closure, retained signed shareable Tribe governance and explicit
+own listener/intake/roster/store choices. It opens no custody, generates no key,
+authors no event, publishes no application and selects no service or reader.
+The existing owner application writer remains the only publication route.
+
+The compiler validates complete public authority histories and every governance
+signature, runs the native relationship reducer and derives the owner's active
+membership event. It checks the public self authority against the actual runtime,
+requires each roster body's active identity and signed Tribe membership, and
+matches the own intake's key references/hash to its own roster route. Private,
+foreign, duplicate or incomplete governance, inactive/foreign body coordinates,
+changed self identity and paths outside the supported native shape refuse before
+publication. Caller-selected stores are required explicitly: no adult private
+history/configuration is inferred or copied. Existing policies and outbound
+visibility obligations remain separate.
+
+At most64 authorities/roster bodies and256 governance events/1MiB governance are
+accepted. The final object must satisfy the native V3 specification schema. New
+preparations default to a stable sorted authority order; an explicit complete
+`authority_order` preserves an existing selected publication's exact list order
+and hash. Changed map insertion order cannot silently change that selection.
+The function retains the original events and TTL choice; it does not extend a
+membership, invitation, credential or execution window.
+
+Actual read-only qualification reproduced all four original protected receive
+specifications exactly from their own current public runtime bundles and retained
+signed originals. The initial comparison isolated an authority-list ordering
+difference; it was corrected by preserving the selected order, without publishing
+an update. Earlier qualification input-size failures were retained separately;
+the bounded public/private metadata readers now select their actual limits. No
+resource keys, service restarts, native membership/input or models were created.
+This proves the compiler's compatibility, not automatic receive publication or
+reader selection. Compose it with the existing original-job writer/secret intent,
+closed-outbound loading and current-reader qualification before claiming the
+full one-command delivery. Do not rerun the completed four child publications.

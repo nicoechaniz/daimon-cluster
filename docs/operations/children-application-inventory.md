@@ -1,5 +1,31 @@
 # Selected application inventory without package execution
 
+An optional `components` list on a selected `cwd` deployment extends the same
+file verifier to its explicitly qualified public dependency trees. Select one
+to three additional `{root, source_ref, files}` entries and the complete ordered
+`pythonpath`, including the main deployment root. The actual process PYTHONPATH
+must match before and after component reads and again at the final process check.
+Each complete tree retains the existing ownership, mode, symlink, file-set, hash
+and mutation checks. No package is imported or started. A mismatching component
+or changed search path makes that unit unavailable, preserving other observations.
+
+The existing private deployment-manifest writer owns these fields. Receiving
+references must stay under `/etc/children-maintenance`; candidate files in a
+temporary qualification directory are not production selection references.
+Before replacing the daily configuration, run the selected collector's existing
+`validate(config)` against the complete proposal, not only the helper's manifest
+validator. Retain an earlier refused configuration and its failed invocation;
+continue with the same verified manifest bytes through the maintained writer.
+Use retained
+maintainer/component/wheel manifests, never hashes learned from an unknown live
+tree. Keep at most1024files per tree and4096 across the complete manifest; the
+existing256KiB manifest,128MiB shared byte-hash budget and finite read-job bounds
+still apply. The result proves those selected files and process search-path
+selection, not actual Python imports, upstream authenticity of every dependency
+or external exposure. Only independently verified provenance supports a stronger
+claim for a particular package. Old manifests without these optional fields keep
+their existing behavior; this change creates no additional timer or scanner.
+
 Optional browser_components uses the same existing read job for guests only.
 It invokes /usr/bin/readelf -dW on the fixed Chromium image, records the direct
 FreeType DT_NEEDED and presence of custom RPATH/RUNPATH, and hashes the standard

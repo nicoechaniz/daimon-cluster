@@ -29,7 +29,7 @@ def cohort(tmp_path, monkeypatch):
     for name, owner in owners.items():
         def apply(command, path, *, name=name, owner=owner):
             assert path == owner.root/'receiving-control'/(command['operation_id']+'-'+command['phase']+'.json')
-            prior = retained.setdefault((name,command['phase']), copy.deepcopy(command))
+            prior = retained.setdefault((name,command['phase'],command['operation_id']), copy.deepcopy(command))
             assert command == prior  # retries cannot invent a new head/deadline
             calls.append((name,command['phase']))
             if owner.gate.get('operation_id') == command['operation_id'] and owner.gate['phase'] == command['phase']:
@@ -192,4 +192,33 @@ def test_aliasing_one_owner_cannot_race_its_observation_context(tmp_path, monkey
     owners['second']=owners['first']
     with pytest.raises(OnboardingError,match='current_reader_binding_required'):
         receiving.refresh_current_readers(owners,**options)
+    assert calls==[]
+
+
+@pytest.mark.parametrize('phase',['revoke','select'])
+def test_process_replacement_keeps_old_command_and_binds_new_control(tmp_path, monkeypatch, phase):
+    import json
+    owners, options, calls, _, _ = cohort(tmp_path, monkeypatch)
+    owner=owners['second']
+    original=owner.prepare_apply_control
+    replaced=[]
+    def restart_before_ack(command,path):
+        if command['phase']==phase and not replaced:
+            replaced.append(copy.deepcopy(command))
+            owner.gate.update(phase='unselected',readers=[],head='7'*64,process_instance_id='replacement')
+            raise OnboardingError('receiving_control_completion_uncertain')
+        return original(command,path)
+    owner.prepare_apply_control=restart_before_ack
+    with pytest.raises(OnboardingError,match='completion_uncertain'):
+        receiving.refresh_current_readers(owners,**options)
+    assert receiving.refresh_current_readers(owners,**options)['receiving_readiness']=='qualified-local-projection'
+    saved=json.loads(options['checkpoint'].read_bytes())
+    assert any(row['command']==replaced[0] for row in saved['superseded_commands'])
+    revoke=saved['commands']['second:revoke']
+    select=saved['commands']['second:select']
+    assert revoke['operation_id']==select['operation_id']!=options['operation_id']
+    assert revoke['process_instance_id']==select['process_instance_id']=='replacement'
+    assert calls.count(('second',phase))==1
+    calls.clear()
+    receiving.refresh_current_readers(owners,**options)
     assert calls==[]

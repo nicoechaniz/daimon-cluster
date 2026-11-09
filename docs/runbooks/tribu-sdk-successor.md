@@ -324,8 +324,14 @@ directory. An inherited private umask can leave an otherwise byte-correct public
 package unreadable. Keep private/shared parents private and select the existing
 public-code destination; do not widen unrelated directories. The cohort completer
 overlaps independent owner observations with at most four workers; native
-controls and final validation remain serialized under the same deadline. It
-adds no polling service, authority or lifecycle operation. Owner-route preflight
+controls and final validation remain serialized under the same deadline. If an
+authenticated owner gate reports a replacement process instance during completion,
+the same checkpoint retains the old exact control and binds a deterministic
+instance-specific control ID for that owner. Original owner request files and
+uncertain outcomes stay intact; old controls are not replayed against new
+instances. Superseded commands stop at32entries or the existing byte limit;
+changed selections/membership still refuse. This adds no polling service,
+authority or lifecycle operation. Owner-route preflight
 failures identify the receiver and phase before code updates begin. Import failures
 use a closed public code; arbitrary stderr and credential material stay private.
 

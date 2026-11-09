@@ -385,24 +385,46 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                 if selected(proof, readers):
                     continue
                 owner, gate = owners[name], proof['gate']
+                prior_commands = [saved['commands'][key] for key in (name+':revoke',name+':select')
+                    if key in saved['commands']]
+                current_ids = {command['operation_id'] for command in prior_commands
+                    if command['process_instance_id'] == gate['process_instance_id']}
+                if len(current_ids) > 1:
+                    raise OnboardingError('receiving_control_binding_conflict')
+                owner_operation = (next(iter(current_ids)) if current_ids else
+                    str(uuid.uuid5(uuid.UUID(operation_id),name+':'+gate['process_instance_id']))
+                    if prior_commands else operation_id)
                 if (phase == 'revoke' and gate.get('phase') == 'revoke'
-                        and gate.get('operation_id') == operation_id
+                        and gate.get('operation_id') == owner_operation
                         and gate.get('release_digest') == release_digest):
                     continue
-                path = owner.root / 'receiving-control' / (operation_id + '-' + phase + '.json')
                 command = dict(schema='dm.runtime.reader-selection/v2', channel_id='tribe',
-                    phase=phase, operation_id=operation_id, release_digest=release_digest,
+                    phase=phase, operation_id=owner_operation, release_digest=release_digest,
                     process_instance_id=gate['process_instance_id'], expected_head=gate['head'],
                     expected_roster_sha256=vector['local_roster_sha256'][name],
                     readers=[] if phase == 'revoke' else readers)
                 key = name + ':' + phase
-                if key in saved['commands']:
-                    command = saved['commands'][key]
+                retained_command = saved['commands'].get(key)
+                if (retained_command is not None
+                        and retained_command['process_instance_id'] == gate['process_instance_id']):
+                    command = retained_command
                 else:
+                    if retained_command is not None:
+                        superseded = saved.setdefault('superseded_commands',[])
+                        if not isinstance(superseded,list) or len(superseded) >= 32:
+                            raise OnboardingError('receiving_control_binding_conflict')
+                        # The authenticated current gate is a different instance.
+                        # Preserve the old exact/possibly uncertain command; it
+                        # is never resubmitted against the replacement instance.
+                        superseded.append(dict(name=name,command=retained_command,
+                            replacement_process_instance_id=gate['process_instance_id'],
+                            observed_process=proof.get('expected',{}).get('process'),
+                            observed_at_ms=time.time_ns()//1_000_000))
                     if phase == 'select':
                         command['effect_not_after_ms'] = min(_reader_proof_expiry(row) for row in proofs.values())
                     saved['commands'][key] = command
                     being_seed._write(checkpoint, saved, limit=being_seed.MAX_SELECTION)
+                path = owner.root / 'receiving-control' / (command['operation_id'] + '-' + phase + '.json')
                 # Native CAS and owner-retained request identity are authoritative.
                 # A lost ACK leaves these files intact; never synthesize success.
                 result = owner.prepare_apply_control(command, path)

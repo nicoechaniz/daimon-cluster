@@ -1633,3 +1633,25 @@ do not amend old signed bytes or replay an unknown publication. This lets the
 short final cutover use bindings already available instead of leaving serving
 applications stopped while another owner signs. It adds no model attention,
 Telegram account prerequisite or additional human approval round.
+
+Run publication with an SDK and operator-code candidate that pin each other.
+A qualified maintenance candidate can publish a compatible application without
+replacing a newer serving candidate. Mixing its SDK with the serving candidate's
+operator code fails the existing native peer qualification; retain both selections
+and use the matching maintenance package. Run each owner's client as its actual
+body user. These checks identify the supported executable context; they do not
+request another owner's permission.
+
+`group_publication` returns the recorded result fields directly, including
+`status` and `application_sha256`; it does not wrap them in `result`. Retain each
+acknowledged step and continue only the missing steps after a wrapper failure.
+Use the native application and visibility preconditions for subsequent selection.
+Do not republish an acknowledged application to repair a local result parser.
+
+For service preservation, compare configuration/argv rather than the complete
+`systemctl show ExecStart` presentation, which also contains changing PID and
+start/exit timestamps. A successful start request is not authenticated readiness:
+a cold receiver can still be loading. Observe its actual child/listeners and then
+qualify the current reader. Preserve any exhausted-start-limit refusal; after the
+completed publication is verified, clear that unit's failed state and start the
+same supported unit. Never substitute a global Stop or replay message input.

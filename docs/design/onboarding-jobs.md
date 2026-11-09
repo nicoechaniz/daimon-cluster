@@ -1141,7 +1141,94 @@ discarding an already retained operation or its effects.
 The maintained compiler reproduced all4 actual original request objects exactly
 from their retained public proofs, with unchanged source files and zero native
 dispatches. This proves compatibility with those completed admissions, not a new
-admission or a complete fresh-companion command. Automatic collection of the
-post-identity preparation inputs, explicit KVM placement/network and coherent
-whole-command receiving qualification remain unfinished. Do not reenroll the
+admission or a complete fresh-companion command. The following section records
+the automatic input collection added afterward; explicit KVM placement/network
+and coherent whole-command receiving qualification remain unfinished. Do not reenroll the
 existing four or use Emma as an unsolicited qualification target.
+
+### Collect preparation through the same worker
+
+An optional `membership_preparations[PLAN_DIGEST]` selects the missing input
+collection in the existing `advance` call. Its closed template contains `state`
+(one private absolute directory for that original plan), sorted `participants`
+(the exact old owner names plus the entrant), `founder_owner`, and
+`authoring_seconds` (60–3600). At most16 distinct state directories/templates and
+16 participants per template are admitted. Owners, candidates and transports
+come from the same existing protected coordinator policy. No second enrollment
+process, queue or new host command is accepted from intake.
+
+After the original job reaches Matrix and its custody ceremony returns actual
+being/body coordinates, the worker freezes one nonce and operation identity.
+It reads `preparation-preview` from each existing Source/Target owner CLI, checks
+each native public authority and qualified helper code/SDK pins, then obtains
+the existing `context-preview` with that complete explicit closure. Each completed
+read is retained; a retry collects only missing inputs. Runtime bundle changes
+between the two observations are refused rather than mixed. The invitation's
+authoring window starts only when those inputs are complete, and is then fixed.
+The existing compiler derives episode/governance coordinates and validates the
+same admission contract used by execution before the worker selects the exact
+request and binds its original journal operation. Later operator extensions do
+not silently replace that invitation or renew its authoring window.
+
+`preparation-preview` reads only own public authority/origin and selected
+shareable canonical Tribe governance. It does not read a chat, inbox, child
+original, holder/password, or the possibly lagging published group application.
+The existing runtime selects the canonical relationship filename. SQLite opens
+it with `mode=ro` and `query_only`, never initializes a missing store, and caps
+collection at256 events,64KiB per event and1MiB total. A3second read budget,
+SQLite progress interruption and bundle/store identity checks keep unavailable
+or concurrently replaced state explicit. Non-shareable governance is refused,
+not silently omitted or relabeled. The returned governance is unverified until
+the compiler checks its signatures with the selected complete authority closure.
+There is no runtime writer, service control or egress action in either preview.
+
+The collection's sender descriptors deliberately carry `process={}` and
+`gate=null`: they bind public origins and make no running-process or outbound
+claim. Native membership execution still has to acquire its real exclusive
+writers and enforce its current authoring precondition. Collection is not a
+substitute for the existing scoped physical maintenance/restoration, reader
+selection, signed receiving grants or actual messaging evidence.
+
+Each private state retains intent/public/context/request metadata, at most8
+files and8MiB final plus at most8MiB atomic staging. Across the16 selected
+templates the conservative bound is256MiB including staging. Capacity refusal
+preserves unfinished work. No growing run archive, scheduler, automatic pruning
+or model input is added. Withdrawing a template prevents new collection but
+does not erase its request, existing operation or uncertain effects. Use a
+coherent full worker release and installer preflight; the historical Home-only
+overlay is not a deployment path for this larger closure. Guest/maintenance
+code builders include the owner-local read helper explicitly.
+
+Actual normal owner CLI reads passed on all7 existing bodies, and the complete
+public closure verified seven current canonical members. Six successful reads
+were retained while the failed Root read was repaired independently. This
+qualifies the observation route; the current fleet worker selection was not
+changed. The automatic collect/bind integration has a real signed-fixture
+journey, not fresh-companion receiving acceptance. Whole-command scoped native
+maintenance, KVM placement/network and coherent receiving qualification remain
+unfinished; preserve the existing four enrollments and Emma hold.
+
+### Explicit retirement of SDK import bytecode
+
+Prepared SDK imports remain immutable during ordinary observation/startup. The
+normal full verification still refuses extra bytecode, unknown files, changed
+source or links. A verified disposable-cache repair can explicitly call the
+existing `onboarding_sdk.runtime_imports(..., retire_bytecode=True)` preparation
+route as its actual owning UID, with the selected artifact/SDK pins. This
+requires an already prepared tree and the existing SDK lock exclusively; it
+does not create an SDK, install dependencies or change the selection.
+
+Before any deletion, all expected source files must match the exact wheel bytes.
+Only PEP3147 bytecode below `__pycache__`, with the current interpreter's magic
+and a corresponding verified source, can be retired. At most one cache per
+expected file and64MiB total are admitted. Unknown files, missing/changed source,
+links and unexpected directories refuse before removal. Only verified cache
+files and resulting empty cache directories are removed; the ordinary complete
+tree verification and dependency check then run unchanged. Do not enable this
+mode in a status read or weaken the normal verifier to ignore caches.
+
+The actual Root repair retired101 such files (3,454,871 bytes), with every wheel
+source byte preserved and no SDK rebuild or service restart. Its original failed
+metadata-read receipt remains, alongside the successful exact retry. The writer
+that originally produced those caches was not established; do not infer a cause
+from their presence.

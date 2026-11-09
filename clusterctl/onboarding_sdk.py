@@ -184,9 +184,58 @@ def interpreter(venv: Path, *, with_executable: bool = False) -> dict:
 
 def runtime_imports(venv: Path, code: Path, *, code_uid: int = 0,
                     matrix_commit: str = MATRIX_COMMIT,
-                    matrix_wheel_sha256: str | None = None) -> Path:
+                    matrix_wheel_sha256: str | None = None, retire_bytecode: bool = False) -> Path:
     return _runtime_imports(venv, code, code_uid=code_uid, matrix_commit=matrix_commit,
-                            matrix_wheel_sha256=matrix_wheel_sha256)[0]
+                            matrix_wheel_sha256=matrix_wheel_sha256, retire_bytecode=retire_bytecode)[0]
+
+
+def _retire_import_bytecode(target: Path, files: dict[str, str]) -> None:
+    """Explicit maintenance only: verify all source bytes before retiring caches.
+
+    Caller owns the existing SDK's exclusive lock. An unexpected source/file,
+    link or directory refuses before any removal. Observation never calls this.
+    """
+    import importlib.util
+    expected_directories = {''}
+    for name in files:
+        expected_directories.update(str(p) for p in PurePosixPath(name).parents if str(p) != '.')
+    caches, directories, actual = [], [], set()
+    cache_bytes = 0
+    for path in target.rglob('*'):
+        being_seed._path(path)
+        name = path.relative_to(target).as_posix()
+        if path.is_dir():
+            private_directory(path)
+            if name not in expected_directories:
+                if path.name != '__pycache__' or any(child.is_dir() for child in path.iterdir()):
+                    raise OnboardingError('qualified_runtime_imports_required')
+                directories.append(path)
+            continue
+        raw = onboarding_release.regular(path, uid=os.geteuid())
+        if name in files:
+            if hashlib.sha256(raw).hexdigest() != files[name]:
+                raise OnboardingError('qualified_runtime_imports_required')
+            actual.add(name)
+        else:
+            try:
+                source = Path(importlib.util.source_from_cache(str(path))).relative_to(target).as_posix()
+            except (ValueError, NotImplementedError):
+                raise OnboardingError('qualified_runtime_imports_required') from None
+            if (path.parent.name != '__pycache__' or path.suffix != '.pyc' or source not in files
+                    or len(raw) < 16 or raw[:4] != importlib.util.MAGIC_NUMBER):
+                raise OnboardingError('qualified_runtime_imports_required')
+            caches.append((path, hashlib.sha256(raw).hexdigest()))
+            cache_bytes += len(raw)
+            if len(caches) > len(files) or cache_bytes > 64*1024*1024:
+                raise OnboardingError('qualified_runtime_imports_required')
+    if actual != set(files):
+        raise OnboardingError('qualified_runtime_imports_required')
+    for path, pin in caches:
+        if hashlib.sha256(onboarding_release.regular(path, uid=os.geteuid())).hexdigest() != pin:
+            raise OnboardingError('qualified_runtime_imports_required')
+        path.unlink()
+    for path in sorted(directories, key=lambda p:len(p.parts), reverse=True):
+        path.rmdir()
 
 
 @contextmanager
@@ -241,7 +290,8 @@ def _sync_import_tree(root: Path, monitor: tuple) -> None:
 
 def _runtime_imports(venv: Path, code: Path, *, code_uid: int = 0,
                      matrix_commit: str = MATRIX_COMMIT,
-                     matrix_wheel_sha256: str | None = None) -> tuple[Path, dict, dict[str, str]]:
+                     matrix_wheel_sha256: str | None = None,
+                     retire_bytecode: bool = False) -> tuple[Path, dict, dict[str, str]]:
     """Derive one closed import tree without altering the installed generation.
 
     Startup executes only the trusted interpreter, approved code and these exact
@@ -261,7 +311,9 @@ def _runtime_imports(venv: Path, code: Path, *, code_uid: int = 0,
     # must not interrupt each other's full verification. Construction and SDK
     # installation retain exclusive ownership of this same lock.
     prepared = target.exists() and receipt.exists()
-    with being_seed._locked(root, shared=prepared), ExitStack() as sync_ownership:
+    if type(retire_bytecode) is not bool or retire_bytecode and not prepared:
+        raise OnboardingError('qualified_runtime_imports_required')
+    with being_seed._locked(root, shared=prepared and not retire_bytecode), ExitStack() as sync_ownership:
         if prepared and (not target.exists() or not receipt.exists()):
             # Do not build or mint a receipt while holding read ownership if
             # preparation changed before acquiring it.
@@ -331,6 +383,8 @@ def _runtime_imports(venv: Path, code: Path, *, code_uid: int = 0,
                 directories.update(str(parent) for parent in PurePosixPath(name).parents if str(parent) != '.')
             actual_files, actual_directories = set(), {''}
             private_directory(target)
+            if retire_bytecode:
+                _retire_import_bytecode(target, files)
             for path in target.rglob('*'):
                 being_seed._path(path)
                 name = path.relative_to(target).as_posix()

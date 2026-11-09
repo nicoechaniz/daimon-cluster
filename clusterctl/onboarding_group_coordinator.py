@@ -322,7 +322,7 @@ def configuration(path: Path) -> dict:
     """
     value = being_seed._read(path, limit=being_seed.MAX_SELECTION)
     try:
-        if (set(value) - {'continuations', 'membership_requests'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
+        if (set(value) - {'continuations', 'membership_requests', 'membership_preparations'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
                 or value['schema'] != SCHEMA or not _path(value['journal'])
                 or not isinstance(value['tribe_ref'], str) or not value['tribe_ref']
                 or not isinstance(value['owners'], dict) or len(value['owners']) > 256
@@ -379,7 +379,17 @@ def configuration(path: Path) -> dict:
                     or not _path(ref['path']) or not isinstance(ref['sha256'], str)
                     or re.fullmatch('[0-9a-f]{64}', ref['sha256']) is None):
                 raise ValueError
-    except (KeyError, TypeError, ValueError, AttributeError):
+        preparations = value.get('membership_preparations', {})
+        if not isinstance(preparations, dict) or len(preparations) > 16:
+            raise ValueError
+        from .onboarding_membership_collection import configuration as prepare_configuration
+        for pin, template in preparations.items():
+            if (not isinstance(pin, str) or re.fullmatch('[0-9a-f]{64}', pin) is None
+                    or not set(prepare_configuration(template)['participants']) <= set(value['owners'])):
+                raise ValueError
+        if len({row['state'] for row in preparations.values()}) != len(preparations):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, AttributeError, OnboardingError):
         raise OnboardingError('onboarding_group_coordinator_configuration_required') from None
     return value
 
@@ -406,6 +416,41 @@ class GroupCoordinator:
         self.path = backend.config.group_admission
         self.settings = configuration(self.path)
         self.store = JobStore(backend.config.jobs)
+
+    def prepare_membership_request(self, name: str, *, deadline_ns: int) -> dict | None:
+        """Collect missing public inputs after real identity, without native effects."""
+        from .onboarding_membership_collection import collect
+        plan = self.store._load(name)['plan']
+        pin = digest(plan)
+        if pin in self.settings.get('membership_requests', {}):
+            return self.settings['membership_requests'][pin]
+        template = self.settings.get('membership_preparations', {}).get(pin)
+        if template is None:
+            return None
+        selection_lock = private_directory(self.path.with_name('.'+self.path.name+'-selection'), create=True)
+        with self._job_scope(plan) as record, being_seed._locked(selection_lock):
+            if record['stage'] != 'matrix':
+                raise OnboardingError('onboarding_group_membership_compilation_required')
+            def authorize():
+                return (configuration(self.path) == self.settings
+                    and self.backend.authorize(plan, pin)
+                    and self.backend._consented(plan, stage='matrix')
+                    and self.backend._decision(plan) is not None
+                    and self.backend._ceremony(plan).authorize(plan))
+            if not authorize():
+                raise OnboardingError('host_authorization_required')
+            identity = self.backend._ceremony(plan).admission_coordinates(plan)
+            owners = {owner: self._owner_client(owner) for owner in template['participants']}
+            ref = collect(plan=plan, selected=self.settings['owners'], template=template, owners=owners,
+                identity=identity, tribe_ref=self.settings['tribe_ref'], deadline_ns=deadline_ns,
+                authorize=authorize)
+            if not authorize():
+                raise OnboardingError('host_authorization_required')
+            selected = copy.deepcopy(self.settings)
+            selected.setdefault('membership_requests', {})[pin] = ref
+            being_seed._write(self.path, selected, limit=being_seed.MAX_SELECTION)
+            self.settings = selected
+            return ref
 
     def bind_membership_request(self, name: str) -> dict | None:
         """Bind a fixed owner-selected recipe after the original identity exists.
@@ -641,18 +686,20 @@ class GroupCoordinator:
             raise OnboardingError('receiving_native_tooling_group_changed')
         return row, approved, group
 
-    def _owners(self, admission: dict) -> dict:
+    def _owner_client(self, name: str):
         from .onboarding_receiving_update import GuestGroupClient, SourceGroupClient
-        owners: dict[str, GuestGroupClient | SourceGroupClient] = {}
+        row = self.settings['owners'][name]
+        if row['profile'] == 'source':
+            options: dict = {key: Path(row[key]) if key in SOURCE_PATHS else row[key] for key in SOURCE_FIELDS}
+            return SourceGroupClient(**options)
+        return GuestGroupClient(self._guest_backend(name), row['plan'],
+            (Path(row['candidate']['code']), row['candidate']['digest']), root=Path(row['root']))
+
+    def _owners(self, admission: dict) -> dict:
+        owners = {}
         for name in sorted(admission['receivers']):
-            owner: GuestGroupClient | SourceGroupClient
             row = self.settings['owners'][name]
-            if row['profile'] == 'source':
-                options: dict = {key: Path(row[key]) if key in SOURCE_PATHS else row[key] for key in SOURCE_FIELDS}
-                owner = SourceGroupClient(**options)
-            else:
-                owner = GuestGroupClient(self._guest_backend(name), row['plan'],
-                    (Path(row['candidate']['code']), row['candidate']['digest']), root=Path(row['root']))
+            owner = self._owner_client(name)
             approved = admission['receivers'][name]
             selected_code = row['code'] if row['profile'] == 'source' else row['candidate']['code']
             selected_digest = row['code_digest'] if row['profile'] == 'source' else row['candidate']['digest']
@@ -1384,6 +1431,7 @@ class GroupCoordinator:
         plan = record['plan']
         bound = self._binding(plan)
         if bound is None:
+            self.prepare_membership_request(name, deadline_ns=deadline)
             if self.bind_membership_request(name) is None:
                 return None
             bound = self._binding(plan)

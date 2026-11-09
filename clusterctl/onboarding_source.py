@@ -163,6 +163,13 @@ class Source:
         value = publication_command(value)
         journal = self.outputs / 'group-admission'
         group = self.outputs / 'tribe'
+        if value['action'] == 'preparation-preview':
+            if authority_closure or expected_context_sha256 is not None or remaining_execution is not None:
+                raise OnboardingError('onboarding_group_owner_context_conflict')
+            from .onboarding_membership_preparation import preview
+            return preview(self.root, operation_id=value['operation_id'],
+                           tribe_ref=value['params']['tribe_ref'], deadline_ns=deadline_ns,
+                           qualified_startup=self.qualified_startup)
         if remaining_execution is not None:
             if value['action'] == 'context-preview':
                 raise OnboardingError('onboarding_group_remaining_owner_context_required')

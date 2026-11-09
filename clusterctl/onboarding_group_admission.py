@@ -25,6 +25,7 @@ METHODS = frozenset({'tribe.invite', 'tribe.membership.accept', 'relationship.ev
                      'relationship.snapshot'})
 PUBLICATIONS = {
     'context-preview': set(),
+    'preparation-preview': {'tribe_ref'},
     'membership-authorities': {'tribe_ref', 'expected_selection_sha256'},
     'communication-prepare': {'expected_plan_sha256', 'expires_at_ms'},
     'application': {'expected_application_sha256', 'specification', 'additions',
@@ -869,6 +870,9 @@ def publication_command(value: dict) -> dict:
                     and set(value['params']) - PUBLICATIONS['snapshot'] <= {'expected_stores', 'expected_preservation'})):
             raise ValueError
         params = value['params']
+        if value['action'] == 'preparation-preview' and (
+                not isinstance(params['tribe_ref'], str) or not 1 <= len(params['tribe_ref']) <= 256):
+            raise ValueError
         if value['action'] == 'membership-authorities' and (
                 not isinstance(params['tribe_ref'], str) or not 1 <= len(params['tribe_ref']) <= 256
                 or params['expected_selection_sha256'] is not None and (
@@ -883,7 +887,7 @@ def publication_command(value: dict) -> dict:
             raise ValueError
         if 'application_precondition' in value:
             guard = value['application_precondition']
-            if (value['action'] in {'application', 'context-preview', 'communication-prepare', 'membership-authorities'}
+            if (value['action'] in {'application', 'context-preview', 'preparation-preview', 'communication-prepare', 'membership-authorities'}
                     or not isinstance(guard, dict) or set(guard) != {'application_step', 'application_sha256'}
                     or not isinstance(guard['application_step'], str)
                     or re.fullmatch('[a-z][a-z0-9-]{0,79}', guard['application_step']) is None

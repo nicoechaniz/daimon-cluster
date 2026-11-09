@@ -132,7 +132,7 @@ def refusal_diagnostic(error: Exception, *, stage: str) -> dict:
         candidate = str(error)
         if candidate in _DIAGNOSTIC_CODES | PUBLIC_CODES | {
                 'explicit_native_admission_configuration_required',
-                'explicit_membership_only_operation_required', 'onboarding_group_membership_compilation_required', 'conversation_selection_changed',
+                'explicit_membership_only_operation_required', 'onboarding_group_membership_compilation_required', 'onboarding_group_preparation_unavailable', 'conversation_selection_changed',
                 'conversation_selection_required', 'conversation_access_unconfirmed',
                 'conversation_browser_checkpoint_changed', 'conversation_access_receipt_changed'}:
             code = candidate

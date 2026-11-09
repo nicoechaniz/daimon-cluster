@@ -1002,10 +1002,11 @@ def load_code_update_readers(path: Path) -> dict:
                 or not isinstance(binding['command'], list) or not 1 <= len(binding['command']) <= 64
                 or any(not isinstance(arg, str) or not 1 <= len(arg) <= 16384 or '\0' in arg
                     for arg in binding['command'])
-                or not isinstance(binding['selection'], dict) or set(binding['selection']) != fields
-                or any((item is not None or key != 'visibility_installation_sha256')
-                    and (not isinstance(item, str) or re.fullmatch('[0-9a-f]{64}', item) is None)
-                    for key, item in binding['selection'].items())):
+                or not (binding['selection'] is None and 'job' in binding
+                    or isinstance(binding['selection'], dict) and set(binding['selection']) == fields
+                    and all(item is None and key == 'visibility_installation_sha256'
+                        or isinstance(item, str) and re.fullmatch('[0-9a-f]{64}', item) is not None
+                        for key, item in binding['selection'].items()))):
             raise OnboardingError('receiving_current_reader_binding_required')
     return value
 
@@ -1023,11 +1024,31 @@ def code_update_reader_clients(value: dict, *, backend=None, plans=None) -> dict
 
 
 def complete_code_update_readers(value: dict, *, operation_id: str,
-                                 release_digest: str, deadline_ns: int, backend=None, plans=None) -> dict:
+                                 release_digest: str, deadline_ns: int, backend=None, plans=None,
+                                 updates: dict | None = None) -> dict:
     """Resolve existing owner routes once, then use the native cohort completer."""
     from .onboarding_receiving_update import refresh_current_readers
-    return refresh_current_readers(code_update_reader_clients(value, backend=backend, plans=plans),
-        selections={name: row['selection'] for name, row in value['owners'].items()},
+    from .onboarding_owner_control import _selection
+    clients = code_update_reader_clients(value, backend=backend, plans=plans)
+    selections = {name: row['selection'] for name, row in value['owners'].items()}
+    for name, binding in value['owners'].items():
+        if selections[name] is not None:
+            continue
+        receipt = (updates or {}).get(binding['job'])
+        if (not isinstance(receipt, dict) or receipt.get('operation_id') != operation_id
+                or receipt.get('candidate_digest') != release_digest):
+            raise OnboardingError('receiving_code_update_receipt_required')
+        client = clients[name]
+        client.deadline_ns = deadline_ns
+        observed = client._call(dict(action='status'))
+        selection = _selection(observed)
+        if (observed.get('process') != receipt.get('process')
+                or observed.get('server') != receipt.get('origin')
+                or selection['receiving_code'] != release_digest
+                or selection['runtime_bundle_sha256'] != receipt['runtime_sha256']):
+            raise OnboardingError('receiving_cohort_selection_changed')
+        selections[name] = selection
+    return refresh_current_readers(clients, selections=selections,
         operation_id=operation_id, release_digest=release_digest, deadline_ns=deadline_ns,
         checkpoint=Path(value['checkpoint']), nonadmitted=frozenset(name for name, row in value['owners'].items()
             if not row['require_admitted']))
@@ -1095,7 +1116,7 @@ def run_code_update(spec: dict) -> dict:
         try:
             readers = complete_code_update_readers(reader_routes,
                 operation_id=spec['operation_id'], release_digest=candidate[1], deadline_ns=deadline,
-                backend=backend, plans=plans)
+                backend=backend, plans=plans, updates={row['name']: row['result'] for row in results})
         except Exception as error:
             from .onboarding import refusal_diagnostic
             readers = dict(failure=refusal_diagnostic(error, stage='current-readers'))

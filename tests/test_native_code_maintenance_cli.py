@@ -197,3 +197,38 @@ def test_job_reader_reuses_owning_placement_executor(tmp_path, monkeypatch):
         job='current',command=['/body/owner'])}),backend=backend,plans={'current':plan})
     clients['current'].deadline_ns=time.monotonic_ns()+1_000_000_000
     assert clients['current']._call(dict(action='status'))=={'current':'owner'}
+
+
+@pytest.mark.parametrize('tamper',[None,'process','code','bundle'])
+def test_updated_job_selection_is_derived_from_its_exact_receipt(tmp_path, monkeypatch, tamper):
+    from clusterctl import onboarding_receiving_update as receiving
+    import time
+    observed=dict(process=dict(pid=42),server=dict(embodiment_id='body:current'),runtime_status=dict(
+        loaded_runtime=dict(qualified_startup=dict(code_digest='a'*64,matrix_wheel_sha256='b'*64),
+            runtime_bundle_sha256='c'*64),loaded_application=dict(application_sha256='d'*64,
+                publication_sha256='e'*64,visibility=dict(installation_sha256='f'*64))))
+    receipt=dict(operation_id=spec()['operation_id'],candidate_digest='a'*64,
+        process=copy.deepcopy(observed['process']),origin=observed['server'],runtime_sha256='c'*64)
+    if tamper=='process':
+        observed['process']['pid']=43
+    elif tamper=='code':
+        observed['runtime_status']['loaded_runtime']['qualified_startup']['code_digest']='9'*64
+    elif tamper=='bundle':
+        observed['runtime_status']['loaded_runtime']['runtime_bundle_sha256']='9'*64
+    client=SimpleNamespace(_call=lambda _:copy.deepcopy(observed))
+    monkeypatch.setattr(managed,'code_update_reader_clients',lambda *_,**__:dict(current=client))
+    def finish(owners,**options):
+        assert owners['current'] is client
+        assert options['selections']['current']['receiving_code']=='a'*64
+        assert options['selections']['current']['runtime_bundle_sha256']=='c'*64
+        return dict(ready=True)
+    monkeypatch.setattr(receiving,'refresh_current_readers',finish)
+    value=dict(checkpoint=str(tmp_path/'progress.json'),owners=dict(current=dict(
+        job='current',selection=None,require_admitted=True)))
+    options=dict(operation_id=receipt['operation_id'],release_digest='a'*64,
+        deadline_ns=time.monotonic_ns()+1_000_000_000,updates={'current':receipt})
+    if tamper:
+        with pytest.raises(OnboardingError,match='selection_changed'):
+            managed.complete_code_update_readers(value,**options)
+    else:
+        assert managed.complete_code_update_readers(value,**options)==dict(ready=True)

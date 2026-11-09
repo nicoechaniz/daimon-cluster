@@ -226,7 +226,11 @@ trusted local/remote owner CLI argv prefix, running
 through its configured owner interpreter and qualified maintenance code. It
 contains locators, never credential values. Reuse actual placement/owner routes;
 this is an operator binding, not another membership or resource catalog.
-`selection` pins the six current-reader selection digests used above; only the
+For a `job` owner, `selection: null` derives the post-update digests from fresh
+native status bound to that exact update's operation, candidate, process, origin
+and retained runtime hash. Do not manually copy six new hashes per target.
+For unchanged/legacy owners, `selection` pins the six current-reader digests used
+above; only the
 visibility installation digest may be null for explicitly closed receiving.
 
 The command checks all owner CLI routes before any Matrix lifecycle action.

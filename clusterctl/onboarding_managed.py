@@ -90,7 +90,8 @@ class ManagedRuntime:
 
     def update_native_code(self, plan: dict, candidate: tuple[Path, str], *,
                            operation_id: str, timeout_seconds: float = 120,
-                           receive_only_group: bool = False, published_group: bool = False) -> dict:
+                           receive_only_group: bool = False, published_group: bool = False,
+                           current_observer=None) -> dict:
         """Select code for an admitted body through its existing unit writer.
 
         No group publication or controller renewal is involved. The durable
@@ -115,6 +116,8 @@ class ManagedRuntime:
                     or self._selection(plan) != (None, None))):
             raise OnboardingError('native_code_update_requires_plain_admitted_body')
         with_group = receive_only_group or published_group
+        if current_observer is not None and not with_group:
+            raise OnboardingError('qualified_onboarding_group_required')
         deadline = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
         def remaining():
             seconds = (deadline - time.monotonic_ns()) / 1_000_000_000
@@ -151,9 +154,16 @@ class ManagedRuntime:
                     raise OnboardingError('native_code_update_record_limit')
                 being_seed._write(path, state)
             def observe():
-                value = self.backend._target_call(plan, 'admitted-running', candidate=candidate,
-                    observation_timeout_seconds=remaining(),
-                    **({'current_native': True, 'require_loaded': True} if with_group else {}))
+                if current_observer is None:
+                    value = self.backend._target_call(plan, 'admitted-running', candidate=candidate,
+                        observation_timeout_seconds=remaining(),
+                        **({'current_native': True, 'require_loaded': True} if with_group else {}))
+                else:
+                    current_observer.deadline_ns = min(deadline,
+                        time.monotonic_ns() + 60_000_000_000)
+                    value = current_observer._call(dict(action='native-current', plan_digest=digest(plan)))
+                    if value.get('plan_digest') != digest(plan):
+                        raise OnboardingError('current_onboarding_target_required')
                 if (value.get('responder_association') != 'same-connection'
                         or any(value['origin'].get(key) != expected[key]
                             for key in ('body_ref', 'embodiment_id', 'incarnation_id'))
@@ -261,6 +271,13 @@ class ManagedRuntime:
                 runtime_sha256=current['runtime_sha256'], origin=current['origin'],
                 process=current['process'], admission_parent=current['admission_parent'],
                 unit_sha256=physical['service']['unit_sha256'], receiving_readiness='unobserved')
+            receiving = (current.get('group_runtime_status') or {}).get('receiving', {})
+            gate = receiving.get('channels', {}).get('tribe', {})
+            if gate.get('process_id') == current['process'].get('pid') and gate.get('phase') in {'select','revoke'}:
+                recovery = receiving.get('recovery', {}).get('tribe', {}).get('state')
+                if recovery not in {'recovered','expired','disabled','invalidated','unavailable','unsupported'}:
+                    recovery = 'unobserved'
+                state['result']['local_reader'] = dict(channel_id='tribe', phase=gate['phase'], recovery=recovery)
             save()
             return state['result']
 
@@ -903,7 +920,7 @@ class ManagedRuntime:
 def validate_code_update(spec: dict) -> dict:
     """One bounded operator request over existing jobs, placements and effects."""
     try:
-        if (not isinstance(spec, dict) or set(spec) - {'reader_completion'} != {
+        if (not isinstance(spec, dict) or set(spec) - {'reader_completion','owner_observation'} != {
                 'schema', 'host_config', 'vm_qualification', 'candidate', 'targets', 'group', 'operation_id', 'max_seconds'}
                 or spec['schema'] != 'cluster-native-code-maintenance/v1'
                 or type(spec['max_seconds']) is not int or not 1 <= spec['max_seconds'] <= 480
@@ -917,7 +934,7 @@ def validate_code_update(spec: dict) -> dict:
                 or not isinstance(spec['candidate']['code'], str)):
             raise ValueError
         for path in (spec['host_config'], spec['candidate']['code'], spec['vm_qualification'],
-                     spec.get('reader_completion')):
+                     spec.get('reader_completion'), spec.get('owner_observation')):
             if path is not None and (not isinstance(path, str) or not Path(path).is_absolute()
                     or '..' in Path(path).parts):
                 raise ValueError
@@ -1151,6 +1168,21 @@ def run_code_update(spec: dict) -> dict:
         from .onboarding_receiving_update import preflight_reader_checkpoint
         preflight_reader_checkpoint(Path(reader_routes['checkpoint']), spec['operation_id'])
     backend, plans = maintenance_backend(spec['host_config'],spec['vm_qualification'],spec['targets'])
+    observers = {}
+    if spec.get('owner_observation') is not None:
+        if spec['group'] == 'none':
+            raise OnboardingError('qualified_onboarding_group_required')
+        routes = load_code_update_readers(Path(spec['owner_observation']))
+        selected = {}
+        for name in spec['targets']:
+            matches = [(key,binding) for key,binding in routes['owners'].items()
+                       if binding.get('job',key) == name]
+            if len(matches) != 1:
+                raise OnboardingError('receiving_current_reader_binding_required')
+            key,binding = matches[0]
+            selected[key] = binding
+        clients = code_update_reader_clients({**routes,'owners':selected}, backend=backend, plans=plans)
+        observers = {binding.get('job',key):clients[key] for key,binding in selected.items()}
     if reader_routes is not None:
         # Resolve owning jobs/placements and probe their existing owner CLIs
         # before any lifecycle effect; signed rosters still qualify membership.
@@ -1188,7 +1220,8 @@ def run_code_update(spec: dict) -> dict:
                 raise OnboardingError('receiving_host_deadline_expired')
             value = owner.update_native_code(plans[name], candidate,
                 operation_id=spec['operation_id'], timeout_seconds=min(300.0, remaining),
-                receive_only_group=spec['group'] == 'closed', published_group=spec['group'] == 'published')
+                receive_only_group=spec['group'] == 'closed', published_group=spec['group'] == 'published',
+                **({'current_observer':observers[name]} if name in observers else {}))
             results.append(dict(name=name, operation_id=spec['operation_id'], status='updated', result=value))
         except Exception as error:
             # A retained failure may include partial effects. Keep the original

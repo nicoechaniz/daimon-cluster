@@ -27,6 +27,8 @@ PUBLIC_ERRORS = frozenset({
     'receiving_control_process_changed', 'receiving_control_parent_changed',
     'receiving_control_binding_conflict', 'receiving_control_fresh_request_expired',
     'receiving_owner_scope_required', 'receiving_control_not_accepted',
+    'current_onboarding_target_required', 'qualified_onboarding_group_required',
+    'receiving_bootstrap_public_preimage_changed', 'onboarding_observation_deadline_expired',
     'receiving_control_completion_uncertain', 'receiving_group_socket_changed',
     'invalid_receiving_control_request', 'daemon_response_truncated',
     'daemon_deadline_expired', 'daemon_timeout',
@@ -353,6 +355,14 @@ def reader_rpc(owner: OwnerGroupClient, value: dict, *, deadline_ns: int) -> dic
         raise OnboardingError('invalid_receiving_control_request')
     if value == {'action': 'status'}:
         return owner.status()
+    if value.get('action') == 'native-current' and set(value) == {'action','plan_digest'}:
+        if (not isinstance(value['plan_digest'],str)
+                or re.fullmatch('[0-9a-f]{64}',value['plan_digest']) is None):
+            raise OnboardingError('invalid_receiving_control_request')
+        from .onboarding_target import observe_current_native_target
+        return observe_current_native_target(owner.root,
+            expected_plan_digest=value['plan_digest'], deadline_ns=deadline_ns,
+            owner_type=type(owner))
     if value.get('action') == 'observe' and set(value) == {'action', 'options'}:
         options = value['options']
         if (not isinstance(options, dict) or set(options) != {'expected_selection',

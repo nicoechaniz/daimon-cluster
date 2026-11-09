@@ -960,11 +960,13 @@ def test_initial_managed_adopts_explicit_successor_without_replaying_start(tmp_p
     assert manager.starts == 1
 
 
+@pytest.mark.parametrize('local_observer', [False, True])
 @pytest.mark.parametrize('lost_start_ack', [False, True])
 @pytest.mark.parametrize('group_mode', ['plain', 'closed', 'published', 'legacy-published'])
-def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, group_mode):
+def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, group_mode, local_observer):
     """Plain and closed-group bodies reuse their existing native unit writer."""
     closed_group = group_mode != 'plain'
+    local_observer = local_observer and closed_group
     published_group = group_mode in {'published','legacy-published'}
     managed = object.__new__(ManagedRuntime)
     managed.settings = {} if group_mode == 'legacy-published' else {'mode': 'native-admission-only'}
@@ -1007,6 +1009,10 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
             runtime_status=dict(loaded_runtime=dict(qualified_startup=dict(code_digest='old-code'))),
             group_runtime_status=dict(loaded_application=dict(application_sha256='c'*64,
                 publication_sha256='d'*64, visibility=dict(release_enabled=False, installation_sha256=None))))
+    if closed_group:
+        current['group_runtime_status']['receiving'] = dict(
+            channels=dict(tribe=dict(process_id=process['pid'],phase='select')),
+            recovery=dict(tribe=dict(state='recovered')))
     if published_group:
         current['group_runtime_status']['loaded_application']['visibility'].update(
             release_enabled=True, installation_sha256='e'*64, policy_sha256='f'*64,
@@ -1034,6 +1040,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
                 operation_id=request['operation_id'], runtime_sha256=request['runtime_sha256'],
                 group=request['group'], catalog_schema_version=2)
         assert action == 'admitted-running'
+        assert not local_observer, 'local observation reopened the cold target CLI'
         assert _.get('current_native', False) is closed_group
         assert _.get('require_loaded', False) is closed_group
         return copy.deepcopy(current)
@@ -1060,6 +1067,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
                 if closed_group:
                     current['runtime_status']['loaded_runtime']['qualified_startup']['code_digest'] = request['argv'][
                         request['argv'].index('--runtime-digest')+1]
+                    current['group_runtime_status']['receiving']['channels']['tribe']['process_id'] = pid
                 prior[action] = dict(admission_parent=current['admission_parent'])
             if failures.pop() if failures else False:
                 raise OnboardingError('lost_start_ack')
@@ -1072,7 +1080,16 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         runtime_available=lambda *_, **__: True, _receiving_base=lambda _: Path('/original/base'),
         _runtime_paths=lambda *_, **__: (Path('/approved/candidate'), [], []),
         _target_call=owner, _guest_service_call=root)
+    class Observer:
+        deadline_ns = None
+        def _call(self, packet):
+            assert packet == dict(action='native-current',plan_digest=digest(plan))
+            assert self.deadline_ns > time.monotonic_ns()
+            return {**copy.deepcopy(current),'plan_digest':digest(plan)}
+    observer = Observer()
     options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bc', receive_only_group=closed_group and not published_group, published_group=published_group)
+    if local_observer:
+        options['current_observer'] = observer
     if lost_start_ack:
         with pytest.raises(OnboardingError, match='lost_migration_ack' if lost_start_ack == 'migration' else 'lost_start_ack'):
             managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
@@ -1085,6 +1102,8 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     result = managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
     assert result['runtime_sha256'] == 'original-bundle'
     assert result['receiving_readiness'] == 'unobserved'
+    if closed_group:
+        assert result['local_reader'] == dict(channel_id='tribe',phase='select',recovery='recovered')
     assert calls.count('bootstrap-quiesce') == 1
     assert calls.count('bootstrap-select') == 1
     assert len(effects[options['operation_id']]) == 4
@@ -1103,6 +1122,8 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         managed.update_native_code(plan, (tmp_path, 'b' * 64), **options)
     completed = being_seed._read(managed.state / 'newcomer/native-code-update.json')
     next_options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd', receive_only_group=closed_group and not published_group, published_group=published_group)
+    if local_observer:
+        next_options['current_observer'] = observer
     if closed_group and not published_group:
         current['group_runtime_status']['loaded_application']['visibility']['release_enabled'] = True
         with pytest.raises(OnboardingError, match='closed_group_required'):
@@ -1123,6 +1144,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     assert job == {'plan': plan, 'original': 'retained'}
 
 
-def test_published_native_update_recovers_lost_migration_ack_without_new_stop(tmp_path, monkeypatch):
+@pytest.mark.parametrize('local_observer', [False, True])
+def test_published_native_update_recovers_lost_migration_ack_without_new_stop(tmp_path, monkeypatch, local_observer):
     test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(
-        tmp_path, monkeypatch, 'migration', 'published')
+        tmp_path, monkeypatch, 'migration', 'published', local_observer)

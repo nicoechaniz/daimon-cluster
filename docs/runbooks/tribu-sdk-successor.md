@@ -177,7 +177,7 @@ python -B -m clusterctl.onboarding_managed --spec "$maintenance_spec"
 | Spec | What the same command completes | Reader result |
 | --- | --- | --- |
 | Includes `reader_completion` | Native software update plus current-reader qualification/selection | `qualified-local-projection` after successful final observation; incomplete if a required reader fails |
-| Omits `reader_completion` | Legacy code-only update | `unobserved`; software success alone does not establish messaging readiness |
+| Omits `reader_completion` | Local software update | Cohort readiness remains `unobserved`; each updated target additionally reports the authenticated `local_reader` phase/recovery when available |
 
 The protected reader-routes file may specify its own `host_config` and nullable
 `vm_qualification` for existing reader jobs. Use this when, for example, original
@@ -186,7 +186,28 @@ then resolves from that registry; the software update keeps its original backend
 Do not copy jobs or reenroll bodies to make the registries coincide. Omitting
 these locators preserves the existing shared-backend behavior.
 
-Prefer the composed spec for ordinary messaging-capable fleet updates. For its
+For a qualified compatible replacement of a managed admitted target, use
+`owner_observation` pointing to the
+existing protected reader-routes file and a helper advertising `native-current`.
+The same command resolves only the updated targets, reusing their existing owner
+CLI/status grant, prepared SDK and actual base/group peers. It does not contact
+other readers or rerun onboarding/boot qualification for each observation. Both
+socket peers, current identity/bundle/application, signed group, process parent,
+protected original plan and native unit CAS still qualify the update. No original
+genesis ceremony is replayed. The legacy Target route remains available when this
+optional field is absent. H8 Source profiles retain their existing Source-specific
+owner route; this optional field belongs to managed-target specs. An unsupported selected helper refuses before stopping
+work; do not silently switch routes after an uncertain lifecycle effect.
+
+`local_reader` is this operation's observed control phase and startup recovery,
+not peer delivery, model use, periodic health or heartbeat activation. A retained
+negative selection stays negative; software maintenance does not enable it. Its
+presence avoids an unnecessary manual whole-group round merely to discover local
+recovery. Keep `reader_completion` for a genuinely required cohort qualification
+or changed contract/authority. It can use the same routes file, but local owner
+observation alone imposes no peer preflight or reader controls.
+
+For a change that requires cohort qualification, use the composed spec. For its
 managed `job` owners, `selection: null` derives digests from the exact native
 update results; do not transcribe six hashes per updated body. An updated
 explicit owner route with the same target name also derives its successor

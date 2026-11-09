@@ -90,8 +90,38 @@
       : 'No alert observation available. This does not establish that the hosts are healthy.', 'muted'));
     byId('alerts').replaceChildren(...cards);
   }
+  function usage(data) {
+    const value = data.usage || {}, accounts = value.accounts || [], rows = value.daimons || [];
+    byId('usage-status').textContent = rows.length ? 'Native counters · refreshed at most once a minute' : 'Usage source unavailable';
+    byId('usage-coverage').textContent = value.coverage || 'No token observation available. Missing data is not zero usage.';
+    byId('usage-daimons').replaceChildren(...rows.map(row => {
+      const box = node('article', '', 'fleet-card');
+      box.append(node('h3', row.name), node('strong', row.total_tokens == null ? 'Unavailable' : row.total_tokens.toLocaleString() + ' tokens'),
+        node('p', row.conversations + ' recorded conversations · ' + row.bodies + ' observed body/bodies'),
+        node('p', row.partial ? 'Partial coverage · ' + row.unavailable_bodies + ' unavailable body/bodies' : 'Selected native databases observed', 'muted'),
+        node('p', 'Recorded since ' + dated(row.since ? row.since * 1000 : null) + ' · checked ' + dated(row.observed_at_ms), 'muted'));
+      return box;
+    }));
+    byId('usage-accounts').replaceChildren(...accounts.map(row => {
+      const box = node('article', '', 'fleet-card');
+      box.append(node('h3', row.label), node('p', (row.plan || 'Plan unavailable') + ' · ' + row.daimons.join(', ')));
+      for (const window of row.windows || []) {
+        const minutes = window.window_minutes;
+        const label = minutes === 10080 ? 'Weekly' : minutes % 1440 === 0 ? minutes / 1440 + ' days' : minutes % 60 === 0 ? minutes / 60 + ' hours' : minutes + ' minutes';
+        box.append(meter(window.limit + ' · ' + label, window.used_percent, 100, window.used_percent + '% used'),
+          node('p', 'Resets ' + dated(window.resets_at ? window.resets_at * 1000 : null), 'muted'));
+      }
+      if (!row.windows?.length) box.append(node('p', 'Allowance windows unavailable'));
+      if (row.ordinary_usage_allowed === false) box.append(node('p', 'Ordinary allowance unavailable', 'state stale'));
+      if (row.reset_credits != null) box.append(node('p', row.reset_credits + ' reset credit(s) available'));
+      box.append(node('p', 'Checked ' + dated(row.observed_at_ms), 'muted'));
+      return box;
+    }));
+    if (!accounts.length) byId('usage-accounts').append(node('p', 'Account windows unavailable. Missing data does not mean an unused allowance.', 'muted'));
+    if (value.account_unavailable_sources) byId('usage-accounts').append(node('p', value.account_unavailable_sources + ' account source(s) unavailable.', 'muted'));
+  }
   function render(data) {
-    map(data); alerts(data);
+    map(data); alerts(data); usage(data);
     byId('instances').replaceChildren(...data.instances.map(row => card(row, false)));
     byId('planned').replaceChildren(...data.planned.map(row => card(row, true)));
     byId('count').textContent = data.instances.length + ' admitted · ' + data.planned.length + ' virtual preparations';
@@ -105,7 +135,7 @@
     try {
       const response = await fetch('/cluster/api/fleet', {credentials:'same-origin', cache:'no-store', headers:{Accept:'application/json'}});
       byId('signin').hidden = response.status !== 401;
-      if ([401,403].includes(response.status)) { last = null; for (const id of ['hosts','host-detail','alerts']) byId(id).replaceChildren(); byId('alert-status').textContent = ''; byId('instances').replaceChildren(); byId('planned').replaceChildren(); byId('count').textContent = ''; }
+      if ([401,403].includes(response.status)) { last = null; for (const id of ['hosts','host-detail','alerts','usage-daimons','usage-accounts']) byId(id).replaceChildren(); byId('alert-status').textContent = ''; byId('instances').replaceChildren(); byId('planned').replaceChildren(); byId('count').textContent = ''; }
       if (response.status === 401) throw new Error('Sign in with our shared login to view the inventory.');
       if (response.status === 403) throw new Error('This account has no Cluster inventory grant.');
       if (!response.ok) throw new Error('Inventory unavailable. Previous observations may have expired.');

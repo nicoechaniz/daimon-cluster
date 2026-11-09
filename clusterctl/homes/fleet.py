@@ -53,7 +53,7 @@ def observation_socket(path):
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077:
         raise ValueError('private_observation_socket_required')
     with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
-        connection.settimeout(22);connection.connect(str(reference));raw=bytearray()
+        connection.settimeout(42);connection.connect(str(reference));raw=bytearray()
         while True:
             data=connection.recv(min(65536,131073-len(raw)))
             if not data:break
@@ -168,6 +168,9 @@ class Fleet:
                     value['preparation_state']='unavailable'
             value['observability'] = observations(self.config.get('observability', {}),
                 health_report=live['health'] if live else None)
+            if live and isinstance(live.get('usage'), dict):
+                # This source is a fixed-scope owner collector, never client input.
+                value['usage'] = live['usage']
             self.cached, self.cached_until = value, time.monotonic() + 3
             return value
 

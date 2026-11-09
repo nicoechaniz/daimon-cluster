@@ -161,6 +161,33 @@ an uncertain start or speech, reenroll a body, reset credentials or use retired
 Source containers. One prepared candidate plus actual current rollback is
 sufficient; discard replaced disposable preparation after its cohort completes.
 
+## Ordinary update: one command, two explicit outcomes
+
+For a new update of existing admitted bodies, use the maintained command with
+the retained protected maintenance spec:
+
+```sh
+python -B -m clusterctl.onboarding_managed --spec "$maintenance_spec"
+```
+
+| Spec | What the same command completes | Reader result |
+| --- | --- | --- |
+| Includes `reader_completion` | Native software update plus current-reader qualification/selection | `qualified-local-projection` after successful final observation; incomplete if a required reader fails |
+| Omits `reader_completion` | Legacy code-only update | `unobserved`; software success alone does not establish messaging readiness |
+
+Prefer the composed spec for ordinary messaging-capable fleet updates. For its
+managed `job` owners, `selection: null` derives digests from the exact native
+update results; do not transcribe six hashes per updated body. Reuse the same
+spec and `operation_id` after an incomplete result. Completed native effects are
+retained and an unresolved reader operation is continued rather than replaced.
+A separate manual reader round is for an already completed code-only update,
+not an extra step after a successful composed command.
+
+`qualified-local-projection` proves the authenticated current reader vector.
+A signed receiving-copy receipt proves native intake; an attributed answer tied
+to its original parent proves a receiving response. Reuse existing valid real
+communication evidence; do not manufacture test speech for each update.
+
 ## Refreshing readers after an already completed software update
 
 A scoped Matrix reload can invalidate the durable reader recovery when its loaded

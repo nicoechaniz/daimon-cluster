@@ -377,7 +377,7 @@ def unit_files(value):
     )
     native = (
         "[Unit]\nDescription=Own general Conversation native backend\nStartLimitIntervalSec=300\n"
-        "StartLimitBurst=3\n[Service]\nType=simple\n"
+        f"StartLimitBurst=3\nWants={WEB_UNIT}\n[Service]\nType=simple\n"
         + common
         + f"WorkingDirectory={HOME}/Projects/being\nExecStart={runtime['binary']} {STATE}/receiver.toml\n"
         "TimeoutStopSec=30\nMemoryMax=2G\nCPUQuota=200%\nTasksMax=512\n"
@@ -385,7 +385,7 @@ def unit_files(value):
     )
     web = (
         f"[Unit]\nDescription=Own private general Conversation web\nAfter={NATIVE_UNIT}\n"
-        f"Requires={NATIVE_UNIT}\nStartLimitIntervalSec=300\nStartLimitBurst=3\n"
+        f"Requires={NATIVE_UNIT}\nPartOf={NATIVE_UNIT}\nStartLimitIntervalSec=300\nStartLimitBurst=3\n"
         "[Service]\nType=simple\n"
         + common
         + "Environment=PYTHONDONTWRITEBYTECODE=1\n"

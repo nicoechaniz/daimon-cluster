@@ -281,3 +281,62 @@ def test_manifest_bounds_apply_before_reading_source(selected_deployment,change)
         row['files']={f'file-{i}':'a'*64 for i in range(1025)}
     with pytest.raises(ValueError,match='selected_deployment_'):
         inventory.collect(['own.service'],proc=proc,deployments=manifest)
+
+
+@pytest.fixture
+def selected_python_script(selected_deployment):
+    root,proc,target,source,manifest=selected_deployment
+    interpreter=proc/'python3.13'
+    target.rename(interpreter)
+    (proc/'3/exe').unlink()
+    (proc/'3/exe').symlink_to(interpreter)
+    (proc/'3/cwd').unlink()
+    (proc/'3/cwd').symlink_to(proc)
+    (proc/'3/cmdline').write_bytes(b'/usr/bin/python3\0-B\0-I\0'+os.fsencode(source)
+        +b'\0--private-setting\0PRIVATE-MUST-NOT-BE-RETAINED\0')
+    manifest['units']['own.service'].update(bind='python-script',
+        files={source.name:hashlib.sha256(source.read_bytes()).hexdigest()})
+    return root,proc,interpreter,source,manifest
+
+
+def test_actual_python_script_binding_needs_neither_public_cwd_nor_executing_source(selected_python_script):
+    root,proc,_target,source,manifest=selected_python_script
+    result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    unit=result['units']['own.service']
+    assert unit['state']=='observed'
+    assert unit['deployment']['python_entrypoint']==source.name
+    assert unit['deployment']['loaded_main_executable'] is False
+    assert 'PRIVATE-MUST-NOT-BE-RETAINED' not in json.dumps(result)
+    assert not (root/'__pycache__').exists()
+
+
+@pytest.mark.parametrize('argv', [
+    [b'/usr/bin/python3',b'-c',b'PASS_SCRIPT_AS_LATER_ARGUMENT'],
+    [b'/usr/bin/python3',b'-m',b'app',b'PASS_SCRIPT_AS_LATER_ARGUMENT'],
+    [b'/usr/bin/python3',b'relative.py'],
+    [b'/usr/bin/python3',b'/foreign/app.py'],
+    [b'/usr/bin/python3',b'-B',b'-x',b'PASS_SCRIPT_AS_LATER_ARGUMENT'],
+    [b'/usr/bin/python3',b'x'*4097],
+])
+def test_python_options_or_foreign_script_never_prove_selected_deployment(selected_python_script,argv):
+    _root,proc,_target,source,manifest=selected_python_script
+    argv=[os.fsencode(source) if x==b'PASS_SCRIPT_AS_LATER_ARGUMENT' else x for x in argv]
+    (proc/'3/cmdline').write_bytes(b'\0'.join(argv)+b'\0')
+    result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    assert result['units']['own.service']['state']=='unavailable'
+    assert 'deployment' not in result['units']['own.service']
+
+
+def test_same_pid_final_script_change_is_not_current_binding(selected_python_script,monkeypatch):
+    _root,proc,_target,_source,manifest=selected_python_script
+    calls=0
+    def properties(unit):
+        nonlocal calls
+        calls+=1
+        if calls==2:
+            (proc/'3/cmdline').write_bytes(b'/usr/bin/python3\0/foreign/script.py\0')
+        return dict(ActiveState='active',MainPID='3')
+    monkeypatch.setattr(inventory,'properties',properties)
+    result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    assert result['units']['own.service']['state']=='unavailable'
+    assert result['units']['own.service']['reason']=='selected_deployment_python_script_changed'

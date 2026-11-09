@@ -119,3 +119,33 @@ the application or erasing other assessment. Full security coverage remains
 partial. Refresh the manifest/reference through the existing host writer from
 an actual newer maintainer selection after an application deployment; never
 silently bless a changed live tree or interpret the gap as missing human authority.
+
+
+## Python supervisor entrypoint binding
+
+A selected deployment may use `bind: "python-script"` for the immutable public
+`/opt/daimon-onboarding-runtime` code family. The existing owner manifest pins
+the complete selected directory's file set and hashes from its maintained
+release, never a newly learned live tree. A Python service's working directory
+may legitimately be `/`; it is not evidence for that script's source selection.
+
+The observer checks the actual Python3 executable and bounded current cmdline's
+script argument, accepting only explicit non-executing interpreter flags before
+that absolute declared script path. Python `-c`, `-m`, option substitution,
+relative/foreign scripts and oversized command metadata do not qualify. Remaining
+arguments are never retained. The selected source bytes are read as data;
+nothing is imported, compiled or executed. The result keeps only the public
+relative `python_entrypoint`, and still marks `loaded_main_executable=false`.
+
+Process/PID/image and entrypoint checks repeat after metadata collection to
+refuse a changed same-PID script selection. Existing root custody, complete file
+set, symlink refusal,128MiB hash budget and read/output deadlines are unchanged.
+Interpreter upstream authenticity, runtime imports/dependencies and exposure stay
+unassessed; verified entrypoint/source selection does not clear those gaps.
+
+All4 current native supervisors were observed to select the same retained
+runtime artifact. Their candidate manifests derive68 declared module files from
+its verified release receipt, preserving the existing App/native manifests.
+Actual daily selection and producer/incident outcome must be recorded separately;
+source tests or a prepared manifest are not receiver adoption. The host Incus
+service's own package provenance remains a separate current gap.

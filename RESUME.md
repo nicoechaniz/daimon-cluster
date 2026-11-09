@@ -1,3 +1,29 @@
+## Current remaining work and actual runtime observation —2026-11-09
+
+Nicolas replaced the active goal with only three remaining items: actual School
+mission/workspace/canonical return and reopened display, the reusable finite
+companion command, and concrete outstanding daily security coverage. Completed
+provisioning, signed/native admission, Conversation, configured voice, Drive,
+skills and dashboard are not new prerequisites. Preserve the later joint Emma
+hold and original accounting. Historical planning below does not reinstate old
+approval gates or reopen completed work.
+
+The guest verifier now accepts hardlinked, root-owned, non-writable public runtime
+files only when their exact pinned hashes and complete component inventory match.
+Private requests/configuration/manifests remain single-link. The actual first
+Pixin refusal identified a zero-byte public module with15links; the corrected
+read passed. Calipso then exposed an incomplete observation descriptor: its
+qualified publication814 component and Python-path order must remain selected.
+All161component bytes matched maintained common815 plus the retained three-file
+publication overlay. A versioned descriptor corrected the observation, retaining
+both refusals and the original positive Pixin result without repeating that read.
+All four actual current native/web observations now pass with unchanged per-read
+process/configuration identities and zero model/provider/input/lifecycle effects.
+212affected tests plus6subtests,104-source typing and Ruff passed. Published
+predecessor7b0d91b exact CI42704824367 completed successfully; it does not qualify
+this later source edit. Capture/select the final complete worker source next;
+the current worker/environment/config and original jobs remain preserved.
+
 ## Deterministic terminal entry receipt —2026-11-09
 
 The v2 foreground command now returns the authorized Conversation HTTPS entry,

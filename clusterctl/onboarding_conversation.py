@@ -54,7 +54,8 @@ def fail(reason):
     raise ConversationError(reason)
 
 
-def read(path, *, uid, limit=65536):
+def read(path, *, uid, limit=65536, allow_hardlinks=False):
+    """Private inputs are single-link; pinned public runtime bytes may be shared."""
     path = Path(path)
     if any(p.is_symlink() for p in (path, *path.parents)):
         fail("conversation_regular_file_required")
@@ -65,7 +66,8 @@ def read(path, *, uid, limit=65536):
             not stat.S_ISREG(info.st_mode)
             or info.st_uid != uid
             or info.st_mode & 0o022
-            or info.st_nlink != 1
+            or info.st_nlink < 1
+            or (not allow_hardlinks and info.st_nlink != 1)
             or info.st_size > limit
         ):
             fail("conversation_owned_file_required")
@@ -278,7 +280,7 @@ def verify_runtime(value):
     for file, pin in (("binary", "binary_sha256"), ("python", "python_sha256")):
         # A venv interpreter may be a symlink to the root-owned system image.
         path = trusted(runtime[file], resolve=file == "python")
-        if sha(read(path, uid=0, limit=64 * 1024**2)) != runtime[pin]:
+        if sha(read(path, uid=0, limit=64 * 1024**2, allow_hardlinks=True)) != runtime[pin]:
             fail("conversation_runtime_changed")
     total = count = 0
     for component in runtime["components"]:
@@ -322,7 +324,7 @@ def verify_runtime(value):
             count += 1
             if total > 96 * 1024**2 or count > 4096:
                 fail("conversation_component_capacity")
-            if sha(read(path, uid=0, limit=16 * 1024**2)) != pin:
+            if sha(read(path, uid=0, limit=16 * 1024**2, allow_hardlinks=True)) != pin:
                 fail("conversation_component_changed")
     return {"files": count, "bytes": total}
 

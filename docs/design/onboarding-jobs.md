@@ -1,5 +1,50 @@
 # Durable receiving jobs
 
+## Pinned public runtime files and current receiving composition
+
+The Conversation verifier permits hardlinks for hash-pinned public executables
+and component source files. Root ownership, non-writable mode, symlink refusal,
+complete inventory, individual hashes and size/count bounds still apply. Private
+requests, configuration and component-manifest inputs remain single-link. A
+mutation through a public alias must fail the same hash check.
+
+Build each selected request from the receiving maintainer's actual qualified
+composition, including its complete ordered Python path and every component
+manifest. Do not replace a receiver's extra publication/voice component or change
+its running service merely to fit an older bootstrap descriptor. Retain an old
+refused descriptor and use a versioned observation descriptor for its correction;
+reuse a completed same-source positive observation when no affected selection
+changed. Current runtime observation is read-only, not an enrollment retry.
+
+## Shared App consumer continuity
+
+Conversation installation also establishes a consumer of shared App releases.
+Reuse `HostConfig.conversation_by_name`, the resolved original pairing and Home
+registration; do not discover consumers from Telegram, historical machine names
+or a fixed cohort in a deployment script. The existing runtime-health registry
+is health enrollment, not an App release subscription or an installation proof.
+The authenticated Home `/cluster/api/fleet` view reports native admissions and
+sanitized placement, not private App configuration or an update endpoint.
+
+Before completing a future Conversation installation, record its existing being,
+body, application and Home references, placement, selected config/state directory,
+web service and maintenance route in the owning App receiving record. Include the
+qualified source revision and observed installed release/manifest digest, with the
+prior selection and actual adoption outcome. Keep transport and configuration
+references private. An unavailable release stays explicitly pending; never fill it
+from the maintainer's moving checkout or treat publication as installation.
+
+Resolve the App's current supported release at preparation time, then pin that
+exact qualified release for this job. Reconcile a later publication as an ordinary
+App update without resetting the original job or identity. Shared frontend release
+selection belongs to the existing App writer; source-specific selection details
+must come from its published contract. Cluster's current guest bootstrap verifies
+the pinned runtime components but does not yet implement an App consumer registry
+or the proposed workshop frontend selector. Do not invent a second registry or
+reuse Home registration as proof of frontend adoption. Maintain the receiving
+record through the existing App/Shared Resources route until that contract is
+available; preserve active work, original actor storage and the next-companion hold.
+
 ## Single-command companion contract
 
 Nicolas's 8 November correction selects one finite operator command after the

@@ -139,8 +139,8 @@ class ConversationTests(unittest.TestCase):
             ("trusted", lambda path, **kw: Path(path)),
             (
                 "read",
-                lambda path, uid, limit=65536: original_read(
-                    path, uid=os.getuid(), limit=limit
+                lambda path, uid, limit=65536, allow_hardlinks=False: original_read(
+                    path, uid=os.getuid(), limit=limit, allow_hardlinks=allow_hardlinks
                 ),
             ),
         ]:
@@ -330,6 +330,8 @@ class RuntimeEvidenceTests(unittest.TestCase):
             root.mkdir()
             source = root / "app.py"
             source.write_bytes(b"qualified public source")
+            alias = parent / 'other-retained-release.py'
+            alias.hardlink_to(source)
             binary = parent / "binary"
             binary.write_bytes(b"qualified executable fixture")
             manifest = parent / "manifest.json"
@@ -363,13 +365,13 @@ class RuntimeEvidenceTests(unittest.TestCase):
                 patch.object(
                     conversation,
                     "read",
-                    side_effect=lambda path, uid, limit=65536: original_read(
-                        path, uid=os.getuid(), limit=limit
+                    side_effect=lambda path, uid, limit=65536, allow_hardlinks=False: original_read(
+                        path, uid=os.getuid(), limit=limit, allow_hardlinks=allow_hardlinks
                     ),
                 ),
             ):
                 self.assertEqual(conversation.verify_runtime(value)["files"], 1)
-                source.write_bytes(b"different source")
+                alias.write_bytes(b"different source")
                 with self.assertRaisesRegex(
                     conversation.ConversationError, "component_changed"
                 ):
@@ -387,6 +389,20 @@ class RuntimeEvidenceTests(unittest.TestCase):
                     conversation.ConversationError, "inventory_changed"
                 ):
                     conversation.verify_runtime(value)
+
+    def test_private_inputs_still_refuse_aliases_and_public_files_keep_other_checks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)/'input.json'
+            path.write_bytes(b'private input fixture')
+            path.chmod(0o600)
+            alias = Path(temp)/'alias.json'
+            alias.hardlink_to(path)
+            with self.assertRaisesRegex(conversation.ConversationError,'owned_file_required'):
+                conversation.read(path,uid=os.getuid())
+            self.assertEqual(conversation.read(path,uid=os.getuid(),allow_hardlinks=True),b'private input fixture')
+            path.chmod(0o666)
+            with self.assertRaisesRegex(conversation.ConversationError,'owned_file_required'):
+                conversation.read(path,uid=os.getuid(),allow_hardlinks=True)
 
     def test_live_readiness_requires_both_private_routes_to_deny_anonymous(self):
         import urllib.error

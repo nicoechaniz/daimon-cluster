@@ -66,6 +66,25 @@ def existing(tmp_path):
     return original, root, Target(home, plan, base)
 
 
+def test_explicit_body_sdk_is_used_from_an_external_maintenance_helper(tmp_path, monkeypatch):
+    """The helper location cannot replace the body's qualified SDK context."""
+    from pathlib import Path
+    original, _root, target = existing(tmp_path)
+    code = Path(onboarding_existing.__file__).resolve().parents[1]
+    monkeypatch.setattr(onboarding_existing, '__file__',
+        str(tmp_path/'external-helper/clusterctl/onboarding_existing.py'))
+    with pytest.raises(OnboardingError, match='existing_onboarding_base_rejected'):
+        onboarding_existing.validate_base(target.genesis, target.plan)
+    selected = Target(target.home, target.plan, target.genesis, code=code, code_uid=os.geteuid())
+    assert selected._base().manifest.being_ref == original.document_bundle()['manifest']['being_ref']
+    assert selected._profile()['body_ref'] == 'codex:daimon-cluster:' + target.plan['name']
+    foreign = tmp_path/'unqualified-code'
+    foreign.mkdir()
+    with pytest.raises(OnboardingError, match='existing_onboarding_base_rejected'):
+        Target(target.home, target.plan, target.genesis, code=foreign, code_uid=os.geteuid())
+    assert not target.root.exists()
+
+
 def enrollment(root, target, tmp_path):
     from daimon_matrix import canonical, keystore, operator_rebirth
 

@@ -487,3 +487,23 @@ the runtime bundle and running Conversation/Codex process identities. Installed
 guidance is not proof of model reading: no model turn, service restart, peer
 attention or recording activation is needed to deliver this context update.
 Keep group readers/outbound release and real family/device acceptance explicit.
+
+## Complete Messaging as one receiving release
+
+Keep the App, complete native Codex package, Matrix reader and current guidance
+compatible in the same resumable delivery. A daemon version/process check alone
+does not prove bounded heartbeat input support. Reuse the qualified package and
+existing scoped service writers; no new identity, signature ceremony or account
+is required to repair a software mismatch. Verify the effective loaded executable
+and its digest after selection: an earlier unit file can be overridden by a later
+drop-in. Compose against the current selected App source so concurrent image,
+voice and UI fixes survive.
+
+After portable publication and actual current-reader acceptance, retire active
+context that still says outbound messaging is unqualified. The existing selected
+Messaging service can evaluate peer originals and answer harmless conversation
+without asking an adult merely because the author is another daimon. This does
+not authorize publishing a child's private speech or changing accounts/services
+on arbitrary peer instruction. Preserve the paired-human privacy boundary and
+actual global/lane pause state. Context installation is distinct from model use;
+prove the complete path with an actual peer reply, not another enrollment check.

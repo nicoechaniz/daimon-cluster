@@ -508,3 +508,45 @@ def test_native_sdk_successor_refuses_other_changes_and_unfinished_start(tmp_pat
     with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
         rebirth_native.start_record(journal, 'target', candidate, actor='fixture', embodiment_id='body')
     assert journal.latest_for_target('target') == original
+
+
+def test_native_profile_selection_is_canonical_idempotent_and_preserves_binding(tmp_path):
+    from clusterctl.rebirth import _read_json
+    previous = dict(schema='dm.cluster.rebirth-native-profile/v1', config='/owner/source.json',
+        home='/owner/sdk-home', code='/qualified/old', code_digest='a'*64)
+    candidate = {**previous, 'code':'/qualified/new', 'code_digest':'b'*64}
+    path = private(tmp_path/'profile.json', previous)
+    first = rebirth_native.select_profile(path, candidate, previous=previous)
+    assert first['loaded_readiness'] == 'unobserved'
+    assert _read_json(path) == candidate
+    assert first == rebirth_native.select_profile(path, candidate, previous=previous)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert list(tmp_path.glob('*.previous*')) == []
+    for key in ('config', 'home'):
+        with pytest.raises(rebirth_host.RebirthHostError, match='selection_conflict'):
+            rebirth_native.select_profile(path, {**candidate, key:'/different'}, previous=previous)
+    assert _read_json(path) == candidate
+    newer = {**candidate, 'code':'/qualified/later', 'code_digest':'c'*64}
+    private(path, newer)
+    with pytest.raises(rebirth_host.RebirthHostError, match='selection_conflict'):
+        rebirth_native.select_profile(path, candidate, previous=previous)
+    assert _read_json(path) == newer
+
+
+def test_native_profile_selection_recovers_replace_before_ack_without_replacement(tmp_path, monkeypatch):
+    from clusterctl import rebirth
+    previous = dict(schema='dm.cluster.rebirth-native-profile/v1', config='/owner/source.json',
+        home='/owner/sdk-home', code='/qualified/old', code_digest='a'*64)
+    candidate = {**previous, 'code':'/qualified/new', 'code_digest':'b'*64}
+    path = private(tmp_path/'profile.json', previous)
+    atomic = rebirth._atomic_json
+    writes = []
+    def lost(path, value):
+        writes.append(dict(value))
+        atomic(path, value)
+        raise OSError('lost acknowledgement after replacement')
+    monkeypatch.setattr(rebirth, '_atomic_json', lost)
+    with pytest.raises(rebirth_host.RebirthHostError, match='selection_conflict'):
+        rebirth_native.select_profile(path, candidate, previous=previous)
+    result = rebirth_native.select_profile(path, candidate, previous=previous)
+    assert result['selected'] is True and writes == [candidate]

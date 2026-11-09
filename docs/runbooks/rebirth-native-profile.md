@@ -41,8 +41,21 @@ profile does not synthesize a harness lifecycle card or claim a model turn.
 Native visibility and resource grants remain those of the selected Source
 configuration. `--production-fence-verifier` and the ordinary profile's separate
 visibility option are rejected with this profile rather than silently ignored.
-An existing `rebirth-start` intent selecting a different profile remains a real
-journal conflict; never overwrite it to force a new startup.
+An SDK-only successor with unchanged Source config can use the existing native
+start-record successor path: it anchors the completed predecessor and retains
+the original identity/admission history. Unrelated intent changes still refuse.
+Do not overwrite or reset a start record to force startup; a known unready
+attempt uses only its explicitly retained recovery operation.
+
+For maintenance selection, use `rebirth_native.select_profile(path, candidate,
+previous=retained_previous)` under the existing operation. It reuses the canonical
+writer and Matrix selection lock, preserves config/home, rejects a concurrent
+successor and reconciles replacement before acknowledgment without rewriting it.
+The operation retains its original profile; this helper creates no growing series
+of backup files. Qualify the successor through `prepare` before the scoped stop.
+Selection alone does not stop/start a service, migrate catalogs, establish body
+admission or qualify readers. Full H8 fleet-command composition remains pending;
+do not substitute a manual chain and call that command complete.
 
 Keep the serving configuration, code selection and startup result in the owning
 host record. Install the supervisor through the existing bounded service route;

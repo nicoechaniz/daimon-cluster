@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import re
 import select
 import socket
 import threading
@@ -14,6 +15,54 @@ from pathlib import Path
 
 from . import onboarding_code_successor, onboarding_release, onboarding_sdk
 from .onboarding import digest
+
+
+def _profile(value: dict) -> dict:
+    if (not isinstance(value, dict) or set(value) != {
+            'schema', 'config', 'code', 'code_digest', 'home'}
+            or value['schema'] != 'dm.cluster.rebirth-native-profile/v1'
+            or not isinstance(value['code_digest'], str)
+            or re.fullmatch('[0-9a-f]{64}', value['code_digest']) is None
+            or any(not isinstance(value[key], str) or not Path(value[key]).is_absolute()
+                or '..' in Path(value[key]).parts for key in ('config', 'code', 'home'))):
+        raise ValueError('profile')
+    return dict(value)
+
+
+def select_profile(path: Path, candidate: dict, *, previous: dict) -> dict:
+    """CAS only a prepared native profile, retaining its config and SDK home.
+
+    The owning maintenance journal retains `previous` and qualifies the candidate
+    before quiescence. This writer does not stop/start a service or acquire body
+    admission. An exact retry observes selection and restores directory durability;
+    it never replaces a concurrent successor. No per-update backup files accrue.
+    """
+    from .onboarding_service import selection_lock
+    from .rebirth import _atomic_json, _read_json
+    from .rebirth_host import RebirthHostError
+    try:
+        previous, candidate = _profile(previous), _profile(candidate)
+        if any(previous[key] != candidate[key] for key in ('schema', 'config', 'home')):
+            raise ValueError('binding')
+        with selection_lock(path):
+            current = _read_json(path)
+            if current not in (previous, candidate):
+                raise ValueError('concurrent profile')
+            if current != candidate:
+                _atomic_json(path, candidate)
+            else:
+                descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            if _read_json(path) != candidate:
+                raise ValueError('profile readback')
+            return dict(schema='cluster-native-profile-selected/v1',
+                previous_sha256=digest(previous), selected_sha256=digest(candidate),
+                selected=True, loaded_readiness='unobserved')
+    except (OSError, ValueError) as error:
+        raise RebirthHostError('rebirth_host_native_profile_selection_conflict') from error
 
 
 def start_record(journal, target: str, intent: dict, *, actor: str, embodiment_id: str,
@@ -119,13 +168,7 @@ def prepare(state: Path, identity: dict, profile: Path, password_fd: int) -> dic
     from .rebirth_host import RebirthHostError, _owner_file, _read_json
 
     try:
-        value = _read_json(_owner_file(profile))
-        if (not isinstance(value, dict) or set(value) != {
-                'schema', 'config', 'code', 'code_digest', 'home'}
-                or value['schema'] != 'dm.cluster.rebirth-native-profile/v1'
-                or any(not isinstance(value[k], str) or not Path(value[k]).is_absolute()
-                       for k in ('config', 'code', 'home'))):
-            raise ValueError('profile')
+        value = _profile(_read_json(_owner_file(profile)))
         config = Path(value['config'])
         settings = _read_json(_owner_file(config))
         root = matrix_root(state, identity['origin']['embodiment_id'])

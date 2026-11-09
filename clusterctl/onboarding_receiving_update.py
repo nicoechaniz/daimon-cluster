@@ -3683,6 +3683,19 @@ class CohortController:
 
     def _admission(self, row: dict) -> dict | None:
         """Validate the frozen physical after-set, independently of late effects."""
+        if 'cohort_admission' not in row['intended_transition']:
+            return None
+        locations = {name: dict(root=str(owner.root), socket=str(owner.socket))
+                     for name, owner in self.owners.items()}
+        return self.validate_admission(row, locations, self._senders(row))
+
+    @staticmethod
+    def validate_admission(row: dict, owner_locations: dict, senders: list) -> dict | None:
+        """Same admission contract, usable during model-free intent compilation.
+
+        This pure validation opens no owner/client, journal or native writer.
+        Execution separately validates its live owners and original grants.
+        """
         transition = row['intended_transition']
         if 'cohort_admission' not in transition:
             return None
@@ -3693,12 +3706,12 @@ class CohortController:
                 or row['target'] != 'receiving:' + value['tribe_ref']
                 or row['expected_precondition'].get('tribe_ref') != value['tribe_ref']
                 or not isinstance(value['receivers'], dict) or not 1 <= len(value['receivers']) <= 256
-                or sorted(value['receivers']) != sorted(self.owners)):
+                or sorted(value['receivers']) != sorted(owner_locations)):
             raise OnboardingError('receiving_cohort_admission_required')
-        before = {item['name']: item for item in self._senders(row)}
-        added = set(self.owners) - set(before)
+        before = {item['name']: item for item in senders}
+        added = set(owner_locations) - set(before)
         if (not added or not isinstance(row['expected_precondition'].get('receiver_selections'), dict)
-                or sorted(row['expected_precondition']['receiver_selections']) != sorted(self.owners)):
+                or sorted(row['expected_precondition']['receiver_selections']) != sorted(owner_locations)):
             raise OnboardingError('receiving_cohort_admission_required')
         identities = set()
         for name, receiver in value['receivers'].items():
@@ -3706,7 +3719,7 @@ class CohortController:
                     'being_ref', 'embodiment_id', 'root', 'socket', 'candidate', 'recipe'}
                     or any(not isinstance(receiver[key], str) or not receiver[key]
                            for key in ('being_ref', 'embodiment_id', 'root', 'socket'))
-                    or (receiver['root'], receiver['socket']) != (str(self.owners[name].root), str(self.owners[name].socket))):
+                    or (receiver['root'], receiver['socket']) != (owner_locations[name]['root'], owner_locations[name]['socket'])):
                 raise OnboardingError('receiving_cohort_admission_receiver_changed')
             identity = receiver['being_ref'], receiver['embodiment_id']
             if identity in identities:

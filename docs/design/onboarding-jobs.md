@@ -1101,3 +1101,47 @@ job. All6 current Interaction guards were actually held, correlated and released
 with zero Caddy reloads or model calls. Caller-selected extra affected receivers
 are also fenced. Disable future routing by withdrawing this selection; do not
 stop captures, unlink their persistent lock files or roll back data stores.
+
+### Compile and bind original signed-membership intent
+
+`onboarding_membership_intent.compile_request` replaces the per-companion
+request assembly formerly left in local operator scripts. It consumes an
+already retained invitation, signed governance/authority closure, qualified
+receiver candidates, owner context observations and sender vector. It derives
+the membership episode and previous terminal event through Matrix's native
+reducer, then verifies the complete social recipe with the existing native
+signature validator. The request binds the original plan, exact selected owners
+and native Matrix operation ID. It contains only membership intent, without
+publication, Telegram, synthetic speech or cohort activation. Compilation opens
+no custody and performs no native effect.
+
+The existing group coordinator can select this fixed private request through
+`membership_requests[PLAN_DIGEST] = {"path": "ABSOLUTE_OWNER_REQUEST", "sha256":
+"REQUEST_DIGEST"}`. Both the request and each map remain under the existing
+selection bounds; the map admits at most256 entries. The request's activation
+manifest path must equal that selected path. `advance` binds it only at the
+original job's Matrix stage, under existing job/grant/consent locks, after the
+signed custody ceremony verifies the actual entrant being/body coordinates.
+Its private selection lock is one fixed directory per coordinator configuration.
+Read-only observation does not create a binding. An absent selection retains the
+old behavior, and an existing full operation cannot be rewritten as membership
+only.
+
+Preparation records the existing operation journal row before atomically adding
+its exact original-plan reference to the coordinator. If selection fails after
+journal planning, retry resumes that same intent/operation. Changed requests,
+original grants, identities, owner vectors and prior bindings are refused and
+preserved. Compilation never generates a nonce or extends an invitation or
+acceptance window; a historical expired request compiles identically. Actual
+native execution still enforces its current authoring precondition and retained
+uncertain effects. Compilation time counts against the existing caller deadline.
+Withdrawing this optional selection prevents new automatic binding, without
+discarding an already retained operation or its effects.
+
+The maintained compiler reproduced all4 actual original request objects exactly
+from their retained public proofs, with unchanged source files and zero native
+dispatches. This proves compatibility with those completed admissions, not a new
+admission or a complete fresh-companion command. Automatic collection of the
+post-identity preparation inputs, explicit KVM placement/network and coherent
+whole-command receiving qualification remain unfinished. Do not reenroll the
+existing four or use Emma as an unsolicited qualification target.

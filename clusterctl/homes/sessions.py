@@ -246,7 +246,9 @@ class Sessions:
             )
             return cursor.rowcount
 
-    def request(self, *, home, origin):
+    def request(self, *, home, origin, ttl=900):
+        if type(ttl) is not int or not 60 <= ttl <= 7 * 86400:
+            raise ValueError("invalid_browser_request_lifetime")
         with closing(self.connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -261,10 +263,10 @@ class Sessions:
                 code, proof = secrets.token_hex(5).upper(), self.secret()
                 db.execute(
                     "INSERT INTO requests VALUES(?,?,?,?,?,NULL,NULL,0)",
-                    (code, hash_token(proof), home, origin, now + 900),
+                    (code, hash_token(proof), home, origin, now + ttl),
                 )
                 db.commit()
-                return {"code": code, "expires_at": now + 900}, proof
+                return {"code": code, "expires_at": now + ttl}, proof
             except BaseException:
                 db.rollback()
                 raise

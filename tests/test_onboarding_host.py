@@ -109,16 +109,22 @@ def test_guest_conversation_failure_preserves_only_closed_public_code(monkeypatc
     assert str(error.value) == expected
 
 
-def test_conversation_stage_binds_own_plan_and_does_not_fabricate_login(tmp_path, monkeypatch):
+@pytest.mark.parametrize('unresolved',[False,True])
+def test_conversation_stage_binds_own_plan_and_does_not_fabricate_login(tmp_path, monkeypatch, unresolved):
     from tests.test_onboarding_conversation import request
     from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA
     config, value, _, _ = configured(tmp_path)
     value['schema'] = CONVERSATION_PLAN_SCHEMA
     selected = request()
     selected.update(name=value['name'], plan_digest=digest(value))
+    supplied = dict(selected)
+    if unresolved:
+        from clusterctl.onboarding_conversation import INTENT_SCHEMA
+        supplied.pop('being_ref')
+        supplied['schema'] = INTENT_SCHEMA
     path = tmp_path/'conversation.json'
-    being_seed._write(path, selected)
-    backend = HostBackend(replace(config, conversation_by_name={value['name']: (path, digest(selected))}))
+    being_seed._write(path, supplied)
+    backend = HostBackend(replace(config, conversation_by_name={value['name']: (path, digest(supplied))}))
     backend.authorize = lambda p, pin: True
     backend._ceremony = lambda p: SimpleNamespace(admission_coordinates=lambda p: {'being_ref': selected['being_ref']})
     backend._guest_paths = lambda p: (tmp_path, Path('/qualified/base'), {})
@@ -142,8 +148,8 @@ def test_conversation_stage_binds_own_plan_and_does_not_fabricate_login(tmp_path
     assert '--apply' in calls[-1][0]
     # A changed pairing request cannot be sent to the guest, even when its
     # declared owner/name is unchanged. No guest-side effect is attempted.
-    selected['human_ref'] = 'human:local:33333333-3333-4333-8333-333333333333'
-    being_seed._write(path, selected)
+    supplied['human_ref'] = 'human:local:33333333-3333-4333-8333-333333333333'
+    being_seed._write(path, supplied)
     with pytest.raises(OnboardingError, match='conversation_selection_changed'):
         backend.observe(value, 'conversation', 'retained-operation')
     assert len(calls) == 2

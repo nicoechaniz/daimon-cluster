@@ -289,7 +289,7 @@ class HostConfig:
             configuration(group_admission)
         conversation_by_name = None
         if 'conversation_by_name' in value:
-            from .onboarding_conversation import selection
+            from .onboarding_conversation import selection, INTENT_SCHEMA
             selected = value['conversation_by_name']
             if not isinstance(selected, dict) or not 1 <= len(selected) <= 64:
                 raise OnboardingError('conversation_selection_required')
@@ -301,7 +301,7 @@ class HostConfig:
                         or not sha(row['request_digest'])):
                     raise OnboardingError('conversation_selection_required')
                 request = document(Path(row['request']))
-                selection(request)
+                selection(request, unresolved=request.get('schema') == INTENT_SCHEMA)
                 if request['name'] != name or digest(request) != row['request_digest']:
                     raise OnboardingError('conversation_selection_changed')
                 conversation_by_name[name] = (Path(row['request']), row['request_digest'])
@@ -621,22 +621,27 @@ class HostBackend:
             return Observation('absent', safe_to_execute=True)
         return Observation("complete", {"verified": True, **resources})
 
+    def _conversation_request(self, plan: dict) -> dict | None:
+        from .onboarding_conversation import resolve_request
+        selected = (self.config.conversation_by_name or {}).get(plan['name'])
+        if selected is None:
+            return None
+        value = document(selected[0])
+        if (digest(value) != selected[1] or value.get('name') != plan['name']
+                or value.get('plan_digest') != digest(plan)):
+            raise OnboardingError('conversation_selection_changed')
+        identity = self._ceremony(plan).admission_coordinates(plan)
+        return resolve_request(value, identity['being_ref'])
+
     def _conversation(self, plan: dict, *, apply: bool) -> Observation:
         """Use the qualified guest adapter with an exact owner-selected pairing.
 
         Guest readiness is technical only; it never supplies a browser login,
         family acceptance, social membership or released messaging receipt.
         """
-        from .onboarding_conversation import selection
-        selected = (self.config.conversation_by_name or {}).get(plan['name'])
-        if selected is None:
+        request = self._conversation_request(plan)
+        if request is None:
             return Observation('waiting', reason='connection_data_required')
-        request = document(selected[0])
-        selection(request)
-        if (digest(request) != selected[1] or request['name'] != plan['name']
-                or request['plan_digest'] != digest(plan)
-                or request['being_ref'] != self._ceremony(plan).admission_coordinates(plan)['being_ref']):
-            raise OnboardingError('conversation_selection_changed')
         _, base, mounts = self._guest_paths(plan)
         code, _, runtime_mounts = self._runtime_paths(plan, base)
         mounts.update(runtime_mounts)
@@ -767,10 +772,9 @@ class HostBackend:
             if browser.state != 'complete':
                 return browser
             facts.update(browser.facts)
-        assert self.config.conversation_by_name is not None
-        request = document(self.config.conversation_by_name[plan['name']][0])
-        if digest(request) != self.config.conversation_by_name[plan['name']][1]:
-            raise OnboardingError('conversation_selection_changed')
+        request = self._conversation_request(plan)
+        if request is None:
+            return Observation('waiting', reason='connection_data_required')
         observed = self.home_access(plan, request, apply)
         if observed.state != 'complete':
             return observed

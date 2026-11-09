@@ -909,9 +909,9 @@ receipts permit local reconciliation without another HTTP submission.
 Worker installation must preflight the coherent worker, host, Home, guest and
 group-coordinator imports in the selected release, alongside its selected Matrix
 SDK. The old small Home-worker overlay is insufficient for this graph. These are
-candidate source capabilities, not a deployed complete companion command: automatic
-Home/request registration from newly committed identity and the explicit KVM
-placement path still require integration. Do not provision the held next companion
+candidate source capabilities, not a deployed complete companion command: wiring
+the registration/request primitives into the worker and HTTPS route, and the
+explicit KVM placement path, still require integration. Do not provision the held next companion
 to test them. Exact private failure diagnostics and stage checkpoints remain with
 the original job; timeout extensions continue that same job and preserve work.
 
@@ -934,5 +934,36 @@ cannot be overwritten by a retry. Identity input is capped at256KiB/16 web rows;
 its protected public proof directory refuses growth beyond64MiB/17 files plus
 its lock and retains conflicting/unfinished evidence. Ordinary source backups
 use the existing protected replacement writer. Registration does not create a
-Home, app route, owner credential or membership: automatic composition of those
-remaining existing writers and the guest request remains unfinished.
+Home, app route, owner credential or membership. The composed Home registration
+operation below adds those Home/owner writes, while worker and HTTPS integration
+remain unfinished.
+
+For a new job, `onboarding_conversation.prepare_intent` derives stable Home and
+application resource IDs from the approved plan digest. The explicit
+`cluster-conversation-intent/v1` contains the selected own human/runtime/profile
+but no placeholder being identity. Host configuration may pin this intent before
+identity creation. Both Conversation execution and final acceptance resolve it
+against the same signature-verified admitted being. The guest accepts only a
+fully resolved bootstrap request. Existing complete requests and their original
+Home/application IDs retain their exact interpretation.
+
+`homes.host register-companion` composes identity registration, the existing
+Home registry/config writer and owner-credential registration. Its private `--row`
+input contains exactly `request`, `human_name`, and `vpn_url`; `--authority`
+contains the ceremony's public identity export. Reference must match the actual
+being; the previous digest selects Home configuration. A new Home's two resource
+keys are generated once in an immutable private intent before publication. A lost
+step after config publication resumes those same keys and the exact owner row;
+it does not reissue a pair or browser session. Existing Homes keep their original
+keys, backend, ring and configuration. Invalid/occupied HTTPS origins refuse
+before issuing keys. The intent area admits at most16 Home intents,64 filesystem
+entries and1MiB of retained bytes; unfinished intents and keys are never evicted.
+
+This internal registration operation returns `receiving_state=unobserved`.
+It creates no guest, restarts no service, publishes no HTTPS route and sends no
+model input. The host command still needs to wire registration, conditional
+gateway loading and the existing guest/HTTPS routing writers into its same job.
+Actual all4 existing Home registrations and preidentity request resolution were
+reconciled without source/config changes, added owner credentials, new keys or
+Home process changes. That is compatibility evidence, not a completed fresh
+companion delivery or permission to provision the held next companion.

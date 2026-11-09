@@ -33,6 +33,9 @@ class ConversationError(ValueError):
 
 
 SCHEMA = "cluster-conversation-bootstrap/v1"
+INTENT_SCHEMA = "cluster-conversation-intent/v1"
+# Resource identifiers, never credentials or native identity authorities.
+RESOURCE_NAMESPACE = uuid.UUID('9d2123d3-9af7-43a7-973c-3cdfe48f4f21')
 HOME = Path("/home/agent")
 STATE = HOME / ".local/state/daimon-conversation"
 SYSTEMD = Path("/etc/systemd/system")
@@ -72,7 +75,7 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def selection(value):
+def selection(value, *, unresolved=False):
     keys = {
         "schema",
         "name",
@@ -90,16 +93,18 @@ def selection(value):
         "runtime",
         "execution",
     }
+    if unresolved:
+        keys.remove('being_ref')
     if (
         not isinstance(value, dict)
         or set(value) != keys
-        or value.get("schema") != SCHEMA
+        or value.get("schema") != (INTENT_SCHEMA if unresolved else SCHEMA)
         or not isinstance(value["name"], str)
         or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,30}", value["name"])
         or not isinstance(value["plan_digest"], str)
         or not SHA.fullmatch(value["plan_digest"])
-        or not isinstance(value["being_ref"], str)
-        or not re.fullmatch(r"dm:being:v1:[A-Za-z0-9_-]{43}", value["being_ref"])
+        or (not unresolved and (not isinstance(value["being_ref"], str)
+            or not re.fullmatch(r"dm:being:v1:[A-Za-z0-9_-]{43}", value["being_ref"])))
         or not isinstance(value["home_ref"], str)
         or not re.fullmatch(r"home:[a-f0-9]{32}", value["home_ref"])
         or not isinstance(value["human_ref"], str)
@@ -205,6 +210,33 @@ def selection(value):
         roots.add(component["root"])
     if set(runtime["pythonpath"]) != roots:
         fail("conversation_component_roots_required")
+    return value
+
+
+def prepare_intent(name, plan_digest, settings):
+    """Derive stable app/Home references before the native identity exists.
+
+    Only the explicit own pair/runtime/profile settings enter this intent.
+    There is no native identity placeholder, credential, account or publication.
+    """
+    static = {'human_ref', 'origin', 'label', 'human_id', 'chat_id', 'topic_id',
+              'port', 'runtime', 'execution'}
+    if not isinstance(settings, dict) or set(settings) != static:
+        fail('conversation_selection_required')
+    value = dict(settings, schema=INTENT_SCHEMA, name=name, plan_digest=plan_digest,
+        home_ref='home:'+uuid.uuid5(RESOURCE_NAMESPACE, 'home:'+str(plan_digest)).hex,
+        application_id=str(uuid.uuid5(RESOURCE_NAMESPACE, 'application:'+str(plan_digest))))
+    return selection(value, unresolved=True)
+
+
+def resolve_request(value, being_ref):
+    """Bind the exact approved intent to the actual admitted native identity."""
+    if isinstance(value, dict) and value.get('schema') == INTENT_SCHEMA:
+        selection(value, unresolved=True)
+        return selection({**value, 'schema': SCHEMA, 'being_ref': being_ref})
+    selection(value)
+    if value['being_ref'] != being_ref:
+        fail('conversation_actual_identity_required')
     return value
 
 
@@ -907,6 +939,7 @@ PUBLIC_CODES = frozenset(
         "conversation_native_engine_unconfirmed",
         "conversation_anonymous_access_not_denied",
         "conversation_actual_home_pairing_required",
+        "conversation_actual_identity_required",
         "conversation_component_capacity",
         "conversation_component_changed",
         "conversation_component_inventory_changed",

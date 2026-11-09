@@ -49,6 +49,33 @@ def request():
     }
 
 
+def test_preidentity_intent_has_stable_resource_ids_without_placeholder_identity():
+    value=request()
+    settings={key:value[key] for key in ('human_ref','origin','label','human_id',
+        'chat_id','topic_id','port','runtime','execution')}
+    intent=conversation.prepare_intent(value['name'],value['plan_digest'],settings)
+    assert 'being_ref' not in intent
+    assert intent==conversation.prepare_intent(value['name'],value['plan_digest'],settings)
+    other=conversation.prepare_intent(value['name'],'d'*64,settings)
+    assert other['home_ref']!=intent['home_ref']
+    assert other['application_id']!=intent['application_id']
+    resolved=conversation.resolve_request(intent,value['being_ref'])
+    assert resolved['schema']==conversation.SCHEMA
+    assert resolved['being_ref']==value['being_ref']
+    assert resolved['home_ref']==intent['home_ref']
+    assert resolved['human_ref']==value['human_ref']
+    assert 'being_ref' not in intent  # Resolving never rewrites the original intent.
+    with unittest.TestCase().assertRaises(conversation.ConversationError):
+        conversation.Bootstrap(intent)  # A guest never accepts an unresolved intent.
+    for invalid in ({**settings,'being_ref':value['being_ref']},
+                    {**settings,'origin':'http://private.invalid'},
+                    {**settings,'human_id':0}):
+        with unittest.TestCase().assertRaises(conversation.ConversationError):
+            conversation.prepare_intent(value['name'],value['plan_digest'],invalid)
+    with unittest.TestCase().assertRaises(conversation.ConversationError):
+        conversation.resolve_request(value,'dm:being:v1:'+'c'*43)
+
+
 class Fixture(conversation.Bootstrap):
     def __init__(self, *, lost_ack=False, effect=True):
         super().__init__(request())

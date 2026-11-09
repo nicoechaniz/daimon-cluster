@@ -61,6 +61,60 @@ def test_signed_companion_identity_registers_once_without_keys_sessions_or_runti
     repeated=register_identity(config_path,row,public['authority'],previous_source_digest='lost-ack')
     assert repeated['status']=='unchanged' and repeated['revision']==result['revision']
     assert source.read_bytes()==retained and json.loads(source.read_bytes())['web'][0]['authority_file']==str(legacy)
+    from unittest.mock import patch
+    from clusterctl.homes.host import register_companion
+    from clusterctl.homes.sessions import Sessions
+    from clusterctl.onboarding_conversation import prepare_intent, resolve_request
+    from clusterctl.onboarding import digest
+    from tests.test_onboarding_conversation import request as conversation_request
+    settings=conversation_request()
+    settings={key:settings[key] for key in ('human_ref','origin','label','human_id',
+        'chat_id','topic_id','port','runtime','execution')}
+    settings.update(human_ref=row['human_ref'],label=row['label'])
+    request=resolve_request(prepare_intent(plan['name'],digest(plan),settings),row['being_ref'])
+    initial_digest=sha(config_path.read_bytes())
+    # Invalid/occupied origins are refused before issuing any resource keys.
+    for vpn in ('http://invalid.example','https://one.example'):
+        with pytest.raises(ValueError):
+            register_companion(config_path,request,public,human_name=row['human_name'],
+                vpn_url=vpn,previous_digest=initial_digest)
+    assert not (gateway/'companion-registrations').exists()
+    assert not (gateway/'keys').exists()
+    # Lose the owner-registration step after Home config/keys were committed.
+    # The next invocation recovers those actual effects with the same keys.
+    with patch.object(Sessions,'register_owner',side_effect=RuntimeError('lost step')):
+        with pytest.raises(RuntimeError,match='lost step'):
+            register_companion(config_path,request,public,human_name=row['human_name'],
+                vpn_url='https://private-companion.example',previous_digest=initial_digest)
+    preserved=files(gateway/'keys')
+    prepared=files(gateway/'companion-registrations')
+    result=register_companion(config_path,request,public,human_name=row['human_name'],
+        vpn_url='https://private-companion.example',previous_digest=initial_digest)
+    assert result['status']=='home-configured' and result['receiving_state']=='unobserved'
+    assert result['home_ref']==request['home_ref']
+    assert files(gateway/'keys')==preserved
+    assert files(gateway/'companion-registrations')==prepared
+    assert source.read_bytes()==retained and files(ceremony.root)==native_before
+    current=json.loads(config_path.read_bytes())
+    assert current['homes']['one']==config['homes']['one']
+    home=current['homes'][request['home_ref']]
+    from pathlib import Path
+    assert all(Path(home[key]).read_text().strip() not in json.dumps(result)
+        for key in ('owner_token_file','gateway_token_file'))
+    import subprocess
+    import sys
+    row_file=gateway/'operator-input.json'
+    proof_file=gateway/'operator-public-identity.json'
+    write(row_file,json.dumps(dict(request=request,human_name=row['human_name'],
+        vpn_url='https://private-companion.example')).encode())
+    write(proof_file,json.dumps(public).encode())
+    cli=subprocess.run([sys.executable,'-m','clusterctl.homes.host','register-companion',
+        '--config',str(config_path),'--reference',row['being_ref'],
+        '--row',str(row_file),'--authority',str(proof_file),
+        '--previous-digest',initial_digest],capture_output=True,text=True,timeout=15)
+    assert cli.returncode==0,cli.stderr
+    assert json.loads(cli.stdout)==result
+    assert files(gateway/'keys')==preserved
 
 
 def test_unverified_companion_identity_never_changes_selected_source(tmp_path):

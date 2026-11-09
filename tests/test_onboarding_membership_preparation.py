@@ -1,4 +1,5 @@
 """Real signed fixtures exercise a strictly read-only owner metadata route."""
+from contextlib import closing
 import json
 import sqlite3
 import uuid
@@ -55,7 +56,7 @@ def test_private_governance_is_refused_instead_of_silently_dropped(group_source)
     source, bundle, tribe = selected(group_source)
     database = source.root/bundle['relationships']['store_filename']
     # Deliberate fixture corruption: this is not a native authoring operation.
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         row = connection.execute('SELECT rowid,event_json FROM events').fetchone()
         event = json.loads(row[1])
         event['sensitivity'] = 'private'

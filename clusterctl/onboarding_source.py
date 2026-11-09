@@ -18,7 +18,7 @@ from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from . import being_seed, onboarding_peer, onboarding_release
 from .onboarding import OnboardingError, digest, private_directory
@@ -81,11 +81,13 @@ class Source:
             raise OnboardingError('same_being_source_body_mismatch')
         return operator
 
-    def _load(self, *, signed: bool, relationship_authorities: dict | None = None):
+    def _load(self, *, signed: bool, relationship_authorities: dict | None = None,
+              catalog_mode: Literal['validate', 'migrate'] = 'validate'):
         from daimon_matrix import daemon, native_egress, runtime
         def clock():
             return time.time_ns() // 1_000_000
-        options: dict[str, Any] = ({'egress_factory': daemon._visibility_factory(self.visibility, clock=clock)} if signed else
+        options: dict[str, Any] = ({'egress_factory': daemon._visibility_factory(self.visibility,
+            clock=clock, catalog_mode=catalog_mode)} if signed else
                                   {'egress': native_egress.closed_visibility(clock=clock, catalog_mode='migrate')})
         bundle = being_seed._read(self.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
         authorities = onboarding_peer.approved_group_authorities(self.root, self.outputs / 'tribe', bundle)
@@ -102,6 +104,33 @@ class Source:
         if self.body_reader is not None:
             options['body_reader'] = self.body_reader
         return runtime.load_runtime(self.root, 'runtime.json', self._reader, clock=clock, **options)
+
+    def migrate_visibility(self, request: dict, *, deadline_ns: int) -> dict:
+        """Migrate an existing Source group before selecting its successor SDK.
+
+        Use the same target migration contract and native writer. In particular,
+        loading a signed installation in migration mode must retain its proof
+        key; a closed placeholder cannot authenticate a published V2 catalog.
+        """
+        from .onboarding_receiving_update import source_bootstrap_group
+        onboarding_peer.visibility_migration_request(request)
+        def budget():
+            if time.monotonic_ns() >= deadline_ns:
+                raise OnboardingError('onboarding_observation_deadline_expired')
+        budget()
+        with self.writer():
+            bundle = being_seed._read(self.root / 'runtime.json', limit=being_seed.MAX_SELECTION)
+            if (digest(bundle) != request['runtime_sha256']
+                    or bundle['local_origin'] != request['origin']):
+                raise OnboardingError('native_code_update_migration_binding_changed')
+            group = source_bootstrap_group(self, bundle)
+            version = onboarding_peer.migrate_published_catalogs(
+                lambda: self._load(signed=True, catalog_mode='migrate'), group, request['group'],
+                snapshot=lambda: source_bootstrap_group(self, being_seed._read(
+                    self.root / 'runtime.json', limit=being_seed.MAX_SELECTION)), budget=budget)
+            return dict(schema='cluster-native-visibility-migrated/v1',
+                operation_id=request['operation_id'], runtime_sha256=request['runtime_sha256'],
+                group=request['group'], catalog_schema_version=version)
 
     @contextmanager
     def writer(self):
@@ -584,6 +613,8 @@ def main(argv=None) -> int:
     parser.add_argument('--native-tooling-json')
     parser.add_argument('--observation-deadline-ns', type=int)
     parser.add_argument('--expected-config-sha256')
+    parser.add_argument('--visibility-migration', type=Path,
+        help='Use the retained published-group migration request; - reads bounded stdin')
     parser.add_argument('--receiving-lifecycle')
     parser.add_argument('--prepare-admission-lifecycle', type=Path)
     parser.add_argument('--lifecycle-action', choices=('quiesce', 'preserve', 'derive', 'start', 'quiescence'))
@@ -615,6 +646,7 @@ def main(argv=None) -> int:
         lifecycle = args.receiving_lifecycle is not None
         preparing = args.prepare_admission_lifecycle is not None
         grouping = args.group_request is not None
+        migrating = args.visibility_migration is not None
         supplemental = (args.remaining_execution_fd, args.remaining_execution_sha256,
             args.remaining_owner_name, args.remaining_parent_pid)
         if any(value is not None for value in supplemental) and (
@@ -627,27 +659,28 @@ def main(argv=None) -> int:
         if args.native_tooling_json is not None and (not args.qualified_identity
                 or len(args.native_tooling_json.encode()) > 65536):
             raise OnboardingError('receiving_native_tooling_recipe_required')
-        receiving = args.owner_status or args.qualified_identity or controlling or lifecycle or grouping or preparing
-        if (sum((args.observe, args.owner_status, args.qualified_identity, controlling, lifecycle, grouping, preparing)) > 1
+        receiving = args.owner_status or args.qualified_identity or controlling or lifecycle or grouping or preparing or migrating
+        if (sum((args.observe, args.owner_status, args.qualified_identity, controlling, lifecycle, grouping, preparing, migrating)) > 1
                 or (lifecycle or preparing or args.group_session) != (args.operation_journal is not None)
                 or args.group_session and (not grouping or args.group_request != Path('-'))
                 or args.lifecycle_action is not None and not lifecycle
                 or args.admission_continuation is not None and (
                     not lifecycle or args.lifecycle_action != 'start' or args.admission_continuation != Path('-'))
                 or (lifecycle or preparing) and (args.ready_fd is not None or args.require_loaded)
+                or migrating and (args.ready_fd is not None or args.require_loaded)
                 or args.qualified_identity != (args.identity_expires_at_ms is not None)
                 or args.identity_expires_at_ms is not None and not 0 < args.identity_expires_at_ms < 2**53
                 or (args.owner_status or args.qualified_identity or grouping) and (args.ready_fd is not None or args.require_loaded)
                 or args.observation_deadline_ns is not None and not receiving):
             raise OnboardingError('invalid_receiving_control_request')
-        if (args.owner_status or args.qualified_identity or lifecycle or grouping or preparing) and args.observation_deadline_ns is None:
+        if (args.owner_status or args.qualified_identity or lifecycle or grouping or preparing or migrating) and args.observation_deadline_ns is None:
             args.observation_deadline_ns = time.monotonic_ns() + 30_000_000_000
         def accept_deadline():
             if args.observation_deadline_ns is not None and time.monotonic_ns() >= args.observation_deadline_ns:
                 raise OnboardingError('onboarding_observation_deadline_expired')
         if args.observation_deadline_ns is not None and not 0 < args.observation_deadline_ns - time.monotonic_ns() <= 60_000_000_000:
             raise OnboardingError('onboarding_observation_deadline_expired')
-        if grouping:
+        if grouping or migrating:
             from .onboarding_group_session import hard_deadline
             probe_scope.enter_context(hard_deadline(args.observation_deadline_ns))
         if (controlling and (args.observe or args.require_loaded or args.ready_fd is not None)
@@ -679,6 +712,18 @@ def main(argv=None) -> int:
         accept_deadline()
         source = Source(settings, code=code, code_uid=args.code_owner, code_digest=args.code_digest,
                         qualified_startup=startup, body_reader=body_reader)
+        if migrating:
+            if args.visibility_migration == Path('-'):
+                raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1)
+                if len(raw) > being_seed.MAX_SELECTION:
+                    raise OnboardingError('native_code_update_migration_binding_required')
+                request = json.loads(raw)
+            else:
+                request = being_seed._read(args.visibility_migration, limit=being_seed.MAX_SELECTION)
+            result = source.migrate_visibility(request, deadline_ns=args.observation_deadline_ns)
+            accept_deadline()
+            print(json.dumps(result))
+            return 0
         if preparing:
             if args.prepare_admission_lifecycle == Path('-'):
                 raw = sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1)

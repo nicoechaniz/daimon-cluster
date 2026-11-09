@@ -13,6 +13,7 @@ import os
 import sqlite3
 import time
 import types
+import uuid
 from contextlib import closing
 from pathlib import Path
 
@@ -22,6 +23,50 @@ from .onboarding import OnboardingError, digest, private_directory
 TOOL_SHA256 = 'd1f67e40bbc8c08eff0e0f96354e107d2f8219b258c661b81b9e98a60565c03c'
 TOOL_MODULE = 'onboarding_peer_native.py'
 TOOL_COMMIT = '63968130294c4db6eac51a94800a837f2c10bad5'
+
+
+def visibility_migration_request(request: dict) -> None:
+    """Keep one request contract for admitted targets and native Source."""
+    try:
+        if (not isinstance(request, dict)
+                or set(request) != {'operation_id', 'runtime_sha256', 'origin', 'group'}
+                or str(uuid.UUID(request['operation_id'])) != request['operation_id']
+                or not isinstance(request['group'], dict)):
+            raise ValueError
+    except (ValueError, TypeError, AttributeError, KeyError):
+        raise OnboardingError('native_code_update_migration_binding_required') from None
+
+
+def migrate_published_catalogs(load_hosted, group: dict, expected: dict, *, snapshot, budget) -> int:
+    """Use both original proof keys; finish preflight before any catalog DDL.
+
+    The caller holds its existing native writer and has bound the runtime/origin.
+    This neither publishes visibility nor changes an installation or policy.
+    """
+    from daimon_matrix.chat_host import application_view
+    from daimon_matrix.native_egress import VISIBILITY_SCHEMA_VERSION
+    if (expected.get('outbound_release') is not True
+            or any(group.get(key) != expected.get(key) for key in (
+                'selected', 'application_sha256', 'publication_sha256', 'installation_sha256'))):
+        raise OnboardingError('native_code_update_migration_binding_changed')
+    budget()
+    hosted = load_hosted()
+    view = application_view(hosted, Path(group['selected']['application']),
+        Path(group['selected']['visibility']), catalog_mode='migrate')
+    if view.egress.policy_digest != expected.get('policy_sha256'):
+        raise OnboardingError('native_code_update_migration_binding_changed')
+    for controller in (hosted.egress, view.egress):
+        for catalog_id, catalog in controller._catalogs.items():
+            budget()
+            controller._preflight_migration(catalog.path, catalog_id)
+    for controller in (hosted.egress, view.egress):
+        budget()
+        controller.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+        controller.validate_registered_catalogs()
+    if snapshot() != group:
+        raise OnboardingError('native_code_update_migration_binding_changed')
+    budget()
+    return VISIBILITY_SCHEMA_VERSION
 
 
 def native(code: Path, *, uid: int = 0):

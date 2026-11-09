@@ -183,6 +183,26 @@ retained and an unresolved reader operation is continued rather than replaced.
 A separate manual reader round is for an already completed code-only update,
 not an extra step after a successful composed command.
 
+Published-group SDK updates must migrate the existing base and application
+catalogs between quiescence and successor selection. Reuse the frozen
+`cluster-native-visibility-migrated/v1` request/receipt and the original proof
+keys; ordinary daemon startup validates catalogs and does not migrate them.
+Both Target and Source now expose this same migration primitive. Source accepts
+`--visibility-migration PATH` (or bounded stdin with `-`) under its existing
+native writer, qualified SDK and finite observation deadline. Do not substitute
+a closed visibility controller for a signed installation.
+
+The composed managed-job path already includes this step. Qualified Source
+preservation now invokes it automatically before selecting the successor and
+retains the receipt in the existing operation journal. Prepare the controller
+and successor with the same SDK so preservation can read the migrated catalogs;
+the maintained worker checks this before preparing lifecycle effects.
+Composition for the original Source/legacy receiving profiles remains
+unfinished; these primitives alone are not a complete original-cohort update. When a qualified
+maintenance helper verifies an existing body, pass that body's selected code
+and owner to the existing-base verifier. The helper's own directory is not the
+body's SDK selection. Identity signatures and all existing bindings still apply.
+
 `qualified-local-projection` proves the authenticated current reader vector.
 A signed receiving-copy receipt proves native intake; an attributed answer tied
 to its original parent proves a receiving response. Reuse existing valid real

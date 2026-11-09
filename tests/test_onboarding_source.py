@@ -2,13 +2,17 @@
 import hashlib
 import os
 import threading
+from pathlib import Path
 
 import pytest
+from daimon_matrix import native_egress
 
 from clusterctl import onboarding_peer
 from clusterctl.onboarding import OnboardingError, digest
 from clusterctl.onboarding_source import Source
+from tests import test_onboarding_group_authorities as group_fixtures
 pytest_plugins = ['tests.test_onboarding_peer']
+group_source = group_fixtures.group_source
 
 
 @pytest.mark.parametrize('observe', [False, True])
@@ -40,10 +44,113 @@ def test_source_group_construction_does_not_invoke_unrelated_pair_ceremony(tmp_p
     assert calls == [True]  # Explicit ceremony still has the exact existing guard.
 
 
+def test_source_migration_cli_refuses_unqualified_code_before_owner_state(tmp_path, monkeypatch, capsys):
+    from clusterctl import onboarding_source
+    monkeypatch.setattr(onboarding_source, 'Source', lambda *a, **k:
+        pytest.fail('unqualified migration opened owner state'))
+    assert onboarding_source.main(['--config', str(tmp_path/'unread.json'),
+        '--visibility-migration', '-']) == 1
+    assert capsys.readouterr().out == '{"error": "native_onboarding_source_refused"}\n'
+
+
+@pytest.mark.skipif(native_egress.VISIBILITY_SCHEMA_VERSION < 2,
+    reason='Schema1 producer stays pinned; explicit successor qualification runs schema2')
+def test_source_migrates_legacy_signed_catalogs_before_ordinary_views(group_source, tmp_path, monkeypatch):
+    """Reproduce the original-three failure with real keys and native catalogs."""
+    import copy
+    import json
+    import socket
+    import sqlite3
+    import time
+    from contextlib import closing
+    from daimon_matrix.chat_host import application_view
+    from daimon_matrix.messaging_config import config_digest
+    from daimon_matrix.runtime import RuntimeError as MatrixRuntimeError
+    from clusterctl.onboarding_receiving_update import source_bootstrap_group
+    from tests.test_onboarding_group_publication import initial_publication
+    monkeypatch.setattr(socket, 'create_connection', lambda *_a, **_k:
+        pytest.fail('offline catalog migration attempted a transport'))
+    owner, group, _journal, initial, _base = initial_publication(group_source, 'source')
+    owner.group_publication(initial, authority_closure={})
+    identifier = initial['operation_id']
+    def submit(step, action, params):
+        return owner.group_publication(dict(operation_id=identifier, step=step,
+            action=action, params=params), authority_closure={})
+    destination = dict(bot_id=1, chat_id=-123, topic_id=None, representation='plain-json/v2')
+    disclosure = submit('disclosure', 'visibility-disclosure', dict(
+        approved_destination=destination, issued_at_ms=time.time_ns()//1_000_000))['disclosure']
+    accepted = submit('accept', 'visibility-accept', dict(approved_destination=destination,
+        disclosures=[disclosure]))['bindings'][0]['binding']
+    visibility = group/'visibility'
+    visibility.mkdir(mode=0o700)
+    token, proof = b'1:SYNTHETIC_NOT_A_TOKEN', os.urandom(32)
+    for name, raw in (('telegram.token', token), ('proof.key', proof)):
+        path = visibility/name
+        path.write_bytes(raw)
+        path.chmod(0o600)
+    submit('visibility', 'visibility-publish', dict(disclosure=disclosure, bindings=[accepted],
+        expected_installation_sha256=None, initial_configuration=dict(destination=destination,
+            secrets=dict(telegram_token_file='telegram.token',
+                telegram_token_sha256=hashlib.sha256(token).hexdigest(), proof_key_file='proof.key'),
+            telegram_qualification=dict(schema='dm.messaging.telegram-qualification/v1',
+                qualified_at_ms=disclosure['issued_at_ms'], token_sha256=hashlib.sha256(token).hexdigest(),
+                get_me_bot_id=1, probe_chat_id=-123, probe_topic_id=None,
+                probe_message_id=1, probe_text_sha256='b'*64))))
+    submit('select', 'selection', dict(expected_selection_sha256=None))
+    target = group_source[1]
+    owner.settings['native_visibility'] = str(signed_visibility(target, tmp_path/'base-visibility'))
+    owner.visibility = Path(owner.settings['native_visibility'])
+    bundle = target.document_bundle()
+    frozen = source_bootstrap_group(owner, bundle)
+    installation = json.loads((visibility/'installation.json').read_bytes())
+    selected = {key: frozen[key] for key in ('selected', 'application_sha256',
+        'publication_sha256', 'installation_sha256')}
+    selected.update(outbound_release=True, policy_sha256=config_digest(installation['document']['policy']))
+    request = dict(operation_id='eea1992e-b6a0-457d-9ef7-4ed7e71446c7',
+        runtime_sha256=digest(bundle), origin=bundle['local_origin'], group=selected)
+    original = {p:p.read_bytes() for p in (owner.root/'runtime.json', owner.root/'custody.json',
+        owner.visibility, owner.visibility.parent/'proof.key', visibility/'installation.json', visibility/'proof.key')}
+    hosted = owner._load(signed=True, catalog_mode='migrate')
+    view = application_view(hosted, group/'application', visibility/'installation.json', catalog_mode='migrate')
+    catalogs = {c.path for controller in (hosted.egress, view.egress) for c in controller._catalogs.values()}
+    retained = {}
+    for path in catalogs:
+        with closing(sqlite3.connect(path)) as db, db:
+            retained[path] = list(db.execute('SELECT operation_id,record FROM echo_v2_obligations'))
+            db.execute('DROP INDEX mandatory_egress_pending')
+            db.execute('ALTER TABLE mandatory_egress_operations RENAME TO migration_fixture')
+            db.execute(native_egress.LEGACY_OPERATION_TABLE_SQL)
+            columns = ','.join(r[1] for r in db.execute('PRAGMA table_info(mandatory_egress_operations)'))
+            db.execute(f'INSERT INTO mandatory_egress_operations({columns}) SELECT {columns} FROM migration_fixture')
+            db.execute('DROP TABLE migration_fixture')
+    with pytest.raises((MatrixRuntimeError, native_egress.NativeEgressError)):
+        owner.views()
+    another = Source(dict(owner.settings), code=owner.code, code_uid=owner.code_uid)
+    with owner.writer(), pytest.raises(BlockingIOError):
+        another.migrate_visibility(request, deadline_ns=time.monotonic_ns()+10_000_000_000)
+    changed = copy.deepcopy(request)
+    changed['group']['publication_sha256'] = 'f'*64
+    with monkeypatch.context() as guard:
+        guard.setattr(owner, '_reader', lambda: pytest.fail('wrong group opened custody'))
+        with pytest.raises(OnboardingError, match='migration_binding_changed'):
+            owner.migrate_visibility(changed, deadline_ns=time.monotonic_ns()+10_000_000_000)
+    result = owner.migrate_visibility(request, deadline_ns=time.monotonic_ns()+30_000_000_000)
+    assert result['catalog_schema_version'] == 2 and result['group'] == selected
+    assert owner.migrate_visibility(request, deadline_ns=time.monotonic_ns()+30_000_000_000) == result
+    assert len(owner.views()) == 2
+    assert {p:p.read_bytes() for p in original} == original
+    for path in catalogs:
+        with closing(sqlite3.connect(path)) as db:
+            assert list(db.execute('SELECT operation_id,record FROM echo_v2_obligations')) == retained[path]
+            assert 'retirement_json' in {r[1] for r in db.execute('PRAGMA table_info(mandatory_egress_operations)')}
+
+
 def signed_visibility(target, directory):
     from daimon_matrix import canonical, daemon, native_egress, runtime
     from daimon_matrix.messaging_config import config_digest, create_binding
-    tool = onboarding_peer.native(target.code, uid=target.code_uid)
+    import time
+    def clock():
+        return time.time_ns() // 1_000_000
     body = onboarding_peer.loaded(target)
     being = target.document_bundle()['manifest']['being_ref']
     scope = dict(mode='all-inter-daimon-communications', channels=[dict(
@@ -51,7 +158,7 @@ def signed_visibility(target, directory):
         peer_being_ref=being, bootstrap_policy={}, relationship_disclosure={})],
         projected_content='complete-plaintext-content-and-metadata')
     destination = dict(bot_id=123, chat_id=-100123, topic_id=None, representation='plain-json/v2')
-    disclosure = dict(schema='dm.messaging.visibility-disclosure/v1', issued_at_ms=tool.now(),
+    disclosure = dict(schema='dm.messaging.visibility-disclosure/v1', issued_at_ms=clock(),
         destination=destination, scope=scope, scope_sha256=config_digest(scope), participants=[being],
         risk='all-inter-daimon-communication-will-be-posted-as-plaintext-to-the-fixed-telegram-destination')
     acceptance = dict(schema='dm.messaging.visibility-acceptance-set/v1', disclosure_sha256=config_digest(disclosure),
@@ -69,14 +176,14 @@ def signed_visibility(target, directory):
             **destination, acceptance_digest=config_digest(acceptance), proof_key_id='sha256:' + hashlib.sha256(proof).hexdigest()),
         secrets=dict(telegram_token_file='telegram.token', telegram_token_sha256=hashlib.sha256(token).hexdigest(),
             proof_key_file='proof.key'),
-        telegram_qualification=dict(schema='dm.messaging.telegram-qualification/v1', qualified_at_ms=tool.now(),
+        telegram_qualification=dict(schema='dm.messaging.telegram-qualification/v1', qualified_at_ms=clock(),
             token_sha256=hashlib.sha256(token).hexdigest(), get_me_bot_id=123, probe_chat_id=-100123,
             probe_topic_id=None, probe_message_id=1, probe_text_sha256='b' * 64))
     path = directory / 'installation.json'
     path.write_bytes(canonical.canonical_bytes(dict(document=document, binding=create_binding(body, document))))
     path.chmod(0o600)
-    adopted = runtime.load_runtime(target.package / 'runtime', 'runtime.json', target._reader, clock=tool.now,
-        egress_factory=daemon._visibility_factory(path, clock=tool.now, catalog_mode='migrate'))
+    adopted = runtime.load_runtime(target.package / 'runtime', 'runtime.json', target._reader, clock=clock,
+        egress_factory=daemon._visibility_factory(path, clock=clock, catalog_mode='migrate'))
     adopted.egress.adopt_closed_visibility_catalogs(version=native_egress.VISIBILITY_SCHEMA_VERSION)
     return path
 

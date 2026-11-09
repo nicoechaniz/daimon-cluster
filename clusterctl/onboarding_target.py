@@ -16,11 +16,10 @@ import socket
 import struct
 import sys
 import time
-import uuid
 from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from . import being_seed, onboarding_code_successor, onboarding_release, onboarding_sdk
 from .onboarding import OnboardingError, digest, private_directory, refusal_diagnostic, validate_plan
@@ -70,10 +69,13 @@ class Target:
         self.home = private_directory(home)
         self.plan = validate_plan(plan)
         self.genesis = genesis
+        # An external maintenance helper is not the selected body's SDK. Keep
+        # the explicit code context for every historical-base verification.
+        self._existing_options: dict[str, Any] = {} if code is None else dict(code=code, code_uid=code_uid)
         self.existing = genesis.get("schema") == "cluster-onboarding-existing-base/v1"
         if self.existing:
             from .onboarding_existing import validate_base
-            validate_base(genesis, self.plan)
+            validate_base(genesis, self.plan, **self._existing_options)
         self.root = home / ".local/state/daimon-onboarding" / plan["name"] / "matrix"
         self.preparation = self.root / "preparation"
         self.package = self.root / "package"
@@ -101,13 +103,14 @@ class Target:
         from daimon_matrix import operator_first_embodiment as first, operator_rebirth
         if self.existing:
             from .onboarding_existing import public_base_bundle
-            return operator_rebirth.authority_from_runtime_bundle(public_base_bundle(self.genesis, self.plan))
+            return operator_rebirth.authority_from_runtime_bundle(public_base_bundle(
+                self.genesis, self.plan, **self._existing_options))
         return first._initial_base(self.genesis)
 
     def _profile(self) -> dict:
         if self.existing:
             from .onboarding_existing import target_profile
-            return target_profile(self.genesis, self.plan)
+            return target_profile(self.genesis, self.plan, **self._existing_options)
         return profile(self.plan)
 
     def _activation_authority(self, request: dict, activation: dict):
@@ -203,57 +206,32 @@ class Target:
         The caller freezes the already published group, not a new installation.
         Exact retry preserves originals and performs no publication or transport.
         """
-        from daimon_matrix.chat_host import application_view
-        from daimon_matrix.native_egress import VISIBILITY_SCHEMA_VERSION
-        from .onboarding_peer import approved_group_authorities
+        from .onboarding_peer import (approved_group_authorities, migrate_published_catalogs,
+            visibility_migration_request)
         from .onboarding_group_admission import load_owner_runtime
         from .onboarding_receiving_update import bootstrap_group
 
         def budget():
             if time.monotonic_ns() >= deadline_ns:
                 raise OnboardingError('onboarding_observation_deadline_expired')
-        try:
-            if (not isinstance(request, dict)
-                    or set(request) != {'operation_id', 'runtime_sha256', 'origin', 'group'}
-                    or str(uuid.UUID(request['operation_id'])) != request['operation_id']
-                    or not isinstance(request['group'], dict)):
-                raise ValueError
-        except (ValueError, TypeError, AttributeError, KeyError):
-            raise OnboardingError('native_code_update_migration_binding_required') from None
+        visibility_migration_request(request)
         budget()
         with being_seed._locked(self.root), self._runtime_writer():
             bundle = self.document_bundle()
             group = bootstrap_group(self, bundle)
             expected = request['group']
             if (digest(bundle) != request['runtime_sha256']
-                    or bundle['local_origin'] != request['origin']
-                    or expected.get('outbound_release') is not True
-                    or any(group.get(key) != expected.get(key) for key in (
-                        'selected', 'application_sha256', 'publication_sha256', 'installation_sha256'))):
+                    or bundle['local_origin'] != request['origin']):
                 raise OnboardingError('native_code_update_migration_binding_changed')
             runtime_root = self.package / 'runtime'
             authorities = approved_group_authorities(runtime_root, self.root / 'tribe', bundle)
-            hosted = load_owner_runtime(runtime_root, self._reader, authorities=authorities,
-                qualified_startup=self.qualified_startup)
-            view = application_view(hosted, Path(group['selected']['application']),
-                Path(group['selected']['visibility']), catalog_mode='migrate')
-            if view.egress.policy_digest != expected['policy_sha256']:
-                raise OnboardingError('native_code_update_migration_binding_changed')
-            # Preflight both existing composers before the first catalog DDL.
-            for controller in (hosted.egress, view.egress):
-                for catalog_id, catalog in controller._catalogs.items():
-                    budget()
-                    controller._preflight_migration(catalog.path, catalog_id)
-            for controller in (hosted.egress, view.egress):
-                budget()
-                controller.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
-                controller.validate_registered_catalogs()
-            if bootstrap_group(self, self.document_bundle()) != group:
-                raise OnboardingError('native_code_update_migration_binding_changed')
-            budget()
+            version = migrate_published_catalogs(lambda: load_owner_runtime(
+                runtime_root, self._reader, authorities=authorities,
+                qualified_startup=self.qualified_startup), group, expected,
+                snapshot=lambda: bootstrap_group(self, self.document_bundle()), budget=budget)
             return dict(schema='cluster-native-visibility-migrated/v1',
                 operation_id=request['operation_id'], runtime_sha256=request['runtime_sha256'],
-                group=expected, catalog_schema_version=VISIBILITY_SCHEMA_VERSION)
+                group=expected, catalog_schema_version=version)
 
     def prepare(self) -> dict:
         from daimon_matrix import canonical, keystore, operator_first_embodiment as first
@@ -355,7 +333,8 @@ class Target:
                     from daimon_matrix import operator_rebirth
                     from .onboarding_existing import public_base_bundle
                     operator_rebirth.activate_target_runtime(self.package, self.preparation,
-                        prepared, request, activation, public_base_bundle(self.genesis, self.plan), self._reader)
+                        prepared, request, activation, public_base_bundle(
+                            self.genesis, self.plan, **self._existing_options), self._reader)
                 else:
                     first.activate_runtime(self.package, self.genesis, self.preparation,
                                            prepared, request, activation, self._reader)

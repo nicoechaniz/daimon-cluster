@@ -31,12 +31,14 @@ def base_packet(
     return value
 
 
-def validate_base(value: dict, plan: dict) -> dict:
+def validate_base(value: dict, plan: dict, *, code: Path | None = None,
+                  code_uid: int | None = None) -> dict:
     from daimon_matrix import operator_rebirth
 
     try:
         if (
-            not isinstance(value, dict)
+            (code is None) != (code_uid is None)
+            or not isinstance(value, dict)
             or set(value)
             != {"schema", "plan_digest", "expected_being_ref", "identity", "routes"}
             or value["schema"] != BASE
@@ -44,7 +46,8 @@ def validate_base(value: dict, plan: dict) -> dict:
         ):
             raise ValueError("binding")
         authority = onboarding_peer.native(
-            Path(__file__).resolve().parents[1], uid=Path(__file__).stat().st_uid
+            Path(__file__).resolve().parents[1] if code is None else code,
+            uid=Path(__file__).stat().st_uid if code_uid is None else code_uid
         ).verify_identity(value["identity"])
         if authority.state.being_ref != value["expected_being_ref"]:
             raise ValueError("existing being")
@@ -66,16 +69,18 @@ def validate_base(value: dict, plan: dict) -> dict:
         raise OnboardingError("existing_onboarding_base_rejected") from None
 
 
-def target_profile(value: dict, plan: dict) -> dict:
-    validate_base(value, plan)
+def target_profile(value: dict, plan: dict, *, code: Path | None = None,
+                   code_uid: int | None = None) -> dict:
+    validate_base(value, plan, code=code, code_uid=code_uid)
     return {**profile(plan), "targets": copy.deepcopy(value["routes"])}
 
 
-def public_base_bundle(value: dict, plan: dict) -> dict:
+def public_base_bundle(value: dict, plan: dict, *, code: Path | None = None,
+                       code_uid: int | None = None) -> dict:
     """A keyless native base projection; never copy a source runtime file."""
     from daimon_matrix import operator_rebirth
 
-    validate_base(value, plan)
+    validate_base(value, plan, code=code, code_uid=code_uid)
     document = value["identity"]["document"]
     origin = document["origin"]
     bundle = dict(

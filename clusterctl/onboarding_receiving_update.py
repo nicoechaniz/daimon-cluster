@@ -2682,6 +2682,54 @@ class SourceBootstrapController:
                 self._record('quiesced', result)
                 return result
 
+    def _migrate_catalogs(self, frozen: dict, candidate: dict, *, deadline_ns: int | None) -> None:
+        """Run the selected SDK's migration before selecting its entrypoint.
+
+        Called under the existing journal/unit locks after observed quiescence,
+        before taking native locks. The successor CLI owns the native writer.
+        A lost response repeats the same idempotent migration, never publication.
+        """
+        if 'qualification' not in candidate:
+            return  # Retained unqualified bootstrap, not routine SDK maintenance.
+        group = candidate['qualification']['group']
+        if group['installation_sha256'] is None:
+            return  # Receive-only application has no published catalog to migrate.
+        installation = being_seed._read(Path(group['selected']['visibility']), limit=being_seed.MAX_SELECTION)
+        from daimon_matrix.messaging_config import config_digest
+        expected = {key: group[key] for key in (
+            'selected', 'application_sha256', 'publication_sha256', 'installation_sha256')}
+        expected.update(outbound_release=True, policy_sha256=config_digest(installation['document']['policy']))
+        request = dict(operation_id=self.operation_id, runtime_sha256=frozen['bundle_sha256'],
+            origin=frozen['predecessor']['server'], group=expected)
+        row = self._row()[0]
+        retained = (row['runtime_observation'] or {}).get('source_bootstrap', {}).get('catalogs_migrated')
+        if retained is not None:
+            result = retained
+        else:
+            deadline = time.monotonic_ns() + 30_000_000_000
+            if deadline_ns is not None:
+                deadline = min(deadline, deadline_ns)
+            self._budget(deadline)
+            try:
+                response = _run_owner([*candidate['argv'], '--visibility-migration', '-',
+                    '--observation-deadline-ns', str(deadline)], input=json.dumps(request), text=True,
+                    capture_output=True, timeout=(deadline-time.monotonic_ns())/1_000_000_000)
+                self._budget(deadline)
+                if response.returncode or len(response.stdout.encode()) > being_seed.MAX_SELECTION:
+                    raise ValueError
+                result = json.loads(response.stdout)
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                raise OnboardingError('native_code_update_migration_unconfirmed') from None
+        if (not isinstance(result, dict) or set(result) != {
+                'schema', 'operation_id', 'runtime_sha256', 'group', 'catalog_schema_version'}
+                or result['schema'] != 'cluster-native-visibility-migrated/v1'
+                or any(result[key] != value for key, value in request.items() if key != 'origin')
+                or type(result['catalog_schema_version']) is not int
+                or result['catalog_schema_version'] < 1):
+            raise OnboardingError('native_code_update_migration_binding_changed')
+        if retained is None:
+            self._record('catalogs_migrated', result)
+
     def publish(self, *, deadline_ns: int | None = None) -> dict:
         """Recover exact capability/visibility/unit publications while stopped."""
         from daimon_matrix import operator_runtime_upgrade as upgrade
@@ -2705,6 +2753,7 @@ class SourceBootstrapController:
             self._stopped(frozen, candidate, **options)
             self._visibility_current(frozen, observations)
             if frozen.get('mode', 'issue') == 'preserve':
+                self._migrate_catalogs(frozen, candidate, deadline_ns=deadline_ns)
                 from daimon_matrix.daemon import _prepare_socket
                 with upgrade._locks(self.source.root):
                     self._budget(deadline_ns)

@@ -124,7 +124,8 @@ def declared_python_paths(process):
     return result
 
 
-PUBLIC_ROOTS = (Path('/opt/daimon-app'), Path('/usr/libexec/incus'))
+PUBLIC_ROOTS = (Path('/opt/daimon-app'), Path('/usr/libexec/incus'),
+                Path('/opt/daimon-onboarding-runtime'))
 TRUSTED_UID = 0
 
 
@@ -137,7 +138,7 @@ def validate_deployments(value, units):
     total = 0
     for row in value['units'].values():
         if (not isinstance(row, dict) or set(row) != {'root', 'bind', 'source_ref', 'files'}
-                or row['bind'] not in {'cwd', 'executable'}
+                or row['bind'] not in {'cwd', 'executable', 'python-script'}
                 or not isinstance(row['source_ref'], str)
                 or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9:/#._-]{0,255}', row['source_ref']) is None
                 or not isinstance(row['root'], str) or not Path(row['root']).is_absolute()
@@ -204,6 +205,33 @@ def deployment_files(root, check):
     return files
 
 
+def python_script_entrypoint(process, image, root, files):
+    """Observe the actual interpreter's script argument, never execute source.
+
+    The remaining arguments may contain private configuration; retain none.
+    Python -c/-m and option-based script substitution are not script bindings.
+    """
+    if re.fullmatch(r'python3(?:\.\d+)?', image.name) is None:
+        raise ValueError('selected_deployment_python_interpreter_required')
+    with (process/'cmdline').open('rb') as stream:
+        raw = stream.read(4097)
+    if len(raw) > 4096:
+        raise ValueError('command_metadata_capacity')
+    argv = raw.split(b'\0')
+    index = 1
+    while index < len(argv) and argv[index] in {b'-B', b'-I', b'-S', b'-u', b'-E', b'-s'}:
+        index += 1
+    if index < len(argv) and argv[index] == b'--':
+        index += 1
+    if index >= len(argv):
+        raise ValueError('selected_deployment_python_script_changed')
+    script = Path(os.fsdecode(argv[index]))
+    if (not script.is_absolute() or '..' in script.parts or not script.is_relative_to(root)
+            or str(script.relative_to(root)) not in files):
+        raise ValueError('selected_deployment_python_script_changed')
+    return str(script.relative_to(root))
+
+
 def verify_deployment(row, process, image, hashed, check):
     root = Path(row['root'])
     if root.resolve() != root:
@@ -214,7 +242,10 @@ def verify_deployment(row, process, image, hashed, check):
             raise ValueError('selected_deployment_directory_custody')
         if parent in PUBLIC_ROOTS:
             break
-    if row['bind'] == 'cwd':
+    entrypoint = None
+    if row['bind'] == 'python-script':
+        entrypoint = python_script_entrypoint(process, image, root, row['files'])
+    elif row['bind'] == 'cwd':
         if (process/'cwd').resolve() != root:
             raise ValueError('selected_deployment_cwd_changed')
     elif not image.is_relative_to(root) or str(image.relative_to(root)) not in row['files']:
@@ -243,8 +274,11 @@ def verify_deployment(row, process, image, hashed, check):
             raise ValueError('selected_deployment_file_changed')
     if row['bind'] == 'cwd' and (process/'cwd').resolve() != root:
         raise ValueError('selected_deployment_cwd_changed')
+    if row['bind'] == 'python-script' and python_script_entrypoint(process, image, root, row['files']) != entrypoint:
+        raise ValueError('selected_deployment_python_script_changed')
     return {'state': 'verified', 'source_ref': row['source_ref'], 'bind': row['bind'],
             'files': len(row['files']), 'loaded_main_executable': row['bind'] == 'executable',
+            **({'python_entrypoint': entrypoint} if entrypoint is not None else {}),
             'meaning': 'Selected files and process association; Python imported modules, dependency authenticity and exposure remain unassessed'}
 
 
@@ -334,6 +368,12 @@ def collect(units, proc=Path('/proc'), seconds=25, include_browser_components=Fa
                     and deployments['units'][unit]['bind'] == 'cwd'
                     and (process/'cwd').resolve() != Path(deployments['units'][unit]['root'])):
                 raise ValueError('selected_deployment_cwd_changed')
+            if (deployments is not None and unit in deployments['units']
+                    and deployments['units'][unit]['bind'] == 'python-script'
+                    and python_script_entrypoint(process, Path(target),
+                        Path(deployments['units'][unit]['root']), deployments['units'][unit]['files'])
+                        != value['deployment']['python_entrypoint']):
+                raise ValueError('selected_deployment_python_script_changed')
             value['state']='observed'
         except (OSError,ValueError,KeyError,subprocess.SubprocessError) as error:
             value.update(state='unavailable',reason=str(error) if type(error) is ValueError else type(error).__name__)

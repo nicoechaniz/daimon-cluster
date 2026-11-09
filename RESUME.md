@@ -1,3 +1,20 @@
+## Daily native supervisor source binding —2026-11-09
+
+The application observer now supports an explicitly selected Python script
+entrypoint under the existing immutable public runtime root. It checks actual
+interpreter/declared script argument and complete pinned file set, rechecking
+same-PID changes without importing source or retaining private arguments. Existing
+bounds and current App manifests stay unchanged. All4 actual supervisor paths
+match the retained runtime;68 source files were derived from its verified release
+receipt. The existing daily pipeline now selects the helper and verified12deployments
+across all4, with all13observed processes preserved. The38second actual complete
+occurrence passed after refreshing stale833references from maintained834adoption
+and a later vendor-source return; original failures remain. Health incident
+resolvedrevision2; partial coverage stays openrevision5. Host Incus package
+provenance, imported modules/dependency authenticity/exposure and current browser
+applicability remain unassessed. See docs/operations/children-application-inventory.md.
+Full child goal and next-companion hold remain; preserve original jobs/services.
+
 ## Four-child receiving clients and next-companion hold —2026-11-08
 
 All4 existing children have signed/native membership and their own signed

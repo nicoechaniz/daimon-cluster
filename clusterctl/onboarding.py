@@ -39,6 +39,7 @@ REASONS = frozenset({
     "telegram_idle_required",
 })
 FACTS = frozenset({
+    "virtual_machine_verified", "vm_image_verified",
     "verified", "root_gib", "home_gib", "cold_gib", "cpu", "memory_gib", "memory_stores", "memory_chapters", "skills",
     "identity_verified", "context_verified", "ssh_ready", "ssh_verified", "provider_verified", "provider_configured", "browser_verified",
     "telegram_ready", "telegram_verified", "welcome_delivered", "human_contact_verified",
@@ -84,7 +85,7 @@ class OnboardingError(ValueError):
 # Explicit public operational codes only. Exception strings, paths, payloads and
 # unknown future codes never become CLI diagnostics by matching a text pattern.
 _DIAGNOSTIC_CODES = frozenset({
-    'onboarding_vm_image_required', 'conversation_proxy_vm_network_required',
+    'onboarding_vm_image_required', 'onboarding_vm_agent_unavailable', 'conversation_proxy_vm_network_required',
     'seed_operation_in_progress', 'qualified_runtime_module_required',
     'qualified_runtime_imports_required', 'qualified_runtime_context_required',
     'qualified_receiving_interpreter_required', 'private_onboarding_sdk_required',

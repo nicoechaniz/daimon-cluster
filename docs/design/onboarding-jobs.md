@@ -901,13 +901,30 @@ a warm worker cannot silently reinterpret its fixed settings.
 The metadata query also passed against the actual pinned local image of the
 existing Oliva VM, with no mutation. Incus6.0.4 does not support
 `image info --format=json`; the supported query returns the actual image object.
-This proves the metadata adapter only. Actual blank VM creation,
-agent/filesystem visibility, NAT forwarding and complete companion execution
-still require receiving qualification. The held next companion is not a test
+That observation proved the metadata adapter only. Later blank VM creation,
+agent/filesystem visibility and private NAT passed as recorded below; complete
+companion execution still requires receiving qualification. The held next companion is not a test
 target. Existing VM placement/read/control support and container network proofs
 must not be presented as a new VM's full onboarding acceptance. See
 [Incus instance creation](https://linuxcontainers.org/incus/docs/main/howto/instances_create/)
 and the existing [VM relocation route](../runbooks/native-host-relocation.md).
+
+Environment completion uses the existing closed Boolean/integer fact contract:
+`virtual_machine_verified` and `vm_image_verified` report the actual type/image
+checks. The exact expected fingerprint remains in the protected host selection,
+and actual metadata is checked before mutation and completion. Returning raw
+type/fingerprint strings in facts caused the real JobStore to reject an otherwise
+verified VM, despite direct adapter tests passing. The integrated environment
+stage regression failed before this correction and now covers journal advancement.
+
+Incus `start` does not establish guest-agent readiness. Before guest filesystem
+operations, the VM adapter observes the same running instance's actual agent
+process/OS metadata, bounded by60seconds and any supplied caller deadline, with
+bounded state reads. A stopped instance, invalid/oversized response or elapsed
+window preserves the original job and reports a precise refusal. No repeated
+VM creation/start, account, model turn or new scheduler follows from waiting.
+The actual first attempt encountered an unavailable agent immediately after start;
+the corrected continuation completed the same retained environment operation.
 
 ### VM Conversation through the same private listener writer
 
@@ -940,9 +957,14 @@ HTTP proxies. Native sockets/control and credentials are unchanged.
 Actual read-only qualification on the existing Oliva VM verified the static NIC,
 MAC-bound live address and host default gateway. It exposed an initial eth0 versus
 enp5s0 name mismatch, corrected in this adapter without a service restart. This
-is current existing-network read evidence, not a new NAT installation or newly
-provisioned companion. Blank VM boot/filesystem, live NAT/HTTPS/auth and full-command
-acceptance remain separate unfinished work. See the
+is current existing-network read evidence, not a newly provisioned companion.
+Later actual disposable qualification booted the same generic Debian13 image,
+verified guest/home/cold mounts and used this proxy writer for private NAT.
+An HTTP200 technical marker matched exact bytes/SHA, with the original environment
+job unchanged. The empty VM and its two volumes were retired with actual absence
+readback. No identity/account/provider/model/public route was created. Effective
+filesystem quotas on the selected directory pool, HTTPS/shared-auth and full-command
+acceptance remain unfinished. See the
 [Incus NAT contract](https://linuxcontainers.org/incus/docs/main/reference/devices_proxy/#nat-mode).
 
 ### Conversation-first companion candidate

@@ -574,6 +574,26 @@ class HostBackend:
             raise OnboardingError('invalid_onboarding_environment_observation')
         return value['ready']
 
+    def _wait_vm_agent(self, plan: dict, *, deadline_ns: int | None = None) -> None:
+        """Incus start completes before the VM agent can serve guest operations."""
+        end = time.monotonic_ns() + 60_000_000_000
+        if deadline_ns is not None:
+            end = min(end, deadline_ns)
+        while True:
+            if time.monotonic_ns() >= end:
+                raise OnboardingError('onboarding_vm_agent_unavailable')
+            raw = self._dispatch(plan, ['query', '/1.0/instances/' + self.instance(plan) + '/state'],
+                timeout_seconds=10, deadline_ns=end)
+            if len(raw.encode()) > 65536:
+                raise OnboardingError('onboarding_vm_agent_unavailable')
+            state = json.loads(raw)
+            if state.get('status') != 'Running':
+                raise OnboardingError('onboarding_vm_agent_unavailable')
+            if (type(state.get('processes')) is int and state['processes'] > 0
+                    and isinstance(state.get('os_info'), dict) and state['os_info'].get('os')):
+                return
+            time.sleep(min(0.25, max(0, (end-time.monotonic_ns())/1_000_000_000)))
+
     def _environment(self, plan: dict, *, deadline_ns: int | None = None) -> Observation:
         if self.native_body(plan) is not None:
             raise OnboardingError('native_receiving_initial_enrollment_unsupported')
@@ -661,11 +681,13 @@ class HostBackend:
             return Observation("absent", safe_to_execute=True)
         if row.get("status") != "Running":
             return Observation("uncertain", reason="uncertain_external_effect")
+        if self.config.instance_type == 'virtual-machine':
+            self._wait_vm_agent(plan, deadline_ns=deadline_ns)
         if 'cold_gib' in resources and not all(self._volume_access(plan, volume, 'observe', deadline_ns=deadline_ns)
                 for volume in ('home', 'cold')):
             return Observation('absent', safe_to_execute=True)
         return Observation("complete", {"verified": True, **resources,
-            **({'instance_type': 'virtual-machine', 'image_fingerprint': expected_image}
+            **({'virtual_machine_verified': True, 'vm_image_verified': True}
                if self.config.instance_type == 'virtual-machine' else {})})
 
     def _conversation_request(self, plan: dict) -> dict | None:
@@ -1131,6 +1153,8 @@ class HostBackend:
                     'pool=' + str(self.config.cold_pool), 'source=' + name + '-cold', 'path=/home/agent/Storage'])
         if row.get("status") == "Stopped":
             self._dispatch(plan, ["start", name])
+        if self.config.instance_type == 'virtual-machine':
+            self._wait_vm_agent(plan)
         if 'cold_gib' in resources:
             for volume in ('home', 'cold'):
                 if (not self._volume_access(plan, volume, 'observe')

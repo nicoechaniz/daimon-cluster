@@ -1304,6 +1304,8 @@ class VMIncusFixture(IncusFixture):
         if argv[:1] == ['query'] and argv[1].startswith('/1.0/images/'):
             self.image_reads.append(list(argv))
             return json.dumps(self.image_metadata)
+        if argv[:1] == ['query'] and argv[1].endswith('/state'):
+            return json.dumps(dict(status='Running', processes=10, os_info={'os':'Debian'}))
         if argv[0] == 'init':
             assert argv[3] == '--vm'
             # Existing fixture executes the same container/volume operations;
@@ -1335,8 +1337,42 @@ def test_vm_environment_reuses_pinned_image_and_existing_journaled_steps(tmp_pat
     backend.execute(value, 'environment', 'original')
     assert run.calls == effects
     assert run.instances[0]['type'] == 'virtual-machine'
-    assert backend.observe(value, 'environment', 'original').facts['image_fingerprint'] == '4' * 64
+    observed = backend.observe(value, 'environment', 'original')
+    observed.validate()
+    assert observed.facts['virtual_machine_verified'] and observed.facts['vm_image_verified']
     assert all(call == ['query', '/1.0/images/' + '4' * 64] for call in run.image_reads)
+
+
+def test_vm_environment_advances_the_real_job_store_contract(tmp_path):
+    value, run, backend = vm_configured(tmp_path)
+    store = JobStore(backend.config.jobs)
+    store.submit(value, backend)
+    result = store.tick(value['name'], backend)
+    assert result['state'] == 'ready' and result['stage'] == 'context'
+    assert store._load(value['name'])['steps']['environment']['state'] == 'complete'
+
+
+def test_vm_waits_for_actual_agent_metadata_without_restarting(tmp_path, monkeypatch):
+    from clusterctl import onboarding_host
+    value, run, backend = vm_configured(tmp_path)
+    reads, sleeps = [], []
+    def delayed(argv, **kwargs):
+        assert argv == ['query', '/1.0/instances/dm-eko/state']
+        assert 0 < kwargs['timeout_seconds'] <= 10
+        reads.append(argv)
+        return json.dumps(dict(status='Running', processes=0 if len(reads) == 1 else 10,
+            os_info={} if len(reads) == 1 else {'os':'Debian'}))
+    backend.run = delayed
+    monkeypatch.setattr(onboarding_host.time, 'sleep', sleeps.append)
+    backend._wait_vm_agent(value)
+    assert len(reads) == 2 and sleeps == [0.25] and run.calls == []
+
+
+def test_expired_vm_agent_wait_dispatches_nothing(tmp_path):
+    value, run, backend = vm_configured(tmp_path)
+    with pytest.raises(OnboardingError, match='^onboarding_vm_agent_unavailable$'):
+        backend._wait_vm_agent(value, deadline_ns=1)
+    assert run.calls == []
 
 
 @pytest.mark.parametrize('metadata', [

@@ -1,3 +1,17 @@
+## Actual blank VM environment and private NAT —2026-11-09
+
+Actual disposable VM qualification reused the existing pinned Debian13 KVM image
+and host environment adapter. It exposed two corrected defects: raw type/image
+strings violated JobStore's closed facts contract; Incus start completed before
+its guest agent served the volume check. Boolean verification facts and a bounded
+60second actual agent observation now let the original retained environment job
+advance to context, without recreating its VM/plan/operation. Native guest/home/cold
+mounts and private NAT through the existing proxy writer passed; technical HTTP200
+marker bytes/hash matched. The empty task VM and its two volumes were retired and
+absence verified. No identity/account/provider/model/public route or held companion
+was created. This does not establish fresh companion/HTTPS/login acceptance or
+effective filesystem quotas on the selected directory pool; those remain.
+
 ## Complete qualification runtime —2026-11-09
 
 Actual run42681213684 passed the guest owner490s, native admission consumers1059s,
@@ -16,8 +30,9 @@ NIC, managed host gateway, MAC-bound live guest address and default route are
 checked before the existing proxy writer. Container defaults stay unchanged.
 Actual read-only Oliva qualification exposed/fixed Incus device-key versus Linux
 interface naming (eth0/enp5s0); the corrected MAC binding passed with zero
-service/model/network mutation. New VM boot/filesystem and actual NAT/HTTPS/auth
-plus full-command acceptance remain unfinished. No held companion was created.
+service/model/network mutation. Later blank VM boot/filesystem/private NAT passed
+as recorded above; HTTPS/auth and full-command acceptance remain unfinished.
+No held companion was created.
 See docs/design/onboarding-jobs.md; current private command checkpoint retains
 source/read evidence and full School/security/Emma scope.
 
@@ -30,8 +45,9 @@ VM type; existing instance type must match. It reuses original init/volume/start
 steps and plan journals, preserving a lost creation reply and refusing another
 type without replacement. Existing plans and all4 active children are unchanged.
 Actual existing Oliva image metadata passed the supported JSON query; no VM was
-created or modified. Blank VM/agent/filesystem/NAT and full-command receiving
-qualification remain unfinished. Emma stays held. See docs/design/onboarding-jobs.md.
+created or modified in that metadata observation. Later disposable blank VM/agent/
+filesystem/private NAT receiving passed as above; full-command qualification
+remains unfinished. Emma stays held. See docs/design/onboarding-jobs.md.
 
 All7 original bodies now passed own original/prepared helper base observation
 with unchanged process, runtime bundle, jobs and policy. Twelve actual CLI reads

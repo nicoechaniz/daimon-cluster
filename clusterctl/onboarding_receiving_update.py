@@ -416,6 +416,16 @@ def _reader_proof_expiry(record: dict) -> int:
     return record['reader']['expires_at_ms']
 
 
+def receiving_status_response(client) -> dict:
+    """Use current metadata, falling back only for an authenticated old view."""
+    if 'scope.me' not in client.config.capability.methods:
+        return client.runtime_status()[1]
+    response = client.invoke('runtime.status', {'view': 'receiving'})[1]
+    if response.get('ok') is False and response.get('error', {}).get('code') == 'invalid_params':
+        return client.runtime_status()[1]
+    return response
+
+
 class OwnerGroupClient:
     """Finite owner-local control of the actual selected group daemon.
 
@@ -500,14 +510,7 @@ class OwnerGroupClient:
                     observation_started_at_ns=self._status_read_started_ns)
 
     def _status_response(self, client) -> dict:
-        if 'scope.me' not in client.config.capability.methods:
-            return client.runtime_status()[1]
-        response = client.invoke('runtime.status', {'view': 'receiving'})[1]
-        # Only a verified native unsupported-view refusal permits the legacy
-        # full observation. Timeouts, authority and process failures propagate.
-        if response.get('ok') is False and response.get('error', {}).get('code') == 'invalid_params':
-            return client.runtime_status()[1]
-        return response
+        return receiving_status_response(client)
 
     def base_status(self) -> dict:
         """Pin an authenticated predecessor without claiming loaded readiness.

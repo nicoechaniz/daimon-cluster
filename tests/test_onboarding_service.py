@@ -262,3 +262,40 @@ def test_native_profile_rejects_execution_and_identity_overrides(tmp_path, monke
         lambda path, uid: b'[Service]\nSlice=fixture.slice\n' + override)
     with pytest.raises(OnboardingError, match='scope_required'):
         onboarding_service.MatrixNativeService(unit)._guest_dropins(str(native))
+
+
+def test_profile_service_freezes_existing_owner_and_overrides_without_editing(tmp_path, monkeypatch):
+    import time
+    from clusterctl import onboarding_service as service
+    unit = tmp_path/'compaii-matrix-itaca.service'
+    override = unit.with_name(unit.name+'.d')/'90-native-sdk-successor.conf'
+    contents = {unit:b'[Service]\nUser=debian\nGroup=debian\n', override:b'[Service]\nExecStart=/existing/supervisor\n'}
+    values = dict(Id=unit.name, ActiveState='active', SubState='running', MainPID='123',
+        ControlGroup='/system.slice/'+unit.name, InvocationID='fixture', FragmentPath=str(unit),
+        DropInPaths=str(override), KillMode='control-group', Result='success', User='debian', Group='debian')
+    calls = []
+    def run(argv):
+        calls.append(argv)
+        return '\n'.join(key+'='+value for key,value in values.items()) if 'show' in argv else ''
+    reads=[]
+    def regular(path, *, uid):
+        reads.append((path,uid))
+        return contents[path]
+    monkeypatch.setattr(service.onboarding_release,'regular',regular)
+    manager=service.MatrixProfileService(unit,user='debian',group='debian',run=run)
+    first=manager.inspect()
+    assert first['dropins'] and all(uid==0 for _,uid in reads)
+    contents[override]+=b'# changed configuration\n'
+    assert manager.inspect()['dropins']!=first['dropins']
+    values['User']='another'
+    with pytest.raises(OnboardingError,match='scope_required'):
+        manager.inspect()
+    values['User']='debian'
+    values['DropInPaths']=str(tmp_path/'foreign.conf')
+    with pytest.raises(OnboardingError,match='scope_required'):
+        manager.inspect()
+    values['DropInPaths']=str(override)
+    manager.stop(deadline_ns=time.monotonic_ns()+1_000_000_000)
+    assert calls[-1]==['systemctl','--no-block','stop',unit.name]
+    with pytest.raises(OnboardingError,match='qualified_matrix_service_required'):
+        service.MatrixProfileService(tmp_path/'database.service',user='debian',group='debian')

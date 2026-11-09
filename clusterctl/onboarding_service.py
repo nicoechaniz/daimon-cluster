@@ -176,7 +176,7 @@ class MatrixUserService:
             raise OnboardingError('receiving_matrix_service_scope_required')
         content = onboarding_release.regular(self.unit, uid=self._unit_uid)
         if identity:
-            guest_execution_identity(content)
+            guest_execution_identity(content, user=identity['User'], group=identity['Group'])
         result = dict(unit_sha256=hashlib.sha256(content).hexdigest(), manager=values)
         if identity and values['DropInPaths']:
             result['dropins'] = self._guest_dropins(values['DropInPaths'])
@@ -323,6 +323,34 @@ class MatrixNativeService(MatrixGuestService):
                     raise OnboardingError('receiving_matrix_service_scope_required')
             result[str(path)] = hashlib.sha256(raw).hexdigest()
         return result
+
+
+class MatrixProfileService(MatrixGuestService):
+    """An existing owner-selected H8 system unit with a private profile selector.
+
+    Freeze its root-owned fragment/drop-ins and actual execution identity. This
+    adapter never edits units or overrides; the controller separately binds the
+    authenticated child and its admission parent before any scoped lifecycle.
+    """
+
+    def __init__(self, unit: Path, *, user: str, group: str, run=None):
+        if (not re.fullmatch(r'[a-z0-9][a-z0-9-]*-matrix-[a-z0-9-]+\.service', unit.name)
+                or any(not re.fullmatch(r'[a-z_][a-z0-9_-]*', value) for value in (user, group))):
+            raise OnboardingError('qualified_matrix_service_required')
+        self.unit = being_seed._path(unit)
+        self.run = run or self._run
+        self._injected_run = run is not None
+        self._manager_prefix = ['systemctl']
+        self._unit_uid = 0
+        self._required_execution = dict(User=user, Group=group)
+
+    def _guest_dropins(self, paths: str) -> dict:
+        selected = [Path(path) for path in paths.split()]
+        if (len(set(selected)) != len(selected)
+                or any(path.parent != self.unit.with_name(self.unit.name + '.d') for path in selected)):
+            raise OnboardingError('receiving_matrix_service_scope_required')
+        return {str(path):hashlib.sha256(onboarding_release.regular(path, uid=0)).hexdigest()
+            for path in selected}
 
 
 class GuestServiceBootstrap:
@@ -1009,7 +1037,7 @@ class GuestServiceBootstrap:
                 time.sleep(min(0.05, max(0, (deadline_ns-time.monotonic_ns())/1_000_000_000)))
 
 
-def guest_execution_identity(content: bytes) -> None:
+def guest_execution_identity(content: bytes, *, user: str = 'agent', group: str = 'agent') -> None:
     """Preserved disk directives must agree with the maintained guest owner.
 
     A previously loaded manager can lag an edited unit until daemon-reload.
@@ -1034,7 +1062,7 @@ def guest_execution_identity(content: bytes) -> None:
                 if section != b'[Service]' or key in identity:
                     raise OnboardingError('receiving_guest_execution_identity_required')
                 identity[key] = value
-    if services != 1 or identity != {b'User': b'agent', b'Group': b'agent'}:
+    if services != 1 or identity != {b'User': user.encode(), b'Group': group.encode()}:
         raise OnboardingError('receiving_guest_execution_identity_required')
 
 

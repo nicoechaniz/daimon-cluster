@@ -151,7 +151,11 @@ def test_native_child_refuses_changed_config_and_dies_with_parent(tmp_path):
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             stat = Path(f'/proc/{child_pid}/stat')
-            if not stat.exists() or stat.read_text().split(') ', 1)[1].startswith('Z '):
+            try:
+                exited = stat.read_text().split(') ', 1)[1].startswith('Z ')
+            except (FileNotFoundError, ProcessLookupError):
+                exited = True  # The owned child disappeared before the proc read.
+            if exited:
                 break
             time.sleep(.02)
         else:
@@ -508,3 +512,216 @@ def test_native_sdk_successor_refuses_other_changes_and_unfinished_start(tmp_pat
     with pytest.raises(rebirth_host.RebirthHostError, match='journal_conflict'):
         rebirth_native.start_record(journal, 'target', candidate, actor='fixture', embodiment_id='body')
     assert journal.latest_for_target('target') == original
+
+
+def test_native_profile_selection_is_canonical_idempotent_and_preserves_binding(tmp_path):
+    from clusterctl.rebirth import _read_json
+    previous = dict(schema='dm.cluster.rebirth-native-profile/v1', config='/owner/source.json',
+        home='/owner/sdk-home', code='/qualified/old', code_digest='a'*64)
+    candidate = {**previous, 'code':'/qualified/new', 'code_digest':'b'*64}
+    path = private(tmp_path/'profile.json', previous)
+    first = rebirth_native.select_profile(path, candidate, previous=previous)
+    assert first['loaded_readiness'] == 'unobserved'
+    assert _read_json(path) == candidate
+    assert first == rebirth_native.select_profile(path, candidate, previous=previous)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert list(tmp_path.glob('*.previous*')) == []
+    for key in ('config', 'home'):
+        with pytest.raises(rebirth_host.RebirthHostError, match='selection_conflict'):
+            rebirth_native.select_profile(path, {**candidate, key:'/different'}, previous=previous)
+    assert _read_json(path) == candidate
+    newer = {**candidate, 'code':'/qualified/later', 'code_digest':'c'*64}
+    private(path, newer)
+    with pytest.raises(rebirth_host.RebirthHostError, match='selection_conflict'):
+        rebirth_native.select_profile(path, candidate, previous=previous)
+    assert _read_json(path) == newer
+
+
+def test_native_profile_selection_recovers_replace_before_ack_without_replacement(tmp_path, monkeypatch):
+    from clusterctl import rebirth
+    previous = dict(schema='dm.cluster.rebirth-native-profile/v1', config='/owner/source.json',
+        home='/owner/sdk-home', code='/qualified/old', code_digest='a'*64)
+    candidate = {**previous, 'code':'/qualified/new', 'code_digest':'b'*64}
+    path = private(tmp_path/'profile.json', previous)
+    atomic = rebirth._atomic_json
+    writes = []
+    def lost(path, value):
+        writes.append(dict(value))
+        atomic(path, value)
+        raise OSError('lost acknowledgement after replacement')
+    monkeypatch.setattr(rebirth, '_atomic_json', lost)
+    with pytest.raises(rebirth_host.RebirthHostError, match='selection_conflict'):
+        rebirth_native.select_profile(path, candidate, previous=previous)
+    result = rebirth_native.select_profile(path, candidate, previous=previous)
+    assert result['selected'] is True and writes == [candidate]
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "migration", "start-active", "start-inactive"]
+)
+def test_native_profile_maintenance_resumes_real_journal_without_replaying_start(
+    tmp_path, monkeypatch, failure
+):
+    from clusterctl import owner_process
+    from clusterctl.operation_journal import OperationJournal
+
+    previous = dict(
+        schema="dm.cluster.rebirth-native-profile/v1",
+        config="/owner/config",
+        home="/owner/home",
+        code="/code/old",
+        code_digest="a" * 64,
+    )
+    candidate = {**previous, "code": "/code/new", "code_digest": "b" * 64}
+    child = dict(pid=123, uid=os.geteuid(), start_ticks=1, boot_id="fixture")
+    parent = {**child, "pid": 124}
+    prior_status = dict(loaded_runtime={'runtime_bundle_sha256':'d'*64},
+        loaded_application=dict(application_sha256='e'*64,publication_sha256='f'*64,
+            visibility={'installation_sha256':'1'*64}))
+    receiving = dict(process=child,server={"fixture":"same origin"},runtime_status=prior_status)
+    scope = dict(
+        process=child,
+        admission_parent=parent,
+        control_group="/matrix",
+        invocation_id="old",
+    )
+    dead = set()
+    calls = []
+
+    class Pin:
+        def __init__(self, process):
+            self.process = process
+
+        def wait_for_exit(self, _):
+            return self.process["pid"] in dead
+
+    class Family:
+        def __init__(self, child):
+            self.process = {**child, "pid": child["pid"] + 1}
+            self.child, self.parent = Pin(child), Pin(self.process)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+    monkeypatch.setattr(owner_process, "ParentProcessPresence", Family)
+    monkeypatch.setattr(
+        owner_process, "observe_process_exit", lambda process: process["pid"] in dead
+    )
+
+    class Manager:
+        active = True
+
+        def inspect(self, **_):
+            return dict(
+                unit_sha256="c" * 64,
+                manager={"ActiveState": "active" if self.active else "inactive"},
+            )
+
+        def bind_admitted_process(self, observed, _):
+            return {
+                **scope,
+                "process": observed["process"],
+                "admission_parent": observed["admission_parent"],
+            }
+
+        def stop(self, **_):
+            calls.append("stop")
+            self.active = False
+            dead.update((123, 124))
+
+        def start(self, **options):
+            options["pre_start"]()
+            calls.append("start")
+            self.active = failure != "start-inactive"
+            if failure in {"start-active", "start-inactive"}:
+                raise OSError("lost start acknowledgement")
+
+    manager = Manager()
+
+    class Owner:
+        value = previous
+        failures = 0
+
+        def profile(self):
+            return self.value
+
+        def migrate(self, *_, **__):
+            calls.append("migrate")
+            if failure == "migration" and not self.failures:
+                self.failures += 1
+                raise OSError("lost migration acknowledgement")
+            return {"catalog_schema_version": 2}
+
+        def select(self, value, **_):
+            calls.append("select")
+            self.value = value
+            return {"selected": True}
+
+        def status(self, *_, **__):
+            calls.append("status")
+            return dict(
+                process={**child, "pid": 456},
+                server=receiving["server"],
+                runtime_status={
+                    **prior_status,
+                    "loaded_runtime": {
+                        **prior_status['loaded_runtime'],
+                        "qualified_startup": {"code_digest": candidate["code_digest"]}
+                    }
+                },
+            )
+
+    owner = Owner()
+    journal = OperationJournal(tmp_path / "journal")
+    row = journal.plan(
+        operation="receiving-update",
+        target="native-profile:fixture",
+        idempotency_key="fixture",
+        intent={},
+        expected_precondition=dict(
+            native_profile=previous,
+            receiving=receiving,
+            service=manager.inspect(),
+            scope=scope,
+        ),
+        intended_transition=dict(native_profile=candidate),
+        audit_identity={"actor": "test"},
+    )
+    controller = rebirth_native.ProfileMaintenance(
+        journal, row["operation_id"], owner, manager, candidate
+    )
+    if failure:
+        with pytest.raises(OSError):
+            controller.run(deadline_ns=time.monotonic_ns() + 1_000_000_000)
+        if failure == "start-inactive":
+            with pytest.raises(
+                rebirth_host.RebirthHostError, match="start_unconfirmed"
+            ):
+                controller.run(deadline_ns=time.monotonic_ns() + 1_000_000_000)
+            assert calls.count("start") == 1
+            assert journal.get(row["operation_id"])["state"] == "runtime-dispatching"
+            return
+    result = controller.run(deadline_ns=time.monotonic_ns() + 1_000_000_000)
+    assert result["complete"] and result["receiving_readiness"] == "unobserved"
+    assert calls.count("stop") == calls.count("start") == calls.count("select") == 1
+    assert calls.index("migrate") < calls.index("select") < calls.index("start")
+    assert journal.get(row["operation_id"])["state"] == "completed"
+    previous_calls = list(calls)
+    assert controller.run(deadline_ns=time.monotonic_ns() + 1_000_000_000)[
+        "retained_completion"
+    ]
+    assert calls == previous_calls
+
+
+def test_profile_owner_uses_actual_closed_helper_entrypoint(tmp_path):
+    previous = dict(schema='dm.cluster.rebirth-native-profile/v1',config='/owner/config',home='/owner/home',
+        code='/qualified/old',code_digest='a'*64)
+    candidate = {**previous,'code':'/qualified/new','code_digest':'b'*64}
+    path = private(tmp_path/'profile.json',previous)
+    owner = rebirth_native.ProfileOwner(path)
+    result = owner.select(candidate,previous=previous,deadline_ns=time.monotonic_ns()+10_000_000_000)
+    assert result['selected'] is True and owner.profile()==candidate
+    assert owner.select(candidate,previous=previous,deadline_ns=time.monotonic_ns()+10_000_000_000)==result

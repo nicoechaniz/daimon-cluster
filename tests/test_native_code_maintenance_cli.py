@@ -269,3 +269,153 @@ def test_pending_reader_checkpoint_keeps_same_operation_resumable(tmp_path):
     being_seed._write(checkpoint, dict(schema='cluster-current-reader-completion/v1',
         binding=dict(operation_id=spec()['operation_id']), commands={}))
     preflight_reader_checkpoint(checkpoint, spec()['operation_id'])
+
+
+@pytest.mark.parametrize("mode", ["update", "check", "failed-reader", "retained"])
+def test_native_profile_command_composes_existing_readers_and_keeps_the_same_deadline(
+    tmp_path, monkeypatch, mode
+):
+    import os
+    from pathlib import Path
+    from clusterctl import rebirth_native, onboarding_receiving_update as receiving
+    from clusterctl.onboarding_owner_control import _selection
+    from clusterctl.operation_journal import OperationJournal
+
+    config = tmp_path / "source.json"
+    being_seed._write(config, {"runtime_root": "/owner/native"})
+    selected = dict(
+        schema="cluster-native-profile-maintenance/v1",
+        operation_id=spec()["operation_id"],
+        profile=str(tmp_path / "profile.json"),
+        unit="/etc/systemd/system/compaii-matrix-itaca.service",
+        journal=str(tmp_path / "native-journal"),
+        candidate={"code_digest": "b" * 64},
+        max_seconds=60,
+        reader_completion=str(tmp_path / "routes.json"),
+    )
+    core = {k: v for k, v in selected.items() if k != "reader_completion"}
+
+    def observation(code):
+        return dict(
+            process={"pid": 42},
+            server={"embodiment_id": "body"},
+            runtime_status=dict(
+                loaded_runtime=dict(
+                    qualified_startup=dict(
+                        code_digest=code, matrix_wheel_sha256="d" * 64
+                    ),
+                    runtime_bundle_sha256="e" * 64,
+                ),
+                loaded_application=dict(
+                    application_sha256="f" * 64,
+                    publication_sha256="1" * 64,
+                    visibility={"installation_sha256": "2" * 64},
+                ),
+            ),
+        )
+
+    before, after = observation("a" * 64), observation("b" * 64)
+    peer = observation("c" * 64)
+    routes = dict(
+        checkpoint=str(tmp_path / "readers.json"),
+        owners={
+            name: dict(selection=_selection(value), require_admitted=True)
+            for name, value in [("root", before), ("peer", peer)]
+        },
+    )
+    monkeypatch.setattr(managed, "load_code_update_readers", lambda _: routes)
+    monkeypatch.setattr(
+        rebirth_native,
+        "ProfileOwner",
+        lambda _: SimpleNamespace(
+            uid=os.geteuid(), profile=lambda: {"config": str(config)}
+        ),
+    )
+    calls = []
+
+    class Client:
+        def __init__(self, name):
+            self.name = name
+            self.root = Path("/owner/native" if name == "root" else "/peer/native")
+
+        def _call(self, request):
+            calls.append(self.name)
+            if self.name == "peer" and mode == "failed-reader":
+                raise OnboardingError("receiving_reader_owner_unavailable")
+            return (
+                (after if mode == "retained" else before)
+                if self.name == "root"
+                else peer
+            )
+
+    clients = {name: Client(name) for name in ("root", "peer")}
+    monkeypatch.setattr(managed, "code_update_reader_clients", lambda *_, **__: clients)
+    if mode == "retained":
+        journal = OperationJournal(Path(core["journal"]))
+        row = journal.plan(
+            operation="receiving-update",
+            target="profile:fixture",
+            operation_id=core["operation_id"],
+            idempotency_key="fixture",
+            intent={"native_profile_maintenance": core},
+            expected_precondition={},
+            intended_transition={},
+            audit_identity={},
+        )
+        journal.advance(row["operation_id"], "completed", result={"loaded": after})
+
+    def run(value, **options):
+        assert (
+            value == core
+            and 0
+            < options["deadline_ns"] - managed.time.monotonic_ns()
+            <= 60_000_000_000
+        )
+        assert calls == ["root", "peer"]
+        calls.append("software")
+        return (
+            dict(qualified=True)
+            if options["check_only"]
+            else dict(complete=True, loaded=after)
+        )
+
+    monkeypatch.setattr(rebirth_native, "run_profile_maintenance", run)
+
+    def finish(owners, **options):
+        assert owners == clients and calls[-1] == "software"
+        assert options["selections"] == {
+            "root": _selection(after),
+            "peer": _selection(peer),
+        }
+        assert (
+            options["deadline_ns"]
+            == clients["root"].deadline_ns
+            == clients["peer"].deadline_ns
+        )
+        calls.append("readers")
+        return dict(receiving_readiness="qualified-local-projection")
+
+    monkeypatch.setattr(receiving, "refresh_current_readers", finish)
+    if mode == "failed-reader":
+        with pytest.raises(OnboardingError, match="reader_owner_unavailable"):
+            managed.run_native_profile_update(selected)
+        assert "software" not in calls
+    else:
+        result = managed.run_native_profile_update(selected, check_only=mode == "check")
+        if mode == "check":
+            assert result["reader_routes_observed"] == 2 and calls[-1] == "software"
+        else:
+            assert (
+                result["receiving_readiness"] == "qualified-local-projection"
+                and calls[-1] == "readers"
+            )
+
+
+def test_native_profile_refusal_is_typed_and_never_exposes_unknown_detail():
+    from clusterctl.onboarding import refusal_diagnostic
+    from clusterctl import rebirth_native, rebirth_host
+    assert 'rebirth_host_native_profile_start_unconfirmed' in rebirth_native.PROFILE_ERRORS
+    assert refusal_diagnostic(rebirth_host.RebirthHostError(
+        'rebirth_host_native_profile_start_unconfirmed'),stage='native')['code']=='rebirth_host_native_profile_start_unconfirmed'
+    assert refusal_diagnostic(rebirth_host.RebirthHostError(
+        '/private/unrelated diagnostic'),stage='native')['code']=='unclassified_refusal'

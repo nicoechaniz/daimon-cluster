@@ -175,9 +175,18 @@ python -B -m clusterctl.onboarding_managed --spec "$maintenance_spec"
 | Includes `reader_completion` | Native software update plus current-reader qualification/selection | `qualified-local-projection` after successful final observation; incomplete if a required reader fails |
 | Omits `reader_completion` | Legacy code-only update | `unobserved`; software success alone does not establish messaging readiness |
 
+The protected reader-routes file may specify its own `host_config` and nullable
+`vm_qualification` for existing reader jobs. Use this when, for example, original
+adult jobs and later child jobs belong to different registries. Reader placement
+then resolves from that registry; the software update keeps its original backend.
+Do not copy jobs or reenroll bodies to make the registries coincide. Omitting
+these locators preserves the existing shared-backend behavior.
+
 Prefer the composed spec for ordinary messaging-capable fleet updates. For its
 managed `job` owners, `selection: null` derives digests from the exact native
-update results; do not transcribe six hashes per updated body. Reuse the same
+update results; do not transcribe six hashes per updated body. An updated
+explicit owner route with the same target name also derives its successor
+selection from the exact receipt, validating current process, origin and bundle. Reuse the same
 spec and `operation_id` after an incomplete result. Completed native effects are
 retained and an unresolved reader operation is continued rather than replaced.
 A separate manual reader round is for an already completed code-only update,

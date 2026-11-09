@@ -215,7 +215,8 @@ def test_owner_import_failure_is_public_code_without_arbitrary_stderr(tmp_path, 
 
 
 @pytest.mark.parametrize('tamper',[None,'process','code','bundle'])
-def test_updated_job_selection_is_derived_from_its_exact_receipt(tmp_path, monkeypatch, tamper):
+@pytest.mark.parametrize('explicit_route',[False,True])
+def test_updated_job_selection_is_derived_from_its_exact_receipt(tmp_path, monkeypatch, tamper, explicit_route):
     from clusterctl import onboarding_receiving_update as receiving
     import time
     observed=dict(process=dict(pid=42),server=dict(embodiment_id='body:current'),runtime_status=dict(
@@ -240,6 +241,9 @@ def test_updated_job_selection_is_derived_from_its_exact_receipt(tmp_path, monke
     monkeypatch.setattr(receiving,'refresh_current_readers',finish)
     value=dict(checkpoint=str(tmp_path/'progress.json'),owners=dict(current=dict(
         job='current',selection=None,require_admitted=True)))
+    if explicit_route:
+        value['owners']['current'].pop('job')
+        value['owners']['current']['selection']={'receiving_code':'9'*64}
     options=dict(operation_id=receipt['operation_id'],release_digest='a'*64,
         deadline_ns=time.monotonic_ns()+1_000_000_000,updates={'current':receipt})
     if tamper:
@@ -424,3 +428,37 @@ def test_native_profile_refusal_is_typed_and_never_exposes_unknown_detail():
         'rebirth_host_native_profile_start_unconfirmed'),stage='native')['code']=='rebirth_host_native_profile_start_unconfirmed'
     assert refusal_diagnostic(rebirth_host.RebirthHostError(
         '/private/unrelated diagnostic'),stage='native')['code']=='unclassified_refusal'
+
+
+def test_reader_registry_is_independent_of_updated_jobs(tmp_path, monkeypatch):
+    from clusterctl import onboarding_receiving_update as receiving
+    from clusterctl.onboarding_owner_control import _selection
+    observed = dict(process=dict(pid=42),server=dict(embodiment_id='body'),runtime_status=dict(
+        loaded_runtime=dict(qualified_startup=dict(code_digest='a'*64,matrix_wheel_sha256='b'*64),
+            runtime_bundle_sha256='c'*64),loaded_application=dict(application_sha256='d'*64,
+            publication_sha256='e'*64,visibility={'installation_sha256':'f'*64})))
+    routes=dict(schema='cluster-maintenance-reader-routes/v1',checkpoint=str(tmp_path/'checkpoint'),
+        host_config='/existing/reader-host.json',vm_qualification='/existing/reader-placements',
+        owners=dict(child=dict(root='/child/runtime',job='child',command=['/existing/owner'],
+            selection=_selection(observed),require_admitted=True)))
+    path=tmp_path/'routes.json';being_seed._write(path,routes)
+    assert managed.load_code_update_readers(path)==routes
+    plan={'name':'child'}
+    def execute(actual, argv, **options):
+        assert actual is plan and argv[0]=='/existing/owner'
+        assert options['uid']==options['gid']==1000
+        return json.dumps(observed)
+    reader_backend=SimpleNamespace(execute_body=execute)
+    def locate(host, qualification, names):
+        assert host==routes['host_config'] and qualification==routes['vm_qualification']
+        assert names=={'child'}
+        return reader_backend,{'child':plan}
+    monkeypatch.setattr(managed,'maintenance_backend',locate)
+    monkeypatch.setattr(receiving,'_run_owner',lambda *_,**__:pytest.fail('reader bypassed its owning placement'))
+    clients=managed.code_update_reader_clients(routes,backend=object(),plans={'updated':{}})
+    clients['child'].deadline_ns=managed.time.monotonic_ns()+1_000_000_000
+    assert clients['child']._call({'action':'status'})==observed
+    for changes in ({'host_config':'../foreign'},{'host_config':None},{'vm_qualification':'relative'}):
+        being_seed._write(path,{**routes,**changes})
+        with pytest.raises(OnboardingError,match='current_reader_binding_required'):
+            managed.load_code_update_readers(path)

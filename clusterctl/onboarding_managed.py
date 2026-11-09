@@ -992,10 +992,17 @@ class ReaderCommandClient:
 def load_code_update_readers(path: Path) -> dict:
     """Locators select existing owner CLIs; native signed rosters select members."""
     value = being_seed._read(path, limit=being_seed.MAX_SELECTION)
-    if (not isinstance(value, dict) or set(value) != {'schema', 'checkpoint', 'owners'}
+    if (not isinstance(value, dict) or set(value) - {'host_config','vm_qualification'} != {'schema', 'checkpoint', 'owners'}
             or value.get('schema') != 'cluster-maintenance-reader-routes/v1'
             or not isinstance(value['owners'], dict) or not 1 <= len(value['owners']) <= 256):
         raise OnboardingError('receiving_current_reader_binding_required')
+    if ('vm_qualification' in value and 'host_config' not in value
+            or 'host_config' in value and not isinstance(value['host_config'],str)):
+        raise OnboardingError('receiving_current_reader_binding_required')
+    for selected_path in (value.get('host_config'),value.get('vm_qualification')):
+        if selected_path is not None and (not isinstance(selected_path,str)
+                or not Path(selected_path).is_absolute() or '..' in Path(selected_path).parts):
+            raise OnboardingError('receiving_current_reader_binding_required')
     checkpoint = Path(value['checkpoint'])
     if not checkpoint.is_absolute() or '..' in checkpoint.parts:
         raise OnboardingError('receiving_current_reader_binding_required')
@@ -1023,6 +1030,12 @@ def load_code_update_readers(path: Path) -> dict:
 
 
 def code_update_reader_clients(value: dict, *, backend=None, plans=None) -> dict:
+    # Reader jobs can belong to a different existing registry than the bodies
+    # being updated. Keep those plans/placements with their owning executor.
+    if 'host_config' in value:
+        names = {binding['job'] for binding in value['owners'].values() if 'job' in binding}
+        if names:
+            backend, plans = maintenance_backend(value['host_config'],value.get('vm_qualification'),names)
     clients = {}
     for name, binding in value['owners'].items():
         if 'job' in binding:
@@ -1043,9 +1056,9 @@ def complete_code_update_readers(value: dict, *, operation_id: str,
     clients = code_update_reader_clients(value, backend=backend, plans=plans)
     selections = {name: row['selection'] for name, row in value['owners'].items()}
     for name, binding in value['owners'].items():
-        if selections[name] is not None:
+        receipt = (updates or {}).get(binding.get('job',name))
+        if selections[name] is not None and receipt is None:
             continue
-        receipt = (updates or {}).get(binding['job'])
         if (not isinstance(receipt, dict) or receipt.get('operation_id') != operation_id
                 or receipt.get('candidate_digest') != release_digest):
             raise OnboardingError('receiving_code_update_receipt_required')

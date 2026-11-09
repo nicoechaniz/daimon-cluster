@@ -33,10 +33,10 @@ jobs:
     needs: scope
     if: needs.scope.outputs.profile != 'docs'
     runs-on: ubuntu-24.04
-    # Run41285528837 passed native admission/composition, then the default
-    # suite was still advancing when the combined30min job cap cancelled it.
-    # Bound the combined qualification, preserving every owner/effect deadline.
-    timeout-minutes: 60
+    # Run42681213684 passed native consumers and reported3539 default tests
+    # passing, but the combined work reached the old60min job cap. Keep all
+    # checks and their own deadlines; allow the measured complete job to exit.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6

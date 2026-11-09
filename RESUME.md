@@ -1,3 +1,12 @@
+## Complete qualification runtime —2026-11-09
+
+Actual run42681213684 passed the guest owner490s, native admission consumers1059s,
+and reported3539 default tests passing1971s, then GitHub cancelled the job at its
+60minute aggregate limit. The explicit annotation confirms timeout; no test failure
+or production expiry was inferred. The job now permits75minutes while preserving
+all checks and their individual owner/effect limits. Receiving and complete-command
+qualification remain unfinished; prior outputs and original job identities stay.
+
 ## VM Conversation NAT continuation —2026-11-09
 
 The existing Conversation listener now has an explicit VM NAT composition,

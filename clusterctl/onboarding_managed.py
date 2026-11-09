@@ -87,8 +87,8 @@ class ManagedRuntime:
         request binds the actual admitted predecessor and changes only ExecStart;
         root's existing bootstrap journal reconciles lost stop/select/start ACKs.
         Identity, credentials, native stores and Conversation are preserved.
-        The complete operation includes cold SDK preparation within120seconds;
-        each owner/physical request remains capped at60seconds and shares the
+        The complete operation includes cold SDK preparation within 120 seconds;
+        each owner/physical request remains capped at 60 seconds and shares the
         original overall deadline. No internal deadline is renewed.
         An existing closed group is frozen across the update. Retain one current
         and one previous completed receipt; unfinished effects require exact

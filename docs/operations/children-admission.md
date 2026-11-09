@@ -318,16 +318,17 @@ private package download cache; preserve the original job and native journals.
 
 `ManagedRuntime.update_native_code` selects an already installed immutable code
 candidate for an explicit `native-admission-only` body. Use the original host,
-job, admission profile and a single retained operation UUID. Its120second overall
+job, admission profile and a single retained operation UUID. Its 120-second overall
 bound includes cold SDK preparation, with each owner/physical call capped
-at60seconds under the same deadline; no phase renews it. It takes the existing
+at 60 seconds under the same deadline; no phase renews it. It takes the existing
 job locks, authenticates the current admitted process, freezes its exact unit and
 runtime-bundle preimage, and delegates validate/quiesce/select/start to the
 existing `GuestServiceBootstrap` unit writer. It changes only Matrix ExecStart;
 Conversation, credentials, identity, native stores and controller grants stay in
 place. There is no group, visibility or Telegram prerequisite and no enrollment
-or grant renewal. A different operation/candidate is refused while the retained
-per-body update exists; reconcile that record before selecting a later update.
+or grant renewal. An unfinished operation/candidate must be reconciled under
+its original identity. A later operation may rotate only a completed receipt;
+one current and one previous record remain bounded at64KiB each.
 
 Lost effects are resumed under the same root bootstrap request. The final
 observation verifies the unchanged runtime bundle, admitted origin, selected

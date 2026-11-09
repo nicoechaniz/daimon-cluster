@@ -1554,9 +1554,9 @@ writer. Select `receive_only_group=True` for an existing group: it uses the
 current native/loaded observation independently of the original enrollment
 ceremony. The command first completes the existing idempotent `sdk-prepare`
 stage as the actual owner; public file availability alone does not prove the
-owner interpreter or closed imports exist. The complete update has one120second
+owner interpreter or closed imports exist. The complete update has one 120-second
 default/maximum envelope, including cold preparation; every individual call
-remains at most60seconds and cannot extend that original envelope. Its authenticated predecessor
+remains at most 60 seconds and cannot extend that original envelope. Its authenticated predecessor
 observation freezes the existing group
 coordinates and signed application/publication hashes. The same closed group
 must remain after startup; a published outbound adapter cannot use this path.

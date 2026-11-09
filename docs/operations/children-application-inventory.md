@@ -81,3 +81,41 @@ invented. The collector now reads the bounded structured receipt and permits
 one parse-only re-read without starting cleanup again in that reconciliation.
 It preserves failure size/digest if recovered; a second invalid read stays
 failed. Original partial occurrence and later verification remain distinct.
+
+## Selected deployment manifests
+
+Optional `application_inventory.deployment_manifests` maps selected target IDs
+to an exact root-owned `path` below `/etc/children-maintenance` and its `sha256`.
+The same qualified helper loads that bounded256KiB manifest as data, verifies
+root ownership/ancestry and bytes, and consumes it inside the existing finite
+read job. No application import, provider request, code execution or new timer is
+added. A standalone read accepts `--deployment-manifest PATH` together with
+`--deployment-manifest-sha256 SHA`.
+
+The closed `children-selected-deployments/v1` document contains `units` for a
+nonempty subset of the already selected services. Each unit selects `root`,
+`bind` (`executable` or `cwd`), public `source_ref` and relative `files` SHA256 map.
+Roots are restricted to maintained public application or Incus code prefixes.
+At most8units/1024files total are accepted. Expected manifests come from retained
+maintainer deployment records, not from hashing the current observed tree and
+calling that observation trusted. Explicit source selection is technical work;
+it requires no second approval or another account.
+
+The helper checks exact source file sets, custody and hashes; symlinks, writable
+files, unexpected/missing source, changed process/cwd and changed files remain
+unavailable. It rechecks file identities and the selected process before returning.
+Runtime `__pycache__`/`.pyc` is excluded and explicitly not verified. Hashing shares
+the original128MiB/25second budget and same-image cache, so a native image already
+hashed through `/proc/PID/exe` is not read a second time. The native job's existing
+40second/128MiB/25%CPU/32task and256KiB output bounds remain unchanged.
+
+An executable binding verifies selected files and the current loaded main image.
+A cwd binding verifies selected source files and current working directory;
+it DOES NOT establish already imported Python modules, every dependency's
+upstream authenticity, process memory or exposure. `phases.selected_deployments`
+retains the actually selected targets and explicitly lists unselected units.
+Changed or missing selected evidence fails observation health without restarting
+the application or erasing other assessment. Full security coverage remains
+partial. Refresh the manifest/reference through the existing host writer from
+an actual newer maintainer selection after an application deployment; never
+silently bless a changed live tree or interpret the gap as missing human authority.

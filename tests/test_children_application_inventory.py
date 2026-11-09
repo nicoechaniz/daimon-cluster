@@ -183,3 +183,101 @@ def test_long_description_does_not_exhaust_bounded_header_read(tmp_path):
     assert result[0]['version']=='9.1'
     assert result[0]['metadata_header_sha256']==hashlib.sha256(headers).hexdigest()
     assert result[0]['metadata_file_bytes']>inventory.MAX_METADATA
+
+
+@pytest.fixture
+def selected_deployment(tmp_path, monkeypatch):
+    monkeypatch.setattr(inventory, 'TRUSTED_UID', os.getuid())
+    monkeypatch.setattr(inventory, 'PUBLIC_ROOTS', (tmp_path,))
+    root = tmp_path/'public-runtime'
+    root.mkdir()
+    proc = tmp_path/'proc'
+    proc.mkdir()
+    image = fixture_process(proc, 3, root/'python')
+    target = root/'native'
+    image.rename(target)
+    (proc/'3/exe').unlink()
+    (proc/'3/exe').symlink_to(target)
+    (proc/'3/cwd').symlink_to(root)
+    source = root/'app.py'
+    source.write_text('raise RuntimeError("public code must never execute")\n')
+    manifest = dict(schema='children-selected-deployments/v1', units={'own.service': dict(
+        root=str(root), bind='cwd', source_ref='App-source-qualified',
+        files={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir()})})
+    monkeypatch.setattr(inventory, 'properties', lambda u:dict(ActiveState='active', MainPID='3'))
+    return root, proc, target, source, manifest
+
+
+def test_exact_source_and_loaded_image_binding_without_executing_source(selected_deployment):
+    root, proc, _target, _source, manifest = selected_deployment
+    cache=root/'__pycache__'
+    cache.mkdir()
+    (cache/'runtime.pyc').write_bytes(b'unqualified bytecode')
+    result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    row=result['units']['own.service']
+    assert row['state']=='observed' and row['deployment']['state']=='verified'
+    assert row['deployment']['files']==2 and row['deployment']['loaded_main_executable'] is False
+    assert 'unassessed' in row['deployment']['meaning']
+    manifest['units']['own.service']['bind']='executable'
+    with patch.object(inventory,'MAX_FILE',sum(p.stat().st_size for p in root.iterdir() if p.is_file())):
+        result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    assert result['units']['own.service']['deployment']['loaded_main_executable'] is True
+    assert 'PRIVATE-MUST-NOT-BE-RETAINED' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('change',['content','extra','missing','symlink','writable','cwd','executable'])
+def test_changed_source_selection_never_becomes_verified(selected_deployment,change):
+    root, proc, target, source, manifest=selected_deployment
+    if change=='content':
+        source.write_text('changed')
+    elif change=='extra':
+        (root/'unrecorded.py').write_text('never execute')
+    elif change=='missing':
+        source.unlink()
+    elif change=='symlink':
+        source.unlink()
+        source.symlink_to(target)
+    elif change=='writable':
+        source.chmod(0o666)
+    elif change=='cwd':
+        (proc/'3/cwd').unlink()
+        (proc/'3/cwd').symlink_to(proc)
+    else:
+        manifest['units']['own.service']['bind']='executable'
+        outside=proc/'outside'
+        outside.write_bytes(target.read_bytes())
+        (proc/'3/exe').unlink()
+        (proc/'3/exe').symlink_to(outside)
+    result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    assert result['units']['own.service']['state']=='unavailable'
+
+
+def test_same_pid_cwd_change_during_final_check_is_not_current_binding(selected_deployment,monkeypatch):
+    root,proc,_target,_source,manifest=selected_deployment
+    count=0
+    def properties(unit):
+        nonlocal count
+        count+=1
+        if count==2:
+            (proc/'3/cwd').unlink()
+            (proc/'3/cwd').symlink_to(proc)
+        return dict(ActiveState='active',MainPID='3')
+    monkeypatch.setattr(inventory,'properties',properties)
+    result=inventory.collect(['own.service'],proc=proc,deployments=manifest)
+    assert result['units']['own.service']['reason']=='selected_deployment_cwd_changed'
+
+
+@pytest.mark.parametrize('change',['escape','wrong-unit','bad-hash','capacity'])
+def test_manifest_bounds_apply_before_reading_source(selected_deployment,change):
+    _root,proc,_target,_source,manifest=selected_deployment
+    row=manifest['units']['own.service']
+    if change=='escape':
+        row['files']['../outside']='a'*64
+    elif change=='wrong-unit':
+        manifest['units']['other.service']=row
+    elif change=='bad-hash':
+        row['files']['app.py']='not-a-hash'
+    else:
+        row['files']={f'file-{i}':'a'*64 for i in range(1025)}
+    with pytest.raises(ValueError,match='selected_deployment_'):
+        inventory.collect(['own.service'],proc=proc,deployments=manifest)

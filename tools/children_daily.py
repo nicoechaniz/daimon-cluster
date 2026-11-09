@@ -217,7 +217,7 @@ print(json.dumps(value))
 
 def validate_application_selection(selection):
     if (not isinstance(selection,dict) or not {'helper','sha256','units'}<=set(selection)
-            or set(selection)-{'helper','sha256','units','browser_components'}
+            or set(selection)-{'helper','sha256','units','browser_components','deployment_manifests'}
             or type(selection.get('browser_components',False)) is not bool):
         raise ValueError('explicit_application_selection_required')
     validate_browser_selection({k:selection[k] for k in ('helper','sha256')})
@@ -230,6 +230,17 @@ def validate_application_selection(selection):
                 or any(not isinstance(n,str) or not re.fullmatch(r'[A-Za-z0-9_.@:-]{1,120}\.service',n) for n in names)
                 or len(set(names))!=len(names)):
             raise ValueError('bounded_application_units_required')
+    manifests = selection.get('deployment_manifests', {})
+    if (not isinstance(manifests, dict) or not set(manifests) <= set(units)):
+        raise ValueError('explicit_deployment_manifests_required')
+    for reference in manifests.values():
+        if (not isinstance(reference, dict) or set(reference) != {'path', 'sha256'}
+                or not isinstance(reference['path'], str) or not Path(reference['path']).is_absolute()
+                or '..' in Path(reference['path']).parts
+                or not Path(reference['path']).is_relative_to('/etc/children-maintenance')
+                or not isinstance(reference['sha256'], str)
+                or re.fullmatch('[a-f0-9]{64}', reference['sha256']) is None):
+            raise ValueError('explicit_deployment_manifests_required')
 
 
 def application_inventory(name, instance, selection):
@@ -245,7 +256,13 @@ if hashlib.sha256(p.read_bytes()).hexdigest()!=selection['sha256']:raise ValueEr
 spec=importlib.util.spec_from_file_location('selected_application_reader',p)
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 options={'include_browser_components':True} if selection.get('browser_components') and name!='lordoftheflies' else {}
-print(json.dumps(m.collect(selection['units'][name],**options),sort_keys=True))
+reference=selection.get('deployment_manifests',{}).get(name)
+if reference is not None:options['deployments']=m.load_deployments(reference['path'],reference['sha256'],selection['units'][name])
+value=m.collect(selection['units'][name],**options)
+if reference is not None:
+ value['deployment_manifest_sha256']=reference['sha256']
+ value['deployment_selection_units']=sorted(options['deployments']['units'])
+print(json.dumps(value,sort_keys=True))
 '''
     argv=['systemd-run','--unit=children-application-inventory-daily','--collect','--pipe','--wait',
           '-p','RuntimeMaxSec=40','-p','MemoryMax=128M','-p','CPUQuota=25%','-p','TasksMax=32',
@@ -499,6 +516,26 @@ def phase_observations(config, report):
                            'applicability': 'pending' if value.get('needs_triage') is True
                                else 'no-selected-triage' if value.get('needs_triage') is False
                                and value.get('state') == 'matched' else 'unavailable'}
+    manifests = config.get('application_inventory', {}).get('deployment_manifests', {})
+    selected, observed, unselected_units = set(manifests), [], []
+    for name, units in config.get('application_inventory', {}).get('units', {}).items():
+        inventory = report.get('targets', {}).get(name, {}).get('applications', {})
+        requested = inventory.get('deployment_selection_units', []) if name in manifests else []
+        if not isinstance(requested, list) or any(not isinstance(unit, str) for unit in requested):
+            requested = []
+        if (name in manifests and inventory.get('state') == 'observed' and requested
+                and set(requested) <= set(units)
+                and inventory.get('deployment_manifest_sha256') == manifests[name]['sha256']
+                and all(inventory.get('units', {}).get(unit, {}).get('state') == 'observed'
+                        and inventory['units'][unit].get('deployment', {}).get('state') == 'verified'
+                        for unit in requested)):
+            observed.append(name)
+        unselected_units.extend(name + ':' + unit for unit in units if unit not in requested)
+    phases['selected_deployments'] = {
+        'state': 'not-selected' if not manifests else 'observed' if set(observed) == selected else 'incomplete',
+        'observed_targets': sorted(observed), 'unavailable_targets': sorted(selected - set(observed)),
+        'unselected_units': sorted(unselected_units),
+        'scope': 'Selected file hashes/process association; imported Python modules and dependencies remain unassessed'}
     phases['selected_public_python_malicious'] = (
         selected_malicious_observation(report.get('public_advisories', {}))
         if config.get('public_advisories') else {'state': 'not-selected'})
@@ -638,7 +675,8 @@ def observation_complete(result):
         for value in result['targets'].values()) and
         result.get('public_advisories',{}).get('state','matched')=='matched' and
         result.get('known_exploitation',{}).get('state','matched')=='matched' and
-        result.get('phases',{}).get('selected_public_python_malicious',{}).get('state')!='incomplete')
+        result.get('phases',{}).get('selected_public_python_malicious',{}).get('state')!='incomplete' and
+        result.get('phases',{}).get('selected_deployments',{}).get('state')!='incomplete')
 
 
 def main():

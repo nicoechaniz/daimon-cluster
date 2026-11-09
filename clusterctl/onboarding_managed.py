@@ -892,3 +892,112 @@ class ManagedRuntime:
                 except (OnboardingError, OSError):
                     pass  # The retained reassessment remains explicitly pending.
             raise
+
+
+def validate_code_update(spec: dict) -> dict:
+    """One bounded operator request over existing jobs, placements and effects."""
+    try:
+        if (not isinstance(spec, dict) or set(spec) != {
+                'schema', 'host_config', 'vm_qualification', 'candidate', 'targets', 'group', 'operation_id', 'max_seconds'}
+                or spec['schema'] != 'cluster-native-code-maintenance/v1'
+                or type(spec['max_seconds']) is not int or not 1 <= spec['max_seconds'] <= 480
+                or not isinstance(spec['candidate'], dict)
+                or set(spec['candidate']) != {'code', 'code_digest'}
+                or re.fullmatch('[0-9a-f]{64}', spec['candidate']['code_digest']) is None
+                or not isinstance(spec['targets'], list) or not 1 <= len(spec['targets']) <= 16
+                or spec['group'] not in {'none', 'closed', 'published'}
+                or str(uuid.UUID(spec['operation_id'])) != spec['operation_id']
+                or not isinstance(spec['host_config'], str)
+                or not isinstance(spec['candidate']['code'], str)):
+            raise ValueError
+        for path in (spec['host_config'], spec['candidate']['code'], spec['vm_qualification']):
+            if path is not None and (not isinstance(path, str) or not Path(path).is_absolute()
+                    or '..' in Path(path).parts):
+                raise ValueError
+        names = set()
+        for name in spec['targets']:
+            if re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', name) is None or name in names:
+                raise ValueError
+            names.add(name)
+    except (TypeError, ValueError, AttributeError, KeyError):
+        raise OnboardingError('native_code_maintenance_spec_required') from None
+    return spec
+
+
+def run_code_update(spec: dict) -> dict:
+    """Reuse the owner/unit journals; never create a second batch effect journal."""
+    from .onboarding_host import HostBackend, HostConfig
+    spec = validate_code_update(spec)
+    deadline = time.monotonic_ns() + spec['max_seconds'] * 1_000_000_000
+    config = HostConfig.load(Path(spec['host_config']))
+    jobs = JobStore(config.jobs)
+    plans = {name: jobs._load(name)['plan'] for name in spec['targets']}
+    runner = None
+    if spec['vm_qualification'] is not None:
+        from .vm_body import RemoteIncusRunner
+        qualification = Path(spec['vm_qualification'])
+        admitted = being_seed._read(qualification / 'receiving.json')
+        placements = {name: (qualification / (name + '-placement.json'),
+            admitted['results'][name]['placement_sha256']) for name in plans}
+        def no_initial_publication(*_, **__):
+            raise OnboardingError('native_code_maintenance_existing_body_required')
+        runner = RemoteIncusRunner(placements, plans, publish=no_initial_publication)
+    backend = HostBackend(config, run=runner)
+    owner = ManagedRuntime(backend)
+    candidate = (Path(spec['candidate']['code']), spec['candidate']['code_digest'])
+    results = []
+    for name in spec['targets']:
+        # Code preparation and the existing owner operation share this body's
+        # original120s envelope and the batch's absolute deadline.
+        target_deadline = min(deadline, time.monotonic_ns() + 120_000_000_000)
+        phase = 'prepare'
+        try:
+            if time.monotonic_ns() >= target_deadline:
+                raise OnboardingError('receiving_host_deadline_expired')
+            if not backend.runtime_available(plans[name], candidate, prepare=True,
+                    deadline_ns=target_deadline):
+                raise OnboardingError('qualified_onboarding_candidate_mount_required')
+            phase = 'update'
+            remaining = (target_deadline - time.monotonic_ns()) / 1_000_000_000
+            if remaining <= 0:
+                raise OnboardingError('receiving_host_deadline_expired')
+            value = owner.update_native_code(plans[name], candidate,
+                operation_id=spec['operation_id'], timeout_seconds=min(120.0, remaining),
+                receive_only_group=spec['group'] == 'closed', published_group=spec['group'] == 'published')
+            results.append(dict(name=name, operation_id=spec['operation_id'], status='updated', result=value))
+        except Exception as error:
+            # A retained failure may include partial effects. Keep the original
+            # operation ID: another invocation reconciles it, never reenrolls.
+            from .onboarding import refusal_diagnostic
+            results.append(dict(name=name, operation_id=spec['operation_id'], status='incomplete',
+                phase=phase, failure=refusal_diagnostic(error, stage='native-code-maintenance')))
+            break
+    complete = len(results) == len(spec['targets']) and all(row['status'] == 'updated' for row in results)
+    return dict(schema='cluster-native-code-maintenance-result/v1', complete=complete,
+        candidate_digest=candidate[1], targets=results,
+        pending=spec['targets'][len(results):],
+        receiving_readiness='unobserved')
+
+
+def main(argv=None) -> int:
+    import argparse
+    import os
+    from .onboarding import refusal_diagnostic
+    parser = argparse.ArgumentParser(description='Bounded code/SDK maintenance of existing admitted bodies')
+    parser.add_argument('--spec', type=Path, required=True,
+        help='retained root-owned private cluster-native-code-maintenance/v1 JSON')
+    args = parser.parse_args(argv)
+    try:
+        if os.geteuid() != 0:
+            raise OnboardingError('native_code_maintenance_root_required')
+        result = run_code_update(being_seed._read(args.spec, limit=65536))
+        print(json.dumps(result))
+        return 0 if result['complete'] else 1
+    except Exception as error:
+        print(json.dumps(dict(schema='cluster-native-code-maintenance-result/v1', complete=False,
+            failure=refusal_diagnostic(error, stage='native-code-maintenance'))))
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

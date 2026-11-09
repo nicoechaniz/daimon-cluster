@@ -1593,6 +1593,31 @@ operation and idempotent migration, without another stop or any message replay.
 Read-only schema loading stays unchanged. Schema migration can require forward
 recovery: do not select a predecessor unable to read the upgraded catalogs.
 
+The maintained operator entrypoint is:
+
+```sh
+python -m clusterctl.onboarding_managed --spec /protected/native-code-update.json
+```
+
+The private root-owned spec uses `schema: cluster-native-code-maintenance/v1`,
+`host_config`, nullable `vm_qualification`, `candidate: {code, code_digest}`,
+`targets` (1–16 existing job names), `group` (`none`, `closed`, or `published`),
+one retained UUID `operation_id`, and `max_seconds` (1–480). For a remote Incus
+cohort, `vm_qualification` selects its existing `receiving.json` and per-name
+placement records, verified by the existing `RemoteIncusRunner`. It supplies no
+new enrollment, identity, SSH route, arbitrary command or publication callback.
+Native/local targets keep their existing HostConfig route.
+
+The command prepares qualified public code and invokes the same update primitive
+serially. Code preparation shares each body's120-second budget and the batch's
+absolute deadline. It stops on the first incomplete result, reports remaining
+names and reuses the same operation ID on exact retry. Existing per-body journals
+reconcile completed or uncertain effects; no duplicate batch effect journal,
+background retry or scheduler is introduced. Keep the spec unchanged for resume.
+The result's `receiving_readiness: unobserved` remains literal until the existing
+cohort reader qualification/selection finishes; this command is code maintenance,
+not the complete fleet provisioning or messaging acceptance workflow.
+
 The original 120-second call bound and existing current/previous operation
 records remain. Catalog migration performs no provider/transport call or inbox
 attention. The result deliberately retains `receiving_readiness=unobserved`:

@@ -72,6 +72,8 @@ class OnboardingError(ValueError):
 # unknown future codes never become CLI diagnostics by matching a text pattern.
 _DIAGNOSTIC_CODES = frozenset({
     'seed_operation_in_progress', 'qualified_runtime_module_required',
+    'native_code_maintenance_spec_required', 'native_code_maintenance_root_required',
+    'native_code_maintenance_existing_body_required', 'receiving_host_deadline_expired',
     'qualified_runtime_imports_required', 'qualified_runtime_context_required',
     'qualified_receiving_interpreter_required', 'private_onboarding_sdk_required',
     'installed_onboarding_sdk_changed', 'onboarding_sdk_digest_mismatch',

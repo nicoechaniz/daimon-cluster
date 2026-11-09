@@ -146,6 +146,46 @@ unassessed; verified entrypoint/source selection does not clear those gaps.
 All4 current native supervisors were observed to select the same retained
 runtime artifact. Their candidate manifests derive68 declared module files from
 its verified release receipt, preserving the existing App/native manifests.
-Actual daily selection and producer/incident outcome must be recorded separately;
-source tests or a prepared manifest are not receiver adoption. The host Incus
-service's own package provenance remains a separate current gap.
+Actual receiving selected the helper on the existing host/four-guest pipeline.
+The complete occurrence observed13main processes and verified12deployments,
+including68declared source files for each of the four supervisors. All process
+identities/invocations were preserved;38seconds/234971136bytes peak remained
+within900seconds/512MiB/25%CPU/64tasks. No new timer, model or native restart.
+Host Incus package provenance remains a separate current gap.
+
+
+## Recovering a changed source selection
+
+Resolve current web provenance from the maintained Interaction receiving pointer
+and its qualified per-target adoption manifest before updating the observer.
+An older successful observation is historical; it must not silently bless a
+newly loaded directory. The receiving run detected old833web references against
+the already adopted834web. The replacement came from the maintained834receipt,
+not hashes learned from the running tree; the App was neither changed nor rolled
+back. Include this manifest refresh in the owning deployment path when selecting
+a new qualified source. Automatic cross-component publication wiring is not
+established by this receiving refresh.
+
+A terminal failed finite observer with MainPID0 and no active systemd Job may
+admit scoped recovery just as an inactive observer can. Preserve its failed
+report, invocation and source preimage; never require `reset-failed` or confuse
+terminal failure with a running worker. An active/queued job or held lock still
+refuses overlapping work. The first receiving recovery's inactive-only check was
+corrected before configuration dispatch, preserving that original refusal.
+
+Keep current and original rollback manifests. A third manifest was temporarily
+staged for the qualified web refresh; after the actual healthy collection, the
+unselected failed intermediate's byte-verified metadata was retained in its
+bounded operation journal and the live manifest directory returned to2entries.
+No app data, runtime code, original rollback or uncertain native effect was
+retired. The known-exploitation HTTP failure also remained unavailable with its
+prior successful source hash. A later bounded read observed all3fixed sources200;
+one new complete occurrence then passed. The exact failed source/status was not
+recorded by that old HTTP error path and is not inferred from later success.
+
+The producer's health incident resolved at higher revision2. The distinct partial
+coverage incident remains open at revision5 with original provenance/delivery
+history and no requested acknowledgment. It still records host Incus provenance,
+Python imports/dependency authenticity/exposure, malicious releases outside the
+selected public versions and current vendor applicability as pending. Healthy
+collection is not security clearance or family/device acceptance.

@@ -23,6 +23,55 @@ scoped gateway reload to change. Disable by removing the optional argument and
 reloading only the gateway. Preserve existing sessions/state and the prior source
 selection for software rollback. Never roll back authority databases.
 
+## Native usage and account allowances
+
+The same foreground owner collector optionally accepts `usage_targets` (at most
+16 fixed, owner-selected read commands), `usage_probe` and `native_transport`.
+The latter two contain a public source `path` and its exact `sha256`. Reuse the
+maintained Telecodex `activity_indicator.py` Native transport; its bounded reader
+prefix is injected with the public usage probe, without installing an observer
+or starting a daemon in the receiving body. Each target supplies `being`, `name`,
+`command` and `probe` (`codex_home`, exact native `database`, and `binary`). Run
+each probe as that native body's existing user, with its actual receiving home.
+The current native socket must already exist. Commands and paths never come
+from browser input.
+
+The probe selects only thread ID, `tokens_used`, creation and update timestamps
+from the existing native state SQLite database in read-only/query-only mode.
+It reads no prompts or message contents. Native `tokens_used` is the persisted
+cumulative `total_token_usage.total_tokens`, not the context-window size. Up to
+4096 counters per body are observed with a two-second query deadline; excess or
+missing bodies explicitly make coverage partial. Duplicate thread IDs across
+the same being's selected databases contribute the maximum observed counter
+once. Distinct beings remain separate. Hashes used for deduplication stay inside
+the collector and are not persisted or sent to the browser. These recorded
+native totals exclude calls outside these counters and unobserved historical bodies;
+they are not an estimate of monetary spend or account-wide lifetime billing.
+
+The existing native `account/rateLimits/read` supplies account identity and
+allowance windows, without a model call. Group observations by its actual account
+ID, never by a guessed provider/voice assignment. The matching local account's
+email supplies the private dashboard label; credential bytes and account IDs
+never leave the probe. Expose sanitized window percentage, duration, reset,
+plan, ordinary-usage availability and available reset-credit count only. Reading
+credits never consumes one. Window duration determines the weekly/short label:
+a weekly window can be `primary`, and an absent short window is not zero usage.
+Current account assignments do not attribute historical tokens to that account.
+
+Usage refreshes only during authenticated foreground dashboard reads, at most
+once per minute. The owner retains one replaceable sanitized `usage.json`
+(64 KiB maximum) alongside the existing bounded report/lock; no raw per-thread
+records, growing history or new timer. Failures are unavailable, never a zero
+counter or a fabricated current window. Keep observation timestamps visible.
+Each usage command is bounded to 12 seconds with four concurrent workers; the
+collector service has a 45-second deadline and the consumer a 42-second socket
+deadline, preserving the existing process/memory/output limits. Preserve current
+account selections and native work. Software delivery changes only a new Fleet
+collector release/config selector and a new Home release overlay containing the
+dashboard files. Reload only the Home gateway, preserving all authentication,
+sessions, owner keys, Homemaker and data stores. Rollback selects prior code and
+the prior collector config; it never restores databases or clears native work.
+
 ## Children's host continuation
 
 Nicolas confirmed reinstalling the former daimonmatrix VPS as Debian 13 on

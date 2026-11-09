@@ -19,6 +19,22 @@ from .onboarding_service import UNIT
 from .production_fences import ed25519_fingerprint
 
 
+def _code_update_group(value: dict) -> dict | None:
+    """Freeze an existing intake-only group; code updates cannot release it."""
+    group = value.get('group')
+    if group is None:
+        return None
+    app = (value.get('group_runtime_status') or {}).get('loaded_application')
+    if (not isinstance(group, dict) or not isinstance(app, dict)
+            or app.get('visibility', {}).get('release_enabled') is not False
+            or app.get('visibility', {}).get('installation_sha256') is not None
+            or any(not isinstance(app.get(key), str) or re.fullmatch('[0-9a-f]{64}', app[key]) is None
+                for key in ('application_sha256', 'publication_sha256'))):
+        raise OnboardingError('native_code_update_closed_group_required')
+    return dict(selected=group, application_sha256=app['application_sha256'],
+        publication_sha256=app['publication_sha256'], outbound_release=False)
+
+
 class ManagedRuntime:
     def __init__(self, backend):
         self.backend = backend
@@ -64,14 +80,15 @@ class ManagedRuntime:
 
     def update_native_code(self, plan: dict, candidate: tuple[Path, str], *,
                            operation_id: str, timeout_seconds: float = 60) -> dict:
-        """Select code for an admitted plain body through its existing unit writer.
+        """Select code for an admitted body through its existing unit writer.
 
         No group publication or controller renewal is involved. The durable
         request binds the actual admitted predecessor and changes only ExecStart;
         root's existing bootstrap journal reconciles lost stop/select/start ACKs.
         Identity, credentials, native stores and Conversation are preserved.
-        One replaceable record per body refuses a different operation until an
-        operator has reconciled it; it is not a second service manager.
+        An existing closed group is frozen across the update. Retain one current
+        and one previous completed receipt; unfinished effects require exact
+        reconciliation and can never be replaced by a new operation.
         """
         from .onboarding_service import command
         if (self.settings.get('mode') != 'native-admission-only'
@@ -114,15 +131,25 @@ class ManagedRuntime:
                     observation_timeout_seconds=remaining())
                 if (value.get('responder_association') != 'same-connection'
                         or any(value['origin'].get(key) != expected[key]
-                            for key in ('body_ref', 'embodiment_id', 'incarnation_id'))
-                        or value.get('group') is not None):
+                            for key in ('body_ref', 'embodiment_id', 'incarnation_id'))):
                     raise OnboardingError('native_code_update_identity_changed')
+                _code_update_group(value)
                 return value
+            previous_completed = None
             if path.exists():
                 state = being_seed._read(path)
                 if state.get('pins') != pins:
-                    raise OnboardingError('native_code_update_operation_conflict')
-            else:
+                    prior_pins, prior_result = state.get('pins', {}), state.get('result', {})
+                    if (prior_pins.get('operation_id') == operation_id
+                            or state.get('dispatching') is not None
+                            or len(json.dumps(state).encode()) > 65536
+                            or set(state.get('effects', {})) != {'validate', 'quiesce', 'select', 'start'}
+                            or prior_result.get('operation_id') != prior_pins.get('operation_id')
+                            or prior_result.get('candidate_digest') != prior_pins.get('candidate_digest')
+                            or prior_result.get('schema') != 'cluster-native-code-updated/v1'):
+                        raise OnboardingError('native_code_update_operation_conflict')
+                    previous_completed = state
+            if not path.exists() or previous_completed is not None:
                 before = observe()
                 previous = {key: before[key] for key in ('process', 'admission_parent')}
                 physical = self.backend._guest_service_call(plan, 'bootstrap-inspect', candidate=candidate,
@@ -131,6 +158,13 @@ class ManagedRuntime:
                 state = dict(pins=pins, runtime_sha256=before['runtime_sha256'],
                     request=dict(schema='cluster-guest-service-bootstrap/v1', operation_id=operation_id,
                         plan_digest=digest(plan), predecessor=previous, argv=argv), effects={})
+                if before.get('group') is not None:
+                    state['closed_group'] = _code_update_group(before)
+                if previous_completed is not None:
+                    # The native bootstrap journal retains the exact historical
+                    # effects. These two bounded owner records are observations.
+                    being_seed._write(directory / 'native-code-update.previous.json', previous_completed)
+                    state['previous_completed_sha256'] = digest(previous_completed)
                 save()
             for action in ('validate', 'quiesce', 'select', 'start'):
                 if action in state['effects']:
@@ -146,6 +180,8 @@ class ManagedRuntime:
             current = observe()
             if current['runtime_sha256'] != state['runtime_sha256']:
                 raise OnboardingError('native_code_update_identity_changed')
+            if _code_update_group(current) != state.get('closed_group'):
+                raise OnboardingError('native_code_update_group_changed')
             physical = self.backend._guest_service_call(plan, 'bootstrap-inspect', candidate=candidate,
                 timeout_seconds=remaining(), owner_observation={key: current[key]
                     for key in ('process', 'admission_parent')})

@@ -961,8 +961,9 @@ def test_initial_managed_adopts_explicit_successor_without_replaying_start(tmp_p
 
 
 @pytest.mark.parametrize('lost_start_ack', [False, True])
-def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack):
-    """A plain admitted body needs no group/controller publication to update code."""
+@pytest.mark.parametrize('closed_group', [False, True])
+def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, closed_group):
+    """Plain and closed-group bodies reuse their existing native unit writer."""
     managed = object.__new__(ManagedRuntime)
     managed.settings = {'mode': 'native-admission-only'}
     managed.state = tmp_path / 'state'
@@ -985,10 +986,15 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     managed._registered = lambda _: True
     calls = []
     effects = {}
+    selected_unit = ['previous']
     process = {'pid': 10}
     parent = {'pid': 9}
     current = dict(process=process, admission_parent=parent, origin=managed._expected(plan),
         runtime_sha256='original-bundle', responder_association='same-connection', group=None)
+    if closed_group:
+        current.update(group=dict(channel_id='tribe', application='/own/application'),
+            group_runtime_status=dict(loaded_application=dict(application_sha256='c'*64,
+                publication_sha256='d'*64, visibility=dict(release_enabled=False, installation_sha256=None))))
     failures = [lost_start_ack]
     def owner(_plan, action, **_):
         assert action == 'admitted-running'
@@ -997,22 +1003,27 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         calls.append(action)
         if action == 'bootstrap-inspect':
             assert options['owner_observation'] == dict(process=current['process'], admission_parent=current['admission_parent'])
-            return dict(service=dict(unit_sha256='selected' if effects else 'previous'),
+            return dict(service=dict(unit_sha256=selected_unit[0]),
                 scope=dict(admission_parent=current['admission_parent']))
         request = options['request']
-        assert request['operation_id'] == '68d4481f-9ade-4b1c-a08d-cfa3f962f5bc'
+        assert request['operation_id'] in {'68d4481f-9ade-4b1c-a08d-cfa3f962f5bc', '68d4481f-9ade-4b1c-a08d-cfa3f962f5bd'}
         assert '--receive-only' in request['argv']
         assert '--visibility-installation' not in request['argv']
         state = being_seed._read(managed.state / 'newcomer/native-code-update.json')
         assert state['dispatching'] == action.removeprefix('bootstrap-')
+        prior = effects.setdefault(request['operation_id'], {})
         if action == 'bootstrap-start':
-            current.update(process={'pid': 20}, admission_parent={'pid': 19})
-            effects.setdefault(action, dict(admission_parent=current['admission_parent']))
+            if action not in prior:
+                pid = 10 + 10 * len(effects)
+                current.update(process={'pid': pid}, admission_parent={'pid': pid-1})
+                prior[action] = dict(admission_parent=current['admission_parent'])
             if failures.pop() if failures else False:
                 raise OnboardingError('lost_start_ack')
         else:
-            effects.setdefault(action, dict(selected_sha256='selected'))
-        return copy.deepcopy(effects[action])
+            prior.setdefault(action, dict(selected_sha256=digest(request['argv'])))
+            if action == 'bootstrap-select':
+                selected_unit[0] = prior[action]['selected_sha256']
+        return copy.deepcopy(prior[action])
     managed.backend = SimpleNamespace(config=SimpleNamespace(jobs=jobs), authorize=lambda *_: True,
         runtime_available=lambda *_, **__: True, _receiving_base=lambda _: Path('/original/base'),
         _runtime_paths=lambda *_, **__: (Path('/approved/candidate'), [], []),
@@ -1022,12 +1033,42 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         with pytest.raises(OnboardingError, match='lost_start_ack'):
             managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
         assert calls.count('bootstrap-start') == 1
+        original_calls = list(calls)
+        with pytest.raises(OnboardingError, match='operation_conflict'):
+            managed.update_native_code(plan, (tmp_path, 'b'*64),
+                operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd')
+        assert calls == original_calls
     result = managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
     assert result['runtime_sha256'] == 'original-bundle'
     assert result['receiving_readiness'] == 'unobserved'
     assert calls.count('bootstrap-quiesce') == 1
     assert calls.count('bootstrap-select') == 1
-    assert len(effects) == 4
+    assert len(effects[options['operation_id']]) == 4
+    if closed_group:
+        current['group_runtime_status']['loaded_application']['application_sha256'] = 'e'*64
+        original_calls = list(calls)
+        with pytest.raises(OnboardingError, match='group_changed'):
+            managed.update_native_code(plan, (tmp_path, 'a'*64), **options)
+        assert calls == original_calls
+        current['group_runtime_status']['loaded_application']['application_sha256'] = 'c'*64
     with pytest.raises(OnboardingError, match='operation_conflict'):
         managed.update_native_code(plan, (tmp_path, 'b' * 64), **options)
+    completed = being_seed._read(managed.state / 'newcomer/native-code-update.json')
+    next_options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd')
+    if closed_group:
+        current['group_runtime_status']['loaded_application']['visibility']['release_enabled'] = True
+        with pytest.raises(OnboardingError, match='closed_group_required'):
+            managed.update_native_code(plan, (tmp_path, 'b'*64), **next_options)
+        assert being_seed._read(managed.state / 'newcomer/native-code-update.json') == completed
+        current['group_runtime_status']['loaded_application']['visibility']['release_enabled'] = False
+    next_result = managed.update_native_code(plan, (tmp_path, 'b'*64), **next_options)
+    assert next_result['candidate_digest'] == 'b'*64
+    assert next_result['process']['pid'] == 30
+    assert being_seed._read(managed.state / 'newcomer/native-code-update.previous.json') == completed
+    latest = being_seed._read(managed.state / 'newcomer/native-code-update.json')
+    assert latest['previous_completed_sha256'] == digest(completed)
+    assert calls.count('bootstrap-quiesce') == 2
+    if closed_group:
+        assert latest['closed_group']['application_sha256'] == 'c'*64
+        assert latest['closed_group']['outbound_release'] is False
     assert job == {'plan': plan, 'original': 'retained'}

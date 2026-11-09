@@ -1548,6 +1548,17 @@ reader selection, message delivery or model action.
 
 ### Receive-only members and control provisioning
 
+A subsequent public code/SDK update of a plain or already closed-group admitted
+guest uses `ManagedRuntime.update_native_code` and the existing bootstrap unit
+writer. Its authenticated predecessor observation freezes the existing group
+coordinates and signed application/publication hashes. The same closed group
+must remain after startup; a published outbound adapter cannot use this path.
+Do not rerun enrollment, controller issuance or group publication to update code.
+The owner retains one current and one previous completed record, at most64KiB
+each; a new operation can replace only a completed receipt. An unfinished or
+uncertain operation must reconcile its original bootstrap request. Exact retries
+and changed group/application refusals preserve their actual effects.
+
 A native receive-only application can be installed without an outbound visibility
 adapter. `bootstrap_group` freezes that adapter's absence as explicit null hashes;
 it still verifies the signed application and freezes its selection/publication.

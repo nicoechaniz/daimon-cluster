@@ -216,7 +216,11 @@ unobserved. The native-code command accepts an optional `reader_completion` path
 existing private maintenance spec. The referenced root-owned JSON has schema
 `cluster-maintenance-reader-routes/v1`, `checkpoint` (one absolute private path)
 and `owners` (the required current receiving owners, at most256). Each owner has
-`root`, `command`, `selection` and `require_admitted`. `command` is the existing
+`root`, `command`, `selection` and `require_admitted`. An optional `job` names
+one of the existing maintenance targets: that route uses the same HostBackend
+placement executor and grant instead of a second SSH/Incus binding. In that case
+`command` is the owner program argv inside the already selected body. Otherwise,
+`command` is the existing
 trusted local/remote owner CLI argv prefix, running
 `clusterctl.onboarding_owner_control` with that body's `--root` and `--socket`
 through its configured owner interpreter and qualified maintenance code. It

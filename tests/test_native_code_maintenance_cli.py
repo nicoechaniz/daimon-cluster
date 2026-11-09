@@ -121,7 +121,10 @@ def test_reader_route_failure_precedes_any_update_or_backend_creation(tmp_path, 
             assert value == {'action':'status'}
             raise OnboardingError('receiving_reader_owner_unavailable')
     monkeypatch.setattr(managed, 'ReaderCommandClient', Client)
-    monkeypatch.setattr(onboarding_host.HostConfig, 'load', lambda _:pytest.fail('update began before route preflight'))
+    monkeypatch.setattr(onboarding_host.HostConfig, 'load', lambda _:SimpleNamespace(jobs=tmp_path))
+    monkeypatch.setattr(managed,'JobStore',lambda _:SimpleNamespace(_load=lambda name:dict(plan=dict(name=name))))
+    monkeypatch.setattr(onboarding_host,'HostBackend',lambda *_,**__:SimpleNamespace())
+    monkeypatch.setattr(managed,'ManagedRuntime',lambda _:pytest.fail('update began before route preflight'))
     with pytest.raises(OnboardingError, match='owner_unavailable'):
         managed.run_code_update(selected)
 
@@ -176,3 +179,21 @@ def test_reader_failure_keeps_update_complete_and_resumes_same_native_effects(tm
     result=managed.run_code_update(selected)
     assert result['complete'] and result['receiving_readiness']=='qualified-local-projection'
     assert len(effects)==3
+
+
+def test_job_reader_reuses_owning_placement_executor(tmp_path, monkeypatch):
+    from clusterctl import onboarding_receiving_update as receiving
+    import time
+    monkeypatch.setattr(receiving,'_run_owner',lambda *_,**__:pytest.fail('new transport bypassed placement'))
+    plan=dict(name='current')
+    def execute(actual,argv,**options):
+        assert actual is plan and argv[0]=='/body/owner'
+        assert options['uid']==options['gid']==1000
+        assert json.loads(options['input_data'])=={'action':'status'}
+        assert options['deadline_ns'] > time.monotonic_ns()
+        return json.dumps({'current':'owner'})
+    backend=SimpleNamespace(execute_body=execute)
+    clients=managed.code_update_reader_clients(dict(owners={'current':dict(root=str(tmp_path),
+        job='current',command=['/body/owner'])}),backend=backend,plans={'current':plan})
+    clients['current'].deadline_ns=time.monotonic_ns()+1_000_000_000
+    assert clients['current']._call(dict(action='status'))=={'current':'owner'}

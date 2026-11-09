@@ -164,7 +164,11 @@ sufficient; discard replaced disposable preparation after its cohort completes.
 ## Ordinary update: one command, two explicit outcomes
 
 For a new update of existing admitted bodies, use the maintained command with
-the retained protected maintenance spec:
+the retained protected maintenance spec. Run it in the controller's existing
+qualified operator environment with its Matrix SDK; host custody/registration
+uses that SDK even when remote lifecycle helpers use stdlib-only launchers.
+A bare `-I -S` launcher omits it. Reuse the environment rather than creating
+one per invocation; this does not select the receiving body's SDK.
 
 ```sh
 python -B -m clusterctl.onboarding_managed --spec "$maintenance_spec"
@@ -175,11 +179,23 @@ python -B -m clusterctl.onboarding_managed --spec "$maintenance_spec"
 | Includes `reader_completion` | Native software update plus current-reader qualification/selection | `qualified-local-projection` after successful final observation; incomplete if a required reader fails |
 | Omits `reader_completion` | Legacy code-only update | `unobserved`; software success alone does not establish messaging readiness |
 
+The protected reader-routes file may specify its own `host_config` and nullable
+`vm_qualification` for existing reader jobs. Use this when, for example, original
+adult jobs and later child jobs belong to different registries. Reader placement
+then resolves from that registry; the software update keeps its original backend.
+Do not copy jobs or reenroll bodies to make the registries coincide. Omitting
+these locators preserves the existing shared-backend behavior.
+
 Prefer the composed spec for ordinary messaging-capable fleet updates. For its
 managed `job` owners, `selection: null` derives digests from the exact native
-update results; do not transcribe six hashes per updated body. Reuse the same
+update results; do not transcribe six hashes per updated body. An updated
+explicit owner route with the same target name also derives its successor
+selection from the exact receipt, validating current process, origin and bundle. Reuse the same
 spec and `operation_id` after an incomplete result. Completed native effects are
 retained and an unresolved reader operation is continued rather than replaced.
+If that exact operation owns a stopped guest, its retained plan/candidate/quiesce
+record admits native recovery before probing its unavailable reader; unrelated
+readers are still checked. Another operation cannot claim that exemption.
 A separate manual reader round is for an already completed code-only update,
 not an extra step after a successful composed command.
 
@@ -199,8 +215,8 @@ and successor with the same SDK so preservation can read the migrated catalogs;
 the maintained worker checks this before preparing lifecycle effects.
 The H8 native-profile route now composes these stages through the same fleet
 command; see [native-profile maintenance](rebirth-native-profile.md#routine-h8-maintenance-through-the-existing-fleet-command).
-Actual changed-profile adoption and the remaining legacy-profile composition
-remain distinct qualification work. When a qualified
+Actual changed-profile adoption remains distinct receiving qualification work.
+Published legacy Target services use the same managed-job composition below. When a qualified
 maintenance helper verifies an existing body, pass that body's selected code
 and owner to the existing-base verifier. The helper's own directory is not the
 body's SDK selection. Identity signatures and all existing bindings still apply.
@@ -306,7 +322,36 @@ using a staged helper, reuse the public-code transfer/normalization route and
 verify imports as the actual receiving owner, including traversal of every parent
 directory. An inherited private umask can leave an otherwise byte-correct public
 package unreadable. Keep private/shared parents private and select the existing
-public-code destination; do not widen unrelated directories. Owner-route preflight
+public-code destination; do not widen unrelated directories. The cohort completer
+overlaps independent owner observations with at most four workers; native
+controls and final validation remain serialized under the same deadline. A
+verified process replacement can also change its loaded-view hash. The same
+native operation may then derive a new reader-control generation, only when
+software selections, credentials, membership and rosters remain unchanged and
+the changed view belongs to that replaced instance. The checkpoint retains up
+to four superseded generations with their exact controls and uncertainty; old
+owner request files remain intact. Native operation IDs remain unchanged so an
+accepted revocation keeps its reservation until selection. The compatible owner
+CLI accepts an optional64-hex local request slot; select that public helper
+before using generation recovery. No daemon or SDK reload is required. Same-instance retries keep their original
+commands/deadlines while they can still take effect. An expired select is
+retained unchanged in a superseded generation; fresh authenticated observations
+of the same vector allow a new local request slot under the same reserved native
+operation. This does not renew a credential, grant or resource contract. The finite observation horizon does not grant maintenance authority or
+replace the original operation deadline. Fresh selections keep their effect
+inside that deadline and actual signed finite credential validity; native
+physical-process, CAS, roster and credential checks remain authoritative. Each
+owner call retains its60-second limit. This removes the former one-minute
+selection gate that expired inside an eight-minute operation. The checkpoint
+keeps four detailed superseded generations plus a rolling count/hash. It retires
+an oldest detail only when current native process/CAS or expiry proves that its
+controls cannot acquire another effect; owner-private originals stay intact. Other changes or the existing byte limit still refuse.
+New snapshots use a vector/process-bound local slot from their first control.
+If the closed owner refuses a filename binding before submission, the completer
+retains that refusal and allocates at most one alternate slot for the unchanged
+command bytes and deadline. An unknown dispatch or ACK never takes that path.
+Closed owner refusal codes remain visible in the ordinary maintenance result.
+This adds no polling service, authority or lifecycle operation. Owner-route preflight
 failures identify the receiver and phase before code updates begin. Import failures
 use a closed public code; arbitrary stderr and credential material stay private.
 
@@ -1667,9 +1712,10 @@ writer. Select `receive_only_group=True` for an existing group: it uses the
 current native/loaded observation independently of the original enrollment
 ceremony. The command first completes the existing idempotent `sdk-prepare`
 stage as the actual owner; public file availability alone does not prove the
-owner interpreter or closed imports exist. The complete update has one 120-second
-default/maximum envelope, including cold preparation; every individual call
-remains at most 60 seconds and cannot extend that original envelope. Its authenticated predecessor
+owner interpreter or closed imports exist. The primitive keeps its120-second
+default and accepts an explicit envelope up to300seconds, including cold
+preparation; every individual call remains at most60seconds and cannot extend
+the declared envelope. Its authenticated predecessor
 observation freezes the existing group
 coordinates and signed application/publication hashes. The same closed group
 must remain after startup; a published outbound adapter cannot use this path.
@@ -1696,6 +1742,19 @@ the old receive-only entrypoint refuses an installation once it exists.
 
 An already-published admitted guest uses the same
 `ManagedRuntime.update_native_code(..., published_group=True)` operation.
+This includes original completed jobs whose runtime predates
+`native-admission-only`; resolve their actual HostConfig and existing placement
+rather than searching only a newer cohort configuration or reenrolling them.
+Published maintenance verifies the current native registration and live group
+snapshot directly; it does not revisit historical publication coordination.
+
+When systemd selects the Target command through an existing Service-only
+`ExecStart` reset/command override, the same unit writer selects that effective
+file in the manager's load order. It changes only the qualified runtime code and
+digest pins, preserving the working interpreter, bootstrap and other arguments.
+The base fragment and other drop-ins remain frozen. A single replaceable
+`.previous` file supports exact lost-ACK recovery; do not append another override
+layer or replace a native Python environment with a generic interpreter.
 It freezes the actual group, signed application/publication, visibility
 installation and policy. After the existing quiesce step, its qualified owner
 preflights both base/group catalogs and performs the SDK's explicit versioned
@@ -1722,17 +1781,20 @@ new enrollment, identity, SSH route, arbitrary command or publication callback.
 Native/local targets keep their existing HostConfig route.
 
 The command prepares qualified public code and invokes the same update primitive
-serially. Code preparation shares each body's120-second budget and the batch's
-absolute deadline. It stops on the first incomplete result, reports remaining
+serially. Code preparation shares each body's maximum300-second budget and the
+batch's unchanged absolute deadline (maximum480seconds). The former120-second
+CLI cap expired during actual Eko maintenance after quiescence and forced
+avoidable resumptions; it is not renewed or layered onto the batch bound. It stops on the first incomplete result, reports remaining
 names and reuses the same operation ID on exact retry. Existing per-body journals
 reconcile completed or uncertain effects; no duplicate batch effect journal,
 background retry or scheduler is introduced. Keep the spec unchanged for resume.
-The result's `receiving_readiness: unobserved` remains literal until the existing
-cohort reader qualification/selection finishes; this command is code maintenance,
-not the complete fleet provisioning or messaging acceptance workflow.
+Include the existing `reader_completion` section for the composed ordinary
+update above. Code-only specs retain `receiving_readiness: unobserved`; a
+successful composed run reports `qualified-local-projection`. Neither result
+claims full fleet provisioning, model uptake or a new message response.
 
-The original 120-second call bound and existing current/previous operation
-records remain. Catalog migration performs no provider/transport call or inbox
+Individual owner/physical calls keep their60-second bound; existing
+current/previous operation records remain. Catalog migration performs no provider/transport call or inbox
 attention. The result deliberately retains `receiving_readiness=unobserved`:
 finish the existing current-reader cohort qualification/selection before claiming
 messaging availability. This per-body update primitive is not the complete fleet

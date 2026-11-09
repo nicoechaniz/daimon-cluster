@@ -24,7 +24,9 @@ def test_refuse_invalid_or_unbounded_spec_before_any_backend(change):
         managed.validate_code_update({**spec(), **change})
 
 
-def test_partial_batch_reuses_one_operation_and_existing_effects(tmp_path, monkeypatch):
+@pytest.mark.parametrize('batch_seconds',[90,480])
+def test_partial_batch_reuses_one_operation_and_existing_effects(tmp_path, monkeypatch, batch_seconds):
+    selected = {**spec(), "max_seconds": batch_seconds}
     clock = [1_000_000_000]
     monkeypatch.setattr(managed.time, 'monotonic_ns', lambda: clock[0])
     config = SimpleNamespace(jobs=tmp_path)
@@ -41,7 +43,7 @@ def test_partial_batch_reuses_one_operation_and_existing_effects(tmp_path, monke
             assert selected is config and run is None
         def runtime_available(self, plan, candidate, *, prepare, deadline_ns):
             assert prepare and candidate[1] == 'a'*64
-            assert 0 < deadline_ns-clock[0] <= 120_000_000_000
+            assert 0 < deadline_ns-clock[0] <= min(300,batch_seconds)*1_000_000_000
             prepared.append(plan['name'])
             clock[0] += 20_000_000_000
             return True
@@ -61,13 +63,13 @@ def test_partial_batch_reuses_one_operation_and_existing_effects(tmp_path, monke
             return copy.deepcopy(effects[key])
     monkeypatch.setattr(onboarding_host, 'HostBackend', Backend)
     monkeypatch.setattr(managed, 'ManagedRuntime', Owner)
-    result = managed.run_code_update(spec())
+    result = managed.run_code_update(selected)
     assert not result['complete'] and result['pending'] == ['third']
     assert [row['status'] for row in result['targets']] == ['updated', 'incomplete']
     assert result['targets'][1]['failure']['code'] == 'seed_operation_in_progress'
     assert prepared == ['first', 'second']
-    assert all(0 < seconds <= 100 for seconds in budgets)
-    result = managed.run_code_update(spec())
+    assert all(0 < seconds <= min(280,batch_seconds-20) for seconds in budgets)
+    result = managed.run_code_update(selected)
     assert result['complete'] and not result['pending']
     assert len(effects) == 3 and {key[0] for key in attempts} == {spec()['operation_id']}
     assert result['receiving_readiness'] == 'unobserved'
@@ -215,7 +217,8 @@ def test_owner_import_failure_is_public_code_without_arbitrary_stderr(tmp_path, 
 
 
 @pytest.mark.parametrize('tamper',[None,'process','code','bundle'])
-def test_updated_job_selection_is_derived_from_its_exact_receipt(tmp_path, monkeypatch, tamper):
+@pytest.mark.parametrize('explicit_route',[False,True])
+def test_updated_job_selection_is_derived_from_its_exact_receipt(tmp_path, monkeypatch, tamper, explicit_route):
     from clusterctl import onboarding_receiving_update as receiving
     import time
     observed=dict(process=dict(pid=42),server=dict(embodiment_id='body:current'),runtime_status=dict(
@@ -240,6 +243,9 @@ def test_updated_job_selection_is_derived_from_its_exact_receipt(tmp_path, monke
     monkeypatch.setattr(receiving,'refresh_current_readers',finish)
     value=dict(checkpoint=str(tmp_path/'progress.json'),owners=dict(current=dict(
         job='current',selection=None,require_admitted=True)))
+    if explicit_route:
+        value['owners']['current'].pop('job')
+        value['owners']['current']['selection']={'receiving_code':'9'*64}
     options=dict(operation_id=receipt['operation_id'],release_digest='a'*64,
         deadline_ns=time.monotonic_ns()+1_000_000_000,updates={'current':receipt})
     if tamper:
@@ -271,7 +277,7 @@ def test_pending_reader_checkpoint_keeps_same_operation_resumable(tmp_path):
     preflight_reader_checkpoint(checkpoint, spec()['operation_id'])
 
 
-@pytest.mark.parametrize("mode", ["update", "check", "failed-reader", "retained"])
+@pytest.mark.parametrize("mode", ["update", "check", "failed-reader", "retained", "owned-stopped"])
 def test_native_profile_command_composes_existing_readers_and_keeps_the_same_deadline(
     tmp_path, monkeypatch, mode
 ):
@@ -340,6 +346,8 @@ def test_native_profile_command_composes_existing_readers_and_keeps_the_same_dea
 
         def _call(self, request):
             calls.append(self.name)
+            if self.name == "root" and mode == "owned-stopped":
+                pytest.fail("the operation-owned stopped reader must not block recovery")
             if self.name == "peer" and mode == "failed-reader":
                 raise OnboardingError("receiving_reader_owner_unavailable")
             return (
@@ -350,7 +358,7 @@ def test_native_profile_command_composes_existing_readers_and_keeps_the_same_dea
 
     clients = {name: Client(name) for name in ("root", "peer")}
     monkeypatch.setattr(managed, "code_update_reader_clients", lambda *_, **__: clients)
-    if mode == "retained":
+    if mode in {"retained", "owned-stopped"}:
         journal = OperationJournal(Path(core["journal"]))
         row = journal.plan(
             operation="receiving-update",
@@ -358,11 +366,14 @@ def test_native_profile_command_composes_existing_readers_and_keeps_the_same_dea
             operation_id=core["operation_id"],
             idempotency_key="fixture",
             intent={"native_profile_maintenance": core},
-            expected_precondition={},
+            expected_precondition={"receiving": before},
             intended_transition={},
             audit_identity={},
         )
-        journal.advance(row["operation_id"], "completed", result={"loaded": after})
+        if mode == "retained":
+            journal.advance(row["operation_id"], "completed", result={"loaded": after})
+        else:
+            journal.advance(row["operation_id"], "runtime-dispatching", runtime_observation={"stop_intent": {}})
 
     def run(value, **options):
         assert (
@@ -371,7 +382,7 @@ def test_native_profile_command_composes_existing_readers_and_keeps_the_same_dea
             < options["deadline_ns"] - managed.time.monotonic_ns()
             <= 60_000_000_000
         )
-        assert calls == ["root", "peer"]
+        assert calls == (["peer"] if mode == "owned-stopped" else ["root", "peer"])
         calls.append("software")
         return (
             dict(qualified=True)
@@ -419,3 +430,92 @@ def test_native_profile_refusal_is_typed_and_never_exposes_unknown_detail():
         'rebirth_host_native_profile_start_unconfirmed'),stage='native')['code']=='rebirth_host_native_profile_start_unconfirmed'
     assert refusal_diagnostic(rebirth_host.RebirthHostError(
         '/private/unrelated diagnostic'),stage='native')['code']=='unclassified_refusal'
+
+
+def test_reader_registry_is_independent_of_updated_jobs(tmp_path, monkeypatch):
+    from clusterctl import onboarding_receiving_update as receiving
+    from clusterctl.onboarding_owner_control import _selection
+    observed = dict(process=dict(pid=42),server=dict(embodiment_id='body'),runtime_status=dict(
+        loaded_runtime=dict(qualified_startup=dict(code_digest='a'*64,matrix_wheel_sha256='b'*64),
+            runtime_bundle_sha256='c'*64),loaded_application=dict(application_sha256='d'*64,
+            publication_sha256='e'*64,visibility={'installation_sha256':'f'*64})))
+    routes=dict(schema='cluster-maintenance-reader-routes/v1',checkpoint=str(tmp_path/'checkpoint'),
+        host_config='/existing/reader-host.json',vm_qualification='/existing/reader-placements',
+        owners=dict(child=dict(root='/child/runtime',job='child',command=['/existing/owner'],
+            selection=_selection(observed),require_admitted=True)))
+    path=tmp_path/'routes.json';being_seed._write(path,routes)
+    assert managed.load_code_update_readers(path)==routes
+    plan={'name':'child'}
+    def execute(actual, argv, **options):
+        assert actual is plan and argv[0]=='/existing/owner'
+        assert options['uid']==options['gid']==1000
+        return json.dumps(observed)
+    reader_backend=SimpleNamespace(execute_body=execute)
+    def locate(host, qualification, names):
+        assert host==routes['host_config'] and qualification==routes['vm_qualification']
+        assert names=={'child'}
+        return reader_backend,{'child':plan}
+    monkeypatch.setattr(managed,'maintenance_backend',locate)
+    monkeypatch.setattr(receiving,'_run_owner',lambda *_,**__:pytest.fail('reader bypassed its owning placement'))
+    clients=managed.code_update_reader_clients(routes,backend=object(),plans={'updated':{}})
+    clients['child'].deadline_ns=managed.time.monotonic_ns()+1_000_000_000
+    assert clients['child']._call({'action':'status'})==observed
+    for changes in ({'host_config':'../foreign'},{'host_config':None},{'vm_qualification':'relative'}):
+        being_seed._write(path,{**routes,**changes})
+        with pytest.raises(OnboardingError,match='current_reader_binding_required'):
+            managed.load_code_update_readers(path)
+
+
+@pytest.mark.parametrize('same_operation',[False,True])
+def test_exact_owned_guest_stop_can_resume_before_its_reader(tmp_path, monkeypatch, same_operation):
+    selected=spec();selected['targets']=['eko'];selected['reader_completion']=str(tmp_path/'routes')
+    admission=tmp_path/'admission';state=tmp_path/'state';being_seed._write(admission,{'state':str(state)})
+    plan={'name':'eko'};directory=state/'eko';directory.mkdir(parents=True)
+    being_seed._write(directory/'native-code-update.json',dict(pins=dict(
+        operation_id=selected['operation_id'] if same_operation else 'other',
+        candidate_digest=selected['candidate']['code_digest'],plan_digest=managed.digest(plan)),
+        effects={'quiesce':{}},dispatching='migrate'))
+    backend=SimpleNamespace(config=SimpleNamespace(admission=admission),runtime_available=lambda *_,**__:True)
+    monkeypatch.setattr(managed,'maintenance_backend',lambda *_,**__:(backend,{'eko':plan}))
+    routes=dict(checkpoint=str(tmp_path/'readers'),owners={'eko':{}})
+    monkeypatch.setattr(managed,'load_code_update_readers',lambda _:routes)
+    def unavailable(_):
+        raise OnboardingError('receiving_reader_owner_unavailable')
+    monkeypatch.setattr(managed,'code_update_reader_clients',lambda *_,**__:{'eko':SimpleNamespace(_call=unavailable)})
+    calls=[]
+    def update(*_,**__):
+        calls.append('native-resume');return {'complete':True}
+    monkeypatch.setattr(managed,'ManagedRuntime',lambda _:SimpleNamespace(update_native_code=update))
+    monkeypatch.setattr(managed,'complete_code_update_readers',lambda *_,**__:dict(receiving_readiness='qualified-local-projection'))
+    result=managed.run_code_update(selected)
+    assert result['complete'] is same_operation
+    assert calls==(['native-resume'] if same_operation else [])
+
+
+def test_reader_client_keeps_native_operation_and_emits_generation_slot(tmp_path):
+    client=managed.ReaderCommandClient(dict(root=str(tmp_path),command=['unused']))
+    client.expected={'unchanged':'binding'}
+    client._call=lambda value:value
+    command=dict(operation_id=spec()['operation_id'],phase='select')
+    slot='a'*64
+    path=tmp_path/'receiving-control'/(command['operation_id']+'-select-'+slot+'.json')
+    value=client.prepare_apply_control(command,path)
+    assert value==dict(action='control',command=command,expected=client.expected,slot=slot)
+    with pytest.raises(OnboardingError,match='control_binding_conflict'):
+        client.prepare_apply_control(command,tmp_path/'elsewhere'/path.name)
+
+
+
+@pytest.mark.parametrize('reported,expected',[
+    ('receiving_control_binding_conflict','receiving_control_binding_conflict'),
+    ('private arbitrary detail','receiving_reader_owner_unavailable'),
+])
+def test_owner_client_retains_only_closed_refusal_codes(tmp_path,monkeypatch,reported,expected):
+    import json,time
+    from clusterctl import onboarding_receiving_update as receiving
+    client=managed.ReaderCommandClient(dict(root=str(tmp_path),command=['unused']))
+    client.deadline_ns=time.monotonic_ns()+60_000_000_000
+    monkeypatch.setattr(receiving,'_run_owner',lambda *a,**k:SimpleNamespace(
+        returncode=1,stdout='',stderr=json.dumps(dict(error=reported))))
+    with pytest.raises(OnboardingError,match=expected):
+        client._call(dict(action='status'))

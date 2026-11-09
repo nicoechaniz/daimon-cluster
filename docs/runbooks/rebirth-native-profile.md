@@ -75,8 +75,10 @@ no-op: observation does not justify a restart.
 Include `reader_completion` using the existing maintained reader-route contract
 to finish current cohort qualification in the same command. Job-backed reader
 routes reuse `host_config` and optional `vm_qualification`, exactly as ordinary
-managed-job maintenance. All routes are inspected before lifecycle effects; the
-updated body's expected selection comes from its actual receipt. Other owners
+managed-job maintenance. All routes are inspected before lifecycle effects. On exact recovery of an
+operation-owned stopped service, its frozen authenticated predecessor supplies
+preflight selection until that same native operation restores it; other owners
+are still inspected. The updated body's expected selection comes from its actual receipt. Other owners
 retain their expected selections. The existing cohort completer performs any
 needed controls and distinguishes `qualified-local-projection` from message or
 model acceptance. Omit reader completion only for an explicitly code-only result,
@@ -86,6 +88,9 @@ which reports `receiving_readiness: unobserved`.
 without creating an operation, selecting software or dispatching lifecycle or
 reader controls. Every owner call and the cohort share the invocation's single
 absolute deadline. Retry the same spec/operation: confirmed effects are retained.
+Pinned process-exit waits respect their60-second primitive limit within the
+original overall deadline. An accepted start may need time to expose its owner
+reader: observe readiness under that same deadline without starting again.
 A lost start acknowledgment with an active candidate is observed, not started
 again. An inactive unit with an unresolved start intent stays explicitly
 unconfirmed; inspect the actual native start journal/service outcome through the

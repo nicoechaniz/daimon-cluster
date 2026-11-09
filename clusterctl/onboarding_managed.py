@@ -97,7 +97,7 @@ class ManagedRuntime:
         request binds the actual admitted predecessor and changes only ExecStart;
         root's existing bootstrap journal reconciles lost stop/select/start ACKs.
         Identity, credentials, native stores and Conversation are preserved.
-        The complete operation includes cold SDK preparation within 120 seconds;
+        The complete operation includes cold SDK preparation within its declared envelope;
         each owner/physical request remains capped at 60 seconds and shares the
         original overall deadline. No internal deadline is renewed.
         An existing group and publication are frozen across the update. Published
@@ -107,12 +107,12 @@ class ManagedRuntime:
         reconciliation and can never be replaced by a new operation.
         """
         from .onboarding_service import command
-        if (self.settings.get('mode') != 'native-admission-only'
-                or type(receive_only_group) is not bool or type(published_group) is not bool
+        if (type(receive_only_group) is not bool or type(published_group) is not bool
                 or receive_only_group and published_group
                 or str(uuid.UUID(operation_id)) != operation_id
-                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 120
-                or self._selection(plan) != (None, None)):
+                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 300
+                or not published_group and (self.settings.get('mode') != 'native-admission-only'
+                    or self._selection(plan) != (None, None))):
             raise OnboardingError('native_code_update_requires_plain_admitted_body')
         with_group = receive_only_group or published_group
         deadline = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
@@ -198,6 +198,8 @@ class ManagedRuntime:
                 state = dict(pins=pins, runtime_sha256=before['runtime_sha256'], origin=before['origin'],
                     request=dict(schema='cluster-guest-service-bootstrap/v1', operation_id=operation_id,
                         plan_digest=digest(plan), predecessor=previous, argv=argv), effects={})
+                if previous['service'].get('entrypoint_selector') is not None:
+                    state['request']['runtime_update'] = True
                 if before.get('group') is not None:
                     state['closed_group'] = frozen_group
                 if previous_completed is not None:
@@ -249,6 +251,10 @@ class ManagedRuntime:
             if (physical['service']['unit_sha256'] != state['effects']['select']['selected_sha256']
                     or physical['scope']['admission_parent'] != state['effects']['start']['admission_parent']
                     or store._load(plan['name']) != job):
+                raise OnboardingError('native_code_update_selection_changed')
+            selected_override = state['effects']['select'].get('selector')
+            if (selected_override is not None and physical['service'].get('entrypoint_selector') != dict(
+                    path=selected_override['path'],sha256=selected_override['selected_sha256'])):
                 raise OnboardingError('native_code_update_selection_changed')
             state['result'] = dict(schema='cluster-native-code-updated/v1',
                 operation_id=operation_id, candidate_digest=candidate[1],
@@ -958,7 +964,20 @@ class ReaderCommandClient:
             if result.returncode and any(line.startswith('ModuleNotFoundError:')
                     for line in getattr(result, 'stderr', '').splitlines()):
                 raise OnboardingError('receiving_reader_owner_import_unavailable')
-            if result.returncode or len(result.stdout.encode()) > being_seed.MAX_SELECTION:
+            if result.returncode:
+                # Owner CLIs publish a closed diagnostic vocabulary. Preserve
+                # that actual refusal rather than mislabeling every failed
+                # control as a transport outage; never propagate arbitrary text.
+                from .onboarding_owner_control import PUBLIC_ERRORS
+                try:
+                    refusal = json.loads(getattr(result,'stderr',''))
+                except ValueError:
+                    refusal = None
+                if (isinstance(refusal,dict) and set(refusal) == {'error'}
+                        and isinstance(refusal['error'],str) and refusal['error'] in PUBLIC_ERRORS):
+                    raise OnboardingError(refusal['error'])
+                raise ValueError
+            if len(result.stdout.encode()) > being_seed.MAX_SELECTION:
                 raise ValueError
             observed = json.loads(result.stdout)
             if not isinstance(observed, dict) or 'error' in observed:
@@ -977,19 +996,30 @@ class ReaderCommandClient:
         return proof
 
     def prepare_apply_control(self, command: dict, path: Path):
-        if (self.expected is None or path != self.root / 'receiving-control' /
-                (command['operation_id'] + '-' + command['phase'] + '.json')):
+        prefix = command['operation_id'] + '-' + command['phase']
+        slot = None if path.name == prefix+'.json' else path.name.removeprefix(prefix+'-').removesuffix('.json')
+        if (self.expected is None or path.parent != self.root/'receiving-control'
+                or slot is not None and (re.fullmatch('[0-9a-f]{64}',slot) is None
+                    or path.name != prefix+'-'+slot+'.json')):
             raise OnboardingError('receiving_control_binding_conflict')
-        return self._call(dict(action='control', command=command, expected=self.expected))
+        return self._call(dict(action='control', command=command, expected=self.expected,
+            **({} if slot is None else {'slot':slot})))
 
 
 def load_code_update_readers(path: Path) -> dict:
     """Locators select existing owner CLIs; native signed rosters select members."""
     value = being_seed._read(path, limit=being_seed.MAX_SELECTION)
-    if (not isinstance(value, dict) or set(value) != {'schema', 'checkpoint', 'owners'}
+    if (not isinstance(value, dict) or set(value) - {'host_config','vm_qualification'} != {'schema', 'checkpoint', 'owners'}
             or value.get('schema') != 'cluster-maintenance-reader-routes/v1'
             or not isinstance(value['owners'], dict) or not 1 <= len(value['owners']) <= 256):
         raise OnboardingError('receiving_current_reader_binding_required')
+    if ('vm_qualification' in value and 'host_config' not in value
+            or 'host_config' in value and not isinstance(value['host_config'],str)):
+        raise OnboardingError('receiving_current_reader_binding_required')
+    for selected_path in (value.get('host_config'),value.get('vm_qualification')):
+        if selected_path is not None and (not isinstance(selected_path,str)
+                or not Path(selected_path).is_absolute() or '..' in Path(selected_path).parts):
+            raise OnboardingError('receiving_current_reader_binding_required')
     checkpoint = Path(value['checkpoint'])
     if not checkpoint.is_absolute() or '..' in checkpoint.parts:
         raise OnboardingError('receiving_current_reader_binding_required')
@@ -1017,6 +1047,12 @@ def load_code_update_readers(path: Path) -> dict:
 
 
 def code_update_reader_clients(value: dict, *, backend=None, plans=None) -> dict:
+    # Reader jobs can belong to a different existing registry than the bodies
+    # being updated. Keep those plans/placements with their owning executor.
+    if 'host_config' in value:
+        names = {binding['job'] for binding in value['owners'].values() if 'job' in binding}
+        if names:
+            backend, plans = maintenance_backend(value['host_config'],value.get('vm_qualification'),names)
     clients = {}
     for name, binding in value['owners'].items():
         if 'job' in binding:
@@ -1037,9 +1073,9 @@ def complete_code_update_readers(value: dict, *, operation_id: str,
     clients = code_update_reader_clients(value, backend=backend, plans=plans)
     selections = {name: row['selection'] for name, row in value['owners'].items()}
     for name, binding in value['owners'].items():
-        if selections[name] is not None:
+        receipt = (updates or {}).get(binding.get('job',name))
+        if selections[name] is not None and receipt is None:
             continue
-        receipt = (updates or {}).get(binding['job'])
         if (not isinstance(receipt, dict) or receipt.get('operation_id') != operation_id
                 or receipt.get('candidate_digest') != release_digest):
             raise OnboardingError('receiving_code_update_receipt_required')
@@ -1079,6 +1115,32 @@ def maintenance_backend(host_config: str, vm_qualification: str | None, names) -
     return backend, plans
 
 
+def code_update_owned_stops(backend, plans: dict, spec: dict) -> set[str]:
+    """Find exact retained operations that may own an unavailable reader."""
+    admission = getattr(getattr(backend,'config',None),'admission',None)
+    if admission is None:
+        return set()
+    settings = being_seed._read(admission)
+    state = Path(settings['state'])
+    if not state.is_absolute() or '..' in state.parts:
+        raise OnboardingError('invalid_onboarding_managed_configuration')
+    owned = set()
+    for name,plan in plans.items():
+        path = state/name/'native-code-update.json'
+        if not path.exists():
+            continue
+        retained = being_seed._read(path)
+        pins = retained.get('pins',{})
+        if (pins.get('operation_id') == spec['operation_id']
+                and pins.get('candidate_digest') == spec['candidate']['code_digest']
+                and pins.get('plan_digest') == digest(plan)
+                and retained.get('result') is None
+                and ('quiesce' in retained.get('effects',{})
+                    or retained.get('dispatching') in {'quiesce','migrate','select','start'})):
+            owned.add(name)
+    return owned
+
+
 def run_code_update(spec: dict) -> dict:
     """Reuse the owner/unit journals; never create a second batch effect journal."""
     spec = validate_code_update(spec)
@@ -1092,8 +1154,11 @@ def run_code_update(spec: dict) -> dict:
     if reader_routes is not None:
         # Resolve owning jobs/placements and probe their existing owner CLIs
         # before any lifecycle effect; signed rosters still qualify membership.
+        owned_stops = code_update_owned_stops(backend,plans,spec)
         for name, client in code_update_reader_clients(reader_routes, backend=backend, plans=plans).items():
             client.deadline_ns = deadline
+            if reader_routes['owners'][name].get('job',name) in owned_stops:
+                continue  # Its native bootstrap revalidates and restores this exact operation.
             try:
                 client._call(dict(action='status'))
             except Exception as error:
@@ -1107,8 +1172,9 @@ def run_code_update(spec: dict) -> dict:
     results = []
     for name in spec['targets']:
         # Code preparation and the existing owner operation share this body's
-        # original120s envelope and the batch's absolute deadline.
-        target_deadline = min(deadline, time.monotonic_ns() + 120_000_000_000)
+        #300s envelope and the SAME batch's absolute deadline. The former120s
+        # cap expired during a real published update and forced avoidable recovery.
+        target_deadline = min(deadline, time.monotonic_ns() + 300_000_000_000)
         phase = 'prepare'
         try:
             if time.monotonic_ns() >= target_deadline:
@@ -1121,7 +1187,7 @@ def run_code_update(spec: dict) -> dict:
             if remaining <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
             value = owner.update_native_code(plans[name], candidate,
-                operation_id=spec['operation_id'], timeout_seconds=min(120.0, remaining),
+                operation_id=spec['operation_id'], timeout_seconds=min(300.0, remaining),
                 receive_only_group=spec['group'] == 'closed', published_group=spec['group'] == 'published')
             results.append(dict(name=name, operation_id=spec['operation_id'], status='updated', result=value))
         except Exception as error:
@@ -1183,8 +1249,19 @@ def run_native_profile_update(spec: dict, *, check_only: bool = False) -> dict:
     retained = None if retained_journal is None else retained_journal.get(core['operation_id'])
     for name,client in clients.items():
         client.deadline_ns = deadline
-        observed = _selection(client._call(dict(action='status')))
         expected = routes['owners'][name]['selection']
+        if (name == updated[0] and retained is not None
+                and retained['state'] != 'completed'
+                and retained['intent'].get('native_profile_maintenance') == core
+                and 'stop_intent' in (retained['runtime_observation'] or {})):
+            # This exact operation may own a stopped service. Requiring its
+            # live reader before resuming would prevent its own recovery.
+            frozen = _selection(retained['expected_precondition']['receiving'])
+            if expected is not None and expected != frozen:
+                raise OnboardingError('receiving_cohort_selection_changed')
+            selections[name] = frozen
+            continue
+        observed = _selection(client._call(dict(action='status')))
         if (name == updated[0] and retained is not None
                 and retained['intent'].get('native_profile_maintenance') == core):
             if retained.get('result') is not None:

@@ -79,7 +79,7 @@ class ManagedRuntime:
             raise OnboardingError('invalid_onboarding_managed_configuration')
 
     def update_native_code(self, plan: dict, candidate: tuple[Path, str], *,
-                           operation_id: str, timeout_seconds: float = 60,
+                           operation_id: str, timeout_seconds: float = 120,
                            receive_only_group: bool = False) -> dict:
         """Select code for an admitted body through its existing unit writer.
 
@@ -87,6 +87,9 @@ class ManagedRuntime:
         request binds the actual admitted predecessor and changes only ExecStart;
         root's existing bootstrap journal reconciles lost stop/select/start ACKs.
         Identity, credentials, native stores and Conversation are preserved.
+        The complete operation includes cold SDK preparation within120seconds;
+        each owner/physical request remains capped at60seconds and shares the
+        original overall deadline. No internal deadline is renewed.
         An existing closed group is frozen across the update. Retain one current
         and one previous completed receipt; unfinished effects require exact
         reconciliation and can never be replaced by a new operation.
@@ -95,7 +98,7 @@ class ManagedRuntime:
         if (self.settings.get('mode') != 'native-admission-only'
                 or type(receive_only_group) is not bool
                 or str(uuid.UUID(operation_id)) != operation_id
-                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 60
+                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 120
                 or self._selection(plan) != (None, None)):
             raise OnboardingError('native_code_update_requires_plain_admitted_body')
         deadline = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
@@ -103,7 +106,7 @@ class ManagedRuntime:
             seconds = (deadline - time.monotonic_ns()) / 1_000_000_000
             if seconds <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
-            return seconds
+            return min(60.0, seconds)
         directory = private_directory(self.state / plan['name'], create=True)
         with being_seed._locked(directory), ExitStack() as locks:
             jobs = private_directory(self.backend.config.jobs)

@@ -984,6 +984,15 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     managed._selection = lambda _: (None, None)
     managed._expected = lambda _: dict(body_ref='body', embodiment_id='embodiment', incarnation_id='incarnation')
     managed._registered = lambda _: True
+    # Cold preparation and the physical transition share one finite envelope.
+    # The former60s total expired after starting the real candidate; a repeated
+    # invocation was then necessary merely to finish its observation.
+    import time
+    monotonic = time.monotonic_ns
+    offset = [0]
+    cold = [True]
+    monkeypatch.setattr('clusterctl.onboarding_managed.time.monotonic_ns',
+        lambda: monotonic() + offset[0])
     calls = []
     effects = {}
     selected_unit = ['previous']
@@ -998,7 +1007,10 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
                 publication_sha256='d'*64, visibility=dict(release_enabled=False, installation_sha256=None))))
     failures = [lost_start_ack]
     def owner(_plan, action, **_):
+        assert 0 < _['observation_timeout_seconds'] <= 60
         if action == 'sdk-prepare':
+            if cold.pop() if cold else False:
+                offset[0] += 55_000_000_000
             assert 'current_native' not in _
             return dict(ready=True)
         assert action == 'admitted-running'
@@ -1006,6 +1018,8 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         assert _.get('require_loaded', False) is closed_group
         return copy.deepcopy(current)
     def root(_plan, action, **options):
+        assert 0 < options['timeout_seconds'] <= 60
+        offset[0] += 2_000_000_000
         calls.append(action)
         if action == 'bootstrap-inspect':
             assert options['owner_observation'] == dict(process=current['process'], admission_parent=current['admission_parent'])

@@ -49,6 +49,40 @@ def test_compiled_receive_publication_resumes_same_client_and_never_installs_vis
     after,_=read_publication(source._load(signed=False),group/'application')
     assert after['client']==client
     assert result['receive_specification_sha256']==digest(app)
+    from clusterctl import being_seed
+    selection=dict(operation_id=command['operation_id'], step='select', action='selection',
+        params=dict(expected_selection_sha256=None),
+        application_precondition=dict(application_step=command['step'],
+            application_sha256=result['application_sha256']))
+    write=being_seed._write
+    def lose_selection(path,*args,**kwargs):
+        write(path,*args,**kwargs)
+        if path==group/'selection.json':
+            raise OSError('lost selected receive reply')
+    if lost:
+        monkeypatch.setattr(being_seed,'_write',lose_selection)
+        with pytest.raises(OSError,match='lost selected receive'):
+            owner.group_publication(selection,authority_closure=closure(peer_bundle))
+        monkeypatch.setattr(being_seed,'_write',write)
+    selected=owner.group_publication(selection,authority_closure=closure(peer_bundle))
+    context=being_seed._read(journal/command['operation_id']/'owner/context.json',limit=being_seed.MAX_SELECTION)
+    snapshot=dict(operation_id=command['operation_id'],step='receive-snapshot',action='receive-snapshot',
+        params=dict(application_step=command['step'],selection_step='select',
+            owner_context_sha256=digest(context)))
+    snap=owner.group_publication(snapshot,authority_closure=closure(peer_bundle))
+    assert snap['outbound_release'] is False
+    assert snap['receiving_readiness']=='unobserved'
+    assert snap['group']['installation_sha256'] is None
+    assert snap['group']['hashes']['visibility'] is None
+    assert set(snap['publications'])=={'receive-application','selection'}
+    assert snap['selection_sha256']==selected['selection_sha256']
+    assert owner.group_publication(snapshot,authority_closure=closure(peer_bundle))==snap
+    # An absence observation cannot be reused after an outbound artifact appears,
+    # even if its content is not a valid native visibility installation.
+    native.private_directory(group/'visibility',create=True)
+    (group/'visibility/installation.json').write_text('{}')
+    with pytest.raises(OnboardingError,match='closed_outbound'):
+        owner.group_publication(snapshot,authority_closure=closure(peer_bundle))
     changed=copy.deepcopy(command)
     changed['params']['policy']['max_ttl_ms']+=1
     with pytest.raises(OnboardingError,match='intent_conflict'):

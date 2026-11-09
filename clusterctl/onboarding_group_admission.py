@@ -37,6 +37,7 @@ PUBLICATIONS = {
     'visibility-publish': {'disclosure', 'bindings', 'expected_installation_sha256', 'initial_configuration'},
     'selection': {'expected_selection_sha256'},
     'snapshot': {'application_step', 'visibility_step', 'selection_step', 'owner_context_sha256'},
+    'receive-snapshot': {'application_step', 'selection_step', 'owner_context_sha256'},
 }
 
 
@@ -867,9 +868,9 @@ def publication_command(value: dict) -> dict:
                 or not isinstance(value['action'], str) or value['action'] not in PUBLICATIONS
                 or not isinstance(value['params'], dict)
                 or set(value['params']) != PUBLICATIONS[value['action']] and not (
-                    value['action'] == 'snapshot'
-                    and PUBLICATIONS['snapshot'] <= set(value['params'])
-                    and set(value['params']) - PUBLICATIONS['snapshot'] <= {'expected_stores', 'expected_preservation'})):
+                    value['action'] in {'snapshot', 'receive-snapshot'}
+                    and PUBLICATIONS[value['action']] <= set(value['params'])
+                    and set(value['params']) - PUBLICATIONS[value['action']] <= {'expected_stores', 'expected_preservation'})):
             raise ValueError
         params = value['params']
         if value['action'] == 'preparation-preview' and (
@@ -889,7 +890,7 @@ def publication_command(value: dict) -> dict:
             raise ValueError
         if 'application_precondition' in value:
             guard = value['application_precondition']
-            if (value['action'] in {'application', 'context-preview', 'preparation-preview', 'communication-prepare', 'membership-authorities'}
+            if (value['action'] in {'application', 'receive-application', 'context-preview', 'preparation-preview', 'communication-prepare', 'membership-authorities'}
                     or not isinstance(guard, dict) or set(guard) != {'application_step', 'application_sha256'}
                     or not isinstance(guard['application_step'], str)
                     or re.fullmatch('[a-z][a-z0-9-]{0,79}', guard['application_step']) is None
@@ -929,7 +930,7 @@ def publication_command(value: dict) -> dict:
         if value['action'] == 'visibility-accept' and (not isinstance(params['disclosures'], list)
                 or not 1 <= len(params['disclosures']) <= 256):
             raise ValueError
-        if value['action'] == 'snapshot' and (any(not isinstance(step, str)
+        if value['action'] in {'snapshot', 'receive-snapshot'} and (any(not isinstance(step, str)
                 or re.fullmatch(r'[a-z][a-z0-9-]{0,79}', step) is None
                 for key, step in params.items() if key not in {
                     'owner_context_sha256', 'expected_stores', 'expected_preservation'})
@@ -950,7 +951,7 @@ def publication_command(value: dict) -> dict:
 
 def check_snapshot_context(journal: Path, value: dict) -> None:
     """A snapshot never creates/reconstructs its approved owner context."""
-    if value['action'] == 'snapshot':
+    if value['action'] in {'snapshot', 'receive-snapshot'}:
         context = being_seed._read(journal / value['operation_id'] / 'owner/context.json',
                                   limit=being_seed.MAX_SELECTION)
         if digest(context) != value['params']['owner_context_sha256']:
@@ -1264,6 +1265,21 @@ def _publish_application(hosted, directory: Path, params: dict) -> dict:
 
 
 
+def _compile_receive_application(hosted, params: dict, closure: dict, events: list) -> dict:
+    from .onboarding_receive_specification import compile_specification
+    from daimon_matrix.operator_rebirth import AUTHORITY_SCHEMA
+    bundle = being_seed._read(hosted.state_root / 'runtime.json', limit=being_seed.MAX_SELECTION)
+    own_ref = bundle['manifest']['being_ref']
+    own_public = dict(authority=dict(schema=AUTHORITY_SCHEMA, **{key:bundle[key] for key in
+        ('manifest', 'control_artifacts', 'control_head', 'credentials', 'incarnations')}),
+        history=bundle['authority_history'])
+    all_authorities = {**closure, own_ref: own_public}
+    return compile_specification(runtime=bundle, runtime_root=str(hosted.state_root),
+        authorities=all_authorities, governance=events, at_ms=hosted.service.clock(),
+        **{key:params[key] for key in ('tribe_ref', 'policy', 'listen', 'intake', 'roster',
+                                      'stores', 'authority_order')})
+
+
 def _publish_receive_application(hosted, group_root: Path, operation: Path, value: dict,
                                  closure: dict, *, deadline_ns: int | None) -> dict:
     """Compile and retain once before the existing first-publication writer.
@@ -1273,20 +1289,10 @@ def _publish_receive_application(hosted, group_root: Path, operation: Path, valu
     caller already holds the native writer and original owner-context journal.
     """
     from .onboarding_membership_preparation import preview
-    from .onboarding_receive_specification import compile_specification
-    from daimon_matrix.operator_rebirth import AUTHORITY_SCHEMA
     params = value['params']
     bundle = being_seed._read(hosted.state_root / 'runtime.json', limit=being_seed.MAX_SELECTION)
-    own_ref = bundle['manifest']['being_ref']
-    own_public = dict(authority=dict(schema=AUTHORITY_SCHEMA, **{key:bundle[key] for key in
-        ('manifest', 'control_artifacts', 'control_head', 'credentials', 'incarnations')}),
-        history=bundle['authority_history'])
-    all_authorities = {**closure, own_ref: own_public}
     def compile(events):
-        return compile_specification(runtime=bundle, runtime_root=str(hosted.state_root),
-            authorities=all_authorities, governance=events, at_ms=hosted.service.clock(),
-            **{key:params[key] for key in ('tribe_ref', 'policy', 'listen', 'intake', 'roster',
-                                          'stores', 'authority_order')})
+        return _compile_receive_application(hosted, params, closure, events)
     selected = operation / 'receive-specification.json'
     command_pin = digest(value)
     if selected.exists():
@@ -1313,7 +1319,8 @@ def _publish_receive_application(hosted, group_root: Path, operation: Path, valu
     return dict(result, receive_specification_sha256=digest(prepared['specification']))
 
 def _publication_snapshot(hosted, group_root: Path, operation: Path, value: dict,
-                          context: dict, snapshot: Callable[[], dict] | None) -> dict:
+                          context: dict, snapshot: Callable[[], dict] | None, *,
+                          deadline_ns: int | None = None) -> dict:
     """Correlate a fresh signed group view with this owner's actual effects.
 
     The owner supplies the profile-specific authenticated group reader while
@@ -1324,9 +1331,12 @@ def _publication_snapshot(hosted, group_root: Path, operation: Path, value: dict
         raise OnboardingError('onboarding_group_snapshot_reader_required')
     if digest(context) != value['params']['owner_context_sha256']:
         raise OnboardingError('onboarding_group_owner_context_conflict')
+    receive_only = value['action'] == 'receive-snapshot'
     receipts: dict[str, dict] = {}
-    for action, key in (('application', 'application_step'), ('visibility-publish', 'visibility_step'),
-                        ('selection', 'selection_step')):
+    steps = ((('receive-application', 'application_step'), ('selection', 'selection_step'))
+        if receive_only else (('application', 'application_step'),
+            ('visibility-publish', 'visibility_step'), ('selection', 'selection_step')))
+    for action, key in steps:
         step = value['params'][key]
         retained = being_seed._read(operation / 'publications' / (step + '.json'),
                                    limit=being_seed.MAX_SELECTION)
@@ -1343,25 +1353,46 @@ def _publication_snapshot(hosted, group_root: Path, operation: Path, value: dict
             raise OnboardingError('onboarding_group_snapshot_publication_required')
         publication_command(command)
         receipts[action] = dict(command_sha256=digest(command), result=result)
+        if action == 'receive-application':
+            receive_params = command['params']
     from daimon_matrix import operator_messaging
     from daimon_matrix.messaging_config import config_digest
-    application_value, _members = operator_messaging._group_visibility_context(hosted, group_root / 'application')
+    if receive_only:
+        from .onboarding_membership_preparation import preview
+        from daimon_matrix.messaging_config import read_publication
+        application_value, _ = read_publication(hosted, group_root / 'application')
+        current = preview(hosted.state_root, operation_id=value['operation_id'],
+            tribe_ref=receive_params['tribe_ref'], deadline_ns=deadline_ns)
+        specification = _compile_receive_application(hosted, receive_params,
+            context['authority_closure'], current['governance'])
+        if {key:item for key,item in application_value.items() if key != 'client'} != specification:
+            raise OnboardingError('onboarding_group_snapshot_publication_changed')
+    else:
+        application_value, _members = operator_messaging._group_visibility_context(hosted, group_root / 'application')
     authorities = operator_messaging._application_authorities(application_value)
-    controller = operator_messaging._owner_visibility_controller(authorities=authorities,
-        application_sha256=config_digest(application_value),
-        installation_path=group_root / 'visibility/installation.json',
-        authority=operator_messaging._runtime_authority(hosted), origin=hosted.service.origin,
-        runtime_id=hosted.service.runtime_id, runtime_label=hosted.service.runtime_label,
-        signer_public_key=hosted.service.signer.public_key, clock=hosted.service.clock,
-        catalog_mode='validate')
+    visibility_path = group_root / 'visibility/installation.json'
+    if receive_only:
+        if visibility_path.exists() or visibility_path.is_symlink():
+            raise OnboardingError('onboarding_group_closed_outbound_required')
+        installation_digest = None
+    else:
+        controller = operator_messaging._owner_visibility_controller(authorities=authorities,
+            application_sha256=config_digest(application_value),
+            installation_path=group_root / 'visibility/installation.json',
+            authority=operator_messaging._runtime_authority(hosted), origin=hosted.service.origin,
+            runtime_id=hosted.service.runtime_id, runtime_label=hosted.service.runtime_label,
+            signer_public_key=hosted.service.signer.public_key, clock=hosted.service.clock,
+            catalog_mode='validate')
+        installation_digest = controller.installation_digest
     group = snapshot()
     selected = being_seed._read(group_root / 'selection.json', limit=being_seed.MAX_SELECTION)
-    application = receipts['application']['result']
-    visibility = receipts['visibility-publish']['result']
+    application = receipts['receive-application' if receive_only else 'application']['result']
+    visibility = dict(installation_sha256=None) if receive_only else receipts['visibility-publish']['result']
     selection = receipts['selection']['result']
     if (any(group.get(key) != application.get(key) for key in ('application_sha256', 'publication_sha256'))
             or group.get('installation_sha256') != visibility.get('installation_sha256')
-            or group.get('installation_sha256') != controller.installation_digest
+            or group.get('installation_sha256') != installation_digest
+            or receive_only and group.get('hashes', {}).get('visibility', 'missing') is not None
             or group.get('application_sha256') != config_digest(application_value)
             # The receiving selector retains Cluster's document codec. Native
             # application/visibility receipts use Matrix's canonical codec.
@@ -1369,6 +1400,7 @@ def _publication_snapshot(hosted, group_root: Path, operation: Path, value: dict
             or digest(selected) != selection.get('selection_sha256')):
         raise OnboardingError('onboarding_group_snapshot_publication_changed')
     return dict(group=group, selection_sha256=digest(selected), publications=receipts,
+                **({'outbound_release': False} if receive_only else {}),
                 owner_context_sha256=digest(context),
                 stores={role: json.loads(binding.observation)
                         for role, binding in hosted.service.loaded_stores.items()})
@@ -1440,8 +1472,9 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
         result = migration.apply(store, backup,
             params['expected_plan_sha256'], deadline_ns=deadline_ns)
         return dict(migration=result)
-    if action == 'snapshot':
-        return _publication_snapshot(hosted, group_root, operation, value, context, snapshot)
+    if action in {'snapshot', 'receive-snapshot'}:
+        return _publication_snapshot(hosted, group_root, operation, value, context, snapshot,
+            deadline_ns=deadline_ns)
     if action == 'receive-application':
         return _publish_receive_application(hosted, group_root, operation, value, closure,
             deadline_ns=deadline_ns)
@@ -1537,7 +1570,7 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
             if retained != {**intent, 'result': retained.get('result')}:
                 raise OnboardingError('onboarding_group_publication_intent_conflict')
         else:
-            if bound is not None and time.time_ns()//1_000_000 >= bound and selected['action']!='snapshot':
+            if bound is not None and time.time_ns()//1_000_000 >= bound and selected['action'] not in {'snapshot', 'receive-snapshot'}:
                 raise OnboardingError('onboarding_group_continuation_fresh_effect_required')
             if (selected['action'] in {'application', 'receive-application'}
                     and (selected['action'] == 'receive-application'
@@ -1562,7 +1595,7 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
             _sync(parent)
         check_deadline()
         if (bound is not None and time.time_ns()//1_000_000 >= bound
-                and selected['action']!='snapshot'):
+                and selected['action'] not in {'snapshot', 'receive-snapshot'}):
             if not isinstance(retained['result'],dict):
                 # No authenticated retained publication result: preserve the
                 # uncertainty; never retry an unproven SDK effect after expiry.
@@ -1613,7 +1646,7 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
                 raise OnboardingError('onboarding_group_publication_visibility_changed')
             check_deadline()
         bound = execution_bound()
-        if bound is not None and selected['action'] != 'snapshot':
+        if bound is not None and selected['action'] not in {'snapshot', 'receive-snapshot'}:
             now = time.time_ns()//1_000_000
             if now >= bound:
                 raise OnboardingError('onboarding_group_continuation_fresh_effect_required')

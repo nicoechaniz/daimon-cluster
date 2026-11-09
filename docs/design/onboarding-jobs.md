@@ -1478,3 +1478,26 @@ derived metadata refusal. No production application or current child installatio
 was replayed. The compiler's separate actual-four compatibility evidence remains
 read-only. Current coordinator automatic key intent/publication/selection and
 reader integration still require completion before full-command acceptance.
+
+
+### Closed-outbound receive publication observation
+
+The owner-local `receive-snapshot` action follows `receive-application` and the
+existing signed `selection` action in the same original operation. Its exact
+parameters are `application_step`, `selection_step`, and `owner_context_sha256`,
+with the same optional `expected_stores`/`expected_preservation` contract as the
+existing snapshot. It validates both retained native publication receipts,
+recompiles against fresh bounded canonical signed governance and the actual own
+runtime, and verifies the current signed application/selector and their hashes.
+It refuses an existing or symlinked visibility installation and records explicit
+`installation_sha256=null`, absent visibility hash, and `outbound_release=false`.
+The full existing snapshot continues requiring its real visibility publication.
+
+The observation retains `receiving_readiness=unobserved`: it is publication and
+selection evidence, not a loaded reader or a message delivery. Current reader
+qualification and receive-side lifecycle composition remain required. Exact
+selection retries recover the original selector after a lost reply; a later
+visibility artifact invalidates the closed-outbound observation rather than
+reusing its cached result. This path creates no Telegram credential, outbound
+installation, daemon restart, model turn, or child speech. Its new behavior is
+source/guest fixture-qualified, not selected on the current four receivers.

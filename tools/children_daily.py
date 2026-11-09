@@ -397,6 +397,65 @@ def known_exploitation(selection, candidates, report, root):
     return result
 
 
+def selected_malicious_observation(public):
+    """Project existing OSV MAL leads; no second feed, scan or network request.
+
+    This covers declared selected public PyPI versions only. It is not artifact
+    authenticity, actual loaded code, unselected software or a clean-system claim.
+    A retained last-success timestamp is never a current successful assessment.
+    """
+    import datetime as dt
+    import re
+    incomplete = {'state': 'incomplete', 'applicability': 'unavailable',
+                  'scope': 'selected-public-PyPI-versions'}
+    if not isinstance(public, dict) or public.get('state') != 'matched':
+        return incomplete
+    queries, records = public.get('public_queries'), public.get('records')
+    groups, pin = public.get('active_alias_groups'), public.get('query_sha256')
+    if (not isinstance(queries, list) or not 1 <= len(queries) <= 64
+            or not isinstance(records, list) or len(records) > 32
+            or not isinstance(groups, list) or len(groups) > 32
+            or type(public.get('checked')) is not int or public['checked'] <= 0
+            or pin != hashlib.sha256(json.dumps(queries, sort_keys=True).encode()).hexdigest()):
+        return incomplete
+    identifier = re.compile(r'[A-Za-z0-9][-A-Za-z0-9._:]{0,100}')
+    malicious = re.compile(r'MAL-[0-9]{4}-[0-9]+')
+    active, withdrawn, seen = set(), set(), set()
+    for row in records:
+        if (not isinstance(row, dict) or not isinstance(row.get('id'), str)
+                or not identifier.fullmatch(row['id']) or row['id'] in seen
+                or not isinstance(row.get('aliases'), list) or len(row['aliases']) > 16
+                or any(not isinstance(a, str) or not identifier.fullmatch(a) for a in row['aliases'])
+                or row.get('withdrawn') is not None and not isinstance(row['withdrawn'], str)):
+            return incomplete
+        if row.get('withdrawn') is not None:
+            try:
+                if dt.datetime.fromisoformat(row['withdrawn'].replace('Z', '+00:00')).tzinfo is None:
+                    return incomplete
+            except ValueError:
+                return incomplete
+        seen.add(row['id'])
+        if any(malicious.fullmatch(value) for value in [row['id'], *row['aliases']]):
+            (active if row.get('withdrawn') is None else withdrawn).add(row['id'])
+    active_groups, grouped = [], set()
+    for group in groups:
+        if (not isinstance(group, list) or not group or len(group) > 32
+                or any(not isinstance(item, str) or item not in seen or item in grouped for item in group)
+                or len(set(group)) != len(group)):
+            return incomplete
+        grouped.update(group)
+        if set(group) & active:
+            active_groups.append(sorted(group))
+    if not active <= grouped or withdrawn & grouped:
+        return incomplete
+    return {'state': 'observed', 'applicability': 'pending' if active else 'no-selected-triage',
+            'scope': 'selected-public-PyPI-versions', 'source': 'existing-OSV-version-query',
+            'checked': public['checked'], 'query_sha256': pin, 'selected_version_count': len(queries),
+            'active_record_ids': sorted(active), 'active_alias_groups': sorted(active_groups),
+            'withdrawn_record_ids': sorted(withdrawn), 'needs_triage': bool(active),
+            'meaning': 'Reported malicious releases for declared versions; artifact and loaded exposure remain unassessed'}
+
+
 def phase_observations(config, report):
     """Describe this occurrence, never infer another producer's acceptance.
 
@@ -440,6 +499,9 @@ def phase_observations(config, report):
                            'applicability': 'pending' if value.get('needs_triage') is True
                                else 'no-selected-triage' if value.get('needs_triage') is False
                                and value.get('state') == 'matched' else 'unavailable'}
+    phases['selected_public_python_malicious'] = (
+        selected_malicious_observation(report.get('public_advisories', {}))
+        if config.get('public_advisories') else {'state': 'not-selected'})
     return phases
 
 
@@ -551,6 +613,9 @@ def collect(config):
         if config.get('known_exploitation'):
             report['known_exploitation']=known_exploitation(config['known_exploitation'],kev_candidates,report,root)
         report['phases'] = phase_observations(config, report)
+        if report['phases']['selected_public_python_malicious']['state'] == 'observed':
+            report['unassessed'].remove('malicious-release-advisories')
+            report['unassessed'].append('malicious-releases-outside-selected-public-Python-versions')
         report['finished'] = int(time.time())
         raw = json.dumps(report, sort_keys=True).encode()
         if len(raw) > 256*1024 or footprint(root) > 512*MIB:
@@ -572,7 +637,8 @@ def observation_complete(result):
         and value.get('applications',{}).get('state','observed')=='observed'
         for value in result['targets'].values()) and
         result.get('public_advisories',{}).get('state','matched')=='matched' and
-        result.get('known_exploitation',{}).get('state','matched')=='matched')
+        result.get('known_exploitation',{}).get('state','matched')=='matched' and
+        result.get('phases',{}).get('selected_public_python_malicious',{}).get('state')!='incomplete')
 
 
 def main():

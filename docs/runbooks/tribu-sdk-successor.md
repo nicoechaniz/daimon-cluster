@@ -197,6 +197,70 @@ or receiver process/selection/roster change requires a fresh observation, never
 relabeled historical loaded-view hashes. Credential validity remains signed validity;
 the finite observation horizon is not an invented permanent reader expiry.
 
+For a coordinator that already has the required owner adapters and approved loaded
+selections, use `onboarding_receiving_update.refresh_current_readers`. It composes
+the same current-reader observation, native revoke/select and final authenticated
+observation. Supply the existing maintenance operation ID, release digest and
+absolute deadline (at most480seconds), plus one private progress checkpoint bounded
+by the existing2MiB record cap. Its native owner request files remain the effect
+authority. The public checkpoint preserves exact commands before dispatch, including
+the original selection deadline; an uncertain call is never relabeled with a new
+head or deadline. Retain that checkpoint with the owning current/previous operation,
+not a growing directory per attempt. A completed checkpoint records the observed
+vector's gate heads and binding digest. A later distinct operation rotates it to
+one `.previous.json` beside the current file, replacing only an older completed
+predecessor. Pending, foreign or same-operation changed bindings are preserved and
+refused. The coordinator checkpoint remains bounded to two2MiB files; native
+owner request journals retain their own ownership and uncertainty. Already matching
+native vectors require no controls; only the observed completion metadata is saved.
+
+This helper does not discover placements, replace owner adapters, restart services,
+reenroll members or send test speech. Membership/process/selection changes refuse
+rather than repurpose the old operation. `qualified-local-projection` establishes
+the final current reader vector; communication acceptance remains explicitly
+unobserved. The native-code command accepts an optional `reader_completion` path in its
+existing private maintenance spec. The referenced root-owned JSON has schema
+`cluster-maintenance-reader-routes/v1`, `checkpoint` (one absolute private path)
+and `owners` (the required current receiving owners, at most256). Each owner has
+`root`, `command`, `selection` and `require_admitted`. An optional `job` names
+one of the existing maintenance targets: that route uses the same HostBackend
+placement executor and grant instead of a second SSH/Incus binding. In that case
+`command` is the owner program argv inside the already selected body. Otherwise,
+`command` is the existing
+trusted local/remote owner CLI argv prefix, running
+`clusterctl.onboarding_owner_control` with that body's `--root` and `--socket`
+through its configured owner interpreter and qualified maintenance code. It
+contains locators, never credential values. Reuse actual placement/owner routes;
+this is an operator binding, not another membership or resource catalog.
+For a `job` owner, `selection: null` derives the post-update digests from fresh
+native status bound to that exact update's operation, candidate, process, origin
+and retained runtime hash. Do not manually copy six new hashes per target.
+For unchanged/legacy owners, `selection` pins the six current-reader digests used
+above; only the
+visibility installation digest may be null for explicitly closed receiving.
+
+The command refuses an unresolved predecessor checkpoint and checks all owner CLI
+routes before any Matrix lifecycle action. A same-operation pending checkpoint
+remains resumable; a completed predecessor needs no separate retirement command.
+After the native updates, it calls the same reader completer within the original
+batch deadline. The bridge exposes only current status/proof and the existing
+reader controls; it provides no lifecycle/model/general-command RPC. RPC bounds
+are measured on each receiving owner's clock, with the caller's remaining timeout
+also enforced. Native requests remain under each actual owner and never cross the
+stdio boundary. A reader failure leaves successful native updates retained and
+returns incomplete with the exact remaining reader failure. Reuse the same spec
+and operation to continue; do not create replacement lifecycle operations.
+Without a reader binding, the legacy code-only command keeps reporting receiving
+readiness as unobserved. A compatible maintenance helper can be staged separately
+from the daemon: do not reload a healthy runtime merely to update its owner CLI. Before
+using a staged helper, reuse the public-code transfer/normalization route and
+verify imports as the actual receiving owner, including traversal of every parent
+directory. An inherited private umask can leave an otherwise byte-correct public
+package unreadable. Keep private/shared parents private and select the existing
+public-code destination; do not widen unrelated directories. Owner-route preflight
+failures identify the receiver and phase before code updates begin. Import failures
+use a closed public code; arbitrary stderr and credential material stay private.
+
 A new software deployment still uses its normal preparation and lifecycle controls.
 This current-state path finishes reader confirmation after observed completed
 adoption; it does not fabricate a lifecycle receipt for the older coordinator.

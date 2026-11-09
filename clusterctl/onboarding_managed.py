@@ -964,7 +964,20 @@ class ReaderCommandClient:
             if result.returncode and any(line.startswith('ModuleNotFoundError:')
                     for line in getattr(result, 'stderr', '').splitlines()):
                 raise OnboardingError('receiving_reader_owner_import_unavailable')
-            if result.returncode or len(result.stdout.encode()) > being_seed.MAX_SELECTION:
+            if result.returncode:
+                # Owner CLIs publish a closed diagnostic vocabulary. Preserve
+                # that actual refusal rather than mislabeling every failed
+                # control as a transport outage; never propagate arbitrary text.
+                from .onboarding_owner_control import PUBLIC_ERRORS
+                try:
+                    refusal = json.loads(getattr(result,'stderr',''))
+                except ValueError:
+                    refusal = None
+                if (isinstance(refusal,dict) and set(refusal) == {'error'}
+                        and isinstance(refusal['error'],str) and refusal['error'] in PUBLIC_ERRORS):
+                    raise OnboardingError(refusal['error'])
+                raise ValueError
+            if len(result.stdout.encode()) > being_seed.MAX_SELECTION:
                 raise ValueError
             observed = json.loads(result.stdout)
             if not isinstance(observed, dict) or 'error' in observed:

@@ -503,3 +503,19 @@ def test_reader_client_keeps_native_operation_and_emits_generation_slot(tmp_path
     assert value==dict(action='control',command=command,expected=client.expected,slot=slot)
     with pytest.raises(OnboardingError,match='control_binding_conflict'):
         client.prepare_apply_control(command,tmp_path/'elsewhere'/path.name)
+
+
+
+@pytest.mark.parametrize('reported,expected',[
+    ('receiving_control_binding_conflict','receiving_control_binding_conflict'),
+    ('private arbitrary detail','receiving_reader_owner_unavailable'),
+])
+def test_owner_client_retains_only_closed_refusal_codes(tmp_path,monkeypatch,reported,expected):
+    import json,time
+    from clusterctl import onboarding_receiving_update as receiving
+    client=managed.ReaderCommandClient(dict(root=str(tmp_path),command=['unused']))
+    client.deadline_ns=time.monotonic_ns()+60_000_000_000
+    monkeypatch.setattr(receiving,'_run_owner',lambda *a,**k:SimpleNamespace(
+        returncode=1,stdout='',stderr=json.dumps(dict(error=reported))))
+    with pytest.raises(OnboardingError,match=expected):
+        client._call(dict(action='status'))

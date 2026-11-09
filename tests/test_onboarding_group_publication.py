@@ -1142,6 +1142,21 @@ def test_native_additive_publication_recovers_its_sdk_predecessor_without_anothe
     assert owner.group_relationship(dict(operation_id=identifier, step='accepted',
         method='relationship.event.ingest', params=dict(event=acceptance)),
         offline=True, authority_closure=approved)['status'] == 'recorded'
+    from clusterctl.onboarding_group_admission import (
+        load_owner_runtime, prepare_current_group_visibility, public_authorities,
+    )
+    destination = dict(bot_id=1, chat_id=-123, topic_id=None, representation='compact-text/v1')
+    issued = time.time_ns() // 1_000_000
+    original_publication = (group/'application/publication.json').read_bytes()
+    with owner.writer():
+        preparing = load_owner_runtime(owner.root, owner._reader, authorities=public_authorities(founder.document_bundle(), approved))
+        prepared_disclosure = prepare_current_group_visibility(preparing, group/'application',
+            approved_destination=destination, issued_at_ms=issued)
+        from daimon_matrix.messaging_config import create_binding
+        prepared_binding = create_binding(preparing, prepared_disclosure)
+    assert set(prepared_disclosure['participants']) == {
+        peer_bundle['manifest']['being_ref'], founder.document_bundle()['manifest']['being_ref']}
+    assert (group/'application/publication.json').read_bytes() == original_publication
     key = source.outputs / 'peer-route.key'
     key.write_bytes(os.urandom(32))
     key.chmod(0o600)
@@ -1179,10 +1194,27 @@ def test_native_additive_publication_recovers_its_sdk_predecessor_without_anothe
     assert base.service.ledger.events() == events
     assert {row['manifest']['being_ref'] for row in current['authorities']} == {peer, founder.document_bundle()['manifest']['being_ref']}
     disclosure = owner.group_publication(dict(operation_id=identifier, step='expanded-disclosure',
-        action='visibility-disclosure', params=dict(approved_destination=dict(bot_id=1,
-            chat_id=-123, topic_id=None, representation='compact-text/v1'),
-            issued_at_ms=time.time_ns() // 1_000_000)), authority_closure=approved)['disclosure']
+        action='visibility-disclosure', params=dict(approved_destination=destination,
+            issued_at_ms=issued)), authority_closure=approved)['disclosure']
     assert set(disclosure['scope']['channels'][0]['participants']) == {peer, founder.document_bundle()['manifest']['being_ref']}
+    assert disclosure == prepared_disclosure
+    with owner.writer():
+        ready = load_owner_runtime(owner.root, owner._reader, authorities=public_authorities(founder.document_bundle(), approved))
+        assert operator_messaging.accept_group_visibility(ready, group/'application', disclosure,
+            approved_destination=destination) == prepared_binding
+
+
+def test_prepared_visibility_refuses_unadmitted_application_pins(group_source):
+    from clusterctl.onboarding_group_admission import prepare_current_group_visibility
+    source, _founder, _peer, _bundle, _event = group_source
+    with source.writer():
+        native = source._load(signed=False)
+        # The fixture trusts a foreign Root before any signed acceptance. It
+        # cannot turn that public verification context into a participant.
+        with pytest.raises(OnboardingError, match='visibility_preparation_rejected'):
+            prepare_current_group_visibility(native, source.outputs/'tribe/application',
+                approved_destination=dict(bot_id=1, chat_id=-123, topic_id=None,
+                    representation='compact-text/v1'), issued_at_ms=time.time_ns()//1_000_000)
 
 
 def test_publication_packets_are_closed_and_cannot_use_online_relationship_route():

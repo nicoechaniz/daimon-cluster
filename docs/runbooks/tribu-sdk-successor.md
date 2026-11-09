@@ -1609,3 +1609,22 @@ connection/process pin, proof horizon and original monotonic deadline remain;
 missing/invalid authority, nonretryable refusals and controls are not retried.
 This avoids turning a brief reported store-busy observation into a manual
 operator chain while retaining its exact failure when the bound is exhausted.
+
+For a completed signed membership admission whose application still has the
+earlier audience, prepare current-member visibility acceptances **before** the
+application cutover. The trusted offline-owner helper
+`prepare_current_group_visibility` derives the existing disclosure contract from
+the actual signed membership and currently verified Root context, under that
+owner's normal writer. Use only the destination frozen from the already approved
+owner configuration. Each owner can attest that exact document with its existing
+`create_binding` capability; this is metadata approval, not speech, an installed
+publication policy or a human-delivery receipt. Keep one exact protected intent
+and the original bindings for the bounded operation.
+
+The normal native application/visibility publisher must still validate the
+prepared document against the fully published current application and complete
+acceptance set before selection. A changed membership or authority must refuse;
+do not amend old signed bytes or replay an unknown publication. This lets the
+short final cutover use bindings already available instead of leaving serving
+applications stopped while another owner signs. It adds no model attention,
+Telegram account prerequisite or additional human approval round.

@@ -1131,6 +1131,78 @@ def _ledger_identity(runtime_root: Path, bundle: dict) -> dict:
     return dict(filename=name, file_identity=list(LoadedStoreBinding.file_identity(runtime_root / name)))
 
 
+def prepare_current_group_visibility(hosted, directory: Path, *,
+                                     approved_destination: dict, issued_at_ms: int,
+                                     local_being_ref: str | None = None) -> dict:
+    """Prepare disclosure from actual membership before application publication.
+
+    Trusted offline owner only, under its existing native writer. The current
+    signed application can lag a completed membership admission. Preparing this
+    public document changes no application, visibility installation or reader;
+    create_binding can attest it using this owner's existing custody. The native
+    publisher must subsequently validate the exact document/bindings against the
+    fully published application before selecting visibility. This is not an
+    alternative release proof or a way to accept a peer-selected destination.
+    """
+    from daimon_matrix.authority_epochs import RootHistoryAuthority
+    from daimon_matrix.messaging_config import read_publication
+    from daimon_matrix.native_egress import VISIBILITY_SCOPE_RISKS
+    from daimon_matrix.operator_rebirth import authority_from_document
+    from daimon_matrix.telegram_mirror import REPRESENTATIONS
+    from daimon_matrix.weave import RootAuthority
+
+    application, _ = read_publication(hosted, directory)
+    ordinary = hosted.service.relationships
+    own = hosted.service.ledger.authority
+    if isinstance(own, RootHistoryAuthority):
+        own = own.active
+    if (not isinstance(own, RootAuthority) or ordinary is None
+            or ordinary.authority_resolver is None
+            or application['relationship_mode'] != dict(mode='shared',
+                runtime_id=hosted.service.runtime_id, state_root=str(hosted.state_root),
+                store_filename=ordinary.store.path.name)
+            or ordinary.store.path != hosted.state_root / ordinary.store.path.name):
+        raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    with ordinary.store.authorization_view(at_ms=hosted.service.clock(),
+            card_verifier=ordinary.card_verifier) as view:
+        snapshot = view.snapshot(application['tribe']['policy']['tribe_ref'])
+    members = {row['principal_id']:row for row in snapshot.value['members'] if row['state']=='active'}
+    owner = own.manifest.being_ref
+    pinned = {row['manifest']['being_ref']:authority_from_document(row) for row in application['authorities']}
+    if (len(pinned) != len(application['authorities']) or not set(pinned) <= set(members)
+            or pinned.get(owner) != own or owner not in members
+            or application['tribe']['policy']['membership_ref'] != members[owner]['membership_ref']):
+        raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    for ref in members:
+        current = ordinary.authority_resolver(ref)
+        if isinstance(current, RootHistoryAuthority):
+            current = current.active
+        if not isinstance(current, RootAuthority) or (ref in pinned and pinned[ref] != current):
+            raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    destination = copy.deepcopy(approved_destination)
+    if (set(destination) != {'bot_id','chat_id','topic_id','representation'}
+            or type(destination['bot_id']) is not int or not 0 < destination['bot_id'] < 2**52
+            or type(destination['chat_id']) is not int or not 0 < abs(destination['chat_id']) < 2**52
+            or destination['topic_id'] is not None and (type(destination['topic_id']) is not int
+                or not 0 < destination['topic_id'] < 2**52)
+            or destination['representation'] not in REPRESENTATIONS
+            or type(issued_at_ms) is not int or not 0 <= issued_at_ms <= hosted.service.clock()
+            or issued_at_ms >= 2**52):
+        raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    local = owner if local_being_ref is None else local_being_ref
+    if not isinstance(local, str) or local not in members:
+        raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    participants = sorted(members)
+    scope = dict(mode='all-inter-daimon-communications', channels=[dict(
+        channel_id=application['tribe']['channel_id'], direction='group', local_being_ref=local,
+        tribe_ref=application['tribe']['policy']['tribe_ref'],
+        membership_ref=members[local]['membership_ref'], participants=participants)],
+        projected_content='complete-plaintext-content-and-metadata')
+    return dict(schema='dm.messaging.visibility-disclosure/v1', issued_at_ms=issued_at_ms,
+        destination=destination, scope=scope, scope_sha256=digest(scope), participants=participants,
+        risk=VISIBILITY_SCOPE_RISKS['all-inter-daimon-communications'])
+
+
 def _publish_application(hosted, directory: Path, params: dict) -> dict:
     from daimon_matrix import operator_messaging
     from daimon_matrix.messaging_config import (

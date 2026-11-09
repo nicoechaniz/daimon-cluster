@@ -1021,8 +1021,83 @@ selected body, at most64 selected names and no new state history or daemon.
 Unselected old jobs keep their original contract. The adapter explicitly supports
 current Incus containers; full KVM network forwarding has different semantics
 and requires its own qualified placement integration. This network receipt is
-not public HTTPS/shared-login readiness. The maintained gateway route compiler,
-membership-only operation compilation, KVM creation and whole-command receiving
-qualification remain necessary before claiming a fresh full companion delivery.
+not public HTTPS/shared-login readiness. The versioned gateway hook below composes
+the public route. Membership-only operation compilation, KVM creation and
+whole-command receiving qualification remain necessary before claiming a fresh
+full companion delivery.
 All four current devices were reconciled read-only, including a real wrong-port
 refusal, without changing their jobs, configuration, processes or native inputs.
+
+### Owned HTTPS route in the same worker
+
+`dm.home-companion-onboarding/v2` adds a `routes` selection to the existing Home
+hook. V1 retains its exact pins and behavior. Routes selects the current Caddy
+`config`, a private `state` directory, one exact unique `anchor` line inside the
+existing shared HTTPS site and the relevant `maintenance` bindings below. The
+Home fallback comes from the actual registered gateway's viewer port; the guest
+listener comes from the Host's already selected Conversation proxy. No endpoint,
+command or new identity comes from browser input.
+
+The writer appends only a missing marked companion block. An identical current
+block is reconciled without mutation; a different marked block or existing exact
+unmarked hostname is preserved. All other configuration bytes remain unchanged.
+It uses the running Caddy service's exact executable/environment for adaptation
+and validation. The configuration path must match that process's actual command.
+The loopback admin listener must belong to the same PID; the adapted candidate
+and current live JSON are compared canonically, not inferred from process uptime.
+Existing unloaded edits and later concurrent changes refuse before publication.
+
+The private write-ahead record distinguishes prepared file publication from a
+reload intent and a proved loaded result. A crash between file publication and
+reload intent continues the same candidate. A lost reload reply is recovered
+from actual loaded configuration without dispatching another reload. Unknown
+effects retain the original operation and buffers. A pending operation never
+lets another job overwrite its unfinished recovery data. There are at most16
+per-name receipts,24 retained files and512KiB; config/buffers are64KiB each,
+with one replaceable before/candidate pair and bounded atomic staging. Processes
+have20second command bounds,4second service reads and3second admin reads. No
+history, credential material, native process or model input is changed.
+
+The existing Home pairing/reload can finish before a public-route wait, so a
+busy route does not block independent account/native job progress. Public shared
+login still needs its actual final HTTPS qualification before overall acceptance.
+The all4 existing marked routes and loaded Caddy configuration passed actual
+read-only reconciliation plus four wrong-target refusals. Caddy's process and
+configuration stayed unchanged. This is existing-receiver compatibility evidence,
+not a fresh full-command deployment or family/device acceptance.
+
+### Preserve active voice during a route change
+
+Caddy's default reload closes WebSockets; see its
+[streaming contract](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#streaming).
+A surviving Caddy PID alone does not preserve a voice call. The mutating route
+path therefore holds the receiving App's existing web/voice maintenance operator
+through publication, reload and readback. This is its existing kernel lock and
+actual health-header check, not another voice policy or a new approval gate.
+
+Each private maintenance binding selects `name`, `upstream`, a bounded transport
+`command`, the existing `python`, maintained `script` and `script_sha256`, private
+`config`, its actual `owner_uid` and local `health_url`. Commands contain exactly
+one `{program}` argv placeholder or a properly quoted `{shell_program}` marker
+for the existing SSH route. The controller sends only that target's own metadata
+through stdin, verifies the maintained script bytes and runs its existing
+`interaction_web_maintenance.py`. That operator verifies the live lock header
+and holds its own inherited descriptor. No keys or configuration bytes leave the
+receiving body. A correlated bounded roundtrip rechecks each holder before the
+actual change, reserving90seconds before its300second hard expiry. EOF/exit ends
+the helper; there is no scheduler or persistent remote worker.
+
+Select all affected App voice receivers, including any served through other
+aliases. The writer also derives the current literal `/interaction` upstreams
+from live Caddy and requires coverage; dynamic/named indirection requires its
+own qualified resolver. Do not infer a receiver from an old unit name or current
+working directory: match its actual listener, configured source and health lock.
+The current legacy Sessions surfaces were separately inspected as HTTP-only;
+an upgrade that adds capture must update this receiving binding too.
+Busy capture refuses the lock without interruption, releases already acquired
+holders and leaves route state prepared. Known voice waits allow independent
+native work to advance; an explicit operator extension/resume keeps the same
+job. All6 current Interaction guards were actually held, correlated and released
+with zero Caddy reloads or model calls. Caller-selected extra affected receivers
+are also fenced. Disable future routing by withdrawing this selection; do not
+stop captures, unlink their persistent lock files or roll back data stores.

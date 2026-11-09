@@ -140,3 +140,63 @@ def test_capacity_refuses_without_discarding_retained_work(tmp_path):
     with pytest.raises(OnboardingError,match='state_capacity'):
         configure(file,progress=progress.root,store=store,backend=lambda:backend,worker_uid=os.getuid())
     assert retained.read_bytes()==b'x'*4097 and calls==[]
+
+
+def test_routed_home_uses_same_worker_and_waits_for_actual_route_effect(tmp_path, monkeypatch):
+    from tests.test_onboarding_conversation_routes import assembled as routed_fixture
+    from clusterctl import onboarding_conversation_routes
+    homes,store,backend,progress,plan,_,calls,_,file=assembled(tmp_path)
+    routed_root=tmp_path/'routing'
+    routed_root.mkdir()
+    writer,_,route_state,route_calls,_=routed_fixture(routed_root)
+    selected=being_seed._read(file)
+    selected.update(schema='dm.home-companion-onboarding/v2',routes=writer.value)
+    being_seed._write(file,selected)
+    homes=configure(file,progress=progress.root,store=store,backend=lambda:backend,worker_uid=os.getuid())
+    backend.config=SimpleNamespace(conversation_proxy_by_name={'eko':dict(listen_host='10.20.30.40',listen_port=18741)})
+    request_value=backend._conversation_request(plan)
+    def gateway(action,request,**options):
+        calls.append(action)
+        if action=='routing':
+            return {'state':'configured','home_backend':'http://127.0.0.1:8820'}
+        if action=='register':
+            return dict(status='home-configured',home_ref=request_value['home_ref'],actor=request_value['being_ref'],human_ref=request_value['human_ref'])
+        return {'state':'ready','pair_matched':True}
+    homes._gateway=gateway
+    monkeypatch.setattr(onboarding_conversation_routes,'Routes',lambda value:writer)
+    route_state['effect']=False
+    ready=committed(store,backend,progress)
+    assert homes(ready)['state']=='waiting'
+    assert calls==['register','probe','routing']
+    assert being_seed._read(homes.state/'eko.json')['phase']=='configured'
+    # A delayed real effect becomes observable under the original route intent.
+    route_state['loaded']=digest({'file':writer.path.read_text()})
+    assert homes.reconcile_committed('eko')=={'state':'complete'}
+    assert route_calls.count('reload')==1 and calls.count('register')==1
+    count=len(calls)
+    assert homes(ready)=={'state':'complete'} and len(calls)==count
+
+
+def test_busy_route_maintenance_does_not_block_independent_native_job_progress(tmp_path):
+    from dataclasses import replace
+    from clusterctl.onboarding_worker import Worker
+    homes,store,backend,progress,_,_,_,state,_=assembled(tmp_path)
+    homes.value=dict(homes.value,schema='dm.home-companion-onboarding/v2',routes={})
+    homes.selection_path=None
+    state['ready']=True
+    def busy(*args):
+        raise OnboardingError('conversation_route_voice_active')
+    homes._routes=busy
+    original_observe=backend.observe
+    def observe(plan,stage,operation):
+        result=original_observe(plan,stage,operation)
+        if stage=='access' and result.state=='complete':
+            return replace(result,facts=dict(result.facts,provider_configured=True))
+        return result
+    backend.observe=observe
+    ready=committed(store,backend,progress)
+    assert homes(ready)=={'state':'waiting','reason':'conversation_route_voice_active'}
+    worker=Worker(store,lambda:backend,publish=progress.publish,homes=homes)
+    after=worker._tick('eko')
+    assert 'access' in after['completed_steps']
+    assert being_seed._read(homes.state/'eko.json')['phase']=='configured'

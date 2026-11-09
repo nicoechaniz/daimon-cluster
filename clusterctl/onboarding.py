@@ -111,6 +111,16 @@ _DIAGNOSTIC_CODES = frozenset({
     'companion_gateway_reload_unconfirmed',
     'conversation_proxy_configuration_required', 'conversation_proxy_observation_unavailable',
     'conversation_proxy_placement_unsupported', 'existing_conversation_proxy_preserved',
+    'conversation_route_configuration_required', 'conversation_route_capacity',
+    'existing_conversation_route_preserved', 'conversation_route_anchor_changed',
+    'conversation_route_service_unobserved', 'conversation_route_service_binding_changed',
+    'conversation_route_service_changed', 'conversation_route_admin_unobserved',
+    'conversation_route_operation_pending', 'conversation_route_reload_unconfirmed',
+    'conversation_route_runtime_unconfirmed', 'conversation_route_checkpoint_changed',
+    'conversation_route_concurrent_configuration_preserved', 'conversation_route_home_backend_required',
+    'conversation_route_validation_refused',
+    'conversation_route_maintenance_required', 'conversation_route_maintenance_unavailable',
+    'conversation_route_maintenance_lost', 'conversation_route_voice_active',
 })
 
 

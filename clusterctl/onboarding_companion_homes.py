@@ -18,6 +18,7 @@ from .onboarding_custody import document
 from .onboarding_progress import Progress
 
 SCHEMA = 'dm.home-companion-onboarding/v1'
+ROUTED_SCHEMA = 'dm.home-companion-onboarding/v2'
 UNIT = 'daimon-home-access.service'
 
 # Runs under the actual gateway configuration owner's UID. Keys stay there.
@@ -38,6 +39,8 @@ else:
  if home is None:result={'state':'configuration-missing'}
  elif home['owner_being_ref']!=request['being_ref'] or home['public_url']!=request['origin']:
   raise ValueError('companion_home_binding_conflict')
+ elif value['action']=='routing':
+  result={'state':'configured','home_backend':'http://127.0.0.1:'+str(cfg['viewer_port'])}
  else:
   url='http://127.0.0.1:'+str(cfg['owner_port'])+'/owner/'+request['home_ref']+'/human-endpoint'
   class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -146,6 +149,26 @@ class CompanionHomes:
         if result.returncode:
             raise OnboardingError('companion_gateway_reload_unconfirmed')
 
+    def _pins(self, plan_digest, request, pair):
+        value = dict(plan_digest=plan_digest, request=request, gateway=self.value['gateway'], pair=pair)
+        if self.value['schema'] == ROUTED_SCHEMA:
+            value['routes'] = self.value['routes']
+        return digest(value)
+
+    def _routes(self, backend, plan, request):
+        from .onboarding_conversation_routes import Routes
+        selected = backend.config.conversation_proxy_by_name
+        if selected is None or plan['name'] not in selected:
+            raise OnboardingError('conversation_proxy_configuration_required')
+        gateway = self._gateway('routing', request)
+        if gateway.get('state') != 'configured' or not isinstance(gateway.get('home_backend'), str):
+            raise OnboardingError('conversation_route_home_backend_required')
+        def authorized():
+            self._selected()
+            return backend.authorize(plan, digest(plan))
+        return Routes(self.value['routes']).reconcile(request, selected[plan['name']],
+            gateway['home_backend'], apply=True, authorize=authorized)
+
     def reconcile_committed(self, name):
         pair = self.value['pairs'].get(name)
         if pair is None:
@@ -176,8 +199,7 @@ class CompanionHomes:
             request = backend._conversation_request(plan)
             if request is None:
                 raise OnboardingError('conversation_selection_required')
-            pins = digest(dict(plan_digest=pair['plan_digest'],request=request,
-                gateway=self.value['gateway'],pair=pair))
+            pins = self._pins(pair['plan_digest'], request, pair)
             path = self.state/(value['name']+'.json')
             observed = document(path) if path.exists() else dict(
                 schema='cluster-companion-home-job/v1',pins=pins,phase='prepared')
@@ -200,6 +222,16 @@ class CompanionHomes:
                 self._save(path,observed)
             probe = self._gateway('probe',request)
             if probe.get('state')=='ready' and probe.get('pair_matched') is True:
+                if self.value['schema'] == ROUTED_SCHEMA:
+                    try:
+                        route = self._routes(backend, plan, request)
+                    except OnboardingError as error:
+                        if str(error) not in {'conversation_route_voice_active',
+                            'conversation_route_maintenance_unavailable','conversation_route_maintenance_lost'}:
+                            raise
+                        return {'state':'waiting', 'reason':str(error)}
+                    if route.get('state') != 'complete' or route.get('route_loaded') is not True:
+                        return {'state':'waiting', 'reason':route.get('reason', 'conversation_route_runtime_unconfirmed')}
                 observed.update(phase='complete',own_pair_observed=True)
                 self._save(path,observed)
                 return {'state':'complete'}
@@ -226,8 +258,7 @@ class CompanionHomes:
         if not path.exists() or pair is None or pair['plan_digest']!=digest(plan):
             return Observation('waiting',reason='connection_data_required')
         value = document(path)
-        expected = digest(dict(plan_digest=digest(plan),request=request,
-            gateway=self.value['gateway'],pair=pair))
+        expected = self._pins(digest(plan), request, pair)
         if value.get('pins')!=expected or value.get('phase')!='complete':
             return Observation('waiting',reason='connection_data_required')
         if self._gateway('probe',request)!={'state':'ready','pair_matched':True}:
@@ -267,7 +298,9 @@ class CompanionHomes:
 
 
 def configure(value, *, progress, store, backend, worker_uid, selection_path=None):
-    if (set(value)!={'schema','state','gateway','pairs'} or value.get('schema')!=SCHEMA
+    routed = value.get('schema') == ROUTED_SCHEMA
+    if (set(value)!={'schema','state','gateway','pairs'} | ({'routes'} if routed else set())
+            or value.get('schema') not in {SCHEMA, ROUTED_SCHEMA}
             or not isinstance(value['state'],str) or not Path(value['state']).is_absolute()
             or '..' in Path(value['state']).parts
             or not isinstance(value['gateway'],dict) or set(value['gateway'])!={'config','python'}
@@ -275,6 +308,9 @@ def configure(value, *, progress, store, backend, worker_uid, selection_path=Non
                 for p in value['gateway'].values())
             or not isinstance(value['pairs'],dict) or not 1<=len(value['pairs'])<=16):
         raise OnboardingError('companion_home_configuration_required')
+    if routed:
+        from .onboarding_conversation_routes import configuration as route_configuration
+        route_configuration(value['routes'])
     for name,pair in value['pairs'].items():
         if (not isinstance(name,str) or not being_seed.NAME.fullmatch(name)
                 or not isinstance(pair,dict) or set(pair)!={'owner','plan_digest','human_name','vpn_url'}

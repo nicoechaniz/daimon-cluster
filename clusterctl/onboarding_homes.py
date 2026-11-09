@@ -770,7 +770,7 @@ def configure(path, *, progress, store, backend, worker_uid):
     import re
 
     value = being_seed._read(Path(path))
-    if value.get('schema') == 'dm.home-companion-onboarding/v1':
+    if value.get('schema') in {'dm.home-companion-onboarding/v1', 'dm.home-companion-onboarding/v2'}:
         from .onboarding_companion_homes import configure as companion_configure
         return companion_configure(value, progress=progress, store=store,
             backend=backend, worker_uid=worker_uid, selection_path=path)

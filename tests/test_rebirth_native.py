@@ -557,7 +557,7 @@ def test_native_profile_selection_recovers_replace_before_ack_without_replacemen
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "migration", "start-active", "start-inactive"]
+    "failure", [None, "migration", "start-active", "start-inactive", "status-pending"]
 )
 def test_native_profile_maintenance_resumes_real_journal_without_replaying_start(
     tmp_path, monkeypatch, failure
@@ -592,7 +592,8 @@ def test_native_profile_maintenance_resumes_real_journal_without_replaying_start
         def __init__(self, process):
             self.process = process
 
-        def wait_for_exit(self, _):
+        def wait_for_exit(self, seconds):
+            assert 0 <= seconds <= 60
             return self.process["pid"] in dead
 
     class Family:
@@ -662,6 +663,9 @@ def test_native_profile_maintenance_resumes_real_journal_without_replaying_start
 
         def status(self, *_, **__):
             calls.append("status")
+            if failure == "status-pending" and not self.failures:
+                self.failures += 1
+                raise rebirth_host.RebirthHostError("rebirth_host_native_profile_owner_unconfirmed")
             return dict(
                 process={**child, "pid": 456},
                 server=receiving["server"],
@@ -693,7 +697,7 @@ def test_native_profile_maintenance_resumes_real_journal_without_replaying_start
     controller = rebirth_native.ProfileMaintenance(
         journal, row["operation_id"], owner, manager, candidate
     )
-    if failure:
+    if failure in {"migration", "start-active", "start-inactive"}:
         with pytest.raises(OSError):
             controller.run(deadline_ns=time.monotonic_ns() + 1_000_000_000)
         if failure == "start-inactive":
@@ -704,7 +708,7 @@ def test_native_profile_maintenance_resumes_real_journal_without_replaying_start
             assert calls.count("start") == 1
             assert journal.get(row["operation_id"])["state"] == "runtime-dispatching"
             return
-    result = controller.run(deadline_ns=time.monotonic_ns() + 1_000_000_000)
+    result = controller.run(deadline_ns=time.monotonic_ns() + 180_000_000_000)
     assert result["complete"] and result["receiving_readiness"] == "unobserved"
     assert calls.count("stop") == calls.count("start") == calls.count("select") == 1
     assert calls.index("migrate") < calls.index("select") < calls.index("start")

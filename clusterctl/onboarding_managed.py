@@ -1189,8 +1189,19 @@ def run_native_profile_update(spec: dict, *, check_only: bool = False) -> dict:
     retained = None if retained_journal is None else retained_journal.get(core['operation_id'])
     for name,client in clients.items():
         client.deadline_ns = deadline
-        observed = _selection(client._call(dict(action='status')))
         expected = routes['owners'][name]['selection']
+        if (name == updated[0] and retained is not None
+                and retained['state'] != 'completed'
+                and retained['intent'].get('native_profile_maintenance') == core
+                and 'stop_intent' in (retained['runtime_observation'] or {})):
+            # This exact operation may own a stopped service. Requiring its
+            # live reader before resuming would prevent its own recovery.
+            frozen = _selection(retained['expected_precondition']['receiving'])
+            if expected is not None and expected != frozen:
+                raise OnboardingError('receiving_cohort_selection_changed')
+            selections[name] = frozen
+            continue
+        observed = _selection(client._call(dict(action='status')))
         if (name == updated[0] and retained is not None
                 and retained['intent'].get('native_profile_maintenance') == core):
             if retained.get('result') is not None:

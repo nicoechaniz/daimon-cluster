@@ -271,7 +271,7 @@ def test_pending_reader_checkpoint_keeps_same_operation_resumable(tmp_path):
     preflight_reader_checkpoint(checkpoint, spec()['operation_id'])
 
 
-@pytest.mark.parametrize("mode", ["update", "check", "failed-reader", "retained"])
+@pytest.mark.parametrize("mode", ["update", "check", "failed-reader", "retained", "owned-stopped"])
 def test_native_profile_command_composes_existing_readers_and_keeps_the_same_deadline(
     tmp_path, monkeypatch, mode
 ):
@@ -340,6 +340,8 @@ def test_native_profile_command_composes_existing_readers_and_keeps_the_same_dea
 
         def _call(self, request):
             calls.append(self.name)
+            if self.name == "root" and mode == "owned-stopped":
+                pytest.fail("the operation-owned stopped reader must not block recovery")
             if self.name == "peer" and mode == "failed-reader":
                 raise OnboardingError("receiving_reader_owner_unavailable")
             return (
@@ -350,7 +352,7 @@ def test_native_profile_command_composes_existing_readers_and_keeps_the_same_dea
 
     clients = {name: Client(name) for name in ("root", "peer")}
     monkeypatch.setattr(managed, "code_update_reader_clients", lambda *_, **__: clients)
-    if mode == "retained":
+    if mode in {"retained", "owned-stopped"}:
         journal = OperationJournal(Path(core["journal"]))
         row = journal.plan(
             operation="receiving-update",
@@ -358,11 +360,14 @@ def test_native_profile_command_composes_existing_readers_and_keeps_the_same_dea
             operation_id=core["operation_id"],
             idempotency_key="fixture",
             intent={"native_profile_maintenance": core},
-            expected_precondition={},
+            expected_precondition={"receiving": before},
             intended_transition={},
             audit_identity={},
         )
-        journal.advance(row["operation_id"], "completed", result={"loaded": after})
+        if mode == "retained":
+            journal.advance(row["operation_id"], "completed", result={"loaded": after})
+        else:
+            journal.advance(row["operation_id"], "runtime-dispatching", runtime_observation={"stop_intent": {}})
 
     def run(value, **options):
         assert (
@@ -371,7 +376,7 @@ def test_native_profile_command_composes_existing_readers_and_keeps_the_same_dea
             < options["deadline_ns"] - managed.time.monotonic_ns()
             <= 60_000_000_000
         )
-        assert calls == ["root", "peer"]
+        assert calls == (["peer"] if mode == "owned-stopped" else ["root", "peer"])
         calls.append("software")
         return (
             dict(qualified=True)

@@ -378,7 +378,7 @@ class ProfileMaintenance:
                         self._record('stop_intent',dict(scope=scope,service_sha256=service['unit_sha256']))
                         self.manager.stop(deadline_ns=deadline_ns)
                         for pinned in (family.child, family.parent):
-                            if not pinned.wait_for_exit(max(0,(deadline_ns-time.monotonic_ns())/1e9)):
+                            if not pinned.wait_for_exit(min(60.0,max(0,(deadline_ns-time.monotonic_ns())/1e9))):
                                 raise RebirthHostError('rebirth_host_native_profile_exit_unobserved')
                 current = unchanged()
                 if current['manager']['ActiveState'] != 'inactive':
@@ -416,7 +416,18 @@ class ProfileMaintenance:
                     raise RebirthHostError('rebirth_host_native_profile_start_unobserved')
                 # The owner status call is bounded by this same deadline; an
                 # accepted start with unavailable readiness stays unconfirmed.
-                observed = self.owner.status(self.candidate,deadline_ns=deadline_ns)
+                while True:
+                    try:
+                        observed = self.owner.status(self.candidate,deadline_ns=deadline_ns)
+                        break
+                    except RebirthHostError as error:
+                        if str(error) != 'rebirth_host_native_profile_owner_unconfirmed':
+                            raise
+                        budget()
+                        if unchanged()['manager']['ActiveState'] not in {'active','activating'}:
+                            raise
+                        # An accepted start is observed, never issued again.
+                        time.sleep(min(0.2,max(0,(deadline_ns-time.monotonic_ns())/1e9)))
                 loaded = observed['runtime_status']['loaded_runtime']
                 prior_runtime = receiving['runtime_status']['loaded_runtime']
                 application = observed['runtime_status']['loaded_application']

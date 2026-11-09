@@ -206,7 +206,13 @@ by the existing2MiB record cap. Its native owner request files remain the effect
 authority. The public checkpoint preserves exact commands before dispatch, including
 the original selection deadline; an uncertain call is never relabeled with a new
 head or deadline. Retain that checkpoint with the owning current/previous operation,
-not a growing directory per attempt. Matching selected vectors are read-only.
+not a growing directory per attempt. A completed checkpoint records the observed
+vector's gate heads and binding digest. A later distinct operation rotates it to
+one `.previous.json` beside the current file, replacing only an older completed
+predecessor. Pending, foreign or same-operation changed bindings are preserved and
+refused. The coordinator checkpoint remains bounded to two2MiB files; native
+owner request journals retain their own ownership and uncertainty. Already matching
+native vectors require no controls; only the observed completion metadata is saved.
 
 This helper does not discover placements, replace owner adapters, restart services,
 reenroll members or send test speech. Membership/process/selection changes refuse

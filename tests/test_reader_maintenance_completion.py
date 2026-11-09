@@ -103,3 +103,71 @@ def test_prepared_unsubmitted_select_reuses_original_deadline_and_command(tmp_pa
     time.sleep(.002)
     receiving.refresh_current_readers(owners, **options)
     assert calls.count(('first','select')) == 1
+
+
+def test_subsequent_releases_rotate_only_completed_current_and_previous(tmp_path, monkeypatch):
+    from clusterctl import being_seed
+    owners, options, calls, _, _ = cohort(tmp_path, monkeypatch)
+    receiving.refresh_current_readers(owners, **options)
+    first=being_seed._read(options['checkpoint'])
+    assert first['completed']['receiving_readiness']=='qualified-local-projection'
+    calls.clear()
+    for operation in ('0535495b-7592-4aa7-ae87-0a1db05cc464','f86fd054-d0aa-468e-b275-06db1a6b992d'):
+        options['operation_id']=operation
+        receiving.refresh_current_readers(owners, **options)
+    assert calls==[]  # healthy native vectors remain untouched
+    current=being_seed._read(options['checkpoint'])
+    previous=being_seed._read(tmp_path/'progress.previous.json')
+    assert current['binding']['operation_id']=='f86fd054-d0aa-468e-b275-06db1a6b992d'
+    assert previous['binding']['operation_id']=='0535495b-7592-4aa7-ae87-0a1db05cc464'
+    assert len(list(tmp_path.glob('*.json')))==2
+
+
+def test_new_operation_cannot_rotate_an_unfinished_predecessor(tmp_path, monkeypatch):
+    from clusterctl import being_seed
+    owners, options, calls, fail, _ = cohort(tmp_path, monkeypatch)
+    fail.append(('first','revoke'))
+    with pytest.raises(OnboardingError):
+        receiving.refresh_current_readers(owners, **options)
+    prior=being_seed._read(options['checkpoint'])
+    options['operation_id']='0535495b-7592-4aa7-ae87-0a1db05cc464'
+    calls.clear()
+    with pytest.raises(OnboardingError,match='binding_conflict'):
+        receiving.refresh_current_readers(owners, **options)
+    assert calls==[] and being_seed._read(options['checkpoint'])==prior
+    assert not (tmp_path/'progress.previous.json').exists()
+
+
+def test_completion_write_failure_reconciles_native_success_without_repeating_it(tmp_path, monkeypatch):
+    from clusterctl import being_seed
+    owners, options, calls, _, _ = cohort(tmp_path, monkeypatch)
+    write=being_seed._write
+    fail=[True]
+    def retain(path,value,**kwargs):
+        if path==options['checkpoint'] and 'completed' in value and fail:
+            fail.pop()
+            raise OSError('test-owned completion write failure')
+        return write(path,value,**kwargs)
+    monkeypatch.setattr(being_seed,'_write',retain)
+    with pytest.raises(OSError):
+        receiving.refresh_current_readers(owners, **options)
+    calls.clear()
+    receiving.refresh_current_readers(owners, **options)
+    assert calls==[]
+    assert being_seed._read(options['checkpoint'])['completed']['receiving_readiness']=='qualified-local-projection'
+
+
+def test_unfinished_previous_record_is_never_overwritten(tmp_path, monkeypatch):
+    from clusterctl import being_seed
+    owners, options, calls, _, _ = cohort(tmp_path, monkeypatch)
+    receiving.refresh_current_readers(owners, **options)
+    previous=tmp_path/'progress.previous.json'
+    unknown=dict(schema='foreign-pending',original='preserve')
+    being_seed._write(previous,unknown)
+    current=being_seed._read(options['checkpoint'])
+    options['operation_id']='0535495b-7592-4aa7-ae87-0a1db05cc464'
+    calls.clear()
+    with pytest.raises(OnboardingError,match='binding_conflict'):
+        receiving.refresh_current_readers(owners, **options)
+    assert calls==[] and being_seed._read(previous)==unknown
+    assert being_seed._read(options['checkpoint'])==current

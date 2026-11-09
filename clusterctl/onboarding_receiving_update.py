@@ -304,14 +304,45 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
         readers = vector['readers']
         binding = dict(operation_id=operation_id, release_digest=release_digest,
             selections=selections, nonadmitted=sorted(nonadmitted), vector=vector)
+        def finished(row):
+            return (isinstance(row, dict) and row.get('schema') == 'cluster-current-reader-completion/v1'
+                and isinstance(row.get('binding'), dict) and isinstance(row.get('commands'), dict)
+                and isinstance(row.get('completed'), dict)
+                and row['completed'].get('binding_sha256') == digest(row['binding'])
+                and row['completed'].get('receiving_readiness') == 'qualified-local-projection'
+                and type(row['completed'].get('observed_at_ms')) is int
+                and row['completed']['observed_at_ms'] >= 0
+                and isinstance(row['binding'].get('selections'), dict)
+                and isinstance(row['completed'].get('gate_heads'), dict)
+                and set(row['completed']['gate_heads']) == set(row['binding']['selections'])
+                and all(isinstance(head, str) and re.fullmatch('[0-9a-f]{64}', head) is not None
+                    for head in row['completed']['gate_heads'].values()))
         if checkpoint.exists():
             saved = being_seed._read(checkpoint, limit=being_seed.MAX_SELECTION)
-            if saved.get('binding') != binding:
+            if (saved.get('schema') != 'cluster-current-reader-completion/v1'
+                    or not isinstance(saved.get('commands'), dict)):
                 raise OnboardingError('receiving_control_binding_conflict')
+            if saved.get('binding') != binding:
+                if (not finished(saved)
+                        or saved['binding'].get('operation_id') == operation_id):
+                    raise OnboardingError('receiving_control_binding_conflict')
+                previous = checkpoint.with_name(checkpoint.stem + '.previous' + checkpoint.suffix)
+                if previous.exists() and not finished(being_seed._read(previous, limit=being_seed.MAX_SELECTION)):
+                    raise OnboardingError('receiving_control_binding_conflict')
+                # One completed predecessor, never a directory per release.
+                # If interrupted between writes, the same predecessor can be
+                # retained again without any native effect or new request ID.
+                being_seed._write(previous, saved, limit=being_seed.MAX_SELECTION)
+                saved = dict(schema='cluster-current-reader-completion/v1', binding=binding, commands={})
+                being_seed._write(checkpoint, saved, limit=being_seed.MAX_SELECTION)
         else:
             saved = dict(schema='cluster-current-reader-completion/v1', binding=binding, commands={})
         changed: list[dict] = []
         def completed(final):
+            saved['completed'] = dict(binding_sha256=digest(binding),
+                receiving_readiness='qualified-local-projection', observed_at_ms=time.time_ns() // 1_000_000,
+                gate_heads={name: proof['gate']['head'] for name, proof in final.items()})
+            being_seed._write(checkpoint, saved, limit=being_seed.MAX_SELECTION)
             return dict(schema='cluster-current-reader-completion/v1', operation_id=operation_id,
                 release_digest=release_digest, receiving_readiness='qualified-local-projection',
                 membership_basis_sha256=vector['membership_basis_sha256'],

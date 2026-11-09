@@ -97,7 +97,7 @@ class ManagedRuntime:
         request binds the actual admitted predecessor and changes only ExecStart;
         root's existing bootstrap journal reconciles lost stop/select/start ACKs.
         Identity, credentials, native stores and Conversation are preserved.
-        The complete operation includes cold SDK preparation within 120 seconds;
+        The complete operation includes cold SDK preparation within its declared envelope;
         each owner/physical request remains capped at 60 seconds and shares the
         original overall deadline. No internal deadline is renewed.
         An existing group and publication are frozen across the update. Published
@@ -110,7 +110,7 @@ class ManagedRuntime:
         if (type(receive_only_group) is not bool or type(published_group) is not bool
                 or receive_only_group and published_group
                 or str(uuid.UUID(operation_id)) != operation_id
-                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 120
+                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 300
                 or not published_group and (self.settings.get('mode') != 'native-admission-only'
                     or self._selection(plan) != (None, None))):
             raise OnboardingError('native_code_update_requires_plain_admitted_body')
@@ -1155,8 +1155,9 @@ def run_code_update(spec: dict) -> dict:
     results = []
     for name in spec['targets']:
         # Code preparation and the existing owner operation share this body's
-        # original120s envelope and the batch's absolute deadline.
-        target_deadline = min(deadline, time.monotonic_ns() + 120_000_000_000)
+        #300s envelope and the SAME batch's absolute deadline. The former120s
+        # cap expired during a real published update and forced avoidable recovery.
+        target_deadline = min(deadline, time.monotonic_ns() + 300_000_000_000)
         phase = 'prepare'
         try:
             if time.monotonic_ns() >= target_deadline:
@@ -1169,7 +1170,7 @@ def run_code_update(spec: dict) -> dict:
             if remaining <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
             value = owner.update_native_code(plans[name], candidate,
-                operation_id=spec['operation_id'], timeout_seconds=min(120.0, remaining),
+                operation_id=spec['operation_id'], timeout_seconds=min(300.0, remaining),
                 receive_only_group=spec['group'] == 'closed', published_group=spec['group'] == 'published')
             results.append(dict(name=name, operation_id=spec['operation_id'], status='updated', result=value))
         except Exception as error:

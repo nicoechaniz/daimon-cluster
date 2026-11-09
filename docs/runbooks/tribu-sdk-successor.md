@@ -1683,9 +1683,10 @@ writer. Select `receive_only_group=True` for an existing group: it uses the
 current native/loaded observation independently of the original enrollment
 ceremony. The command first completes the existing idempotent `sdk-prepare`
 stage as the actual owner; public file availability alone does not prove the
-owner interpreter or closed imports exist. The complete update has one 120-second
-default/maximum envelope, including cold preparation; every individual call
-remains at most 60 seconds and cannot extend that original envelope. Its authenticated predecessor
+owner interpreter or closed imports exist. The primitive keeps its120-second
+default and accepts an explicit envelope up to300seconds, including cold
+preparation; every individual call remains at most60seconds and cannot extend
+the declared envelope. Its authenticated predecessor
 observation freezes the existing group
 coordinates and signed application/publication hashes. The same closed group
 must remain after startup; a published outbound adapter cannot use this path.
@@ -1751,8 +1752,10 @@ new enrollment, identity, SSH route, arbitrary command or publication callback.
 Native/local targets keep their existing HostConfig route.
 
 The command prepares qualified public code and invokes the same update primitive
-serially. Code preparation shares each body's120-second budget and the batch's
-absolute deadline. It stops on the first incomplete result, reports remaining
+serially. Code preparation shares each body's maximum300-second budget and the
+batch's unchanged absolute deadline (maximum480seconds). The former120-second
+CLI cap expired during actual Eko maintenance after quiescence and forced
+avoidable resumptions; it is not renewed or layered onto the batch bound. It stops on the first incomplete result, reports remaining
 names and reuses the same operation ID on exact retry. Existing per-body journals
 reconcile completed or uncertain effects; no duplicate batch effect journal,
 background retry or scheduler is introduced. Keep the spec unchanged for resume.
@@ -1761,8 +1764,8 @@ update above. Code-only specs retain `receiving_readiness: unobserved`; a
 successful composed run reports `qualified-local-projection`. Neither result
 claims full fleet provisioning, model uptake or a new message response.
 
-The original 120-second call bound and existing current/previous operation
-records remain. Catalog migration performs no provider/transport call or inbox
+Individual owner/physical calls keep their60-second bound; existing
+current/previous operation records remain. Catalog migration performs no provider/transport call or inbox
 attention. The result deliberately retains `receiving_readiness=unobserved`:
 finish the existing current-reader cohort qualification/selection before claiming
 messaging availability. This per-body update primitive is not the complete fleet

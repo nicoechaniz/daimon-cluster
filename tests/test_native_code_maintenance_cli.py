@@ -24,7 +24,9 @@ def test_refuse_invalid_or_unbounded_spec_before_any_backend(change):
         managed.validate_code_update({**spec(), **change})
 
 
-def test_partial_batch_reuses_one_operation_and_existing_effects(tmp_path, monkeypatch):
+@pytest.mark.parametrize('batch_seconds',[90,480])
+def test_partial_batch_reuses_one_operation_and_existing_effects(tmp_path, monkeypatch, batch_seconds):
+    selected = {**spec(), "max_seconds": batch_seconds}
     clock = [1_000_000_000]
     monkeypatch.setattr(managed.time, 'monotonic_ns', lambda: clock[0])
     config = SimpleNamespace(jobs=tmp_path)
@@ -41,7 +43,7 @@ def test_partial_batch_reuses_one_operation_and_existing_effects(tmp_path, monke
             assert selected is config and run is None
         def runtime_available(self, plan, candidate, *, prepare, deadline_ns):
             assert prepare and candidate[1] == 'a'*64
-            assert 0 < deadline_ns-clock[0] <= 120_000_000_000
+            assert 0 < deadline_ns-clock[0] <= min(300,batch_seconds)*1_000_000_000
             prepared.append(plan['name'])
             clock[0] += 20_000_000_000
             return True
@@ -61,13 +63,13 @@ def test_partial_batch_reuses_one_operation_and_existing_effects(tmp_path, monke
             return copy.deepcopy(effects[key])
     monkeypatch.setattr(onboarding_host, 'HostBackend', Backend)
     monkeypatch.setattr(managed, 'ManagedRuntime', Owner)
-    result = managed.run_code_update(spec())
+    result = managed.run_code_update(selected)
     assert not result['complete'] and result['pending'] == ['third']
     assert [row['status'] for row in result['targets']] == ['updated', 'incomplete']
     assert result['targets'][1]['failure']['code'] == 'seed_operation_in_progress'
     assert prepared == ['first', 'second']
-    assert all(0 < seconds <= 100 for seconds in budgets)
-    result = managed.run_code_update(spec())
+    assert all(0 < seconds <= min(280,batch_seconds-20) for seconds in budgets)
+    result = managed.run_code_update(selected)
     assert result['complete'] and not result['pending']
     assert len(effects) == 3 and {key[0] for key in attempts} == {spec()['operation_id']}
     assert result['receiving_readiness'] == 'unobserved'

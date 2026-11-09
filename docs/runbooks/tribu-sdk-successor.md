@@ -1573,6 +1573,14 @@ Appearance or removal of an adapter changes the frozen group. Use the existing
 owner optional-controller `issue` stage/publication for the retained body; this
 adds the control role, not human authorization, a new enrollment or outbound release.
 
+When enabling its first visibility adapter, use the existing native owner
+publication and unit writers with the already prepared SDK. If the initial
+catalog migration encounters an authenticated closed-key catalog, the publisher
+uses `adopt_closed_visibility_catalogs` and completes that same publication.
+Do not rebuild every SDK, reenroll the body or recreate pending messages for this
+storage-key transition. Prepare the full-visibility entrypoint before publishing:
+the old receive-only entrypoint refuses an installation once it exists.
+
 For this explicit closed composition, `observe_current_reader(receive_only=True)`
 checks actual process, identity, controlled roster, wire/store compatibility and
 loaded authority coverage. It reports `native-receive-only` and

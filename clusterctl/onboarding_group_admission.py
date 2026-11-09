@@ -1393,9 +1393,18 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
         # The peer app has its own signed catalog key, separate from the base
         # native runtime. Prepare its stores before first ordinary group load.
         from daimon_matrix.chat_host import application_view
-        from daimon_matrix.native_egress import VISIBILITY_SCHEMA_VERSION
+        from daimon_matrix.native_egress import NativeEgressError, VISIBILITY_SCHEMA_VERSION
         view = application_view(hosted, directory, installation, catalog_mode='migrate')
-        view.egress.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+        try:
+            view.egress.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+        except NativeEgressError as error:
+            if params['initial_configuration'] is None or str(error) != 'egress_catalog_invalid':
+                raise
+            # An admitted receive-only body can already retain genuine pending
+            # obligations. Adopt their closed storage key without changing any
+            # original policy, attempt or outcome; never reauthor that history.
+            view.egress.adopt_closed_visibility_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+            view.egress.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
         view.egress.validate_registered_catalogs()
         return dict(installation_sha256=result['installation_sha256'])
     from .onboarding_peer import publish_group_selection

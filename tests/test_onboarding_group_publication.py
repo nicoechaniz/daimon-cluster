@@ -52,6 +52,57 @@ def initial_publication(group_source, profile):
     return owner, group, journal, request, base
 
 
+def test_initial_portable_visibility_adopts_existing_closed_catalogs(group_source):
+    """First publication must open already initialized receive-only catalogs."""
+    import sqlite3
+    from daimon_matrix.canonical import b64url
+    from daimon_matrix.messaging_config import load_application
+    from daimon_matrix.native_egress import VISIBILITY_SCHEMA_VERSION
+
+    owner, group, _journal, initial, base = initial_publication(group_source, 'target')
+    owner.group_publication(initial, authority_closure={})
+    closed = load_application(base, group / 'application')
+    closed.egress.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+
+    def pending():
+        rows = {}
+        for path in (group / 'application').glob('*.sqlite'):
+            with sqlite3.connect(path) as db:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='echo_v2_obligations'").fetchone():
+                    for identifier, raw in db.execute('SELECT operation_id,record FROM echo_v2_obligations'):
+                        value = json.loads(raw)
+                        value.pop('authentication')
+                        rows[(path.name, identifier)] = value
+        return rows
+
+    originals = pending()
+    assert list((group / 'application').glob('*.sqlite'))
+    destination = dict(publication=dict(kind='conversation-journal/v1',
+        surface_ref='https://fixture.invalid/conversation', audience=['human:fixture'],
+        receipt_key=b64url(b'p' * 32)), representation='plain-json/v2')
+    identifier = initial['operation_id']
+    def submit(step, action, params):
+        return owner.group_publication(dict(operation_id=identifier, step=step, action=action, params=params),
+                                       authority_closure={})
+    disclosure = submit('disclosure', 'visibility-disclosure', dict(approved_destination=destination,
+        issued_at_ms=time.time_ns() // 1_000_000))['disclosure']
+    binding = submit('accept', 'visibility-accept', dict(approved_destination=destination,
+        disclosures=[disclosure]))['bindings'][0]['binding']
+    visibility = group / 'visibility'
+    visibility.mkdir(mode=0o700)
+    key = visibility / 'proof.key'
+    key.write_bytes(os.urandom(32))
+    key.chmod(0o600)
+    configuration = dict(destination=destination, secrets=dict(proof_key_file='proof.key'),
+        publication_backend=dict(kind='owner-unix/v1', socket_path='/tmp/portable-fixture.sock'))
+    request = dict(disclosure=disclosure, bindings=[binding], expected_installation_sha256=None,
+                   initial_configuration=configuration)
+    result = submit('visibility', 'visibility-publish', request)
+    assert submit('visibility', 'visibility-publish', request) == result
+    assert result['status'] == 'recorded'
+    assert pending() == originals
+
+
 @pytest.fixture
 def schema_owner(tmp_path):
     from tests.test_onboarding_target import receiving

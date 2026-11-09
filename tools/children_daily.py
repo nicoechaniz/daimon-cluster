@@ -397,6 +397,52 @@ def known_exploitation(selection, candidates, report, root):
     return result
 
 
+def phase_observations(config, report):
+    """Describe this occurrence, never infer another producer's acceptance.
+
+    Selected cleanup/browser/application phases can succeed while advisory
+    applicability remains pending. A historical broad label must not erase that
+    evidence, and a missing target must not become a vacuously successful phase.
+    """
+    targets = {row['id'] for row in config['targets']}
+    guests = {row['id'] for row in config['targets'] if row['instance']}
+    def phase(selected, expected, key, field, accepted):
+        if not selected:
+            return {'state': 'not-selected'}
+        observed = sorted(name for name in expected
+            if report['targets'].get(name, {}).get(key, {}).get(field) in accepted)
+        missing = sorted(expected - set(observed))
+        return {'state': 'observed' if expected and not missing else 'incomplete',
+                'observed_targets': observed, 'unavailable_targets': missing}
+    debian = sorted(name for name in targets
+        if report['targets'].get(name, {}).get('debian_advisories') == 'matched')
+    phases = {
+        'debian_advisories': {'state': 'observed' if targets and set(debian) == targets else 'incomplete',
+                             'observed_targets': debian,
+                             'unavailable_targets': sorted(targets - set(debian))},
+        'application_inventory': phase(bool(config.get('application_inventory')), targets,
+            'applications', 'state', {'observed'}),
+        'compiler_cleanup': phase(bool(config.get('compiler_cleanup_enabled')), guests,
+            'compiler_cleanup', 'status', {'complete'}),
+        'browser_metadata': phase(bool(config.get('browser_status')), guests,
+            'browser', 'state', {'standby', 'ready'}),
+        # These independent writers have their own native invocation and effect
+        # receipts. Running this reader cannot establish their delivery/health.
+        'package_transactions': {'state': 'external-producer'},
+        'incident_delivery_and_missed_runs': {'state': 'external-observer'},
+    }
+    for key in ('public_advisories', 'known_exploitation'):
+        if not config.get(key):
+            phases[key] = {'state': 'not-selected'}
+        else:
+            value = report.get(key, {})
+            phases[key] = {'state': 'observed' if value.get('state') == 'matched' else 'incomplete',
+                           'applicability': 'pending' if value.get('needs_triage') is True
+                               else 'no-selected-triage' if value.get('needs_triage') is False
+                               and value.get('state') == 'matched' else 'unavailable'}
+    return phases
+
+
 def collect(config):
     validate(config)
     root = Path(config['state'])
@@ -416,9 +462,8 @@ def collect(config):
         atomic(whitelist, b'VERSION 0\n')
         report = {'schema': 'cluster-children-daily-result/v1', 'started': int(time.time()),
                   'coverage': 'partial', 'targets': {}, 'source': {},
-                  'unassessed': ['upstream-and-malicious-release-advisories',
-                                 'automatic-patch-transactions', 'browser-and-cache-cleanup',
-                                 'incident-delivery-and-missed-run-supervision']}
+                  'unassessed': ['malicious-release-advisories',
+                                 'full-application-provenance-loaded-state-and-exposure']}
         try:
             raw = fetch_feed()
             atomic(feed/'trixie', raw)
@@ -505,6 +550,7 @@ def collect(config):
                 [v.get('applications',{}) for v in report['targets'].values()],root)
         if config.get('known_exploitation'):
             report['known_exploitation']=known_exploitation(config['known_exploitation'],kev_candidates,report,root)
+        report['phases'] = phase_observations(config, report)
         report['finished'] = int(time.time())
         raw = json.dumps(report, sort_keys=True).encode()
         if len(raw) > 256*1024 or footprint(root) > 512*MIB:

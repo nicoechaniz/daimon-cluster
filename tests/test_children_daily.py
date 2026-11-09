@@ -395,3 +395,44 @@ class KnownExploitationTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CurrentPhaseEvidenceTests(unittest.TestCase):
+    def test_current_cleanup_and_browser_success_survive_pending_advisory_triage(self):
+        names = ['pixin', 'calipso', 'c-137', 'noodles']
+        config = {'targets': [{'id': 'host', 'instance': None}] +
+                  [{'id': name, 'instance': 'dm-' + name} for name in names],
+                  'application_inventory': {'selected': True}, 'compiler_cleanup_enabled': True,
+                  'browser_status': {'selected': True}, 'public_advisories': {'selected': True},
+                  'known_exploitation': {'selected': True}}
+        report = {'targets': {name: {'debian_advisories': 'matched',
+                    'applications': {'state': 'observed'},
+                    'compiler_cleanup': {'status': 'complete'},
+                    'browser': {'state': 'standby'}} for name in ['host', *names]},
+                  'public_advisories': {'state': 'matched', 'needs_triage': True},
+                  'known_exploitation': {'state': 'matched', 'needs_triage': True}}
+        result = daily.phase_observations(config, report)
+        self.assertEqual(result['compiler_cleanup']['observed_targets'], sorted(names))
+        self.assertEqual(result['browser_metadata']['state'], 'observed')
+        self.assertEqual(result['application_inventory']['state'], 'observed')
+        self.assertEqual(result['known_exploitation']['applicability'], 'pending')
+        self.assertEqual(result['package_transactions']['state'], 'external-producer')
+        self.assertEqual(result['incident_delivery_and_missed_runs']['state'], 'external-observer')
+        del report['targets']['calipso']
+        changed = daily.phase_observations(config, report)
+        for key in ('debian_advisories', 'application_inventory', 'compiler_cleanup', 'browser_metadata'):
+            self.assertEqual(changed[key]['state'], 'incomplete')
+            self.assertEqual(changed[key]['unavailable_targets'], ['calipso'])
+
+    def test_disabled_and_empty_phases_do_not_claim_observed_success(self):
+        report = {'targets': {}, 'public_advisories': {'state': 'matched', 'needs_triage': False}}
+        result = daily.phase_observations({'targets': []}, report)
+        self.assertEqual(result['debian_advisories']['state'], 'incomplete')
+        self.assertEqual(result['compiler_cleanup']['state'], 'not-selected')
+        self.assertEqual(result['public_advisories']['state'], 'not-selected')
+        config = {'targets': [{'id': 'pixin', 'instance': 'dm-pixin'}],
+                  'compiler_cleanup_enabled': True, 'public_advisories': {'selected': True}}
+        report['public_advisories'] = {'state': 'unavailable', 'last_success_checked': 1}
+        result = daily.phase_observations(config, report)
+        self.assertEqual(result['compiler_cleanup']['unavailable_targets'], ['pixin'])
+        self.assertEqual(result['public_advisories']['applicability'], 'unavailable')

@@ -56,14 +56,24 @@ per-run archive or duplicate backup. Preserve actual native history separately.
 
 Exit 0 means these Debian inventory/matching calls completed, not full security
 clearance. Exit 2 records incomplete source/target coverage. The result always
-marks the larger assessment partial, with upstream/malicious-release coverage,
-patch transactions, browser/cache cleanup, incident delivery and missed-run
-supervision explicitly unassessed until their actual maintained adapters pass.
-A successful oneshot does not prove those missing phases.
+marks the larger assessment partial. Its `phases` map reports current Debian
+matching, application inventory, compiler cleanup, browser metadata and selected
+public/known-exploitation advisory reads separately. Only the current selected
+resources count: a missing or failed target keeps its phase incomplete, and an
+unselected adapter is not observed success. Successful source collection with
+pending applicability remains visibly pending; no empty result clears exposure.
+
+Package transactions and incident delivery/missed-run supervision are marked as
+external producers, because they have their own invocation/effect receipts.
+This collector neither repeats those operations nor infers their completion.
+The remaining general assessment gaps concern malicious releases and full
+application provenance, loaded state and exposure. Do not repeat a successful
+browser or cleanup operation merely to satisfy the retired static phase labels.
+A successful oneshot does not prove those remaining capabilities or human reading.
 
 ## Receiving qualification and continuation
 
-Nine focused tests exercise real subprocess timeout/output bounds, failed reads,
+Focused tests exercise real subprocess timeout/output bounds, failed reads,
 compressed-feed schema/truncation/expansion limits, redirect refusal, symlink
 preservation, offline/unavailable coverage and preservation of an observed
 inventory when the separate vendor matcher fails. Run:

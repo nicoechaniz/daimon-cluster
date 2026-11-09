@@ -1232,3 +1232,47 @@ source byte preserved and no SDK rebuild or service restart. Its original failed
 metadata-read receipt remains, alongside the successful exact retry. The writer
 that originally produced those caches was not established; do not infer a cause
 from their presence.
+
+### Matrix-only membership preservation building block
+
+`onboarding_membership_maintenance.MembershipManager` and `MembershipPause`
+reuse the existing service inspection and durable pause/restoration algorithm.
+Their only service targets are the installed Source Matrix system unit and the
+receiving Matrix guest/native unit. The normal onboarding-worker pause retains
+its original claim identity, journal schema and fixed worker target; it cannot
+acquire Matrix effects by recovering an older operation.
+
+The Matrix profile requires the actual service execution user/group, root-owned
+unit/drop-ins, a loaded control-group service and typed static ExecStart metadata.
+Only hashes of commands/files are retained. Before stopping an active service,
+the caller must supply its genuine authenticated own native observation. The
+existing kernel process/parent and same-unit cgroup checks bind it to the manager;
+PID or invocation replacement refuses before StopUnit. Source base observations
+omit the guest adapter's `admission_parent`: this profile derives that tuple from
+the actual kernel parent. The existing guest bootstrap contract still requires
+and revalidates its explicitly retained parent.
+
+A stop intent precedes dispatch. A lost manager response is reconciled from the
+actual unit state. A later invocation recovers only the same original operation
+and binding. Changed service definitions refuse restoration; externally started
+replacement processes are preserved. Only originally active owned stops are
+started again. Recovery itself needs no new native observation or membership
+request, and must run before candidate/deadline preflight. The caller holds the
+existing fixed-unit selection lock and keeps the original admission job/grant.
+
+These are maintenance helper APIs included in the maintained maintenance artifact,
+not a new command, grant, timer or standalone recovery service. They are not yet
+wired into the provisioning worker. A `finally` block alone does not cover a
+killed interpreter: integrate restoration with the existing bounded command/service
+supervisor before enabling automatic native admission. Keep the owning command's finite execution and storage bounds and reuse its original
+journal; never create a per-status journal or erase
+unfinished pause claims to free capacity. No production Matrix stop/restart or
+new membership dispatch was performed to qualify this building block.
+
+The current Source service's authenticated native child and actual manager parent
+were successfully bound without effects. The first attempt's refusal is retained:
+it incorrectly expected a guest-only parent field in Source status. The corrected
+read used the actual kernel parent, with separate negative process/cgroup and
+configuration-change tests. This does not establish full command receiving,
+reader convergence, model uptake or new companion admission. Preserve the four
+completed child enrollments and the Emma hold.

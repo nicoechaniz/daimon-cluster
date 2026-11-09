@@ -334,11 +334,12 @@ MAINTENANCE_FILES = {'tests/test_current_reader_refresh.py', 'clusterctl/receivi
     'clusterctl/native_body.py', 'tests/test_native_body.py',
     'clusterctl/onboarding_worker.py', 'tests/test_onboarding_progress.py',
     'clusterctl/receiving_worker.py', 'tests/test_receiving_worker.py',
+    'clusterctl/onboarding_membership_maintenance.py', 'tests/test_onboarding_membership_maintenance.py',
     'tools/build_receiving_maintenance.py', 'tools/check_rc_types.py',
     'clusterctl/onboarding_owner_control.py', 'tests/test_onboarding_owner_control.py', 'tests/test_receiving_cohort_control.py',
     'clusterctl/onboarding_owner_client.py', 'tests/test_onboarding_owner_client.py',
     'clusterctl/onboarding_receiving_update.py', 'tests/test_guest_bootstrap_controller.py'}
-MAINTENANCE_TESTS = ('tests/test_current_reader_refresh.py', 'tests/test_native_body.py', 'tests/test_receiving_worker.py', 'tests/test_receiving_maintenance.py', 'tests/test_onboarding_owner_control.py',
+MAINTENANCE_TESTS = ('tests/test_onboarding_membership_maintenance.py', 'tests/test_current_reader_refresh.py', 'tests/test_native_body.py', 'tests/test_receiving_worker.py', 'tests/test_receiving_maintenance.py', 'tests/test_onboarding_owner_control.py',
     'tests/test_onboarding_progress.py', 'tests/test_onboarding_worker_install.py',
     'tests/test_source_bootstrap.py', 'tests/test_source_owner_adapter.py',
     'tests/test_guest_bootstrap_controller.py', 'tests/test_receiving_cohort_control.py',

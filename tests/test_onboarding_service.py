@@ -175,6 +175,13 @@ def test_guest_manager_binds_real_parent_and_child_with_explicit_synthetic_cgrou
         manager = MatrixGuestService(tmp_path/UNIT, run=lambda *_: pytest.fail('binding dispatched a service effect'))
         binding = manager.bind_admitted_process(observed, inspected)
         assert binding['process']==process and binding['admission_parent']==observed['admission_parent']
+        from clusterctl.onboarding_service import bind_admitted_service_process
+        # Base status has the authenticated child only. Its parent is obtained
+        # from the kernel; the existing guest route still requires its retained parent.
+        assert bind_admitted_service_process({'process': process}, inspected,
+            bind_process=manager.bind_process, derive_parent=True) == binding
+        with pytest.raises(OnboardingError, match='process_scope_required'):
+            manager.bind_admitted_process({'process': process}, inspected)
         for invalid in (
             {**observed, 'admission_parent':process},
             {**observed, 'admission_parent':{**observed['admission_parent'], 'start_ticks':1}},

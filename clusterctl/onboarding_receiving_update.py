@@ -250,6 +250,111 @@ def _reader_active(reader: dict, now: int) -> bool:
     return reader['expires_at_ms'] > now
 
 
+def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: str,
+                            release_digest: str, deadline_ns: int, checkpoint: Path,
+                            nonadmitted: frozenset[str] = frozenset()) -> dict:
+    """Finish ordinary maintenance using existing owner controls and journals.
+
+    Call with the existing cohort's owner adapters and approved loaded selections.
+    This performs no lifecycle, publication, enrollment or model work. Healthy
+    vectors are read-only; partial controls retain the same operation and exact
+    owner-private request files. The bounded public checkpoint retains exact
+    commands before dispatch; only native owner journals establish effects.
+    """
+    if (not 1 <= len(owners) <= 256 or set(owners) != set(selections)
+            or not nonadmitted <= set(owners)
+            or str(uuid.UUID(operation_id)) != operation_id
+            or re.fullmatch('[0-9a-f]{64}', release_digest) is None
+            or type(deadline_ns) is not int
+            or not 0 < deadline_ns - time.monotonic_ns() <= 480_000_000_000):
+        raise OnboardingError('receiving_current_reader_binding_required')
+
+    def accept():
+        if time.monotonic_ns() >= deadline_ns:
+            raise OnboardingError('receiving_owner_deadline_expired')
+
+    def observe_all():
+        proofs = {}
+        for name, owner in owners.items():
+            accept()
+            proofs[name] = observe_current_reader(owner,
+                expected_selection=selections[name],
+                expires_at_ms=time.time_ns() // 1_000_000 + 59_000,
+                require_admitted=name not in nonadmitted,
+                receive_only=selections[name]['visibility_installation_sha256'] is None)
+        vector = conversation_cohort(proofs)
+        now = time.time_ns() // 1_000_000
+        if any(_reader_proof_expiry(proof) <= now for proof in proofs.values()):
+            raise OnboardingError('receiving_cohort_observation_expired')
+        return proofs, vector
+
+    def selected(proof, readers):
+        gate = proof['gate']
+        return gate.get('phase') == 'select' and gate.get('readers') == readers
+
+    # Existing adapters own process pins, transport timeouts and native request
+    # retention. Keep their prior deadline after this finite call.
+    with being_seed._locked(checkpoint.parent), ExitStack() as stack:
+        for owner in owners.values():
+            prior = getattr(owner, 'deadline_ns', None)
+            owner.deadline_ns = min(prior, deadline_ns) if prior is not None else deadline_ns
+            stack.callback(setattr, owner, 'deadline_ns', prior)
+        proofs, vector = observe_all()
+        readers = vector['readers']
+        binding = dict(operation_id=operation_id, release_digest=release_digest,
+            selections=selections, nonadmitted=sorted(nonadmitted), vector=vector)
+        if checkpoint.exists():
+            saved = being_seed._read(checkpoint, limit=being_seed.MAX_SELECTION)
+            if saved.get('binding') != binding:
+                raise OnboardingError('receiving_control_binding_conflict')
+        else:
+            saved = dict(schema='cluster-current-reader-completion/v1', binding=binding, commands={})
+        changed = []
+        for phase in ('revoke', 'select'):
+            if phase == 'select':
+                # Revocation can take time. Renew observations, never the
+                # signed credentials or an already prepared control's deadline.
+                proofs, current = observe_all()
+                if current != vector:
+                    raise OnboardingError('receiving_cohort_selection_changed')
+            for name, proof in proofs.items():
+                accept()
+                if selected(proof, readers):
+                    continue
+                owner, gate = owners[name], proof['gate']
+                if (phase == 'revoke' and gate.get('phase') == 'revoke'
+                        and gate.get('operation_id') == operation_id
+                        and gate.get('release_digest') == release_digest):
+                    continue
+                path = owner.root / 'receiving-control' / (operation_id + '-' + phase + '.json')
+                command = dict(schema='dm.runtime.reader-selection/v2', channel_id='tribe',
+                    phase=phase, operation_id=operation_id, release_digest=release_digest,
+                    process_instance_id=gate['process_instance_id'], expected_head=gate['head'],
+                    expected_roster_sha256=vector['local_roster_sha256'][name],
+                    readers=[] if phase == 'revoke' else readers)
+                key = name + ':' + phase
+                if key in saved['commands']:
+                    command = saved['commands'][key]
+                else:
+                    if phase == 'select':
+                        command['effect_not_after_ms'] = min(_reader_proof_expiry(row) for row in proofs.values())
+                    saved['commands'][key] = command
+                    being_seed._write(checkpoint, saved, limit=being_seed.MAX_SELECTION)
+                # Native CAS and owner-retained request identity are authoritative.
+                # A lost ACK leaves these files intact; never synthesize success.
+                result = owner.prepare_apply_control(command, path)
+                proofs[name] = {**proof, 'gate': result['gate']}
+                changed.append(dict(name=name, phase=phase))
+        final, current = observe_all()
+        if current != vector or any(not selected(proof, readers) for proof in final.values()):
+            raise OnboardingError('receiving_cohort_selection_changed')
+        return dict(schema='cluster-current-reader-completion/v1', operation_id=operation_id,
+            release_digest=release_digest, receiving_readiness='qualified-local-projection',
+            membership_basis_sha256=vector['membership_basis_sha256'],
+            readers=readers, changed=changed, proofs=final,
+            communication_acceptance='unobserved')
+
+
 def _reader_proof_expiry(record: dict) -> int:
     # Retained V1 operations predate the separated proof horizon. Their exact
     # finite reader expiry remains authoritative; do not reinterpret history.

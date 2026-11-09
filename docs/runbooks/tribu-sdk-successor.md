@@ -197,6 +197,24 @@ or receiver process/selection/roster change requires a fresh observation, never
 relabeled historical loaded-view hashes. Credential validity remains signed validity;
 the finite observation horizon is not an invented permanent reader expiry.
 
+For a coordinator that already has the required owner adapters and approved loaded
+selections, use `onboarding_receiving_update.refresh_current_readers`. It composes
+the same current-reader observation, native revoke/select and final authenticated
+observation. Supply the existing maintenance operation ID, release digest and
+absolute deadline (at most480seconds), plus one private progress checkpoint bounded
+by the existing2MiB record cap. Its native owner request files remain the effect
+authority. The public checkpoint preserves exact commands before dispatch, including
+the original selection deadline; an uncertain call is never relabeled with a new
+head or deadline. Retain that checkpoint with the owning current/previous operation,
+not a growing directory per attempt. Matching selected vectors are read-only.
+
+This helper does not discover placements, replace owner adapters, restart services,
+reenroll members or send test speech. Membership/process/selection changes refuse
+rather than repurpose the old operation. `qualified-local-projection` establishes
+the final current reader vector; communication acceptance remains explicitly
+unobserved. The native-code CLI still needs its existing mixed-cohort owner binding
+wired to this helper before its one-command fleet readiness can be claimed.
+
 A new software deployment still uses its normal preparation and lifecycle controls.
 This current-state path finishes reader confirmation after observed completed
 adoption; it does not fabricate a lifecycle receipt for the older coordinator.

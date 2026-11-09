@@ -155,6 +155,12 @@ class ManagedRuntime:
                             or prior_result.get('schema') != 'cluster-native-code-updated/v1'):
                         raise OnboardingError('native_code_update_operation_conflict')
                     previous_completed = state
+            # Mounted public code is not an installed owner interpreter. This
+            # existing idempotent stage also prepares its closed import tree.
+            sdk = self.backend._target_call(plan, 'sdk-prepare', candidate=candidate,
+                observation_timeout_seconds=remaining())
+            if sdk.get('ready') is not True:
+                raise OnboardingError('native_code_update_sdk_unready')
             if not path.exists() or previous_completed is not None:
                 before = observe()
                 previous = {key: before[key] for key in ('process', 'admission_parent')}

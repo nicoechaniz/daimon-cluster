@@ -998,6 +998,9 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
                 publication_sha256='d'*64, visibility=dict(release_enabled=False, installation_sha256=None))))
     failures = [lost_start_ack]
     def owner(_plan, action, **_):
+        if action == 'sdk-prepare':
+            assert 'current_native' not in _
+            return dict(ready=True)
         assert action == 'admitted-running'
         assert _.get('current_native', False) is closed_group
         assert _.get('require_loaded', False) is closed_group

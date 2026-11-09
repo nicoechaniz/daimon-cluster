@@ -322,7 +322,10 @@ using a staged helper, reuse the public-code transfer/normalization route and
 verify imports as the actual receiving owner, including traversal of every parent
 directory. An inherited private umask can leave an otherwise byte-correct public
 package unreadable. Keep private/shared parents private and select the existing
-public-code destination; do not widen unrelated directories. Owner-route preflight
+public-code destination; do not widen unrelated directories. The cohort completer
+overlaps independent owner observations with at most four workers; native
+controls and final validation remain serialized under the same deadline. It
+adds no polling service, authority or lifecycle operation. Owner-route preflight
 failures identify the receiver and phase before code updates begin. Import failures
 use a closed public code; arbitrary stderr and credential material stay private.
 

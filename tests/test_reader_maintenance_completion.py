@@ -172,3 +172,24 @@ def test_unfinished_previous_record_is_never_overwritten(tmp_path, monkeypatch):
         receiving.refresh_current_readers(owners, **options)
     assert calls==[] and being_seed._read(previous)==unknown
     assert being_seed._read(options['checkpoint'])==current
+
+
+def test_independent_observations_overlap_before_any_control(tmp_path, monkeypatch):
+    import threading
+    owners, options, calls, _, _ = cohort(tmp_path, monkeypatch)
+    original = receiving.observe_current_reader
+    barrier = threading.Barrier(len(owners), timeout=2)
+    def observe(owner, **kwargs):
+        barrier.wait()  # A serial observation loop cannot make progress.
+        return original(owner, **kwargs)
+    monkeypatch.setattr(receiving,'observe_current_reader',observe)
+    assert receiving.refresh_current_readers(owners,**options)['receiving_readiness']=='qualified-local-projection'
+    assert calls==[('first','revoke'),('second','revoke'),('first','select'),('second','select')]
+
+
+def test_aliasing_one_owner_cannot_race_its_observation_context(tmp_path, monkeypatch):
+    owners, options, calls, _, _ = cohort(tmp_path, monkeypatch)
+    owners['second']=owners['first']
+    with pytest.raises(OnboardingError,match='current_reader_binding_required'):
+        receiving.refresh_current_readers(owners,**options)
+    assert calls==[]

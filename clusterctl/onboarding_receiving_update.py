@@ -293,6 +293,7 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
     commands before dispatch; only native owner journals establish effects.
     """
     if (not 1 <= len(owners) <= 256 or set(owners) != set(selections)
+            or len({id(owner) for owner in owners.values()}) != len(owners)
             or not nonadmitted <= set(owners)
             or str(uuid.UUID(operation_id)) != operation_id
             or re.fullmatch('[0-9a-f]{64}', release_digest) is None
@@ -305,15 +306,19 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
             raise OnboardingError('receiving_owner_deadline_expired')
 
     def observe_all():
-        proofs = {}
-        for name, owner in owners.items():
+        def observe(name, owner):
             accept()
             options = dict(expected_selection=selections[name],
                 expires_at_ms=time.time_ns() // 1_000_000 + 59_000,
                 require_admitted=name not in nonadmitted,
                 receive_only=selections[name]['visibility_installation_sha256'] is None)
             remote = getattr(owner, 'current_reader', None)
-            proofs[name] = remote(**options) if callable(remote) else observe_current_reader(owner, **options)
+            return remote(**options) if callable(remote) else observe_current_reader(owner, **options)
+        # Independent owner observations overlap; validation and all native
+        # controls remain serialized. The same outer/owner deadlines still win.
+        with ThreadPoolExecutor(max_workers=min(4,len(owners))) as pool:
+            pending = {name:pool.submit(observe,name,owner) for name,owner in owners.items()}
+            proofs = {name:future.result() for name,future in pending.items()}
         vector = conversation_cohort(proofs)
         now = time.time_ns() // 1_000_000
         if any(_reader_proof_expiry(proof) <= now for proof in proofs.values()):

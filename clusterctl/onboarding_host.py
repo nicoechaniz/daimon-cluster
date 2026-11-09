@@ -1542,7 +1542,7 @@ class HostBackend:
         if current_native and (action != 'admitted-running' or not require_loaded
                 or candidate is None or observation_timeout_seconds is None):
             raise OnboardingError('qualified_onboarding_target_observer_required')
-        if owner_deadline_ns is not None and (action not in {'group-session','group-relationship','group-publication',
+        if owner_deadline_ns is not None and (action not in {'group-session','group-relationship','group-publication','group-resource',
                     'receiving-bootstrap-freeze','receiving-bootstrap-stage','receiving-bootstrap-publish'}
                 or type(owner_deadline_ns) is not int
                 or not 0 < owner_deadline_ns-time.monotonic_ns() <= 60_000_000_000):
@@ -1559,14 +1559,20 @@ class HostBackend:
                 or (bootstrap_initial or bootstrap_initial_service) and action != 'receiving-bootstrap-freeze'):
             raise OnboardingError('invalid_receiving_bootstrap_request')
         controlling = action in {'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply'}
-        if (action in {'group-relationship', 'group-publication', 'group-session'}) != (group_request is not None):
+        if (action in {'group-relationship', 'group-publication', 'group-resource', 'group-session'}) != (group_request is not None):
             raise OnboardingError('onboarding_group_relationship_command_required')
         if group_request is not None:
-            from .onboarding_group_admission import request_packet
-            group_request = request_packet(group_request)
-            if (candidate is None or not group_request['offline'] or observation_timeout_seconds is None
-                    or (action == 'group-publication') != ('action' in group_request['command'])):
-                raise OnboardingError('onboarding_group_relationship_writer_required')
+            if action == 'group-resource':
+                from .onboarding_receive_keys import transfer_packet
+                group_request = transfer_packet(group_request)
+                if candidate is None or observation_timeout_seconds is None:
+                    raise OnboardingError('onboarding_group_relationship_writer_required')
+            else:
+                from .onboarding_group_admission import request_packet
+                group_request = request_packet(group_request)
+                if (candidate is None or not group_request['offline'] or observation_timeout_seconds is None
+                        or (action == 'group-publication') != ('action' in group_request['command'])):
+                    raise OnboardingError('onboarding_group_relationship_writer_required')
         if remaining_execution is not None and (action != 'group-publication' or not callable(remaining_execution)
                 or self.config.views is None or group_request is None or owner_deadline_ns is None):
             raise OnboardingError('onboarding_group_remaining_owner_input_required')
@@ -1598,7 +1604,7 @@ class HostBackend:
         elif control_file is not None or control_command is not None or control_value is not None:
             raise OnboardingError('invalid_receiving_control_request')
         if observation_timeout_seconds is not None:
-            if (action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
+            if (action not in {'observe', 'sdk-observe', 'sdk-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
                     or not math.isfinite(observation_timeout_seconds)
                     or not 0 < observation_timeout_seconds <= 60):
                 raise OnboardingError('receiving_host_deadline_required')
@@ -1625,7 +1631,7 @@ class HostBackend:
         if candidate is not None:
             if (action not in {'sdk-observe', 'sdk-prepare', 'observe', 'running', 'admitted-running',
                     'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'receiving-bootstrap-freeze',
-                    'receiving-bootstrap-stage', 'receiving-bootstrap-publish', 'receiving-identity', 'group-relationship', 'group-publication', 'group-session',
+                    'receiving-bootstrap-stage', 'receiving-bootstrap-publish', 'receiving-identity', 'group-relationship', 'group-publication', 'group-resource', 'group-session',
                     'admission-prepare', 'admission-check', 'admission-enroll'}
                     or profile is not None and action not in {'admission-check', 'admission-enroll'}
                     or peer_packet is not None or peer_being_ref is not None
@@ -1717,7 +1723,7 @@ class HostBackend:
             arguments += ['--bootstrap-initial-service']
         prepared_venv = None
         if candidate is not None and (bootstrapping or action in {'running', 'admitted-running', 'receiving-identity',
-                'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session',
+                'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session',
                 'admission-prepare', 'admission-check', 'admission-enroll'}):
             # _runtime_paths verified the entire public candidate and its SDK.
             # Enter the already prepared owner generation directly; Target still
@@ -1731,7 +1737,7 @@ class HostBackend:
             if remaining <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
             arguments += ['--bootstrap-timeout-seconds' if bootstrapping else '--observation-timeout-seconds', str(remaining)]
-            if bootstrapping or action == 'group-session' or owner_deadline_ns is not None:
+            if bootstrapping or action in {'group-session', 'group-resource'} or owner_deadline_ns is not None:
                 arguments += ['--observation-deadline-ns', str(deadline_ns)]
         if prepared_venv is None:
             owner_command = code_command(self.body_python(plan), runtime_code,

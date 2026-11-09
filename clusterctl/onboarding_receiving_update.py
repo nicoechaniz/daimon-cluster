@@ -665,6 +665,11 @@ class GuestGroupClient:
         current = self._relationship_process
         return current is not None and current.writer_held()
 
+    def private_resource(self, request: dict) -> dict:
+        """Machine-private bytes; callers must not journal the export result."""
+        from .onboarding_receive_keys import private_result
+        return private_result(self._call('group-resource', maintenance=True, group_request=request))
+
     def group_publication(self, command: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None,
                           remaining_execution=None) -> dict:
@@ -805,6 +810,10 @@ class SourceGroupClient:
             if result.returncode or len(result.stdout.encode()) > being_seed.MAX_SELECTION:
                 raise OnboardingError('receiving_source_owner_unavailable')
             value = json.loads(result.stdout)
+            if (module == 'clusterctl.onboarding_source' and '--private-resource' in arguments
+                    and isinstance(value, dict) and value.get('schema') == 'cluster-private-receive-resource-refusal/v1'):
+                from .onboarding_receive_keys import private_result
+                private_result(value)
             if (not isinstance(value, dict)
                     or (not native_response and 'error' in value)
                     or native_response and (module != 'clusterctl.onboarding_owner_client'
@@ -918,6 +927,12 @@ class SourceGroupClient:
         return OwnerConversation(argv, packet, deadline_ns=deadline, validate=unchanged,
             user=self.owner_uid, group=self.owner_gid, extra_groups=(),
             env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'})
+
+    def private_resource(self, request: dict) -> dict:
+        """Machine-private bytes through the existing UID/config-bound pipe."""
+        from .onboarding_receive_keys import private_result
+        return private_result(self._call(['--group-request', '-', '--private-resource'],
+            maintenance=True, command=request))
 
     def group_publication(self, command: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None,effect_not_after_ms: int | None = None,

@@ -1270,3 +1270,25 @@ def test_host_public_matrix_publisher_reuses_local_validation_and_remote_operato
     with pytest.raises(OnboardingError, match='host_authorization_required'):
         backend.prepare_matrix_public(plan, documents)
     assert len(published) == 1
+
+
+def test_private_resource_uses_existing_qualified_owner_stdin_and_never_argv(tmp_path, monkeypatch):
+    import uuid
+    backend, value, _, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
+    packet = dict(schema='cluster-private-receive-resource/v1', action='import',
+        operation_id=str(uuid.uuid4()), owner_context_sha256='a'*64,
+        route=dict(provider_ref='native', route_ref='own', key_ref='resource',
+            endpoint='http://127.0.0.1:1234/dm-messaging/v1/message', secret_file='own.key', secret_sha256='b'*64),
+        source={'private':'machine-only'})
+    backend._target_call(value, 'group-resource', candidate=candidate,
+        group_request=packet, observation_timeout_seconds=5)
+    argv, options = calls[0]
+    assert 'group-resource' in argv
+    assert '--group-request' in argv
+    assert '--observation-deadline-ns' in argv
+    assert json.loads(options['input_data']) == packet
+    assert 'machine-only' not in ' '.join(argv)
+    assert packet['operation_id'] not in argv
+    with pytest.raises(OnboardingError):
+        backend._target_call(value, 'group-resource', candidate=candidate, group_request=packet)
+    assert len(calls) == 1

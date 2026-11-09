@@ -1554,3 +1554,56 @@ No timer, model attention, global Stop, outbound release or automatic goal
 resume is introduced. Coordinator publication/resource transfer and current
 reader selection still need composition and actual receiving qualification;
 this source primitive alone does not establish delivery.
+
+
+### Private receive-resource transfer through existing owner transports
+
+The existing qualified Source/Target owner pipe now carries an explicit
+machine-private resource transfer. The Source uses `--group-request -` with
+`--private-resource`; the guest uses `group-resource --group-request -`.
+Both reuse current code/configuration/UID/placement and finite observation
+bounds. File-backed private requests, unqualified candidates and absent guest
+budgets are refused. This route opens no native writer or provider connection
+and restarts no service; it is not a public native publication action.
+
+A `cluster-private-receive-resource/v1` packet pins the original native
+`operation_id`, own `owner_context_sha256`, exact public `route`, `action` and
+`source`. The owner verifies the original protected context against its actual
+runtime bundle and fixed group path. Export selects either the retained original
+`receive-key` command/receipt/intent or its current signed application intake
+with exact application/publication hashes. Only that own intake resource key can
+leave; client/identity credentials and caller-chosen file paths are unsupported.
+Current signature verification is reused without loading the native runtime.
+
+The export contains private machine bytes. It must never be published, logged,
+added to an operation observation or returned to a human/model caller. The
+`onboarding_receive_keys.relay` function connects two selected private owner
+pipes, revalidates the original coordinator's current job/grant before export,
+before import and after import, and returns only a public import receipt. The
+secret travels through the existing private stdin/stdout execution transport,
+never argv or public staging. The caller retains only the returned route hash,
+provenance hash and relative source filename for native publication.
+
+Import binds the source's public provenance and exact key hash to the recipient's
+own retained context. It writes that metadata before atomically materializing the
+private key; exact retries recover the same bytes after lost intent/file/result
+acknowledgments. Existing differing files, altered provenance, exposed keys,
+symlinks and hardlinks refuse without replacement. No key is regenerated. Later
+publication uses its existing `secret_sources` references; the transfer does not
+select the application, admit a member, install visibility or prove a reader.
+
+The wire is limited to16KiB. Each import operation retains at most16 resources,
+34 directory entries and72KiB final data, with an80KiB staging ceiling. New import
+operations are limited to16 per original owner journal with a256-entry scan;
+exact retained recovery remains available at capacity. Keys/metadata stay with
+the original operation and current/rollback selection; no automatic retirement
+of referenced or unfinished work is added. Missing capacity is a retained failure,
+not authorization to discard work. Coordinator-wide resource/publication/load
+composition and actual fleet qualification remain unfinished.
+
+The private CLI returns only a closed refusal schema and fixed public error code
+on failure. Arbitrary exception text, private paths and captured data are never
+serialized. Existing owner clients translate that typed refusal back into the
+original operation's failure without replacing its private input. Unknown errors
+remain unavailable; neither a failed relay nor a lost response authorizes minting
+a replacement key or retrying another operation.

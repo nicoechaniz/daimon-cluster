@@ -150,6 +150,12 @@ class Source:
             return relationship_request(self.root, journal, value, offline=hosted, deadline_ns=deadline_ns,
                 membership_precondition=membership_precondition,effect_not_after_ms=effect_not_after_ms)
 
+    def private_resource(self, value: dict, *, deadline_ns: int) -> dict:
+        """Private machine pipe; never a native publication or public receipt."""
+        from .onboarding_receive_keys import private_transfer
+        return private_transfer(self.root, self.outputs/'tribe', self.outputs/'group-admission',
+            value, deadline_ns=deadline_ns)
+
     def group_publication(self, value: dict, *, authority_closure: dict,
                           expected_context_sha256: str | None = None,
                           effect_not_after_ms: int | None = None,
@@ -616,6 +622,7 @@ def main(argv=None) -> int:
     parser.add_argument('--operation-journal', type=Path)
     parser.add_argument('--group-request', type=Path)
     parser.add_argument('--group-session', action='store_true')
+    parser.add_argument('--private-resource', action='store_true')
     parser.add_argument('--remaining-execution-fd', type=int)
     parser.add_argument('--remaining-execution-sha256')
     parser.add_argument('--remaining-owner-name')
@@ -640,6 +647,9 @@ def main(argv=None) -> int:
         lifecycle = args.receiving_lifecycle is not None
         preparing = args.prepare_admission_lifecycle is not None
         grouping = args.group_request is not None
+        if args.private_resource and (not grouping or args.group_request != Path('-')
+                or args.group_session or args.remaining_execution_fd is not None):
+            raise OnboardingError('receive_resource_request_required')
         supplemental = (args.remaining_execution_fd, args.remaining_execution_sha256,
             args.remaining_owner_name, args.remaining_parent_pid)
         if any(value is not None for value in supplemental) and (
@@ -733,6 +743,13 @@ def main(argv=None) -> int:
                 packet = json.loads(raw)
             else:
                 packet = being_seed._read(args.group_request, limit=being_seed.MAX_SELECTION)
+            if args.private_resource:
+                from .onboarding_receive_keys import private_response
+                result = private_response(lambda: source.private_resource(packet,
+                    deadline_ns=args.observation_deadline_ns))
+                accept_deadline()
+                print(json.dumps(result))
+                return 0
             packet = request_packet(packet)
             context:dict = ({'expected_context_sha256': packet['expected_context_sha256']}
                        if 'expected_context_sha256' in packet else {})

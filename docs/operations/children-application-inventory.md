@@ -16,7 +16,13 @@ dependency evidence, not upstream authenticity or actual runtime loading.
 Invoke `python3 -B -I -S tools/children_application_inventory.py --units NAME.service`
 through the bounded native read job. It reads explicitly selected systemd main
 processes. It binds executable bytes to the actual running PID, then checks the
-service is still active with that PID. It captures executable path/SHA, not
+service is still active with that PID. It also pins the kernel process start
+ticks and rechecks the current executable's device/inode/size/mtime/ctime and
+link after metadata collection. PID reuse, exec replacement and observable
+same-size writes become unavailable, including when the initial image hash was
+reused for another selected unit. This is a bounded observation of the selected
+main process, not continuous monitoring or protection from a privileged attacker.
+It captures executable path/SHA, not
 arguments. It selects only PYTHONPATH metadata in memory, discarding every other
 environment key and value. It parses distribution Name/Version headers as data;
 no package import, .pth execution, installer, model or provider call is requested.

@@ -361,13 +361,17 @@ def reader_rpc(owner: OwnerGroupClient, value: dict, *, deadline_ns: int) -> dic
                 'expires_at_ms', 'require_admitted', 'receive_only'}):
             raise OnboardingError('invalid_receiving_control_request')
         return observe_current_reader(owner, **options)
-    if value.get('action') == 'control' and set(value) == {'action', 'command', 'expected'}:
+    if value.get('action') == 'control' and set(value) - {'slot'} == {'action', 'command', 'expected'}:
         command = value['command']
         import uuid
         if (not isinstance(command, dict) or command.get('phase') not in {'revoke', 'select'}
                 or str(uuid.UUID(command['operation_id'])) != command['operation_id']):
             raise OnboardingError('invalid_receiving_control_request')
-        path = owner.root / 'receiving-control' / (command['operation_id'] + '-' + command['phase'] + '.json')
+        slot = value.get('slot')
+        if 'slot' in value and (not isinstance(slot,str) or re.fullmatch('[0-9a-f]{64}',slot) is None):
+            raise OnboardingError('invalid_receiving_control_request')
+        suffix = '' if slot is None else '-' + slot
+        path = owner.root / 'receiving-control' / (command['operation_id'] + '-' + command['phase'] + suffix + '.json')
         return execute(owner, command, path, expected=value['expected'], deadline_ns=deadline_ns)
     raise OnboardingError('invalid_receiving_control_request')
 

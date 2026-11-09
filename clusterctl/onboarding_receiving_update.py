@@ -377,7 +377,8 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
             if (saved.get('schema') != 'cluster-current-reader-completion/v1'
                     or not isinstance(saved.get('commands'), dict)):
                 raise OnboardingError('receiving_control_binding_conflict')
-            if compatible_restart(saved):
+            legacy_generation = saved.get('reader_operation_id') not in {None,operation_id}
+            if compatible_restart(saved) or (legacy_generation and saved.get('binding') == binding):
                 history = saved.get('superseded_generations',[])
                 if not isinstance(history,list) or len(history) >= 4:
                     raise OnboardingError('receiving_control_binding_conflict')
@@ -388,8 +389,7 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                     if key != 'superseded_generations'}]
                 saved = {
                     **initial(),'superseded_generations':history,
-                    'reader_operation_id':str(uuid.uuid5(uuid.UUID(operation_id),
-                        digest(dict(vector=vector,instances=instances))))}
+                    'control_slot':digest(dict(vector=vector,instances=instances,generation=len(history)))}
                 being_seed._write(checkpoint,saved,limit=being_seed.MAX_SELECTION)
             elif saved.get('binding') != binding:
                 if (not reader_checkpoint_completed(saved)
@@ -431,7 +431,11 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                 if selected(proof, readers):
                     continue
                 owner, gate = owners[name], proof['gate']
-                owner_operation = saved.get('reader_operation_id',operation_id)
+                owned_operations = {operation_id}
+                for generation in saved.get('superseded_generations',[]):
+                    owned_operations.update(command['operation_id'] for command in generation['commands'].values())
+                owner_operation = (gate['operation_id'] if gate.get('phase') == 'revoke'
+                    and gate.get('operation_id') in owned_operations else operation_id)
                 if (phase == 'revoke' and gate.get('phase') == 'revoke'
                         and gate.get('operation_id') == owner_operation
                         and gate.get('release_digest') == release_digest):
@@ -449,7 +453,8 @@ def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: 
                         command['effect_not_after_ms'] = min(_reader_proof_expiry(row) for row in proofs.values())
                     saved['commands'][key] = command
                     being_seed._write(checkpoint, saved, limit=being_seed.MAX_SELECTION)
-                path = owner.root / 'receiving-control' / (command['operation_id'] + '-' + phase + '.json')
+                suffix = '' if saved.get('control_slot') is None else '-' + saved['control_slot']
+                path = owner.root / 'receiving-control' / (command['operation_id'] + '-' + phase + suffix + '.json')
                 # Native CAS and owner-retained request identity are authoritative.
                 # A lost ACK leaves these files intact; never synthesize success.
                 result = owner.prepare_apply_control(command, path)

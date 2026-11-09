@@ -983,10 +983,14 @@ class ReaderCommandClient:
         return proof
 
     def prepare_apply_control(self, command: dict, path: Path):
-        if (self.expected is None or path != self.root / 'receiving-control' /
-                (command['operation_id'] + '-' + command['phase'] + '.json')):
+        prefix = command['operation_id'] + '-' + command['phase']
+        slot = None if path.name == prefix+'.json' else path.name.removeprefix(prefix+'-').removesuffix('.json')
+        if (self.expected is None or path.parent != self.root/'receiving-control'
+                or slot is not None and (re.fullmatch('[0-9a-f]{64}',slot) is None
+                    or path.name != prefix+'-'+slot+'.json')):
             raise OnboardingError('receiving_control_binding_conflict')
-        return self._call(dict(action='control', command=command, expected=self.expected))
+        return self._call(dict(action='control', command=command, expected=self.expected,
+            **({} if slot is None else {'slot':slot})))
 
 
 def load_code_update_readers(path: Path) -> dict:

@@ -29,13 +29,18 @@ def cohort(tmp_path, monkeypatch):
     monkeypatch.setattr(receiving, 'conversation_cohort', lambda _:copy.deepcopy(vector))
     for name, owner in owners.items():
         def apply(command, path, *, name=name, owner=owner):
-            assert path == owner.root/'receiving-control'/(command['operation_id']+'-'+command['phase']+'.json')
-            prior = retained.setdefault((name,command['phase'],command['operation_id']), copy.deepcopy(command))
+            assert path.parent == owner.root/'receiving-control'
+            assert path.name.startswith(command['operation_id']+'-'+command['phase'])
+            prior = retained.setdefault((name,path.name), copy.deepcopy(command))
             assert command == prior  # retries cannot invent a new head/deadline
             calls.append((name,command['phase']))
             if owner.gate.get('operation_id') == command['operation_id'] and owner.gate['phase'] == command['phase']:
                 return dict(gate=copy.deepcopy(owner.gate))
             assert command['expected_head'] == owner.gate['head']
+            if owner.gate['phase']=='revoke':
+                assert command['operation_id']==owner.gate['operation_id'], 'native reservation must stay owned'
+            if command['phase']=='select':
+                assert owner.gate['phase']=='revoke'
             owner.gate.update(phase=command['phase'], readers=command['readers'],
                 operation_id=command['operation_id'], release_digest=command['release_digest'],
                 head=('e' if command['phase']=='revoke' else 'f')*64)
@@ -217,7 +222,8 @@ def test_process_replacement_keeps_old_command_and_binds_new_control(tmp_path, m
     assert saved['superseded_generations'][0]['commands']['second:'+phase]==replaced[0]
     revoke=saved['commands']['second:revoke']
     select=saved['commands']['second:select']
-    assert revoke['operation_id']==select['operation_id']!=options['operation_id']
+    assert revoke['operation_id']==select['operation_id']==options['operation_id']
+    assert len(saved['control_slot'])==64
     assert revoke['process_instance_id']==select['process_instance_id']=='replacement'
     assert calls.count(('second',phase))==1
     calls.clear()
@@ -265,4 +271,5 @@ def test_restart_rebinds_only_loaded_view_and_preserves_old_generation(tmp_path,
         saved=json.loads(options['checkpoint'].read_bytes())
         assert saved['binding']['operation_id']==options['operation_id']
         assert saved['superseded_generations'][0]['commands']['second:revoke']==pending[0]
-        assert saved['reader_operation_id']!=options['operation_id']
+        assert saved['commands']['second:select']['operation_id']==options['operation_id']
+        assert len(saved['control_slot'])==64

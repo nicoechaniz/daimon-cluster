@@ -330,7 +330,10 @@ native operation may then derive a new reader-control generation, only when
 software selections, credentials, membership and rosters remain unchanged and
 the changed view belongs to that replaced instance. The checkpoint retains up
 to four superseded generations with their exact controls and uncertainty; old
-owner request files remain intact. Same-instance retries keep their original
+owner request files remain intact. Native operation IDs remain unchanged so an
+accepted revocation keeps its reservation until selection. The compatible owner
+CLI accepts an optional64-hex local request slot; select that public helper
+before using generation recovery. No daemon or SDK reload is required. Same-instance retries keep their original
 commands/deadlines. Other changes or the existing byte limit still refuse.
 This adds no polling service, authority or lifecycle operation. Owner-route preflight
 failures identify the receiver and phase before code updates begin. Import failures

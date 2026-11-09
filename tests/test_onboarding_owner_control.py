@@ -546,3 +546,27 @@ def test_new_receiving_identity_uses_fresh_same_response_without_scope_projectio
     response['result']['body']['state'] = 'stopped'
     with pytest.raises(OnboardingError, match='admission_conflict'):
         OwnerGroupClient.identity(owner, require_admitted=True)
+
+
+@pytest.mark.parametrize('slot',[None,'a'*64,'../foreign','',17])
+def test_reader_rpc_generation_slot_is_only_a_bounded_local_request_path(tmp_path, monkeypatch, slot):
+    deadline=time.monotonic_ns()+1_000_000_000
+    command=dict(operation_id=str(uuid.uuid4()),phase='revoke')
+    value=dict(action='control',command=command,expected={'unchanged':'binding'})
+    if slot is not None:value['slot']=slot
+    calls=[]
+    def execute(owner, actual, path, **options):
+        calls.append(path)
+        assert actual is command and options['expected']==value['expected']
+        assert options['deadline_ns']==deadline
+        return {'accepted':True}
+    monkeypatch.setattr(control,'execute',execute)
+    owner=SimpleNamespace(root=tmp_path)
+    if slot is None or slot=='a'*64:
+        assert control.reader_rpc(owner,value,deadline_ns=deadline)=={'accepted':True}
+        suffix='' if slot is None else '-'+slot
+        assert calls==[tmp_path/'receiving-control'/(command['operation_id']+'-revoke'+suffix+'.json')]
+    else:
+        with pytest.raises(OnboardingError,match='invalid_receiving_control_request'):
+            control.reader_rpc(owner,value,deadline_ns=deadline)
+        assert calls==[]

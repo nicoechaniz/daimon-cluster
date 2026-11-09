@@ -490,3 +490,16 @@ def test_exact_owned_guest_stop_can_resume_before_its_reader(tmp_path, monkeypat
     result=managed.run_code_update(selected)
     assert result['complete'] is same_operation
     assert calls==(['native-resume'] if same_operation else [])
+
+
+def test_reader_client_keeps_native_operation_and_emits_generation_slot(tmp_path):
+    client=managed.ReaderCommandClient(dict(root=str(tmp_path),command=['unused']))
+    client.expected={'unchanged':'binding'}
+    client._call=lambda value:value
+    command=dict(operation_id=spec()['operation_id'],phase='select')
+    slot='a'*64
+    path=tmp_path/'receiving-control'/(command['operation_id']+'-select-'+slot+'.json')
+    value=client.prepare_apply_control(command,path)
+    assert value==dict(action='control',command=command,expected=client.expected,slot=slot)
+    with pytest.raises(OnboardingError,match='control_binding_conflict'):
+        client.prepare_apply_control(command,tmp_path/'elsewhere'/path.name)

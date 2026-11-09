@@ -212,7 +212,13 @@ same command uses the existing root `bootstrap-recover-start` observation to
 qualify that exact successor. It retains the original start and recovery request,
 proves the original parent exited and the unit/selector is unchanged, and issues
 no further start. Lost recovery acknowledgements resume the retained request;
-a changed successor or expired unfinished recovery remains a precise refusal.
+a changed successor or expired unfinished observation gets a new bounded
+observation, retaining the previous request/uncertain receipt inside the same
+65KiB native-operation record. This renews no start, input or provider authority.
+If an older selected package contains a maintenance-verifier defect, optional
+`recovery_implementation: {"code": "/qualified/public/code", "code_digest": "..."}`
+selects a separately qualified root helper through the existing implementation
+route. It does not select that code as the body's runtime or restart the unit.
 
 For a change that requires cohort qualification, use the composed spec. For its
 managed `job` owners, `selection: null` derives digests from the exact native

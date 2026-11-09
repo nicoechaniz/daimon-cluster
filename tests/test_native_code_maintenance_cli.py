@@ -83,6 +83,28 @@ def test_command_requires_root_without_disclosing_spec_path(capsys, monkeypatch)
     assert 'private' not in json.dumps(result)
 
 
+def test_recovery_helper_prepares_without_changing_native_candidate_or_operation(monkeypatch):
+    from pathlib import Path
+    selected = {**spec(), 'targets':['first'],
+        'recovery_implementation':dict(code='/held/recovery',code_digest='b'*64)}
+    prepared = []
+    backend = SimpleNamespace(runtime_available=lambda plan,code,**kw:
+        prepared.append(code) is None)
+    monkeypatch.setattr(managed,'maintenance_backend',lambda *args:
+        (backend,{'first':dict(name='first')}))
+    def update(plan,candidate,**kw):
+        assert candidate == (Path('/held/code'),'a'*64)
+        assert kw['operation_id'] == spec()['operation_id']
+        assert kw['recovery_implementation'] == (Path('/held/recovery'),'b'*64)
+        return dict(candidate_digest=candidate[1])
+    monkeypatch.setattr(managed,'ManagedRuntime',lambda _:SimpleNamespace(update_native_code=update))
+    assert managed.run_code_update(selected)['complete']
+    assert prepared == [(Path('/held/code'),'a'*64),(Path('/held/recovery'),'b'*64)]
+    for bad in ({},dict(code='relative',code_digest='b'*64),dict(code='/held/code',code_digest='bad')):
+        with pytest.raises(OnboardingError,match='spec_required'):
+            managed.validate_code_update({**selected,'recovery_implementation':bad})
+
+
 def test_remote_cohort_uses_existing_placement_pins_without_initial_publication(tmp_path, monkeypatch):
     from clusterctl import vm_body
     selected = spec()

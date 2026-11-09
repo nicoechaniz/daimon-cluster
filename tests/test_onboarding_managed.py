@@ -1056,10 +1056,10 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
                 scope=dict(process=current['process'], admission_parent=current['admission_parent']))
         request = options['request']
         if action == 'bootstrap-recover-start':
-            assert automatic_restart and options['implementation'] == (tmp_path,'a'*64)
+            assert automatic_restart and options['implementation'][0] == tmp_path
             assert request['bootstrap']['operation_id'] == '68d4481f-9ade-4b1c-a08d-cfa3f962f5bc'
             recovery_requests.append(copy.deepcopy(request))
-            if recovery_fault == 'lost-ack' and len(recovery_requests) == 1:
+            if recovery_fault in {'lost-ack','expired','implementation'} and len(recovery_requests) == 1:
                 raise OnboardingError('lost_recovery_ack')
             receipt = dict(schema='cluster-guest-start-successor/v1',
                 recovery_operation_id=request['operation_id'], recovery_sha256=digest(request),
@@ -1123,9 +1123,16 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
             managed.update_native_code(plan, (tmp_path, 'b'*64),
                 operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd', receive_only_group=closed_group and not published_group, published_group=published_group)
         assert calls == original_calls
-    if recovery_fault == 'lost-ack':
+    if recovery_fault in {'lost-ack','expired','implementation'}:
         with pytest.raises(OnboardingError, match='lost_recovery_ack'):
             managed.update_native_code(plan, (tmp_path, 'a'*64), **options)
+        if recovery_fault == 'expired':
+            path = managed.state/'newcomer/native-code-update.json'
+            retained = being_seed._read(path)
+            retained['start_recovery_request']['expires_at_ms'] = 1
+            being_seed._write(path,retained)
+        if recovery_fault == 'implementation':
+            options['recovery_implementation'] = (tmp_path,'f'*64)
     result = managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
     assert result['runtime_sha256'] == 'original-bundle'
     assert result['receiving_readiness'] == 'unobserved'
@@ -1141,8 +1148,15 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         assert result['admission_parent'] == {'pid':21}
         assert calls.count('bootstrap-start') == 1
         managed.update_native_code(plan, (tmp_path,'a'*64), **options)
-        assert calls.count('bootstrap-recover-start') == (2 if recovery_fault == 'lost-ack' else 1)
-        assert all(request == recovery_requests[0] for request in recovery_requests)
+        assert calls.count('bootstrap-recover-start') == (2 if recovery_fault in {'lost-ack','expired','implementation'} else 1)
+        if recovery_fault in {'expired','implementation'}:
+            latest = being_seed._read(managed.state/'newcomer/native-code-update.json')
+            assert len(latest['start_recovery_history']) == 1
+            assert latest['start_recovery_history'][0]['receipt'] is None
+            assert latest['start_recovery_history'][0]['request']['operation_id'] == recovery_requests[0]['operation_id']
+            assert recovery_requests[1]['operation_id'] != recovery_requests[0]['operation_id']
+        else:
+            assert all(request == recovery_requests[0] for request in recovery_requests)
         return
     if closed_group:
         current['runtime_status']['loaded_runtime']['qualified_startup']['code_digest'] = 'stale-code'
@@ -1187,7 +1201,7 @@ def test_published_native_update_recovers_lost_migration_ack_without_new_stop(tm
         tmp_path, monkeypatch, 'migration', 'published', local_observer)
 
 
-@pytest.mark.parametrize('fault', [None, 'lost-ack', 'false-exit', 'changed-manager'])
+@pytest.mark.parametrize('fault', [None, 'lost-ack', 'expired', 'implementation', 'false-exit', 'changed-manager'])
 def test_native_update_observes_automatic_successor_without_another_start(tmp_path, monkeypatch, fault):
     if fault in {'false-exit','changed-manager'}:
         with pytest.raises(OnboardingError, match='receiving_guest_start_recovery_conflict'):

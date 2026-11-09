@@ -395,6 +395,7 @@ LOADED_STARTUP_TESTS = ('tests/test_onboarding_sdk.py', 'tests/test_onboarding_c
 
 HOME_FILES = {'clusterctl/homes/fleet.py', 'clusterctl/homes/fleet_reader.py', 'clusterctl/homes/observability.py',
     'clusterctl/homes/usage.py', 'clusterctl/homes/usage_probe.py', 'tests/test_home_usage.py',
+    'docs/runbooks/cluster-home-dashboard.md',
     'clusterctl/homes/assets/cluster.html', 'clusterctl/homes/assets/cluster.js', 'clusterctl/homes/assets/cluster.css',
     'tests/test_home_fleet.py', 'tests/test_home_fleet_reader.py', 'tests/test_home_observability.py',
     'deploy/fleet-reader/cluster-fleet-reader.socket', 'deploy/fleet-reader/cluster-fleet-reader@.service',

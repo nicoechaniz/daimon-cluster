@@ -35,6 +35,15 @@ def test_unavailable_is_not_zero_and_missing_body_preserves_partial_total():
     assert two['total_tokens'] == 8 and two['partial']
 
 
+def test_usage_and_its_guide_keep_complete_home_authorization_coverage():
+    from tools.ci_scope import HOME_TESTS, select
+    root = Path(__file__).parents[1]
+    assert select(['clusterctl/homes/usage.py', 'clusterctl/homes/usage_probe.py',
+                   'docs/runbooks/cluster-home-dashboard.md'], root) == ('homes', list(HOME_TESTS))
+    assert 'tests/test_home_usage.py' in HOME_TESTS
+    assert 'tests/test_home_access.py' in HOME_TESTS
+
+
 def test_probe_reads_only_counter_metadata_in_readonly_database(tmp_path):
     path = Path(__file__).parents[1] / 'clusterctl/homes/usage_probe.py'
     spec = importlib.util.spec_from_file_location('probe', path)

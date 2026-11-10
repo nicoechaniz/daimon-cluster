@@ -25,7 +25,7 @@ def serve_native_view(view: Any, stop: threading.Event, *, ready_descriptor: int
                       startup_deadline_ns: int) -> None:
     """Use the selected SDK's startup deadline API without changing old SDKs."""
     from daimon_matrix import daemon
-    options = {}
+    options: dict[str, Any] = {}
     if 'startup_deadline_ns' in inspect.signature(daemon.serve_forever).parameters:
         options['startup_deadline_ns'] = startup_deadline_ns
     daemon.serve_forever(view, stop=stop, ready_descriptor=ready_descriptor, **options)

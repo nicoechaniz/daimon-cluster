@@ -209,6 +209,16 @@ retry authority. All other owner RPCs retain their60second cap. Select the
 compatible helper before using this observation route; an older helper refuses
 the longer read rather than silently shortening the update.
 
+The same managed update spec also supports `--check-only`. It uses current
+owner reads on the selected bodies, with no SDK preparation, copying, lifecycle
+request, reader control or new operation record. It reports desired versus loaded
+code, the local reader's observed phase/recovery, and bounded metadata about the
+existing retained update. An unavailable body remains explicit and does not
+prevent observing the remaining selected bodies. No unrelated peer is queried.
+`complete` means these observations completed; `converged` separately compares
+loaded code with the desired release. Neither is a message-delivery or whole-fleet
+acceptance claim. Native H8 check-only keeps its existing observation-only path.
+
 `local_reader` is this operation's observed control phase and startup recovery,
 not peer delivery, model use, periodic health or heartbeat activation. A retained
 negative selection stays negative; software maintenance does not enable it. Its
@@ -1794,6 +1804,17 @@ uses `adopt_closed_visibility_catalogs` and completes that same publication.
 Do not rebuild every SDK, reenroll the body or recreate pending messages for this
 storage-key transition. Prepare the full-visibility entrypoint before publishing:
 the old receive-only entrypoint refuses an installation once it exists.
+
+An existing installation can move prospectively to portable Conversation
+publication through that same owner `visibility-publish` action. With a Matrix
+SDK supporting visibility successors, pass `replacement_configuration` containing
+only `destination` and `publication_backend`, the exact predecessor installation
+digest, `initial_configuration=null` and the accepted disclosure/bindings. The
+existing writer advances generation and retains the proof key and predecessor;
+there is no membership expansion, reenrollment or deletion step. Older requests
+without this optional field retain their existing behavior. Prepare the current
+App publisher first. This changes no original pending/ambiguous message and is
+not a retry of historical publication.
 
 An already-published admitted guest uses the same
 `ManagedRuntime.update_native_code(..., published_group=True)` operation.

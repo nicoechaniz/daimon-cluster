@@ -104,6 +104,24 @@ def test_initial_portable_visibility_adopts_existing_closed_catalogs(group_sourc
     assert submit('visibility', 'visibility-publish', request) == result
     assert result['status'] == 'recorded'
     assert pending() == originals
+    # A future destination change uses this same owner/catalog writer. No
+    # initial installation or membership expansion is needed a second time.
+    destination2 = copy.deepcopy(destination)
+    destination2['publication']['surface_ref'] += '/next'
+    disclosure2 = submit('successor-disclosure', 'visibility-disclosure', dict(
+        approved_destination=destination2, issued_at_ms=time.time_ns() // 1_000_000))['disclosure']
+    binding2 = submit('successor-accept', 'visibility-accept', dict(
+        approved_destination=destination2, disclosures=[disclosure2]))['bindings'][0]['binding']
+    original_key = (key.stat().st_ino, key.read_bytes())
+    successor = dict(disclosure=disclosure2, bindings=[binding2], initial_configuration=None,
+        expected_installation_sha256=result['installation_sha256'], replacement_configuration=dict(
+            destination=destination2, publication_backend=configuration['publication_backend']))
+    updated = submit('successor', 'visibility-publish', successor)
+    assert submit('successor', 'visibility-publish', successor) == updated
+    assert updated['installation_sha256'] != result['installation_sha256']
+    assert json.loads((visibility / 'installation.json').read_bytes())['document']['generation'] == 2
+    assert (key.stat().st_ino, key.read_bytes()) == original_key
+    assert pending() == originals
 
 
 @pytest.fixture
@@ -1269,6 +1287,18 @@ def test_prepared_visibility_refuses_unadmitted_application_pins(group_source):
             prepare_current_group_visibility(native, source.outputs/'tribe/application',
                 approved_destination=dict(bot_id=1, chat_id=-123, topic_id=None,
                     representation='compact-text/v1'), issued_at_ms=time.time_ns()//1_000_000)
+
+
+def test_publication_accepts_explicit_portable_successor_without_new_installation():
+    value = dict(operation_id=str(uuid.uuid4()), step='visibility', action='visibility-publish',
+        params=dict(disclosure={}, bindings=[], expected_installation_sha256='a'*64,
+            initial_configuration=None, replacement_configuration=dict(
+                destination={}, publication_backend={})))
+    assert publication_command(value) == value
+    for delta in ({'initial_configuration':{}}, {'expected_installation_sha256':None},
+                  {'replacement_configuration':{'destination':{}, 'publication_backend':{}, 'secrets':{}}}):
+        with pytest.raises(OnboardingError, match='publication_command_required'):
+            publication_command({**value, 'params':{**value['params'], **delta}})
 
 
 def test_publication_packets_are_closed_and_cannot_use_online_relationship_route():

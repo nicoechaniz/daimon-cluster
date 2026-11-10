@@ -46,3 +46,11 @@ A signed native SQLite BUSY/LOCKED rejection during reader selection is reconcil
 once with the same durable request and original effect deadline. Other refusals,
 repeated contention and uncertain transport results remain retained failures;
 they do not trigger new controls or an automatic maintenance loop.
+
+Cold native startup has one180-second parent readiness envelope, including SDK,
+identity/application preparation and listener recovery. A caller-supplied earlier
+deadline still wins; phases do not restart the clock. The SDK retains its own
+shorter reader-journal recovery cap, and normal RPC/control/credential deadlines
+are unchanged. Actual readiness, not a successful service start, completes the
+receiving qualification. This permits cold preparation before recovery; it does
+not compact an ever-growing signed journal or remove any verification.

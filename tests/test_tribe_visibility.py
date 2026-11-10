@@ -120,3 +120,59 @@ def test_late_selector_change_wins_over_watchdog_restoration(tmp_path, monkeypat
     namespace['restore'](dict(directory=str(tmp_path), mode='sign'))
     assert not any(args[0] == 'start' for args in calls)
     assert json.loads((tmp_path/'apply-sign.json').read_text())['phase'] == 'later_selection_preserved'
+
+
+def test_native_rollout_and_arm_resume_without_repeating_completed_updates():
+    value = request()
+    value['native_updates'] = ['/retained/spec.json']
+    value['owners']['compaii'].update(launch={'owner_config':{'code_digest':'new'}},
+        expected_sdk_wheel='wheel')
+    spec = {'schema':'fixture', 'max_seconds':5, 'operation_id':'existing'}
+    result, calls = {}, []
+    def run_update(selected):
+        assert selected == spec
+        calls.append('update')
+        return {'complete':True,'operation_id':'existing','private_context':'not duplicated'}
+    def observe(*_):
+        calls.append('observe')
+        return {'code_digest':'new','matrix_sdk':'wheel','process':{'pid':123}}
+    def arm(*_):
+        calls.append('arm')
+        return {'armed':True}
+    for _ in range(2):
+        tool.prepare_rollout(value,result,30,save=lambda _:None,run_update=run_update,
+            observe=observe,arm=arm,read_spec=lambda _:spec,clock=lambda:0)
+    assert calls == ['update','observe','arm']
+    assert 'private_context' not in result['native_updates']['/retained/spec.json']['result']
+
+
+def test_unselected_sdk_stops_before_signature_or_publication():
+    value = request()
+    value['owners']['compaii'].update(launch={'owner_config':{'code_digest':'new'}},
+        expected_sdk_wheel='wheel')
+    def prepare(result, deadline):
+        tool.prepare_rollout(value,result,deadline,save=lambda _:None,
+            run_update=lambda _:pytest.fail('unexpected native update'),
+            observe=lambda *_:{'code_digest':'old','matrix_sdk':'wheel','process':{}},
+            arm=lambda *_:pytest.fail('unselected receiver armed'))
+    with pytest.raises(ValueError,match='visibility_selected_sdk_required'):
+        tool.apply(value,dispatch=lambda *_:pytest.fail('native speech started'),
+            observe=lambda *_:None,save=lambda _:None,finish=lambda *_:None,prepare=prepare)
+
+
+def test_each_operation_gets_a_collectable_finite_owner_unit(tmp_path, monkeypatch):
+    namespace = {}
+    exec(tool.WORKER.split('payload=json.load')[0],namespace)
+    commands = []
+    monkeypatch.setattr(namespace['subprocess'],'run',lambda argv,**_:commands.append(argv))
+    for operation in ('first','second'):
+        directory=tmp_path/operation
+        directory.mkdir()
+        owner=directory/'owner'
+        owner.mkdir()
+        (directory/'launch.json').write_text(json.dumps({'owner':str(owner)}))
+        namespace['launch']({'directory':str(directory),'mode':'sign',
+            'intent':{'operation_id':operation},'worker':'fixed'})
+    units = [next(arg for arg in argv if arg.startswith('--unit=')) for argv in commands]
+    assert len(set(units)) == 2
+    assert all('--collect' in argv and 'RemainAfterExit=yes' not in argv for argv in commands)

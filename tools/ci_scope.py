@@ -790,6 +790,18 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
 
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
+    visibility_rollout_files = {'tools/tribe_visibility.py','tests/test_tribe_visibility.py',
+                                'docs/operations/tribe-visibility.md'}
+    visibility_rollout_tests = ['tests/test_tribe_visibility.py',
+        'tests/test_native_code_maintenance_cli.py','tests/test_onboarding_owner_control.py',
+        'tests/test_ci_scope.py','tests/test_ci_workflow.py']
+    if ({'tools/tribe_visibility.py','tests/test_tribe_visibility.py'} <= set(changed)
+            and set(changed) <= visibility_rollout_files | CI_FILES
+            and all((root / path).is_file() for path in visibility_rollout_tests)):
+        # This operator calls unchanged native owners. Keep its consumers and
+        # process/CLI contracts; changes to any owner/transport/SDK retain full CI.
+        return 'peer', visibility_rollout_tests
+
     coordinator_files = {'clusterctl/onboarding_group_coordinator.py',
                          'tests/test_onboarding_group_coordinator.py',
                          'tests/test_onboarding_group_finisher.py'}

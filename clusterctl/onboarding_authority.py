@@ -95,10 +95,15 @@ def retire_history(authority: AdmissionAuthority, seconds: int) -> dict:
             # Do not monopolize the SQLite writer while draining a large old
             # backlog. Renewals keep their ordinary path and lease deadlines.
             time.sleep(min(0.01, max(0, (deadline - time.monotonic_ns()) / 1_000_000_000)))
-    except FenceError:
+    except FenceError as exception:
         # Retain earlier committed batches; the failed batch rolls back. Never
         # expose SQLite/custody details in the bounded operator receipt.
-        error = 'retirement-batch-unavailable'
+        cause = exception.__cause__
+        interrupted = (isinstance(cause, sqlite3.OperationalError)
+                       and getattr(cause, 'sqlite_errorcode', None) == sqlite3.SQLITE_INTERRUPT)
+        explicit_deadline = str(exception) == 'resource fence maintenance deadline expired'
+        if not (time.monotonic_ns() >= deadline and (interrupted or explicit_deadline)):
+            error = 'retirement-batch-unavailable'
     return dict(schema='cluster-admission-history-retirement/v1',
                 retired_events=retired, complete=complete, error=error)
 

@@ -76,7 +76,11 @@ with no socket/listener and no service restart.
 `--retirement-seconds` selects1..60 seconds of batch work (default30). It prints
 one bounded receipt with committed retired count and `complete`; incomplete or
 failed work returns nonzero and can resume from the retained checkpoint using
-the same command. Initial authority/configuration validation precedes that batch
+the same command. Reaching the time budget, including SQLite's deadline-triggered
+query interruption, reports `complete: false, error: null` with the committed
+count. An interruption before the deadline or an integrity/availability failure
+still reports `retirement-batch-unavailable`; reaching the deadline does not hide
+an unrelated failure. Initial authority/configuration validation precedes that batch
 budget. Maintenance lock waits are capped at100ms, SQLite scans observe the
 batch deadline, and a10ms gap between batches yields to active renewals.
 No timer, lease extension, new holder or resource is created.

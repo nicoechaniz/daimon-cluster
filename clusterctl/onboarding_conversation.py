@@ -904,6 +904,7 @@ def atomic(path, raw, *, mode, absent=False):
     temporary = path.with_name(".conversation-" + uuid.uuid4().hex)
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     try:
+        os.fchmod(fd, mode)  # Honor explicit public/private modes independently of operator umask.
         with os.fdopen(fd, "wb") as stream:
             stream.write(raw)
             stream.flush()

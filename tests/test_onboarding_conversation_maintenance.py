@@ -87,3 +87,14 @@ def test_second_busy_target_releases_the_first_owned_lease(tmp_path):
                 raise AssertionError("Busy target admitted")
         with open(one["config"], "r+b") as released:
             fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_explicit_public_file_mode_survives_private_operator_umask(tmp_path):
+    from clusterctl.onboarding_conversation import atomic
+    target = tmp_path / "Caddyfile"
+    previous = os.umask(0o077)
+    try:
+        atomic(target, b"selected public service configuration", mode=0o644)
+    finally:
+        os.umask(previous)
+    assert target.stat().st_mode & 0o777 == 0o644

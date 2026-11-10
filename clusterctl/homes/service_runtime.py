@@ -290,6 +290,7 @@ class Runtime:
                         p = release / n
                         p.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
                         atomic(p, raw_file, mode=0o644)
+                        p.chmod(0o644)
                     # Private operator umasks must not hide immutable code from the service UID.
                     release.chmod(0o755)
                     for directory in release.rglob('*'):

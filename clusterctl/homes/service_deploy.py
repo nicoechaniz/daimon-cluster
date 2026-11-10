@@ -86,6 +86,7 @@ class ServiceRoutes(Routes):
         return (f' # BEGIN home-service:{name}\n'
                 f' @home_service_{name} {{\n  host {host}\n  path {prefix}*\n }}\n'
                 f' handle @home_service_{name} {{\n  route {{\n'
+                '   header {\n    Cache-Control "private, no-store"\n    defer\n   }\n'
                 f'   forward_auth {auth.removeprefix("http://")} {{\n'
                 f'    uri /service-access/{name}\n    header_up Host {host}\n'
                 '    header_up -Authorization\n    header_up -X-Daimon-Home\n'

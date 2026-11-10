@@ -201,6 +201,7 @@ identity or session. Node receives no
 owner Authorization token or caller-supplied actor headers. Authentication is
 enforced by the route rather than a package's assertion that it handles login.
 Direct private listener access must remain restricted to the selected edge.
+The route forces private/no-store responses independently of package cache headers.
 
 ## Continuation, rollback and bounded retention
 

@@ -474,6 +474,7 @@ def test_route_scope_and_concurrent_replacement_preserved(setup):
     }
     block = ServiceRoutes.render(value, g, g["auth_backend"])
     assert b"forward_auth" in block and b"header_up -Authorization" in block
+    assert b'Cache-Control "private, no-store"' in block and b"defer" in block
     assert b"path /workshop/*" in block
     before = (g["routes"]["anchor"] + "\n").encode()
     after = ServiceRoutes.compose(before, value, block, g["routes"]["anchor"])

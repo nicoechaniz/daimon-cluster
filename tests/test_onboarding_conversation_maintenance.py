@@ -79,7 +79,7 @@ def test_second_busy_target_releases_the_first_owned_lease(tmp_path):
     one = target(first)
     two = target(second)
     two["name"] = "second"
-    two["upstream"] = "127.0.0.1:8801"
+    two["upstream"] = one["upstream"]  # Distinct readers behind the same Host-routed proxy.
     with open(two["config"], "r+b") as busy:
         fcntl.flock(busy, fcntl.LOCK_SH)
         with pytest.raises(OnboardingError, match="conversation_route_voice_active"):

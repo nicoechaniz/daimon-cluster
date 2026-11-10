@@ -261,3 +261,6 @@ also refuses a same-ID App entry pointing elsewhere or using a different
 audience/application mode, preserving an original Sites or other publication.
 Resolve an explicit audience move through the maintained publisher's audience
 writer; do not create a duplicate or overwrite unrelated content implicitly.
+
+Distinct App readers behind a shared Host-routed upstream remain separate maintenance
+targets. The same proxy address must not collapse their independent live voice locks.

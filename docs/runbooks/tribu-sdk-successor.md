@@ -13,6 +13,11 @@ sequence of additional gates to repeat for every iteration.
    `onboarding_code_successor.build(..., current=..., current_fingerprint=...)`.
    Reuse the qualified SDK artifact directly; the builder already copies it
    into the candidate, so an extra input/staging copy is unnecessary locally.
+   Cold SDK installation and closed-import preparation use the same remaining
+   finite maintenance envelope (at most300seconds), before any service stop.
+   Ordinary observation and physical controls retain their60second limit. A
+   preparation timeout leaves the serving selection intact; inspect its retained
+   installation/import receipts before continuing the same operation.
    When both daemon behavior and the installed foundation client change, include
    `onboarding_runtime.py`, `onboarding_foundation_native.py` and
    `onboarding_owner_client.py` in this same candidate. The owner-client capture

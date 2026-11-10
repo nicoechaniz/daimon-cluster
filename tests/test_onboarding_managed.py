@@ -1022,7 +1022,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     recovery_requests = []
     def owner(_plan, action, **_):
         assert 0 < _.get('observation_timeout_seconds', _.get('bootstrap_timeout_seconds', 0)) <= (
-            300 if action == 'visibility-migrate' else 60)
+            300 if action in {'visibility-migrate', 'sdk-prepare'} else 60)
         if action == 'receiving-bootstrap-freeze':
             assert capability_expansion and published_group
             assert _['bootstrap_capability_additions'] == {'observe': ['we.event.get']}
@@ -1033,8 +1033,9 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
                 capability_additions=_['bootstrap_capability_additions'],
                 preservation=dict(active=True, not_before_ms=0, not_after_ms=time.time_ns()//1_000_000+3600000))
         if action == 'sdk-prepare':
+            assert _['observation_timeout_seconds'] > 60
             if cold.pop() if cold else False:
-                offset[0] += 55_000_000_000
+                offset[0] += 75_000_000_000
             assert 'current_native' not in _
             return dict(ready=True)
         if action == 'visibility-migrate':

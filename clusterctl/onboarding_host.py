@@ -1385,7 +1385,7 @@ class HostBackend:
         if observation_timeout_seconds is not None:
             if (action not in {'observe', 'sdk-observe', 'sdk-prepare', 'visibility-migrate', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
                     or not math.isfinite(observation_timeout_seconds)
-                    or not 0 < observation_timeout_seconds <= (300 if action == 'visibility-migrate' else 60)):
+                    or not 0 < observation_timeout_seconds <= (300 if action in {'visibility-migrate', 'sdk-prepare'} else 60)):
                 raise OnboardingError('receiving_host_deadline_required')
             deadline_ns = time.monotonic_ns() + int(observation_timeout_seconds * 1_000_000_000)
             if owner_deadline_ns is not None:

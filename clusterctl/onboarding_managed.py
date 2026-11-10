@@ -290,8 +290,11 @@ class ManagedRuntime:
                 raise OnboardingError('native_code_update_operation_conflict')
             # Mounted public code is not an installed owner interpreter. This
             # existing idempotent stage also prepares its closed import tree.
+            sdk_seconds = (deadline - time.monotonic_ns()) / 1_000_000_000
+            if sdk_seconds <= 0:
+                raise OnboardingError('receiving_host_deadline_expired')
             sdk = self.backend._target_call(plan, 'sdk-prepare', candidate=candidate,
-                observation_timeout_seconds=remaining())
+                observation_timeout_seconds=min(300.0, sdk_seconds))
             if sdk.get('ready') is not True:
                 raise OnboardingError('native_code_update_sdk_unready')
             if not path.exists() or previous_completed is not None:

@@ -24,7 +24,7 @@ def archive(
         schema="dm.home-service-package/v1",
         service="workshop",
         runtime="node24-http",
-        entry="main.js",
+        entry=name,
         state_schema="v1",
         health={"path": "/health", "sha256": sha(b"ok")},
         files=[{"path": name, "sha256": sha(source)}],
@@ -695,3 +695,20 @@ def test_rendered_route_adapts_with_actual_caddy_when_available(setup, tmp_path)
     wire = json.dumps(adapted)
     assert "/service-access/s-" + key(c) in wire
     assert "/workshop/*" in wire
+
+
+def test_new_release_is_readable_under_private_operator_umask(setup):
+    c, _, _, _, _, _, value = setup
+    raw, _ = archive(name="src/main.js")
+    value = deepcopy(value)
+    value["package"]["sha256"] = sha(raw)
+    worker = ManagerFixture(c)
+    previous_umask = os.umask(0o077)
+    try:
+        assert worker.run(envelope(c, value, raw))["state"] == "ready"
+    finally:
+        os.umask(previous_umask)
+    release = worker.code / ("release-" + sha(raw))
+    assert release.stat().st_mode & 0o777 == 0o755
+    assert (release / "src").stat().st_mode & 0o777 == 0o755
+    assert (release / "src/main.js").stat().st_mode & 0o777 == 0o644

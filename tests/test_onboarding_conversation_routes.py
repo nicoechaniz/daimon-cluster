@@ -49,6 +49,17 @@ def test_absent_observation_then_one_reload_with_loaded_proof(tmp_path):
     assert calls.count('reload') == 1
 
 
+def test_staged_caddyfile_hidden_name_uses_actual_load_destination(tmp_path):
+    writer, _, _, _, _ = assembled(tmp_path)
+    staged = writer.state / 'candidate.caddyfile'
+    value = {'routes': [{'handler': 'file_server', 'hide': [str(staged), '/private']},
+                        {'handler': 'static_response', 'body': str(staged)}]}
+    writer._command = lambda *_: json.dumps(value).encode()
+    expected = {'routes': [{'handler': 'file_server', 'hide': [str(writer.path), '/private']},
+                           {'handler': 'static_response', 'body': str(staged)}]}
+    assert writer._adapt({}, staged) == digest(expected)
+
+
 def test_lost_reload_response_recovers_actual_effect_without_repeating(tmp_path):
     writer, args, state, calls, _ = assembled(tmp_path)
     state['lost'] = True

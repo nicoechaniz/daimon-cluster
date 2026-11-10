@@ -211,7 +211,22 @@ class Routes:
 
     def _adapt(self, process, path):
         raw = self._command(process, 'adapt', '--config', str(path), '--adapter', 'caddyfile')
-        return digest(json.loads(raw))
+        value = json.loads(raw)
+        # Caddy automatically hides the input Caddyfile in file_server handlers.
+        # The prepared copy will be loaded at self.path; compare that effective
+        # configuration without treating the staging filename as a route change.
+        def selected_filename(node):
+            if isinstance(node, dict):
+                if node.get('handler') == 'file_server' and isinstance(node.get('hide'), list):
+                    node['hide'] = [str(self.path) if item == str(path) else item
+                                    for item in node['hide']]
+                for child in node.values():
+                    selected_filename(child)
+            elif isinstance(node, list):
+                for child in node:
+                    selected_filename(child)
+        selected_filename(value)
+        return digest(value)
 
     def _live_configuration(self, process):
         # The default loopback admin listener must belong to this exact loaded

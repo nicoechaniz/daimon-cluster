@@ -1891,6 +1891,11 @@ can verify as root yet fail to import as the configured service user. Verify the
 existing command as that user; preserve private directory permissions, old
 receipts and uncertain controls instead of widening a private tree or resetting
 its journals. Installing helper files alone does not update a locator.
+Determine helper compatibility from the maintained source and verified file
+inventory, not a digest label or a past summary describing it as newer/older.
+The installed helper must accept the actual read bound the caller will send.
+Reconciliation of an already-running restored predecessor uses the ordinary
+read bound; only post-start observation needs the extended cold-start bound.
 The stopped-owner `visibility-migrate` phase shares the remaining bounded native
 update envelope (at most300s); it must not inherit the60s cap of ordinary owner
 reads. Cryptographic staging/publication can exceed that read deadline. A timeout

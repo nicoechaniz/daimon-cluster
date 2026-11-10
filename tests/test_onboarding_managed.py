@@ -1138,6 +1138,8 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         def _call(self, packet):
             assert packet == dict(action='native-current',plan_digest=digest(plan))
             assert self.deadline_ns > time.monotonic_ns()
+            if restored_repair and current['runtime_status']['loaded_runtime']['qualified_startup']['code_digest'] == 'b'*64:
+                assert self.deadline_ns - time.monotonic_ns() <= 60_000_000_000
             return {**copy.deepcopy(current),'plan_digest':digest(plan)}
     observer = Observer()
     options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bc', receive_only_group=closed_group and not published_group, published_group=published_group)

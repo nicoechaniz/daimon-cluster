@@ -204,7 +204,7 @@ class ManagedRuntime:
                             or state.get('result') is not None
                             or not restored and set(state.get('effects', {})) != required):
                         raise OnboardingError('native_code_update_operation_conflict')
-                    current = observe(starting=True)
+                    current = observe(starting=not restored)
                     if (current['runtime_sha256'] != state.get('effective_runtime_sha256', state['runtime_sha256'])
                             or current['origin'] != state['origin']):
                         raise OnboardingError('native_code_update_identity_changed')

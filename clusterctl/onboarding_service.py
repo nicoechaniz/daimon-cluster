@@ -383,11 +383,24 @@ class GuestServiceBootstrap:
         self.manager = manager
 
     def inspect(self, observed: dict | None = None, *, deadline_ns: int) -> dict:
+        from .owner_process import observe_process_exit, validate_process
         self._budget(deadline_ns)
+        previous = None
+        if observed is not None and 'previous_admission_parent' in observed:
+            previous = validate_process(observed['previous_admission_parent'])
+            if previous['uid'] != 1000:
+                raise OnboardingError('receiving_guest_service_request_required')
+            observed = {key: value for key, value in observed.items()
+                        if key != 'previous_admission_parent'}
         current = self.manager.inspect(deadline_ns=deadline_ns)
         scope = None if observed is None else self.manager.bind_admitted_process(observed, current)
         self._budget(deadline_ns)
-        return dict(service=current, scope=scope, receiving_readiness='unobserved')
+        result = dict(service=current, scope=scope, receiving_readiness='unobserved')
+        if previous is not None:
+            result['previous_admission_parent'] = dict(process=previous,
+                exited=observe_process_exit(previous))
+            self._budget(deadline_ns)
+        return result
 
     @staticmethod
     def _budget(deadline_ns: int) -> None:
@@ -1476,7 +1489,8 @@ def main(argv=None) -> int:
         if (args.runtime_code is not None
                 and args.runtime_code != Path('/opt/daimon-onboarding-runtime') / args.runtime_digest):
             raise OnboardingError('qualified_guest_service_required')
-        if args.action == 'bootstrap-recover-start':
+        if (args.action == 'bootstrap-recover-start'
+                or args.action == 'bootstrap-inspect' and args.implementation_code is not None):
             if (args.implementation_code is None or args.implementation_digest is None
                     or args.implementation_code != Path('/opt/daimon-onboarding-runtime') / args.implementation_digest
                     or Path(__file__).resolve().parents[1] != args.implementation_code.resolve()):

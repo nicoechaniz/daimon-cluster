@@ -22,6 +22,23 @@ def deadline():
     return time.monotonic_ns() + 2_000_000_000
 
 
+@pytest.mark.parametrize('exited', [False, True])
+def test_inspection_reports_exact_previous_parent_exit_without_lifecycle(fixture, monkeypatch, exited):
+    controller, manager, request = fixture[:3]
+    observed = {key:request['predecessor'][key] for key in ('process','admission_parent')}
+    previous = {**observed['admission_parent'], 'pid':121}
+    inspected = []
+    def exit_observation(value):
+        inspected.append(value)
+        return exited
+    monkeypatch.setattr(owner_process, 'observe_process_exit', exit_observation)
+    result = controller.inspect({**observed,'previous_admission_parent':previous}, deadline_ns=deadline())
+    assert result['previous_admission_parent'] == dict(process=previous, exited=exited)
+    assert inspected == [previous]
+    assert result['scope']['process'] == observed['process']
+    assert manager.stops == manager.starts == manager.reloads == 0
+
+
 def test_changed_frozen_dropin_bytes_prevent_first_stop(fixture):
     controller, manager, request = fixture[:3]
     request['predecessor']['service']['manager']['DropInPaths'] = '/maintained.conf'
@@ -870,7 +887,7 @@ def test_initial_service_cannot_treat_quiescence_query_as_start(initial):
 
 @pytest.mark.parametrize(
     "action",
-    ["bootstrap-inspect", "bootstrap-quiesce", "bootstrap-select", "bootstrap-start", "bootstrap-recover-start", "bootstrap-quiescence"],
+    ["bootstrap-inspect", "bootstrap-inspect-helper", "bootstrap-quiesce", "bootstrap-select", "bootstrap-start", "bootstrap-recover-start", "bootstrap-quiescence"],
 )
 def test_closed_root_cli_never_calls_install_or_owner_sdk(monkeypatch, capsys, action):
     import json
@@ -878,6 +895,9 @@ def test_closed_root_cli_never_calls_install_or_owner_sdk(monkeypatch, capsys, a
     from clusterctl.onboarding import digest
 
     selected = plan()
+    inspection_helper = action == 'bootstrap-inspect-helper'
+    if inspection_helper:
+        action = 'bootstrap-inspect'
     calls = []
     monkeypatch.setattr(onboarding_service.os, "geteuid", lambda: 0)
     monkeypatch.setattr(
@@ -925,6 +945,10 @@ def test_closed_root_cli_never_calls_install_or_owner_sdk(monkeypatch, capsys, a
         "--action",
         action,
     ]
+    if inspection_helper:
+        implementation = '/opt/daimon-onboarding-runtime/' + 'f' * 64
+        monkeypatch.setattr(onboarding_service, '__file__', implementation + '/clusterctl/onboarding_service.py')
+        argv += ['--implementation-code', implementation, '--implementation-digest', 'f' * 64]
     if action != "bootstrap-inspect":
         request = {"plan_digest": digest(selected)}
         if action == 'bootstrap-recover-start':

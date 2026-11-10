@@ -1536,7 +1536,8 @@ class HostBackend:
                 or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 60
                 or (action == 'bootstrap-inspect') != (request is None)
                 or action != 'bootstrap-inspect' and owner_observation is not None
-                or (action == 'bootstrap-recover-start') != (implementation is not None)):
+                or action == 'bootstrap-recover-start' and implementation is None
+                or implementation is not None and action not in {'bootstrap-recover-start','bootstrap-inspect'}):
             raise OnboardingError('receiving_guest_service_request_required')
         deadline_ns = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
         if (owner_deadline_ns is not None and (type(owner_deadline_ns) is not int

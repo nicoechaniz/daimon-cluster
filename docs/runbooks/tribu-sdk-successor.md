@@ -1898,7 +1898,12 @@ Reconciliation of an already-running restored predecessor uses the ordinary
 read bound; only post-start observation needs the extended cold-start bound.
 The stopped-owner `visibility-migrate` phase shares the remaining bounded native
 update envelope (at most300s); it must not inherit the60s cap of ordinary owner
-reads. Cryptographic staging/publication can exceed that read deadline. A timeout
+reads. The existing native/VM transport carries that same caller-selected
+finite deadline to the receiving monotonic clock. Public artifact preparation
+likewise uses its remaining bounded operation time; its default stays60s when no
+outer deadline is supplied. Neither layer may silently replace a selected300s
+migration/copy deadline with60s. Ordinary action validators retain their own
+bounds; this changes no resource account, provider budget or grant validity. Cryptographic staging/publication can exceed that read deadline. A timeout
 is a partial operation: inspect its original journal, actual owner process and
 capability transaction before continuing. An expired unpublished capability
 request cannot be reused as fresh publication authority. If the original runtime

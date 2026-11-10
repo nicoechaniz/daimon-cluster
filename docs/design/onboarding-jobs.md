@@ -759,6 +759,18 @@ An existing changed unit is preserved and refused. Omitting `--activate`
 installs without starting. The worker uses the same engine and policy as web,
 agent API and CLI; no active Codex conversation is needed.
 
+For an existing installation, preserve its selected `--home-placements` and
+`--runtime-health-registry` arguments when supplying `--replace-unit-sha256`;
+omitting an optional argument constructs a unit without that integration. Compare
+the generated unit with the actual predecessor before dispatch. Public release
+source directories must remain traversable by the gateway owner (0755, as in the
+predecessor); extraction under a private umask does not establish that access.
+Keep private configuration, credentials and environments at their existing modes.
+For the companion hook, `gateway.python` selects the actual gateway owner
+interpreter, not a root-only worker environment. Reuse its existing root-to-owner
+probe on an already registered Home to observe loaded routes, without replaying
+a completed job. A preparation/launcher failure is not a product or peer failure.
+
 
 ### Runtime successors for an already receiving body
 

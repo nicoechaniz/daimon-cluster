@@ -729,3 +729,66 @@ def test_profile_owner_uses_actual_closed_helper_entrypoint(tmp_path):
     result = owner.select(candidate,previous=previous,deadline_ns=time.monotonic_ns()+10_000_000_000)
     assert result['selected'] is True and owner.profile()==candidate
     assert owner.select(candidate,previous=previous,deadline_ns=time.monotonic_ns()+10_000_000_000)==result
+
+
+@pytest.mark.parametrize('qualified', [True, False])
+def test_profile_sdk_preparation_uses_pinned_existing_helpers_before_runtime(tmp_path, monkeypatch, qualified):
+    selected = dict(schema='dm.cluster.rebirth-native-profile/v1', config='/owner/config',
+        home=str(tmp_path), code='/qualified/current', code_digest='a'*64)
+    calls = []
+    parameters = dict(matrix_commit='b'*40, matrix_wheel_sha256='c'*64)
+    monkeypatch.setattr(rebirth_native.onboarding_release, 'verify', lambda *a, **k: calls.append('verify'))
+    monkeypatch.setattr(rebirth_native.onboarding_code_successor, 'sdk_parameters',
+        lambda *a, **k: parameters if qualified else {})
+    def install(home, code, digest, **kwargs):
+        assert home == tmp_path and digest == selected['code_digest']
+        assert kwargs == dict(code_uid=0, **parameters)
+        calls.append('install')
+        return tmp_path/'venv'
+    def imports(venv, code, **kwargs):
+        assert venv == tmp_path/'venv' and kwargs == dict(code_uid=0, **parameters)
+        calls.append('imports')
+    monkeypatch.setattr(onboarding_sdk, 'install', install)
+    monkeypatch.setattr(onboarding_sdk, 'runtime_imports', imports)
+    if not qualified:
+        with pytest.raises(ValueError, match='qualified native SDK required'):
+            rebirth_native.prepare_profile_sdk(selected, deadline_ns=time.monotonic_ns()+1_000_000_000)
+        assert calls == ['verify']
+    else:
+        assert rebirth_native.prepare_profile_sdk(selected,
+            deadline_ns=time.monotonic_ns()+1_000_000_000)['ready'] is True
+        assert calls == ['verify', 'install', 'imports']
+
+
+@pytest.mark.parametrize('mode', ['changed', 'check-only', 'unchanged', 'preparation-failure'])
+def test_native_profile_prepares_only_changed_live_update_before_any_stop(tmp_path, monkeypatch, mode):
+    from clusterctl import onboarding_service
+    from clusterctl.operation_journal import OperationJournal
+    previous = dict(schema='dm.cluster.rebirth-native-profile/v1', config='/owner/config',
+        home='/owner/home', code='/qualified/old', code_digest='a'*64)
+    candidate = previous if mode == 'unchanged' else {**previous, 'code':'/qualified/new', 'code_digest':'b'*64}
+    calls = []
+    class Owner:
+        uid, gid = os.getuid(), os.getgid()
+        def __init__(self, path): pass
+        def profile(self): return previous
+        def prepare_sdk(self, value, **options):
+            assert value == candidate
+            calls.append('prepare')
+            if mode == 'preparation-failure':
+                raise OSError('preparation failed before stop')
+        def status(self, value, **options):
+            assert value == candidate
+            calls.append('status')
+            raise OSError('reached still-serving observation')
+    monkeypatch.setattr(rebirth_native, 'ProfileOwner', Owner)
+    monkeypatch.setattr(onboarding_service, 'MatrixProfileService', lambda *args, **kwargs: object())
+    monkeypatch.setattr(OperationJournal, 'existing', lambda *args: None)
+    monkeypatch.setattr(os, 'geteuid', lambda: 0)
+    spec = dict(schema='cluster-native-profile-maintenance/v1',
+        operation_id='71578e4b-7476-4ffe-861c-0faae92cabff', profile='/owner/profile',
+        candidate=candidate, unit='/system/unit', journal='/owner/journal', max_seconds=180)
+    with pytest.raises(OSError):
+        rebirth_native.run_profile_maintenance(spec, check_only=mode == 'check-only')
+    assert calls == (['prepare'] if mode == 'preparation-failure' else
+        ['prepare', 'status'] if mode == 'changed' else ['status'])

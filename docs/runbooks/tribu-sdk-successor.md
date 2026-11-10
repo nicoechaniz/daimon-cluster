@@ -98,10 +98,13 @@ Prepare the exact reviewed operator source through the existing operator route,
 verify its import with the unit's interpreter, and preserve both current
 selections before scoped activation. Native profile metadata uses the H8
 canonical JSON serializer, not ordinary pretty-printed JSON.
-SDK installation alone does not prepare the closed import tree. Use the owning
-`onboarding_sdk.runtime_imports` helper with the same qualified revision/wheel
-parameters before selecting a native profile or executing its runtime command.
-Reuse the retained import receipt and immutable tree when already prepared.
+The existing native-profile maintenance command prepares a changed candidate's
+SDK and closed imports as the actual profile owner before stopping anything.
+It reuses `onboarding_sdk.install` and `runtime_imports` with the candidate's
+qualified revision/wheel pins and retained immutable receipts. Preparation uses
+at most60seconds within the original180second operation budget; a failure leaves
+the serving profile unchanged. Check-only and unchanged-profile reads do not
+install dependencies. No separate preparation command is required for updates.
 After a successor startup is retained, a compatible previous SDK is another
 linked startup under the corrected supervisor. Keep that supervisor selected;
 restoring the old one-intent supervisor cannot interpret the new startup chain.
@@ -198,6 +201,13 @@ genesis ceremony is replayed. The legacy Target route remains available when thi
 optional field is absent. H8 Source profiles retain their existing Source-specific
 owner route; this optional field belongs to managed-target specs. An unsupported selected helper refuses before stopping
 work; do not silently switch routes after an uncertain lifecycle effect.
+
+The current-owner helper admits up to180seconds only for the authenticated
+`native-current` read. This covers parent preparation and child startup inside
+the update's existing absolute budget; it extends no start, write, resource or
+retry authority. All other owner RPCs retain their60second cap. Select the
+compatible helper before using this observation route; an older helper refuses
+the longer read rather than silently shortening the update.
 
 `local_reader` is this operation's observed control phase and startup recovery,
 not peer delivery, model use, periodic health or heartbeat activation. A retained

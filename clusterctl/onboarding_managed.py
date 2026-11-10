@@ -99,8 +99,9 @@ class ManagedRuntime:
         root's existing bootstrap journal reconciles lost stop/select/start ACKs.
         Identity, credentials, native stores and Conversation are preserved.
         The complete operation includes cold SDK preparation within its declared envelope;
-        each owner/physical request remains capped at 60 seconds and shares the
-        original overall deadline. No internal deadline is renewed.
+        writes and physical requests remain capped at60seconds; the read-only
+        post-start observation may use180seconds of the same original deadline.
+        No start or write authority is renewed.
         An existing group and publication are frozen across the update. Published
         groups explicitly migrate catalogs under their stopped native owner;
         they never repeat enrollment or publication. Retain one current
@@ -153,14 +154,17 @@ class ManagedRuntime:
                 if len(json.dumps(state).encode()) > 65536:
                     raise OnboardingError('native_code_update_record_limit')
                 being_seed._write(path, state)
-            def observe():
+            def observe(*, starting: bool = False):
                 if current_observer is None:
                     value = self.backend._target_call(plan, 'admitted-running', candidate=candidate,
                         observation_timeout_seconds=remaining(),
                         **({'current_native': True, 'require_loaded': True} if with_group else {}))
                 else:
-                    current_observer.deadline_ns = min(deadline,
-                        time.monotonic_ns() + 60_000_000_000)
+                    # A new parent still has to prepare and admit its child. Use
+                    # the operation's existing budget for this read; a nested
+                    # one-minute cap previously required manual finalization.
+                    current_observer.deadline_ns = min(deadline, time.monotonic_ns() +
+                        (180 if starting else 60) * 1_000_000_000)
                     value = current_observer._call(dict(action='native-current', plan_digest=digest(plan)))
                     if value.get('plan_digest') != digest(plan):
                         raise OnboardingError('current_onboarding_target_required')
@@ -244,7 +248,7 @@ class ManagedRuntime:
                         candidate=candidate, timeout_seconds=remaining(), request=state['request'])
                 state.pop('dispatching', None)
                 save()
-            current = observe()
+            current = observe(starting=True)
             if current['runtime_sha256'] != state['runtime_sha256']:
                 raise OnboardingError('native_code_update_identity_changed')
             if _code_update_group(current, published=published_group) != state.get('closed_group'):
@@ -1023,7 +1027,8 @@ class ReaderCommandClient:
         from .onboarding_receiving_update import _run_owner
         if self.deadline_ns is None:
             raise OnboardingError('receiving_owner_deadline_binding_required')
-        remaining = min(55.0, (self.deadline_ns - time.monotonic_ns()) / 1_000_000_000)
+        maximum = 175.0 if value.get('action') == 'native-current' else 55.0
+        remaining = min(maximum, (self.deadline_ns - time.monotonic_ns()) / 1_000_000_000)
         if remaining <= 0:
             raise OnboardingError('receiving_owner_deadline_expired')
         try:

@@ -572,3 +572,29 @@ def test_reader_rpc_generation_slot_is_only_a_bounded_local_request_path(tmp_pat
         with pytest.raises(OnboardingError,match='invalid_receiving_control_request'):
             control.reader_rpc(owner,value,deadline_ns=deadline)
         assert calls==[]
+
+
+@pytest.mark.parametrize('packet,seconds,accepted', [
+    ({'action': 'native-current', 'plan_digest': 'a'*64}, 175, True),
+    ({'action': 'status'}, 175, False),
+    ({'action': 'control'}, 175, False),
+    ({'action': 'native-current', 'plan_digest': 'a'*64, 'extra': True}, 175, False),
+    ({'action': 'native-current', 'plan_digest': 'a'*64}, 181, False),
+])
+def test_only_current_native_read_admits_parent_and_child_startup_budget(monkeypatch, packet, seconds, accepted):
+    import io
+    import json
+    import sys
+    calls = []
+    class Owner:
+        def __init__(self, *args, **kwargs):
+            calls.append('owner')
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+    monkeypatch.setattr(control, 'OwnerGroupClient', Owner)
+    monkeypatch.setattr(control, 'reader_rpc', lambda owner, value, **kwargs: {'observed': True})
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(packet).encode())))
+    monkeypatch.setattr(sys, 'argv', ['owner', '--root', '/held', '--socket', '/held/socket',
+        '--reader-rpc', '--max-seconds', str(seconds)])
+    assert control.main() == (0 if accepted else 1)
+    assert calls == (['owner'] if accepted else [])

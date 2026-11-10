@@ -120,7 +120,7 @@ class ManagedRuntime:
                 or reconcile_existing and (not published_group or current_observer is None)
                 or receive_only_group and published_group
                 or str(uuid.UUID(operation_id)) != operation_id
-                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 300
+                or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 480
                 or not published_group and (self.settings.get('mode') != 'native-admission-only'
                     or self._selection(plan) != (None, None))):
             raise OnboardingError('native_code_update_requires_plain_admitted_body')
@@ -351,8 +351,8 @@ class ManagedRuntime:
                 save()
                 if action == 'migrate':
                     migrated = self.backend._target_call(plan, 'visibility-migrate',
-                        candidate=candidate, observation_timeout_seconds=max(0.0,
-                            (deadline - time.monotonic_ns()) / 1_000_000_000), visibility_migration=dict(
+                        candidate=candidate, observation_timeout_seconds=max(0.0, min(300.0,
+                            (deadline - time.monotonic_ns()) / 1_000_000_000)), visibility_migration=dict(
                             operation_id=operation_id, runtime_sha256=state['runtime_sha256'],
                             origin=state['origin'], group=state['closed_group'],
                             **({'capability_bootstrap': state['capability_bootstrap']}
@@ -1483,10 +1483,10 @@ def run_code_update(spec: dict) -> dict:
     candidate = (Path(spec['candidate']['code']), spec['candidate']['code_digest'])
     results = []
     for name in spec['targets']:
-        # Code preparation and the existing owner operation share this body's
-        #300s envelope and the SAME batch's absolute deadline. The former120s
-        # cap expired during a real published update and forced avoidable recovery.
-        target_deadline = min(deadline, time.monotonic_ns() + 300_000_000_000)
+        # Use the declared batch envelope for cold preparation plus transition.
+        # Individual SDK/migration calls remain capped at300s; a hidden300s
+        # total previously consumed the transition budget during cold install.
+        target_deadline = min(deadline, time.monotonic_ns() + 480_000_000_000)
         phase = 'prepare'
         try:
             if time.monotonic_ns() >= target_deadline:
@@ -1506,7 +1506,7 @@ def run_code_update(spec: dict) -> dict:
             if remaining <= 0:
                 raise OnboardingError('receiving_host_deadline_expired')
             value = owner.update_native_code(plans[name], candidate,
-                operation_id=spec['operation_id'], timeout_seconds=min(300.0, remaining),
+                operation_id=spec['operation_id'], timeout_seconds=min(480.0, remaining),
                 receive_only_group=spec['group'] == 'closed', published_group=spec['group'] == 'published',
                 **({'current_observer':observers[name]} if name in observers else {}),
                 recovery_implementation=recovery_code,

@@ -14,7 +14,9 @@ sequence of additional gates to repeat for every iteration.
    Reuse the qualified SDK artifact directly; the builder already copies it
    into the candidate, so an extra input/staging copy is unnecessary locally.
    Cold SDK installation and closed-import preparation use the same remaining
-   finite maintenance envelope (at most300seconds), before any service stop.
+   declared finite maintenance envelope (at most480seconds overall), before any
+   service stop. Each SDK/migration call remains capped at300seconds. Cold
+   installation must not silently reduce a480second request to300seconds total.
    Ordinary observation and physical controls retain their60second limit. A
    preparation timeout leaves the serving selection intact; inspect its retained
    installation/import receipts before continuing the same operation.

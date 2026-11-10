@@ -963,7 +963,7 @@ def test_initial_managed_adopts_explicit_successor_without_replaying_start(tmp_p
 @pytest.mark.parametrize('local_observer', [False, True])
 @pytest.mark.parametrize('lost_start_ack', [False, True])
 @pytest.mark.parametrize('group_mode', ['plain', 'closed', 'published', 'legacy-published'])
-def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, group_mode, local_observer, automatic_restart=False, recovery_fault=None, reconcile_repair=False, capability_expansion=False, restored_repair=False):
+def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, group_mode, local_observer, automatic_restart=False, recovery_fault=None, reconcile_repair=False, capability_expansion=False, restored_repair=False, cold_prepare_seconds=75, operation_seconds=None):
     """Plain and closed-group bodies reuse their existing native unit writer."""
     closed_group = group_mode != 'plain'
     local_observer = local_observer and closed_group
@@ -1035,7 +1035,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         if action == 'sdk-prepare':
             assert _['observation_timeout_seconds'] > 60
             if cold.pop() if cold else False:
-                offset[0] += 75_000_000_000
+                offset[0] += cold_prepare_seconds * 1_000_000_000
             assert 'current_native' not in _
             return dict(ready=True)
         if action == 'visibility-migrate':
@@ -1144,6 +1144,8 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
             return {**copy.deepcopy(current),'plan_digest':digest(plan)}
     observer = Observer()
     options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bc', receive_only_group=closed_group and not published_group, published_group=published_group)
+    if operation_seconds is not None:
+        options['timeout_seconds'] = operation_seconds
     if local_observer:
         options['current_observer'] = observer
     if capability_expansion:
@@ -1311,6 +1313,12 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         assert latest['closed_group']['outbound_release'] is published_group
         assert calls.count('visibility-migrate') == (2 + (lost_start_ack == 'migration') if published_group else 0)
     assert job == {'plan': plan, 'original': 'retained'}
+
+
+def test_cold_sdk_keeps_transition_time_inside_declared_maintenance_envelope(tmp_path, monkeypatch):
+    test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(
+        tmp_path, monkeypatch, False, 'published', True,
+        capability_expansion=True, cold_prepare_seconds=180, operation_seconds=480)
 
 
 @pytest.mark.parametrize('fault', [None, 'previous-alive', 'unknown-effect'])

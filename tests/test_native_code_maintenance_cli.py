@@ -594,3 +594,69 @@ def test_owner_read_covers_startup_within_existing_operation_deadline(tmp_path, 
     client.deadline_ns = clock + 12_000_000_000
     client._call(dict(action=action))
     assert seen[-1] == 12
+
+
+@pytest.mark.parametrize('failure', [None, 'offline', 'wrong-plan', 'missing-group'])
+def test_managed_status_is_partial_and_never_prepares_or_replays(tmp_path, monkeypatch, failure):
+    selected = {**spec(), 'owner_observation':str(tmp_path/'routes.json')}
+    plans = {name:dict(name=name) for name in selected['targets']}
+    admission = tmp_path/'admission.json'
+    state = tmp_path/'state'
+    being_seed._write(admission, dict(state=str(state)))
+    retained_path = state/'first/native-code-update.json'
+    retained_path.parent.mkdir(parents=True)
+    being_seed._write(retained_path, dict(pins=dict(operation_id=selected['operation_id'],
+        candidate_digest='a'*64, plan_digest=managed.digest(plans['first'])),
+        dispatching='start', effects={'validate':{},'quiesce':{}},
+        private_authority='must-not-appear-in-status'))
+    original = {str(p.relative_to(tmp_path)):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    original_entries = {str(p.relative_to(tmp_path)) for p in tmp_path.rglob('*')}
+    backend = SimpleNamespace(config=SimpleNamespace(admission=admission))
+    monkeypatch.setattr(managed,'maintenance_backend',lambda *args:(backend,plans))
+    monkeypatch.setattr(managed,'ManagedRuntime',lambda *args:pytest.fail('status initialized a writer'))
+    calls=[]
+    class Owner:
+        deadline_ns = None
+        def __init__(self, name): self.name=name
+        def _call(self, packet):
+            calls.append(self.name)
+            assert packet == dict(action='native-current',plan_digest=managed.digest(plans[self.name]))
+            if self.name=='second' and failure=='offline':
+                raise OnboardingError('daemon_timeout')
+            current = dict(plan_digest=managed.digest(plans[self.name]),
+                responder_association='same-connection',process={'pid':7},admission_parent={'pid':6},
+                group={'channel_id':'tribe'},runtime_status={'loaded_runtime':{'qualified_startup':{
+                    'code_digest':'b'*64 if self.name=='third' else 'a'*64}}},
+                group_runtime_status=dict(loaded_application=dict(application_sha256='c'*64,
+                    publication_sha256='d'*64,visibility=dict(release_enabled=True,
+                        catalog_validation='validated',installation_sha256='e'*64,policy_sha256='f'*64)),
+                    receiving=dict(channels={'tribe':dict(process_id=7,phase='select')},
+                        recovery={'tribe':{'state':'recovered'}})))
+            if self.name=='second' and failure=='wrong-plan':
+                current['plan_digest']='0'*64
+            if self.name=='second' and failure=='missing-group':
+                current.pop('group')
+            return current
+    monkeypatch.setattr(managed,'code_update_observers',lambda *args:{n:Owner(n) for n in plans})
+    result = managed.run_code_status(selected)
+    assert result['complete'] is (failure is None)
+    assert result['converged'] is False and result['effects']=='observation-only'
+    assert calls==selected['targets']
+    assert result['targets'][0]['local_reader']['recovery']=='recovered'
+    assert result['targets'][0]['retained_operation']==dict(operation_id=selected['operation_id'],
+        candidate_digest='a'*64,complete=False,dispatching='start',effects=['quiesce','validate'])
+    assert result['targets'][2]['status']=='observed' and not result['targets'][2]['converged']
+    assert 'must-not-appear' not in json.dumps(result)
+    assert {str(p.relative_to(tmp_path)) for p in tmp_path.rglob('*')} == original_entries
+    assert {str(p.relative_to(tmp_path)):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}==original
+
+
+def test_managed_check_only_dispatches_to_existing_status_without_update(tmp_path, monkeypatch, capsys):
+    path=tmp_path/'spec.json'
+    being_seed._write(path,spec())
+    monkeypatch.setattr('os.geteuid',lambda:0)
+    monkeypatch.setattr(being_seed,'_read',lambda *args,**kwargs:spec())
+    monkeypatch.setattr(managed,'run_code_update',lambda *_:pytest.fail('status attempted update'))
+    monkeypatch.setattr(managed,'run_code_status',lambda value:dict(complete=True,effects='observation-only'))
+    assert managed.main(['--spec',str(path),'--check-only'])==0
+    assert json.loads(capsys.readouterr().out)['effects']=='observation-only'

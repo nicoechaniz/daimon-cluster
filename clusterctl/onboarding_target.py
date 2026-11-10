@@ -490,7 +490,8 @@ class Target:
     def _controller_comparison(self, expected: dict, bundle: dict, store, signing_key: dict) -> tuple[dict, dict | None]:
         """Observe the native one-controller successor without changing history.
 
-        Signed native original-profile renewals retain their role, methods,
+        Signed native original-profile renewals retain their role; explicit owned-event
+        read expansion adds only we.event.get to observe. Both retain the existing
         client/key binding and historical receipt. Their validity windows may
         advance after expiry; they do not become another birth ceremony.
         Normalize only for the retained credential/peer comparison. Current
@@ -519,21 +520,32 @@ class Target:
             # The authenticated current signature and unchanged key IDs below
             # establish ownership; neither a newer counter nor dates alone do.
             renewed = []
-            changing = {'capability_id', 'not_before_ms', 'not_after_ms'}
+            changed_profiles = []
             for old, new in zip(previous, current[:-1], strict=True):
                 if old == new:
                     continue
                 before, after = old['descriptor'], new['descriptor']
+                expanded = (old['profile'] == profiles.operator_capability_profile('observe')
+                    and 'we.event.get' not in before['methods']
+                    and after['methods'] == sorted([*before['methods'], 'we.event.get']))
+                changing = {'capability_id', 'not_before_ms', 'not_after_ms'}
+                if expanded:
+                    changing.add('methods')
+                window_changed = any(before[key] != after[key] for key in ('not_before_ms', 'not_after_ms'))
                 if (expected['schema'] != 'dm.runtime.bundle/v8'
                         or set(old) != set(new) or set(before) != set(after)
                         or any(old[key] != new[key] for key in old if key != 'descriptor')
                         or any(before[key] != after[key] for key in before if key not in changing)
                         or before['status'] != 'active'
-                        or not before['not_before_ms'] < before['not_after_ms'] <= after['not_before_ms']
-                        or not after['not_before_ms'] < after['not_after_ms'] <=
-                            after['not_before_ms'] + profiles.OPERATOR_CAPABILITY_TTL_MS):
+                        or not (expanded or window_changed)
+                        or window_changed and (
+                            not before['not_before_ms'] < before['not_after_ms'] <= after['not_before_ms']
+                            or not after['not_before_ms'] < after['not_after_ms'] <=
+                                after['not_before_ms'] + profiles.OPERATOR_CAPABILITY_TTL_MS)):
                     raise ValueError
-                renewed.append((after['not_before_ms'], after['not_after_ms']))
+                changed_profiles.append(new)
+                if window_changed:
+                    renewed.append((after['not_before_ms'], after['not_after_ms']))
             if renewed and len(set(renewed)) != 1:
                 raise ValueError
             label = expected['runtime_label']
@@ -558,7 +570,7 @@ class Target:
                 signing_key=signing_key, capability_rows=current)
             # A renewed descriptor must be installed in its own existing client;
             # rendering only the controller would leave the original role unusable.
-            for selected in (current if renewed else [row]):
+            for selected in [*changed_profiles, row]:
                 selected_profile = selected['profile']
                 directory = private_directory(self.package / 'runtime' / selected_profile['client_directory'])
                 key_path = directory / selected_profile['client_key_filename']
@@ -995,6 +1007,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--identity-expires-at-ms', type=int)
     parser.add_argument('--native-tooling-json')
     parser.add_argument('--bootstrap-request-json')
+    parser.add_argument('--bootstrap-capability-additions-json')
     parser.add_argument('--bootstrap-ready-sha256')
     parser.add_argument('--bootstrap-timeout-seconds', type=float)
     parser.add_argument('--bootstrap-initial', action='store_true')
@@ -1038,6 +1051,12 @@ def main(argv: list[str] | None = None) -> int:
                     or args.observation_timeout_seconds is None or args.ready_fd is not None)):
             raise OnboardingError('native_code_update_migration_binding_required')
         bootstrapping = args.action.startswith('receiving-bootstrap-')
+        if args.bootstrap_capability_additions_json is not None:
+            from .onboarding_receiving_update import guest_capability_additions
+            if (args.action != 'receiving-bootstrap-freeze' or args.bootstrap_initial
+                    or args.bootstrap_initial_service or len(args.bootstrap_capability_additions_json.encode()) > 1024):
+                raise OnboardingError('invalid_receiving_bootstrap_request')
+            guest_capability_additions(json.loads(args.bootstrap_capability_additions_json))
         if bootstrapping:
             if (args.bootstrap_timeout_seconds is None or not math.isfinite(args.bootstrap_timeout_seconds)
                     or not 0 < args.bootstrap_timeout_seconds <= 60 or args.ready_fd is not None
@@ -1172,7 +1191,9 @@ def main(argv: list[str] | None = None) -> int:
             stage = args.action
             if args.action == 'receiving-bootstrap-freeze':
                 result = freeze_guest_bootstrap(target, deadline_ns=deadline_ns, initial=args.bootstrap_initial,
-                    initial_service=args.bootstrap_initial_service)
+                    initial_service=args.bootstrap_initial_service,
+                    capability_additions=(None if args.bootstrap_capability_additions_json is None
+                        else json.loads(args.bootstrap_capability_additions_json)))
             else:
                 owner = GuestOwnerBootstrap(target, json.loads(args.bootstrap_request_json))
                 result = owner.execute(args.action.removeprefix('receiving-bootstrap-'),

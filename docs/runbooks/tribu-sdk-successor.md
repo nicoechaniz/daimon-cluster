@@ -630,6 +630,16 @@ Use one protected root-owned mode-0600 JSON spec (`cluster-receiving-maintenance
   path and existing `tooling` recipe. Jobs must match the grants and either be
   complete or have only their final acceptance outstanding, with every earlier
   stage complete. Their historical acceptance is never falsified by maintenance.
+  A selected existing guest may additionally specify
+  `"capability_additions": {"observe": ["we.event.get"]}` when its actual signed
+  observe profile lacks that method. Omission preserves every grant unchanged.
+  Preparation freezes the missing method before interruption; the existing owner
+  capability transaction signs the successor without changing keys or expiry.
+  This narrow expansion cannot renew an expired controller, accompany first
+  admission, select another role or issue arbitrary methods. Finish a genuinely
+  required renewal separately through its existing operation. The same host/owner
+  journals reconcile lost publication replies and verify the resulting group and
+  loaded reader. A new descriptor alone does not prove loaded model use.
 - Optional `worker`: exactly `{"unit":"daimon-onboarding-worker.service"}`.
   Required for the final-acceptance profile. Its Root journal must be the canonical
   `/var/lib/daimon-cluster-receiving-maintenance/operations`, so a second operation

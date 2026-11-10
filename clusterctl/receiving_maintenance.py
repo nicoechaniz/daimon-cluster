@@ -111,9 +111,12 @@ def validate(spec: dict) -> dict:
                  'bootstrap_imports', 'journal', 'transaction'):
         _path(source[name])
     for guest in spec['guests'].values():
-        if not isinstance(guest, dict) or set(guest) != {'grant', 'tooling'}:
+        if not isinstance(guest, dict) or set(guest) - {'capability_additions'} != {'grant', 'tooling'}:
             raise OnboardingError('receiving_maintenance_binding_required')
         _path(guest['grant'])
+        if 'capability_additions' in guest:
+            from .onboarding_receiving_update import guest_capability_additions
+            guest_capability_additions(guest['capability_additions'])
     from .onboarding_owner_client import validate_tooling_recipe
     for profile in (source, *spec['guests'].values()):
         validate_tooling_recipe(profile['tooling'])
@@ -1025,8 +1028,10 @@ class ReceivingMaintenance:
                     self._mounted_sdk(plan, vector)
                 frozen, request = prepare_guest_bootstrap(self.backend, plan, candidate=self.body,
                     manifest_path=_path(candidate['manifest_path']), manifest_digest=candidate['manifest_digest'],
-                    expires_at_ms=candidate['expires_at_ms'], timeout_seconds=60, manifest_uid=0)
-                if frozen['owner'].get('mode') != 'preserve':
+                    expires_at_ms=candidate['expires_at_ms'], timeout_seconds=60, manifest_uid=0,
+                    **({'capability_additions': self.spec['guests'][name]['capability_additions']}
+                       if 'capability_additions' in self.spec['guests'][name] else {}))
+                if frozen['owner'].get('mode') not in {'preserve', 'expand'}:
                     raise OnboardingError('receiving_maintenance_preservation_required')
                 self._record('guest:' + name, {'frozen': frozen, 'request': request})
             effects = self._effects()

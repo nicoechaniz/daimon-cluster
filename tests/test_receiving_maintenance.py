@@ -1009,3 +1009,15 @@ def test_authorization_only_failure_can_continue_with_a_new_finite_intent(tmp_pa
     operation.continue_activation(previous, deadline + 120000)
     current = {k: v for k, v in operation._effects().items() if k.startswith('activation-continuation:')}
     assert len(current) == 2 and all(current[k] == v for k, v in old.items())
+
+
+def test_guest_event_read_selection_is_explicit_and_bounded_in_existing_spec(tmp_path):
+    spec = spec_fixture(tmp_path)
+    unchanged = maintenance.validate(spec)
+    assert 'capability_additions' not in unchanged['guests']['eko']
+    spec['guests']['eko']['capability_additions'] = {'observe': ['we.event.get']}
+    selected = maintenance.validate(spec)
+    assert selected['guests']['eko']['capability_additions'] == {'observe': ['we.event.get']}
+    spec['guests']['eko']['capability_additions'] = {'observe': ['tribe.invite']}
+    with pytest.raises(OnboardingError, match='capability_additions_required'):
+        maintenance.validate(spec)

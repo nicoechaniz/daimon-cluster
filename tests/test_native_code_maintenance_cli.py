@@ -574,3 +574,23 @@ def test_native_observation_rpc_refuses_unbounded_or_ambiguous_packets(value,tmp
     import time
     with pytest.raises(OnboardingError,match='invalid_receiving_control_request'):
         reader_rpc(SimpleNamespace(root=tmp_path),value,deadline_ns=time.monotonic_ns()+1_000_000_000)
+
+
+@pytest.mark.parametrize('action,maximum', [('native-current', 175), ('status', 55), ('control', 55)])
+def test_owner_read_covers_startup_within_existing_operation_deadline(tmp_path, monkeypatch, action, maximum):
+    from clusterctl import onboarding_receiving_update as receiving
+    clock = 1_000_000_000
+    monkeypatch.setattr(managed.time, 'monotonic_ns', lambda: clock)
+    client = managed.ReaderCommandClient(dict(root=str(tmp_path), command=['owner']))
+    client.deadline_ns = clock + 240_000_000_000
+    seen = []
+    def run(argv, **options):
+        seen.append(options['timeout'])
+        assert float(argv[-1]) == options['timeout']
+        return SimpleNamespace(returncode=0, stdout='{}')
+    monkeypatch.setattr(receiving, '_run_owner', run)
+    assert client._call(dict(action=action)) == {}
+    assert seen == [maximum]
+    client.deadline_ns = clock + 12_000_000_000
+    client._call(dict(action=action))
+    assert seen[-1] == 12

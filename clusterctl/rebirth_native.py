@@ -453,6 +453,22 @@ class ProfileMaintenance:
             return result
 
 
+def prepare_profile_sdk(profile: dict, *, deadline_ns: int) -> dict:
+    """Prepare immutable public dependencies as the profile owner before stop."""
+    profile = _profile(profile)
+    code = Path(profile['code'])
+    onboarding_release.verify(code, profile['code_digest'], uid=0)
+    parameters = onboarding_code_successor.sdk_parameters(code, uid=0)
+    if not parameters:
+        raise ValueError('qualified native SDK required')
+    with onboarding_sdk.probe_budget(deadline_ns):
+        venv = onboarding_sdk.install(Path(profile['home']), code,
+            profile['code_digest'], code_uid=0, **parameters)
+        onboarding_sdk.runtime_imports(venv, code, code_uid=0, **parameters)
+    return dict(schema='cluster-native-profile-sdk-prepared/v1',
+        code_digest=profile['code_digest'], ready=True)
+
+
 class ProfileOwner:
     """Existing private owner and qualified Source CLI, entered after UID drop."""
 
@@ -475,13 +491,14 @@ class ProfileOwner:
             raise ValueError('native profile must be canonical')
         return value
 
-    def _call(self, argv: list[str], *, deadline_ns: int, payload: dict | None = None) -> dict:
+    def _call(self, argv: list[str], *, deadline_ns: int, payload: dict | None = None,
+              max_seconds: float = 30) -> dict:
         import json
         import subprocess
         import time
         from .onboarding_receiving_update import _run_owner
         from .rebirth_host import RebirthHostError
-        remaining = min(30.0,(deadline_ns-time.monotonic_ns())/1e9)
+        remaining = min(max_seconds,(deadline_ns-time.monotonic_ns())/1e9)
         if remaining <= 0:
             raise RebirthHostError('rebirth_host_native_profile_deadline_expired')
         options = {} if os.geteuid() == self.uid and os.getegid() == self.gid else dict(
@@ -515,6 +532,27 @@ class ProfileOwner:
             '--code-digest',profile['code_digest'],'--code-owner','0',
             '--observation-deadline-ns',str(deadline_ns),*args])
         return self._call(argv,deadline_ns=deadline_ns,payload=payload)
+
+    def prepare_sdk(self, profile: dict, *, deadline_ns: int) -> dict:
+        import sys
+        import time
+        from .rebirth_host import RebirthHostError
+        # The maintained stdlib-only helper can prepare a new interpreter;
+        # requiring that new interpreter here would be circular.
+        deadline_ns = min(deadline_ns, time.monotonic_ns() + 60_000_000_000)
+        launcher = """import json,sys
+sys.path.insert(0,sys.argv[1])
+from clusterctl.rebirth_native import prepare_profile_sdk
+print(json.dumps(prepare_profile_sdk(json.load(sys.stdin),deadline_ns=int(sys.argv[2]))))
+"""
+        argv = [sys.executable, '-B', '-I', '-S', '-c', launcher,
+            str(Path(__file__).resolve().parents[1]), str(deadline_ns)]
+        result = self._call(argv, deadline_ns=deadline_ns, payload=_profile(profile), max_seconds=60)
+        if (result.get('schema') != 'cluster-native-profile-sdk-prepared/v1'
+                or result.get('code_digest') != profile['code_digest']
+                or result.get('ready') is not True):
+            raise RebirthHostError('rebirth_host_native_profile_owner_unconfirmed')
+        return result
 
     def status(self, profile: dict, *, deadline_ns: int) -> dict:
         return self._source(profile,['--owner-status'],deadline_ns=deadline_ns)
@@ -590,6 +628,10 @@ def run_profile_maintenance(spec: dict, *, check_only: bool = False,
         previous = owner.profile()
         if any(previous[key] != candidate[key] for key in ('schema','config','home')):
             raise RebirthHostError('rebirth_host_native_profile_binding_changed')
+        # Prepare a genuinely changed candidate before any lifecycle effect.
+        # Check-only and unchanged selection remain observation-only.
+        if not check_only and previous != candidate:
+            owner.prepare_sdk(candidate, deadline_ns=deadline)
         # The successor CLI validates its immutable SDK/import context before
         # observing the still-serving predecessor. No offline runtime is loaded.
         observed = owner.status(candidate,deadline_ns=deadline)

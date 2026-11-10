@@ -405,13 +405,19 @@ def main() -> int:
     try:
         if args.reader_rpc:
             if (args.deadline_ns is not None or args.time_namespace is not None
-                    or args.max_seconds is None or not 0 < args.max_seconds <= 60
+                    or args.max_seconds is None or not 0 < args.max_seconds <= 180
                     or args.path is not None or args.observe_only or args.retain_status
                     or args.identity_expires_at_ms is not None or args.code is not None
                     or args.body_venv is not None or args.require_admitted):
                 raise OnboardingError('invalid_receiving_control_request')
             deadline = time.monotonic_ns() + int(args.max_seconds * 1_000_000_000)
             value = json.loads(sys.stdin.buffer.read(being_seed.MAX_SELECTION + 1))
+            # Only this read may cover parent preparation plus child startup.
+            # Writes and all other owner requests keep their original60s cap.
+            if args.max_seconds > 60 and (
+                    not isinstance(value, dict) or set(value) != {'action', 'plan_digest'}
+                    or value.get('action') != 'native-current'):
+                raise OnboardingError('invalid_receiving_control_request')
             class CurrentOwner(OwnerGroupClient):
                 def _status_response(self, client):
                     return client.runtime_status(view='receiving')[1]

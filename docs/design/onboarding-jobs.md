@@ -1124,8 +1124,17 @@ and native public origin are derived after committed identity. The old
 
 The new hook runs only after the same worker-owned progress has committed the v2
 identity stage and rechecks the actual original job/grant under its job lock.
-It registers Home under the gateway configuration's actual owner UID, then reads
-the existing owner's paired-human endpoint. An already-loaded pair requires no
+It registers Home under the gateway configuration's actual owner UID and adds
+its same-origin `interaction` route to the existing private application receiving
+map selected by the running gateway's `--miniapp-receivers` argument. The same
+writer preserves all other homes/capabilities and refuses a conflicting existing
+route before issuing keys. Reconciliation reuses the committed identity, owner
+keys and route; it does not repeat onboarding or create a second registry. The
+standalone `register-companion` CLI accepts `--receivers` for this composition.
+
+The hook then reads the existing owner's paired-human endpoint. Completion
+requires both the exact human/being pair and its loaded, configured `interaction`
+URL; pairing alone is insufficient. An already-loaded pair and route require no
 reload. A newly registered but unloaded Home may reload only the existing
 `daimon-home-access.service`, after verifying its actual process explicitly uses
 the selected configuration. Reload intent is durable before dispatch; an

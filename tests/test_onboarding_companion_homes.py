@@ -200,3 +200,95 @@ def test_busy_route_maintenance_does_not_block_independent_native_job_progress(t
     after=worker._tick('eko')
     assert 'access' in after['completed_steps']
     assert being_seed._read(homes.state/'eko.json')['phase']=='configured'
+
+
+def test_gateway_probe_requires_loaded_conversation_route(tmp_path):
+    """A matching pair alone must not finish delivery; exercise the real probe."""
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+    import subprocess
+    import sys
+    from threading import Thread
+    from clusterctl.onboarding_companion_homes import GATEWAY
+    from tests.test_home_host import configuration, write
+
+    config = configuration(tmp_path)
+    home = config['homes']['one']
+    observed = dict(human={'ref':'human-one'}, owner_being_ref=home['owner_being_ref'],
+                    applications=[])
+
+    class Owner(BaseHTTPRequestHandler):
+        def do_POST(self):
+            assert self.path == '/owner/one/human-endpoint'
+            assert self.headers['Authorization'] == 'Bearer fixture-owner'
+            self.rfile.read(int(self.headers['Content-Length']))
+            raw = json.dumps(observed).encode()
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Owner)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        config['owner_port'] = server.server_port
+        path = tmp_path/'config.json'
+        write(path, json.dumps(config).encode())
+        payload = dict(action='probe', config=str(path), request=dict(home_ref='one',
+            human_ref='human-one', being_ref=home['owner_being_ref'], origin=home['public_url']))
+
+        def probe():
+            result = subprocess.run([sys.executable, '-I', '-B', '-c', GATEWAY,
+                str(Path(__file__).resolve().parents[1])], input=json.dumps(payload),
+                capture_output=True, text=True, timeout=10)
+            assert result.returncode == 0, result.stderr
+            return json.loads(result.stdout)
+
+        assert probe() == {'state':'not-loaded'}
+        observed['applications'] = [dict(capability='interaction',
+            url=home['public_url']+'/other/', state='configured')]
+        assert probe() == {'state':'not-loaded'}
+        observed['applications'][0]['url'] = home['public_url']+'/interaction/'
+        assert probe() == {'state':'ready', 'pair_matched':True}
+        observed['human']['ref'] = 'another-human'
+        assert probe() == {'state':'unavailable'}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+@pytest.mark.parametrize('selector', ['selected', 'missing', 'relative', 'duplicate'])
+def test_home_route_uses_actual_gateway_receivers(tmp_path, monkeypatch, selector):
+    import subprocess
+    import sys
+    from clusterctl.onboarding_companion_homes import CompanionHomes
+
+    config = tmp_path/'gateway.json'
+    receivers = tmp_path/'receivers.json'
+    args = ['--config', str(config)]
+    if selector != 'missing':
+        args += ['--miniapp-receivers', 'relative.json' if selector == 'relative' else str(receivers)]
+    if selector == 'duplicate':
+        args += ['--miniapp-receivers', str(tmp_path/'other.json')]
+    # A real process cmdline, with no service changes or receiver impersonation.
+    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)', *args])
+    try:
+        homes = object.__new__(CompanionHomes)
+        homes.value = {'gateway': {'config': str(config)}}
+        monkeypatch.setattr(subprocess, 'run', lambda *a, **kw: SimpleNamespace(
+            returncode=0, stdout=f'MainPID={child.pid}\nInvocationID=fixture\nActiveState=active\n'))
+        if selector == 'selected':
+            assert homes._unit(receivers=True)['receivers_file'] == str(receivers)
+        else:
+            with pytest.raises(OnboardingError, match='companion_gateway_receivers_required'):
+                homes._unit(receivers=True)
+        assert 'receivers_file' not in homes._unit()
+    finally:
+        child.terminate()
+        child.wait(timeout=3)

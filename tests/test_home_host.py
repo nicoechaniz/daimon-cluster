@@ -73,6 +73,17 @@ def test_signed_companion_identity_registers_once_without_keys_sessions_or_runti
     settings.update(human_ref=row['human_ref'],label=row['label'])
     request=resolve_request(prepare_intent(plan['name'],digest(plan),settings),row['being_ref'])
     initial_digest=sha(config_path.read_bytes())
+    receivers=gateway/'receivers.json'
+    prior_routes={'one': {'voices':'https://one.example/voices/'}}
+    write(receivers,json.dumps(prior_routes).encode())
+    conflict={**prior_routes,request['home_ref']:{'interaction':request['origin']+'/other/'}}
+    write(receivers,json.dumps(conflict).encode())
+    with pytest.raises(ValueError,match='existing_companion_receiver_preserved'):
+        register_companion(config_path,request,public,human_name=row['human_name'],
+            vpn_url='https://private-companion.example',previous_digest=initial_digest,
+            receivers_file=receivers)
+    assert not (gateway/'keys').exists()
+    write(receivers,json.dumps(prior_routes).encode())
     # Invalid/occupied origins are refused before issuing any resource keys.
     for vpn in ('http://invalid.example','https://one.example'):
         with pytest.raises(ValueError):
@@ -85,11 +96,18 @@ def test_signed_companion_identity_registers_once_without_keys_sessions_or_runti
     with patch.object(Sessions,'register_owner',side_effect=RuntimeError('lost step')):
         with pytest.raises(RuntimeError,match='lost step'):
             register_companion(config_path,request,public,human_name=row['human_name'],
-                vpn_url='https://private-companion.example',previous_digest=initial_digest)
+                vpn_url='https://private-companion.example',previous_digest=initial_digest,
+                receivers_file=receivers)
+    assert json.loads(receivers.read_bytes())==prior_routes
     preserved=files(gateway/'keys')
     prepared=files(gateway/'companion-registrations')
     result=register_companion(config_path,request,public,human_name=row['human_name'],
-        vpn_url='https://private-companion.example',previous_digest=initial_digest)
+        vpn_url='https://private-companion.example',previous_digest=initial_digest,
+        receivers_file=receivers)
+    assert json.loads(receivers.read_bytes())=={**prior_routes,request['home_ref']:{
+        'interaction':request['origin']+'/interaction/'}}
+    route_before=(receivers.read_bytes(),receivers.stat().st_mtime_ns)
+    assert result['receiver_route']['state']=='configured'
     assert result['status']=='home-configured' and result['receiving_state']=='unobserved'
     assert result['home_ref']==request['home_ref']
     assert files(gateway/'keys')==preserved
@@ -111,9 +129,10 @@ def test_signed_companion_identity_registers_once_without_keys_sessions_or_runti
     cli=subprocess.run([sys.executable,'-m','clusterctl.homes.host','register-companion',
         '--config',str(config_path),'--reference',row['being_ref'],
         '--row',str(row_file),'--authority',str(proof_file),
-        '--previous-digest',initial_digest],capture_output=True,text=True,timeout=15)
+        '--previous-digest',initial_digest,'--receivers',str(receivers)],capture_output=True,text=True,timeout=15)
     assert cli.returncode==0,cli.stderr
     assert json.loads(cli.stdout)==result
+    assert (receivers.read_bytes(),receivers.stat().st_mtime_ns)==route_before
     assert files(gateway/'keys')==preserved
 
 

@@ -15,7 +15,10 @@ from typing import Any
 
 from .onboarding import OnboardingError
 
-STARTUP_TIMEOUT_S = 60
+# Cold identity/application qualification and reader recovery share one finite
+# parent envelope. The SDK still applies its own shorter reader-recovery cap;
+# ordinary RPC/control and credential deadlines are unchanged.
+STARTUP_TIMEOUT_S = 180
 
 
 def serve_native_view(view: Any, stop: threading.Event, *, ready_descriptor: int | None,

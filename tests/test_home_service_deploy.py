@@ -433,7 +433,21 @@ def test_actual_owner_auth_registry_finalize_and_http_audience(
                 e.close()
                 return code
 
-        assert status() == 403
+        assert status() == 401
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+
+        req = urllib.request.Request(url + "/service-access/s-" + key(c), headers={
+            "Host": "one.example", "Sec-Fetch-Dest": "document",
+            "X-Forwarded-Uri": "/workshop/?tab=cases"})
+        with pytest.raises(urllib.error.HTTPError) as redirect:
+            urllib.request.build_opener(NoRedirect).open(req, timeout=3)
+        with redirect.value as response:
+            assert response.code == 302
+            assert response.headers["Location"] == "/access/sso/start?return=%2Fworkshop%2F%3Ftab%3Dcases"
+        assert app.service_deployments.login_return("one", "s-" + key(c), "//other.example/") == "/workshop/"
+        assert app.service_deployments.login_return("one", "s-" + key(c), "/owner/") == "/workshop/"
         assert status("human-two") == 403
         assert status("human-one") == 204
         assert status(

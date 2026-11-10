@@ -195,7 +195,9 @@ The gateway's new `/service-access/s-<key>` is a **read-only forward-auth**
 decision under existing browser identity. It checks current capability, exact
 committed own App version and current audience on every request. Missing, foreign
 or revoked identity is denied for a personal audience. Unsafe browser methods
-require the exact Home Origin. It mints no identity or session. Node receives no
+require the exact Home Origin. Signed-out document navigation returns through existing shared SSO to only the
+capability's local path; unauthenticated API access returns401. It mints no
+identity or session. Node receives no
 owner Authorization token or caller-supplied actor headers. Authentication is
 enforced by the route rather than a package's assertion that it handles login.
 Direct private listener access must remain restricted to the selected edge.

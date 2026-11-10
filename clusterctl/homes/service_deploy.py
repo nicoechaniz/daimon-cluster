@@ -295,6 +295,18 @@ class Deployments:
                              'version': payload['version']}, result=result)
         return result
 
+    def login_return(self, home, service_key, forwarded_uri):
+        """Return only this capability's local path for browser login recovery."""
+        for grant in self.config['grants']:
+            if grant['receiver']['home'] == home and 's-' + key(grant['receiver']) == service_key:
+                from .service import return_target
+                try:
+                    selected = return_target(forwarded_uri)
+                except ValueError:
+                    return grant['prefix']
+                return selected if urlsplit(selected).path.startswith(grant['prefix']) else grant['prefix']
+        return None
+
     def access(self, app, home, subject, service_key):
         """Current capability, exact committed App version and live audience required."""
         for g in self.config['grants']:

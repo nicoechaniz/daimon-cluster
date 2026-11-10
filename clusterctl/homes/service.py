@@ -947,6 +947,15 @@ def handler(app, *, owner=False):
                 if path.startswith('/service-access/'):
                     service_key = path.removeprefix('/service-access/')
                     forwarded_method = self.headers.get('X-Forwarded-Method', 'GET')
+                    if subject is None and app.service_deployments:
+                        destination = app.service_deployments.login_return(
+                            home, service_key, self.headers.get('X-Forwarded-Uri', ''))
+                        if (destination and forwarded_method == 'GET'
+                                and self.headers.get('Sec-Fetch-Dest') == 'document'):
+                            self.respond(302, b'', headers=(('Location', '/access/sso/start?return=' + quote(destination, safe='')),))
+                            return
+                        self.respond(401, {'message': 'Entrá con tu cuenta para abrir esta aplicación.'})
+                        return
                     if (not app.service_deployments or vpn
                             or forwarded_method not in ('GET', 'HEAD', 'OPTIONS')
                             and self.headers.get('Origin') != origin

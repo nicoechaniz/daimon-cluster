@@ -713,3 +713,14 @@ def test_new_release_is_readable_under_private_operator_umask(setup):
     assert release.stat().st_mode & 0o777 == 0o755
     assert (release / "src").stat().st_mode & 0o777 == 0o755
     assert (release / "src/main.js").stat().st_mode & 0o777 == 0o644
+
+
+def test_verified_runtime_file_can_exceed_small_operator_record_limit(setup):
+    c, _, _, _, _, _, value = setup
+    code = b'/*' + b'vendored code ' * 6000 + b'*/'
+    raw, _ = archive(source=code)
+    value = deepcopy(value)
+    value['package']['sha256'] = sha(raw)
+    worker = ManagerFixture(c)
+    assert worker.run(envelope(c, value, raw))['state'] == 'ready'
+    assert (worker.code / ('release-' + sha(raw)) / 'main.js').read_bytes() == code

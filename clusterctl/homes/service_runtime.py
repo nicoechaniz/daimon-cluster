@@ -289,7 +289,7 @@ class Runtime:
                             raw_file = canonical(package)
                         p = release / n
                         p.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-                        atomic(p, raw_file, mode=0o644)
+                        atomic(p, raw_file, mode=0o644, max_bytes=MAX_ARCHIVE)
                         p.chmod(0o644)
                     # Private operator umasks must not hide immutable code from the service UID.
                     release.chmod(0o755)

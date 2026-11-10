@@ -242,7 +242,7 @@ class Backend:
 
 
 class Application:
-    def __init__(self, config, authority, sessions, *, backends=None, passkey_rp_id=None, client_example=False, style_provider=None, auth_origin=None, google_client=None, homemaker_source=None, homemaker_state=None, homemaker_home=None, homemaker_returns=(), miniapp_routes=None, miniapp_receivers=None, cluster_dashboard=None):
+    def __init__(self, config, authority, sessions, *, backends=None, passkey_rp_id=None, client_example=False, style_provider=None, auth_origin=None, google_client=None, homemaker_source=None, homemaker_state=None, homemaker_home=None, homemaker_returns=(), miniapp_routes=None, miniapp_receivers=None, cluster_dashboard=None, service_deployments=None):
         self.styles = StyleConsumer(style_provider, authority, config["homes"]) if style_provider else None
         from .launcher import validate_launch_routes
         self.miniapp_routes=validate_launch_routes(miniapp_routes)
@@ -257,6 +257,14 @@ class Application:
             authority,
             sessions,
         )
+        self.service_deployments = None
+        if service_deployments is not None:
+            from .service_deploy import Deployments
+            self.service_deployments = Deployments(service_deployments)
+            for grant in self.service_deployments.config['grants']:
+                receiving = grant['receiver']
+                if self.homes.get(receiving['home'], {}).get('owner_being_ref') != receiving['owner']:
+                    raise ValueError('service_capability_owner_mismatch')
         from .fleet import Fleet
         self.cluster_dashboard = Fleet(cluster_dashboard) if cluster_dashboard else None
         if self.cluster_dashboard and self.cluster_dashboard.config['home'] not in self.homes:
@@ -399,6 +407,18 @@ class Application:
                 known_tribe=lambda ref: ref in self.authority.tribes(),
             )
             return {"status": "valid"}
+        if operation in ('service-deploy', 'service-finalize'):
+            if self.service_deployments is None:
+                raise ValueError('service_deployment_unconfigured')
+            def still_authorized():
+                current = self.authority.actor(owner.ref)
+                return bool(current and current.enabled and current.revision == owner.revision
+                            and self.sessions.owner(token, home=home, subject=current,
+                                binding_revision=receiving.get('owner_revision')))
+            if operation == 'service-deploy':
+                return self.service_deployments.deploy(self, home, owner, payload, authorize=still_authorized)
+            with self.locks[home]:
+                return self.service_deployments.finalize(self, home, owner, payload, authorize=still_authorized)
         if operation == 'check-review-access':
             # Owner-local read-only decision for a trusted application's
             # verified participant. No reader session, content lease or model
@@ -924,6 +944,17 @@ def handler(app, *, owner=False):
                 ) or (path == '/passkeys.js' and app.passkeys is not None)
                 home, origin, subject, vpn, cookies, parent_token = self.context(
                     resolve_identity=not public_asset)
+                if path.startswith('/service-access/'):
+                    service_key = path.removeprefix('/service-access/')
+                    forwarded_method = self.headers.get('X-Forwarded-Method', 'GET')
+                    if (not app.service_deployments or vpn
+                            or forwarded_method not in ('GET', 'HEAD', 'OPTIONS')
+                            and self.headers.get('Origin') != origin
+                            or not app.service_deployments.access(app, home, subject, service_key)):
+                        self.respond(403, {'status': 'denied'})
+                        return
+                    self.respond(204, b'')
+                    return
                 if path.startswith('/cluster/'):
                     from .fleet import routes as fleet_routes
                     fleet_routes(self, app, path, home, subject, vpn)
@@ -1500,6 +1531,7 @@ def main():
     parser.add_argument('--miniapp-routes', help='Operator-selected public same-origin destination map JSON')
     parser.add_argument('--miniapp-receivers', help='Verified same-origin per-pair application routes JSON')
     parser.add_argument('--cluster-dashboard', help='Protected owner-selected read-only Cluster dashboard configuration')
+    parser.add_argument('--service-deployments', help='Protected explicit per-owner service capabilities; disabled when absent')
     args = parser.parse_args()
     from daimon_matrix.messaging_config import protected_read
 
@@ -1519,7 +1551,8 @@ def main():
                       homemaker_home=args.homemaker_home, homemaker_returns=args.homemaker_return,
                       miniapp_routes=json.loads(protected_read(Path(args.miniapp_routes))) if args.miniapp_routes else None,
                       miniapp_receivers=json.loads(protected_read(Path(args.miniapp_receivers))) if args.miniapp_receivers else None,
-                      cluster_dashboard=json.loads(protected_read(Path(args.cluster_dashboard))) if args.cluster_dashboard else None)
+                      cluster_dashboard=json.loads(protected_read(Path(args.cluster_dashboard))) if args.cluster_dashboard else None,
+                      service_deployments=json.loads(protected_read(Path(args.service_deployments))) if args.service_deployments else None)
     if args.http_transport == 'cheroot':
         from .wsgi import run
         run(app, config)

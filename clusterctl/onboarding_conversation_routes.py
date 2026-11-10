@@ -164,6 +164,10 @@ def operation(value):
 
 
 class Routes:
+    # Specialized maintained service writers reuse the same finite CAS/reload
+    # journal; only their closed route renderer and insertion matcher differ.
+    render = staticmethod(render)
+    compose = staticmethod(compose)
     def __init__(self, value):
         self.value = configuration(value)
         self.path = Path(value['config'])
@@ -266,7 +270,7 @@ class Routes:
         return True
 
     def reconcile(self, request, listener, home_backend, *, apply, authorize):
-        block = render(request, listener, home_backend)
+        block = self.render(request, listener, home_backend)
         pins = digest(dict(request=request, listener=listener, home_backend=home_backend, routing=self.value))
         with being_seed._locked(self.state):
             active_path = self.state/'active.json'
@@ -280,7 +284,7 @@ class Routes:
             if receipt.exists() and operation(document(receipt)).get('pins') != pins:
                 raise OnboardingError('existing_conversation_route_preserved')
             before = self._read()
-            after = compose(before, request, block, self.value['anchor'])
+            after = self.compose(before, request, block, self.value['anchor'])
             if active and active.get('pins') == pins and active.get('phase') != 'complete':
                 if self._finish(active, process):
                     return {'state':'complete', 'route_loaded':True}

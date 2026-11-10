@@ -104,6 +104,24 @@ def test_initial_portable_visibility_adopts_existing_closed_catalogs(group_sourc
     assert submit('visibility', 'visibility-publish', request) == result
     assert result['status'] == 'recorded'
     assert pending() == originals
+    # A future destination change uses this same owner/catalog writer. No
+    # initial installation or membership expansion is needed a second time.
+    destination2 = copy.deepcopy(destination)
+    destination2['publication']['surface_ref'] += '/next'
+    disclosure2 = submit('successor-disclosure', 'visibility-disclosure', dict(
+        approved_destination=destination2, issued_at_ms=time.time_ns() // 1_000_000))['disclosure']
+    binding2 = submit('successor-accept', 'visibility-accept', dict(
+        approved_destination=destination2, disclosures=[disclosure2]))['bindings'][0]['binding']
+    original_key = (key.stat().st_ino, key.read_bytes())
+    successor = dict(disclosure=disclosure2, bindings=[binding2], initial_configuration=None,
+        expected_installation_sha256=result['installation_sha256'], replacement_configuration=dict(
+            destination=destination2, publication_backend=configuration['publication_backend']))
+    updated = submit('successor', 'visibility-publish', successor)
+    assert submit('successor', 'visibility-publish', successor) == updated
+    assert updated['installation_sha256'] != result['installation_sha256']
+    assert json.loads((visibility / 'installation.json').read_bytes())['document']['generation'] == 2
+    assert (key.stat().st_ino, key.read_bytes()) == original_key
+    assert pending() == originals
 
 
 @pytest.fixture

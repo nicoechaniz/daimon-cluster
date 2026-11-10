@@ -41,6 +41,13 @@ reparented, so a killed launcher cannot leave an unsupervised child.
 Normal process exit releases the lease. Authority database restart preserves
 the monotonic token and trusted-clock high-water.
 
+Bounded event-history maintenance uses the same authority's local
+`--retire-history` mode and existing custody/configuration arguments, without
+opening a listener or restarting admission. See
+[production fence retention](design/production-resource-fences.md) for its
+signed checkpoint, batch budget and unchanged position/tombstone semantics.
+This candidate is not evidence of actual live retirement or receiving adoption.
+
 Admission is rechecked immediately before and after the registry start and at
 the spawn boundary. If it is lost before spawn, the exact just-created
 incarnation is removed with a guarded compensation and that compensation is

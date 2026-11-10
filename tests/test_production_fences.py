@@ -938,3 +938,156 @@ def test_second_write_failure_rolls_back_position_and_high_water(tmp_path, keys)
     with pytest.raises(FenceError, match="transaction failed"):
         _acquire(store, owner, holder)
     assert store.position(RESOURCE)["epoch"] == -1
+
+
+def _renew_test_fence(store, holder):
+    position = store.position(RESOURCE)
+    return store.renew(RESOURCE, expected_epoch=position['epoch'],
+        expected_proof=position['proof'], authorization=_authorization(
+            holder, operation='renew', position=position))
+
+
+def test_bounded_event_retirement_preserves_cas_tombstones_and_rotation(tmp_path, keys, monkeypatch):
+    from clusterctl import production_fences as module
+    monkeypatch.setattr(module, 'EVENT_HISTORY_KEEP', 8)
+    monkeypatch.setattr(module, 'EVENT_RETIREMENT_BATCH', 3)
+    owner, holder = keys
+    store = _store(tmp_path, owner)
+    held = _acquire(store, owner, holder)
+    stale_position = store.position(RESOURCE)
+    # Real signed legacy history, without the successor's automatic retirement.
+    with monkeypatch.context() as legacy:
+        legacy.setattr(module.ProductionFenceStore, '_retire_events', lambda *args: 0)
+        for _ in range(44):
+            held = _renew_test_fence(store, holder)
+    position = store.position(RESOURCE)
+    database = tmp_path / 'state/resource-fences.sqlite3'
+    def retained():
+        with sqlite3.connect(database) as db:
+            return db.execute('SELECT COUNT(*) FROM events').fetchone()[0]
+    assert retained() == 45
+    assert store.collect_garbage() == 3
+    assert retained() == 42 and store.position(RESOURCE) == position
+    def fail(boundary):
+        if boundary == 'before-commit':
+            raise RuntimeError('injected retirement commit failure')
+    store._backend._fault_hook = fail
+    with pytest.raises(RuntimeError, match='retirement commit failure'):
+        store.collect_garbage()
+    assert retained() == 42 and store.position(RESOURCE) == position
+    store._backend._fault_hook = None
+    while store.collect_garbage():
+        pass
+    assert retained() == 8
+    assert store.verify_current(RESOURCE, at_ms=NOW_MS) == held
+    with sqlite3.connect(database) as db:
+        checkpoint = json.loads(db.execute('SELECT checkpoint_json FROM event_retirement').fetchone()[0])
+    assert checkpoint['retired_events'] == 37 and checkpoint['through_epoch'] == 36
+    assert len(checkpoint['chain_sha256']) == 64
+    replacement = _key(tmp_path / 'replacement.pem', 'replacement')
+    store.rotate_signer(replacement)
+    # Current evidence must move before revoking the old authority key.
+    held = _renew_test_fence(store, holder)
+    store.revoke_signing_key(owner.key_id)
+    held = _renew_test_fence(store, holder)
+    assert retained() == 8
+    with pytest.raises(FenceConflict):
+        store.renew(RESOURCE, expected_epoch=stale_position['epoch'],
+            expected_proof=stale_position['proof'], authorization=_authorization(
+                holder, operation='renew', position=stale_position))
+    position = store.position(RESOURCE)
+    store.release(RESOURCE, expected_epoch=position['epoch'], expected_proof=position['proof'],
+        authorization=_authorization(holder, operation='release', position=position))
+    tombstone = store.position(RESOURCE)
+    assert tombstone['current'] is False
+    assert store.collect_garbage() == 0
+    assert store.position(RESOURCE) == tombstone
+    assert store.verify_current(RESOURCE, at_ms=NOW_MS) is None
+    verifier = ResourceFenceStore.production_verifier(tmp_path / 'state')
+    assert verifier.position(RESOURCE) == tombstone
+    with pytest.raises(FenceError, match='verifier-only'):
+        verifier.collect_garbage()
+
+
+def test_event_retirement_rejects_corrupt_history_without_advancing_authority(tmp_path, keys, monkeypatch):
+    from clusterctl import production_fences as module
+    monkeypatch.setattr(module, 'EVENT_HISTORY_KEEP', 2)
+    owner, holder = keys
+    store = _store(tmp_path, owner)
+    _acquire(store, owner, holder)
+    with monkeypatch.context() as legacy:
+        legacy.setattr(module.ProductionFenceStore, '_retire_events', lambda *args: 0)
+        for _ in range(4):
+            _renew_test_fence(store, holder)
+    position = store.position(RESOURCE)
+    database = tmp_path / 'state/resource-fences.sqlite3'
+    with sqlite3.connect(database) as db:
+        evidence = json.loads(db.execute('SELECT evidence_json FROM events WHERE epoch=0').fetchone()[0])
+        evidence['signature'] = 'corrupt'
+        db.execute('UPDATE events SET evidence_json=? WHERE epoch=0', (json.dumps(evidence),))
+    with pytest.raises(InvalidSignature, match='historical'):
+        _renew_test_fence(store, holder)
+    assert store.position(RESOURCE) == position
+    with sqlite3.connect(database) as db:
+        assert db.execute('SELECT COUNT(*) FROM events').fetchone()[0] == 5
+        assert db.execute('SELECT COUNT(*) FROM event_retirement').fetchone()[0] == 0
+
+
+def test_default_event_history_stays_bounded_during_ordinary_renewal(tmp_path, keys):
+    from clusterctl.production_fences import EVENT_HISTORY_KEEP
+    owner, holder = keys
+    store = _store(tmp_path, owner)
+    _acquire(store, owner, holder)
+    for _ in range(EVENT_HISTORY_KEEP + 4):
+        current = _renew_test_fence(store, holder)
+    with sqlite3.connect(tmp_path / 'state/resource-fences.sqlite3') as db:
+        assert db.execute('SELECT COUNT(*) FROM events').fetchone()[0] == EVENT_HISTORY_KEEP
+        checkpoint = json.loads(db.execute('SELECT checkpoint_json FROM event_retirement').fetchone()[0])
+    assert checkpoint['retired_events'] == 5
+    assert store.verify_current(RESOURCE, at_ms=NOW_MS) == current
+
+
+def test_history_maintenance_cli_uses_existing_authority_without_endpoint(tmp_path, keys, monkeypatch, capsys):
+    from clusterctl import admission
+    owner, _ = keys
+    public = tmp_path / 'registrar.pub'
+    public.write_text(owner.public_key)
+    def forbidden(*args, **kwargs):
+        pytest.fail('history maintenance started a server')
+    monkeypatch.setattr(admission, 'AdmissionServer', forbidden)
+    monkeypatch.setattr(admission, 'AdmissionTCPServer', forbidden)
+    assert admission.main(['--state-dir', str(tmp_path / 'authority'), '--retire-history',
+        '--authority-key', str(tmp_path / 'owner.pem'), '--authority-key-id', owner.key_id,
+        '--registrar-key-id', owner.key_id, '--registrar-public-key-file', str(public)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result == dict(schema='cluster-admission-history-retirement/v1',
+                         retired_events=0, complete=True, error=None)
+
+
+def test_retirement_deadline_rolls_back_without_touching_position(tmp_path, keys):
+    import time
+    owner, holder = keys
+    store = _store(tmp_path, owner)
+    _acquire(store, owner, holder)
+    position = store.position(RESOURCE)
+    with pytest.raises(FenceError, match='deadline'):
+        store.collect_garbage(deadline_ns=time.monotonic_ns() - 1)
+    assert store.position(RESOURCE) == position
+
+
+def test_retirement_checkpoint_tampering_rolls_back_next_renewal(tmp_path, keys, monkeypatch):
+    from clusterctl import production_fences as module
+    monkeypatch.setattr(module, 'EVENT_HISTORY_KEEP', 2)
+    owner, holder = keys
+    store = _store(tmp_path, owner)
+    _acquire(store, owner, holder)
+    for _ in range(4):
+        _renew_test_fence(store, holder)
+    position = store.position(RESOURCE)
+    with sqlite3.connect(tmp_path / 'state/resource-fences.sqlite3') as db:
+        checkpoint = json.loads(db.execute('SELECT checkpoint_json FROM event_retirement').fetchone()[0])
+        checkpoint['retired_events'] += 1
+        db.execute('UPDATE event_retirement SET checkpoint_json=?', (json.dumps(checkpoint),))
+    with pytest.raises(InvalidSignature, match='historical'):
+        _renew_test_fence(store, holder)
+    assert store.position(RESOURCE) == position

@@ -1,6 +1,7 @@
 # Production resource fences
 
-Status: implemented candidate for issue #64; not yet enabled on a live host.
+Status: production SQLite/Ed25519 admission is deployed. The bounded historical
+event-retirement successor described below is a candidate, not yet selected live.
 
 ## Authority and boundary
 
@@ -53,12 +54,32 @@ resource.
 
 1. the new current record or release tombstone;
 2. the monotonic resource high-water and proof;
-3. the append-only signed event.
+3. the signed event and any bounded historical retirement checkpoint.
 
 Readers use query-only connections. Expiry is an observation, never a delete;
-release creates a signed tombstone at the next epoch. Garbage collection and
-arbitrary byte restore are disabled, so restart, rollback or an expired V1
-file cannot lower or revive a position.
+release creates a signed tombstone at the next epoch. Positions, tombstones,
+public key history and the clock high-water are never retired. Arbitrary byte
+restore stays disabled, so retirement cannot lower or revive a position.
+
+Ordinary commits retain the latest256 events per resource. At most32 older
+events are authenticated and retired in one transaction, alongside a cumulative
+signed count/through-epoch/hash checkpoint. A legacy backlog drains in bounded
+batches; it is not falsely reported as already within the new steady-state cap.
+The checkpoint commits the actual retired bytes, but cannot reconstruct them and
+is not an authority to restore a fence. Historical signatures may authenticate
+retired-key evidence; current-position verification still rejects revoked keys.
+Any failed batch rolls back its checkpoint, event removal and position update.
+
+The owning `clusterctl.admission --retire-history` mode reuses its existing
+state/signing/registrar arguments, with no socket/listener and no service restart.
+`--retirement-seconds` selects1..60 seconds of batch work (default30). It prints
+one bounded receipt with committed retired count and `complete`; incomplete or
+failed work returns nonzero and can resume from the retained checkpoint using
+the same command. Initial authority/configuration validation precedes that batch
+budget. Maintenance lock waits are capped at100ms and SQLite scans observe the
+batch deadline. No timer, lease extension, new holder or resource is created.
+SQLite reuses retired pages; the command does not VACUUM or promise a smaller
+database file. No raw SQL cleanup, history copy or new recurring process is needed.
 
 SQLite serializes the short commit section. Contenders for one resource see
 exactly one winner; operations on different resources do not conflict at the

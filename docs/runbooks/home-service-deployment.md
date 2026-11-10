@@ -265,3 +265,19 @@ writer; do not create a duplicate or overwrite unrelated content implicitly.
 
 Distinct App readers behind a shared Host-routed upstream remain separate maintenance
 targets. The same proxy address must not collapse their independent live voice locks.
+
+### Gateway with NoNewPrivileges
+
+Keep the existing Home sandbox. A gateway with `NoNewPrivileges=yes` cannot
+acquire privilege through `sudo`; successful operator-shell execution is not a
+receiving transport test. For a local privileged worker, use the fixed systemd
+`Accept=yes` Unix socket transport and `clusterctl.homes.service_socket --socket
+/run/daimon-home-services/SELECTED.sock`. The protected socket/service unit fixes
+the entire executor argv and config; the client supplies only the existing
+bounded JSON envelope, half-closes stdin, and reads at most16KiB. Root owns the
+socket and nonwritable parent directories; grant socket group access only to the
+existing gateway user. Preserve worker deadlines/resource bounds and its exact
+runtime/route capability. Do not accept commands, paths or service selection on
+that socket. A disconnected reply remains uncertain; inspect the existing
+journal and retry only the same retained request. No gateway sandbox or broad
+sudo/login policy change is needed.

@@ -66,7 +66,7 @@ def unit(config, release, package):
     """No package-supplied argv, environment, unit directives or install scripts."""
     c = config
     return (f'[Unit]\nDescription=Own Home HTTP service {key(c)}\n'
-            'After=network.target\nStartLimitIntervalSec=60\nStartLimitBurst=3\n'
+            f'After=network.target\nRequiresMountsFor={c["data"]}\nStartLimitIntervalSec=60\nStartLimitBurst=3\n'
             f'[Service]\nUser={c["uid"]}\nGroup={c["gid"]}\nUMask=0077\n'
             f'WorkingDirectory={release}\nExecStart={c["node"]} {release / package["entry"]}\n'
             f'Environment=HOST=127.0.0.1 PORT={c["port"]} NODE_ENV=production\n'

@@ -6,6 +6,7 @@ onboarding, provider input, goal control or new background service is involved.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -172,6 +173,38 @@ def restore(payload):
         state.update(phase='restored' if same else 'later_selection_preserved',watchdog_restored=same)
         atomic(record,state)
 
+def arm(payload):
+    assert os.geteuid()==0
+    launch=json.loads(json.dumps(payload['launch']));c=launch['owner_config'];unit=launch['unit']
+    assert unit in {'compaii-matrix-itaca.service','daimon-onboarding-matrix.service'}
+    sys.path.insert(0,c['code'])
+    from clusterctl.onboarding_service import selection_lock
+    from clusterctl.owner_process import ProcessPresence
+    account=pwd.getpwnam(launch['user'])
+    assert payload['process']['uid']==account.pw_uid
+    with selection_lock(Path('/etc/systemd/system')/unit), ProcessPresence(payload['process']) as presence:
+        group=system('show',unit,'-p','ControlGroup','--value')
+        actual=Path('/proc')/str(payload['process']['pid'])/'cgroup'
+        assert group.startswith('/') and any(line.split(':',2)[-1] in {group} or
+            line.split(':',2)[-1].startswith(group+'/') for line in actual.read_text().splitlines())
+        runtime=Path(c['runtime'])/'runtime.json'
+        assert hashlib.sha256(runtime.read_bytes()).hexdigest()==c['runtime_sha256']
+        command=system('show',unit,'-p','ExecStart','--value').split(' ; start_time=',1)[0]
+        c['stable_command_sha256']=hashlib.sha256(command.encode()).hexdigest()
+        directory=Path(payload['directory']);owner=Path(launch['owner'])
+        for path in (directory,owner):
+            assert path.parent.is_dir() and not any(p.is_symlink() for p in (path,*path.parents))
+        directory.mkdir(mode=0o700,exist_ok=True)
+        assert directory.stat().st_uid==0 and not directory.stat().st_mode&0o077
+        if not owner.exists():
+            owner.mkdir(mode=0o700);os.chown(owner,account.pw_uid,account.pw_gid)
+        assert owner.stat().st_uid==account.pw_uid and not owner.stat().st_mode&0o077
+        destination=directory/'launch.json'
+        if destination.exists():assert json.loads(destination.read_text())==launch,'visibility_launch_changed'
+        else:
+            presence.verify();atomic(destination,launch)
+    return {'done':True,'response':{'armed':True}}
+
 def launch(payload):
     directory=Path(payload['directory']);settings=json.loads((directory/'launch.json').read_text())
     receipt=Path(settings['owner'])/('receipt.json' if payload['mode']=='sign' else 'publication-receipt.json')
@@ -193,7 +226,7 @@ def launch(payload):
             value=json.loads(record.read_text())
             if value.get('complete') and value['phase']=='restored':
                 return dict(done=True,response={'receipt':value['receipt'],'retained':False,'lifecycle':1})
-        unit='matrix-visibility-'+payload['mode']+'.service'
+        unit='matrix-visibility-'+payload['mode']+'-'+payload['intent']['operation_id']+'.service'
         active=system('show',unit,'-p','ActiveState','--value')
         if active in {'failed','inactive'}:
             raise RuntimeError('visibility_job_failed_inspect_retained_result')
@@ -201,9 +234,9 @@ def launch(payload):
     atomic(request,payload)
     script=directory/('apply-'+payload['mode']+'.worker.py')
     script.write_text(payload['worker']);script.chmod(0o600)
-    unit='matrix-visibility-'+payload['mode']
-    subprocess.run(['systemd-run','--quiet','--unit='+unit,'-p','Type=exec',
-        '-p','RemainAfterExit=yes','-p','RuntimeMaxSec=340','-p','TimeoutStopSec=60',
+    unit='matrix-visibility-'+payload['mode']+'-'+payload['intent']['operation_id']
+    subprocess.run(['systemd-run','--quiet','--collect','--unit='+unit,'-p','Type=exec',
+        '-p','RuntimeMaxSec=340','-p','TimeoutStopSec=60',
         '-p','MemoryMax=512M','-p','CPUQuota=50%','-p','TasksMax=64',
         '-p','ExecStopPost='+sys.executable+' -B -I '+str(script)+' restore '+str(request),
         sys.executable,'-B','-I',str(script),'run',str(request)],check=True,capture_output=True,text=True)
@@ -213,22 +246,65 @@ payload=json.load(open(sys.argv[2])) if sys.argv[1] in {'run','restore'} else js
 if sys.argv[1]=='owner':result=owner(payload)
 elif sys.argv[1]=='restore':restore(payload);result={'restoration_checked':True}
 elif sys.argv[1]=='run':result=maintain(payload)
+elif sys.argv[1]=='arm':result=arm(payload)
 else:result=launch(payload)
 print(json.dumps(result))
 '''
 
 
-def private_json(path: Path) -> dict:
+def private_json(path: Path, *, limit=512*1024) -> dict:
     info = path.lstat()
     if path.is_symlink() or info.st_uid != 0 or info.st_mode & 0o077:
         raise ValueError('root_owned_visibility_request_required')
     raw = path.read_bytes()
-    if len(raw) > 512 * 1024:
+    if len(raw) > limit:
         raise ValueError('visibility_request_too_large')
     return json.loads(raw)
 
 
-def apply(request: dict, *, dispatch, observe, save, finish, clock=time.monotonic) -> dict:
+def prepare_rollout(request, result, deadline, *, save, run_update, observe, arm,
+                    read_spec=private_json, clock=time.monotonic):
+    """Resume existing native journals, then pin only the selected Matrix owners."""
+    updates = result.setdefault('native_updates', {})
+    for selected in request.get('native_updates', []):
+        spec = read_spec(Path(selected))
+        digest = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
+        retained = updates.get(selected)
+        if retained is not None:
+            if retained['spec_sha256'] != digest:
+                raise ValueError('visibility_native_update_changed')
+            if retained.get('result', {}).get('complete'):
+                continue
+        if deadline-clock() < spec['max_seconds']:
+            raise TimeoutError('visibility_native_update_deadline')
+        updates[selected] = dict(spec_sha256=digest, phase='submitted')
+        save(result)
+        observed = run_update(spec)
+        updates[selected].update(phase='observed', result={
+            key:observed[key] for key in ('schema','complete','operation_id',
+                'candidate_digest','receiving_readiness','failure') if key in observed})
+        save(result)
+        if not observed.get('complete'):
+            raise ValueError('visibility_native_update_incomplete')
+    armed = result.setdefault('armed', {})
+    for name, route in request['owners'].items():
+        if 'launch' not in route or armed.get(name):
+            continue
+        if deadline <= clock():
+            raise TimeoutError('visibility_operation_deadline')
+        current = observe(name, deadline-clock())
+        if (current['code_digest'] != route['launch']['owner_config']['code_digest']
+                or current['matrix_sdk'] != route['expected_sdk_wheel']):
+            raise ValueError('visibility_selected_sdk_required')
+        response = arm(name, route, current['process'], deadline-clock())
+        if response.get('armed') is not True:
+            raise ValueError('visibility_owner_arm_unconfirmed')
+        armed[name] = True
+        save(result)
+
+
+def apply(request: dict, *, dispatch, observe, save, finish, clock=time.monotonic,
+          prepare=None, initial=None) -> dict:
     """One fixed plan; completed signatures/publications are retained, not replayed."""
     intent = request['intent']
     if (set(request['publications']) != set(intent['canonical_disclosures'])
@@ -237,6 +313,13 @@ def apply(request: dict, *, dispatch, observe, save, finish, clock=time.monotoni
     receipts = {}
     deadline = clock() + request['max_seconds']
     result = dict(operation_id=intent['operation_id'], complete=False, owners={}, publications={}, models=0)
+    if initial is not None:
+        if initial['operation_id'] != intent['operation_id']:
+            raise ValueError('visibility_operation_changed')
+        result.update(initial)
+        result['complete']=False
+    if prepare is not None:
+        prepare(result,deadline)
     for name, route in request['owners'].items():
         if clock() >= deadline:
             raise TimeoutError('visibility_operation_deadline')
@@ -309,7 +392,7 @@ def main(argv=None) -> int:
     def dispatch(name, payload, seconds):
         route = request['owners'][name]
         command = [sys.executable if route.get('backend') is None else '/usr/bin/python3',
-            '-B','-I','-c',WORKER,'launch']
+            '-B','-I','-c',WORKER,'arm' if payload['mode']=='arm' else 'launch']
         deadline = time.monotonic()+seconds
         while time.monotonic() < deadline:
             remaining = min(55,deadline-time.monotonic())
@@ -355,8 +438,34 @@ def main(argv=None) -> int:
             deadline_ns=deadline, checkpoint=Path(request['reader_checkpoint']),
             nonadmitted=frozenset(name for name in clients if not registry[name]['require_admitted']))
 
+    def prepare(result, deadline):
+        from clusterctl.onboarding_managed import run_native_profile_update, run_code_update
+        from clusterctl.onboarding_owner_control import _selection
+
+        def run_update(spec):
+            if spec['schema'] == 'cluster-native-profile-maintenance/v1':
+                return run_native_profile_update(spec)
+            return run_code_update(spec)
+
+        def selected(name, seconds):
+            client = reader_clients[request['owners'][name]['reader']]
+            client.deadline_ns = time.monotonic_ns()+int(min(55,seconds)*1e9)
+            status = client._call({'action':'status'})
+            value = _selection(status)
+            return dict(code_digest=value['receiving_code'],matrix_sdk=value['matrix_sdk'],
+                process=status['process'])
+
+        def arm_owner(name, route, process, seconds):
+            return dispatch(name,dict(mode='arm',directory=route['directory'],
+                launch=route['launch'],process=process),min(55,seconds))
+
+        prepare_rollout(request,result,deadline,save=save,run_update=run_update,
+            observe=selected,arm=arm_owner)
+
     try:
-        result = apply(request,dispatch=dispatch,observe=observe,save=save,finish=finish)
+        initial = private_json(output,limit=1024*1024) if output.exists() else None
+        result = apply(request,dispatch=dispatch,observe=observe,save=save,finish=finish,
+            prepare=prepare,initial=initial)
     except Exception as error:
         diagnostic = output.with_suffix('.diagnostic')
         diagnostic.write_text(str(error)[-8192:])

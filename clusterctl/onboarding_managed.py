@@ -327,13 +327,9 @@ class ManagedRuntime:
                 runtime_sha256=current['runtime_sha256'], origin=current['origin'],
                 process=current['process'], admission_parent=current['admission_parent'],
                 unit_sha256=physical['service']['unit_sha256'], receiving_readiness='unobserved')
-            receiving = (current.get('group_runtime_status') or {}).get('receiving', {})
-            gate = receiving.get('channels', {}).get('tribe', {})
-            if gate.get('process_id') == current['process'].get('pid') and gate.get('phase') in {'select','revoke'}:
-                recovery = receiving.get('recovery', {}).get('tribe', {}).get('state')
-                if recovery not in {'recovered','expired','disabled','invalidated','unavailable','unsupported'}:
-                    recovery = 'unobserved'
-                state['result']['local_reader'] = dict(channel_id='tribe', phase=gate['phase'], recovery=recovery)
+            local_reader = code_update_local_reader(current)
+            if local_reader is not None:
+                state['result']['local_reader'] = local_reader
             save()
             return state['result']
 
@@ -1223,16 +1219,8 @@ def code_update_owned_stops(backend, plans: dict, spec: dict) -> set[str]:
     return owned
 
 
-def run_code_update(spec: dict) -> dict:
-    """Reuse the owner/unit journals; never create a second batch effect journal."""
-    spec = validate_code_update(spec)
-    deadline = time.monotonic_ns() + spec['max_seconds'] * 1_000_000_000
-    reader_routes = (load_code_update_readers(Path(spec['reader_completion']))
-        if spec.get('reader_completion') is not None else None)
-    if reader_routes is not None:
-        from .onboarding_receiving_update import preflight_reader_checkpoint
-        preflight_reader_checkpoint(Path(reader_routes['checkpoint']), spec['operation_id'])
-    backend, plans = maintenance_backend(spec['host_config'],spec['vm_qualification'],spec['targets'])
+def code_update_observers(spec: dict, backend, plans: dict) -> dict:
+    """Resolve only selected body owners through their existing placement."""
     observers = {}
     if spec.get('owner_observation') is not None:
         if spec['group'] == 'none':
@@ -1248,6 +1236,88 @@ def run_code_update(spec: dict) -> dict:
             selected[key] = binding
         clients = code_update_reader_clients({**routes,'owners':selected}, backend=backend, plans=plans)
         observers = {binding.get('job',key):clients[key] for key,binding in selected.items()}
+    return observers
+
+
+def code_update_local_reader(current: dict) -> dict | None:
+    """An authenticated local recovery observation, never fleet delivery."""
+    receiving = (current.get('group_runtime_status') or {}).get('receiving', {})
+    gate = receiving.get('channels', {}).get('tribe', {})
+    if gate.get('process_id') != current['process'].get('pid') or gate.get('phase') not in {'select','revoke'}:
+        return None
+    recovery = receiving.get('recovery', {}).get('tribe', {}).get('state')
+    if recovery not in {'recovered','expired','disabled','invalidated','unavailable','unsupported'}:
+        recovery = 'unobserved'
+    return dict(channel_id='tribe', phase=gate['phase'], recovery=recovery)
+
+
+def run_code_status(spec: dict) -> dict:
+    """Inspect desired/loaded code and retained effects; prepare or start nothing."""
+    spec = validate_code_update(spec)
+    if spec.get('owner_observation') is None:
+        raise OnboardingError('receiving_current_reader_binding_required')
+    deadline = time.monotonic_ns() + spec['max_seconds'] * 1_000_000_000
+    backend, plans = maintenance_backend(spec['host_config'], spec['vm_qualification'], spec['targets'])
+    observers = code_update_observers(spec, backend, plans)
+    settings = being_seed._read(backend.config.admission)
+    state_root = Path(settings['state'])
+    if not state_root.is_absolute() or '..' in state_root.parts:
+        raise OnboardingError('invalid_onboarding_managed_configuration')
+    rows = []
+    for name in spec['targets']:
+        phase = 'owner-observation'
+        try:
+            owner = observers[name]
+            owner.deadline_ns = min(deadline, time.monotonic_ns() + 55_000_000_000)
+            current = owner._call(dict(action='native-current', plan_digest=digest(plans[name])))
+            if (current.get('plan_digest') != digest(plans[name])
+                    or current.get('responder_association') != 'same-connection'):
+                raise OnboardingError('current_onboarding_target_required')
+            if _code_update_group(current, published=spec['group'] == 'published') is None:
+                raise OnboardingError('qualified_onboarding_group_required')
+            loaded = current['runtime_status']['loaded_runtime']['qualified_startup']
+            phase = 'retained-operation'
+            operation = None
+            path = state_root / name / 'native-code-update.json'
+            if path.exists():
+                retained = being_seed._read(path)
+                pins = retained['pins']
+                if (pins['plan_digest'] != digest(plans[name])
+                        or str(uuid.UUID(pins['operation_id'])) != pins['operation_id']
+                        or re.fullmatch('[0-9a-f]{64}', pins['candidate_digest']) is None):
+                    raise OnboardingError('native_code_update_operation_conflict')
+                dispatch = retained.get('dispatching')
+                actions = {'validate','quiesce','migrate','select','start'}
+                operation = dict(operation_id=pins['operation_id'],
+                    candidate_digest=pins['candidate_digest'], complete=retained.get('result') is not None,
+                    dispatching=dispatch if dispatch in actions else None,
+                    effects=sorted(actions.intersection(retained.get('effects', {}))))
+            rows.append(dict(name=name, status='observed',
+                desired_code=spec['candidate']['code_digest'], loaded_code=loaded['code_digest'],
+                converged=loaded['code_digest'] == spec['candidate']['code_digest'],
+                process=current['process'], admission_parent=current['admission_parent'],
+                local_reader=code_update_local_reader(current), retained_operation=operation))
+        except Exception as error:
+            from .onboarding import refusal_diagnostic
+            rows.append(dict(name=name, status='unavailable', phase=phase,
+                failure=refusal_diagnostic(error, stage='native-code-maintenance')))
+    return dict(schema='cluster-native-code-maintenance-status/v1',
+        complete=all(row['status'] == 'observed' for row in rows), targets=rows,
+        converged=all(row.get('converged') is True for row in rows),
+        effects='observation-only', receiving_readiness='unobserved')
+
+
+def run_code_update(spec: dict) -> dict:
+    """Reuse the owner/unit journals; never create a second batch effect journal."""
+    spec = validate_code_update(spec)
+    deadline = time.monotonic_ns() + spec['max_seconds'] * 1_000_000_000
+    reader_routes = (load_code_update_readers(Path(spec['reader_completion']))
+        if spec.get('reader_completion') is not None else None)
+    if reader_routes is not None:
+        from .onboarding_receiving_update import preflight_reader_checkpoint
+        preflight_reader_checkpoint(Path(reader_routes['checkpoint']), spec['operation_id'])
+    backend, plans = maintenance_backend(spec['host_config'],spec['vm_qualification'],spec['targets'])
+    observers = code_update_observers(spec, backend, plans)
     if reader_routes is not None:
         # Resolve owning jobs/placements and probe their existing owner CLIs
         # before any lifecycle effect; signed rosters still qualify membership.
@@ -1397,7 +1467,7 @@ def main(argv=None) -> int:
     parser.add_argument('--spec', type=Path, required=True,
         help='retained root-owned private code or native-profile maintenance JSON')
     parser.add_argument('--check-only', action='store_true',
-        help='Inspect a native-profile maintenance request without lifecycle effects')
+        help='Inspect desired/loaded native code and retained operations without lifecycle effects')
     args = parser.parse_args(argv)
     try:
         if os.geteuid() != 0:
@@ -1406,9 +1476,7 @@ def main(argv=None) -> int:
         if spec.get('schema') == 'cluster-native-profile-maintenance/v1':
             result = run_native_profile_update(spec,check_only=args.check_only)
         else:
-            if args.check_only:
-                raise OnboardingError('native_code_maintenance_spec_required')
-            result = run_code_update(spec)
+            result = run_code_status(spec) if args.check_only else run_code_update(spec)
         print(json.dumps(result))
         return 0 if result.get('complete') or result.get('qualified') else 1
     except Exception as error:

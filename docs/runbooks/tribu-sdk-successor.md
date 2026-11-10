@@ -209,6 +209,16 @@ retry authority. All other owner RPCs retain their60second cap. Select the
 compatible helper before using this observation route; an older helper refuses
 the longer read rather than silently shortening the update.
 
+The same managed update spec also supports `--check-only`. It uses current
+owner reads on the selected bodies, with no SDK preparation, copying, lifecycle
+request, reader control or new operation record. It reports desired versus loaded
+code, the local reader's observed phase/recovery, and bounded metadata about the
+existing retained update. An unavailable body remains explicit and does not
+prevent observing the remaining selected bodies. No unrelated peer is queried.
+`complete` means these observations completed; `converged` separately compares
+loaded code with the desired release. Neither is a message-delivery or whole-fleet
+acceptance claim. Native H8 check-only keeps its existing observation-only path.
+
 `local_reader` is this operation's observed control phase and startup recovery,
 not peer delivery, model use, periodic health or heartbeat activation. A retained
 negative selection stays negative; software maintenance does not enable it. Its

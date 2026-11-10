@@ -13,6 +13,13 @@ sequence of additional gates to repeat for every iteration.
    `onboarding_code_successor.build(..., current=..., current_fingerprint=...)`.
    Reuse the qualified SDK artifact directly; the builder already copies it
    into the candidate, so an extra input/staging copy is unnecessary locally.
+   Cold SDK installation and closed-import preparation use the same remaining
+   declared finite maintenance envelope (at most480seconds overall), before any
+   service stop. Each SDK/migration call remains capped at300seconds. Cold
+   installation must not silently reduce a480second request to300seconds total.
+   Ordinary observation and physical controls retain their60second limit. A
+   preparation timeout leaves the serving selection intact; inspect its retained
+   installation/import receipts before continuing the same operation.
    When both daemon behavior and the installed foundation client change, include
    `onboarding_runtime.py`, `onboarding_foundation_native.py` and
    `onboarding_owner_client.py` in this same candidate. The owner-client capture
@@ -33,6 +40,16 @@ sequence of additional gates to repeat for every iteration.
    On uncertainty inspect that operation instead of rebuilding or replaying it.
    Retire consumed duplicate transfer/input files after verifying the retained
    copy; preserve active selections, actual rollback and unfinished work.
+
+Run maintenance with the existing qualified Cluster environment, which includes
+its Matrix SDK. After a timeout, inspect the same operation's retained publication
+before recovery. An already exchanged exact publication can be acknowledged after
+its original admission deadline without another grant, counter advance or expiry
+extension. Continue that same specification; never restore an earlier counter.
+If the native update completed and only reader completion failed, reuse its
+retained update receipt with the existing reader completer. Its expired-selection
+recovery preserves old commands and qualifies the current CAS and credentials;
+another software deployment or capability expansion is unnecessary.
 
 Routine scoped delivery already within the human's task needs no repeated GO,
 new identity ceremony, mandatory multi-reviewer quorum or unrelated full-stack

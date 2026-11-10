@@ -190,13 +190,19 @@ class ManagedRuntime:
                 if reconcile_existing:
                     required = {'validate', 'quiesce', 'migrate', 'select', 'start'}
                     prior = state.get('pins', {})
+                    bootstrap = state.get('capability_bootstrap', {})
+                    restored = (state.get('dispatching') == 'migrate'
+                        and set(state.get('effects', {})) == {'validate', 'quiesce'}
+                        and bootstrap.get('mode') == 'expand'
+                        and type(bootstrap.get('expires_at_ms')) is int
+                        and bootstrap['expires_at_ms'] <= time.time_ns() // 1_000_000)
                     if (prior.get('operation_id') != operation_id
                             or prior.get('plan_digest') != digest(plan)
                             or prior.get('published_group') is not True
                             or prior.get('candidate_digest') == candidate[1]
-                            or state.get('dispatching') is not None
+                            or not restored and state.get('dispatching') is not None
                             or state.get('result') is not None
-                            or set(state.get('effects', {})) != required):
+                            or not restored and set(state.get('effects', {})) != required):
                         raise OnboardingError('native_code_update_operation_conflict')
                     current = observe(starting=True)
                     if (current['runtime_sha256'] != state.get('effective_runtime_sha256', state['runtime_sha256'])
@@ -207,7 +213,8 @@ class ManagedRuntime:
                     if current['runtime_status']['loaded_runtime'].get(
                             'qualified_startup', {}).get('code_digest') != candidate[1]:
                         raise OnboardingError('native_code_update_selection_changed')
-                    previous_parent = state['effects']['start']['admission_parent']
+                    previous_parent = (state['request']['predecessor']['admission_parent'] if restored
+                        else state['effects']['start']['admission_parent'])
                     physical = self.backend._guest_service_call(plan, 'bootstrap-inspect',
                         candidate=candidate, timeout_seconds=remaining(), owner_observation=dict(
                             **{key: current[key] for key in ('process', 'admission_parent')},
@@ -220,6 +227,15 @@ class ManagedRuntime:
                             or physical['scope']['process'] != current['process']
                             or store._load(plan['name']) != job):
                         raise OnboardingError('native_code_update_reconciliation_changed')
+                    if restored:
+                        before = state['request']['predecessor']['service']
+                        after = physical['service']
+                        # A later restart is not proof of an unchanged selection.
+                        # Check every effective service byte, not its new PID.
+                        if (current['runtime_sha256'] != state['runtime_sha256']
+                                or {key: value for key, value in after.items() if key != 'manager'}
+                                    != {key: value for key, value in before.items() if key != 'manager'}):
+                            raise OnboardingError('native_code_update_reconciliation_changed')
                     # Resolve the retained attempt truthfully. Its requested code
                     # and confirmed effects remain unchanged, with no fabricated
                     # original result and no stop/select/start or catalog rewrite.
@@ -231,7 +247,8 @@ class ManagedRuntime:
                         process=current['process'], admission_parent=current['admission_parent'],
                         unit_sha256=physical['service']['unit_sha256'],
                         previous_admission_parent=exit_receipt,
-                        disposition='superseded-by-observed-successor',
+                        disposition=('restored-unchanged-predecessor' if restored
+                            else 'superseded-by-observed-successor'),
                         receiving_readiness='unobserved')
                     reader = code_update_local_reader(current)
                     if reader is not None:
@@ -242,18 +259,25 @@ class ManagedRuntime:
                 if state.get('pins') != pins:
                     prior_pins, prior_result = state.get('pins', {}), state.get('result') or {}
                     reconciliation = state.get('reconciliation', {})
+                    restored_resolution = (reconciliation.get('disposition') == 'restored-unchanged-predecessor'
+                        and set(state.get('effects', {})) == {'validate', 'quiesce'}
+                        and state.get('dispatching') == 'migrate'
+                        and reconciliation.get('runtime_sha256') == state.get('runtime_sha256')
+                        and reconciliation.get('previous_admission_parent') == dict(
+                            process=state.get('request', {}).get('predecessor', {}).get('admission_parent'), exited=True))
                     reconciled = (reconciliation.get('schema') == 'cluster-native-code-reconciled/v1'
                         and reconciliation.get('operation_id') == prior_pins.get('operation_id')
                         and reconciliation.get('original_candidate_digest') == prior_pins.get('candidate_digest')
                         and reconciliation.get('pins_sha256') == digest(prior_pins)
                         and reconciliation.get('effects_sha256') == digest(state.get('effects', {}))
-                        and reconciliation.get('disposition') == 'superseded-by-observed-successor'
-                        and reconciliation.get('previous_admission_parent') == dict(
-                            process=state.get('effects', {}).get('start', {}).get('admission_parent'), exited=True))
+                        and (restored_resolution or (
+                            reconciliation.get('disposition') == 'superseded-by-observed-successor'
+                            and reconciliation.get('previous_admission_parent') == dict(
+                                process=state.get('effects', {}).get('start', {}).get('admission_parent'), exited=True))))
                     if (prior_pins.get('operation_id') == operation_id
-                            or state.get('dispatching') is not None
+                            or state.get('dispatching') is not None and not (reconciled and restored_resolution)
                             or len(json.dumps(state).encode()) > 65536
-                            or set(state.get('effects', {})) != ({'validate', 'quiesce', 'migrate', 'select', 'start'}
+                            or not (reconciled and restored_resolution) and set(state.get('effects', {})) != ({'validate', 'quiesce', 'migrate', 'select', 'start'}
                                 if prior_pins.get('published_group') else {'validate', 'quiesce', 'select', 'start'})
                             or not (reconciled or (
                                 prior_result.get('operation_id') == prior_pins.get('operation_id')

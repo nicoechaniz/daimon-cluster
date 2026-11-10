@@ -1900,6 +1900,15 @@ request cannot be reused as fresh publication authority. If the original runtime
 and service configuration are proved unchanged and no writer remains, restore
 that original Matrix service while repairing the retained update; do not leave a
 healthy predecessor unavailable merely because its candidate preparation failed.
+Use the existing `reconcile_existing` mode with that actually restored public
+code and the original operation ID to retain the failed attempt as
+`restored-unchanged-predecessor`. This path accepts only an expired capability
+migration stopped before selection, a matching authenticated original bundle and
+group, unchanged effective service files and the observed predecessor exit. It
+performs no capability stage/publication or service start. The original pending
+phase and effects stay intact alongside the resolution. An ordinary fresh update
+can then proceed with a new finite operation; it cannot reuse or extend the old
+capability request. Unknown or changed runtime/service state still needs recovery.
 The artifact builder `onboarding_code_successor.build` imports the maintained
 `tools.build_onboarding_code` development helpers. Sealed receiving runtime
 packages intentionally omit that development package. Build from the maintained

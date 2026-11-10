@@ -1047,21 +1047,31 @@ def test_default_event_history_stays_bounded_during_ordinary_renewal(tmp_path, k
     assert store.verify_current(RESOURCE, at_ms=NOW_MS) == current
 
 
-def test_history_maintenance_cli_uses_existing_authority_without_endpoint(tmp_path, keys, monkeypatch, capsys):
-    from clusterctl import admission
+def test_history_maintenance_cli_reuses_preflight_and_owned_authority(tmp_path, keys, monkeypatch, capsys):
+    from types import SimpleNamespace
+    from clusterctl import onboarding_authority as operator
     owner, _ = keys
-    public = tmp_path / 'registrar.pub'
-    public.write_text(owner.public_key)
+    store = _store(tmp_path, owner)
+    config, signer = {'retained': True}, object()
+    calls = []
+    def preflight(path):
+        calls.append(('preflight', path))
+        return config, signer
+    def owned(value, selected):
+        assert value is config and selected is signer
+        calls.append(('owned', None))
+        return SimpleNamespace(_store=store)
     def forbidden(*args, **kwargs):
         pytest.fail('history maintenance started a server')
-    monkeypatch.setattr(admission, 'AdmissionServer', forbidden)
-    monkeypatch.setattr(admission, 'AdmissionTCPServer', forbidden)
-    assert admission.main(['--state-dir', str(tmp_path / 'authority'), '--retire-history',
-        '--authority-key', str(tmp_path / 'owner.pem'), '--authority-key-id', owner.key_id,
-        '--registrar-key-id', owner.key_id, '--registrar-public-key-file', str(public)]) == 0
+    monkeypatch.setattr(operator, 'preflight', preflight)
+    monkeypatch.setattr(operator, 'owned_authority', owned)
+    monkeypatch.setattr(operator, 'AdmissionTCPServer', forbidden)
+    path = tmp_path / 'existing-config.json'
+    assert operator.main(['--config', str(path), '--retire-history']) == 0
     result = json.loads(capsys.readouterr().out)
     assert result == dict(schema='cluster-admission-history-retirement/v1',
                          retired_events=0, complete=True, error=None)
+    assert calls == [('preflight', path), ('owned', None)]
 
 
 def test_retirement_deadline_rolls_back_without_touching_position(tmp_path, keys):

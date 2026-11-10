@@ -42,8 +42,8 @@ Normal process exit releases the lease. Authority database restart preserves
 the monotonic token and trusted-clock high-water.
 
 Bounded event-history maintenance uses the same authority's local
-`--retire-history` mode and existing custody/configuration arguments, without
-opening a listener or restarting admission. See
+`--retire-history` mode, existing protected configuration and permanent
+database-owner UID drop, without opening a listener or restarting admission. See
 [production fence retention](design/production-resource-fences.md) for its
 signed checkpoint, batch budget and unchanged position/tombstone semantics.
 This candidate is not evidence of actual live retirement or receiving adoption.

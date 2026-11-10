@@ -65,19 +65,21 @@ Ordinary commits retain the latest256 events per resource. At most32 older
 events are authenticated and retired in one transaction, alongside a cumulative
 signed count/through-epoch/hash checkpoint. A legacy backlog drains in bounded
 batches; it is not falsely reported as already within the new steady-state cap.
-The checkpoint commits the actual retired bytes, but cannot reconstruct them and
+The checkpoint commits the retired row contents, but cannot reconstruct them and
 is not an authority to restore a fence. Historical signatures may authenticate
 retired-key evidence; current-position verification still rejects revoked keys.
 Any failed batch rolls back its checkpoint, event removal and position update.
 
-The owning `clusterctl.admission --retire-history` mode reuses its existing
-state/signing/registrar arguments, with no socket/listener and no service restart.
+The owning `clusterctl.onboarding_authority --config CONFIG --retire-history`
+mode reuses its existing root preflight and permanent database-owner UID drop,
+with no socket/listener and no service restart.
 `--retirement-seconds` selects1..60 seconds of batch work (default30). It prints
 one bounded receipt with committed retired count and `complete`; incomplete or
 failed work returns nonzero and can resume from the retained checkpoint using
 the same command. Initial authority/configuration validation precedes that batch
-budget. Maintenance lock waits are capped at100ms and SQLite scans observe the
-batch deadline. No timer, lease extension, new holder or resource is created.
+budget. Maintenance lock waits are capped at100ms, SQLite scans observe the
+batch deadline, and a10ms gap between batches yields to active renewals.
+No timer, lease extension, new holder or resource is created.
 SQLite reuses retired pages; the command does not VACUUM or promise a smaller
 database file. No raw SQL cleanup, history copy or new recurring process is needed.
 

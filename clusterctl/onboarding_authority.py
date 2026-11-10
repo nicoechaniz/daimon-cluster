@@ -12,12 +12,13 @@ import json
 import os
 import sqlite3
 import stat
+import time
 from contextlib import closing
 from pathlib import Path
 
 from . import being_seed, onboarding_release
 from .admission import AdmissionAuthority, AdmissionTCPServer
-from .fences import Ed25519Signer
+from .fences import Ed25519Signer, FenceError
 from .onboarding import OnboardingError
 from .production_fences import DATABASE_SCHEMA, ed25519_fingerprint
 
@@ -61,14 +62,19 @@ def preflight(path: Path) -> tuple[dict, Ed25519Signer]:
     return value, signer
 
 
-def serve(value: dict, signer: Ed25519Signer) -> None:
+def owned_authority(value: dict, signer: Ed25519Signer) -> AdmissionAuthority:
+    """Keep serving and local maintenance under the same permanent UID drop."""
     os.setgroups([])
     os.setgid(value['runtime_gid'])
     os.setuid(value['runtime_uid'])
     if os.geteuid() != value['runtime_uid'] or os.getegid() != value['runtime_gid']:
         raise OnboardingError('canonical_onboarding_authority_required')
-    authority = AdmissionAuthority(value['state_dir'], signer=signer,
-                                   holder_registrars=value['holder_registrars'])
+    return AdmissionAuthority(value['state_dir'], signer=signer,
+                              holder_registrars=value['holder_registrars'])
+
+
+def serve(value: dict, signer: Ed25519Signer) -> None:
+    authority = owned_authority(value, signer)
     server = AdmissionTCPServer(('127.0.0.1', value['port']), authority)
     try:
         server.serve_forever()
@@ -76,15 +82,45 @@ def serve(value: dict, signer: Ed25519Signer) -> None:
         server.server_close()
 
 
+def retire_history(authority: AdmissionAuthority, seconds: int) -> dict:
+    deadline = time.monotonic_ns() + seconds * 1_000_000_000
+    retired, complete, error = 0, False, None
+    try:
+        while time.monotonic_ns() < deadline:
+            count = authority._store.collect_garbage(deadline_ns=deadline)
+            retired += count
+            if count == 0:
+                complete = True
+                break
+            # Do not monopolize the SQLite writer while draining a large old
+            # backlog. Renewals keep their ordinary path and lease deadlines.
+            time.sleep(min(0.01, max(0, (deadline - time.monotonic_ns()) / 1_000_000_000)))
+    except FenceError:
+        # Retain earlier committed batches; the failed batch rolls back. Never
+        # expose SQLite/custody details in the bounded operator receipt.
+        error = 'retirement-batch-unavailable'
+    return dict(schema='cluster-admission-history-retirement/v1',
+                retired_events=retired, complete=complete, error=error)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
-    parser.add_argument('--check', action='store_true')
+    operation = parser.add_mutually_exclusive_group()
+    operation.add_argument('--check', action='store_true')
+    operation.add_argument('--retire-history', action='store_true')
+    parser.add_argument('--retirement-seconds', type=int, default=30)
     args = parser.parse_args(argv)
+    if not 1 <= args.retirement_seconds <= 60:
+        parser.error('--retirement-seconds must be between1 and60')
     try:
         value, signer = preflight(args.config)
         if args.check:
             print(json.dumps({'configured': True, 'existing_authority_verified': True}))
+        elif args.retire_history:
+            result = retire_history(owned_authority(value, signer), args.retirement_seconds)
+            print(json.dumps(result))
+            return 0 if result['complete'] else 1
         else:
             serve(value, signer)
         return 0

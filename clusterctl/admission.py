@@ -1609,17 +1609,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     endpoint = parser.add_mutually_exclusive_group(required=True)
     endpoint.add_argument("--socket", type=Path)
     endpoint.add_argument("--listen-host")
-    endpoint.add_argument("--retire-history", action="store_true",
-                          help="retire bounded historical events without starting/stopping the authority")
-    parser.add_argument("--retirement-seconds", type=int, default=30)
     parser.add_argument("--listen-port", type=int)
     parser.add_argument("--authority-key", type=Path, required=True)
     parser.add_argument("--authority-key-id", required=True)
     parser.add_argument("--registrar-key-id", required=True)
     parser.add_argument("--registrar-public-key-file", type=Path, required=True)
     args = parser.parse_args(argv)
-    if not 1 <= args.retirement_seconds <= 60:
-        parser.error("--retirement-seconds must be between1 and60")
     registrar_public_key = args.registrar_public_key_file.read_text(
         encoding="ascii"
     ).strip()
@@ -1628,25 +1623,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         signer=Ed25519Signer(args.authority_key, args.authority_key_id),
         holder_registrars={args.registrar_key_id: registrar_public_key},
     )
-    if args.retire_history:
-        if args.listen_port is not None:
-            parser.error("--listen-port requires --listen-host")
-        deadline = time.monotonic_ns() + args.retirement_seconds * 1_000_000_000
-        retired, complete, error = 0, False, None
-        try:
-            while time.monotonic_ns() < deadline:
-                count = authority._store.collect_garbage(deadline_ns=deadline)
-                retired += count
-                if count == 0:
-                    complete = True
-                    break
-        except FenceError:
-            # No raw SQLite/custody details in an operator receipt. Earlier
-            # committed batches stay retired; the failed batch rolls back.
-            error = "retirement-batch-unavailable"
-        print(json.dumps(dict(schema="cluster-admission-history-retirement/v1",
-                              retired_events=retired, complete=complete, error=error)))
-        return 0 if complete else 1
     if args.socket is not None:
         if args.listen_port is not None:
             parser.error("--listen-port requires --listen-host")

@@ -1882,6 +1882,14 @@ cohort, `vm_qualification` selects its existing `receiving.json` and per-name
 placement records, verified by the existing `RemoteIncusRunner`. It supplies no
 new enrollment, identity, SSH route, arbitrary command or publication callback.
 Native/local targets keep their existing HostConfig route.
+The artifact builder `onboarding_code_successor.build` imports the maintained
+`tools.build_onboarding_code` development helpers. Sealed receiving runtime
+packages intentionally omit that development package. Build from the maintained
+checkout, or supply that exact public build-tool closure during an explicit
+remote preparation; do not treat the omission as a serving-runtime outage.
+A preparation that fails before creating its candidate has no selection effect.
+Retain its failure and continue that known-unstarted build after fixing the build
+context, preserving the same parent/source and qualified SDK.
 
 For an existing published target that lacks its owned-event read, the same spec
 can explicitly add `"capability_additions": {"observe": ["we.event.get"]}`.

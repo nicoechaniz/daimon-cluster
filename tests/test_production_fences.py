@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import json
 import multiprocessing
 import os
@@ -963,7 +965,7 @@ def test_bounded_event_retirement_preserves_cas_tombstones_and_rotation(tmp_path
     position = store.position(RESOURCE)
     database = tmp_path / 'state/resource-fences.sqlite3'
     def retained():
-        with sqlite3.connect(database) as db:
+        with closing(sqlite3.connect(database)) as db, db:
             return db.execute('SELECT COUNT(*) FROM events').fetchone()[0]
     assert retained() == 45
     assert store.collect_garbage() == 3
@@ -980,7 +982,7 @@ def test_bounded_event_retirement_preserves_cas_tombstones_and_rotation(tmp_path
         pass
     assert retained() == 8
     assert store.verify_current(RESOURCE, at_ms=NOW_MS) == held
-    with sqlite3.connect(database) as db:
+    with closing(sqlite3.connect(database)) as db, db:
         checkpoint = json.loads(db.execute('SELECT checkpoint_json FROM event_retirement').fetchone()[0])
     assert checkpoint['retired_events'] == 37 and checkpoint['through_epoch'] == 36
     assert len(checkpoint['chain_sha256']) == 64
@@ -1021,14 +1023,14 @@ def test_event_retirement_rejects_corrupt_history_without_advancing_authority(tm
             _renew_test_fence(store, holder)
     position = store.position(RESOURCE)
     database = tmp_path / 'state/resource-fences.sqlite3'
-    with sqlite3.connect(database) as db:
+    with closing(sqlite3.connect(database)) as db, db:
         evidence = json.loads(db.execute('SELECT evidence_json FROM events WHERE epoch=0').fetchone()[0])
         evidence['signature'] = 'corrupt'
         db.execute('UPDATE events SET evidence_json=? WHERE epoch=0', (json.dumps(evidence),))
     with pytest.raises(InvalidSignature, match='historical'):
         _renew_test_fence(store, holder)
     assert store.position(RESOURCE) == position
-    with sqlite3.connect(database) as db:
+    with closing(sqlite3.connect(database)) as db, db:
         assert db.execute('SELECT COUNT(*) FROM events').fetchone()[0] == 5
         assert db.execute('SELECT COUNT(*) FROM event_retirement').fetchone()[0] == 0
 
@@ -1040,7 +1042,7 @@ def test_default_event_history_stays_bounded_during_ordinary_renewal(tmp_path, k
     _acquire(store, owner, holder)
     for _ in range(EVENT_HISTORY_KEEP + 4):
         current = _renew_test_fence(store, holder)
-    with sqlite3.connect(tmp_path / 'state/resource-fences.sqlite3') as db:
+    with closing(sqlite3.connect(tmp_path / 'state/resource-fences.sqlite3')) as db, db:
         assert db.execute('SELECT COUNT(*) FROM events').fetchone()[0] == EVENT_HISTORY_KEEP
         checkpoint = json.loads(db.execute('SELECT checkpoint_json FROM event_retirement').fetchone()[0])
     assert checkpoint['retired_events'] == 5
@@ -1094,7 +1096,7 @@ def test_retirement_checkpoint_tampering_rolls_back_next_renewal(tmp_path, keys,
     for _ in range(4):
         _renew_test_fence(store, holder)
     position = store.position(RESOURCE)
-    with sqlite3.connect(tmp_path / 'state/resource-fences.sqlite3') as db:
+    with closing(sqlite3.connect(tmp_path / 'state/resource-fences.sqlite3')) as db, db:
         checkpoint = json.loads(db.execute('SELECT checkpoint_json FROM event_retirement').fetchone()[0])
         checkpoint['retired_events'] += 1
         db.execute('UPDATE event_retirement SET checkpoint_json=?', (json.dumps(checkpoint),))

@@ -33,7 +33,8 @@ value=json.load(sys.stdin);path=Path(value['config'])
 if value['action']=='register':
  raw=regular(path)
  result=register_companion(path,value['request'],value['public'],
-  human_name=value['human_name'],vpn_url=value['vpn_url'],previous_digest=__import__('hashlib').sha256(raw).hexdigest())
+  human_name=value['human_name'],vpn_url=value['vpn_url'],previous_digest=__import__('hashlib').sha256(raw).hexdigest(),
+  receivers_file=value['receivers_file'])
 else:
  cfg=validate_config(json.loads(regular(path)));request=value['request'];home=cfg['homes'].get(request['home_ref'])
  if home is None:result={'state':'configuration-missing'}
@@ -54,7 +55,9 @@ else:
     observed=json.loads(raw)
    if observed['human']['ref']!=request['human_ref'] or observed['owner_being_ref']!=request['being_ref']:
     raise ValueError('companion_home_binding_conflict')
-   result={'state':'ready','pair_matched':True}
+   expected={'capability':'interaction','url':request['origin']+'/interaction/','state':'configured'}
+   result=({'state':'ready','pair_matched':True} if expected in observed.get('applications',[])
+     else {'state':'not-loaded'})
   except urllib.error.HTTPError as error:
    result={'state':'not-loaded' if error.code==404 else 'unavailable'}
   except (OSError,ValueError,KeyError):result={'state':'unavailable'}
@@ -109,7 +112,11 @@ class CompanionHomes:
             argv = ['/usr/sbin/runuser', '-u', pwd.getpwuid(uid).pw_name, '--', *argv]
         payload = dict(action=action, config=str(path), request=request)
         if action == 'register':
+            receiving = self._unit(receivers=True)
+            selected_receivers = Path(receiving['receivers_file'])
+            regular(selected_receivers, uid=uid, limit=4*1024*1024)
             payload.update(public=public, human_name=pair['human_name'], vpn_url=pair['vpn_url'])
+            payload['receivers_file'] = str(selected_receivers)
         raw = json.dumps(payload).encode()
         if len(raw)>5*1024*1024:
             raise OnboardingError('companion_gateway_input_capacity')
@@ -124,7 +131,7 @@ class CompanionHomes:
             raise OnboardingError('companion_gateway_operation_refused')
         return value
 
-    def _unit(self):
+    def _unit(self, *, receivers=False):
         result = subprocess.run(['systemctl','show',UNIT,'-p','MainPID','-p','InvocationID',
             '-p','ActiveState'],capture_output=True,text=True,timeout=5)
         if result.returncode or len(result.stdout)>8192:
@@ -139,6 +146,11 @@ class CompanionHomes:
         target = os.fsencode(self.value['gateway']['config'])
         if len(raw)>65536 or not any(a==b'--config' and b==target for a,b in zip(args,args[1:])):
             raise OnboardingError('companion_gateway_service_binding_changed')
+        if receivers:
+            matches = [value for flag,value in zip(args,args[1:]) if flag==b'--miniapp-receivers']
+            if len(matches)!=1 or not Path(os.fsdecode(matches[0])).is_absolute():
+                raise OnboardingError('companion_gateway_receivers_required')
+            value['receivers_file'] = os.fsdecode(matches[0])
         return value
 
     def _reload(self):

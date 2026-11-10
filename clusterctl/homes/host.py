@@ -265,7 +265,51 @@ def accept_owner_authority(config_path, reference, *, previous_digest):
             "config_digest": sha(original)}
 
 
-def register_companion(config_path, request, public, *, human_name, vpn_url, previous_digest):
+def _companion_receiver_document(config, request, path):
+    """Prepare one existing same-origin receiving route, preserving its peers."""
+    import os
+    from ..onboarding_release import regular as bounded_regular
+    from .applications import receiver_routes
+
+    path = Path(path)
+    raw = bounded_regular(path, uid=os.geteuid(), limit=4*1024*1024)
+    if path.stat().st_mode & 0o077:
+        raise ValueError('private_application_receivers_required')
+    value = json.loads(raw)
+    homes = {**config['homes'], request['home_ref']: {'public_url': request['origin']}}
+    receiver_routes(value, homes)
+    routes = value.get(request['home_ref'], {})
+    url = request['origin'] + '/interaction/'
+    if routes.get('interaction', url) != url:
+        raise ValueError('existing_companion_receiver_preserved')
+    proposed = {**value, request['home_ref']: {**routes, 'interaction': url}}
+    receiver_routes(proposed, homes)
+    return raw, proposed
+
+
+def _register_companion_receiver(config_path, request, path):
+    from .. import being_seed
+
+    path = Path(path)
+    with being_seed._locked(path.parent):
+        original = regular(config_path)
+        config = validate_config(json.loads(original))
+        home = config['homes'].get(request['home_ref'])
+        if home is None or any(home[key] != value for key, value in {
+                'owner_being_ref': request['being_ref'], 'public_url': request['origin']}.items()):
+            raise ValueError('existing_companion_home_preserved')
+        raw, proposed = _companion_receiver_document(config, request, path)
+        if json.loads(raw) != proposed:
+            if regular(path) != raw or regular(config_path) != original:
+                raise ValueError('concurrent_application_receivers_preserved')
+            # Same bounded map; no growing backup series or second registry.
+            being_seed._write(path, proposed, limit=4*1024*1024)
+        return dict(state='configured', capability='interaction',
+                    url=request['origin']+'/interaction/', digest=sha(regular(path)))
+
+
+def register_companion(config_path, request, public, *, human_name, vpn_url, previous_digest,
+                       receivers_file=None):
     """Compose the existing identity/Home/owner writers for one new companion.
 
     The private intent retains the same resource keys through uncertain effects.
@@ -287,6 +331,8 @@ def register_companion(config_path, request, public, *, human_name, vpn_url, pre
     config_path=Path(config_path)
     original=regular(config_path)
     config=validate_config(json.loads(original))
+    if receivers_file is not None:
+        _companion_receiver_document(config, request, receivers_file)
     reference=request['home_ref']
     home=config['homes'].get(reference)
     vpn=urlsplit(vpn_url)
@@ -368,9 +414,12 @@ def register_companion(config_path, request, public, *, human_name, vpn_url, pre
         revision=home['owner_revision'],token=token)
     if not sessions.owner(token,home=reference,subject=actor,binding_revision=home['owner_revision']):
         raise ValueError('current_home_identity_binding_required')
-    return dict(status='home-configured',home_ref=reference,actor=request['being_ref'],
+    result = dict(status='home-configured',home_ref=reference,actor=request['being_ref'],
         human_ref=request['human_ref'],revision=actor.revision,
         config_digest=sha(regular(config_path)),receiving_state='unobserved')
+    if receivers_file is not None:
+        result['receiver_route'] = _register_companion_receiver(config_path, request, receivers_file)
+    return result
 
 
 def main():
@@ -380,6 +429,8 @@ def main():
     parser.add_argument("--reference", required=True)
     parser.add_argument("--row", type=Path)
     parser.add_argument("--authority", type=Path)
+    parser.add_argument("--receivers", type=Path,
+                        help="Existing gateway application receiving map for companion delivery")
     parser.add_argument("--previous-digest", required=True)
     args = parser.parse_args()
     try:
@@ -392,7 +443,8 @@ def main():
                 raise ValueError('home_identity_source_mismatch')
             print(json.dumps(register_companion(args.config,value['request'],
                 json.loads(regular(args.authority)),human_name=value['human_name'],
-                vpn_url=value['vpn_url'],previous_digest=args.previous_digest)))
+                vpn_url=value['vpn_url'],previous_digest=args.previous_digest,
+                receivers_file=args.receivers)))
             return
         if args.operation == 'register-identity':
             if args.row is None or args.authority is None:

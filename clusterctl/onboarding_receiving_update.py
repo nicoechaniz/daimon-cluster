@@ -2023,6 +2023,31 @@ def recover_capability_stage(upgrade, *, runtime_root: Path, transaction: Path,
         raise OnboardingError('receiving_bootstrap_attempt_limit')
 
 
+def guest_capability_additions(value, bundle: dict | None = None) -> dict:
+    """Validate an explicit owner request; ordinary updates issue no methods."""
+    if value is None:
+        return {}
+    if value != {'observe': ['we.event.get']}:
+        raise OnboardingError('receiving_guest_capability_additions_required')
+    if bundle is not None:
+        rows = [row for row in bundle['capabilities']
+                if row['profile'].get('schema') == 'dm.operator.capability-profile/v1'
+                and row['profile'].get('role') == 'observe']
+        if len(rows) != 1 or 'we.event.get' in rows[0]['descriptor']['methods']:
+            raise OnboardingError('receiving_guest_capability_additions_required')
+    return {'observe': ['we.event.get']}
+
+
+def guest_stage_options(request: dict) -> dict:
+    return {} if request.get('mode') == 'expand' else controller_stage_options(request.get('mode', 'issue'))
+
+
+def guest_stage_matches(receipt: dict, request: dict) -> bool:
+    flags = (not receipt.get('renew_receiving_controller', False)
+             and not receipt.get('provision_receiving_controller', False)) if request.get('mode') == 'expand' else controller_stage_matches(receipt, request.get('mode', 'issue'))
+    return flags and receipt.get('add_methods') == request.get('capability_additions', {})
+
+
 def _freeze_initial_guest_owner(target, *, deadline_ns: int, initial_service: bool) -> dict:
     """Read initial context while the caller holds the actual native writer.
 
@@ -2066,13 +2091,20 @@ def _freeze_initial_guest_owner(target, *, deadline_ns: int, initial_service: bo
 
 
 def freeze_guest_bootstrap(target, *, deadline_ns: int, initial: bool = False,
-                           initial_service: bool = False) -> dict:
-    """Freeze a predecessor, initial controller or first selected group load."""
+                           initial_service: bool = False, capability_additions: dict | None = None) -> dict:
+    """Freeze a predecessor and any explicitly selected missing owner method."""
     from .onboarding_service import GuestServiceBootstrap
     if (type(initial) is not bool or type(initial_service) is not bool
             or initial and initial_service):
         raise OnboardingError('invalid_receiving_bootstrap_request')
     GuestServiceBootstrap._budget(deadline_ns)
+    additions = guest_capability_additions(capability_additions)
+    if additions and (initial or initial_service):
+        raise OnboardingError('receiving_guest_capability_additions_required')
+    if additions:
+        from daimon_matrix.service import OPERATOR_CAPABILITY_PROFILES
+        if 'we.event.get' not in OPERATOR_CAPABILITY_PROFILES['observe']:
+            raise OnboardingError('qualified_owner_event_read_sdk_required')
     if initial or initial_service:
         with being_seed._locked(target.root), target._runtime_writer():
             return _freeze_initial_guest_owner(target, deadline_ns=deadline_ns, initial_service=initial_service)
@@ -2092,6 +2124,11 @@ def freeze_guest_bootstrap(target, *, deadline_ns: int, initial: bool = False,
             'runtime_bundle_sha256') != preservation['runtime_bytes_sha256']:
         raise OnboardingError('receiving_controller_loaded_bundle_conflict')
     mode = controller_bootstrap_mode(bundle, preservation)
+    additions = guest_capability_additions(capability_additions, bundle)
+    if additions:
+        if mode != 'preserve':
+            raise OnboardingError('receiving_guest_capability_preservation_required')
+        mode = 'expand'
     renewal = {}
     if mode == 'renew':
         from daimon_matrix import operator_runtime_upgrade as upgrade
@@ -2099,6 +2136,7 @@ def freeze_guest_bootstrap(target, *, deadline_ns: int, initial: bool = False,
     return dict(plan_digest=digest(target.plan), genesis_digest=digest(target.genesis),
         code_digest=target.code_digest, runtime_sha256=digest(bundle), group_sha256=digest(group),
         mode=mode, preservation=preservation, **renewal,
+        **({'capability_additions': additions} if additions else {}),
         being_ref=bundle['manifest']['being_ref'], origin=bundle['local_origin'], group=group,
         store_bindings=(observed['runtime_status'].get('loaded_runtime') or {}).get('stores'),
         observer_startup=target.qualified_startup,
@@ -2122,10 +2160,10 @@ class GuestOwnerBootstrap:
             if initial else isinstance(predecessor, dict) and set(predecessor) == {'process', 'admission_parent'})
         fields = {'schema', 'operation_id', 'plan_digest', 'genesis_digest', 'code_digest',
                   'runtime_sha256', 'group_sha256', 'predecessor', 'expires_at_ms'}
-        if (os.geteuid() != 1000 or set(request) - {'group_context'} not in (fields, fields | {'mode', 'preservation'})
-                or request.get('mode', 'issue') not in {'issue', 'preserve', 'renew'}
-                or (request.get('mode', 'issue') in {'preserve', 'renew'}) != isinstance(request.get('preservation'), dict)
-                or request.get('mode') in {'preserve', 'renew'} and (
+        if (os.geteuid() != 1000 or set(request) - {'group_context', 'capability_additions'} not in (fields, fields | {'mode', 'preservation'})
+                or request.get('mode', 'issue') not in {'issue', 'preserve', 'renew', 'expand'}
+                or (request.get('mode', 'issue') in {'preserve', 'renew', 'expand'}) != isinstance(request.get('preservation'), dict)
+                or request.get('mode') in {'preserve', 'renew', 'expand'} and (
                     request['runtime_sha256'] != request['preservation'].get('runtime_sha256')
                     or request['preservation'].get('origin') != target.document_bundle()['local_origin'])
                 or request['schema'] not in {'cluster-guest-owner-bootstrap/v1', 'cluster-guest-owner-initial/v1'}
@@ -2138,6 +2176,9 @@ class GuestOwnerBootstrap:
                 or request['code_digest'] != target.code_digest
                 or not valid_predecessor):
             raise OnboardingError('receiving_guest_bootstrap_request_required')
+        additions = guest_capability_additions(request.get('capability_additions'))
+        if (request.get('mode') == 'expand') != bool(additions) or initial and additions:
+            raise OnboardingError('receiving_guest_capability_additions_required')
         context = request.get('group_context')
         if 'group_context' in request:
             try:
@@ -2294,6 +2335,7 @@ class GuestOwnerBootstrap:
             bundle = self.target.document_bundle()
             if digest(bundle) != self.request['runtime_sha256']:
                 raise OnboardingError('receiving_guest_bootstrap_source_changed')
+            guest_capability_additions(self.request.get('capability_additions'), bundle)
             current = dict(source_sha256=upgrade.inventory_digest(self.runtime), counter=bundle['keystore']['counter'],
                 control_head=bundle['control_head'], being_ref=bundle['manifest']['being_ref'], origin=bundle['local_origin'])
             if intent is not None and current != intent:
@@ -2319,8 +2361,8 @@ class GuestOwnerBootstrap:
                 upgrade.stage_capabilities(source=self.runtime, transaction=self.transaction,
                     expected_source_sha256=intent['source_sha256'], expected_counter=intent['counter'],
                     expected_control_head=intent['control_head'], expected_being_ref=intent['being_ref'],
-                    expected_origin=intent['origin'], add_methods={},
-                    **controller_stage_options(self.request.get('mode', 'issue')), expires_at_ms=self.request['expires_at_ms'], password=bytes(password), externally_quiesced=True)
+                    expected_origin=intent['origin'], add_methods=self.request.get('capability_additions', {}),
+                    **guest_stage_options(self.request), expires_at_ms=self.request['expires_at_ms'], password=bytes(password), externally_quiesced=True)
             finally:
                 password[:] = b'\0' * len(password)
             receipt = json.loads(onboarding_release.regular(ready_path, uid=1000))
@@ -2331,8 +2373,7 @@ class GuestOwnerBootstrap:
                 or receipt.get('counter_after') != intent['counter'] + 1
                 or receipt.get('control_head') != intent['control_head']
                 or receipt.get('being_ref') != intent['being_ref'] or receipt.get('origin') != intent['origin']
-                or not controller_stage_matches(receipt, self.request.get('mode', 'issue'))
-                or receipt.get('add_methods') != {} or receipt.get('expires_at_ms') != self.request['expires_at_ms']):
+                or not guest_stage_matches(receipt, self.request) or receipt.get('expires_at_ms') != self.request['expires_at_ms']):
             raise OnboardingError('receiving_guest_bootstrap_request_conflict')
         raw = onboarding_release.regular(ready_path, uid=1000)
         ready_sha256 = hashlib.sha256(raw).hexdigest()
@@ -3136,7 +3177,7 @@ def prepare_guest_bootstrap(backend, plan: dict, *, candidate: tuple[Path, str],
                             manifest_path: Path, manifest_digest: str, expires_at_ms: int,
                             timeout_seconds: float = 30, manifest_uid: int = 0,
                             admission_link: dict | None = None, installed_only: bool = False,
-                            deadline_ns: int | None = None) -> tuple[dict, dict]:
+                            capability_additions: dict | None = None, deadline_ns: int | None = None) -> tuple[dict, dict]:
     """Prepare one guest without selecting code or interrupting its service.
 
     A receiving operation freezes these vectors before any lifecycle effect.
@@ -3170,8 +3211,13 @@ def prepare_guest_bootstrap(backend, plan: dict, *, candidate: tuple[Path, str],
     call_deadline = (None if deadline_ns is None else
         min(deadline_ns, time.monotonic_ns() + int(remaining() * 1_000_000_000)))
     owner = backend._target_call(plan, 'receiving-bootstrap-freeze', candidate=candidate,
-        bootstrap_timeout_seconds=remaining(), **({'owner_deadline_ns':call_deadline} if call_deadline is not None else {}))
+        bootstrap_timeout_seconds=remaining(),
+        **({'bootstrap_capability_additions': guest_capability_additions(capability_additions)}
+           if capability_additions is not None else {}),
+        **({'owner_deadline_ns':call_deadline} if call_deadline is not None else {}))
     remaining()
+    if owner.get('mode') == 'expand':
+        preservation_authorization(owner['preservation'], expires_at_ms)
     with onboarding_sdk.probe_budget(deadline_ns):
         checked = preflight(candidate[0], candidate[1], manifest_path, manifest_digest,
             being_ref=owner['being_ref'], embodiment_id=owner['origin']['embodiment_id'],
@@ -3435,10 +3481,10 @@ class GuestBootstrapController:
         candidate = after['guest_bootstraps'][self.name]
         if (set(frozen) != {'plan', 'owner', 'root'} or frozen['plan']['name'] != self.name
                 or type(candidate['expires_at_ms']) is not int or candidate['expires_at_ms'] <= 0
-                or frozen['owner'].get('mode', 'issue') not in {'issue', 'preserve', 'renew'}
-                or (frozen['owner'].get('mode', 'issue') in {'preserve', 'renew'}) != isinstance(frozen['owner'].get('preservation'), dict)
+                or frozen['owner'].get('mode', 'issue') not in {'issue', 'preserve', 'renew', 'expand'}
+                or (frozen['owner'].get('mode', 'issue') in {'preserve', 'renew', 'expand'}) != isinstance(frozen['owner'].get('preservation'), dict)
                 or frozen['owner']['plan_digest'] != digest(frozen['plan'])
-                or frozen['owner'].get('mode') in {'preserve', 'renew'} and (
+                or frozen['owner'].get('mode') in {'preserve', 'renew', 'expand'} and (
                     frozen['owner']['preservation'].get('runtime_sha256') != frozen['owner']['runtime_sha256']
                     or frozen['owner']['preservation'].get('origin') != frozen['owner']['origin'])
                 or candidate['runtime_digest'] != frozen['owner']['code_digest']
@@ -3587,6 +3633,8 @@ class GuestBootstrapController:
                 expires_at_ms=candidate['expires_at_ms'])
             if 'mode' in frozen['owner']:
                 owner_request.update(mode=frozen['owner']['mode'], preservation=frozen['owner']['preservation'])
+            if 'capability_additions' in frozen['owner']:
+                owner_request['capability_additions'] = frozen['owner']['capability_additions']
             effects = (row['runtime_observation'] or {}).get('guest_bootstraps', {}).get(self.name, {})
             link = candidate.get('admission_link')
             horizon = candidate['expires_at_ms']
@@ -3622,13 +3670,15 @@ class GuestBootstrapController:
                 current = self.backend._guest_service_call(frozen['plan'], 'bootstrap-inspect', candidate=vector,
                     timeout_seconds=remaining())
                 if current['service']['manager']['ActiveState'] == 'active':
-                    if frozen['owner'].get('mode', 'issue') == 'preserve':
+                    if frozen['owner'].get('mode', 'issue') in {'preserve', 'expand'}:
                         preservation_authorization(frozen['owner']['preservation'], candidate['expires_at_ms'])
                     if (current['service'] != frozen['root']['service']
                             or candidate['expires_at_ms'] <= time.time_ns() // 1_000_000):
                         raise OnboardingError('receiving_guest_bootstrap_predecessor_or_expiry_changed')
                     fresh = self.backend._target_call(frozen['plan'], 'receiving-bootstrap-freeze', candidate=vector,
-                        bootstrap_timeout_seconds=remaining())
+                        bootstrap_timeout_seconds=remaining(),
+                        **({'bootstrap_capability_additions': frozen['owner']['capability_additions']}
+                           if 'capability_additions' in frozen['owner'] else {}))
                     if any(fresh.get(key) != value for key, value in frozen['owner'].items()
                            if key != 'observer_startup'):
                         raise OnboardingError('receiving_guest_bootstrap_predecessor_changed')

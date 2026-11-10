@@ -1417,3 +1417,104 @@ def test_group_freeze_pins_missing_visibility_without_inventing_receipt(fixture,
     appeared = _BOOTSTRAP_GROUP(target, target.document_bundle())
     assert digest(appeared) != digest(frozen)
     assert appeared['hashes']['visibility'] is not None
+
+
+@pytest.fixture
+def legacy_event_profile(monkeypatch):
+    from daimon_matrix.service import OPERATOR_CAPABILITY_PROFILES
+    current = dict(OPERATOR_CAPABILITY_PROFILES)
+    if 'we.event.get' not in current['observe']:
+        pytest.skip('selected successor SDK is required for owned-event read expansion')
+    monkeypatch.setitem(OPERATOR_CAPABILITY_PROFILES, 'observe', current['observe'] - {'we.event.get'})
+    monkeypatch.setitem(OPERATOR_CAPABILITY_PROFILES, 'weave', current['weave'] - {'we.propose', 'we.projection.receipt'})
+    def restore():
+        for role, methods in current.items():
+            monkeypatch.setitem(OPERATOR_CAPABILITY_PROFILES, role, methods)
+    return restore
+
+
+@pytest.fixture
+def legacy_event_owner(legacy_event_profile, fixture):
+    target, request, group, exited = fixture
+    legacy_event_profile()
+    return target, request, group, exited
+
+
+def test_explicit_guest_event_read_upgrade_preserves_identity_keys_expiry_and_lost_ack(legacy_event_owner, monkeypatch):
+    from daimon_matrix import operator_runtime_upgrade as upgrade
+    target, request, group, _ = legacy_event_owner
+    first = GuestOwnerBootstrap(target, request)
+    ready = first.execute('stage', deadline_ns=deadline())
+    first.execute('publish', deadline_ns=deadline(), ready_sha256=ready['ready_sha256'])
+    root = target.package / 'runtime'
+    before = target.document_bundle()
+    preservation = receiving_update.controller_preservation(root, before)
+    request = {**request, 'operation_id': str(uuid.uuid4()), 'runtime_sha256': digest(before),
+        'mode': 'expand', 'preservation': preservation,
+        'capability_additions': {'observe': ['we.event.get']}}
+    migration = dict(operation_id=request['operation_id'], runtime_sha256=request['runtime_sha256'],
+        origin=request['preservation']['origin'], group=group, capability_bootstrap=request)
+    monkeypatch.setattr('clusterctl.onboarding_peer.approved_group_authorities', lambda *_: {})
+    monkeypatch.setattr('clusterctl.onboarding_group_admission.load_owner_runtime', lambda *_args, **_kwargs: object())
+    def migrate(load, observed, expected, **options):
+        assert observed == expected == group
+        assert load() is not None
+        return 2
+    monkeypatch.setattr('clusterctl.onboarding_peer.migrate_published_catalogs', migrate)
+    keys = {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*.key')}
+    history = files(target.credential)
+    actual = upgrade.publish
+    calls = []
+    def lost(**kwargs):
+        result = actual(**kwargs)
+        calls.append(result)
+        if len(calls) == 1:
+            raise OSError('synthetic lost event-read publication reply')
+        return result
+    monkeypatch.setattr(upgrade, 'publish', lost)
+    with pytest.raises(OSError, match='lost event-read'):
+        target.migrate_visibility(migration, deadline_ns=deadline())
+    published = target.document_bundle()
+    result = target.migrate_visibility(migration, deadline_ns=deadline())
+    assert target.document_bundle() == published
+    assert published['keystore']['counter'] == before['keystore']['counter'] + 1
+    assert result['runtime_sha256'] == digest(published)
+    assert result['predecessor_runtime_sha256'] == digest(before)
+    assert result['capability_bootstrap_sha256'] == digest(request)
+    assert files(target.credential) == history
+    assert {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*.key')} == keys
+    assert published['local_origin'] == before['local_origin']
+    assert published['manifest'] == before['manifest']
+    for old, new in zip(before['capabilities'], published['capabilities'], strict=True):
+        if old['profile']['role'] != 'observe':
+            assert old == new
+        else:
+            a, b = old['descriptor'], new['descriptor']
+            assert b['methods'] == sorted([*a['methods'], 'we.event.get'])
+            assert {k: v for k, v in a.items() if k not in {'methods', 'capability_id'}} == {
+                k: v for k, v in b.items() if k not in {'methods', 'capability_id'}}
+    assert target.observe()['phase'] == 'v8'
+    assert result['schema'] == 'cluster-native-visibility-migrated/v1'
+
+
+@pytest.mark.parametrize('selection', [
+    {}, {'observe': ['tribe.invite']}, {'weave': ['we.event.get']},
+    {'observe': ['we.event.get', 'we.event.get']},
+])
+def test_guest_event_read_selection_rejects_unscoped_methods_before_records(fixture, selection):
+    target, request, _, _ = fixture
+    before = files(target.package / 'runtime')
+    with pytest.raises(OnboardingError, match='receiving_guest_capability_additions_required'):
+        GuestOwnerBootstrap(target, {**request, 'capability_additions': selection})
+    assert files(target.package / 'runtime') == before
+    assert not (target.root / 'receiving-bootstrap' / request['operation_id']).exists()
+
+
+def test_guest_event_read_freeze_refuses_unsupported_sdk_before_observing_body(monkeypatch):
+    from types import SimpleNamespace
+    from daimon_matrix.service import OPERATOR_CAPABILITY_PROFILES
+    monkeypatch.setitem(OPERATOR_CAPABILITY_PROFILES, 'observe', frozenset())
+    target = SimpleNamespace(running=lambda **_: pytest.fail('unsupported SDK reached the body'))
+    with pytest.raises(OnboardingError, match='qualified_owner_event_read_sdk_required'):
+        receiving_update.freeze_guest_bootstrap(target, deadline_ns=deadline(),
+            capability_additions={'observe': ['we.event.get']})

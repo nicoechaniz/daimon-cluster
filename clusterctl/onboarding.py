@@ -81,6 +81,8 @@ _DIAGNOSTIC_CODES = frozenset({
     'receiving_control_binding_conflict', 'receiving_control_process_changed',
     'receiving_control_not_accepted', 'receiving_control_completion_uncertain',
     'receiving_owner_deadline_expired',
+    'receiving_guest_capability_additions_required', 'receiving_guest_capability_preservation_required',
+    'qualified_owner_event_read_sdk_required',
     'qualified_runtime_imports_required', 'qualified_runtime_context_required',
     'qualified_receiving_interpreter_required', 'private_onboarding_sdk_required',
     'installed_onboarding_sdk_changed', 'onboarding_sdk_digest_mismatch',

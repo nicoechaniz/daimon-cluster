@@ -632,7 +632,8 @@ def test_actual_target_cli_keeps_approved_context_guard(tmp_path, monkeypatch, c
 
 def test_initial_bootstrap_cli_budget_starts_before_sdk_qualification(tmp_path, monkeypatch):
     target, args, calls = qualified_target_cli(tmp_path, monkeypatch)
-    def freeze(target, *, deadline_ns, initial, initial_service):
+    def freeze(target, *, deadline_ns, initial, initial_service, capability_additions):
+        assert capability_additions is None
         assert initial and not initial_service
         calls.append(deadline_ns)
         return {'synthetic': 'initial-owner-context'}
@@ -753,7 +754,8 @@ def test_linked_preparation_bound_reaches_native_and_first_bootstrap_requests(fi
 def test_bootstrap_absolute_deadline_cannot_restart_on_delayed_guest_arrival(tmp_path, monkeypatch, arrival, accepted):
     target, args, calls = qualified_target_cli(tmp_path, monkeypatch)
     monkeypatch.setattr(target, 'time', SimpleNamespace(monotonic_ns=lambda:arrival))
-    def freeze(target, *, deadline_ns, initial, initial_service):
+    def freeze(target, *, deadline_ns, initial, initial_service, capability_additions):
+        assert capability_additions is None
         calls.append(deadline_ns)
         return {'synthetic':'context'}
     monkeypatch.setattr('clusterctl.onboarding_receiving_update.freeze_guest_bootstrap', freeze)
@@ -899,3 +901,17 @@ def test_explicit_membership_only_intent_skips_publication_pipeline(fixture, mon
     assert result == {'signed_membership': 'only', 'receiving_readiness': 'unobserved'}
     assert seen == [('newcomer', 60)] and f.calls == []
     assert f.body['registered'] is False
+
+
+@pytest.mark.parametrize('seconds, accepted', [(180, True), (300, True), (301, False)])
+def test_visibility_migration_cli_uses_bounded_whole_operation_budget(tmp_path, monkeypatch, seconds, accepted):
+    target, args, calls = qualified_target_cli(tmp_path, monkeypatch)
+    def migrate(request, *, deadline_ns):
+        assert request == {'synthetic': 'migration'}
+        calls.append(deadline_ns)
+        return {'synthetic': 'migration-result'}
+    monkeypatch.setattr(target, 'Target', lambda *a, **k: SimpleNamespace(migrate_visibility=migrate))
+    result = target.main(['visibility-migrate', *args, '--observation-timeout-seconds', str(seconds),
+        '--visibility-migration-json', '{"synthetic":"migration"}'])
+    assert result == (0 if accepted else 1)
+    assert calls == ([1_000_000_000 + seconds * 1_000_000_000] if accepted else [])

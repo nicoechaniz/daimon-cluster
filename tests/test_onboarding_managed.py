@@ -963,7 +963,7 @@ def test_initial_managed_adopts_explicit_successor_without_replaying_start(tmp_p
 @pytest.mark.parametrize('local_observer', [False, True])
 @pytest.mark.parametrize('lost_start_ack', [False, True])
 @pytest.mark.parametrize('group_mode', ['plain', 'closed', 'published', 'legacy-published'])
-def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, group_mode, local_observer, automatic_restart=False, recovery_fault=None, reconcile_repair=False):
+def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, group_mode, local_observer, automatic_restart=False, recovery_fault=None, reconcile_repair=False, capability_expansion=False, restored_repair=False):
     """Plain and closed-group bodies reuse their existing native unit writer."""
     closed_group = group_mode != 'plain'
     local_observer = local_observer and closed_group
@@ -1006,7 +1006,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         runtime_sha256='original-bundle', responder_association='same-connection', group=None)
     if closed_group:
         current.update(group=dict(channel_id='tribe', application='/own/application', visibility='/own/visibility'),
-            runtime_status=dict(loaded_runtime=dict(qualified_startup=dict(code_digest='old-code'))),
+            runtime_status=dict(loaded_runtime=dict(qualified_startup=dict(code_digest=('b'*64 if restored_repair else 'old-code')))),
             group_runtime_status=dict(loaded_application=dict(application_sha256='c'*64,
                 publication_sha256='d'*64, visibility=dict(release_enabled=False, installation_sha256=None))))
     if closed_group:
@@ -1021,25 +1021,47 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     restart_pending = [automatic_restart]
     recovery_requests = []
     def owner(_plan, action, **_):
-        assert 0 < _['observation_timeout_seconds'] <= 60
+        assert 0 < _.get('observation_timeout_seconds', _.get('bootstrap_timeout_seconds', 0)) <= (
+            300 if action == 'visibility-migrate' else 60)
+        if action == 'receiving-bootstrap-freeze':
+            assert capability_expansion and published_group
+            assert _['bootstrap_capability_additions'] == {'observe': ['we.event.get']}
+            calls.append(action)
+            return dict(mode='expand', plan_digest=digest(plan), genesis_digest='a'*64,
+                code_digest='a'*64, runtime_sha256=current['runtime_sha256'], group_sha256='b'*64,
+                origin=current['origin'], predecessor={key: current[key] for key in ('process', 'admission_parent')},
+                capability_additions=_['bootstrap_capability_additions'],
+                preservation=dict(active=True, not_before_ms=0, not_after_ms=time.time_ns()//1_000_000+3600000))
         if action == 'sdk-prepare':
             if cold.pop() if cold else False:
                 offset[0] += 55_000_000_000
             assert 'current_native' not in _
             return dict(ready=True)
         if action == 'visibility-migrate':
+            assert 0 < _['observation_timeout_seconds'] <= 300
+            if capability_expansion:
+                assert _['observation_timeout_seconds'] > 60
             assert published_group
             request = _['visibility_migration']
             state = being_seed._read(managed.state / 'newcomer/native-code-update.json')
             assert state['dispatching'] == 'migrate' and 'quiesce' in state['effects']
-            assert request['runtime_sha256'] == current['runtime_sha256']
+            if 'capability_bootstrap' in request:
+                assert capability_expansion and request['runtime_sha256'] == 'original-bundle'
+                assert request['capability_bootstrap'] == state['capability_bootstrap']
+                if not restored_repair:
+                    current['runtime_sha256'] = '9'*64
+            else:
+                assert request['runtime_sha256'] == current['runtime_sha256']
             assert request['group']['installation_sha256'] == 'e'*64
             calls.append(action)
             if failures and failures[0] == 'migration':
                 failures.pop()
                 raise OnboardingError('lost_migration_ack')
             return dict(schema='cluster-native-visibility-migrated/v1',
-                operation_id=request['operation_id'], runtime_sha256=request['runtime_sha256'],
+                operation_id=request['operation_id'], runtime_sha256=current['runtime_sha256'],
+                **({'predecessor_runtime_sha256': request['runtime_sha256'],
+                    'capability_bootstrap_sha256': digest(request['capability_bootstrap'])}
+                   if 'capability_bootstrap' in request else {}),
                 group=request['group'], catalog_schema_version=2)
         assert action == 'admitted-running'
         assert not local_observer, 'local observation reopened the cold target CLI'
@@ -1057,7 +1079,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
             result = dict(service=dict(unit_sha256=selected_unit[0], manager={'InvocationID':str(current['admission_parent']['pid'])}),
                 scope=dict(process=current['process'], admission_parent=current['admission_parent']))
             if previous is not None:
-                assert reconcile_repair
+                assert reconcile_repair or restored_repair
                 result['previous_admission_parent'] = dict(process=previous,
                     exited=recovery_fault != 'previous-alive')
             return result
@@ -1116,11 +1138,16 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         def _call(self, packet):
             assert packet == dict(action='native-current',plan_digest=digest(plan))
             assert self.deadline_ns > time.monotonic_ns()
+            if restored_repair and current['runtime_status']['loaded_runtime']['qualified_startup']['code_digest'] == 'b'*64:
+                assert self.deadline_ns - time.monotonic_ns() <= 60_000_000_000
             return {**copy.deepcopy(current),'plan_digest':digest(plan)}
     observer = Observer()
     options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bc', receive_only_group=closed_group and not published_group, published_group=published_group)
     if local_observer:
         options['current_observer'] = observer
+    if capability_expansion:
+        options['capability_additions'] = {'observe': ['we.event.get']}
+        options['timeout_seconds'] = 300
     if lost_start_ack:
         with pytest.raises(OnboardingError, match='lost_migration_ack' if lost_start_ack == 'migration' else 'lost_start_ack'):
             managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
@@ -1130,6 +1157,40 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
             managed.update_native_code(plan, (tmp_path, 'b'*64),
                 operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd', receive_only_group=closed_group and not published_group, published_group=published_group)
         assert calls == original_calls
+    if restored_repair:
+        path = managed.state / 'newcomer/native-code-update.json'
+        incomplete = being_seed._read(path)
+        incomplete['capability_bootstrap']['expires_at_ms'] = 1
+        if recovery_fault == 'unexpired':
+            incomplete['capability_bootstrap']['expires_at_ms'] = time.time_ns()//1_000_000+3600000
+        being_seed._write(path, incomplete)
+        current.update(process={'pid':62}, admission_parent={'pid':61})
+        current['group_runtime_status']['receiving']['channels']['tribe']['process_id'] = 62
+        if recovery_fault == 'runtime-changed':
+            current['runtime_sha256'] = 'unknown-change'
+        if recovery_fault == 'unit-changed':
+            selected_unit[0] = 'unknown-unit'
+        repair = dict(operation_id=options['operation_id'], published_group=True,
+            current_observer=observer, reconcile_existing=True)
+        before_calls = list(calls)
+        if recovery_fault:
+            with pytest.raises(OnboardingError, match='identity_changed|reconciliation_changed|operation_conflict'):
+                managed.update_native_code(plan, (tmp_path, 'b'*64), **repair)
+            assert being_seed._read(path) == incomplete
+            assert not {'bootstrap-start','bootstrap-select'} & set(calls)
+            return
+        result = managed.update_native_code(plan, (tmp_path, 'b'*64), **repair)
+        assert calls[len(before_calls):] == ['bootstrap-inspect']
+        assert result['disposition'] == 'restored-unchanged-predecessor'
+        retained = being_seed._read(path)
+        assert retained['effects'] == incomplete['effects']
+        assert retained['dispatching'] == 'migrate' and 'result' not in retained
+        assert managed.update_native_code(plan, (tmp_path, 'b'*64), **repair) == result
+        fresh = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd', published_group=True,
+            current_observer=observer)
+        assert managed.update_native_code(plan, (tmp_path, 'a'*64), **fresh)['candidate_digest'] == 'a'*64
+        assert being_seed._read(path.with_name('native-code-update.previous.json')) == retained
+        return
     if recovery_fault in {'lost-ack','expired','implementation'}:
         with pytest.raises(OnboardingError, match='lost_recovery_ack'):
             managed.update_native_code(plan, (tmp_path, 'a'*64), **options)
@@ -1141,7 +1202,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         if recovery_fault == 'implementation':
             options['recovery_implementation'] = (tmp_path,'f'*64)
     result = managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
-    assert result['runtime_sha256'] == 'original-bundle'
+    assert result['runtime_sha256'] == ('9'*64 if capability_expansion else 'original-bundle')
     assert result['receiving_readiness'] == 'unobserved'
     if closed_group:
         assert result['local_reader'] == dict(channel_id='tribe',phase='select',recovery='recovered')
@@ -1225,6 +1286,9 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
                 **{**options, 'reconcile_existing':False,
                    'operation_id':'68d4481f-9ade-4b1c-a08d-cfa3f962f5bd'})
         being_seed._write(path, completed)
+    if capability_expansion:
+        assert completed['effective_runtime_sha256'] == '9'*64
+        assert calls.count('receiving-bootstrap-freeze') == 1
     next_options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd', receive_only_group=closed_group and not published_group, published_group=published_group)
     if local_observer:
         next_options['current_observer'] = observer
@@ -1271,3 +1335,15 @@ def test_native_update_observes_automatic_successor_without_another_start(tmp_pa
     else:
         test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(
             tmp_path, monkeypatch, False, 'published', True, True, fault)
+
+
+def test_scoped_native_maintenance_retains_event_read_publication_across_lost_migration_ack(tmp_path, monkeypatch):
+    test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(
+        tmp_path, monkeypatch, 'migration', 'published', True, capability_expansion=True)
+
+
+@pytest.mark.parametrize('fault', [None, 'runtime-changed', 'unit-changed', 'unexpired', 'previous-alive'])
+def test_expired_unpublished_migration_reconciles_only_actual_unchanged_restoration(tmp_path, monkeypatch, fault):
+    test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(
+        tmp_path, monkeypatch, 'migration', 'published', True,
+        recovery_fault=fault, capability_expansion=True, restored_repair=True)

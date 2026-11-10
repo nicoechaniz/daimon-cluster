@@ -1299,6 +1299,7 @@ class HostBackend:
                      bootstrap_timeout_seconds: float | None = None,
                      bootstrap_initial: bool = False,
                      bootstrap_initial_service: bool = False,
+                     bootstrap_capability_additions: dict | None = None,
                      control_file: Path | None = None, control_command: Path | None = None,
                      control_value: dict | None = None, identity_expires_at_ms: int | None = None,
                      native_tooling: dict | None = None, group_request: dict | None = None,
@@ -1356,6 +1357,11 @@ class HostBackend:
         if identity_expires_at_ms is not None and (type(identity_expires_at_ms) is not int
                 or not 0 < identity_expires_at_ms < 2**53):
             raise OnboardingError('invalid_receiving_identity_request')
+        if bootstrap_capability_additions is not None:
+            from .onboarding_receiving_update import guest_capability_additions
+            guest_capability_additions(bootstrap_capability_additions)
+            if action != 'receiving-bootstrap-freeze' or bootstrap_initial or bootstrap_initial_service:
+                raise OnboardingError('invalid_receiving_bootstrap_request')
         if bootstrapping:
             if (candidate is None or bootstrap_timeout_seconds is None
                     or observation_timeout_seconds is not None
@@ -1379,7 +1385,7 @@ class HostBackend:
         if observation_timeout_seconds is not None:
             if (action not in {'observe', 'sdk-observe', 'sdk-prepare', 'visibility-migrate', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
                     or not math.isfinite(observation_timeout_seconds)
-                    or not 0 < observation_timeout_seconds <= 60):
+                    or not 0 < observation_timeout_seconds <= (300 if action == 'visibility-migrate' else 60)):
                 raise OnboardingError('receiving_host_deadline_required')
             deadline_ns = time.monotonic_ns() + int(observation_timeout_seconds * 1_000_000_000)
             if owner_deadline_ns is not None:
@@ -1481,6 +1487,8 @@ class HostBackend:
             if len(encoded.encode()) > 65536:
                 raise OnboardingError('receiving_native_tooling_recipe_required')
             arguments += ['--native-tooling-json', encoded]
+        if bootstrap_capability_additions is not None:
+            arguments += ['--bootstrap-capability-additions-json', json.dumps(bootstrap_capability_additions, sort_keys=True, separators=(',', ':'))]
         if bootstrap_request is not None:
             encoded = json.dumps(bootstrap_request, sort_keys=True, separators=(',', ':'))
             if len(encoded.encode()) > 131072:

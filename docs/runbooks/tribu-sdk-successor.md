@@ -630,6 +630,16 @@ Use one protected root-owned mode-0600 JSON spec (`cluster-receiving-maintenance
   path and existing `tooling` recipe. Jobs must match the grants and either be
   complete or have only their final acceptance outstanding, with every earlier
   stage complete. Their historical acceptance is never falsified by maintenance.
+  A selected existing guest may additionally specify
+  `"capability_additions": {"observe": ["we.event.get"]}` when its actual signed
+  observe profile lacks that method. Omission preserves every grant unchanged.
+  Preparation freezes the missing method before interruption; the existing owner
+  capability transaction signs the successor without changing keys or expiry.
+  This narrow expansion cannot renew an expired controller, accompany first
+  admission, select another role or issue arbitrary methods. Finish a genuinely
+  required renewal separately through its existing operation. The same host/owner
+  journals reconcile lost publication replies and verify the resulting group and
+  loaded reader. A new descriptor alone does not prove loaded model use.
 - Optional `worker`: exactly `{"unit":"daimon-onboarding-worker.service"}`.
   Required for the final-acceptance profile. Its Root journal must be the canonical
   `/var/lib/daimon-cluster-receiving-maintenance/operations`, so a second operation
@@ -1872,6 +1882,63 @@ cohort, `vm_qualification` selects its existing `receiving.json` and per-name
 placement records, verified by the existing `RemoteIncusRunner`. It supplies no
 new enrollment, identity, SSH route, arbitrary command or publication callback.
 Native/local targets keep their existing HostConfig route.
+Keep `owner_observation` and `reader_completion` on the consumed current owner
+locators, not an old copy retained in a qualification directory. After a public
+owner-helper update, reconcile the existing consumed locator with that qualified
+installation and its actual status/selection. In particular, the local operator
+must reference its installed public helper: a root-private qualification copy
+can verify as root yet fail to import as the configured service user. Verify the
+existing command as that user; preserve private directory permissions, old
+receipts and uncertain controls instead of widening a private tree or resetting
+its journals. Installing helper files alone does not update a locator.
+Determine helper compatibility from the maintained source and verified file
+inventory, not a digest label or a past summary describing it as newer/older.
+The installed helper must accept the actual read bound the caller will send.
+Reconciliation of an already-running restored predecessor uses the ordinary
+read bound; only post-start observation needs the extended cold-start bound.
+The stopped-owner `visibility-migrate` phase shares the remaining bounded native
+update envelope (at most300s); it must not inherit the60s cap of ordinary owner
+reads. The existing native/VM transport carries that same caller-selected
+finite deadline to the receiving monotonic clock. Public artifact preparation
+likewise uses its remaining bounded operation time; its default stays60s when no
+outer deadline is supplied. Neither layer may silently replace a selected300s
+migration/copy deadline with60s. Ordinary action validators retain their own
+bounds; this changes no resource account, provider budget or grant validity. Cryptographic staging/publication can exceed that read deadline. A timeout
+is a partial operation: inspect its original journal, actual owner process and
+capability transaction before continuing. An expired unpublished capability
+request cannot be reused as fresh publication authority. If the original runtime
+and service configuration are proved unchanged and no writer remains, restore
+that original Matrix service while repairing the retained update; do not leave a
+healthy predecessor unavailable merely because its candidate preparation failed.
+Use the existing `reconcile_existing` mode with that actually restored public
+code and the original operation ID to retain the failed attempt as
+`restored-unchanged-predecessor`. This path accepts only an expired capability
+migration stopped before selection, a matching authenticated original bundle and
+group, unchanged effective service files and the observed predecessor exit. It
+performs no capability stage/publication or service start. The original pending
+phase and effects stay intact alongside the resolution. An ordinary fresh update
+can then proceed with a new finite operation; it cannot reuse or extend the old
+capability request. Unknown or changed runtime/service state still needs recovery.
+The artifact builder `onboarding_code_successor.build` imports the maintained
+`tools.build_onboarding_code` development helpers. Sealed receiving runtime
+packages intentionally omit that development package. Build from the maintained
+checkout, or supply that exact public build-tool closure during an explicit
+remote preparation; do not treat the omission as a serving-runtime outage.
+A preparation that fails before creating its candidate has no selection effect.
+Retain its failure and continue that known-unstarted build after fixing the build
+context, preserving the same parent/source and qualified SDK.
+
+For an existing published target that lacks its owned-event read, the same spec
+can explicitly add `"capability_additions": {"observe": ["we.event.get"]}`.
+Select only targets actually missing that method. The command freezes the exact
+owner request and original finite deadline before stopping its Matrix service,
+then runs the existing owner capability publication inside the journaled migration
+phase. It binds both predecessor and signed successor runtime hashes; a lost
+migration/publication acknowledgment reconciles those same receipts, without a
+second grant or renewed expiry. The current reader completer remains part of the
+same command. No full onboarding, Source bootstrap or unrelated receiver restart
+is required for this local read-method change. Ordinary code updates omit the
+field and preserve every capability; reconciliation-only operations cannot add it.
 
 The command prepares qualified public code and invokes the same update primitive
 serially. Code preparation shares each body's maximum300-second budget and the

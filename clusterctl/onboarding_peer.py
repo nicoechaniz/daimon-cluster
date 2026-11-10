@@ -25,11 +25,13 @@ TOOL_MODULE = 'onboarding_peer_native.py'
 TOOL_COMMIT = '63968130294c4db6eac51a94800a837f2c10bad5'
 
 
-def visibility_migration_request(request: dict) -> None:
+def visibility_migration_request(request: dict, *, allow_capability_bootstrap: bool = False) -> None:
     """Keep one request contract for admitted targets and native Source."""
     try:
         if (not isinstance(request, dict)
-                or set(request) != {'operation_id', 'runtime_sha256', 'origin', 'group'}
+                or set(request) - ({'capability_bootstrap'} if allow_capability_bootstrap else set()) != {
+                    'operation_id', 'runtime_sha256', 'origin', 'group'}
+                or 'capability_bootstrap' in request and not isinstance(request['capability_bootstrap'], dict)
                 or str(uuid.UUID(request['operation_id'])) != request['operation_id']
                 or not isinstance(request['group'], dict)):
             raise ValueError

@@ -240,6 +240,23 @@ If an older selected package contains a maintenance-verifier defect, optional
 selects a separately qualified root helper through the existing implementation
 route. It does not select that code as the body's runtime or restart the unit.
 
+If an explicitly selected compatible repair is already running under different
+code, use the same command and original `operation_id` with the actual repaired
+`candidate` and `reconcile_existing: true`. This observation-only mode requires
+published-group `owner_observation`, every original physical effect confirmed,
+and no uncertain dispatch. It verifies current code, unchanged identity/runtime
+and group, the native child/managed parent, and actual exit of the original
+started parent. An optional qualified `recovery_implementation` supplies the
+current root inspector without selecting or restarting it. A still-running old
+parent, changed bindings or missing original effects remain concrete failures.
+
+The result is `cluster-native-code-reconciled/v1`, not success for the originally
+requested code. The old pins/effects and absent original result remain intact;
+the same bounded journal retains the observed successor and exact evidence hashes.
+The next ordinary update consumes that resolution and preserves it as the
+existing previous record. No extra controller, new identity, model input,
+catalog rewrite, lifecycle effect or repeated start is involved.
+
 For a change that requires cohort qualification, use the composed spec. For its
 managed `job` owners, `selection: null` derives digests from the exact native
 update results; do not transcribe six hashes per updated body. An updated

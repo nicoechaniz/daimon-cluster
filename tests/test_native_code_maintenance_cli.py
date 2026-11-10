@@ -24,6 +24,36 @@ def test_refuse_invalid_or_unbounded_spec_before_any_backend(change):
         managed.validate_code_update({**spec(), **change})
 
 
+def test_reconciliation_requires_explicit_published_current_owner_observation():
+    selected = {**spec(), 'reconcile_existing':True, 'owner_observation':'/held/current-readers.json'}
+    assert managed.validate_code_update(selected) == selected
+    for change in [dict(reconcile_existing=False), dict(group='closed'), dict(owner_observation=None)]:
+        with pytest.raises(OnboardingError, match='native_code_maintenance_spec_required'):
+            managed.validate_code_update({**selected,**change})
+
+
+def test_same_command_reports_reconciliation_separately_from_installation(monkeypatch):
+    selected = {**spec(), 'targets':['first'], 'reconcile_existing':True,
+        'owner_observation':'/held/current-readers.json'}
+    backend = SimpleNamespace(runtime_available=lambda *args,**kwargs:True)
+    monkeypatch.setattr(managed, 'maintenance_backend', lambda *args:
+        (backend, {'first':dict(name='first')}))
+    observer = object()
+    monkeypatch.setattr(managed, 'code_update_observers', lambda *args:{'first':observer})
+    def reconcile(plan, candidate, **options):
+        assert plan == dict(name='first')
+        assert options['operation_id'] == selected['operation_id']
+        assert options['reconcile_existing'] is True
+        assert options['current_observer'] is observer
+        return dict(schema='cluster-native-code-reconciled/v1',candidate_digest=candidate[1],
+            original_candidate_digest='b'*64)
+    monkeypatch.setattr(managed, 'ManagedRuntime', lambda _:SimpleNamespace(update_native_code=reconcile))
+    result = managed.run_code_update(selected)
+    assert result['complete'] is True
+    assert result['targets'][0]['status'] == 'reconciled'
+    assert result['targets'][0]['result']['original_candidate_digest'] == 'b'*64
+
+
 @pytest.mark.parametrize('batch_seconds',[90,480])
 def test_partial_batch_reuses_one_operation_and_existing_effects(tmp_path, monkeypatch, batch_seconds):
     selected = {**spec(), "max_seconds": batch_seconds}

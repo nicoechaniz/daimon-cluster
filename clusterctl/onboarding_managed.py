@@ -91,7 +91,8 @@ class ManagedRuntime:
     def update_native_code(self, plan: dict, candidate: tuple[Path, str], *,
                            operation_id: str, timeout_seconds: float = 120,
                            receive_only_group: bool = False, published_group: bool = False,
-                           current_observer=None, recovery_implementation=None) -> dict:
+                           current_observer=None, recovery_implementation=None,
+                           reconcile_existing: bool = False) -> dict:
         """Select code for an admitted body through its existing unit writer.
 
         No group publication or controller renewal is involved. The durable
@@ -110,6 +111,8 @@ class ManagedRuntime:
         """
         from .onboarding_service import command
         if (type(receive_only_group) is not bool or type(published_group) is not bool
+                or type(reconcile_existing) is not bool
+                or reconcile_existing and (not published_group or current_observer is None)
                 or receive_only_group and published_group
                 or str(uuid.UUID(operation_id)) != operation_id
                 or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 300
@@ -178,18 +181,82 @@ class ManagedRuntime:
             previous_completed = None
             if path.exists():
                 state = being_seed._read(path)
+                if reconcile_existing:
+                    required = {'validate', 'quiesce', 'migrate', 'select', 'start'}
+                    prior = state.get('pins', {})
+                    if (prior.get('operation_id') != operation_id
+                            or prior.get('plan_digest') != digest(plan)
+                            or prior.get('published_group') is not True
+                            or prior.get('candidate_digest') == candidate[1]
+                            or state.get('dispatching') is not None
+                            or state.get('result') is not None
+                            or set(state.get('effects', {})) != required):
+                        raise OnboardingError('native_code_update_operation_conflict')
+                    current = observe(starting=True)
+                    if (current['runtime_sha256'] != state['runtime_sha256']
+                            or current['origin'] != state['origin']):
+                        raise OnboardingError('native_code_update_identity_changed')
+                    if _code_update_group(current, published=True) != state.get('closed_group'):
+                        raise OnboardingError('native_code_update_group_changed')
+                    if current['runtime_status']['loaded_runtime'].get(
+                            'qualified_startup', {}).get('code_digest') != candidate[1]:
+                        raise OnboardingError('native_code_update_selection_changed')
+                    previous_parent = state['effects']['start']['admission_parent']
+                    physical = self.backend._guest_service_call(plan, 'bootstrap-inspect',
+                        candidate=candidate, timeout_seconds=remaining(), owner_observation=dict(
+                            **{key: current[key] for key in ('process', 'admission_parent')},
+                            previous_admission_parent=previous_parent),
+                        **({'implementation':recovery_implementation}
+                           if recovery_implementation is not None else {}))
+                    exit_receipt = physical.get('previous_admission_parent')
+                    if (exit_receipt != dict(process=previous_parent, exited=True)
+                            or physical['scope']['admission_parent'] != current['admission_parent']
+                            or physical['scope']['process'] != current['process']
+                            or store._load(plan['name']) != job):
+                        raise OnboardingError('native_code_update_reconciliation_changed')
+                    # Resolve the retained attempt truthfully. Its requested code
+                    # and confirmed effects remain unchanged, with no fabricated
+                    # original result and no stop/select/start or catalog rewrite.
+                    result = dict(schema='cluster-native-code-reconciled/v1',
+                        operation_id=operation_id, candidate_digest=candidate[1],
+                        original_candidate_digest=prior['candidate_digest'],
+                        pins_sha256=digest(prior), effects_sha256=digest(state['effects']),
+                        runtime_sha256=current['runtime_sha256'], origin=current['origin'],
+                        process=current['process'], admission_parent=current['admission_parent'],
+                        unit_sha256=physical['service']['unit_sha256'],
+                        previous_admission_parent=exit_receipt,
+                        disposition='superseded-by-observed-successor',
+                        receiving_readiness='unobserved')
+                    reader = code_update_local_reader(current)
+                    if reader is not None:
+                        result['local_reader'] = reader
+                    state['reconciliation'] = result
+                    save()
+                    return result
                 if state.get('pins') != pins:
-                    prior_pins, prior_result = state.get('pins', {}), state.get('result', {})
+                    prior_pins, prior_result = state.get('pins', {}), state.get('result') or {}
+                    reconciliation = state.get('reconciliation', {})
+                    reconciled = (reconciliation.get('schema') == 'cluster-native-code-reconciled/v1'
+                        and reconciliation.get('operation_id') == prior_pins.get('operation_id')
+                        and reconciliation.get('original_candidate_digest') == prior_pins.get('candidate_digest')
+                        and reconciliation.get('pins_sha256') == digest(prior_pins)
+                        and reconciliation.get('effects_sha256') == digest(state.get('effects', {}))
+                        and reconciliation.get('disposition') == 'superseded-by-observed-successor'
+                        and reconciliation.get('previous_admission_parent') == dict(
+                            process=state.get('effects', {}).get('start', {}).get('admission_parent'), exited=True))
                     if (prior_pins.get('operation_id') == operation_id
                             or state.get('dispatching') is not None
                             or len(json.dumps(state).encode()) > 65536
                             or set(state.get('effects', {})) != ({'validate', 'quiesce', 'migrate', 'select', 'start'}
                                 if prior_pins.get('published_group') else {'validate', 'quiesce', 'select', 'start'})
-                            or prior_result.get('operation_id') != prior_pins.get('operation_id')
-                            or prior_result.get('candidate_digest') != prior_pins.get('candidate_digest')
-                            or prior_result.get('schema') != 'cluster-native-code-updated/v1'):
+                            or not (reconciled or (
+                                prior_result.get('operation_id') == prior_pins.get('operation_id')
+                                and prior_result.get('candidate_digest') == prior_pins.get('candidate_digest')
+                                and prior_result.get('schema') == 'cluster-native-code-updated/v1'))):
                         raise OnboardingError('native_code_update_operation_conflict')
                     previous_completed = state
+            elif reconcile_existing:
+                raise OnboardingError('native_code_update_operation_conflict')
             # Mounted public code is not an installed owner interpreter. This
             # existing idempotent stage also prepares its closed import tree.
             sdk = self.backend._target_call(plan, 'sdk-prepare', candidate=candidate,
@@ -972,7 +1039,7 @@ class ManagedRuntime:
 def validate_code_update(spec: dict) -> dict:
     """One bounded operator request over existing jobs, placements and effects."""
     try:
-        if (not isinstance(spec, dict) or set(spec) - {'reader_completion','owner_observation','recovery_implementation'} != {
+        if (not isinstance(spec, dict) or set(spec) - {'reader_completion','owner_observation','recovery_implementation','reconcile_existing'} != {
                 'schema', 'host_config', 'vm_qualification', 'candidate', 'targets', 'group', 'operation_id', 'max_seconds'}
                 or spec['schema'] != 'cluster-native-code-maintenance/v1'
                 or type(spec['max_seconds']) is not int or not 1 <= spec['max_seconds'] <= 480
@@ -984,6 +1051,9 @@ def validate_code_update(spec: dict) -> dict:
                 or str(uuid.UUID(spec['operation_id'])) != spec['operation_id']
                 or not isinstance(spec['host_config'], str)
                 or not isinstance(spec['candidate']['code'], str)):
+            raise ValueError
+        if ('reconcile_existing' in spec and (spec['reconcile_existing'] is not True
+                or spec['group'] != 'published' or spec.get('owner_observation') is None)):
             raise ValueError
         implementation = spec.get('recovery_implementation')
         if implementation is not None and (not isinstance(implementation,dict)
@@ -1292,6 +1362,11 @@ def run_code_status(spec: dict) -> dict:
                     candidate_digest=pins['candidate_digest'], complete=retained.get('result') is not None,
                     dispatching=dispatch if dispatch in actions else None,
                     effects=sorted(actions.intersection(retained.get('effects', {}))))
+                if retained.get('reconciliation') is not None:
+                    resolution = retained['reconciliation']
+                    operation['reconciliation'] = dict(
+                        disposition=resolution.get('disposition'),
+                        observed_code=resolution.get('candidate_digest'))
             rows.append(dict(name=name, status='observed',
                 desired_code=spec['candidate']['code_digest'], loaded_code=loaded['code_digest'],
                 converged=loaded['code_digest'] == spec['candidate']['code_digest'],
@@ -1364,8 +1439,10 @@ def run_code_update(spec: dict) -> dict:
                 operation_id=spec['operation_id'], timeout_seconds=min(300.0, remaining),
                 receive_only_group=spec['group'] == 'closed', published_group=spec['group'] == 'published',
                 **({'current_observer':observers[name]} if name in observers else {}),
-                **({'recovery_implementation':recovery_code} if recovery_code is not None else {}))
-            results.append(dict(name=name, operation_id=spec['operation_id'], status='updated', result=value))
+                recovery_implementation=recovery_code,
+                reconcile_existing=bool(spec.get('reconcile_existing')))
+            results.append(dict(name=name, operation_id=spec['operation_id'],
+                status='reconciled' if spec.get('reconcile_existing') else 'updated', result=value))
         except Exception as error:
             # A retained failure may include partial effects. Keep the original
             # operation ID: another invocation reconciles it, never reenrolls.
@@ -1373,7 +1450,8 @@ def run_code_update(spec: dict) -> dict:
             results.append(dict(name=name, operation_id=spec['operation_id'], status='incomplete',
                 phase=phase, failure=refusal_diagnostic(error, stage='native-code-maintenance')))
             break
-    complete = len(results) == len(spec['targets']) and all(row['status'] == 'updated' for row in results)
+    complete = len(results) == len(spec['targets']) and all(
+        row['status'] in {'updated', 'reconciled'} for row in results)
     readers = None
     if complete and reader_routes is not None:
         try:

@@ -635,7 +635,8 @@ def test_host_root_service_route_never_executes_private_sdk_or_installer(tmp_pat
 
 
 @pytest.mark.parametrize('change', [None, 'unmounted', 'changed-code', 'missing-implementation'])
-def test_managed_start_recovery_uses_qualified_root_helper_without_changing_target(tmp_path, monkeypatch, change):
+@pytest.mark.parametrize('action', ['bootstrap-recover-start', 'bootstrap-inspect'])
+def test_managed_start_recovery_uses_qualified_root_helper_without_changing_target(tmp_path, monkeypatch, change, action):
     from clusterctl import onboarding_code_successor
     backend, value, run, candidate, calls = candidate_call_fixture(tmp_path, monkeypatch)
     implementation_path = tmp_path / 'root-implementation'
@@ -655,19 +656,24 @@ def test_managed_start_recovery_uses_qualified_root_helper_without_changing_targ
     if change == 'changed-code':
         (implementation_path / 'clusterctl/onboarding_target.py').write_text('# unqualified overwrite\n')
     options = dict(candidate=candidate, timeout_seconds=5, request={'recovery': 'synthetic'})
+    if action == 'bootstrap-inspect':
+        options.update(request=None, owner_observation={'process':'selected'})
     if change != 'missing-implementation':
         options['implementation'] = implementation
-    if change:
+    if change and not (change == 'missing-implementation' and action == 'bootstrap-inspect'):
         with pytest.raises(OnboardingError):
-            backend._guest_service_call(value, 'bootstrap-recover-start', **options)
+            backend._guest_service_call(value, action, **options)
         assert not calls
         return
-    assert backend._guest_service_call(value, 'bootstrap-recover-start', **options) == {'observed': True}
+    assert backend._guest_service_call(value, action, **options) == {'observed': True}
     argv = calls[0][0]
     assert argv[:6] == ['exec', 'dm-eko', '--user', '0', '--group', '0']
     assert argv[argv.index('--') + 1] == '/usr/bin/python3'
     assert argv[argv.index('--runtime-code') + 1] == '/opt/daimon-onboarding-runtime/' + candidate[1]
     assert argv[argv.index('--runtime-digest') + 1] == candidate[1]
+    if change == 'missing-implementation':
+        assert '--implementation-code' not in argv
+        return
     assert argv[argv.index('--implementation-code') + 1] == guest_implementation
     assert argv[argv.index('--implementation-digest') + 1] == implementation[1]
     assert guest_implementation in argv[:argv.index('--action')]

@@ -963,7 +963,7 @@ def test_initial_managed_adopts_explicit_successor_without_replaying_start(tmp_p
 @pytest.mark.parametrize('local_observer', [False, True])
 @pytest.mark.parametrize('lost_start_ack', [False, True])
 @pytest.mark.parametrize('group_mode', ['plain', 'closed', 'published', 'legacy-published'])
-def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, group_mode, local_observer, automatic_restart=False, recovery_fault=None):
+def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, group_mode, local_observer, automatic_restart=False, recovery_fault=None, reconcile_repair=False):
     """Plain and closed-group bodies reuse their existing native unit writer."""
     closed_group = group_mode != 'plain'
     local_observer = local_observer and closed_group
@@ -1051,9 +1051,16 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         offset[0] += 2_000_000_000
         calls.append(action)
         if action == 'bootstrap-inspect':
-            assert options['owner_observation'] == dict(process=current['process'], admission_parent=current['admission_parent'])
-            return dict(service=dict(unit_sha256=selected_unit[0], manager={'InvocationID':str(current['admission_parent']['pid'])}),
+            observed = dict(options['owner_observation'])
+            previous = observed.pop('previous_admission_parent', None)
+            assert observed == dict(process=current['process'], admission_parent=current['admission_parent'])
+            result = dict(service=dict(unit_sha256=selected_unit[0], manager={'InvocationID':str(current['admission_parent']['pid'])}),
                 scope=dict(process=current['process'], admission_parent=current['admission_parent']))
+            if previous is not None:
+                assert reconcile_repair
+                result['previous_admission_parent'] = dict(process=previous,
+                    exited=recovery_fault != 'previous-alive')
+            return result
         request = options['request']
         if action == 'bootstrap-recover-start':
             assert automatic_restart and options['implementation'][0] == tmp_path
@@ -1172,6 +1179,52 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     with pytest.raises(OnboardingError, match='operation_conflict'):
         managed.update_native_code(plan, (tmp_path, 'b' * 64), **options)
     completed = being_seed._read(managed.state / 'newcomer/native-code-update.json')
+    if reconcile_repair:
+        assert local_observer and published_group
+        # Model a lost final readiness result after every original physical
+        # effect was acknowledged, followed by an explicitly selected repair.
+        # Neither the failed requested code nor those effects become a success.
+        path = managed.state / 'newcomer/native-code-update.json'
+        incomplete = copy.deepcopy(completed)
+        incomplete.pop('result')
+        being_seed._write(path, incomplete)
+        current.update(process={'pid':62}, admission_parent={'pid':61})
+        current['runtime_status']['loaded_runtime']['qualified_startup']['code_digest'] = 'b'*64
+        current['group_runtime_status']['receiving']['channels']['tribe']['process_id'] = 62
+        selected_unit[0] = 'repaired-unit'
+        options['reconcile_existing'] = True
+        if recovery_fault == 'unknown-effect':
+            incomplete['dispatching'] = 'start'
+            being_seed._write(path, incomplete)
+        if recovery_fault in {'previous-alive', 'unknown-effect'}:
+            before = being_seed._read(path)
+            with pytest.raises(OnboardingError, match='reconciliation_changed|operation_conflict'):
+                managed.update_native_code(plan, (tmp_path, 'b'*64), **options)
+            assert being_seed._read(path) == before
+            assert calls.count('bootstrap-quiesce') == 1
+            return
+        original_calls = list(calls)
+        result = managed.update_native_code(plan, (tmp_path, 'b'*64), **options)
+        assert calls[len(original_calls):] == ['bootstrap-inspect']
+        assert result['schema'] == 'cluster-native-code-reconciled/v1'
+        assert result['original_candidate_digest'] == 'a'*64
+        assert result['candidate_digest'] == 'b'*64
+        completed = being_seed._read(path)
+        assert 'result' not in completed
+        assert completed['effects'] == incomplete['effects']
+        assert completed['pins'] == incomplete['pins']
+        assert completed['reconciliation']['local_reader']['recovery'] == 'recovered'
+        assert managed.update_native_code(plan, (tmp_path, 'b'*64), **options) == result
+        # Altered retained effects cannot be laundered through the resolution
+        # when the next ordinary update consumes the existing journal.
+        damaged = copy.deepcopy(completed)
+        damaged['effects']['start']['admission_parent'] = {'pid':999}
+        being_seed._write(path, damaged)
+        with pytest.raises(OnboardingError, match='operation_conflict'):
+            managed.update_native_code(plan, (tmp_path, 'b'*64),
+                **{**options, 'reconcile_existing':False,
+                   'operation_id':'68d4481f-9ade-4b1c-a08d-cfa3f962f5bd'})
+        being_seed._write(path, completed)
     next_options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd', receive_only_group=closed_group and not published_group, published_group=published_group)
     if local_observer:
         next_options['current_observer'] = observer
@@ -1193,6 +1246,14 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         assert latest['closed_group']['outbound_release'] is published_group
         assert calls.count('visibility-migrate') == (2 + (lost_start_ack == 'migration') if published_group else 0)
     assert job == {'plan': plan, 'original': 'retained'}
+
+
+@pytest.mark.parametrize('fault', [None, 'previous-alive', 'unknown-effect'])
+def test_observed_repair_reconciliation_preserves_failed_attempt_and_unblocks_next_update(
+        tmp_path, monkeypatch, fault):
+    test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(
+        tmp_path, monkeypatch, False, 'published', True,
+        reconcile_repair=True, recovery_fault=fault)
 
 
 @pytest.mark.parametrize('local_observer', [False, True])

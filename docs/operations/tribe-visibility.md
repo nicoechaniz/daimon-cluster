@@ -41,3 +41,8 @@ restoration callback. An uncertain owner result remains a concrete failure to
 inspect, not permission to create a replacement operation. The private result
 records actual publication and cohort completion. A message delivery/response is
 still its own actual result; an enabled lane or selected service does not prove it.
+
+A signed native SQLite BUSY/LOCKED rejection during reader selection is reconciled
+once with the same durable request and original effect deadline. Other refusals,
+repeated contention and uncertain transport results remain retained failures;
+they do not trigger new controls or an automatic maintenance loop.

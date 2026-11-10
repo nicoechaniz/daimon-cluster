@@ -1,5 +1,6 @@
 """Control recovery and deadlines through the existing native request contract."""
 import copy
+import json
 import os
 import socket
 import time
@@ -111,6 +112,54 @@ def test_lost_ack_reuses_original_native_request_without_reauthoring(tmp_path):
         assert calls.count('prepare') == 1
         sends = [v[1] for v in calls if isinstance(v,tuple)]
         assert sends[0] == sends[1]
+    finally:
+        listener.close()
+
+
+@pytest.mark.parametrize('repeated', [False, True])
+def test_roster_contention_reconciles_once_without_new_control(tmp_path, repeated):
+    owner, client, expected, command, path, _state, calls, listener = fixture(tmp_path)
+    original = client.send
+    sent = []
+
+    def send(request):
+        sent.append(copy.deepcopy(request))
+        if len(sent) == 1 or repeated:
+            return dict(ok=False, error=dict(code='reader_roster_unavailable', retryable=True))
+        return original(request)
+
+    client.send = send
+    try:
+        if repeated:
+            with pytest.raises(OnboardingError, match='receiving_control_not_accepted'):
+                control.execute(owner, command, path, expected=expected, deadline_ns=owner.deadline_ns)
+        else:
+            result = control.execute(owner, command, path, expected=expected, deadline_ns=owner.deadline_ns)
+            assert result['gate']['phase'] == 'select'
+        assert len(sent) == 2 and sent[0] == sent[1]
+        assert calls.count('prepare') == 1
+        assert json.loads(path.read_text())['request'] == sent[0]
+    finally:
+        listener.close()
+
+
+@pytest.mark.parametrize('error', [
+    dict(code='reader_roster_unavailable', retryable=False),
+    dict(code='reader_roster_conflict', retryable=True),
+])
+def test_other_reader_refusals_are_not_retried(tmp_path, error):
+    owner, client, expected, command, path, _state, _calls, listener = fixture(tmp_path)
+    sent = []
+
+    def send(request):
+        sent.append(request)
+        return dict(ok=False, error=error)
+
+    client.send = send
+    try:
+        with pytest.raises(OnboardingError, match='receiving_control_not_accepted'):
+            control.execute(owner, command, path, expected=expected, deadline_ns=owner.deadline_ns)
+        assert len(sent) == 1
     finally:
         listener.close()
 
@@ -555,7 +604,8 @@ def test_reader_rpc_generation_slot_is_only_a_bounded_local_request_path(tmp_pat
     deadline=time.monotonic_ns()+1_000_000_000
     command=dict(operation_id=str(uuid.uuid4()),phase='revoke')
     value=dict(action='control',command=command,expected={'unchanged':'binding'})
-    if slot is not None:value['slot']=slot
+    if slot is not None:
+        value['slot']=slot
     calls=[]
     def execute(owner, actual, path, **options):
         calls.append(path)

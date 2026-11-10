@@ -316,6 +316,20 @@ def execute(owner: OwnerGroupClient, command: dict[str, Any], path: Path, *,
         # on a cached request. A second status is not that stronger proof.
         response = client.send(request)
         _accept(deadline_ns)
+        if (response.get('ok') is False
+                and response.get('error') == {'code': 'reader_roster_unavailable', 'retryable': True}):
+            # A verified SQLite BUSY/LOCKED rejection has no selected effect.
+            # Reconcile the exact durable request once, within its original
+            # process/CAS/effect deadline. Never retry an unknown transport result.
+            if parent is not None:
+                parent.verify()
+            if presence is None:
+                owner._observer.verify()
+            else:
+                presence.verify()
+            _accept(deadline_ns)
+            response = client.send(request)
+            _accept(deadline_ns)
         if response.get('ok') is not True:
             raise OnboardingError('receiving_control_not_accepted')
         gate = response.get('result')

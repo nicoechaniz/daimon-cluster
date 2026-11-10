@@ -1093,7 +1093,7 @@ def main(argv: list[str] | None = None) -> int:
                 or admitting and ((timeout is None) != (args.authorization_expires_at_ms is None))):
             raise OnboardingError('invalid_receiving_observation_timeout')
         if timeout is not None and (args.action not in {'observe', 'sdk-observe', 'sdk-prepare', 'visibility-migrate', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
-                or not math.isfinite(timeout) or not 0 < timeout <= 60):
+                or not math.isfinite(timeout) or not 0 < timeout <= (300 if args.action == 'visibility-migrate' else 60)):
             raise OnboardingError('invalid_receiving_observation_timeout')
         if bootstrapping:
             timeout = args.bootstrap_timeout_seconds

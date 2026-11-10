@@ -323,7 +323,8 @@ class ManagedRuntime:
                 save()
                 if action == 'migrate':
                     migrated = self.backend._target_call(plan, 'visibility-migrate',
-                        candidate=candidate, observation_timeout_seconds=remaining(), visibility_migration=dict(
+                        candidate=candidate, observation_timeout_seconds=max(0.0,
+                            (deadline - time.monotonic_ns()) / 1_000_000_000), visibility_migration=dict(
                             operation_id=operation_id, runtime_sha256=state['runtime_sha256'],
                             origin=state['origin'], group=state['closed_group'],
                             **({'capability_bootstrap': state['capability_bootstrap']}

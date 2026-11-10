@@ -1891,6 +1891,15 @@ can verify as root yet fail to import as the configured service user. Verify the
 existing command as that user; preserve private directory permissions, old
 receipts and uncertain controls instead of widening a private tree or resetting
 its journals. Installing helper files alone does not update a locator.
+The stopped-owner `visibility-migrate` phase shares the remaining bounded native
+update envelope (at most300s); it must not inherit the60s cap of ordinary owner
+reads. Cryptographic staging/publication can exceed that read deadline. A timeout
+is a partial operation: inspect its original journal, actual owner process and
+capability transaction before continuing. An expired unpublished capability
+request cannot be reused as fresh publication authority. If the original runtime
+and service configuration are proved unchanged and no writer remains, restore
+that original Matrix service while repairing the retained update; do not leave a
+healthy predecessor unavailable merely because its candidate preparation failed.
 The artifact builder `onboarding_code_successor.build` imports the maintained
 `tools.build_onboarding_code` development helpers. Sealed receiving runtime
 packages intentionally omit that development package. Build from the maintained

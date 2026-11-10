@@ -901,3 +901,17 @@ def test_explicit_membership_only_intent_skips_publication_pipeline(fixture, mon
     assert result == {'signed_membership': 'only', 'receiving_readiness': 'unobserved'}
     assert seen == [('newcomer', 60)] and f.calls == []
     assert f.body['registered'] is False
+
+
+@pytest.mark.parametrize('seconds, accepted', [(180, True), (300, True), (301, False)])
+def test_visibility_migration_cli_uses_bounded_whole_operation_budget(tmp_path, monkeypatch, seconds, accepted):
+    target, args, calls = qualified_target_cli(tmp_path, monkeypatch)
+    def migrate(request, *, deadline_ns):
+        assert request == {'synthetic': 'migration'}
+        calls.append(deadline_ns)
+        return {'synthetic': 'migration-result'}
+    monkeypatch.setattr(target, 'Target', lambda *a, **k: SimpleNamespace(migrate_visibility=migrate))
+    result = target.main(['visibility-migrate', *args, '--observation-timeout-seconds', str(seconds),
+        '--visibility-migration-json', '{"synthetic":"migration"}'])
+    assert result == (0 if accepted else 1)
+    assert calls == ([1_000_000_000 + seconds * 1_000_000_000] if accepted else [])

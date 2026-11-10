@@ -1021,7 +1021,8 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     restart_pending = [automatic_restart]
     recovery_requests = []
     def owner(_plan, action, **_):
-        assert 0 < _.get('observation_timeout_seconds', _.get('bootstrap_timeout_seconds', 0)) <= 60
+        assert 0 < _.get('observation_timeout_seconds', _.get('bootstrap_timeout_seconds', 0)) <= (
+            300 if action == 'visibility-migrate' else 60)
         if action == 'receiving-bootstrap-freeze':
             assert capability_expansion and published_group
             assert _['bootstrap_capability_additions'] == {'observe': ['we.event.get']}
@@ -1037,6 +1038,9 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
             assert 'current_native' not in _
             return dict(ready=True)
         if action == 'visibility-migrate':
+            assert 0 < _['observation_timeout_seconds'] <= 300
+            if capability_expansion:
+                assert _['observation_timeout_seconds'] > 60
             assert published_group
             request = _['visibility_migration']
             state = being_seed._read(managed.state / 'newcomer/native-code-update.json')
@@ -1140,6 +1144,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         options['current_observer'] = observer
     if capability_expansion:
         options['capability_additions'] = {'observe': ['we.event.get']}
+        options['timeout_seconds'] = 300
     if lost_start_ack:
         with pytest.raises(OnboardingError, match='lost_migration_ack' if lost_start_ack == 'migration' else 'lost_start_ack'):
             managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)

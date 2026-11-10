@@ -647,6 +647,23 @@ def test_actual_supervisor_failure_retains_safe_cause_and_parent_reports_after_c
     assert owned.supervisor.renewal_failure == frames[0]
 
 
+def test_renewal_failure_phase_is_optional_closed_and_never_exception_text():
+    from clusterctl.admission import AdmissionUnavailable
+    from clusterctl.admission_supervisor import _renewal_failure, renewal_failure_diagnostic
+    error = AdmissionUnavailable('admission round-trip deadline expired')
+    legacy = _renewal_failure(error, 2)
+    assert renewal_failure_diagnostic(legacy) == legacy and 'phase' not in legacy
+    error.phase, error.action = 'receive', 'renew'
+    observed = _renewal_failure(error, 2)
+    assert renewal_failure_diagnostic(observed) == observed
+    assert observed['phase'] == 'receive' and observed['action'] == 'renew'
+    private = 'secret and /private/path'
+    error.phase, error.action = private, private
+    assert _renewal_failure(error, 2) == legacy
+    assert renewal_failure_diagnostic({**legacy, 'phase':private, 'action':'renew'}) is None
+    assert renewal_failure_diagnostic({**legacy, 'phase':'receive'}) is None
+
+
 @pytest.mark.parametrize('change', [
     'disappeared', 'appeared', 'appeared_receive_only',
     'tribe_ref', 'directory', 'visibility', 'socket',

@@ -54,3 +54,13 @@ shorter reader-journal recovery cap, and normal RPC/control/credential deadlines
 are unchanged. Actual readiness, not a successful service start, completes the
 receiving qualification. This permits cold preparation before recovery; it does
 not compact an ever-growing signed journal or remove any verification.
+
+Admission-renewal failures retain the existing closed journal frame and may add
+fixed `action`/`phase` labels for request preparation, connection, send, receive,
+decode or response verification. These distinguish a future timeout's actual
+client phase without recording endpoint, coordinates, keys, request bodies or
+authority exception text. Older frames remain valid; a historical unlabelled
+timeout cannot be attributed retroactively. Lease TTL, retry count, absolute
+round-trip deadline, signature checks and the independent monotonic kill fence
+are unchanged. This is existing failure reporting, not a new monitor or model
+attention service.

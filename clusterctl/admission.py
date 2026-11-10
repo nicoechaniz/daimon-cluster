@@ -63,6 +63,9 @@ class AdmissionConflict(AdmissionError):
 class AdmissionUnavailable(AdmissionError):
     """The authority could not be reached or returned an invalid response."""
 
+    phase: str | None = None
+    action: str | None = None
+
 
 def _canonical(value: Mapping[str, Any]) -> bytes:
     return json.dumps(
@@ -957,11 +960,17 @@ class AdmissionClient:
         deadline_ns = time.monotonic_ns() + int(self.timeout_s * 1_000_000_000)
         if self.deadline_ns is not None:
             deadline_ns = min(deadline_ns, self.deadline_ns)
+        phase = 'prepare'
+
+        def unavailable(message: str) -> AdmissionUnavailable:
+            error = AdmissionUnavailable(message)
+            error.phase, error.action = phase, action
+            return error
 
         def remaining() -> float:
             budget = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
             if budget <= 0:
-                raise AdmissionUnavailable("admission round-trip deadline expired")
+                raise unavailable("admission round-trip deadline expired")
             return budget
 
         request_id = str(uuid.uuid4())
@@ -983,9 +992,15 @@ class AdmissionClient:
         if len(encoded) > MAX_MESSAGE_BYTES:
             raise AdmissionError("admission request is too large")
         try:
+            remaining()
+            phase = 'connect'
             with self.endpoint.connect(remaining()) as connection:
+                remaining()
+                phase = 'send'
                 connection.settimeout(remaining())
                 connection.sendall(encoded)
+                remaining()
+                phase = 'receive'
                 chunks = bytearray()
                 while not chunks.endswith(b"\n"):
                     connection.settimeout(remaining())
@@ -995,26 +1010,29 @@ class AdmissionClient:
                         break
                     chunks.extend(chunk)
                     if len(chunks) > MAX_MESSAGE_BYTES:
-                        raise AdmissionUnavailable("admission response is too large")
+                        raise unavailable("admission response is too large")
         except (OSError, TimeoutError) as exception:
             remaining()
-            raise AdmissionUnavailable("admission authority is unavailable") from exception
+            raise unavailable("admission authority is unavailable") from exception
+        phase = 'decode'
         try:
             response = json.loads(chunks)
         except (json.JSONDecodeError, UnicodeDecodeError) as exception:
-            raise AdmissionUnavailable("admission response is malformed") from exception
+            raise unavailable("admission response is malformed") from exception
+        remaining()
+        phase = 'verify-response'
         if (
             not isinstance(response, dict)
             or response.get("schema") != RESPONSE_SCHEMA
             or response.get("request_id") != request_id
             or response.get("authority_key_id") != self.authority_key_id
         ):
-            raise AdmissionUnavailable("admission response binding mismatch")
+            raise unavailable("admission response binding mismatch")
         signature = response.get("signature")
         if not isinstance(signature, str) or not _verify_ed25519(
             _canonical(response), signature, self.authority_public_key
         ):
-            raise AdmissionUnavailable("admission response signature is invalid")
+            raise unavailable("admission response signature is invalid")
         remaining()
         if response.get("ok") is not True:
             if response.get("error") in {"AdmissionConflict", "FenceConflict"}:

@@ -1271,6 +1271,18 @@ def test_prepared_visibility_refuses_unadmitted_application_pins(group_source):
                     representation='compact-text/v1'), issued_at_ms=time.time_ns()//1_000_000)
 
 
+def test_publication_accepts_explicit_portable_successor_without_new_installation():
+    value = dict(operation_id=str(uuid.uuid4()), step='visibility', action='visibility-publish',
+        params=dict(disclosure={}, bindings=[], expected_installation_sha256='a'*64,
+            initial_configuration=None, replacement_configuration=dict(
+                destination={}, publication_backend={})))
+    assert publication_command(value) == value
+    for delta in ({'initial_configuration':{}}, {'expected_installation_sha256':None},
+                  {'replacement_configuration':{'destination':{}, 'publication_backend':{}, 'secrets':{}}}):
+        with pytest.raises(OnboardingError, match='publication_command_required'):
+            publication_command({**value, 'params':{**value['params'], **delta}})
+
+
 def test_publication_packets_are_closed_and_cannot_use_online_relationship_route():
     value = dict(operation_id=str(uuid.uuid4()), step='select', action='selection',
                  params=dict(expected_selection_sha256=None))

@@ -1795,6 +1795,17 @@ Do not rebuild every SDK, reenroll the body or recreate pending messages for thi
 storage-key transition. Prepare the full-visibility entrypoint before publishing:
 the old receive-only entrypoint refuses an installation once it exists.
 
+An existing installation can move prospectively to portable Conversation
+publication through that same owner `visibility-publish` action. With a Matrix
+SDK supporting visibility successors, pass `replacement_configuration` containing
+only `destination` and `publication_backend`, the exact predecessor installation
+digest, `initial_configuration=null` and the accepted disclosure/bindings. The
+existing writer advances generation and retains the proof key and predecessor;
+there is no membership expansion, reenrollment or deletion step. Older requests
+without this optional field retain their existing behavior. Prepare the current
+App publisher first. This changes no original pending/ambiguous message and is
+not a retry of historical publication.
+
 An already-published admitted guest uses the same
 `ManagedRuntime.update_native_code(..., published_group=True)` operation.
 This includes original completed jobs whose runtime predates

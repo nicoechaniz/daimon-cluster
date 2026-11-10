@@ -864,6 +864,13 @@ def publication_command(value: dict) -> dict:
                 or not isinstance(value['action'], str) or value['action'] not in PUBLICATIONS
                 or not isinstance(value['params'], dict)
                 or set(value['params']) != PUBLICATIONS[value['action']] and not (
+                    value['action'] == 'visibility-publish'
+                    and set(value['params']) == PUBLICATIONS['visibility-publish'] | {'replacement_configuration'}
+                    and isinstance(value['params']['replacement_configuration'], dict)
+                    and set(value['params']['replacement_configuration']) == {'destination', 'publication_backend'}
+                    and value['params']['initial_configuration'] is None
+                    and value['params']['expected_installation_sha256'] is not None
+                ) and not (
                     value['action'] == 'snapshot'
                     and PUBLICATIONS['snapshot'] <= set(value['params'])
                     and set(value['params']) - PUBLICATIONS['snapshot'] <= {'expected_stores', 'expected_preservation'})):

@@ -1883,6 +1883,18 @@ placement records, verified by the existing `RemoteIncusRunner`. It supplies no
 new enrollment, identity, SSH route, arbitrary command or publication callback.
 Native/local targets keep their existing HostConfig route.
 
+For an existing published target that lacks its owned-event read, the same spec
+can explicitly add `"capability_additions": {"observe": ["we.event.get"]}`.
+Select only targets actually missing that method. The command freezes the exact
+owner request and original finite deadline before stopping its Matrix service,
+then runs the existing owner capability publication inside the journaled migration
+phase. It binds both predecessor and signed successor runtime hashes; a lost
+migration/publication acknowledgment reconciles those same receipts, without a
+second grant or renewed expiry. The current reader completer remains part of the
+same command. No full onboarding, Source bootstrap or unrelated receiver restart
+is required for this local read-method change. Ordinary code updates omit the
+field and preserve every capability; reconciliation-only operations cannot add it.
+
 The command prepares qualified public code and invokes the same update primitive
 serially. Code preparation shares each body's maximum300-second budget and the
 batch's unchanged absolute deadline (maximum480seconds). The former120-second

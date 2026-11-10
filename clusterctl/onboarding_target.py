@@ -293,13 +293,28 @@ class Target:
         def budget():
             if time.monotonic_ns() >= deadline_ns:
                 raise OnboardingError('onboarding_observation_deadline_expired')
-        visibility_migration_request(request)
+        visibility_migration_request(request, allow_capability_bootstrap=True)
+        budget()
+        effective_runtime = request['runtime_sha256']
+        bootstrap = request.get('capability_bootstrap')
+        if bootstrap is not None:
+            from .onboarding_receiving_update import GuestOwnerBootstrap
+            if (bootstrap.get('operation_id') != request['operation_id']
+                    or bootstrap.get('runtime_sha256') != request['runtime_sha256']
+                    or bootstrap.get('mode') != 'expand'
+                    or bootstrap.get('preservation', {}).get('origin') != request['origin']):
+                raise OnboardingError('native_code_update_migration_binding_changed')
+            owner = GuestOwnerBootstrap(self, bootstrap)
+            ready = owner.execute('stage', deadline_ns=deadline_ns)
+            published = owner.execute('publish', deadline_ns=deadline_ns,
+                ready_sha256=ready['ready_sha256'])
+            effective_runtime = published['runtime_sha256']
         budget()
         with being_seed._locked(self.root), self._runtime_writer():
             bundle = self.document_bundle()
             group = bootstrap_group(self, bundle)
             expected = request['group']
-            if (digest(bundle) != request['runtime_sha256']
+            if (digest(bundle) != effective_runtime
                     or bundle['local_origin'] != request['origin']):
                 raise OnboardingError('native_code_update_migration_binding_changed')
             runtime_root = self.package / 'runtime'
@@ -309,7 +324,9 @@ class Target:
                 qualified_startup=self.qualified_startup), group, expected,
                 snapshot=lambda: bootstrap_group(self, self.document_bundle()), budget=budget)
             return dict(schema='cluster-native-visibility-migrated/v1',
-                operation_id=request['operation_id'], runtime_sha256=request['runtime_sha256'],
+                operation_id=request['operation_id'], runtime_sha256=effective_runtime,
+                **({'predecessor_runtime_sha256': request['runtime_sha256'],
+                    'capability_bootstrap_sha256': digest(bootstrap)} if bootstrap is not None else {}),
                 group=expected, catalog_schema_version=version)
 
     def prepare(self) -> dict:

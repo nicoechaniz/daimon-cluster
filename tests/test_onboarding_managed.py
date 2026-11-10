@@ -963,7 +963,7 @@ def test_initial_managed_adopts_explicit_successor_without_replaying_start(tmp_p
 @pytest.mark.parametrize('local_observer', [False, True])
 @pytest.mark.parametrize('lost_start_ack', [False, True])
 @pytest.mark.parametrize('group_mode', ['plain', 'closed', 'published', 'legacy-published'])
-def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, group_mode, local_observer, automatic_restart=False, recovery_fault=None, reconcile_repair=False):
+def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_path, monkeypatch, lost_start_ack, group_mode, local_observer, automatic_restart=False, recovery_fault=None, reconcile_repair=False, capability_expansion=False):
     """Plain and closed-group bodies reuse their existing native unit writer."""
     closed_group = group_mode != 'plain'
     local_observer = local_observer and closed_group
@@ -1021,7 +1021,16 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     restart_pending = [automatic_restart]
     recovery_requests = []
     def owner(_plan, action, **_):
-        assert 0 < _['observation_timeout_seconds'] <= 60
+        assert 0 < _.get('observation_timeout_seconds', _.get('bootstrap_timeout_seconds', 0)) <= 60
+        if action == 'receiving-bootstrap-freeze':
+            assert capability_expansion and published_group
+            assert _['bootstrap_capability_additions'] == {'observe': ['we.event.get']}
+            calls.append(action)
+            return dict(mode='expand', plan_digest=digest(plan), genesis_digest='a'*64,
+                code_digest='a'*64, runtime_sha256=current['runtime_sha256'], group_sha256='b'*64,
+                origin=current['origin'], predecessor={key: current[key] for key in ('process', 'admission_parent')},
+                capability_additions=_['bootstrap_capability_additions'],
+                preservation=dict(active=True, not_before_ms=0, not_after_ms=time.time_ns()//1_000_000+3600000))
         if action == 'sdk-prepare':
             if cold.pop() if cold else False:
                 offset[0] += 55_000_000_000
@@ -1032,14 +1041,22 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
             request = _['visibility_migration']
             state = being_seed._read(managed.state / 'newcomer/native-code-update.json')
             assert state['dispatching'] == 'migrate' and 'quiesce' in state['effects']
-            assert request['runtime_sha256'] == current['runtime_sha256']
+            if 'capability_bootstrap' in request:
+                assert capability_expansion and request['runtime_sha256'] == 'original-bundle'
+                assert request['capability_bootstrap'] == state['capability_bootstrap']
+                current['runtime_sha256'] = '9'*64
+            else:
+                assert request['runtime_sha256'] == current['runtime_sha256']
             assert request['group']['installation_sha256'] == 'e'*64
             calls.append(action)
             if failures and failures[0] == 'migration':
                 failures.pop()
                 raise OnboardingError('lost_migration_ack')
             return dict(schema='cluster-native-visibility-migrated/v1',
-                operation_id=request['operation_id'], runtime_sha256=request['runtime_sha256'],
+                operation_id=request['operation_id'], runtime_sha256=current['runtime_sha256'],
+                **({'predecessor_runtime_sha256': request['runtime_sha256'],
+                    'capability_bootstrap_sha256': digest(request['capability_bootstrap'])}
+                   if 'capability_bootstrap' in request else {}),
                 group=request['group'], catalog_schema_version=2)
         assert action == 'admitted-running'
         assert not local_observer, 'local observation reopened the cold target CLI'
@@ -1121,6 +1138,8 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bc', receive_only_group=closed_group and not published_group, published_group=published_group)
     if local_observer:
         options['current_observer'] = observer
+    if capability_expansion:
+        options['capability_additions'] = {'observe': ['we.event.get']}
     if lost_start_ack:
         with pytest.raises(OnboardingError, match='lost_migration_ack' if lost_start_ack == 'migration' else 'lost_start_ack'):
             managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
@@ -1141,7 +1160,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         if recovery_fault == 'implementation':
             options['recovery_implementation'] = (tmp_path,'f'*64)
     result = managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)
-    assert result['runtime_sha256'] == 'original-bundle'
+    assert result['runtime_sha256'] == ('9'*64 if capability_expansion else 'original-bundle')
     assert result['receiving_readiness'] == 'unobserved'
     if closed_group:
         assert result['local_reader'] == dict(channel_id='tribe',phase='select',recovery='recovered')
@@ -1225,6 +1244,9 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
                 **{**options, 'reconcile_existing':False,
                    'operation_id':'68d4481f-9ade-4b1c-a08d-cfa3f962f5bd'})
         being_seed._write(path, completed)
+    if capability_expansion:
+        assert completed['effective_runtime_sha256'] == '9'*64
+        assert calls.count('receiving-bootstrap-freeze') == 1
     next_options = dict(operation_id='68d4481f-9ade-4b1c-a08d-cfa3f962f5bd', receive_only_group=closed_group and not published_group, published_group=published_group)
     if local_observer:
         next_options['current_observer'] = observer
@@ -1271,3 +1293,8 @@ def test_native_update_observes_automatic_successor_without_another_start(tmp_pa
     else:
         test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(
             tmp_path, monkeypatch, False, 'published', True, True, fault)
+
+
+def test_scoped_native_maintenance_retains_event_read_publication_across_lost_migration_ack(tmp_path, monkeypatch):
+    test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(
+        tmp_path, monkeypatch, 'migration', 'published', True, capability_expansion=True)

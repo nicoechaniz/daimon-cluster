@@ -2101,6 +2101,10 @@ def freeze_guest_bootstrap(target, *, deadline_ns: int, initial: bool = False,
     additions = guest_capability_additions(capability_additions)
     if additions and (initial or initial_service):
         raise OnboardingError('receiving_guest_capability_additions_required')
+    if additions:
+        from daimon_matrix.service import OPERATOR_CAPABILITY_PROFILES
+        if 'we.event.get' not in OPERATOR_CAPABILITY_PROFILES['observe']:
+            raise OnboardingError('qualified_owner_event_read_sdk_required')
     if initial or initial_service:
         with being_seed._locked(target.root), target._runtime_writer():
             return _freeze_initial_guest_owner(target, deadline_ns=deadline_ns, initial_service=initial_service)

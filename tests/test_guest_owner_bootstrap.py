@@ -1452,11 +1452,17 @@ def test_explicit_guest_event_read_upgrade_preserves_identity_keys_expiry_and_lo
     request = {**request, 'operation_id': str(uuid.uuid4()), 'runtime_sha256': digest(before),
         'mode': 'expand', 'preservation': preservation,
         'capability_additions': {'observe': ['we.event.get']}}
-    owner = GuestOwnerBootstrap(target, request)
+    migration = dict(operation_id=request['operation_id'], runtime_sha256=request['runtime_sha256'],
+        origin=request['preservation']['origin'], group=group, capability_bootstrap=request)
+    monkeypatch.setattr('clusterctl.onboarding_peer.approved_group_authorities', lambda *_: {})
+    monkeypatch.setattr('clusterctl.onboarding_group_admission.load_owner_runtime', lambda *_args, **_kwargs: object())
+    def migrate(load, observed, expected, **options):
+        assert observed == expected == group
+        assert load() is not None
+        return 2
+    monkeypatch.setattr('clusterctl.onboarding_peer.migrate_published_catalogs', migrate)
     keys = {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*.key')}
     history = files(target.credential)
-    ready = owner.execute('stage', deadline_ns=deadline())
-    assert owner.execute('stage', deadline_ns=deadline()) == ready
     actual = upgrade.publish
     calls = []
     def lost(**kwargs):
@@ -1467,12 +1473,14 @@ def test_explicit_guest_event_read_upgrade_preserves_identity_keys_expiry_and_lo
         return result
     monkeypatch.setattr(upgrade, 'publish', lost)
     with pytest.raises(OSError, match='lost event-read'):
-        owner.execute('publish', deadline_ns=deadline(), ready_sha256=ready['ready_sha256'])
+        target.migrate_visibility(migration, deadline_ns=deadline())
     published = target.document_bundle()
-    result = GuestOwnerBootstrap(target, request).execute('publish', deadline_ns=deadline(),
-        ready_sha256=ready['ready_sha256'])
+    result = target.migrate_visibility(migration, deadline_ns=deadline())
     assert target.document_bundle() == published
-    assert result['counter_after'] == before['keystore']['counter'] + 1
+    assert published['keystore']['counter'] == before['keystore']['counter'] + 1
+    assert result['runtime_sha256'] == digest(published)
+    assert result['predecessor_runtime_sha256'] == digest(before)
+    assert result['capability_bootstrap_sha256'] == digest(request)
     assert files(target.credential) == history
     assert {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*.key')} == keys
     assert published['local_origin'] == before['local_origin']
@@ -1486,7 +1494,7 @@ def test_explicit_guest_event_read_upgrade_preserves_identity_keys_expiry_and_lo
             assert {k: v for k, v in a.items() if k not in {'methods', 'capability_id'}} == {
                 k: v for k, v in b.items() if k not in {'methods', 'capability_id'}}
     assert target.observe()['phase'] == 'v8'
-    assert result['receiving_readiness'] == 'unobserved'
+    assert result['schema'] == 'cluster-native-visibility-migrated/v1'
 
 
 @pytest.mark.parametrize('selection', [
@@ -1500,3 +1508,13 @@ def test_guest_event_read_selection_rejects_unscoped_methods_before_records(fixt
         GuestOwnerBootstrap(target, {**request, 'capability_additions': selection})
     assert files(target.package / 'runtime') == before
     assert not (target.root / 'receiving-bootstrap' / request['operation_id']).exists()
+
+
+def test_guest_event_read_freeze_refuses_unsupported_sdk_before_observing_body(monkeypatch):
+    from types import SimpleNamespace
+    from daimon_matrix.service import OPERATOR_CAPABILITY_PROFILES
+    monkeypatch.setitem(OPERATOR_CAPABILITY_PROFILES, 'observe', frozenset())
+    target = SimpleNamespace(running=lambda **_: pytest.fail('unsupported SDK reached the body'))
+    with pytest.raises(OnboardingError, match='qualified_owner_event_read_sdk_required'):
+        receiving_update.freeze_guest_bootstrap(target, deadline_ns=deadline(),
+            capability_additions={'observe': ['we.event.get']})

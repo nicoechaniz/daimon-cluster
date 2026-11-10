@@ -92,7 +92,7 @@ class ManagedRuntime:
                            operation_id: str, timeout_seconds: float = 120,
                            receive_only_group: bool = False, published_group: bool = False,
                            current_observer=None, recovery_implementation=None,
-                           reconcile_existing: bool = False) -> dict:
+                           reconcile_existing: bool = False, capability_additions: dict | None = None) -> dict:
         """Select code for an admitted body through its existing unit writer.
 
         No group publication or controller renewal is involved. The durable
@@ -110,6 +110,10 @@ class ManagedRuntime:
         reconciliation and can never be replaced by a new operation.
         """
         from .onboarding_service import command
+        from .onboarding_receiving_update import guest_capability_additions, preservation_authorization
+        additions = guest_capability_additions(capability_additions)
+        if additions and (not published_group or reconcile_existing):
+            raise OnboardingError('receiving_guest_capability_additions_required')
         if (type(receive_only_group) is not bool or type(published_group) is not bool
                 or type(reconcile_existing) is not bool
                 or reconcile_existing and (not published_group or current_observer is None)
@@ -153,6 +157,8 @@ class ManagedRuntime:
             if published_group:
                 pins.pop('argv')
                 pins['published_group'] = True
+            if additions:
+                pins['capability_additions'] = additions
             def save():
                 if len(json.dumps(state).encode()) > 65536:
                     raise OnboardingError('native_code_update_record_limit')
@@ -193,7 +199,7 @@ class ManagedRuntime:
                             or set(state.get('effects', {})) != required):
                         raise OnboardingError('native_code_update_operation_conflict')
                     current = observe(starting=True)
-                    if (current['runtime_sha256'] != state['runtime_sha256']
+                    if (current['runtime_sha256'] != state.get('effective_runtime_sha256', state['runtime_sha256'])
                             or current['origin'] != state['origin']):
                         raise OnboardingError('native_code_update_identity_changed')
                     if _code_update_group(current, published=True) != state.get('closed_group'):
@@ -265,6 +271,21 @@ class ManagedRuntime:
                 raise OnboardingError('native_code_update_sdk_unready')
             if not path.exists() or previous_completed is not None:
                 before = observe()
+                capability_bootstrap = None
+                if additions:
+                    frozen = self.backend._target_call(plan, 'receiving-bootstrap-freeze', candidate=candidate,
+                        bootstrap_timeout_seconds=remaining(), bootstrap_capability_additions=additions)
+                    horizon = time.time_ns() // 1_000_000 + max(1, (deadline - time.monotonic_ns()) // 1_000_000)
+                    if (frozen.get('mode') != 'expand' or frozen['runtime_sha256'] != before['runtime_sha256']
+                            or frozen['origin'] != before['origin'] or frozen['capability_additions'] != additions
+                            or frozen['predecessor'] != {key: before[key] for key in ('process', 'admission_parent')}):
+                        raise OnboardingError('native_code_update_migration_binding_changed')
+                    preservation_authorization(frozen['preservation'], horizon)
+                    capability_bootstrap = {key: frozen[key] for key in (
+                        'plan_digest', 'genesis_digest', 'code_digest', 'runtime_sha256', 'group_sha256',
+                        'predecessor', 'mode', 'preservation', 'capability_additions')}
+                    capability_bootstrap.update(schema='cluster-guest-owner-bootstrap/v1',
+                        operation_id=operation_id, expires_at_ms=horizon)
                 previous = {key: before[key] for key in ('process', 'admission_parent')}
                 physical = self.backend._guest_service_call(plan, 'bootstrap-inspect', candidate=candidate,
                     timeout_seconds=remaining(), owner_observation=previous)
@@ -279,6 +300,8 @@ class ManagedRuntime:
                 state = dict(pins=pins, runtime_sha256=before['runtime_sha256'], origin=before['origin'],
                     request=dict(schema='cluster-guest-service-bootstrap/v1', operation_id=operation_id,
                         plan_digest=digest(plan), predecessor=previous, argv=argv), effects={})
+                if capability_bootstrap is not None:
+                    state['capability_bootstrap'] = capability_bootstrap
                 if previous['service'].get('entrypoint_selector') is not None:
                     state['request']['runtime_update'] = True
                 if before.get('group') is not None:
@@ -302,21 +325,34 @@ class ManagedRuntime:
                     migrated = self.backend._target_call(plan, 'visibility-migrate',
                         candidate=candidate, observation_timeout_seconds=remaining(), visibility_migration=dict(
                             operation_id=operation_id, runtime_sha256=state['runtime_sha256'],
-                            origin=state['origin'], group=state['closed_group']))
+                            origin=state['origin'], group=state['closed_group'],
+                            **({'capability_bootstrap': state['capability_bootstrap']}
+                               if 'capability_bootstrap' in state else {})))
+                    if 'capability_bootstrap' in state:
+                        if (migrated.get('predecessor_runtime_sha256') != state['runtime_sha256']
+                                or migrated.get('capability_bootstrap_sha256') != digest(state['capability_bootstrap'])
+                                or not isinstance(migrated.get('runtime_sha256'), str)
+                                or re.fullmatch('[0-9a-f]{64}', migrated['runtime_sha256']) is None):
+                            raise OnboardingError('native_code_update_migration_binding_changed')
+                        expected_runtime = migrated['runtime_sha256']
+                    else:
+                        expected_runtime = state['runtime_sha256']
                     if (migrated.get('schema') != 'cluster-native-visibility-migrated/v1'
                             or migrated.get('operation_id') != operation_id
-                            or migrated.get('runtime_sha256') != state['runtime_sha256']
+                            or migrated.get('runtime_sha256') != expected_runtime
                             or migrated.get('group') != state['closed_group']
                             or type(migrated.get('catalog_schema_version')) is not int):
                         raise OnboardingError('native_code_update_migration_binding_changed')
                     state['effects'][action] = migrated
+                    if 'capability_bootstrap' in state:
+                        state['effective_runtime_sha256'] = expected_runtime
                 else:
                     state['effects'][action] = self.backend._guest_service_call(plan, 'bootstrap-' + action,
                         candidate=candidate, timeout_seconds=remaining(), request=state['request'])
                 state.pop('dispatching', None)
                 save()
             current = observe(starting=True)
-            if current['runtime_sha256'] != state['runtime_sha256']:
+            if current['runtime_sha256'] != state.get('effective_runtime_sha256', state['runtime_sha256']):
                 raise OnboardingError('native_code_update_identity_changed')
             if _code_update_group(current, published=published_group) != state.get('closed_group'):
                 raise OnboardingError('native_code_update_group_changed')
@@ -1039,7 +1075,7 @@ class ManagedRuntime:
 def validate_code_update(spec: dict) -> dict:
     """One bounded operator request over existing jobs, placements and effects."""
     try:
-        if (not isinstance(spec, dict) or set(spec) - {'reader_completion','owner_observation','recovery_implementation','reconcile_existing'} != {
+        if (not isinstance(spec, dict) or set(spec) - {'reader_completion','owner_observation','recovery_implementation','reconcile_existing','capability_additions'} != {
                 'schema', 'host_config', 'vm_qualification', 'candidate', 'targets', 'group', 'operation_id', 'max_seconds'}
                 or spec['schema'] != 'cluster-native-code-maintenance/v1'
                 or type(spec['max_seconds']) is not int or not 1 <= spec['max_seconds'] <= 480
@@ -1055,6 +1091,11 @@ def validate_code_update(spec: dict) -> dict:
         if ('reconcile_existing' in spec and (spec['reconcile_existing'] is not True
                 or spec['group'] != 'published' or spec.get('owner_observation') is None)):
             raise ValueError
+        if 'capability_additions' in spec:
+            from .onboarding_receiving_update import guest_capability_additions
+            guest_capability_additions(spec['capability_additions'])
+            if spec['group'] != 'published' or spec.get('reconcile_existing'):
+                raise ValueError
         implementation = spec.get('recovery_implementation')
         if implementation is not None and (not isinstance(implementation,dict)
                 or set(implementation) != {'code','code_digest'}
@@ -1440,7 +1481,9 @@ def run_code_update(spec: dict) -> dict:
                 receive_only_group=spec['group'] == 'closed', published_group=spec['group'] == 'published',
                 **({'current_observer':observers[name]} if name in observers else {}),
                 recovery_implementation=recovery_code,
-                reconcile_existing=bool(spec.get('reconcile_existing')))
+                reconcile_existing=bool(spec.get('reconcile_existing')),
+                **({'capability_additions': spec['capability_additions']}
+                   if 'capability_additions' in spec else {}))
             results.append(dict(name=name, operation_id=spec['operation_id'],
                 status='reconciled' if spec.get('reconcile_existing') else 'updated', result=value))
         except Exception as error:

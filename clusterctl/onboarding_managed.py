@@ -100,7 +100,8 @@ class ManagedRuntime:
         root's existing bootstrap journal reconciles lost stop/select/start ACKs.
         Identity, credentials, native stores and Conversation are preserved.
         The complete operation includes cold SDK preparation within its declared envelope;
-        writes and physical requests remain capped at60seconds; the read-only
+        ordinary owner reads and physical requests remain capped at60seconds;
+        stopped-owner migration may use the remaining300s envelope, and read-only
         post-start observation may use180seconds of the same original deadline.
         No start or write authority is renewed.
         An existing group and publication are frozen across the update. Published

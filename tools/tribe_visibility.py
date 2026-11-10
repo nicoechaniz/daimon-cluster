@@ -192,6 +192,10 @@ def arm(payload):
         command=system('show',unit,'-p','ExecStart','--value').split(' ; start_time=',1)[0]
         c['stable_command_sha256']=hashlib.sha256(command.encode()).hexdigest()
         directory=Path(payload['directory']);owner=Path(launch['owner'])
+        expected_owner=(Path(c['config']).parent/'messaging-maintenance' if 'config' in c
+            else Path(c['runtime']).parents[1]/'maintenance')
+        expected_stage=Path(c['code']).parent if 'config' in c else Path('/opt/daimon-matrix-maintenance')
+        assert owner.parent==expected_owner and directory.parent==expected_stage
         for path in (directory,owner):
             assert path.parent.is_dir() and not any(p.is_symlink() for p in (path,*path.parents))
         directory.mkdir(mode=0o700,exist_ok=True)

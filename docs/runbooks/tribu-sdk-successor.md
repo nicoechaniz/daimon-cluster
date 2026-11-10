@@ -1882,6 +1882,15 @@ cohort, `vm_qualification` selects its existing `receiving.json` and per-name
 placement records, verified by the existing `RemoteIncusRunner`. It supplies no
 new enrollment, identity, SSH route, arbitrary command or publication callback.
 Native/local targets keep their existing HostConfig route.
+Keep `owner_observation` and `reader_completion` on the consumed current owner
+locators, not an old copy retained in a qualification directory. After a public
+owner-helper update, reconcile the existing consumed locator with that qualified
+installation and its actual status/selection. In particular, the local operator
+must reference its installed public helper: a root-private qualification copy
+can verify as root yet fail to import as the configured service user. Verify the
+existing command as that user; preserve private directory permissions, old
+receipts and uncertain controls instead of widening a private tree or resetting
+its journals. Installing helper files alone does not update a locator.
 The artifact builder `onboarding_code_successor.build` imports the maintained
 `tools.build_onboarding_code` development helpers. Sealed receiving runtime
 packages intentionally omit that development package. Build from the maintained

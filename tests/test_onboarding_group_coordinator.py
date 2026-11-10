@@ -632,7 +632,8 @@ def test_actual_target_cli_keeps_approved_context_guard(tmp_path, monkeypatch, c
 
 def test_initial_bootstrap_cli_budget_starts_before_sdk_qualification(tmp_path, monkeypatch):
     target, args, calls = qualified_target_cli(tmp_path, monkeypatch)
-    def freeze(target, *, deadline_ns, initial, initial_service):
+    def freeze(target, *, deadline_ns, initial, initial_service, capability_additions):
+        assert capability_additions is None
         assert initial and not initial_service
         calls.append(deadline_ns)
         return {'synthetic': 'initial-owner-context'}
@@ -753,7 +754,8 @@ def test_linked_preparation_bound_reaches_native_and_first_bootstrap_requests(fi
 def test_bootstrap_absolute_deadline_cannot_restart_on_delayed_guest_arrival(tmp_path, monkeypatch, arrival, accepted):
     target, args, calls = qualified_target_cli(tmp_path, monkeypatch)
     monkeypatch.setattr(target, 'time', SimpleNamespace(monotonic_ns=lambda:arrival))
-    def freeze(target, *, deadline_ns, initial, initial_service):
+    def freeze(target, *, deadline_ns, initial, initial_service, capability_additions):
+        assert capability_additions is None
         calls.append(deadline_ns)
         return {'synthetic':'context'}
     monkeypatch.setattr('clusterctl.onboarding_receiving_update.freeze_guest_bootstrap', freeze)

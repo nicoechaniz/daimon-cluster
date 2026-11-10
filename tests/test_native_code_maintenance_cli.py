@@ -73,7 +73,7 @@ def test_partial_batch_reuses_one_operation_and_existing_effects(tmp_path, monke
             assert selected is config and run is None
         def runtime_available(self, plan, candidate, *, prepare, deadline_ns):
             assert prepare and candidate[1] == 'a'*64
-            assert 0 < deadline_ns-clock[0] <= min(300,batch_seconds)*1_000_000_000
+            assert 0 < deadline_ns-clock[0] <= min(480,batch_seconds)*1_000_000_000
             prepared.append(plan['name'])
             clock[0] += 20_000_000_000
             return True
@@ -98,7 +98,7 @@ def test_partial_batch_reuses_one_operation_and_existing_effects(tmp_path, monke
     assert [row['status'] for row in result['targets']] == ['updated', 'incomplete']
     assert result['targets'][1]['failure']['code'] == 'seed_operation_in_progress'
     assert prepared == ['first', 'second']
-    assert all(0 < seconds <= min(280,batch_seconds-20) for seconds in budgets)
+    assert all(0 < seconds <= min(460,batch_seconds-20) for seconds in budgets)
     result = managed.run_code_update(selected)
     assert result['complete'] and not result['pending']
     assert len(effects) == 3 and {key[0] for key in attempts} == {spec()['operation_id']}

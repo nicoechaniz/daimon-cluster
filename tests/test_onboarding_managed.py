@@ -1150,7 +1150,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         options['current_observer'] = observer
     if capability_expansion:
         options['capability_additions'] = {'observe': ['we.event.get']}
-        options['timeout_seconds'] = 300
+        options['timeout_seconds'] = 300 if operation_seconds is None else operation_seconds
     if lost_start_ack:
         with pytest.raises(OnboardingError, match='lost_migration_ack' if lost_start_ack == 'migration' else 'lost_start_ack'):
             managed.update_native_code(plan, (tmp_path, 'a' * 64), **options)

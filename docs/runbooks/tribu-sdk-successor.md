@@ -41,6 +41,16 @@ sequence of additional gates to repeat for every iteration.
    Retire consumed duplicate transfer/input files after verifying the retained
    copy; preserve active selections, actual rollback and unfinished work.
 
+Run maintenance with the existing qualified Cluster environment, which includes
+its Matrix SDK. After a timeout, inspect the same operation's retained publication
+before recovery. An already exchanged exact publication can be acknowledged after
+its original admission deadline without another grant, counter advance or expiry
+extension. Continue that same specification; never restore an earlier counter.
+If the native update completed and only reader completion failed, reuse its
+retained update receipt with the existing reader completer. Its expired-selection
+recovery preserves old commands and qualifies the current CAS and credentials;
+another software deployment or capability expansion is unnecessary.
+
 Routine scoped delivery already within the human's task needs no repeated GO,
 new identity ceremony, mandatory multi-reviewer quorum or unrelated full-stack
 rehearsal. Confirm a substantial service-loss risk and honor explicit global Stop,

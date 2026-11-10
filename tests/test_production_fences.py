@@ -1076,6 +1076,46 @@ def test_history_maintenance_cli_reuses_preflight_and_owned_authority(tmp_path, 
     assert calls == [('preflight', path), ('owned', None)]
 
 
+@pytest.mark.parametrize('failure,expired,expected_error', [
+    ('deadline', True, None),
+    ('interrupted', True, None),
+    ('interrupted', False, 'retirement-batch-unavailable'),
+    ('integrity', True, 'retirement-batch-unavailable'),
+])
+def test_history_operator_distinguishes_budget_expiry_from_unavailability(
+        monkeypatch, failure, expired, expected_error):
+    from types import SimpleNamespace
+    from clusterctl import onboarding_authority as operator
+    clock, calls = [0], []
+
+    def collect_garbage(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return 32
+        clock[0] = 1_000_000_000 if expired else 100_000_000
+        if failure == 'deadline':
+            raise FenceError('resource fence maintenance deadline expired')
+        if failure == 'interrupted':
+            # Use the real SQLite interruption shape observed in production.
+            with closing(sqlite3.connect(':memory:')) as connection:
+                connection.set_progress_handler(lambda: 1, 1)
+                try:
+                    connection.execute('SELECT 1').fetchone()
+                except sqlite3.OperationalError as cause:
+                    assert cause.sqlite_errorcode == sqlite3.SQLITE_INTERRUPT
+                    raise FenceError('production fence transaction failed') from cause
+            pytest.fail('SQLite did not interrupt the query')
+        raise FenceError('historical checkpoint signature rejected')
+
+    monkeypatch.setattr(operator.time, 'monotonic_ns', lambda: clock[0])
+    monkeypatch.setattr(operator.time, 'sleep', lambda _: None)
+    authority = SimpleNamespace(_store=SimpleNamespace(collect_garbage=collect_garbage))
+    assert operator.retire_history(authority, 1) == dict(
+        schema='cluster-admission-history-retirement/v1',
+        retired_events=32, complete=False, error=expected_error)
+    assert len(calls) == 2
+
+
 def test_retirement_deadline_rolls_back_without_touching_position(tmp_path, keys):
     import time
     owner, holder = keys

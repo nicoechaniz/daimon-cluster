@@ -3,6 +3,13 @@
 Owning roadmap: [#214](https://github.com/nicoechaniz/daimon-cluster/issues/214).
 First slice: [#215](https://github.com/nicoechaniz/daimon-cluster/issues/215).
 
+Own backend publication has an opt-in, source-only
+[service deployment candidate](../runbooks/home-service-deployment.md).
+It reuses this browser identity and the existing owner publisher, with explicit
+operator service capabilities; ordinary Home publication grants no deployment
+privilege. Receiving selection and authenticated service acceptance remain with
+the Homes operator.
+
 ## Supported same-origin client
 
 Load `/access-client.js` on a registered, trusted top-level home page. It exposes

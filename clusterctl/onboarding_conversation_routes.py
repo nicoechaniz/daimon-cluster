@@ -164,6 +164,10 @@ def operation(value):
 
 
 class Routes:
+    # Specialized maintained service writers reuse the same finite CAS/reload
+    # journal; only their closed route renderer and insertion matcher differ.
+    render = staticmethod(render)
+    compose = staticmethod(compose)
     def __init__(self, value):
         self.value = configuration(value)
         self.path = Path(value['config'])
@@ -207,7 +211,22 @@ class Routes:
 
     def _adapt(self, process, path):
         raw = self._command(process, 'adapt', '--config', str(path), '--adapter', 'caddyfile')
-        return digest(json.loads(raw))
+        value = json.loads(raw)
+        # Caddy automatically hides the input Caddyfile in file_server handlers.
+        # The prepared copy will be loaded at self.path; compare that effective
+        # configuration without treating the staging filename as a route change.
+        def selected_filename(node):
+            if isinstance(node, dict):
+                if node.get('handler') == 'file_server' and isinstance(node.get('hide'), list):
+                    node['hide'] = [str(self.path) if item == str(path) else item
+                                    for item in node['hide']]
+                for child in node.values():
+                    selected_filename(child)
+            elif isinstance(node, list):
+                for child in node:
+                    selected_filename(child)
+        selected_filename(value)
+        return digest(value)
 
     def _live_configuration(self, process):
         # The default loopback admin listener must belong to this exact loaded
@@ -266,7 +285,7 @@ class Routes:
         return True
 
     def reconcile(self, request, listener, home_backend, *, apply, authorize):
-        block = render(request, listener, home_backend)
+        block = self.render(request, listener, home_backend)
         pins = digest(dict(request=request, listener=listener, home_backend=home_backend, routing=self.value))
         with being_seed._locked(self.state):
             active_path = self.state/'active.json'
@@ -277,10 +296,18 @@ class Routes:
                     raise OnboardingError('conversation_route_operation_pending')
                 active = None
             receipt = self.state/(request['name']+'.json')
-            if receipt.exists() and operation(document(receipt)).get('pins') != pins:
-                raise OnboardingError('existing_conversation_route_preserved')
             before = self._read()
-            after = compose(before, request, block, self.value['anchor'])
+            after = self.compose(before, request, block, self.value['anchor'])
+            if receipt.exists():
+                recorded = operation(document(receipt))
+                if recorded['pins'] != pins:
+                    # Operator transport/guard metadata can rotate while the
+                    # exact selected route stays loaded. Observe that no-op;
+                    # preserve the original receipt and never reload it again.
+                    if (recorded['phase'] == 'complete' and before == after
+                            and self._adapt(process, self.path) == self._live(process)):
+                        return {'state':'complete', 'route_loaded':True}
+                    raise OnboardingError('existing_conversation_route_preserved')
             if active and active.get('pins') == pins and active.get('phase') != 'complete':
                 if self._finish(active, process):
                     return {'state':'complete', 'route_loaded':True}

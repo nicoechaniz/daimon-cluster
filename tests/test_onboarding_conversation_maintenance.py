@@ -79,7 +79,7 @@ def test_second_busy_target_releases_the_first_owned_lease(tmp_path):
     one = target(first)
     two = target(second)
     two["name"] = "second"
-    two["upstream"] = "127.0.0.1:8801"
+    two["upstream"] = one["upstream"]  # Distinct readers behind the same Host-routed proxy.
     with open(two["config"], "r+b") as busy:
         fcntl.flock(busy, fcntl.LOCK_SH)
         with pytest.raises(OnboardingError, match="conversation_route_voice_active"):
@@ -87,3 +87,14 @@ def test_second_busy_target_releases_the_first_owned_lease(tmp_path):
                 raise AssertionError("Busy target admitted")
         with open(one["config"], "r+b") as released:
             fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_explicit_public_file_mode_survives_private_operator_umask(tmp_path):
+    from clusterctl.onboarding_conversation import atomic
+    target = tmp_path / "Caddyfile"
+    previous = os.umask(0o077)
+    try:
+        atomic(target, b"selected public service configuration", mode=0o644)
+    finally:
+        os.umask(previous)
+    assert target.stat().st_mode & 0o777 == 0o644

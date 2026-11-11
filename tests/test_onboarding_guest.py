@@ -182,6 +182,14 @@ def test_installs_own_soul_selected_inheritance_and_native_manual_memory_without
     result = subprocess.run([sys.executable, '-B', str(receiver.state / 'hmk-store-001.py'), 'memoryctl.py', 'stats'],
                             env=environment, capture_output=True, check=True)
     assert json.loads(result.stdout)['db_path'] == str(receiver.received / 'memory/store-001/library.db')
+    # Current and compatibility names must actually execute against the same
+    # own store, even when the calling shell inherits another database binding.
+    for name in ('dmk', 'hmk'):
+        result = subprocess.run([str(receiver.home / '.local/bin' / name), 'memoryctl.py', 'stats'],
+                                env=environment, capture_output=True, check=True)
+        assert json.loads(result.stdout)['db_path'] == str(receiver.received / 'memory/store-001/library.db')
+    assert 'authorized own-memory curation' in agents
+    assert 'an empty hybrid-pack is not exhaustive absence' in agents
     with closing(receiver._database('store-001')) as db:
         assert db.execute('SELECT query FROM old_query_history').fetchone()[0] == 'Private original history'
 

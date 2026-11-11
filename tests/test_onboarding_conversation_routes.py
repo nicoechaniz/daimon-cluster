@@ -60,6 +60,16 @@ def test_staged_caddyfile_hidden_name_uses_actual_load_destination(tmp_path):
     assert writer._adapt({}, staged) == digest(expected)
 
 
+def test_completed_exact_route_survives_operator_metadata_rotation_without_reload(tmp_path):
+    writer, args, _, calls, _ = assembled(tmp_path)
+    assert writer.reconcile(*args, apply=True, authorize=lambda: True)['state'] == 'complete'
+    original = (writer.state / 'active.json').read_bytes()
+    writer.value['anchor'] = ' # revised operator insertion marker'
+    assert writer.reconcile(*args, apply=True, authorize=lambda: True)['state'] == 'complete'
+    assert calls.count('reload') == 1
+    assert (writer.state / 'active.json').read_bytes() == original
+
+
 def test_lost_reload_response_recovers_actual_effect_without_repeating(tmp_path):
     writer, args, state, calls, _ = assembled(tmp_path)
     state['lost'] = True

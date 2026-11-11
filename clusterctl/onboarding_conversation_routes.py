@@ -296,10 +296,18 @@ class Routes:
                     raise OnboardingError('conversation_route_operation_pending')
                 active = None
             receipt = self.state/(request['name']+'.json')
-            if receipt.exists() and operation(document(receipt)).get('pins') != pins:
-                raise OnboardingError('existing_conversation_route_preserved')
             before = self._read()
             after = self.compose(before, request, block, self.value['anchor'])
+            if receipt.exists():
+                recorded = operation(document(receipt))
+                if recorded['pins'] != pins:
+                    # Operator transport/guard metadata can rotate while the
+                    # exact selected route stays loaded. Observe that no-op;
+                    # preserve the original receipt and never reload it again.
+                    if (recorded['phase'] == 'complete' and before == after
+                            and self._adapt(process, self.path) == self._live(process)):
+                        return {'state':'complete', 'route_loaded':True}
+                    raise OnboardingError('existing_conversation_route_preserved')
             if active and active.get('pins') == pins and active.get('phase') != 'complete':
                 if self._finish(active, process):
                     return {'state':'complete', 'route_loaded':True}

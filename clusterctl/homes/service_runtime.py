@@ -300,6 +300,13 @@ class Runtime:
                     shutil.rmtree(release)
                     raise
             verify_tree(release, package, uid=os.geteuid())
+            if current and current['digest'] == envelope['digest'] and self.health(current):
+                # Reattest an unchanged healthy release after an operator-only
+                # transport revision. Preserve PID, state and rollback source.
+                record = dict(pins=pins, state='ready', digest=envelope['digest'], package=package)
+                self.save('current.json', record)
+                self.save(name, record)
+                return {'state': 'ready', 'digest': record['digest']}
             record = dict(pins=pins, state='dispatched', digest=envelope['digest'], package=package)
             # Persist intent BEFORE changing the unit or asking the manager.
             # An interruption is reconciled by observation; never another restart.

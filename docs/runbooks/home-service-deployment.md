@@ -281,3 +281,31 @@ runtime/route capability. Do not accept commands, paths or service selection on
 that socket. A disconnected reply remains uncertain; inspect the existing
 journal and retry only the same retained request. No gateway sandbox or broad
 sudo/login policy change is needed.
+
+### Dedicated remote operation access
+
+A remote worker uses a dedicated locked-password transport principal and key,
+never an existing administrative login. The forced command
+`clusterctl.homes.service_remote.forward` accepts only an installed operation
+name; root's separate closed declaration fixes its runtime/route configuration
+or protected host wrapper. A narrow sudo rule names each exact permitted
+operation. Shells, arbitrary commands, port forwarding and unknown services are
+not part of this route. Keep existing administrative principals, keys and SSH
+admission unchanged. The transport key remains operator-only; local fixed Unix
+workers provide the existing sandboxed gateway with this transport.
+
+Maintenance forwards the existing finite guard stream, but matches its public
+bootstrap and exact configured application, script digest, uid and health URL
+before running the installed protocol as that application's user. It never runs
+caller-supplied source or accepts a different application target. Host/container
+wrappers select one exact instance and its own protected operation declaration.
+
+When rotating only protected operator transport metadata, preserve original
+operation IDs and receipts. A new explicitly identified attestation request may
+bind the same exact immutable package to the new capability. The receiver verifies
+its current files, selected unit and health and does not restart healthy identical
+code. An already complete exact Caddy block can be observed against the actual
+loaded configuration without another reload, even when operator guard metadata
+has rotated; conflicting or incomplete operations still fail closed. Keep current
+state and compatible rollback, and qualify the actual dedicated transport and
+cross-service refusals before declaring adoption.

@@ -724,3 +724,18 @@ def test_verified_runtime_file_can_exceed_small_operator_record_limit(setup):
     worker = ManagerFixture(c)
     assert worker.run(envelope(c, value, raw))['state'] == 'ready'
     assert (worker.code / ('release-' + sha(raw)) / 'main.js').read_bytes() == code
+
+
+def test_same_healthy_code_can_be_reattested_without_restarting(setup):
+    c, _, _, raw, _, _, value = setup
+    worker = ManagerFixture(c)
+    assert worker.run(envelope(c, value, raw))['state'] == 'ready'
+    assert worker.restarts == 1
+    selected = worker.read('current.json')
+    state = Path(c['data']) / 'existing-state'
+    state.write_bytes(b'keep this state')
+    revised = deepcopy(value)
+    revised.update(request_id='new-fixed-transport', previous=selected['digest'])
+    assert worker.run(envelope(c, revised, raw))['state'] == 'ready'
+    assert worker.restarts == 1 and state.read_bytes() == b'keep this state'
+    assert worker.read('current.json')['pins']['request_id'] == 'new-fixed-transport'

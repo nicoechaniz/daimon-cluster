@@ -41,6 +41,13 @@ sequence of additional gates to repeat for every iteration.
    Retire consumed duplicate transfer/input files after verifying the retained
    copy; preserve active selections, actual rollback and unfinished work.
 
+For an unattended named tmux maintenance job, detach stdin with `</dev/null`.
+If an outer GNU `timeout` is used, select `timeout --foreground` so its process
+group does not stop on `SIGTTIN` while a child transport reads stdin. A stopped
+launcher is not a stopped Matrix service or a completed update: inspect its exact
+process group and retained owner operation, then continue that operation without
+rebuilding the candidate or replacing its identity.
+
 Run maintenance with the existing qualified Cluster environment, which includes
 its Matrix SDK. After a timeout, inspect the same operation's retained publication
 before recovery. An already exchanged exact publication can be acknowledged after

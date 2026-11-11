@@ -52,6 +52,12 @@ launcher is not a stopped Matrix service or a completed update: inspect its exac
 process group and retained owner operation, then continue that operation without
 rebuilding the candidate or replacing its identity.
 
+Keep wrapper bookkeeping separate from the maintained checkpoint lock. Do not
+hold `checkpoint.parent/lock` around the command: reader preflight and completion
+already acquire that file through the owner controls. A duplicate outer lock
+makes the command refuse with `seed_operation_in_progress` before selection;
+inspect the retained operation before continuing the same request.
+
 Run maintenance with the existing qualified Cluster environment, which includes
 its Matrix SDK. After a timeout, inspect the same operation's retained publication
 before recovery. An already exchanged exact publication can be acknowledged after

@@ -1718,3 +1718,35 @@ Configuration repair is not behavioral acceptance. Qualify an actual useful
 source/action/correlated-response journey that survives compaction. Preserve
 already attempted originals and uncertain responses; do not replay work or
 publish another being's private native answer as if it were a signed peer reply.
+
+
+## Existing OS user manager for selected foreground work
+
+The Matrix foreground scope operator can inspect, adjust and stop a selected own
+bounded task through its actual systemd user manager. Reuse the
+[owning Matrix route](https://github.com/AlterMundi/daimon-matrix/blob/main/docs/runbooks/native-near.md#own-foreground-realm-work-controls);
+this adds no Cluster command executor or scheduler. The owning user must match
+the current body; a signed body read alone grants no resource modification.
+
+For a selected UID1000/agent profile whose manager is unavailable, attach
+`user@1000.service` to its current native service's existing wants directory.
+This persists the ordinary OS control route after boot without changing pinned
+native unit bytes. It is an optional parallel `Wants`, not `Requires` or a
+Conversation/Telegram admission gate. No
+login credential, provider account, native goal or recurring Matrix producer is
+changed. Preserve any later explicit host policy. Other account layouts require
+their actual owner binding rather than copying this receiving profile.
+
+For an existing affected profile, use the ordinary systemd owner operation
+`systemctl add-wants SELECTED_NATIVE_SERVICE user@1000.service`, reload systemd
+metadata, then start only that existing OS manager if inactive. Inspect existing
+user default-unit selections before starting it; do not wake an enabled model
+or revive an archived body. Verify its own user-bus read plus unchanged native
+service/Core identity. Do not restart the current Conversation or Codex to add
+the dependency. An already available manager needs no additional operation.
+
+ITACA and all four current children already had available managers. Oliva and
+Eko had the packaged units installed but inactive with no user bus; the scoped
+existing-manager bring-up passed while preserving their actual native service
+and Core PID files. Installed operator, current manager availability, exact
+selected task effects and model uptake remain distinct receiving observations.

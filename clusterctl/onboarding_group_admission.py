@@ -873,7 +873,9 @@ def publication_command(value: dict) -> dict:
                 or set(value['params']) != PUBLICATIONS[value['action']] and not (
                     value['action'] in {'snapshot', 'receive-snapshot'}
                     and PUBLICATIONS[value['action']] <= set(value['params'])
-                    and set(value['params']) - PUBLICATIONS[value['action']] <= {'expected_stores', 'expected_preservation'})):
+                    and set(value['params']) - PUBLICATIONS[value['action']] <= {'expected_stores', 'expected_preservation'}) and not (
+                    value['action'] == 'visibility-publish'
+                    and set(value['params']) == PUBLICATIONS['visibility-publish'] | {'replacement_configuration'})):
             raise ValueError
         params = value['params']
         if value['action'] == 'preparation-preview' and (

@@ -1288,3 +1288,36 @@ def test_publication_packets_are_closed_and_cannot_use_online_relationship_route
         publication_command({**snapshot, 'params': {**snapshot['params'], 'expected_stores': {}}})
     with pytest.raises(OnboardingError, match='publication_command_required'):
         publication_command({**snapshot, 'params': {**snapshot['params'], 'expected_preservation': {}}})
+
+
+def test_owner_publication_forwards_explicit_destination_replacement(tmp_path, monkeypatch):
+    from daimon_matrix import operator_messaging
+    from clusterctl.onboarding_group_admission import _publication_effect
+    value = dict(operation_id=str(uuid.uuid4()), step='portable-destination',
+        action='visibility-publish', params=dict(disclosure={'selected': 'disclosure'}, bindings=[],
+            expected_installation_sha256='a'*64, initial_configuration=None,
+            replacement_configuration=dict(destination={'publication': 'owner descriptor'},
+                publication_backend={'kind': 'owner-unix/v1', 'socket_path': '/owner/socket'})))
+    packet = request_packet(dict(command=value, offline=True, authority_closure={}))
+    assert packet['command'] == value
+    with pytest.raises(OnboardingError, match='publication_command_required'):
+        publication_command({**value, 'params':{**value['params'], 'unapproved':True}})
+    with pytest.raises(OnboardingError, match='publication_command_required'):
+        publication_command(dict(operation_id=value['operation_id'], step='select', action='selection',
+            params=dict(expected_selection_sha256=None, replacement_configuration={})))
+    # The actual dispatch seam must preserve the exact owner parameters, not
+    # silently discard the replacement and keep the old Telegram destination.
+    calls = []
+    def publish(hosted, directory, installation, **params):
+        calls.append((hosted, directory, installation, params))
+        raise OSError('retained writer result unavailable')
+    monkeypatch.setattr(operator_messaging, 'publish_group_visibility', publish)
+    hosted = object()
+    with pytest.raises(OSError, match='retained writer result unavailable'):
+        _publication_effect(hosted, tmp_path, packet['command'], {}, operation=tmp_path/'operation',
+            context={}, snapshot=None)
+    assert calls == [(hosted, tmp_path/'application', tmp_path/'visibility/installation.json', value['params'])]
+    # Existing requests remain byte-for-byte compatible without the optional field.
+    legacy = copy.deepcopy(value)
+    del legacy['params']['replacement_configuration']
+    assert publication_command(legacy) == legacy

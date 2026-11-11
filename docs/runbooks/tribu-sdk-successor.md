@@ -1670,3 +1670,20 @@ a cold receiver can still be loading. Observe its actual child/listeners and the
 qualify the current reader. Preserve any exhausted-start-limit refusal; after the
 completed publication is verified, clear that unit's failed state and start the
 same supported unit. Never substitute a global Stop or replay message input.
+
+## Existing publication destination changes
+
+The existing owner `group-publication` action `visibility-publish` accepts the
+optional `replacement_configuration` already supported by the selected Matrix
+SDK. Keep `initial_configuration=None` and the exact current
+`expected_installation_sha256`; pass only the SDK's accepted destination and
+publication backend. Reuse genuine current participant disclosures/bindings and
+the ordinary owner writer, journal, selection and receiving-reader route.
+The existing SDK verifies the predecessor, signatures, key preservation and
+backend identity; Cluster does not reconstruct or bypass them. Older requests
+without this field retain their existing behavior. This is a future-message
+policy change, not reenrollment or recovery of ambiguous historical publication.
+
+Inspect the actual paired-human `matrix publication status` descriptor first.
+An installed App publisher does not mean Matrix has selected that destination.
+Keep current native work, accounts, lane choices and original uncertain effects.

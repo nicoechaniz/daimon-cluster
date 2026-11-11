@@ -493,6 +493,57 @@ def test_initial_parent_refuses_a_changed_profile_before_admission(monkeypatch):
             not_after_ms=time.time_ns() // 1_000_000 + 60000))
 
 
+def test_closed_sdk_preparation_finishes_before_admission_acquisition(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from clusterctl import onboarding_code_successor, onboarding_sdk
+
+    target = SimpleNamespace(root=tmp_path, home=tmp_path, code=tmp_path, code_uid=os.geteuid(),
+        code_digest='a' * 64, plan={}, genesis={},
+        observe=lambda: {'receipt': {'origin': {}}})
+    prepared = []
+    monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {'matrix_commit': 'b' * 40})
+
+    def prepare(*args, **kwargs):
+        prepared.append(True)
+        return tmp_path / 'runtime-imports'
+
+    class ReachedAdmission(Exception):
+        pass
+
+    def launch(self, client, spawn):
+        assert prepared == [True], 'SDK verification consumed an acquired unsupervised lease'
+        raise ReachedAdmission
+
+    monkeypatch.setattr(onboarding_sdk, 'runtime_imports', prepare)
+    monkeypatch.setattr(ReceivingHolder, 'launch', launch)
+    with pytest.raises(ReachedAdmission):
+        AdmittedDaemon(target, object()).start(receive_only=True)
+
+
+@pytest.mark.parametrize('failure', ['verification', 'startup-deadline'])
+def test_failed_sdk_preparation_never_acquires_admission_or_opens_child_ipc(tmp_path, monkeypatch, failure):
+    from types import SimpleNamespace
+    from clusterctl import onboarding_code_successor, onboarding_runtime, onboarding_sdk
+
+    target = SimpleNamespace(code=tmp_path, code_uid=os.geteuid(),
+        observe=lambda: {'receipt': {'origin': {}}})
+    monkeypatch.setattr(onboarding_code_successor, 'sdk_parameters', lambda *a, **k: {'matrix_commit': 'b' * 40})
+    clock = [0]
+    monkeypatch.setattr(onboarding_runtime.time, 'monotonic_ns', lambda: clock[0])
+
+    def prepare(*args, **kwargs):
+        if failure == 'verification':
+            raise OnboardingError('qualified_runtime_imports_required')
+        clock[0] = (onboarding_runtime.READY_TIMEOUT_S + 1) * 1_000_000_000
+        return tmp_path / 'runtime-imports'
+
+    monkeypatch.setattr(onboarding_sdk, 'runtime_imports', prepare)
+    monkeypatch.setattr(onboarding_runtime.socket, 'socketpair', lambda: pytest.fail('failed preparation opened IPC'))
+    monkeypatch.setattr(ReceivingHolder, 'launch', lambda *a: pytest.fail('failed preparation acquired admission'))
+    with pytest.raises(OnboardingError):
+        AdmittedDaemon(target, object()).start(receive_only=True)
+
+
 @pytest.mark.parametrize('reason', ['lease-hard-deadline', 'admission-renew-failed',
                                   'body-observer-unavailable', 'runtime-exited'])
 def test_parent_retains_supervision_outcome_after_actual_child_cleanup(monkeypatch, capsys, reason):

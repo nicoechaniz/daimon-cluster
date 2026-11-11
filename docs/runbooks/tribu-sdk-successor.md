@@ -2037,6 +2037,12 @@ and all other existing arguments during later SDK/application maintenance;
 never remount or edit provisioning inputs, recreate a holder or leave a failed
 pre-effect configuration attempt with its service stopped.
 
+Complete the parent's closed SDK/import verification before acquiring that
+short admission lease. It remains inside the original startup deadline; failed
+or over-budget verification starts no child and acquires no admission. Do not
+repeat this work in the unsupervised spawn callback. The child still verifies
+its actual boot, and the existing renewal and independent watchdog are unchanged.
+
 Current-reader qualification permits at most three read-only observations only
 when the native roster explicitly reports `retryable=true`. The same owner
 connection/process pin, proof horizon and original monotonic deadline remain;

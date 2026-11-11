@@ -9,6 +9,10 @@ sequence of additional gates to repeat for every iteration.
 1. Resolve the current selected generation and the consumers affected by the
    actual change. Preserve the existing body, keys, native history and goals.
    A routine update is not onboarding, a species release or a new authority act.
+   For an SDK-only successor, omit `capability_additions`: preserve the effective
+   grants. Do not copy a previous update's one-off method expansion into the next
+   specification. The expansion primitive deliberately refuses an already granted
+   method; that refusal is not a missing human authorization.
 2. Prepare one candidate from that verified current selection with
    `onboarding_code_successor.build(..., current=..., current_fingerprint=...)`.
    Reuse the qualified SDK artifact directly; the builder already copies it

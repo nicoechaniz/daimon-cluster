@@ -326,6 +326,19 @@ class AdmittedDaemon:
         startup_deadline_ns = time.monotonic_ns() + READY_TIMEOUT_S * 1_000_000_000
         if receive_only == (visibility_installation is not None):
             raise OnboardingError("onboarding_visibility_selection_required")
+        from . import onboarding_code_successor, onboarding_sdk
+        parameters = onboarding_code_successor.sdk_parameters(self.target.code, uid=self.target.code_uid)
+        prepared_imports = None
+        if parameters:
+            # Full closure verification can exceed a short admission lease.
+            # Finish it within the original startup budget before acquiring
+            # admission; the child still verifies its own actual boot below.
+            venv = Path(sys.prefix)
+            imports = onboarding_sdk.runtime_imports(venv, self.target.code,
+                code_uid=self.target.code_uid, **parameters)
+            prepared_imports = venv, imports
+        if time.monotonic_ns() >= startup_deadline_ns:
+            raise OnboardingError('onboarding_runtime_not_ready')
         parent, child = socket.socketpair()
         parent.settimeout(5)
         ready_read, ready_write = os.pipe()
@@ -349,14 +362,8 @@ class AdmittedDaemon:
                 str(messaging_application) if messaging_application else '', str(self.target.code_uid),
                 self.target.code_digest, json.dumps(expected_initial_context) if expected_initial_context is not None else '',
                 str(startup_deadline_ns)]
-            from . import onboarding_code_successor, onboarding_sdk
-            parameters = onboarding_code_successor.sdk_parameters(self.target.code, uid=self.target.code_uid)
-            if parameters:
-                # This parent already runs the selected SDK. Derive/check the
-                # same closed paths before a fresh child can execute site hooks.
-                venv = Path(sys.prefix)
-                imports = onboarding_sdk.runtime_imports(venv, self.target.code,
-                    code_uid=self.target.code_uid, **parameters)
+            if prepared_imports is not None:
+                venv, imports = prepared_imports
                 child_launcher = '''import sys
 from pathlib import Path
 sys.prefix = sys.exec_prefix = sys.argv.pop(1)

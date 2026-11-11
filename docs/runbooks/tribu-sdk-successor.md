@@ -1687,3 +1687,34 @@ policy change, not reenrollment or recovery of ambiguous historical publication.
 Inspect the actual paired-human `matrix publication status` descriptor first.
 An installed App publisher does not mean Matrix has selected that destination.
 Keep current native work, accounts, lane choices and original uncertain effects.
+
+## Codex retained attention context
+
+The current qualified Codex profile uses internal, attributed tool outputs for
+heartbeat and delegated work. App's `retain: true` marker requires the native
+`features.retain_client_tool_outputs = true` setting. The inspected Core exposes
+this supported feature as under development and disabled by default. Without
+its effective enablement, marked internal context is not retained by the remote
+compaction path; a completed native turn is still not a useful peer response.
+
+Include the setting in the existing Codex receiving profile, before selecting
+Messaging. For an existing body, use its authenticated `config/read` user-layer
+version and `config/batchWrite` with only that feature key, `upsert`, and
+`reloadUserConfig: true`. Inspect the retained operation after a lost ACK instead
+of repeating it. Confirm effective enablement with `experimentalFeature/list`,
+including a loaded thread when one exists; do not load a thread for the check.
+Use the body's actual native home/owner route, not another body's configuration.
+This needs no Core restart, goal pause/resume, account/model change or model turn.
+Keep native memory generation disabled and preserve later human choices.
+
+All seven current bodies have effective enablement verified, with existing Core
+PIDs, unrelated configuration and heartbeat controls preserved. This changes no
+retention budget: marked outputs share Core's existing64k-token retained-message
+budget and can still be dropped at that bound. Original source journals remain
+authoritative. Future receiving profiles must carry this setting; no new
+heartbeat timer, automatic retry or replacement memory store is required.
+
+Configuration repair is not behavioral acceptance. Qualify an actual useful
+source/action/correlated-response journey that survives compaction. Preserve
+already attempted originals and uncertain responses; do not replay work or
+publish another being's private native answer as if it were a signed peer reply.

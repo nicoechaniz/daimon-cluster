@@ -321,6 +321,17 @@ os.execv({sys.executable!r}, [{sys.executable!r}, "-B", str(script), *sys.argv[2
             wrapper = (f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
                        f"{shlex.quote(str(self.state / ('hmk-' + self.primary + '.py')))} \"$@\"\n").encode()
             new_bytes(self.home / ".local/bin/hmk", wrapper, executable=True)
+            # Both public names select the same preserved primary store. This
+            # adds no database, provider, MCP server or automatic attention.
+            new_bytes(self.home / ".local/bin/dmk", wrapper, executable=True)
+            access.extend([
+                "Own DMK CLI: ~/.local/bin/dmk (the compatible hmk name remains available).\n",
+                "For explicit memory navigation use memoryctl.py search --query QUERY --limit 5, then expand --id ID.\n",
+                "Inspect add-text/update/delete --help for authorized own-memory curation; retain attribution and revisions.\n",
+                "Older supplied CLIs may lack hybrid-search; an empty hybrid-pack is not exhaustive absence.\n",
+                "Keep temporary project state outside durable memory and never import another being's autobiography.\n",
+                "Use the selected neutral daimon-memory-kit skill when installed. These tools do not change human retention authority.\n",
+            ])
         new_bytes(self.state / "MEMORY-ACCESS.md", "".join(access).encode())
         if self.fresh_store is not None:
             self._initialize_fresh_memory()

@@ -47,13 +47,17 @@ def native_inventory(root: Path) -> dict:
     return response['result']
 
 
-def observation_socket(path):
+def observation_socket(path, *, view=None):
     reference=Path(path)
     info=reference.lstat()
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077:
         raise ValueError('private_observation_socket_required')
     with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
-        connection.settimeout(22);connection.connect(str(reference));raw=bytearray()
+        connection.settimeout(12 if view=='resources' else 42);connection.connect(str(reference));raw=bytearray()
+        if view is not None:
+            if view not in ('all','resources'):raise ValueError('invalid_observation_view')
+            connection.sendall(json.dumps({'view':view}).encode()+b'\n')
+            connection.shutdown(socket.SHUT_WR)
         while True:
             data=connection.recv(min(65536,131073-len(raw)))
             if not data:break
@@ -120,6 +124,38 @@ class Fleet:
         self.lock = threading.Lock()
         self.cached = None
         self.cached_until = 0.0
+        self.resources_lock=threading.Lock()
+        self.resources_cached=None
+        self.resources_until=0.0
+
+    def resources(self):
+        # Slow usage/admission I/O has a different lock and cannot block this lane.
+        from .observability import observations
+        with self.resources_lock:
+            if self.resources_cached and time.monotonic()<self.resources_until:
+                return self.resources_cached
+            live=None
+            try:
+                if self.config.get('observer_socket'):
+                    live=observation_socket(self.config['observer_socket'],view='resources')
+            except (OSError,ValueError,KeyError,TypeError):
+                pass
+            observation=observations(self.config.get('observability',{}),
+                                     health_report=live['health'] if live else None)
+            previous=(self.resources_cached or {}).get('observability',{})
+            if live is None:
+                observation['health_state']='unavailable'
+                if previous.get('health'):observation['health']=previous['health']
+            if observation['alerts_state']=='observed':
+                observation['alerts_observed_at_ms']=int(time.time()*1000)
+            elif previous.get('alerts_observed_at_ms'):
+                observation['alerts']=previous.get('alerts',[])
+                observation['alerts_observed_at_ms']=previous['alerts_observed_at_ms']
+            result={'schema':'cluster-home-resources/v1','observed_at_ms':int(time.time()*1000),
+                    'observability':observation,'sample_max_age_seconds':15}
+            self.resources_cached=result
+            self.resources_until=time.monotonic()+1
+            return result
 
     def snapshot(self):
         # Coalesce concurrent browser requests without a timer or persisted copy.
@@ -162,12 +198,24 @@ class Fleet:
                 value['planned']=[]
                 try:
                     live=observation_socket(self.config['observer_socket'])
-                    value['planned']=live['preparations']
+                    # Reconcile actual existing virtuals with signed bodies. A
+                    # retained legacy onboarding job is not a new preparation.
+                    matched=set()
+                    for body in rows:
+                        candidates=[p for p in live['preparations']
+                            if p['name'].casefold()==body['name'].casefold() and p['host']==body['host']]
+                        if len(candidates)==1:
+                            p=candidates[0];matched.add(p['name'])
+                            body['physical']={k:p[k] for k in ('physical_state','services','observed_at_ms')}
+                    value['planned']=[p for p in live['preparations'] if p['name'] not in matched]
                     value['preparation_state']='partial' if live.get('partial') else 'observed'
                 except (OSError,ValueError,KeyError,TypeError):
                     value['preparation_state']='unavailable'
             value['observability'] = observations(self.config.get('observability', {}),
                 health_report=live['health'] if live else None)
+            if live and isinstance(live.get('usage'), dict):
+                # This source is a fixed-scope owner collector, never client input.
+                value['usage'] = live['usage']
             self.cached, self.cached_until = value, time.monotonic() + 3
             return value
 
@@ -187,7 +235,7 @@ def routes(handler, app, path, home, subject, vpn):
         filename, kind = ('cluster.js', 'text/javascript; charset=utf-8') if path.endswith('.js') else ('cluster.css', 'text/css; charset=utf-8')
         handler.respond(200, (Path(__file__).parent / 'assets' / filename).read_bytes(), kind)
         return
-    if path != '/cluster/api/fleet':
+    if path not in ('/cluster/api/fleet','/cluster/api/resources'):
         handler.respond(404, {})
         return
     if vpn or not subject or subject.kind != 'human':
@@ -197,7 +245,7 @@ def routes(handler, app, path, home, subject, vpn):
         handler.respond(403, {'error': 'fleet_access_not_granted'})
         return
     try:
-        value = fleet.snapshot()
+        value = fleet.resources() if path.endswith('/resources') else fleet.snapshot()
     except Exception:
         handler.respond(503, {'error': 'inventory_unavailable'})
         return

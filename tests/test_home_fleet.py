@@ -61,6 +61,55 @@ def test_authenticated_read_and_identity_recheck():
     assert h.result[0]==403
 
 
+def test_resources_do_not_wait_for_inventory_or_usage_and_keep_failed_sample_date(monkeypatch):
+    from clusterctl.homes import fleet as module
+    import time
+    cfg=configuration();cfg['observer_socket']='/unused/reader.sock'
+    reading={'observed_at':'2026-11-12T05:00:00Z','scope':'host','sample_seconds':1,
+             'memory':None,'cpu':None,'disks':[],'services':[]}
+    live={'health':{'schema':'computer-health/v1','targets':[
+        dict(id='h',label='Host',scope='host',state='available',attempted_at='now',reading=reading)]}}
+    seen=[]
+    def observer(path,**kw):seen.append(kw);return live
+    monkeypatch.setattr(module,'observation_socket',observer)
+    f=Fleet(cfg,reader=lambda _:(_ for _ in ()).throw(AssertionError('slow inventory must not run')))
+    with f.lock:
+        first=f.resources()
+    assert seen==[{'view':'resources'}]
+    assert first['observability']['health']['targets'][0]['reading']['observed_at']==reading['observed_at']
+    f.resources_until=0
+    monkeypatch.setattr(module,'observation_socket',lambda *a,**kw:(_ for _ in ()).throw(OSError()))
+    failed=f.resources()
+    assert failed['observability']['health_state']=='unavailable'
+    assert failed['observability']['health']['targets'][0]['reading']['observed_at']==reading['observed_at']
+
+
+def test_resources_endpoint_requires_same_grant_and_rechecks_identity(monkeypatch):
+    f=Fleet(configuration(),reader=lambda _:(_ for _ in ()).throw(AssertionError('no inventory')))
+    app=SimpleNamespace(cluster_dashboard=f); actor=SimpleNamespace(kind='human',ref='human:telegram:1')
+    for subject,expected in [(None,401),(SimpleNamespace(kind='human',ref='human:telegram:2'),403)]:
+        h=Handler(subject);routes(h,app,'/cluster/api/resources','one',subject,False)
+        assert h.result[0]==expected
+    h=Handler(actor);routes(h,app,'/cluster/api/resources','one',actor,False)
+    assert h.result[0]==200 and h.result[1]['schema']=='cluster-home-resources/v1'
+    h=Handler(None);routes(h,app,'/cluster/api/resources','one',actor,False)
+    assert h.result[0]==403
+
+
+def test_admitted_virtual_does_not_reappear_as_a_legacy_preparation(monkeypatch):
+    from clusterctl.homes import fleet as module
+    cfg=configuration();cfg['observer_socket']='/unused/reader.sock'
+    physical=dict(name='one',host='Host',hosting='Incus',physical_state='running',
+                  stage='old-stage',job_state='waiting',services={'native.service':'active'},observed_at_ms=123)
+    monkeypatch.setattr(module,'observation_socket',lambda _:dict(
+        health={'schema':'computer-health/v1','targets':[]},preparations=[physical],partial=False))
+    value=Fleet(cfg,reader=lambda _:inventory()).snapshot()
+    assert value['planned']==[]
+    assert value['instances'][0]['physical']=={
+        'physical_state':'running','services':{'native.service':'active'},'observed_at_ms':123}
+    assert 'old-stage' not in str(value) and 'waiting' not in str(value)
+
+
 def test_foreground_source_replaces_fixed_plan_and_refuses_stale_substitution(monkeypatch):
     import time
     from clusterctl.homes import fleet as module

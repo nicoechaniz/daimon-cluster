@@ -1,7 +1,7 @@
 # Authenticated Cluster dashboard
 
 The optional Home gateway dashboard exposes `/cluster/` and the private
-`/cluster/api/fleet` endpoint on one selected registered home. It reuses existing
+`/cluster/api/fleet` and `/cluster/api/resources` endpoints on one selected registered home. It reuses existing
 shared Home sign-in and current authority sessions; it introduces no login store.
 Enable it with `--cluster-dashboard` pointing to an owner-protected JSON file.
 The schema is `cluster-home-dashboard/v1`: `home`, explicit `readers` (human
@@ -17,13 +17,20 @@ Unauthenticated and other-human requests are denied before native I/O. Browser
 identity is rechecked after discovery. Only sanitized rows reach the browser.
 
 Bounds: at most 64 observed bodies, 16 planned rows, one in-memory response cached
-for three seconds. Browsers refresh every ten seconds only while visible. No
+for three seconds. Inventory/usage refresh every30seconds while visible; resources/alerts have an
+independent3second cadence and source-age labels. See
+[the live resource contract](cluster-resource-dashboard.md). No
 persisted inventory or new background timer. Protected configuration requires a
 scoped gateway reload to change. Disable by removing the optional argument and
 reloading only the gateway. Preserve existing sessions/state and the prior source
 selection for software rollback. Never roll back authority databases.
 
-## Children's host continuation
+## Historical first children's host continuation —7November2026
+
+The four original companions are now created and admitted. Current actual
+receiving state is maintained in Shared Resources children-conversation.md; the
+original preparation below is history, not permission to repeat onboarding.
+
 
 Nicolas confirmed reinstalling the former daimonmatrix VPS as Debian 13 on
 2026-11-07. Do not repeat that destructive operation. Its new role is

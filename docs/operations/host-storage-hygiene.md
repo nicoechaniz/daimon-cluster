@@ -73,6 +73,29 @@ Do not resolve a storage incident through acknowledgment or changed thresholds.
 
 ## Finite byte, entry and time budgets
 
+For explicit human-authorized space recovery, `--reset-incremental --apply`
+can discard recent **idle incremental caches only**. It retains each real own
+Cargo profile `.cargo-lock` exclusively through deletion and refuses busy or
+substituted locks and active/mapped source projects. It does not remove compiled
+dependencies, executables, source, runtime selectors, sessions or worktrees.
+The operator selects only the intended validated incremental roots in a private
+configuration. No retired-worktree entries are accepted in this mode.
+`--max-reset-bytes` defaults to4GiB and requires an explicit larger bound, at
+most256GiB; a run also stops at2million entries or240seconds. Partial actual
+removals stay counted; a budget stop is not complete cleanup. This is a finite
+operator action, not the hourly retention policy and not a timer to rearm.
+
+Heavy workspaces can disable new incremental generation through their receiving
+Cargo configuration (`[profile.dev] incremental=false`; inherited custom dev
+profiles follow it). Preserve existing workspace settings and current builds;
+this changes future compilation caching, not loaded services. Include every
+actual debug/dev-small incremental root in the existing hourly policy. A
+successful timer with missing roots or only age-based eligibility does not
+establish a bounded build working set. Use `uv cache prune --ci` through uv's
+supported in-use checks for expendable downloaded-wheel cache; never use
+`--force` or remove shared environment hardlinks yourself. Keep native sources,
+compiled runtime/rollback binaries and genuinely protected recovery separate.
+
 `max_bytes_per_run` (default1GiB, maximum4GiB), `max_entries_per_run`
 (default100000, maximum1000000) and `max_seconds_per_run` (default120,
 maximum300) bound each pass in addition to its directory count. Eligibility

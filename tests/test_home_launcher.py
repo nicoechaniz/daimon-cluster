@@ -152,7 +152,7 @@ def test_owner_web_app_requires_both_configured_application_and_current_publicat
             app.homes[home]['ring'] = [{'name':'one', 'url':app.homes['one']['public_url']}]
         result = catalog(app, home, None, False)
         web = next(e for e in result['apps'] if e['title'] == 'Home Maker')
-        assert web['url'] == url and web['launch'] == 'web'
+        assert '/apps/open/' in web['url'] and web['target_url'] == url and web['launch'] == 'web'
         assert web['version_ref'] == entry['version_ref']
         assert all(e['launch'] == 'telegram' for e in result['apps'] if e != web)
     # The app link is withdrawn under the same existing publication/grant rules.
@@ -250,7 +250,8 @@ def test_declared_shared_web_apps_are_discoverable_from_another_pair(system):
                          known_actor=app.authority.actor,known_tribe=lambda _:False)
     result=catalog(app,'two',None,False)
     shared=next(e for e in result['apps'] if e['id'].endswith(entry['artifact_ref']))
-    assert shared['url']=='https://service.example.test/shared/'
+    assert shared['url'].startswith(app.homes['one']['public_url']+'/apps/open/')
+    assert shared['target_url']=='https://service.example.test/shared/'
     assert shared['launch']=='web' and shared['application_mode']=='shared' and shared['available']
     assert application(entry)['mode']=='shared'
     entry['url']='https://service.example.test:invalid/shared/'

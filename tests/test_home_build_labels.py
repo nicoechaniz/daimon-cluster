@@ -96,6 +96,22 @@ def test_stable_alias_observes_current_publication_and_never_accepts_a_destinati
         assert location(alias)[0] == 404
         token, _ = approved(app)
         assert location(alias, token) == (302, "https://service.example.test/latest/")
+        # An already authenticated Home reader need not repeat the SSO entry.
+        entry["url"] = (
+            "https://one.example.test/access/sso/start?return=%2Fview%2F"
+            + "a" * 32
+            + "%3Fdisplay%3Dwork"
+        )
+        entry["version_ref"] = version_digest(entry)
+        app.registry.register(
+            home="one",
+            owner="owner",
+            state=states["one"],
+            expected_revision=5,
+            known_actor=app.authority.actor,
+            known_tribe=lambda _: False,
+        )
+        assert location(alias, token) == (302, "/view/" + "a" * 32 + "?display=work")
         app.sessions.revoke(home="one", token=token)
         assert location(alias, token)[0] == 404
         with opener.open(

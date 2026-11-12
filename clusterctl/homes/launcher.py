@@ -11,7 +11,7 @@ import html
 from pathlib import Path
 import re
 import threading
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, parse_qs, urlsplit
 from .applications import application, paired_receiver
 
 ASSETS = Path(__file__).parent / 'launcher'
@@ -199,7 +199,13 @@ def routes(handler, app, path, home, subject, vpn):
         matches = [e for e in entries if urlsplit(e['url']).path == path and e['available']]
         if len(matches) != 1 or matches[0]['target_url'] == matches[0]['url']:
             raise ValueError('unknown_app_alias')
-        handler.respond(302, b'', headers=(('Location', matches[0]['target_url']),))
+        target = matches[0]['target_url']
+        selected = urlsplit(target)
+        if subject and selected.scheme + '://' + selected.netloc == app.homes[home]['public_url'].rstrip('/') and selected.path == '/access/sso/start':
+            returns = parse_qs(selected.query).get('return', [])
+            if len(returns) == 1 and re.fullmatch(r'/view/[a-f0-9]{32}\?display=work', returns[0]):
+                target = returns[0]
+        handler.respond(302, b'', headers=(('Location', target),))
         return True
     if path == '/apps/':
         if not CAPACITY.acquire(blocking=False):
@@ -227,7 +233,6 @@ def routes(handler, app, path, home, subject, vpn):
     if path not in files:
         return False
     name, kind = files[path]
-    from urllib.parse import parse_qs
     body = (ASSETS / name).read_bytes()
     version = hashlib.sha256(body).hexdigest()[:16]
     immutable = parse_qs(urlsplit(handler.path).query) == {'v':[version]}

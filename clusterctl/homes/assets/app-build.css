@@ -1,5 +1,5 @@
 /* The requested version line uses existing appearance roles and never catches taps. */
-.app-build { margin: 2px 0 5px; color: var(--dm-text, var(--muted, currentColor)); font: 11px/1.4 ui-monospace, monospace; letter-spacing: .02em; white-space: nowrap; overflow-wrap: normal; }
+.app-build.app-build { margin: 2px 0 5px; color: var(--dm-text, var(--muted, currentColor)); font: 11px/1.4 ui-monospace, monospace; letter-spacing: .02em; white-space: nowrap; overflow-wrap: normal; }
 .app-build code { font: inherit; }
 .app-build code span:nth-child(4n+1) { color: var(--dm-accent, var(--accent, currentColor)); }
 .app-build code span:nth-child(4n+2) { color: var(--secondary, var(--dm-text, currentColor)); }

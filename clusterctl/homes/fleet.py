@@ -178,8 +178,10 @@ def routes(handler, app, path, home, subject, vpn):
         handler.respond(404, {})
         return
     if path == '/cluster/':
-        handler.respond(200, (Path(__file__).parent / 'assets' / 'cluster.html').read_bytes(),
-                        'text/html; charset=utf-8')
+        from .build_label import digest, stamp
+        assets = Path(__file__).parent / 'assets'
+        body = stamp((assets / 'cluster.html').read_bytes(), digest([assets / n for n in ('cluster.html','cluster.js','cluster.css')]))
+        handler.respond(200, body, 'text/html; charset=utf-8')
         return
     if path in ('/cluster/app.js', '/cluster/app.css'):
         filename, kind = ('cluster.js', 'text/javascript; charset=utf-8') if path.endswith('.js') else ('cluster.css', 'text/css; charset=utf-8')

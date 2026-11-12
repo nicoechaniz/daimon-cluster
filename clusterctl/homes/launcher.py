@@ -74,6 +74,13 @@ def owner_app_url(app):
     return None
 
 
+def launch_alias(entry, origin):
+    name = entry.get('id', '')
+    if not isinstance(name, str) or not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', name):
+        name = entry['artifact_ref']
+    return origin.rstrip('/') + '/apps/open/' + name
+
+
 def catalog(app, home, subject, vpn, *, local_only=False):
     # Aggregate only registered members of this home's already-selected public
     # ring. Do not invent membership from labels or forward its private session.
@@ -126,7 +133,8 @@ def catalog(app, home, subject, vpn, *, local_only=False):
             launch = 'telegram' if urlsplit(url).hostname == 't.me' else 'web'
             apps.append({'id': ref + ':' + entry['artifact_ref'],
                          'title': entry['title'], 'summary': entry.get('summary', ''),
-                         'url': url, 'author': app.homes[ref]['name'],
+                         'url': launch_alias(entry, app.homes[ref]['public_url']) if mode in ('shared','author') and launch == 'web' else url,
+                         'target_url': url, 'author': app.homes[ref]['name'],
                          'launch': launch, 'application_mode': mode, 'available': available,
                          'capability':published_app.get('capability') if published_app else None,
                          'dependency': published_app.get('dependency', '') if published_app else '',
@@ -177,10 +185,22 @@ def page(app, home, subject, vpn):
                       ('/apps/launch.js',ASSETS/'launch.js'),
                       ('/home-style.js',ASSETS.parent/'assets/home-style.js')):
         source = source.replace('"'+url+'"', '"'+url+'?v='+hashlib.sha256(path.read_bytes()).hexdigest()[:16]+'"')
-    return source.encode()
+    from .build_label import digest, stamp
+    files = [p for p in ASSETS.iterdir() if p.is_file()] + [Path(__file__)]
+    return stamp(source.encode(), digest(files))
 
 
 def routes(handler, app, path, home, subject, vpn):
+    if path.startswith('/apps/open/'):
+        name = path.removeprefix('/apps/open/')
+        if not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', name):
+            raise ValueError('unknown_app_alias')
+        entries = catalog(app, home, subject, vpn, local_only=True)['apps']
+        matches = [e for e in entries if urlsplit(e['url']).path == path and e['available']]
+        if len(matches) != 1 or matches[0]['target_url'] == matches[0]['url']:
+            raise ValueError('unknown_app_alias')
+        handler.respond(302, b'', headers=(('Location', matches[0]['target_url']),))
+        return True
     if path == '/apps/':
         if not CAPACITY.acquire(blocking=False):
             handler.respond(503, b'Please retry shortly', 'text/plain', headers=(('Retry-After','1'),))

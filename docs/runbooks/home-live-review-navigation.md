@@ -337,3 +337,29 @@ previous immutable gateway source for software rollback, preserving all current
 publication, auth, session and resource state. Qualify the opaque-child request,
 ordinary click, destination refusal and mobile layout separately from actual
 human-device acceptance.
+
+## Stable Apps launches and interface versions
+
+Shared and author-dependent web cards advertise `/apps/open/<publication-id>`
+on their owning Home. This alias reads the current authorized publication on
+every navigation and redirects to its selected target; updating the existing
+publication ID updates the destination. It is not another version registry.
+Unknown, withdrawn, denied or ambiguous selections return404. Query parameters
+cannot override the destination. Existing paired receiver routes remain unchanged.
+Keep meaningful application query parameters in the publication target; do not
+publish cache-busting release queries as the canonical user entry.
+
+The shared Apps, Cluster, Homemaker and artifact-view shells display a small
+`ui` hash derived from their selected interface bytes. This identifies that
+interface, independently of the displayed project's model/content revision or
+backend release. Immutable work bytes and private grants are untouched.
+`/app-build.css` uses the existing appearance roles; the fullscreen label does
+not capture pointer events. A public Apps reverse-proxy projection must include
+this stylesheet; aliases use their owning Home rather than forwarding sessions
+through the anonymous aggregate host.
+
+Qualification: gateway/launcher/Fleet/Homemaker and build-label tests, followed
+by actual catalog/alias/stylesheet readback and a browser at desktop and phone
+widths. Preserve the current immutable gateway release, SDK, configuration,
+Homemaker selection and state during a source-only overlay/rollback. A passing
+fixture or an own-being browser does not establish a human phone's acceptance.

@@ -1,0 +1,7 @@
+/* The requested version line uses existing appearance roles and never catches taps. */
+.app-build { margin: 2px 0 5px; color: var(--dm-text, var(--muted, currentColor)); font: 11px/1.4 ui-monospace, monospace; letter-spacing: .02em; white-space: nowrap; overflow-wrap: normal; }
+.app-build code { font: inherit; }
+.app-build code span:nth-child(4n+1) { color: var(--dm-accent, var(--accent, currentColor)); }
+.app-build code span:nth-child(4n+2) { color: var(--secondary, var(--dm-text, currentColor)); }
+.app-build code span:nth-child(4n+3) { color: var(--good, var(--dm-text, currentColor)); }
+.app-build--overlay { position: fixed; inset: max(4px, env(safe-area-inset-top)) auto auto max(10px, env(safe-area-inset-left)); z-index: 24; pointer-events: none; padding: 2px 5px; border-radius: 4px; background: var(--dm-background, #141414); }

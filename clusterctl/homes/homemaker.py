@@ -305,7 +305,9 @@ def editor_page(provider, entry='index.html', *, context='pair'):
         if name.lower().endswith(('.html', '.htm')):
             return match[0]
         return match[1] + b'="' + (prefix + name).encode() + b'"'
-    return re.sub(rb'(?<![\w:-])(src|href)="([^"]+)"', rewrite, body)
+    from .build_label import digest, stamp
+    body = re.sub(rb'(?<![\w:-])(src|href)="([^"]+)"', rewrite, body)
+    return stamp(body, digest([p for p in provider.public.rglob('*') if p.is_file()]))
 
 
 

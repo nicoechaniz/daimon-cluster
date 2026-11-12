@@ -700,6 +700,9 @@ def review_source(app, home, reference, version, subject, vpn, *, origin, parent
 def preview(app, home, reference, version, subject, vpn, *, origin, parent_token, display_mode="details"):
     if display_mode not in ("details", "work"):
         raise ValueError("invalid_display_mode")
+    from .build_label import digest, stamp
+    assets = Path(__file__).parent / 'assets'
+    build = digest([Path(__file__)] + [assets / n for n in ('work-view.js','work-live-review.js','work-annotations.js','work-annotations.css','home.css')])
     selected, content_origin, prefix, source = artifact_context(
         app, home, reference, version, subject, vpn, origin=origin, parent_token=parent_token)
     current = next(
@@ -741,7 +744,7 @@ def preview(app, home, reference, version, subject, vpn, *, origin, parent_token
             download_root = "/works/" + reference + "/" + selected["version_ref"] + "/"
             display = display.replace('<iframe ', '<iframe data-live-review="' + ('current' if version == 'current' else 'pinned') + '" ', 1)
             display = display.replace('<iframe ', '<iframe data-download-root="' + esc(download_root, quote=True) + '" data-download-files="' + esc(json.dumps(media_files), quote=True) + '" ', 1)
-        return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected["title"])} · {esc(app.homes[home]["name"])}</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script><script src="/work-live-review.js" defer></script><script src="/work-view.js" defer></script><script src="/work-annotations.js" defer></script></head><body class="work-view">{display}</body></html>'''.encode()
+        return stamp(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected["title"])} · {esc(app.homes[home]["name"])}</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script><script src="/work-live-review.js" defer></script><script src="/work-view.js" defer></script><script src="/work-annotations.js" defer></script></head><body class="work-view">{display}</body></html>'''.encode(), build, overlay=display_mode == 'work')
     versions = ['<li><a href="/view/' + reference + '">Current version</a></li>']
     for previous in reversed(current.get("versions", [])):
         if app.policy.allows(previous, home=home, subject=subject, dedicated_vpn=vpn):
@@ -764,7 +767,7 @@ def preview(app, home, reference, version, subject, vpn, *, origin, parent_token
         for filename in selected["files"]
     )
     auth, script = auth_controls(subject, vpn, bool(app.passkeys), '/view/' + reference, bool(app.sso))
-    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected["title"])} · {esc(app.homes[home]["name"])}</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script>{script}</head><body><main><nav><a href="/">← Home</a>{auth}</nav><p id="passkey-status" role="status" aria-live="polite"></p><header><small>{esc(selected["visibility"])} · {"Current version" if version == "current" else "Earlier version"}</small><h1>{esc(selected["title"])}</h1><p>{esc(selected["summary"])}</p><a href="{esc(source, quote=True)}">Open selected work ↗</a></header>{display}<details><summary>Selected files</summary><ul>{files}</ul></details><details><summary>Versions available to you</summary><ul>{"".join(versions)}</ul></details></main></body></html>'''.encode()
+    return stamp(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected["title"])} · {esc(app.homes[home]["name"])}</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script>{script}</head><body><main><nav><a href="/">← Home</a>{auth}</nav><p id="passkey-status" role="status" aria-live="polite"></p><header><small>{esc(selected["visibility"])} · {"Current version" if version == "current" else "Earlier version"}</small><h1>{esc(selected["title"])}</h1><p>{esc(selected["summary"])}</p><a href="{esc(source, quote=True)}">Open selected work ↗</a></header>{display}<details><summary>Selected files</summary><ul>{files}</ul></details><details><summary>Versions available to you</summary><ul>{"".join(versions)}</ul></details></main></body></html>'''.encode(), build, overlay=display_mode == 'work')
 
 
 def key_page(app, subject=None, *, registered=False):
@@ -937,7 +940,7 @@ def handler(app, *, owner=False):
                     return
                 path = urlsplit(self.path).path
                 public_asset = path in (
-                    '/home.css', '/work-live-review.js', '/work-view.js', '/work-annotations.js', '/work-annotations.css',
+                    '/home.css', '/app-build.css', '/work-live-review.js', '/work-view.js', '/work-annotations.js', '/work-annotations.css',
                     '/home-style.js', '/artifact-style.js', '/home-miniapp-login.js',
                     '/cluster/', '/cluster/app.js', '/cluster/app.css',
                     '/access-client.js', '/fonts/space-grotesk-latin.woff2',
@@ -1128,6 +1131,13 @@ def handler(app, *, owner=False):
                     self.respond(200, key_page(app, subject,
                         registered=parse_qs(urlsplit(self.path).query).get('registered') == ['1']),
                         'text/html; charset=utf-8')
+                elif path == '/app-build.css':
+                    body = (Path(__file__).parent / 'assets' / 'app-build.css').read_bytes()
+                    import hashlib
+                    revision = hashlib.sha256(body).hexdigest()[:16]
+                    immutable = parse_qs(urlsplit(self.path).query) == {'v':[revision]}
+                    self.respond(200, body, 'text/css; charset=utf-8', cache_control=(
+                        'public, max-age=31536000, immutable' if immutable else 'public, max-age=0, must-revalidate'))
                 elif path == "/home.css":
                     self.respond(
                         200,

@@ -30,6 +30,14 @@ def test_ui_hash_follows_served_bytes_not_absolute_release_path(tmp_path):
     assert stamp(body, before) == body and b"/app-build.css?v=" in body
     with pytest.raises(ValueError):
         stamp(body, "<script>")
+    fresh = b"<html><head></head><body><h1>Work</h1></body></html>"
+    selected = stamp(fresh, before, content_revision="a" * 64)
+    changed = stamp(fresh, before, content_revision="b" * 64)
+    assert selected != changed
+    assert (b'data-app-build="' + before.encode()) in selected
+    assert b'data-app-content-revision="' + b"a" * 64 in selected
+    with pytest.raises(ValueError):
+        stamp(fresh, before, content_revision="<script>")
 
 
 class NoRedirect(HTTPRedirectHandler):

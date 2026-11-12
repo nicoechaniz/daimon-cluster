@@ -29,12 +29,32 @@ def digest(files):
     return result.hexdigest()
 
 
-def stamp(body, revision, *, overlay=False):
+def stamp(body, revision, *, overlay=False, content_revision=None):
     if not re.fullmatch("[a-f0-9]{64}", revision):
         raise ValueError("invalid_ui_build")
+    if content_revision is not None and not re.fullmatch(
+        "[a-f0-9]{64}", content_revision
+    ):
+        raise ValueError("invalid_content_revision")
     if b"data-app-build=" in body:
         return body
     label = "".join("<span>" + digit + "</span>" for digit in revision[:12])
+    content = ""
+    if content_revision is not None:
+        content_label = "".join(
+            "<span>" + digit + "</span>" for digit in content_revision[:12]
+        )
+        content = (
+            '<span data-app-content-revision="'
+            + content_revision
+            + '" title="Revisión publicada '
+            + content_revision
+            + '" aria-label="Revisión publicada '
+            + content_revision[:12]
+            + '"> · v <code>'
+            + content_label
+            + "</code></span>"
+        )
     badge = (
         '<p class="app-build' + (" app-build--overlay" if overlay else "") + '" '
         'data-app-build="'
@@ -46,7 +66,9 @@ def stamp(body, revision, *, overlay=False):
         + revision[:12]
         + '">ui <code>'
         + label
-        + "</code></p>"
+        + "</code>"
+        + content
+        + "</p>"
     ).encode()
     version = hashlib.sha256((ASSETS / "app-build.css").read_bytes()).hexdigest()[:16]
     body = body.replace(

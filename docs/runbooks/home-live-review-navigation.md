@@ -385,3 +385,11 @@ updates navigation UI, not the local controller or hardware acceptance.
 Do not use anonymous sign-in pages as proof of a private application's build.
 Record authenticated UI/source evidence and the audience denial separately.
 Qualification-only own-service publications are not human-facing Apps coverage.
+
+HTML applications published as artifacts (including standalone Oca/School and
+evolving study pages) also show `v` in that same small line. This is the exact
+selected publication revision, labeled independently of the common viewer's
+`ui` build. It changes when the selected page changes and remains pinned for
+an explicitly historical review. It is not a backend/program-code digest.
+The outer trusted shell supplies both labels; immutable child bytes, audiences,
+resource history and draft/promotion rules remain unchanged.

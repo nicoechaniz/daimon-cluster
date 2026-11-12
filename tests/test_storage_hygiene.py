@@ -1,5 +1,6 @@
 """Retention excludes live, recently changed and non-cache data."""
 import importlib.util
+import fcntl
 from pathlib import Path
 import subprocess
 import shutil
@@ -39,6 +40,48 @@ class StorageHygieneTests(unittest.TestCase):
         self.assertFalse(self.candidate.exists())
         self.assertTrue(executable.exists())
         self.assertTrue((self.repo / "nested/Cargo.toml").exists())
+
+    def reset(self, **kwargs):
+        (self.root.parent/'.cargo-lock').touch(exist_ok=True)
+        return hygiene.reset_incremental(self.config, activity_scan=lambda:set(), **kwargs)
+
+    def test_explicit_idle_reset_reclaims_recent_cache_preserves_other_build_data(self):
+        executable=self.root.parent/'app';executable.write_bytes(b'kept executable')
+        deps=self.root.parent/'deps';deps.mkdir();(deps/'compiled.rlib').write_bytes(b'kept dependency')
+        report=self.reset(apply=True,max_bytes=1024)
+        self.assertEqual(report['cache_dirs_removed'],1)
+        self.assertEqual(report['bytes_removed'],5)
+        self.assertTrue(executable.exists());self.assertTrue((deps/'compiled.rlib').exists())
+
+    def test_explicit_reset_keeps_busy_cargo_profile(self):
+        lock=self.root.parent/'.cargo-lock';lock.touch()
+        with lock.open('r+b') as handle:
+            fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            report=self.reset(apply=True)
+        self.assertEqual(report['skipped'],1);self.assertTrue(self.candidate.exists())
+
+    def test_explicit_reset_does_not_treat_its_own_exclusive_lock_as_a_builder(self):
+        lock=self.root.parent/'.cargo-lock';lock.touch()
+        report=hygiene.reset_incremental(self.config,apply=True,
+            activity_scan=lambda:{lock})
+        self.assertEqual(report['cache_dirs_removed'],1)
+        self.assertFalse(self.candidate.exists())
+
+    def test_explicit_reset_dry_run_and_byte_ceiling_keep_candidate(self):
+        report=self.reset(apply=False)
+        self.assertTrue(self.candidate.exists());self.assertEqual(report['bytes_removed'],0)
+        report=self.reset(apply=True,max_bytes=1)
+        self.assertEqual(report['budget_exhausted'],'byte_limit')
+        self.assertTrue(self.candidate.exists())
+
+    def test_explicit_reset_keeps_mapped_source_and_refuses_linked_lock(self):
+        (self.root.parent/'.cargo-lock').touch()
+        report=hygiene.reset_incremental(self.config,apply=True,
+            activity_scan=lambda:{self.repo/'active'})
+        self.assertTrue(self.candidate.exists());self.assertEqual(report['skipped'],1)
+        lock=self.root.parent/'.cargo-lock';lock.unlink();lock.symlink_to(self.repo/'other')
+        report=hygiene.reset_incremental(self.config,apply=True,activity_scan=lambda:set())
+        self.assertTrue(self.candidate.exists());self.assertEqual(report['errors'],1)
 
     def test_count_budget_limits_each_pass(self):
         second = self.root / "second-cache"

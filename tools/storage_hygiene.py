@@ -346,6 +346,79 @@ def save_config(path, config):
     temporary.replace(path)
 
 
+def reset_incremental(config, apply=False, max_bytes=4*1024**3, activity_scan=None):
+    """Explicit operator relief of idle incremental data, including recent caches.
+
+    Cargo's profile lock stays held through deletion. This does not clean deps,
+    executables, environments, worktrees or retained application state.
+    """
+    if not 1 <= max_bytes <= 256*1024**3:
+        raise ValueError('Incremental reset requires a finite byte limit <=256GiB')
+    if config.get('retired_worktrees'):
+        raise ValueError('Incremental reset cannot retire worktrees')
+    projects, roots = validate_roots(config)
+    scan = activity_scan or (lambda: process_paths(
+        allow_privileged=config.get('allow_privileged_process_scan', False)))
+    budget={'remaining_bytes':max_bytes,'max_entries':2000000,'entries':0,
+            'deadline':time.monotonic()+240}
+    report={'apply':apply,'mode':'explicit_idle_incremental_reset','cache_dirs_removed':0,
+            'bytes_removed':0,'skipped':0,'errors':0,'budget_exhausted':None,
+            'free_bytes_before':shutil.disk_usage(projects).free}
+    for root in roots:
+        if not root.exists():
+            continue
+        owner=configured_path(git(root.parent.parent.parent,'rev-parse','--show-toplevel').stdout.strip())
+        lock_path=root.parent/'.cargo-lock'
+        try:
+            # Never create or follow a substituted profile lock.
+            fd=os.open(lock_path,os.O_RDWR|os.O_NOFOLLOW)
+            with os.fdopen(fd,'r+b') as lock:
+                info=os.fstat(lock.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                    raise ValueError('Own regular Cargo profile lock required')
+                try:
+                    fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                except BlockingIOError:
+                    report['skipped']+=1
+                    continue
+                # The privileged observer also sees this cleaner's lock FD.
+                # Exclusivity already rules out another Cargo owner of that FD;
+                # all other process evidence remains a reason to preserve data.
+                if in_use(owner,scan()-{lock_path}):
+                    report['skipped']+=1
+                    continue
+                cutoff=time.time()
+                for candidate in root.iterdir():
+                    inspect_entry(budget)
+                    if not candidate.is_dir() or candidate.is_symlink():
+                        report['skipped']+=1
+                        continue
+                    original=candidate.lstat()
+                    size=eligible_bytes(candidate,cutoff,budget)
+                    if size is None:
+                        report['skipped']+=1
+                        continue
+                    if apply:
+                        current=candidate.lstat()
+                        if ((current.st_dev,current.st_ino,current.st_ctime_ns) !=
+                                (original.st_dev,original.st_ino,original.st_ctime_ns)):
+                            raise RuntimeError('Incremental candidate changed under profile lock')
+                        shutil.rmtree(candidate)
+                        budget['remaining_bytes']-=size
+                        report['cache_dirs_removed']+=1
+                        report['bytes_removed']+=size
+        except CleanupBudget as error:
+            report['budget_exhausted']=str(error)
+            break
+        except RuntimeError:
+            report['errors']+=1
+            break
+        except OSError:
+            report['errors']+=1
+    report['free_bytes_after']=shutil.disk_usage(projects).free
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
@@ -353,9 +426,14 @@ def main():
     parser.add_argument("--retire-worktree", type=Path)
     parser.add_argument("--repo", type=Path)
     parser.add_argument("--integration-ref", default="refs/remotes/origin/HEAD")
+    parser.add_argument('--reset-incremental',action='store_true',
+                        help='Explicit idle-cache relief under Cargo profile locks; not routine retention')
+    parser.add_argument('--max-reset-bytes',type=int,default=4*1024**3)
     args = parser.parse_args()
     if args.retire_worktree and (args.apply or not args.repo):
         parser.error("Retirement requires --repo and cannot be combined with --apply")
+    if args.reset_incremental and args.retire_worktree:
+        parser.error('Incremental reset cannot retire worktrees')
     os.umask(0o077)
     try:
         with args.config.with_suffix(".lock").open("a") as lock:
@@ -365,6 +443,8 @@ def main():
                 retire_worktree(config, args.repo, args.retire_worktree, args.integration_ref)
                 save_config(args.config, config)
                 report = {"status": "registered_finished_worktree"}
+            elif args.reset_incremental:
+                report=reset_incremental(config,apply=args.apply,max_bytes=args.max_reset_bytes)
             else:
                 report = clean(config, apply=args.apply)
                 if report["worktrees_removed"]:

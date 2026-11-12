@@ -400,6 +400,8 @@ LOADED_STARTUP_TESTS = ('tests/test_onboarding_sdk.py', 'tests/test_onboarding_c
 
 
 HOME_FILES = {'clusterctl/homes/fleet.py', 'clusterctl/homes/fleet_reader.py', 'clusterctl/homes/observability.py',
+    'clusterctl/homes/usage.py', 'clusterctl/homes/usage_probe.py', 'tests/test_home_usage.py',
+    'docs/runbooks/cluster-home-dashboard.md', 'docs/runbooks/cluster-resource-dashboard.md',
     'clusterctl/homes/assets/cluster.html', 'clusterctl/homes/assets/cluster.js', 'clusterctl/homes/assets/cluster.css',
     'tests/test_home_fleet.py', 'tests/test_home_fleet_reader.py', 'tests/test_home_observability.py',
     'deploy/fleet-reader/cluster-fleet-reader.socket', 'deploy/fleet-reader/cluster-fleet-reader@.service',
@@ -439,7 +441,7 @@ HOME_FILES = {'clusterctl/homes/fleet.py', 'clusterctl/homes/fleet_reader.py', '
     'clusterd/assets/fonts/OFL.txt', 'clusterd/assets/fonts/PROVENANCE.json',
     'tests/test_home_access.py', 'tests/test_home_gateway.py', 'tests/test_home_host.py',
     'tests/test_home_owner_authority.py', 'tests/test_home_web_identities.py'}
-HOME_TESTS = ('tests/test_home_fleet.py', 'tests/test_home_fleet_reader.py', 'tests/test_home_observability.py', 'tests/test_home_web_identities.py', 'tests/test_home_wsgi.py', 'tests/test_home_owner_authority.py', 'tests/test_home_launcher.py', 'tests/test_home_access.py', 'tests/test_home_gateway.py', 'tests/test_home_host.py',
+HOME_TESTS = ('tests/test_home_usage.py', 'tests/test_home_fleet.py', 'tests/test_home_fleet_reader.py', 'tests/test_home_observability.py', 'tests/test_home_web_identities.py', 'tests/test_home_wsgi.py', 'tests/test_home_owner_authority.py', 'tests/test_home_launcher.py', 'tests/test_home_access.py', 'tests/test_home_gateway.py', 'tests/test_home_host.py',
               'tests/test_home_passkeys.py', 'tests/test_home_client.py', 'tests/test_home_styles.py', 'tests/test_home_login.py', 'tests/test_home_homemaker.py',
               'tests/test_home_live_review.py', 'tests/test_home_review_notes.py', 'tests/test_auth.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 

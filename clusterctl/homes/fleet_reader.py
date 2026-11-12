@@ -18,6 +18,40 @@ import time
 LIMIT = 131072
 
 
+def collect_usage(config, *, execute=None):
+    # Public probe/transport bytes are pinned by the same protected owner config.
+    # The transport is the existing Telecodex read-only Native implementation.
+    execute = execute or (lambda argv, source: run(argv, source, timeout=12))
+    sources = []
+    for field in ('native_transport', 'usage_probe'):
+        path = Path(config[field]['path'])
+        if path.stat().st_size > 1048576:
+            raise ValueError('usage_source_limit')
+        source = path.read_bytes()
+        if hashlib.sha256(source).hexdigest() != config[field]['sha256']:
+            raise ValueError('changed_usage_source')
+        sources.append(source.decode())
+    transport = sources[0].split('\nclass Rollout:', 1)[0]
+    if 'class Native:' not in transport or len(transport) > 16384:
+        raise ValueError('invalid_usage_transport')
+    targets = config['usage_targets']
+    if not 1 <= len(targets) <= 16:
+        raise ValueError('usage_target_limit')
+    def read(target):
+        row = dict(being=target['being'], name=target['name'], state='unavailable')
+        try:
+            program = transport+'\n'+sources[1]+'\nprint(json.dumps(probe_usage('+repr(target['probe'])+', native_factory=Native)))\n'
+            row.update(state='available', reading=execute(target['command'], program))
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+            pass
+        return row
+    # Imported only in the owner collector, never on remote guests.
+    import runpy
+    aggregate = runpy.run_path(str(Path(__file__).with_name('usage.py')))['aggregate']
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        return aggregate(list(pool.map(read, targets)))
+
+
 def run(argv, source, timeout=16):
     child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, start_new_session=True)
@@ -83,7 +117,7 @@ for path in paths:
 '''
 
 
-def collect(config, *, execute=run):
+def collect(config, *, execute=run, resources_only=False):
     source = Path(config['probe_source']).read_bytes()
     if hashlib.sha256(source).hexdigest() != config['probe_sha256']:
         raise ValueError('changed_probe_source')
@@ -96,10 +130,11 @@ def collect(config, *, execute=run):
         try:
             spec = target['probe']
             program = source+'\nimport subprocess,re,socket\nspec='+repr(spec)+'\nreading=probe(spec)\n'
-            if 'jobs' in spec: program += PREPARATION
+            if 'jobs' in spec and not resources_only: program += PREPARATION
             else: program += '\npreparations=[]\n'
             program += '\nprint(json.dumps(dict(reading=reading,preparations=preparations)))\n'
-            data = execute(target['command'], program)
+            data = (execute(target['command'], program, timeout=4) if resources_only
+                    else execute(target['command'], program))
             label.update(state='available', reading=data['reading'])
             return label, data['preparations']
         except (OSError, ValueError, KeyError, subprocess.SubprocessError):
@@ -112,6 +147,64 @@ def collect(config, *, execute=run):
             'partial':any(r[0]['state']!='available' for r in rows)}
 
 
+def request_view(stream=None):
+    """Optional tiny enum on the existing private socket; legacy callers send nothing."""
+    import select
+    import sys
+    stream=stream or sys.stdin.buffer
+    if not select.select([stream],[],[],.1)[0]:
+        return 'all'
+    raw=bytearray(); deadline=time.monotonic()+.5
+    while len(raw)<=256:
+        remaining=deadline-time.monotonic()
+        if remaining<=0 or not select.select([stream],[],[],remaining)[0]:
+            raise ValueError('invalid_observation_request')
+        part=os.read(stream.fileno(),257-len(raw))
+        if not part:break
+        raw.extend(part)
+        if b'\n' in raw:break
+    if not raw:
+        return 'all'
+    if len(raw)>256 or not raw.endswith(b'\n'):
+        raise ValueError('invalid_observation_request')
+    value=json.loads(raw)
+    if value not in ({'view':'resources'},{'view':'all'}):
+        raise ValueError('invalid_observation_request')
+    return value['view']
+
+
+def resource_snapshot(config, state):
+    """A fast independent lane: never wait for native usage or its lock/cache."""
+    with (state/'resources.lock').open('a+b') as lock:
+        # Bounded waiting: another reader may be collecting the same four hosts.
+        deadline=time.monotonic()+6
+        while True:
+            try:
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic()>=deadline:raise ValueError('resource_reader_busy')
+                time.sleep(.05)
+        current=state/'resources.json'
+        previous=None
+        if current.exists():
+            raw=current.read_bytes()
+            if len(raw)>LIMIT:raise ValueError('report_limit')
+            previous=json.loads(raw)
+            if 0 <= time.time()-current.stat().st_mtime < 1:
+                return previous
+        result=collect(config,resources_only=True)
+        old={t['id']:t for t in (previous or {}).get('health',{}).get('targets',[])}
+        for row in result['health']['targets']:
+            if row['state']!='available' and old.get(row['id'],{}).get('reading'):
+                # Retain the real old sample/date, never relabel it as successful.
+                row['reading']=old[row['id']]['reading']
+        raw=json.dumps(result).encode()
+        if len(raw)>LIMIT:raise ValueError('report_limit')
+        tmp=state/'resources.next';tmp.write_bytes(raw);tmp.chmod(0o600);tmp.replace(current)
+        return result
+
+
 def main():
     import argparse
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--config',type=Path,required=True);args=parser.parse_args()
@@ -122,13 +215,31 @@ def main():
     config=json.loads(args.config.read_text());state=Path(config['state']);state.mkdir(mode=0o700,parents=True,exist_ok=True)
     if state.is_symlink() or state.stat().st_uid!=os.geteuid() or state.stat().st_mode&0o077:
         raise ValueError('private_state_required')
+    if request_view()=='resources':
+        print(json.dumps(resource_snapshot(config,state)),flush=True)
+        return
     with (state/'lock').open('a+b') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX)
         current=state/'current.json'
         if current.exists() and 0 <= time.time()-current.stat().st_mtime < 5:
             raw=current.read_bytes()
         else:
-            result=collect(config);raw=json.dumps(result).encode()
+            usage = None
+            if config.get('usage_targets'):
+                usage_path = state/'usage.json'
+                if usage_path.exists() and 0 <= time.time()-usage_path.stat().st_mtime < 60:
+                    usage = json.loads(usage_path.read_bytes())
+                else:
+                    try:
+                        usage = collect_usage(config)
+                    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+                        usage = {'schema':'cluster-usage/v1','state':'unavailable','daimons':[],'accounts':[]}
+                    encoded = json.dumps(usage).encode()
+                    if len(encoded)>65536:raise ValueError('usage_report_limit')
+                    temporary=state/'usage.next';temporary.write_bytes(encoded);temporary.chmod(0o600);temporary.replace(usage_path)
+            result=collect(config)
+            if usage is not None:result['usage']=usage
+            raw=json.dumps(result).encode()
             if len(raw)>LIMIT:raise ValueError('report_limit')
             temporary=state/'current.next';temporary.write_bytes(raw);temporary.chmod(0o600);temporary.replace(current)
         if len(raw)>LIMIT:raise ValueError('report_limit')

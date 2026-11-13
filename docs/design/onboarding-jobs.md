@@ -93,6 +93,14 @@ operation IDs and uncertain effects. The worker's finite owner surface is
 `--extend-seconds 600`: an active supervisor reads the extended deadline without
 launching another worker; an expired operator continues the original job from
 its next missing checkpoint. A plain retry cannot silently reset the deadline.
+For a new v2 foreground job, pass `--home-placements` with the existing
+companion Home composition. The command validates its actual schema and exact
+owner/plan pairing before submitting a job or allocating a body. A missing or
+different placement returns `companion_home_configuration_required` in the
+command-preparation diagnostic. Repair that selected configuration and continue
+the same operation; do not provision manually or replace the intended identity.
+Completed jobs retain the read-only entry path without Home reinstallation.
+
 The bounded record keeps its original start/deadline and aggregate extensions,
 not an unbounded attempt history. Extending wall time changes no native goal,
 token budget, pause or external effect receipt. If an operation was uncertain,

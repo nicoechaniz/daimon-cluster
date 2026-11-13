@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import being_seed
-from .onboarding import Backend, JobStore, OnboardingError, refusal_diagnostic, CONVERSATION_JOB_SCHEMA
+from .onboarding import Backend, JobStore, OnboardingError, refusal_diagnostic, CONVERSATION_JOB_SCHEMA, CONVERSATION_PLAN_SCHEMA, digest
 
 
 def completed_result(store: JobStore, backend: Backend, name: str, value: dict) -> tuple[int, dict]:
@@ -42,6 +42,32 @@ def completed_result(store: JobStore, backend: Backend, name: str, value: dict) 
         # unavailable. The operator failed, not its preserved historical work.
         return 3, dict(state='attention-required', reason='verification_failed', job=value,
             diagnostic=refusal_diagnostic(error, stage='completed-entry'))
+
+
+def prepare_companion_homes(config, plan: dict, store: JobStore, placements: Path | None):
+    """Validate the actual Home composition before a new v2 job allocates a body.
+
+    Completed jobs keep their read-only entry fast path. This reuses the same
+    Home hook as the child worker, without opening custody or creating identity.
+    """
+    if plan.get('schema') != CONVERSATION_PLAN_SCHEMA:
+        return
+    retained = store.directory(plan['name'])/'job.json'
+    if retained.exists():
+        record = store._load(plan['name'])
+        if record['state'] == 'complete' and record['plan_digest'] == digest(plan):
+            return
+    if placements is None or config.progress is None:
+        raise OnboardingError('companion_home_configuration_required')
+    from .onboarding_homes import configure
+    from .onboarding_host import HostBackend
+    homes = configure(placements, progress=config.progress, store=store,
+        backend=lambda: HostBackend(config), worker_uid=os.geteuid())
+    selected = getattr(homes, 'value', {})
+    pair = selected.get('pairs', {}).get(plan['name'])
+    if (not isinstance(pair, dict) or pair.get('owner') != plan['owner']
+            or pair.get('plan_digest') != digest(plan)):
+        raise OnboardingError('companion_home_configuration_required')
 
 
 class ForegroundRun:
@@ -346,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             if not isinstance(selected, dict) or selected.get('name') != args.until:
                 raise OnboardingError('host_authorization_required')
             store = JobStore(config.jobs)
+            prepare_companion_homes(config, selected, store, args.home_placements)
             original = store.submit(selected, HostBackend(config))
             control = ForegroundRun(store, args.until, original['plan_digest'])
             record = control.prepare(args.timeout_seconds, extend=args.extend_seconds)
@@ -453,9 +480,10 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGINT, lambda *_: stop.set())
         worker.run(stop)
         return 0
-    except Exception:
+    except Exception as error:
         print(json.dumps(dict(schema='cluster-onboarding-foreground/v1', state='attention-required',
-            reason='onboarding_worker_configuration_refused', effect='inspect-original-job-and-operation')
+            reason='onboarding_worker_configuration_refused', effect='inspect-original-job-and-operation',
+            diagnostic=refusal_diagnostic(error, stage='command-preparation'))
             if args.until else {"error": "onboarding_worker_configuration_refused"}))
         return 1
 

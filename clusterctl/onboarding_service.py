@@ -78,6 +78,11 @@ def guest_service_dropins(paths: str, *, uid: int, reference_unit: Path | None =
         expected[reference_unit.with_name(reference_unit.name + '.d') / 'tribu-reference-cache.conf'] = (
             b'[Service]\nEnvironment=DM_TRIBU_REFERENCE_DIRECTORY='
             b'/home/agent/.local/state/tribu-reference-cache\n')
+    from .onboarding_vm_state import CONSUMERS, UNIT as STATE_UNIT
+    # Exact dependencies installed by the KVM native-filesystem writer.
+    for consumer in CONSUMERS:
+        expected[Path('/etc/systemd/system') / (consumer + '.d/companion-state.conf')] = (
+            '[Unit]\nRequires=' + STATE_UNIT + '\nAfter=' + STATE_UNIT + '\n').encode()
     selected = [Path(path) for path in paths.split()]
     if len(set(selected)) != len(selected) or any(path not in expected for path in selected):
         raise OnboardingError('receiving_matrix_service_scope_required')

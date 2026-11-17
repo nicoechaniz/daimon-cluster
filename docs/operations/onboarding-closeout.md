@@ -52,3 +52,34 @@ uploads. Keep its owner grants, current admission, qualified code/SDK, original
 public mounts and native tooling adoption. Native skill updates remain separate.
 Legacy no-candidate onboarding repair may still require the original upload;
 use the current supported maintenance route for existing accepted bodies.
+
+Cold KVM public App bundles must include the complete selected Codex package
+(layout manifest, entrypoint, code-mode host, resources and path tools). A lone
+binary can answer `--version` while native daemon startup fails. The pinned
+public bundle is bounded to 768 MiB and 10,000 files; mutable accounts, identity
+and memory stay outside it. Qualify daemon readiness, not CLI version alone.
+
+A central companion Home resolves the current `/human` projection through the
+configured owner adapter and passes only its bounded nonsecret pairing in the
+host-owned bootstrap pipe. Guest-local legacy Homes retain `daimon-home human`.
+Final acceptance still performs the real paired login, own Conversation read,
+anonymous/admin denial and logout; a supplied display label proves none of them.
+The initial bootstrap must act on an absent receiver, not report it already ready.
+
+For KVM admission, explicitly select `vm_relay: "PRIVATE_ADDRESS:PORT"` in the
+v2 native-admission profile. Reuse the actual existing authority relay destination;
+there is no default network expansion. The maintained writer installs a guest
+loopback-only systemd socket/proxyd with an exact destination network fence,
+32 MiB memory/64 descriptors/16 tasks and five-minute idle exit. Container profiles
+keep their existing Incus instance-bound proxy. A listening relay proves only
+transport: signed enrollment, admitted presence and registry adoption must pass.
+Stop only this guest socket/service if deliberately retiring its admission path;
+never stop another body's authority or reuse a foreign profile.
+
+Refresh explicit public membership observer/maintenance helpers through their
+current pinned receiving transport. Preserve completed public/context reads and
+native serving selections. The finite maintenance recipe also supplies compatible
+context readers before its later writer phase; do not combine a new caller with
+older peer/context helpers. Operational web-maintenance transport updates do not
+change the immutable Home or route intent; current upstream guards still protect
+all affected live calls before any Caddy reload.

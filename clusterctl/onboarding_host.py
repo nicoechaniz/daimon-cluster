@@ -356,11 +356,13 @@ class HostConfig:
 
 class HostBackend:
     def __init__(self, config: HostConfig, *, run: Callable | None = None, input_cache=None,
-                 custody_run: Callable | None = None, home_access: Callable | None = None):
+                 custody_run: Callable | None = None, home_access: Callable | None = None,
+                 home_pairing: Callable | None = None):
         self.config = config
         self.run = run or self._run
         self.custody_run = custody_run
         self.home_access = home_access
+        self.home_pairing = home_pairing
         self.input_cache = input_cache if input_cache is not None else onboarding_input.VerificationCache()
 
     def native_body(self, plan: dict):
@@ -410,6 +412,15 @@ class HostBackend:
             if prepare:
                 return native.prepare_code(candidate[0], candidate[1], deadline_ns=deadline_ns) == code
             return native.code_available(code, candidate[1], deadline_ns=deadline_ns)
+        if prepare and not self._mounted(plan, mounts, deadline_ns=deadline_ns):
+            if not self.authorize(plan, digest(plan)):
+                raise OnboardingError('host_authorization_required')
+            for name, mount in mounts.items():
+                if not self._mounted(plan, {name:mount}, deadline_ns=deadline_ns):
+                    self._dispatch(plan, ['config','device','add',self.instance(plan),name,'disk',
+                        *[key+'='+value for key,value in mount.items() if key!='type']],
+                        deadline_ns=deadline_ns)
+            self._wait_guest_mounts(plan,mounts)
         return self._mounted(plan, mounts, deadline_ns=deadline_ns)
     def advance_group_admission(self, name: str) -> dict | None:
         if self.config.group_admission is None:
@@ -754,10 +765,15 @@ class HostBackend:
             engine = self._telegram_command(plan, 'native-observe').get('native_state')
         if engine != 'active':
             return Observation('waiting', reason='backend_unavailable')
+        supplied = request
+        input_flag = '--request-stdin'
+        if self.home_pairing is not None:
+            supplied = dict(request=request, pairing=self.home_pairing(plan, request))
+            input_flag = '--paired-request-stdin'
         result = json.loads(self.execute_body(plan, [str(self.body_python(plan)),
-            str(code / 'clusterctl/onboarding_conversation.py'), '--request-stdin',
+            str(code / 'clusterctl/onboarding_conversation.py'), input_flag,
             '--timeout-seconds', '55', *(['--apply'] if apply else [])],
-            uid=0, gid=0, input_data=json.dumps(request), timeout_seconds=60))
+            uid=0, gid=0, input_data=json.dumps(supplied), timeout_seconds=60))
         if (result.get('schema') == 'cluster-conversation-observation/v1'
                 and result.get('state') == 'absent' and result.get('safe_to_execute') is True):
             return Observation('absent', safe_to_execute=True)

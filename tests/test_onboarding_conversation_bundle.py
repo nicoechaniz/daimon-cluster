@@ -70,8 +70,21 @@ def test_own_codex_is_exposed_idempotently_and_foreign_guest_executable_survives
     binary = root / 'bin/codex'
     binary.write_bytes(b'qualified binary')
     binary.chmod(0o555)
+    (root / 'codex-resources').mkdir(mode=0o755)
+    (root / 'codex-path').mkdir(mode=0o755)
+    for directory in root.iterdir():
+        if directory.is_dir():
+            directory.chmod(0o755)
+    host = root / 'bin/codex-code-mode-host'
+    host.write_bytes(b'qualified host')
+    host.chmod(0o555)
+    package = root / 'codex-package.json'
+    package.write_text(json.dumps(dict(layoutVersion=1, entrypoint='bin/codex',
+        resourcesDir='codex-resources', pathDir='codex-path')))
+    package.chmod(0o444)
     raw = json.dumps({'schema': bundle.SCHEMA, 'files': {
-        'bin/codex': hashlib.sha256(binary.read_bytes()).hexdigest()}}).encode()
+        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in (binary, host, package)}}).encode()
     (root / bundle.MARKER).write_bytes(raw)
     (root / bundle.MARKER).chmod(0o444)
     pin = hashlib.sha256(raw).hexdigest()
@@ -104,3 +117,22 @@ def test_missing_guest_dependencies_have_one_finite_standard_package_install(tmp
     with pytest.raises(OnboardingError):
         bundle.dependencies(ready=lambda: False, run=run, release=release)
     assert len(calls) == 2
+
+
+def test_lone_codex_binary_cannot_claim_native_daemon_delivery(tmp_path):
+    root = tmp_path / 'app'
+    root.mkdir(mode=0o755)
+    root.chmod(0o755)
+    (root / 'bin').mkdir(mode=0o755)
+    (root / 'bin').chmod(0o755)
+    binary = root / 'bin/codex'
+    binary.write_bytes(b'CLI version works, daemon needs its package')
+    binary.chmod(0o555)
+    raw = json.dumps({'schema': bundle.SCHEMA, 'files': {
+        'bin/codex': hashlib.sha256(binary.read_bytes()).hexdigest()}}).encode()
+    (root / bundle.MARKER).write_bytes(raw)
+    (root / bundle.MARKER).chmod(0o444)
+    with pytest.raises(OnboardingError, match='conversation_bundle_codex_package_required'):
+        bundle.bootstrap_codex(hashlib.sha256(raw).hexdigest(), root=root,
+            destination=tmp_path / 'codex')
+    assert not (tmp_path / 'codex').exists()

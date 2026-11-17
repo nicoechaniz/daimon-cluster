@@ -422,7 +422,8 @@ def main(argv: list[str] | None = None) -> int:
         homes = None
         def backend():
             return HostBackend(selections.current(), input_cache=inputs,
-                home_access=homes.conversation_access if homes else None)
+                home_access=homes.conversation_access if homes else None,
+                home_pairing=getattr(homes, 'conversation_pairing', None))
         from .onboarding_progress import Progress
 
         progress = Progress(config.progress, worker_uid=os.geteuid()) if config.progress else None

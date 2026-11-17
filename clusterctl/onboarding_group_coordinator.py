@@ -458,6 +458,35 @@ class GroupCoordinator:
                 raise OnboardingError('host_authorization_required')
             identity = self.backend._ceremony(plan).admission_coordinates(plan)
             owners = {owner: self._owner_client(owner) for owner in template['participants']}
+            # Explicit maintenance helpers also serve prospective context reads.
+            # Their serving selection/public authority remains the retained one.
+            maintenance = self.settings.get('membership_maintenance', {}).get(pin, {}).get('owners', {})
+            for name, owner in owners.items():
+                if name in maintenance:
+                    helper = maintenance[name]
+                    owner.maintenance = (Path(helper['code']), helper['code_digest'])
+                    if hasattr(owner, 'backend') and not owner.backend.runtime_available(
+                            owner.plan, owner.maintenance, prepare=True, deadline_ns=deadline_ns):
+                        raise OnboardingError('qualified_onboarding_candidate_mount_required')
+                    if hasattr(owner, 'backend'):
+                        def sdk(action):
+                            remaining = (deadline_ns-time.monotonic_ns())/1_000_000_000
+                            if remaining <= 0:
+                                raise OnboardingError('receiving_host_deadline_expired')
+                            return owner.backend._target_call(owner.plan,action,
+                                candidate=owner.maintenance,observation_timeout_seconds=min(60,remaining))
+                        if sdk('sdk-observe').get('ready') is not True:
+                            if sdk('sdk-prepare').get('ready') is not True:
+                                raise OnboardingError('qualified_onboarding_candidate_mount_required')
+            # Public observer helpers are preparation, not daemon selection.
+            # Existing remote bodies may retain a prior installed helper; use
+            # their pinned transport to stage the selected compatible bytes.
+            for owner in owners.values():
+                if hasattr(owner, 'backend') and not owner.backend.runtime_available(
+                        owner.plan, owner.candidate, deadline_ns=deadline_ns):
+                    if not owner.backend.runtime_available(owner.plan, owner.candidate,
+                            prepare=True, deadline_ns=deadline_ns):
+                        raise OnboardingError('qualified_onboarding_candidate_mount_required')
             ref = collect(plan=plan, selected=self.settings['owners'], template=template, owners=owners,
                 identity=identity, tribe_ref=self.settings['tribe_ref'], deadline_ns=deadline_ns,
                 authorize=authorize)

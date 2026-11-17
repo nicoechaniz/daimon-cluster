@@ -23,7 +23,7 @@ from .onboarding_release import regular
 SCHEMA = 'cluster-conversation-bundle/v1'
 MARKER = 'conversation-bundle.json'
 MAX_FILES = 10000
-MAX_BYTES = 512 * 1024**2
+MAX_BYTES = 768 * 1024**2
 
 
 def configuration(value):
@@ -110,6 +110,19 @@ def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
         from .onboarding_vm_state import install
         install(*state_plan)
     source = root / 'bin/codex'
+    # The daemon resolves its sibling package and code-mode host. A lone CLI
+    # executable reports its version but cannot start the native server.
+    try:
+        package = json.loads(regular(root / 'codex-package.json', uid=os.geteuid()))
+        if (package.get('layoutVersion') != 1 or package.get('entrypoint') != 'bin/codex'
+                or package.get('resourcesDir') != 'codex-resources'
+                or package.get('pathDir') != 'codex-path'
+                or not (root / 'codex-resources').is_dir()
+                or not (root / 'codex-path').is_dir()
+                or not os.access(root / 'bin/codex-code-mode-host', os.X_OK)):
+            raise ValueError
+    except (OSError, ValueError, TypeError, AttributeError):
+        raise OnboardingError('conversation_bundle_codex_package_required') from None
     if not source.is_file() or not os.access(source, os.X_OK):
         raise OnboardingError('conversation_bundle_codex_required')
     if destination.is_symlink():

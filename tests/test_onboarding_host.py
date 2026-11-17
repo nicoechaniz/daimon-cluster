@@ -1511,3 +1511,24 @@ def test_vm_static_nic_is_selected_at_original_init_and_foreign_address_is_prese
     with pytest.raises(OnboardingError,match='onboarding_environment_conflict'):
         backend.execute(value,'environment','original')
     assert run.calls==before
+
+
+def test_existing_guest_prepares_only_missing_qualified_read_only_helper(tmp_path, monkeypatch):
+    backend,value,_run,candidate,_calls=candidate_call_fixture(tmp_path,monkeypatch)
+    installed=set()
+    writes=[]
+    monkeypatch.setattr(backend,'_mounted',lambda plan,mounts,**kw:set(mounts)<=installed)
+    def dispatch(plan, argv, **options):
+        assert plan==value and options['deadline_ns']==123
+        assert argv[:3]==['config','device','add'] and argv[5]=='disk'
+        assert 'readonly=true' in argv
+        writes.append(argv)
+        installed.add(argv[4])
+        return ''
+    monkeypatch.setattr(backend,'_dispatch',dispatch)
+    waits=[]
+    monkeypatch.setattr(backend,'_wait_guest_mounts',lambda *a:waits.append(a))
+    assert not backend.runtime_available(value,candidate)
+    assert backend.runtime_available(value,candidate,prepare=True,deadline_ns=123)
+    assert backend.runtime_available(value,candidate,prepare=True,deadline_ns=123)
+    assert len(writes)==len(waits)==1

@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULES = ("__init__.py", "being_seed.py", "onboarding_transfer.py", "onboarding.py", "onboarding_input.py",
            "onboarding_release.py", "onboarding_code_successor.py", "onboarding_custody.py", "onboarding_custody_native.py", "onboarding_holder_backup.py", "onboarding_owner_client.py", "onboarding_peer.py", "onboarding_group_admission.py", "onboarding_group_session.py", "onboarding_group_recovery.py", "onboarding_guest.py", "onboarding_mounts.py", "onboarding_sdk.py",
            "onboarding_target.py", "onboarding_membership_preparation.py", "onboarding_receive_specification.py", "onboarding_receive_keys.py", "onboarding_existing.py", "onboarding_credential.py", "owner_process.py", "onboarding_admission.py",
-           "onboarding_runtime.py", "onboarding_views.py", "onboarding_service.py", "onboarding_conversation.py", "onboarding_conversation_bundle.py", "onboarding_vm_state.py", "onboarding_ssh.py", "onboarding_provider.py", "onboarding_telegram.py", "native_codex_supervisor.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
+           "onboarding_runtime.py", "onboarding_views.py", "onboarding_service.py", "onboarding_conversation.py", "onboarding_conversation_bundle.py", "onboarding_vm_state.py", "onboarding_vm_admission.py", "onboarding_ssh.py", "onboarding_provider.py", "onboarding_telegram.py", "native_codex_supervisor.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
 
 
 def read_code(source: Path) -> bytes:

@@ -303,3 +303,36 @@ def test_foreground_home_preparation_preserves_exact_pair(tmp_path):
     with pytest.raises(OnboardingError,match='companion_home_configuration_required'):
         prepare_companion_homes(config,selected,store,file)
     assert calls==[] and backend.calls==[]
+
+
+def test_new_owner_denial_reloads_only_exact_config_newer_than_process(tmp_path):
+    homes,store,backend,progress,_,_,_,state,file = assembled(tmp_path)
+    ready = committed(store,backend,progress)
+    config = tmp_path/'config'
+    config.write_bytes(b'new exact gateway selection')
+    checksum = hashlib.sha256(config.read_bytes()).hexdigest()
+    original = homes._gateway
+    def gateway(action, request, **options):
+        if action == 'register':
+            return {**original(action,request,**options), 'config_digest':checksum}
+        return {'state':'unavailable'}
+    homes._gateway = gateway
+    homes._unit = lambda:dict(ActiveState='active', MainPID='42',
+        process_start_epoch_ns=1, config_mtime_ns=2)
+    reloads=[]
+    homes._reload=lambda:reloads.append('exact-new-config')
+    assert homes(ready)['state']=='waiting'
+    assert homes(ready)['state']=='waiting'
+    assert reloads==['exact-new-config']
+    assert being_seed._read(homes.state/'eko.json')['phase']=='reload-intent'
+
+
+def test_live_owner_denial_is_not_treated_as_missing_configuration(tmp_path):
+    homes,store,backend,progress,_,_,_,_,_=assembled(tmp_path)
+    ready=committed(store,backend,progress)
+    original=homes._gateway
+    homes._gateway=lambda action,request,**kw: original(action,request,**kw) if action=='register' else {'state':'unavailable'}
+    homes._unit=lambda:dict(ActiveState='active', MainPID='42',
+        process_start_epoch_ns=3, config_mtime_ns=2)
+    homes._reload=lambda:pytest.fail('Live denial cannot trigger restart')
+    assert homes(ready)['state']=='waiting'

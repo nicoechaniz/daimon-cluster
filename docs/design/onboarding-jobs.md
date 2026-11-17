@@ -81,6 +81,16 @@ ready guests skip installation; an incompatible guest fails without package
 mutation. No model, account, SSH listener or other service is started by this
 dependency preparation.
 
+If the actual shared Home gateway uses scoped native SDK imports, select those
+same imports for its onboarding helper with `gateway.runtime_imports`:
+`path`, `sdk_digest` and `files_sha256` from the protected installed
+`runtime-imports.json`. The helper verifies the complete bounded import tree
+against that exact receipt before importing Home authority constructors. This
+keeps current standing-event bindings readable even when the gateway Python's
+installed legacy SDK differs. Do not upgrade Matrix, copy a peer environment or
+silently fall back to the legacy site package to fix this consumer. Existing
+gateway configurations without an explicit selection remain compatible.
+
 The actual cold KVM exposed SQLite WAL I/O failures on its Incus `virtiofs`
 Home. A disposable probe also failed with metadata caching; native guest-root
 storage passed WAL commit/reopen/integrity readback. Do not select unsafe caching

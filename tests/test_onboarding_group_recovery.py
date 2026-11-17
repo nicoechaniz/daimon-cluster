@@ -132,6 +132,66 @@ def test_expired_signed_only_invite_continues_same_parent_without_publication_gr
             recovery._frontier(changed)
 
 
+def test_expired_continuation_needs_fresh_exact_absence_before_another_bounded_membership_attempt(tmp_path, monkeypatch):
+    from clusterctl import onboarding_group_admission as social_module
+    from daimon_matrix.canonical import b64url
+    from daimon_matrix.relationships import invitation_id
+    _, original, request, now = fixture(tmp_path, monkeypatch)
+    after = copy.deepcopy(original['intended_transition'])
+    after.pop('admission_preparations')
+    after.pop('admission_publications')
+    after['membership_only'] = {'schema': 'cluster-native-membership-only/v1'}
+    journal = OperationJournal(tmp_path/'retry')
+    parent = plan_update(journal, manifest_digest='a'*64, target=original['target'],
+        expected_precondition=original['expected_precondition'], intended_transition=after, audit_identity={})
+    observed = dict(membership_admission=original['runtime_observation']['membership_admission'],
+        membership_maintenance={'recipe': {}, 'binding': 'f'*64})
+    parent = journal.advance(parent['operation_id'], 'planned', runtime_observation=observed)
+    request.update(parent_operation_id=parent['operation_id'], parent_intent_sha256=parent['intent_hash'],
+        frontier_sha256=digest(observed))
+    first = recovery.plan(journal, request, audit_identity={'actor': 'synthetic-test'})
+    grant = recovery.attach(journal, parent['operation_id'], recovery.reference(first))
+    # Native recipe validation is covered by the actual signed phase tests;
+    # this fixture isolates planner provenance, clock and unknown-effect fences.
+    monkeypatch.setattr(social_module, 'membership_recipe', lambda value, *args, **kw: copy.deepcopy(value))
+    current = journal.get(parent['operation_id'])
+    recipe, phase, prefix, provenance = recovery.membership(journal, current, after['cohort_admission'])
+    cmd = dict(operation_id=recipe['operation_id'], step=prefix+'membership-invite',
+        method='tribe.invite', params={'payload': recipe['invitation']})
+    observed = copy.deepcopy(current['runtime_observation'])
+    observed[phase] = dict(recipe_sha256=digest(recipe), requests={'founder': {
+        prefix+'membership-invite': {'command': cmd, 'result': None}}}, **provenance)
+    current = journal.advance(parent['operation_id'], 'planned', runtime_observation=observed)
+    later = grant['expires_at_ms']+1
+    monkeypatch.setattr(recovery, 'time', SimpleNamespace(time_ns=lambda: later*1_000_000,
+        monotonic_ns=time.monotonic_ns))
+    invitation = copy.deepcopy(recipe['invitation'])
+    nonce = b64url(b'3'*32)
+    invitation.update(issued_at_ms=later, expires_at_ms=later+3_600_000, nonce=nonce,
+        invitation_id=invitation_id(tribe=invitation['tribe_ref'], founder_epoch=invitation['founder_epoch'],
+            invitee_being_ref=invitation['invitee_being_ref'], nonce=nonce))
+    inspection = {**request['inspection'], 'command_sha256': digest(cmd), 'observed_at_ms': later}
+    retry = dict(authorization_id=str(uuid.uuid4()), parent_operation_id=parent['operation_id'],
+        parent_intent_sha256=parent['intent_hash'], frontier_sha256=digest(observed),
+        previous_authorization_sha256=digest(grant), expires_at_ms=later+3_600_000,
+        invitation=invitation, inspection=inspection, maintenance=request['maintenance'])
+    for change in ({'observed_at_ms': now}, {'rpc_state': 'pending'}, {'invitations': [{}]}):
+        with pytest.raises(OnboardingError, match='retry_frontier_required'):
+            recovery.plan_membership_retry(journal, {**retry, 'inspection': {**inspection, **change}}, audit_identity={})
+    approved = recovery.plan_membership_retry(journal, retry, audit_identity={'actor': 'synthetic-test'})
+    assert approved['intended_transition']['effects'] == ['membership']
+    preceding, step = recovery.preceding_membership(journal, current, approved['intended_transition'])
+    assert preceding['invitation'] == cmd['params']['payload'] and step == cmd['step']
+    recovery.attach(journal, parent['operation_id'], recovery.reference(approved))
+    final = journal.get(parent['operation_id'])
+    assert all(final['runtime_observation'][key] == value for key, value in observed.items())
+    assert final['intended_transition'] == after and final['state'] == 'planned'
+    assert recovery.require_effect(journal, final, recovery.reference(approved), 'membership', now_ms=later)
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.require_effect(journal, final, recovery.reference(approved), 'publication', now_ms=later)
+    assert recovery.membership(journal, final, after['cohort_admission'])[1] != phase
+
+
 def test_protected_coordinator_selection_reads_same_grant_and_cannot_drop_attachment(tmp_path,monkeypatch):
     from clusterctl.onboarding_group_coordinator import GroupCoordinator
     journal,parent,request,_=fixture(tmp_path,monkeypatch)

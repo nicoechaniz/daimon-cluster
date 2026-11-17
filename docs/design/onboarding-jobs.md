@@ -1980,3 +1980,31 @@ complete literal pins/provenance are verified before sealing and at successor
 validation; arbitrary tool edits and unrelated frozen context still refuse.
 Installed-module verification exercises that repaired closure. The predecessor
 is preserved, and package preparation selects no service or identity.
+
+
+### Cold KVM receiving result and bounded membership continuation
+
+The finite v2 companion command has completed actual cold KVM admission for
+Emma: original identity and operation retained, private native stores, full Codex
+package and supervisor, paired shared Home access, HTTPS Conversation, and signed
+Tribe membership distributed to eight owners. A cold boot and paired technical
+read/anonymous denial/logout were verified. These observations establish technical
+readiness, not a model answer, mailbox provisioning, first human/device use, or
+ordinary group outbound/publication acceptance.
+
+Runtime mount device names account for QEMU's complete 31-byte `incus_` tag.
+KVM owner-control deadlines are rebased to the receiving clock without extending
+the wall expiry. Current signed observation profiles may include exactly the
+existing `we.event.get` read capability and their declared not-before skew;
+arbitrary role/method changes still refuse.
+
+A large membership distribution can span several individually guarded native
+windows in the same finite foreground invocation. Continue only when new native
+step results were durably confirmed and every scoped guard restored. Unchanged
+failures and uncertain restoration stop with retained evidence; the original
+foreground deadline still ends the command. If an invitation expires before
+any dispatch, the supported membership-only continuation requires a fresh exact
+founder-writer absence proof, binds its predecessor and unchanged original intent,
+and retains every earlier frame. At most eight linked attempts and a selected
+expiry of at most 24 hours are allowed. This grants no application publication,
+model execution, account change or automatic authorization renewal.

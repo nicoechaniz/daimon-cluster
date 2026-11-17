@@ -141,7 +141,7 @@ def _parallel(items, action):
 
 @contextmanager
 def preserved(owners, selected, *, journal, row, deadline_ns, validate, restore_only=False,
-              phase='membership', continuation_sha256=None):
+              phase='membership', continuation_sha256=None, generation=None):
     """All preparations/recoveries precede any pause; all writer exit precedes restore."""
     if not isinstance(phase, str) or phase not in {'membership', 'receive'}:
         raise OnboardingError('membership_maintenance_phase_required')
@@ -163,6 +163,11 @@ def preserved(owners, selected, *, journal, row, deadline_ns, validate, restore_
     field = phase+'_maintenance'
     if continuation_sha256 is not None:
         field = 'membership_continuation_maintenance'
+    if generation is not None:
+        if (continuation_sha256 is None or not isinstance(generation, str)
+                or str(uuid.UUID(generation)) != generation):
+            raise OnboardingError('membership_maintenance_configuration_required')
+        field += '-'+generation
     retained = (row['runtime_observation'] or {}).get(field)
     expected = dict(recipe=selected, binding=binding)
     if phase == 'receive':
@@ -170,7 +175,16 @@ def preserved(owners, selected, *, journal, row, deadline_ns, validate, restore_
         if restore_only and retained is None:
             raise OnboardingError('membership_maintenance_original_required')
     if retained is not None and retained != expected:
-        raise OnboardingError('membership_maintenance_original_changed')
+        previous_identity = {'operation_id': row['operation_id'], 'intent': row['intent'],
+            'recipe': retained.get('recipe'), 'continuation_sha256': continuation_sha256}
+        if (continuation_sha256 is None or digest(previous_identity) != retained.get('binding')):
+            raise OnboardingError('membership_maintenance_original_changed')
+        # Operator-selected compatible code repair, not another social attempt
+        # or a refreshed grant. Preserve the old scope under its exact binding.
+        field += '-'+binding
+        retained = (row['runtime_observation'] or {}).get(field)
+        if retained is not None and retained != expected:
+            raise OnboardingError('membership_maintenance_original_changed')
     previous = {name: (owner.deadline_ns, owner.maintenance) for name, owner in owners.items()}
     sessions = {}
     try:

@@ -1389,6 +1389,7 @@ def test_vm_public_code_device_names_fit_real_incus_virtiofs_socket_limit(tmp_pa
         # observed in the first fresh Emma invocation's refused hotplug.
         path = '/var/lib/incus/devices/dm-' + 'x' * 31 + '/virtio-fs.' + name + '.sock'
         assert len(path.encode()) < 108
+        assert len(('incus_'+name).encode()) <= 31
         assert name.startswith(prefix + '-')
         assert vm._code_mount_name(prefix, 'b' * 64) != name
         assert len(container._code_mount_name(prefix, 'a' * 64)) == 63

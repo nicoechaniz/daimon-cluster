@@ -1497,7 +1497,10 @@ class HostBackend:
         # 63-byte container device name exceeds sockaddr_un even for dm-emma.
         # Full source/path/digest checks still establish authority; this short
         # name is only presentation and a conflicting device remains refused.
-        length = 20 if self.config.instance_type == 'virtual-machine' else 62 - len(prefix)
+        # QEMU also prefixes the device name with "incus_" as its virtiofs
+        # mount tag. Cold boot enforces that tag's 31-byte limit, even when
+        # adding the same device to a running VM succeeded.
+        length = 25-len(prefix)-1 if self.config.instance_type == 'virtual-machine' else 62-len(prefix)
         return prefix + '-' + fingerprint[:length]
 
     def _runtime_paths(self, plan: dict, base: Path, *,

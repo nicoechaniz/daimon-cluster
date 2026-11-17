@@ -676,9 +676,14 @@ class GroupCoordinator:
         """Resolve explicit operator selection; attached permission cannot disappear."""
         from . import onboarding_group_recovery as recovery
         selected = self.settings.get('continuations', {}).get(row['operation_id'])
-        attachment = (row['runtime_observation'] or {}).get('admission_continuation')
+        observations = row['runtime_observation'] or {}
+        attachment = observations.get('membership_retry') or observations.get('admission_continuation')
         if attachment is not None and (selected is None or attachment.get('reference') != selected):
-            raise OnboardingError('onboarding_group_continuation_reference_required')
+            pending = None if selected is None else recovery.resolve(journal, row, selected)
+            if (pending is None or pending.get('schema') != recovery.RETRY_SCHEMA
+                    or pending.get('previous_reference') != attachment['reference']
+                    or pending.get('previous_authorization_sha256') != attachment['authorization_sha256']):
+                raise OnboardingError('onboarding_group_continuation_reference_required')
         if selected is None:
             return None
         return recovery.resolve(journal, row, selected)
@@ -1685,7 +1690,14 @@ class GroupCoordinator:
                     code=helper['code'], code_digest=helper['code_digest'],
                     journal=selected['owners'][key]['journal'])
                     for key, helper in continuation['maintenance'].items()})
+                # An explicit protected software selection may advance qualified
+                # helpers while this same social grant/window stays immutable.
+                # Keep the original guard recipe and every earlier scope receipt.
+                if retained is not None and selected != retained['recipe']:
+                    recipe = selected
             social_key = 'membership_admission' if continuation is None else 'membership_continuation'
+            if continuation is not None and continuation['schema'] == recovery.RETRY_SCHEMA:
+                social_key += '-'+continuation['authorization_id'].replace('-', '')
             native_result = (row['runtime_observation'] or {}).get(social_key, {}).get('result')
             def authorized():
                 # Independent guards validate concurrently. Atomic plan/grant
@@ -1710,13 +1722,31 @@ class GroupCoordinator:
             guarded = recipe is not None and (native_result is None or retained is not None)
             scope = (preserved(owners, recipe, journal=journal, row=row, deadline_ns=deadline,
                 validate=authorized, restore_only=native_result is not None,
-                continuation_sha256=None if continuation is None else digest(continuation))
+                continuation_sha256=None if continuation is None else digest(continuation),
+                generation=(continuation['authorization_id'] if continuation is not None
+                    and continuation['schema'] == recovery.RETRY_SCHEMA else None))
                 if guarded else nullcontext(lambda: None))
-            with scope as check:
-                authorized()
-                check()
-                result = CohortController(journal, original_id, owners).admit_membership_only(
-                    deadline_ns=getattr(check, 'deadline_ns', deadline))
+            def confirmed_steps(current):
+                phase = (current['runtime_observation'] or {}).get(social_key, {})
+                return sum(item.get('result') is not None
+                    for steps in phase.get('requests', {}).values() for item in steps.values())
+            before_steps = confirmed_steps(row)
+            try:
+                with scope as check:
+                    authorized()
+                    check()
+                    result = CohortController(journal, original_id, owners).admit_membership_only(
+                        deadline_ns=getattr(check, 'deadline_ns', deadline))
+            except OnboardingError as error:
+                # The guard has already closed/restored. A finite --until may
+                # resume exact native journals only after confirmed new results;
+                # unchanged failures, unknown restoration and expiry still stop.
+                if (str(error) in {'onboarding_group_relationship_deadline_expired',
+                        'receiving_owner_deadline_expired', 'receiving_host_deadline_expired'}
+                        and not getattr(error, '__notes__', [])
+                        and confirmed_steps(journal.get(original_id)) > before_steps):
+                    raise OnboardingError('onboarding_group_bounded_progress_pending') from None
+                raise
             return finish_membership_only(journal, journal.get(original_id), result)
 
     def advance_receive_only(self, name: str, *, timeout_seconds: float = 60, select_current: bool = False) -> dict | None:

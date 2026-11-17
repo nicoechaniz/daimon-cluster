@@ -47,8 +47,9 @@ def setup(tmp_path, monkeypatch):
             assert {name for phase, name in events if phase == 'recover'} == set(owners)
             current = journal.get(row['operation_id'])
             observed = current['runtime_observation']
-            assert any(observed.get(field, {}).get('recipe') == selected
-                for field in ('membership_maintenance', 'receive_maintenance', 'membership_continuation_maintenance'))
+            assert any(value.get('recipe') == selected for field, value in observed.items()
+                if field in {'membership_maintenance', 'receive_maintenance'}
+                or field.startswith('membership_continuation_maintenance'))
             events.append(('pause', self.name))
             if 'pause-' + self.name in failures:
                 raise OnboardingError('pause-failed')
@@ -143,6 +144,22 @@ def test_slow_authentication_precedes_one_fresh_shared_sixty_second_pause(setup,
         first_pause = next(i for i, event in enumerate(events) if event[0] == 'pause')
         assert {name for phase, name in events[:first_pause] if phase == 'authenticate'} == set(owners)
     assert all(owner.deadline_ns is None for owner in owners.values())
+
+
+def test_same_social_continuation_can_select_explicit_qualified_helper_repair_without_erasing_old_scope(setup):
+    journal, row, owners, selected, events, failures = setup
+    with run(setup, continuation_sha256='b'*64):
+        pass
+    before = journal.get(row['operation_id'])['runtime_observation']
+    selected['owners']['one']['code'] = '/qualified/repaired-helper'
+    with run(setup, continuation_sha256='b'*64):
+        pass
+    after = journal.get(row['operation_id'])['runtime_observation']
+    assert all(after[key] == value for key, value in before.items())
+    updates = set(after)-set(before)
+    assert len(updates) == 1
+    assert next(iter(updates)).startswith('membership_continuation_maintenance-')
+    assert after[next(iter(updates))]['recipe'] == selected
 
 
 def test_restore_failure_preserves_native_error_and_reports_recovery_gap(setup):

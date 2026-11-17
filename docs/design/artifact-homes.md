@@ -1,5 +1,33 @@
 # Artifact homes — access and delivery contract
 
+## Stable selected-link entrances (source-qualified; receiving adoption separate)
+
+`/view/RESOURCE` now also accepts an existing `link` resource, resolving its
+currently selected target with a303 response and `Cache-Control: no-store`.
+`?version=VERSION` selects an immutable historical link; both its current and
+original audience must authorize the reader. Denied/missing selections return
+the ordinary404 without a target Location or title. Targets must be ordinary
+ASCII HTTP(S) URLs without credentials, controls, spaces or backslashes; encode
+non-ASCII paths and use IDNA hostnames when preparing a link. The gateway fetches
+no destination and transfers no Home session to it. The destination enforces its
+own access independently. Existing artifact previews and catalog link targets
+retain their behavior.
+
+Use the existing link publication writer under one stable ID to select a pinned
+artifact-view URL. The model resource can then advance for review while the link
+continues to select the published edition. Explicitly updating that link selects
+another edition without changing its `/view/RESOURCE` bookmark. This is ordinary
+link history, not another release registry. Obtain the link's resource reference
+from the authorized catalog; the publisher's returned link URL is still its
+destination. The browser sign-in path remains
+`/access/sso/start?return=URLENCODED_RELATIVE_VIEW_PATH`; it preserves version and
+display query parameters through the existing exact-origin return.
+
+Source tests cover redirect selection, historical/current audience intersection,
+revocation, invalid targets and real HTTP shared-login handoff. A deployment and
+actual selected-reader browser journey must still be observed separately.
+
+
 Owning epic: AlterMundi/daimon-matrix#318; Skills#46/#51/#52 and Cluster#199.
 Design alignment reviewed against Daimon Field D003 and the human-selected
 Resonancia study: cyan orbital orientation, segmented instruments, licensed

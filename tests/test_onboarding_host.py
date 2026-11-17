@@ -151,7 +151,8 @@ def test_conversation_stage_binds_own_plan_and_does_not_fabricate_login(tmp_path
     backend.execute_body = execute
     observed = backend.observe(value, 'conversation', 'retained-operation')
     assert observed.state == 'complete'
-    assert observed.facts == {'conversation_ready': True}
+    observed.validate()
+    assert observed.facts == {'verified': True, 'conversation_ready': True}
     assert '--apply' not in calls[0][0]
     assert calls[0][1]['uid'] == 0
     assert json.loads(calls[0][1]['input_data']) == selected
@@ -227,7 +228,8 @@ def test_identity_stage_retains_native_transaction_without_social_start(tmp_path
     backend._mounted = lambda p, mounts: True
     backend._sdk_successor = lambda p: False
     observed = backend.observe(value, 'identity', 'same-retained-operation')
-    assert observed.facts == {'identity_verified': True}
+    observed.validate()
+    assert observed.facts == {'verified': True, 'identity_verified': True}
 
 
 def test_companion_native_admission_does_not_wait_for_outbound_visibility(tmp_path, monkeypatch):
@@ -265,7 +267,8 @@ def test_companion_native_admission_does_not_wait_for_outbound_visibility(tmp_pa
     assert backend.observe(value, 'matrix', 'original').reason == 'group_admission_pending'
     state['membership'] = True
     observed = backend.observe(value, 'matrix', 'original')
-    assert observed.facts == {'identity_verified': True, 'native_running_verified': True,
+    observed.validate()
+    assert observed.facts == {'verified': True, 'identity_verified': True, 'native_running_verified': True,
                               'tribe_membership_verified': True}
     assert effects == ['native-start']
 

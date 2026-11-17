@@ -766,7 +766,7 @@ class HostBackend:
                 or any(result.get(key) is not True for key in
                     ('native_control', 'web_health', 'anonymous_private_api_denied'))):
             return Observation('waiting', reason='verification_failed')
-        return Observation('complete', {'conversation_ready': True})
+        return Observation('complete', {'verified': True, 'conversation_ready': True})
 
     def _identity(self, plan: dict, *, apply: bool) -> Observation:
         """Install this body's signed identity without starting social services.
@@ -809,7 +809,7 @@ class HostBackend:
         # These coordinates are native signature-verified, not names supplied
         # by a plan or a portal. No runtime/membership/visibility claim follows.
         ceremony.admission_coordinates(plan)
-        return Observation('complete', {'identity_verified': True})
+        return Observation('complete', {'verified': True, 'identity_verified': True})
 
     def _companion_matrix(self, plan: dict, *, apply: bool) -> Observation:
         """Compose existing native admission and signed membership separately.
@@ -843,7 +843,7 @@ class HostBackend:
         membership = GroupCoordinator(self).observe_membership(plan)
         if membership.state != 'complete':
             return membership
-        return Observation('complete', dict(identity_verified=True,
+        return Observation('complete', dict(verified=True, identity_verified=True,
             native_running_verified=True, tribe_membership_verified=True))
 
     def _companion_acceptance(self, plan: dict, *, apply: bool) -> Observation:

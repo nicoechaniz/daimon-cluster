@@ -1357,6 +1357,20 @@ def vm_configured(tmp_path):
     return value, run, HostBackend(replace(config, instance_type='virtual-machine'), run=run)
 
 
+def test_vm_public_code_device_names_fit_real_incus_virtiofs_socket_limit(tmp_path):
+    config, _, _, container = configured(tmp_path)
+    vm = HostBackend(replace(config, instance_type='virtual-machine'))
+    for prefix in ('runtime', 'telegram'):
+        name = vm._code_mount_name(prefix, 'a' * 64)
+        # Longest valid companion name, using the actual Incus socket layout
+        # observed in the first fresh Emma invocation's refused hotplug.
+        path = '/var/lib/incus/devices/dm-' + 'x' * 31 + '/virtio-fs.' + name + '.sock'
+        assert len(path.encode()) < 108
+        assert name.startswith(prefix + '-')
+        assert vm._code_mount_name(prefix, 'b' * 64) != name
+        assert len(container._code_mount_name(prefix, 'a' * 64)) == 63
+
+
 def test_vm_environment_reuses_pinned_image_and_existing_journaled_steps(tmp_path):
     value, run, backend = vm_configured(tmp_path)
     assert backend.observe(value, 'environment', 'original').state == 'absent'

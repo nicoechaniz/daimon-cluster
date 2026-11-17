@@ -69,6 +69,11 @@ Home and cold volumes may use the same quota-capable pool; their distinct
 per-service volume names and original plan pins remain required. A configured
 size on a directory pool is not evidence of quota enforcement.
 
+VM code-device labels use short digest prefixes because Incus embeds them in
+virtiofs UNIX socket paths. Full artifact digests and exact source/path/read-only
+checks remain authoritative. Container labels retain their existing bytes;
+never recreate an existing body to repair a refused VM disk hotplug.
+
 Nicolas's 8 November correction selects one finite operator command after the
 necessary inputs have been supplied. This is a required completion contract,
 not a claim that the current portal/worker already fulfills it. The next

@@ -1315,7 +1315,7 @@ class HostBackend:
         code = Path('/opt/daimon-onboarding-telegram') / fingerprint
         mount = dict(type='disk', source=str(self.config.telegram_code), path=str(code), readonly='true', shift='true')
         return code, ['--runtime-code', str(code), '--runtime-digest', fingerprint], {
-            'telegram-' + fingerprint[:54]: mount}
+            self._code_mount_name('telegram', fingerprint): mount}
 
     def _attach_telegram(self, plan: dict, *, deadline_ns: int | None = None) -> None:
         budget: dict = {} if deadline_ns is None else {'deadline_ns': deadline_ns}
@@ -1442,6 +1442,14 @@ class HostBackend:
         selected = (self.config.runtime_by_name or {}).get(plan['name'])
         return selected if selected is not None else (self.config.runtime_code, self.config.runtime_digest)
 
+    def _code_mount_name(self, prefix: str, fingerprint: str) -> str:
+        # Incus uses this name in the VM virtiofs UNIX socket path. The legacy
+        # 63-byte container device name exceeds sockaddr_un even for dm-emma.
+        # Full source/path/digest checks still establish authority; this short
+        # name is only presentation and a conflicting device remains refused.
+        length = 20 if self.config.instance_type == 'virtual-machine' else 62 - len(prefix)
+        return prefix + '-' + fingerprint[:length]
+
     def _runtime_paths(self, plan: dict, base: Path, *,
                        candidate: tuple[Path, str] | None = None) -> tuple[Path, list[str], dict]:
         """Context stays frozen; each body may retain its qualified generation."""
@@ -1457,7 +1465,7 @@ class HostBackend:
             return code, ['--runtime-code', str(code), '--runtime-digest', runtime_digest], {}
         mount = dict(type='disk', source=str(runtime_code), path=str(code), readonly='true', shift='true')
         return code, ['--runtime-code', str(code), '--runtime-digest', runtime_digest], {
-            'runtime-' + runtime_digest[:55]: mount}
+            self._code_mount_name('runtime', runtime_digest): mount}
 
     def _mounted(self, plan: dict, mounts: dict, *, deadline_ns: int | None = None) -> bool:
         if self.native_body(plan) is not None:

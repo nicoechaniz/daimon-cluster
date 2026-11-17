@@ -1236,10 +1236,11 @@ class HostBackend:
         _, code, mounts = self._guest_paths(plan)
         if not self._mounted(plan, mounts):
             raise OnboardingError('qualified_guest_environment_required')
+        import_code = self._runtime_paths(plan, code)[0] if plan['schema'] == CONVERSATION_PLAN_SCHEMA else code
         launcher = ('import sys; sys.path.insert(0,sys.argv.pop(1)); '
                     'from clusterctl.onboarding_ssh import main; raise SystemExit(main())')
         value = json.loads(self._dispatch(plan, ['exec', self.instance(plan), '--',
-            'python3', '-B', '-I', '-c', launcher, str(code), action, '--code', str(code),
+            'python3', '-B', '-I', '-c', launcher, str(import_code), action, '--code', str(code),
             '--plan', '/home/agent/.onboarding-input/plan.json', '--public-key', key]))
         if (not isinstance(value, dict) or type(value.get('installed')) is not bool
                 or value.get('plan_digest') != digest(plan) or value.get('port') != 2222):

@@ -232,6 +232,26 @@ def test_identity_stage_retains_native_transaction_without_social_start(tmp_path
     assert observed.facts == {'verified': True, 'identity_verified': True}
 
 
+def test_v2_ssh_imports_qualified_helper_but_keeps_original_context_pin(tmp_path):
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA, Observation
+    config, selected, _, backend = configured(tmp_path)
+    selected['schema'] = CONVERSATION_PLAN_SCHEMA
+    base, current = Path('/qualified/base'), Path('/qualified/current')
+    backend._environment = lambda p: Observation('complete', {'verified': True})
+    backend._guest_paths = lambda p: (tmp_path, base, {})
+    backend._runtime_paths = lambda p, b: (current, [], {})
+    backend._mounted = lambda p, mounts: True
+    calls = []
+    def dispatch(p, argv):
+        calls.append(argv)
+        return json.dumps({'installed':False, 'plan_digest':digest(p), 'port':2222})
+    backend._dispatch = dispatch
+    assert not backend._ssh_command(selected, 'observe', 'selected public fixture')['installed']
+    argv = calls[0]
+    assert argv[argv.index('--code')-2] == str(current)
+    assert argv[argv.index('--code')+1] == str(base)
+
+
 def test_companion_native_admission_does_not_wait_for_outbound_visibility(tmp_path, monkeypatch):
     from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA, Observation
     from clusterctl import onboarding_managed, onboarding_group_coordinator

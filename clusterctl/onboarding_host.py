@@ -325,8 +325,8 @@ class HostConfig:
                         raise OnboardingError('conversation_proxy_vm_network_required')
         conversation_bundle_by_name = None
         if 'conversation_bundle_by_name' in value:
-            from .onboarding_conversation_bundle import configuration
-            conversation_bundle_by_name = configuration(value['conversation_bundle_by_name'])
+            from .onboarding_conversation_bundle import configuration as bundle_configuration
+            conversation_bundle_by_name = bundle_configuration(value['conversation_bundle_by_name'])
             if conversation_by_name is None or set(conversation_bundle_by_name) - set(conversation_by_name):
                 raise OnboardingError('conversation_bundle_selection_required')
         return cls(directories["jobs"], directories["grants"], value["native_image"],

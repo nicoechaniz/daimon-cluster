@@ -55,7 +55,7 @@ verified tree read-only at `/opt/daimon-app`; it also exposes its pinned
 existing executable. This is public software delivery, never a copy of a being's
 home, account, conversation database or memory. The selected Conversation request
 still pins its native/Python executables and every imported component separately.
-The bundle is bounded to 10,000 files/512 MiB, refuses links, writable public code,
+The bundle is bounded to 10,000 files/768 MiB, refuses links, writable public code,
 unlisted files and digest changes before allocation, and stays retained while a
 live or rollback configuration references it. Remove only unselected task-owned
 transfer copies after exact readback; never retire a mounted generation.
@@ -119,10 +119,11 @@ writer. Never unmount a live canonical state path as cleanup.
 
 Nicolas's 8 November correction selects one finite operator command after the
 necessary inputs have been supplied. This is a required completion contract,
-not a claim that the current portal/worker already fulfills it. The next
-companion remains on hold until the full four-child delivery is ready and we
-begin the retained joint timing exercise with Nicolas. Do not provision it to prepare
-the benchmark.
+not a claim that a prepared candidate or partial job already fulfills it.
+Nicolas has explicitly started Emma's actual admission on 17 November; that
+instruction supersedes her earlier hold. Preserve that original job and separate
+command readiness, actual creation and first human/device use. Another future
+companion still requires its own selected inputs and actual authorization.
 
 Collect the real pairing, placement/resource limits, authorized account and
 selected service inputs before invocation. Validate completeness against the

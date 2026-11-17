@@ -100,11 +100,15 @@ def verify(root: Path, fingerprint: str, *, uid: int):
 
 
 def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
-                    destination=Path('/usr/local/bin/codex'), prepare_dependencies=False):
+                    destination=Path('/usr/local/bin/codex'), prepare_dependencies=False,
+                    state_plan=None):
     """Expose this selected public executable; never overwrite a guest login/tool."""
     verify(root, fingerprint, uid=os.geteuid())
     if prepare_dependencies:
         dependencies()
+    if state_plan is not None:
+        from .onboarding_vm_state import install
+        install(*state_plan)
     source = root / 'bin/codex'
     if not source.is_file() or not os.access(source, os.X_OK):
         raise OnboardingError('conversation_bundle_codex_required')

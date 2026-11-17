@@ -1565,9 +1565,11 @@ class HostBackend:
             fingerprint = self.config.conversation_bundle_by_name[plan['name']][1]
             launcher = ('import sys; sys.path.insert(0, sys.argv[1]); '
                 'from clusterctl.onboarding_conversation_bundle import bootstrap_codex; '
-                'bootstrap_codex(sys.argv[2], prepare_dependencies=True)')
+                'bootstrap_codex(sys.argv[2], prepare_dependencies=True, '
+                'state_plan=(sys.argv[3],sys.argv[4]) if sys.argv[5]=="vm" else None)')
             self._dispatch(plan, ['exec', self.instance(plan), '--', 'python3', '-B', '-I',
-                '-c', launcher, str(code), fingerprint])
+                '-c', launcher, str(code), fingerprint, digest(plan), plan['name'],
+                'vm' if self.config.instance_type == 'virtual-machine' else 'container'])
         self._guest_command(plan, "execute", stage, guest_code)
 
     def _wait_guest_mounts(self, plan: dict, mounts: dict) -> None:

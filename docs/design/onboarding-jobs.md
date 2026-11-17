@@ -81,6 +81,32 @@ ready guests skip installation; an incompatible guest fails without package
 mutation. No model, account, SSH listener or other service is started by this
 dependency preparation.
 
+The actual cold KVM exposed SQLite WAL I/O failures on its Incus `virtiofs`
+Home. A disposable probe also failed with metadata caching; native guest-root
+storage passed WAL commit/reopen/integrity readback. Do not select unsafe caching
+or pretend that configured volume capacity proves database readiness.
+
+For these new VM jobs the same context writer places `.agents`, `.local` and
+`.codex` private runtime state on the VM's native root filesystem through bind
+mounts at their original Home paths. This consumes the existing root-disk quota;
+it adds no disk or account and leaves project files/cold storage on their
+selected volumes. Keep service databases in their owned `.local/state` paths.
+Initial copying is limited to inactive, pre-identity context, 20,000 files and
+1 GiB per directory. Original Home files remain preserved beneath the binds;
+one private receipt prevents copying them over newer receiving writes on retry
+or reboot. This is one active canonical memory/history location, not ingestion
+into another pool. Ordinary VM protection must retain its root disk as well as
+the selected Home/cold volumes.
+
+The bounded `daimon-companion-state.service` boot prerequisite waits for the
+original Home mount and gates native/Conversation/Home units. It is a oneshot
+without a timer, model input or account/goal control. Runtime consumers require
+its successful completion. Its installed script/configuration are immutable to
+the receiving agent; a differing prior selection or identity refuses a fresh
+copy. Preserve the original files until actual receiving verification; retire
+only a verified unreferenced preactivation copy through the owning maintenance
+writer. Never unmount a live canonical state path as cleanup.
+
 Nicolas's 8 November correction selects one finite operator command after the
 necessary inputs have been supplied. This is a required completion contract,
 not a claim that the current portal/worker already fulfills it. The next

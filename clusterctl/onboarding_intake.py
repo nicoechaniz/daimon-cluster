@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from . import being_seed, onboarding_consent, onboarding_input, onboarding_release
-from .onboarding import PLAN_SCHEMA, OnboardingError, digest, private_directory, validate_plan, validate_resources
+from .onboarding import PLAN_SCHEMA, CONVERSATION_PLAN_SCHEMA, OnboardingError, digest, private_directory, validate_plan, validate_resources
 from .onboarding_progress import Progress
 
 POLICY = 'cluster-onboarding-intake-policy/v1'
@@ -21,8 +21,9 @@ POLICY = 'cluster-onboarding-intake-policy/v1'
 
 def policy(path: Path, release_digest: str) -> dict:
     value = being_seed._read(path)
-    if (set(value) != {'schema', 'release_digest', 'beings', 'revoked'}
+    if (set(value) - {'plan_schema'} != {'schema', 'release_digest', 'beings', 'revoked'}
             or value['schema'] != POLICY or value['release_digest'] != release_digest
+            or value.get('plan_schema', PLAN_SCHEMA) not in (PLAN_SCHEMA, CONVERSATION_PLAN_SCHEMA)
             or type(value['revoked']) is not bool or not isinstance(value['beings'], dict)
             or len(value['beings']) > 100):
         raise OnboardingError('invalid_onboarding_intake_policy')
@@ -44,6 +45,7 @@ def allows(config, plan: dict) -> bool:
     selected = policy(config.intake_policy, config.release_digest)
     entry = selected['beings'].get(plan['name'])
     return (selected['revoked'] is False and entry is not None
+            and ('plan_schema' not in selected or plan['schema'] == selected['plan_schema'])
             and all(plan[key] == entry[key] for key in ('owner', 'account_profile', 'browser'))
             and plan.get('resources') == entry.get('resources'))
 
@@ -65,7 +67,7 @@ class Intake:
         private_directory(config.inputs)
         for name, entry in selected['beings'].items():
             try:
-                self.prepare(name, entry)
+                self.prepare(name, entry, plan_schema=selected.get('plan_schema', PLAN_SCHEMA))
             except FileNotFoundError:
                 # A sleeping pair or an unfinished upload needs no intervention.
                 continue
@@ -80,8 +82,10 @@ class Intake:
                     progress.publish({**previous, 'state': 'attention-required',
                         'reason': 'verification_failed', 'updated_ms': int(time.time() * 1000)})
 
-    def prepare(self, name: str, entry: dict) -> dict | None:
+    def prepare(self, name: str, entry: dict, *, plan_schema=PLAN_SCHEMA) -> dict | None:
         config = self.config
+        if plan_schema not in (PLAN_SCHEMA, CONVERSATION_PLAN_SCHEMA):
+            raise OnboardingError('invalid_onboarding_intake_policy')
         directory = being_seed._directory(config.consent_state, name)
         for path in (config.consent_state, directory.parent, directory):
             being_seed._path(path)
@@ -137,7 +141,7 @@ class Intake:
                 fingerprint = onboarding_input.capture(directory / 'received', destination,
                     source_uid=config.consent_uid, resume=True,
                     seed_mode='new' if record.get('mode') == 'new' else None)['seed_digest']
-            plan = validate_plan(dict(schema=PLAN_SCHEMA, name=name, **entry,
+            plan = validate_plan(dict(schema=plan_schema, name=name, **entry,
                 seed_digest=fingerprint, release_digest=config.release_digest))
             from .onboarding_custody import CustodyPolicy
             custody = CustodyPolicy(config.custody_policy) if config.custody_policy is not None else None

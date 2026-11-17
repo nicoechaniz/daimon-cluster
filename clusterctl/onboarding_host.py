@@ -103,6 +103,7 @@ class HostConfig:
     conversation_by_name: dict[str, tuple[Path, str]] | None = None
     conversation_proxy_by_name: dict[str, dict] | None = None
     instance_type: str = 'container'
+    conversation_bundle_by_name: dict[str, tuple[Path, str]] | None = None
 
     @classmethod
     def load(cls, path: Path, *, expected_value: dict | None = None) -> HostConfig:
@@ -113,7 +114,7 @@ class HostConfig:
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
         telegram_keys = {"telegram_code", "telegram_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name", "conversation_proxy_by_name", "instance_type"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name", "conversation_proxy_by_name", "conversation_bundle_by_name", "instance_type"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -125,7 +126,7 @@ class HostConfig:
             raise OnboardingError("invalid_onboarding_host_configuration")
         cold_pool = value.get('cold_pool')
         if cold_pool is not None and (not isinstance(cold_pool, str)
-                or not being_seed.NAME.fullmatch(cold_pool) or cold_pool == value['pool']):
+                or not being_seed.NAME.fullmatch(cold_pool)):
             raise OnboardingError('invalid_onboarding_host_configuration')
         directories = {}
         for key in ("jobs", "grants", "inputs", "views"):
@@ -322,11 +323,17 @@ class HostConfig:
                     request = document(conversation_by_name[name][0])
                     if request.get('listen_host') != vm['address']:
                         raise OnboardingError('conversation_proxy_vm_network_required')
+        conversation_bundle_by_name = None
+        if 'conversation_bundle_by_name' in value:
+            from .onboarding_conversation_bundle import configuration
+            conversation_bundle_by_name = configuration(value['conversation_bundle_by_name'])
+            if conversation_by_name is None or set(conversation_bundle_by_name) - set(conversation_by_name):
+                raise OnboardingError('conversation_bundle_selection_required')
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
                    consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission, cold_pool, conversation_by_name, conversation_proxy_by_name,
-                   value.get("instance_type", "container"))
+                   value.get("instance_type", "container"), conversation_bundle_by_name)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -600,6 +607,7 @@ class HostBackend:
         if self.config.instance_type not in ('container', 'virtual-machine'):
             raise OnboardingError('invalid_onboarding_host_configuration')
         resources = plan.get('resources', {'root_gib': 8, 'home_gib': 22})
+        self._conversation_bundle_mount(plan)
         if self.config.instance_type == 'virtual-machine':
             # A pinned local VM image reuses Incus creation. Verify its actual
             # metadata before any environment mutation, including volume creation.
@@ -1389,6 +1397,16 @@ class HostBackend:
         from .onboarding_approvals import decision
         return decision(self.config, proposal)
 
+    def _conversation_bundle_mount(self, plan: dict) -> dict:
+        selected = (self.config.conversation_bundle_by_name or {}).get(plan['name'])
+        if selected is None:
+            return {}
+        from .onboarding_conversation_bundle import verify
+        root, fingerprint = selected
+        verify(root, fingerprint, uid=os.geteuid())
+        return {'onboarding-app': dict(type='disk', source=str(root),
+            path='/opt/daimon-app', readonly='true', shift='true')}
+
     def _guest_paths(self, plan: dict) -> tuple[Path, Path, dict]:
         if self.config.code is None or self.config.inputs is None or self.config.views is None:
             raise OnboardingError("receiving_code_configuration_required")
@@ -1404,6 +1422,7 @@ class HostBackend:
         if manifest.get('seed_mode') == 'new':
             _, _, runtime_mounts = self._runtime_paths(plan, guest_code)
             mounts.update(runtime_mounts)
+        mounts.update(self._conversation_bundle_mount(plan))
         return source, guest_code, mounts
 
     def _receiving_base(self, plan: dict) -> Path:
@@ -1506,7 +1525,7 @@ class HostBackend:
             instances, _ = self._inventory()
             row = next(row for row in instances if row.get("name") == self.instance(plan))
             # Code first: its typed bootstrap owns just the new empty home.
-            for name in ('onboarding-code', *[key for key in mounts if key.startswith('runtime-')], 'onboarding-input'):
+            for name in ('onboarding-code', *[key for key in mounts if key.startswith('runtime-')], *(['onboarding-app'] if 'onboarding-app' in mounts else []), 'onboarding-input'):
                 if name == "onboarding-input":
                     launcher = ("import sys; sys.path.insert(0, sys.argv[1]); "
                                 "from clusterctl.onboarding_mounts import bootstrap_home; "
@@ -1530,6 +1549,14 @@ class HostBackend:
                 '--group', '1000', '--', 'python3', '-B', '-I', '-c', program, json.dumps(plan)]))
             if set(result) != {'recovered'} or type(result['recovered']) is not int or result['recovered'] < 0:
                 raise OnboardingError('invalid_onboarding_observation')
+        if stage == 'context' and self.config.conversation_bundle_by_name and plan['name'] in self.config.conversation_bundle_by_name:
+            code = self._runtime_paths(plan, guest_code)[0]
+            fingerprint = self.config.conversation_bundle_by_name[plan['name']][1]
+            launcher = ('import sys; sys.path.insert(0, sys.argv[1]); '
+                'from clusterctl.onboarding_conversation_bundle import bootstrap_codex; '
+                'bootstrap_codex(sys.argv[2])')
+            self._dispatch(plan, ['exec', self.instance(plan), '--', 'python3', '-B', '-I',
+                '-c', launcher, str(code), fingerprint])
         self._guest_command(plan, "execute", stage, guest_code)
 
     def _ceremony(self, plan: dict):

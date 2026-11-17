@@ -47,6 +47,28 @@ available; preserve active work, original actor storage and the next-companion h
 
 ## Single-command companion contract
 
+Cold Conversation guests can select `conversation_bundle_by_name` in the host
+configuration: each name maps to a root-owned public App tree and the SHA256 of
+its `conversation-bundle.json` manifest. The existing context stage mounts that
+verified tree read-only at `/opt/daimon-app`; it also exposes its pinned
+`bin/codex` through the standard guest executable path, preserving any differing
+existing executable. This is public software delivery, never a copy of a being's
+home, account, conversation database or memory. The selected Conversation request
+still pins its native/Python executables and every imported component separately.
+The bundle is bounded to 10,000 files/512 MiB, refuses links, writable public code,
+unlisted files and digest changes before allocation, and stays retained while a
+live or rollback configuration references it. Remove only unselected task-owned
+transfer copies after exact readback; never retire a mounted generation.
+
+Operator intake policy may explicitly select `plan_schema` as
+`cluster-onboarding-plan/v2` for web companions. An omitted selection preserves
+the legacy v1 flow. Intake, owner review, custody and the frozen grant must all
+retain that same schema on continuation; do not rewrite a v2 plan into a legacy
+Telegram job. Home and actual cold-VM acceptance remain separately verified.
+Home and cold volumes may use the same quota-capable pool; their distinct
+per-service volume names and original plan pins remain required. A configured
+size on a directory pool is not evidence of quota enforcement.
+
 Nicolas's 8 November correction selects one finite operator command after the
 necessary inputs have been supplied. This is a required completion contract,
 not a claim that the current portal/worker already fulfills it. The next

@@ -397,19 +397,8 @@ class HostBackend:
         native = self.native_body(plan)
         return native.python if native is not None else Path('/usr/bin/python3')
 
-    def execute_body(self, plan: dict, argv: list[str], *, uid: int = 1000, gid: int = 1000,
-                     home: bool = False, input_data: str | None = None,
-                     timeout_seconds: float | None = None, deadline_ns: int | None = None,
-                     owner_clock: bool = False) -> str:
-        """Execute through physical placement; do not translate Incus commands."""
-        if not self.authorize(plan, digest(plan)):
-            raise OnboardingError('host_authorization_required')
-        native = self.native_body(plan)
-        if native is not None:
-            return native.execute(argv, uid=uid, gid=gid,
-                env={'HOME': '/home/agent'} if home else None, input_data=input_data,
-                timeout_seconds=60 if timeout_seconds is None else timeout_seconds,
-                deadline_ns=deadline_ns, owner_clock=owner_clock or '--observation-deadline-ns' in argv)
+    def owner_clock_argv(self, argv: list[str], *, deadline_ns: int | None,
+                         owner_clock: bool = False) -> list[str]:
         if self.config.instance_type == 'virtual-machine' and (
                 owner_clock or '--observation-deadline-ns' in argv):
             # A cold KVM has a different kernel clock from its Incus host.
@@ -423,6 +412,22 @@ class HostBackend:
             request = dict(argv=argv,remaining_seconds=min(60,remaining),
                 expires_at_ms=time.time_ns()//1_000_000+int(min(60,remaining)*1000))
             argv = ['/usr/bin/python3','-B','-I','-c',VM_OWNER_CLOCK,json.dumps(request)]
+        return argv
+
+    def execute_body(self, plan: dict, argv: list[str], *, uid: int = 1000, gid: int = 1000,
+                     home: bool = False, input_data: str | None = None,
+                     timeout_seconds: float | None = None, deadline_ns: int | None = None,
+                     owner_clock: bool = False) -> str:
+        """Execute through physical placement; do not translate Incus commands."""
+        if not self.authorize(plan, digest(plan)):
+            raise OnboardingError('host_authorization_required')
+        native = self.native_body(plan)
+        if native is not None:
+            return native.execute(argv, uid=uid, gid=gid,
+                env={'HOME': '/home/agent'} if home else None, input_data=input_data,
+                timeout_seconds=60 if timeout_seconds is None else timeout_seconds,
+                deadline_ns=deadline_ns, owner_clock=owner_clock or '--observation-deadline-ns' in argv)
+        argv = self.owner_clock_argv(argv, deadline_ns=deadline_ns, owner_clock=owner_clock)
         command = ['exec', self.instance(plan), '--user', str(uid), '--group', str(gid),
                    *(['--env', 'HOME=/home/agent'] if home else []), '--', *argv]
         return self._dispatch(plan, command, input_data=input_data,
@@ -1706,6 +1711,7 @@ while True:
         if native is not None:
             return native.relationship_conversation(command, packet,
                 deadline_ns=deadline, validate=authorized)
+        command = self.owner_clock_argv(command, deadline_ns=deadline)
         return OwnerConversation(['incus', 'exec', self.instance(plan), '--user', '1000', '--group', '1000',
             '--env', 'HOME=/home/agent', '--', *command], packet, deadline_ns=deadline,
             validate=authorized, env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'})

@@ -353,3 +353,16 @@ def test_normal_matrix_term_is_distinct_from_worker_exit_and_forced_kill(tmp_pat
     finally:
         pause.restore()
     assert manager.starts == manager.stops == 2
+
+
+def test_recovery_retains_canonical_prefixed_operation_journal_identity(tmp_path, capsys):
+    import time
+    import uuid
+    operation='operation:'+str(uuid.uuid4())
+    manager=MatrixFixture(tmp_path)
+    assert maintenance.main(['--journal',str(tmp_path/'journal'),
+        '--operation-id',operation,'--binding-sha256','a'*64,'--recover-only',
+        '--observation-deadline-ns',str(time.monotonic_ns()+10_000_000_000)],
+        manager_factory=lambda **kw:manager)==0
+    assert manager.stops==manager.starts==0
+    assert 'cluster-membership-maintenance-recovery/v1' in capsys.readouterr().out

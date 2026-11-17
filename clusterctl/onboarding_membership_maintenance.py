@@ -205,7 +205,9 @@ def main(argv=None, *, manager_factory=MembershipManager) -> int:
     parser.add_argument('--observation-deadline-ns', type=int, required=True)
     args = parser.parse_args(argv)
     try:
-        if (str(uuid.UUID(args.operation_id)) != args.operation_id
+        original_id = args.operation_id.removeprefix('operation:')
+        if (str(uuid.UUID(original_id)) != original_id
+                or args.operation_id not in {original_id, 'operation:'+original_id}
                 or re.fullmatch('[0-9a-f]{64}', args.binding_sha256) is None
                 or not args.journal.is_absolute() or '..' in args.journal.parts):
             raise OnboardingError('membership_scope_binding_required')

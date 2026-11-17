@@ -71,8 +71,11 @@ class Endpoint:
         owner.maintenance = self.candidate
 
     def command(self, *, recovery=False):
-        return code_command(self.python, self.code, MODULE,
+        command = code_command(self.python, self.code, MODULE,
             self.arguments + (['--recover-only'] if recovery else []))
+        if not self.source and self.body is None:
+            command = self.owner.backend.owner_clock_argv(command, deadline_ns=self.deadline)
+        return command
 
     def recover(self):
         # Recovery is observation/restoration of this original claim. It never
@@ -86,7 +89,7 @@ class Endpoint:
             raw = result.stdout
         else:
             raw = self.owner.backend.execute_body(self.owner.plan, command, uid=0, gid=0,
-                timeout_seconds=60)
+                timeout_seconds=60, deadline_ns=self.deadline)
         value = json.loads(raw)
         if (set(value) != {'schema', 'recovered', 'receiving_readiness'}
                 or value['schema'] != 'cluster-membership-maintenance-recovery/v1'

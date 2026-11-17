@@ -173,3 +173,85 @@ def test_existing_voice_backend_requires_covered_actual_maintenance_before_publi
         writer.reconcile(*args,apply=True,authorize=lambda:True)
     assert writer.path.read_bytes()==before and 'reload' not in calls
     assert routes.interaction_upstreams(live)=={'127.0.0.1:8800'}
+
+
+def rotated_prepared(tmp_path):
+    writer, args, state, calls, before = assembled(tmp_path)
+    with pytest.raises(OnboardingError, match='host_authorization_required'):
+        writer.reconcile(*args, apply=True, authorize=lambda: False)
+    original = being_seed._read(writer.state/'active.json')
+    assert original['phase'] == 'prepared' and writer.path.read_bytes() == before
+    # A real operator metadata field; this fixture does not execute transports.
+    writer.value['maintenance'] = [dict(name='existing', upstream='127.0.0.1:8800',
+        command=['/usr/bin/python3', '-c', '{program}'], python='/usr/bin/python3',
+        script='/qualified/scripts/interaction_web_maintenance.py', script_sha256='a'*64,
+        config='/qualified/dashboard.toml', owner_uid=1000, health_url='http://127.0.0.1:8800/health')]
+    writer._maintenance = lambda _: routes.nullcontext(lambda: None)
+    return writer, args, state, calls, before, original
+
+
+def test_prepared_metadata_rotation_keeps_identical_candidate_and_original(tmp_path):
+    writer, args, _, calls, _, original = rotated_prepared(tmp_path)
+    assert writer.reconcile(*args, apply=True, authorize=lambda: True)['state'] == 'complete'
+    previous = writer.state/('prepared-'+original['pins']+'.json')
+    assert being_seed._read(previous) == original
+    completed = being_seed._read(writer.state/'active.json')
+    assert completed['pins'] != original['pins']
+    assert all(completed[k] == original[k] for k in ('before', 'after', 'adapted'))
+    assert calls.count('reload') == 1
+    assert writer.reconcile(*args, apply=True, authorize=lambda: True)['state'] == 'complete'
+    assert calls.count('reload') == 1
+
+
+@pytest.mark.parametrize('change', ['operator-file', 'route', 'dry-run', 'revoked'])
+def test_prepared_rotation_rejects_changed_or_unauthorized_work(tmp_path, change):
+    writer, args, _, calls, before, original = rotated_prepared(tmp_path)
+    if change == 'operator-file':
+        writer.path.write_bytes(before+b'# concurrent operator\n')
+    if change == 'route':
+        args = (dict(args[0], origin='https://different.example.org'), *args[1:])
+    code = 'host_authorization_required' if change == 'revoked' else 'conversation_route_operation_pending'
+    with pytest.raises(OnboardingError, match=code):
+        writer.reconcile(*args, apply=change != 'dry-run', authorize=lambda: change != 'revoked')
+    assert being_seed._read(writer.state/'active.json') == original
+    assert not list(writer.state.glob('prepared-*.json')) and 'reload' not in calls
+
+
+def test_rotation_never_rebinds_an_uncertain_reload(tmp_path):
+    writer, args, state, calls, _ = assembled(tmp_path)
+    state['effect'] = False
+    assert writer.reconcile(*args, apply=True, authorize=lambda: True)['state'] == 'waiting'
+    original = being_seed._read(writer.state/'active.json')
+    writer.value['maintenance'] = []  # Only the changed-pin behavior is exercised.
+    with pytest.raises(OnboardingError, match='conversation_route_operation_pending'):
+        writer.reconcile(*args, apply=True, authorize=lambda: True)
+    assert being_seed._read(writer.state/'active.json') == original
+    assert calls.count('reload') == 1 and not list(writer.state.glob('prepared-*.json'))
+
+
+def test_prepared_metadata_history_has_existing_receipt_bound(tmp_path):
+    writer, args, _, calls, _, original = rotated_prepared(tmp_path)
+    for index in range(15):
+        being_seed._write(writer.state/('old-'+str(index)+'.json'), {'retained': index})
+    with pytest.raises(OnboardingError, match='conversation_route_capacity'):
+        writer.reconcile(*args, apply=True, authorize=lambda: True)
+    assert being_seed._read(writer.state/'active.json') == original and 'reload' not in calls
+
+
+def test_published_file_with_prepared_checkpoint_cannot_rotate_metadata(tmp_path, monkeypatch):
+    writer, args, _, calls, _ = assembled(tmp_path)
+    original_atomic = routes.atomic
+    def fail_after_publish(path, raw, **options):
+        original_atomic(path, raw, **options)
+        if path == writer.path:
+            raise TimeoutError('Fixture operator lost after candidate file write')
+    monkeypatch.setattr(routes, 'atomic', fail_after_publish)
+    with pytest.raises(TimeoutError):
+        writer.reconcile(*args, apply=True, authorize=lambda: True)
+    original = being_seed._read(writer.state/'active.json')
+    assert original['phase'] == 'prepared'
+    writer.value['maintenance'] = []
+    with pytest.raises(OnboardingError, match='conversation_route_operation_pending'):
+        writer.reconcile(*args, apply=True, authorize=lambda: True)
+    assert being_seed._read(writer.state/'active.json') == original
+    assert 'reload' not in calls and not list(writer.state.glob('prepared-*.json'))

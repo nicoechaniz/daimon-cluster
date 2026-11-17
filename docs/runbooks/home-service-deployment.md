@@ -309,3 +309,27 @@ loaded configuration without another reload, even when operator guard metadata
 has rotated; conflicting or incomplete operations still fail closed. Keep current
 state and compatible rollback, and qualify the actual dedicated transport and
 cross-service refusals before declaring adoption.
+
+### Prepared route and refreshed maintenance coverage
+
+A new service can reach a healthy receiving runtime while the shared Caddy writer
+correctly refuses a missing current web/voice maintenance target. Keep the exact
+service request, package digest, ready runtime and prepared route; do not start a
+new request or reset the journal to hide that refusal.
+
+The route writer accepts refreshed protected operator guard metadata only while
+the operation is `prepared`, the actual Caddy file/live configuration still match
+the original preimage, and the generated candidate bytes plus adapted
+configuration are exactly unchanged. It retains the original prepared checkpoint
+under its old pin digest, within the existing16-receipt bound, before binding the
+same candidate to the new metadata. Fresh authorization and every current
+maintenance guard still apply before any file write/reload. A changed route,
+concurrent file edit, dry run, revoked authority or `reload-intent`/unknown effect
+cannot use this path. Observe an uncertain reload; never rebind or dispatch it.
+
+Update only the affected protected declaration and its receiving capability,
+using actual current health/source/owner metadata. An existing live target is not
+permission to start, enroll, update or otherwise activate a held companion.
+Repeat the original deployment request through the ordinary owner command after
+that technical correction; a healthy existing runtime must retain its PID and
+invocation rather than restart during route recovery.

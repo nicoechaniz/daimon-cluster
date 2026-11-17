@@ -200,3 +200,80 @@ def test_busy_route_maintenance_does_not_block_independent_native_job_progress(t
     after=worker._tick('eko')
     assert 'access' in after['completed_steps']
     assert being_seed._read(homes.state/'eko.json')['phase']=='configured'
+
+
+def test_finite_full_conversation_resumes_same_body_and_home_after_wait(tmp_path):
+    """Real job/Home journals span every stage; substrate effects are fixtures."""
+    import time
+    from dataclasses import replace
+    from clusterctl.onboarding import CONVERSATION_STAGES, Observation
+    from clusterctl.onboarding_worker import Worker
+    homes,store,backend,progress,plan,_,calls,state,_=assembled(tmp_path)
+    state['ready']=True
+    original=backend.observe
+    waiting={'enabled':True}
+    def observe(selected,stage,operation):
+        if stage=='conversation' and waiting['enabled']:
+            return Observation('waiting',reason='connection_data_required')
+        result=original(selected,stage,operation)
+        if result.state=='complete' and stage in {'access','acceptance'}:
+            facts=dict(result.facts,provider_configured=True)
+            if stage=='acceptance':
+                assert being_seed._read(homes.state/'eko.json')['phase']=='complete'
+                facts.update(conversation_verified=True,shared_login_verified=True,
+                    native_running_verified=True,tribe_membership_verified=True)
+            return replace(result,facts=facts)
+        return result
+    backend.observe=observe
+    entry={'url':'https://fixture.example.org/interaction/?view=conversation&client=standalone'}
+    backend.companion_entry=lambda _plan:entry
+    worker=Worker(store,lambda:backend,publish=progress.publish,homes=homes)
+    status,result=worker.until(plan['name'],deadline=time.monotonic()+3)
+    assert status==2 and result['stage']=='conversation'
+    before=store._load(plan['name'])
+    environment=before['steps']['environment'].copy()
+    waiting['enabled']=False
+    status,result=worker.until(plan['name'],deadline=time.monotonic()+3)
+    assert status==0 and result['entry']==entry
+    assert result['completed_steps']==list(CONVERSATION_STAGES)
+    assert store._load(plan['name'])['steps']['environment']==environment
+    assert [stage for _,stage,_ in backend.calls]==list(CONVERSATION_STAGES)
+    assert calls.count('register')==1
+    journal=(store.directory(plan['name'])/'job.json').read_bytes()
+    effects=list(backend.calls)
+    assert worker.until(plan['name'],deadline=time.monotonic()+3)[0]==0
+    assert (store.directory(plan['name'])/'job.json').read_bytes()==journal
+    assert backend.calls==effects
+
+
+def test_new_foreground_refuses_missing_home_before_job_or_substrate(tmp_path,monkeypatch,capsys):
+    from clusterctl import onboarding_host,onboarding_worker
+    from tests.test_onboarding import FixtureBackend
+    backend=FixtureBackend()
+    value=plan(browser=False)
+    value['schema']=CONVERSATION_PLAN_SCHEMA
+    grants=tmp_path/'grants'
+    grants.mkdir(mode=0o700)
+    being_seed._write(grants/(value['name']+'.json'),{'plan':value})
+    config=SimpleNamespace(jobs=tmp_path/'jobs',grants=grants,progress=tmp_path/'progress')
+    monkeypatch.setattr(onboarding_host,'CurrentHostConfig',lambda _:SimpleNamespace(current=lambda:config))
+    monkeypatch.setattr(onboarding_host,'HostBackend',lambda _:backend)
+    assert onboarding_worker.main(['--config',str(tmp_path/'owner.json'),'--until',value['name']])==1
+    import json
+    output=json.loads(capsys.readouterr().out)
+    assert output['diagnostic']['code']=='companion_home_configuration_required'
+    assert not config.jobs.exists() and backend.calls==[]
+
+
+def test_foreground_home_preparation_preserves_exact_pair(tmp_path):
+    from clusterctl.onboarding_worker import prepare_companion_homes
+    homes,store,backend,progress,selected,_,calls,_,file=assembled(tmp_path)
+    config=SimpleNamespace(progress=progress.root)
+    prepare_companion_homes(config,selected,store,file)
+    assert calls==[] and backend.calls==[]
+    changed=being_seed._read(file)
+    changed['pairs'][selected['name']]['owner']='different-owner'
+    being_seed._write(file,changed)
+    with pytest.raises(OnboardingError,match='companion_home_configuration_required'):
+        prepare_companion_homes(config,selected,store,file)
+    assert calls==[] and backend.calls==[]

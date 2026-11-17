@@ -767,13 +767,18 @@ def test_added_guard_compatibility_does_not_accept_any_other_grant_change(setup)
     expanded['routes']['maintenance'].append(guard_fixture('added'))
     assert grant_matches_recorded(recorded, expanded)
     for field, value in [('upstream', '127.0.0.1:5999'), ('prefix', '/another/')]:
-        changed = deepcopy(expanded); changed[field] = value
+        changed = deepcopy(expanded)
+        changed[field] = value
         assert not grant_matches_recorded(recorded, changed)
-    changed = deepcopy(expanded); changed['receiver']['uid'] += 1
+    changed = deepcopy(expanded)
+    changed['receiver']['uid'] += 1
     assert not grant_matches_recorded(recorded, changed)
-    changed = deepcopy(grant); changed['routes']['maintenance'] = []
+    changed = deepcopy(grant)
+    changed['routes']['maintenance'] = []
     assert not grant_matches_recorded(recorded, changed)
-    changed = deepcopy(grant); changed['routes']['maintenance'][0]['script_sha256'] = 'b'*64
+    changed = deepcopy(grant)
+    changed['routes']['maintenance'][0]['script_sha256'] = 'b'*64
     assert not grant_matches_recorded(recorded, changed)
-    changed = deepcopy(expanded); changed['routes']['maintenance'].append(guard_fixture('second-added'))
+    changed = deepcopy(expanded)
+    changed['routes']['maintenance'].append(guard_fixture('second-added'))
     assert not grant_matches_recorded(recorded, changed)

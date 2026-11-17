@@ -228,7 +228,6 @@ class Deployments:
             if len(self.journal.list_all(limit=129)) >= 128 and not self.journal.latest_for_idempotency_key(key(c)+':'+value['request_id']):
                 raise ValueError('service_operation_capacity')
             previous_op = self.journal.latest_for_idempotency_key(key(c)+':'+value['request_id'])
-            call = {'grant': sha(canonical(g)), 'request': value}
             if previous_op and not runtime_call_matches(previous_op['intent']['runtime_call'], g, value):
                 raise ValueError('service_request_conflict')
             op = previous_op or self.journal.plan(operation='home-service-deploy/v1', target=key(c),

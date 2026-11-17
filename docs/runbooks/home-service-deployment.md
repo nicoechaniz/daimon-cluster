@@ -339,3 +339,12 @@ the original immutable intent, creating a new target operation or weakening
 finalization/access checks. Removals, replacements, multiple edits and receiver,
 transport or route changes refuse. A healthy existing runtime retains its PID
 and invocation rather than restarting during this recovery.
+
+The finite route executor's task bound must cover every selected maintenance
+guard plus its transport processes and the Caddy control CLI. Qualify the
+actual bound: eight guarded receivers required 96 tasks on the Holodeck
+receiver; 32 caused a kernel-confirmed fork rejection before the reload reached
+the Caddy admin API. Preserve the original reload intent. Operator recovery
+requires exact candidate/preimage pins, observed unchanged live configuration
+and reacquired guards before finishing that selected reload; a lost reply alone
+is never evidence that another reload is safe.

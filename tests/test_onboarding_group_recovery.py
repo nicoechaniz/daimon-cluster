@@ -97,6 +97,41 @@ def test_linked_grant_cas_preserves_original_vectors_and_survives_exact_retry(tm
         recovery.plan(journal, {**request, 'expires_at_ms': request['expires_at_ms']+1}, audit_identity={})
 
 
+def test_expired_signed_only_invite_continues_same_parent_without_publication_grant(tmp_path, monkeypatch):
+    _, original, request, now = fixture(tmp_path, monkeypatch)
+    after = copy.deepcopy(original['intended_transition'])
+    after.pop('admission_preparations')
+    after.pop('admission_publications')
+    after['membership_only'] = {'schema': 'cluster-native-membership-only/v1'}
+    journal = OperationJournal(tmp_path/'signed-only')
+    parent = plan_update(journal, manifest_digest='a'*64, target=original['target'],
+        expected_precondition=original['expected_precondition'], intended_transition=after, audit_identity={})
+    observed = dict(membership_admission=original['runtime_observation']['membership_admission'],
+        membership_maintenance={'recipe': {'selected': 'original'}, 'binding': 'f'*64})
+    parent = journal.advance(parent['operation_id'], 'planned', runtime_observation=observed)
+    request.update(parent_operation_id=parent['operation_id'], parent_intent_sha256=parent['intent_hash'],
+        frontier_sha256=digest(observed))
+    approved = recovery.plan(journal, request, audit_identity={'actor': 'synthetic-test'})
+    assert approved['intended_transition']['effects'] == ['membership']
+    assert approved['intended_transition']['children'] == {}
+    recovery.attach(journal, parent['operation_id'], recovery.reference(approved))
+    current = journal.get(parent['operation_id'])
+    assert current['intended_transition'] == after
+    assert current['runtime_observation']['membership_admission'] == observed['membership_admission']
+    assert recovery.require_effect(journal, current, recovery.reference(approved), 'membership', now_ms=now)
+    with pytest.raises(OnboardingError, match='effect_not_authorized'):
+        recovery.require_effect(journal, current, recovery.reference(approved), 'publication', now_ms=now)
+    # A retained positive response or another dispatched stage is not absence.
+    for key in ('result', 'other_stage'):
+        changed = copy.deepcopy(parent)
+        if key == 'result':
+            changed['runtime_observation']['membership_admission']['requests']['founder']['membership-invite']['result'] = {}
+        else:
+            changed['runtime_observation']['other_stage'] = {}
+        with pytest.raises(OnboardingError, match='frontier_required'):
+            recovery._frontier(changed)
+
+
 def test_protected_coordinator_selection_reads_same_grant_and_cannot_drop_attachment(tmp_path,monkeypatch):
     from clusterctl.onboarding_group_coordinator import GroupCoordinator
     journal,parent,request,_=fixture(tmp_path,monkeypatch)

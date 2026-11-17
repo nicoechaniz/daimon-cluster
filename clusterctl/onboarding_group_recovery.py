@@ -36,9 +36,48 @@ def _sha(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
 
 
+def _membership_only(row: dict) -> bool:
+    return row['intended_transition'].get('membership_only') == {
+        'schema': 'cluster-native-membership-only/v1'}
+
+
+def _effects(row: dict) -> list[str]:
+    return ['membership'] if _membership_only(row) else EFFECTS.copy()
+
+
+def _membership_frontier(row: dict) -> tuple[dict, dict, dict, dict]:
+    """An expired, never-dispatched invite in the explicit signed-only route."""
+    from .onboarding_group_admission import command
+    try:
+        before, after, observed = row['expected_precondition'], row['intended_transition'], row['runtime_observation']
+        admission, social = after['cohort_admission'], after['portal_admission']['social']
+        original = command(dict(operation_id=social['operation_id'], step='membership-invite',
+            method='tribe.invite', params={'payload': social['invitation']}))
+        phase = observed['membership_admission']
+        if (not _membership_only(row) or row['operation'] != 'receiving-update' or row['state'] != 'planned'
+                or row['target'] != 'receiving:'+admission['tribe_ref']
+                or row['intent_hash'] != digest(row['intent'])
+                or row['intent']['runtime_call']['precondition_digest'] != digest(before)
+                or row['intent']['runtime_call']['transition_digest'] != digest(after)
+                or set(after) != {'cohort_admission', 'portal_admission', 'membership_only'}
+                or after['portal_admission']['schema'] != 'cluster-portal-group-admission/v2'
+                or not before['senders']
+                or set(observed) != {'membership_admission', 'membership_maintenance'}
+                or set(phase) != {'recipe_sha256', 'requests'}
+                or phase['recipe_sha256'] != digest(social)
+                or phase['requests'] != {social['founder_owner']: {
+                    'membership-invite': {'command': original, 'result': None}}}):
+            raise ValueError
+        return admission, social, original, {}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise OnboardingError('onboarding_group_continuation_frontier_required') from None
+
+
 def _frontier(row: dict) -> tuple[dict, dict, dict, dict]:
     """Recognize only the reviewed frontier, not an arbitrary partial admission."""
     from .onboarding_group_admission import command
+    if _membership_only(row):
+        return _membership_frontier(row)
     try:
         before, after, observed = row['expected_precondition'], row['intended_transition'], row['runtime_observation']
         admission, social = after['cohort_admission'], after['portal_admission']['social']
@@ -254,7 +293,7 @@ def authorization(parent: dict, request: dict, *, now_ms: int) -> dict:
             manifest_digest=parent['intent']['runtime_call']['manifest_digest'],
             original_recipe_sha256=digest(social), original_invitation_command_sha256=digest(original),
             expires_at_ms=request['expires_at_ms'], invitation=copy.deepcopy(replacement),
-            inspection=copy.deepcopy(inspection), maintenance=copy.deepcopy(helpers), effects=EFFECTS.copy()+(['preparation'] if preparation else []))
+            inspection=copy.deepcopy(inspection), maintenance=copy.deepcopy(helpers), effects=_effects(parent)+(['preparation'] if preparation else []))
     except OnboardingError:
         raise
     except (KeyError, TypeError, ValueError, AttributeError):
@@ -308,7 +347,7 @@ def resolve(journal, parent: dict, selected: dict) -> dict:
                 or not _sha(row['intent']['runtime_call']['request_sha256'])
                 or grant['schema'] not in {SCHEMA, PREPARATION_SCHEMA} or grant['parent_operation_id'] != parent['operation_id']
                 or grant['parent_intent_sha256'] != parent['intent_hash']
-                or grant['effects'] != EFFECTS+(['preparation'] if grant['schema'] == PREPARATION_SCHEMA else [])
+                or grant['effects'] != _effects(parent)+(['preparation'] if grant['schema'] == PREPARATION_SCHEMA else [])
                 or grant['schema'] == PREPARATION_SCHEMA and (grant['children'] != {}
                     or grant['preparations_sha256'] != digest(parent['intended_transition']['admission_preparations']))
                 or grant['original_vectors_sha256'] != digest(dict(before=parent['expected_precondition'],
@@ -383,7 +422,7 @@ def require_execution(journal, parent: dict, selected: dict, effect: str) -> dic
                     or current['intent']['runtime_call']['transition_digest'] != digest(current['intended_transition'])):
                 raise ValueError
             grant = resolve(journal, current, selected)
-            if current['state'] == 'planned' and grant['schema'] != PREPARATION_SCHEMA:
+            if current['state'] == 'planned' and grant['schema'] != PREPARATION_SCHEMA and not _membership_only(current):
                 raise ValueError
             expected = dict(schema='cluster-admission-continuation-attachment/v1', reference=selected,
                 authorization_sha256=digest(grant), frontier_sha256=grant['frontier_sha256'])

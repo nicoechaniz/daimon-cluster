@@ -38,8 +38,9 @@ def finish_membership_only(journal, row: dict, result: dict) -> dict:
     channel selection, running reader, visibility or general onboarding finish.
     """
     after = row['intended_transition']
-    retained = (row['runtime_observation'] or {}).get('membership_admission', {})
-    social = after.get('portal_admission', {}).get('social', {})
+    from . import onboarding_group_recovery as recovery
+    social, state_key, _prefix, provenance = recovery.membership(journal, row, after['cohort_admission'])
+    retained = (row['runtime_observation'] or {}).get(state_key, {})
     if (after.get('membership_only') != {'schema': 'cluster-native-membership-only/v1'}
             or any(key in after for key in (
                 'admission_publications', 'admission_communication', 'cohort_activation'))
@@ -48,6 +49,7 @@ def finish_membership_only(journal, row: dict, result: dict) -> dict:
             or result.get('operation_id') != social.get('operation_id')
             or result.get('receiving_readiness') != 'unobserved'
             or retained.get('recipe_sha256') != digest(social)
+            or any(retained.get(key) != value for key, value in provenance.items())
             or retained.get('result') != result or retained.get('result_sha256') != digest(result)):
         raise OnboardingError('onboarding_group_membership_completion_required')
     if row['state'] == 'completed':
@@ -1490,7 +1492,8 @@ class GroupCoordinator:
         # An explicit protected membership-only intent bypasses the historical
         # controller/publication/communication pipeline, never its authorization.
         if 'membership_only' in bound[1]['intended_transition']:
-            result = self.advance_membership_only(name, timeout_seconds=remaining())
+            result = self.advance_membership_only(name,
+                timeout_seconds=min(180, (deadline-time.monotonic_ns())/1_000_000_000))
             if result is not None and digest(plan) in self.settings.get('receive_preparations', {}):
                 return self.advance_receive_only(name, timeout_seconds=(deadline-time.monotonic_ns())/1_000_000_000, select_current=True)
             return result
@@ -1638,14 +1641,14 @@ class GroupCoordinator:
                     physical_prepared=True, controller_prepared=True, receiving_readiness='unobserved',
                     **({'lifecycle_prepared': True} if lifecycles else {}))
 
-    def advance_membership_only(self, name: str, *, timeout_seconds: float = 60) -> dict | None:
+    def advance_membership_only(self, name: str, *, timeout_seconds: float = 180) -> dict | None:
         """Resume original signed membership, optionally owning finite Matrix preservation.
 
         Old operations gain no interruption by observing newer software. The
         protected policy explicitly selects the helper recipe; completed native
         membership never repeats a pause. Outbound publication remains separate.
         """
-        if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 60:
+        if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 180:
             raise OnboardingError('receiving_host_deadline_required')
         deadline = time.monotonic_ns() + int(timeout_seconds * 1_000_000_000)
         plan = self.store._load(name)['plan']
@@ -1661,6 +1664,11 @@ class GroupCoordinator:
             if row['state'] == 'completed':
                 with self._job_scope(plan):
                     return finish_membership_only(journal, row, row['result'])
+            from . import onboarding_group_recovery as recovery
+            continuation = self._continuation(journal, row)
+            if continuation is not None:
+                recovery.attach(journal, row['operation_id'], self.settings['continuations'][row['operation_id']])
+                row = journal.get(row['operation_id'])
             owners = self._owners(admission)
             from .onboarding_receiving_update import CohortController
             from .onboarding_membership_scope import preserved
@@ -1670,7 +1678,15 @@ class GroupCoordinator:
             selected = self.settings.get('membership_maintenance', {}).get(pin)
             retained = (row['runtime_observation'] or {}).get('membership_maintenance')
             recipe = selected if retained is None else retained['recipe']
-            native_result = (row['runtime_observation'] or {}).get('membership_admission', {}).get('result')
+            if continuation is not None:
+                if selected is None:
+                    raise OnboardingError('membership_maintenance_configuration_required')
+                recipe = dict(schema=selected['schema'], owners={key: dict(
+                    code=helper['code'], code_digest=helper['code_digest'],
+                    journal=selected['owners'][key]['journal'])
+                    for key, helper in continuation['maintenance'].items()})
+            social_key = 'membership_admission' if continuation is None else 'membership_continuation'
+            native_result = (row['runtime_observation'] or {}).get(social_key, {}).get('result')
             def authorized():
                 # Independent guards validate concurrently. Atomic plan/grant
                 # files and original journal binding are read here; the caller
@@ -1684,19 +1700,23 @@ class GroupCoordinator:
                 if (fresh['admissions'].get(pin) != original_id
                         or fresh.get('owners') != self.settings.get('owners')
                         or fresh.get('tribe_ref') != self.settings.get('tribe_ref')
+                        or fresh.get('continuations', {}).get(original_id) != self.settings.get('continuations', {}).get(original_id)
                         or fresh.get('membership_maintenance', {}).get(pin) != selected):
                     raise OnboardingError('membership_maintenance_original_changed')
-                if recipe is not None and selected != recipe and native_result is None:
+                if continuation is None and recipe is not None and selected != recipe and native_result is None:
                     raise OnboardingError('membership_maintenance_original_changed')
             # A previously retained result needs only outstanding restoration;
             # do not pause services again merely to close its original row.
             guarded = recipe is not None and (native_result is None or retained is not None)
             scope = (preserved(owners, recipe, journal=journal, row=row, deadline_ns=deadline,
-                validate=authorized, restore_only=native_result is not None) if guarded else nullcontext(lambda: None))
+                validate=authorized, restore_only=native_result is not None,
+                continuation_sha256=None if continuation is None else digest(continuation))
+                if guarded else nullcontext(lambda: None))
             with scope as check:
                 authorized()
                 check()
-                result = CohortController(journal, original_id, owners).admit_membership_only(deadline_ns=deadline)
+                result = CohortController(journal, original_id, owners).admit_membership_only(
+                    deadline_ns=getattr(check, 'deadline_ns', deadline))
             return finish_membership_only(journal, journal.get(original_id), result)
 
     def advance_receive_only(self, name: str, *, timeout_seconds: float = 60, select_current: bool = False) -> dict | None:

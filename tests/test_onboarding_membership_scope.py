@@ -48,7 +48,7 @@ def setup(tmp_path, monkeypatch):
             current = journal.get(row['operation_id'])
             observed = current['runtime_observation']
             assert any(observed.get(field, {}).get('recipe') == selected
-                for field in ('membership_maintenance', 'receive_maintenance'))
+                for field in ('membership_maintenance', 'receive_maintenance', 'membership_continuation_maintenance'))
             events.append(('pause', self.name))
             if 'pause-' + self.name in failures:
                 raise OnboardingError('pause-failed')
@@ -104,6 +104,45 @@ def test_changed_retained_recipe_refuses_before_preparation(setup):
         with run(setup):
             pytest.fail('changed original admitted')
     assert not events
+
+
+def test_explicit_continuation_retains_original_guard_recipe_and_new_helper_scope(setup):
+    journal, row, owners, selected, events, failures = setup
+    with run(setup):
+        pass
+    original = journal.get(row['operation_id'])['runtime_observation']['membership_maintenance']
+    selected['owners']['one']['code'] = '/qualified/successor'
+    with run(setup, continuation_sha256='b'*64):
+        pass
+    observed = journal.get(row['operation_id'])['runtime_observation']
+    assert observed['membership_maintenance'] == original
+    assert observed['membership_continuation_maintenance']['recipe'] == selected
+    assert observed['membership_continuation_maintenance']['binding'] != original['binding']
+    with pytest.raises(OnboardingError, match='original_changed'):
+        with run(setup, continuation_sha256='c'*64):
+            pytest.fail('different continuation reused the retained guard')
+
+
+def test_slow_authentication_precedes_one_fresh_shared_sixty_second_pause(setup, monkeypatch):
+    journal, row, owners, selected, events, failures = setup
+    clock = [0]
+    deadlines = []
+    monkeypatch.setattr(scope, 'time', SimpleNamespace(monotonic_ns=lambda: clock[0]))
+    def authenticate(endpoint):
+        events.append(('authenticate', endpoint.name))
+        clock[0] += 40_000_000_000
+    def deadline(endpoint, value):
+        deadlines.append(value)
+    monkeypatch.setattr(scope.Endpoint, 'prepare', authenticate, raising=False)
+    monkeypatch.setattr(scope.Endpoint, 'scope_deadline', deadline, raising=False)
+    with scope.preserved(owners, selected, journal=journal, row=row,
+            deadline_ns=180_000_000_000, validate=lambda: None) as check:
+        assert getattr(check, 'deadline_ns') == 140_000_000_000
+        assert deadlines == [140_000_000_000]*2
+        assert all(owner.deadline_ns == 140_000_000_000 for owner in owners.values())
+        first_pause = next(i for i, event in enumerate(events) if event[0] == 'pause')
+        assert {name for phase, name in events[:first_pause] if phase == 'authenticate'} == set(owners)
+    assert all(owner.deadline_ns is None for owner in owners.values())
 
 
 def test_restore_failure_preserves_native_error_and_reports_recovery_gap(setup):

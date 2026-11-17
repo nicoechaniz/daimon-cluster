@@ -20,6 +20,16 @@ an explicitly deleted machine environment a prerequisite of the current roadmap.
 
 ## Expiry during native preparation
 
+An explicit membership-only operation has a narrower continuation frontier:
+the parent remains planned, its only observations are its original scoped
+maintenance and the retained, unanswered invitation command. An actual native
+writer inspection must prove no dispatched RPC, invitation or acceptance.
+The existing linked approval then grants only membership, with a new invitation
+identity and a fixed expiry. It grants no publication, service replacement,
+activation or communication. Preserve the original invitation and maintenance
+recipe; a separately bound continuation scope selects its qualified helpers.
+Completion consumes that exact continuation result after observed restoration.
+
 A distinct linked preparation approval retains the same parent when it is still
 `planned`, with only target/native prerequisite observations and no execution
 intent, existing-member lifecycle, reader revocation, physical/bootstrap request,

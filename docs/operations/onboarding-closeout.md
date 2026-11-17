@@ -84,6 +84,28 @@ older peer/context helpers. Operational web-maintenance transport updates do not
 change the immutable Home or route intent; current upstream guards still protect
 all affected live calls before any Caddy reload.
 
+Matrix maintenance records a stopped native CLI's failed exit truthfully. The
+specific terminal exit(1) outcome may proceed only with the unchanged unit,
+no systemd job/PID, and an empty control group. This is quiescence, never healthy
+drain or service success; all native writers and ledger validation still precede
+any signature. A forced kill, remaining process or changed unit remains a refusal.
+Restoration may clear an observed start-limit failure of this exact owned unit;
+it changes no service limits and retains the failed attempts in the journal.
+Maintenance helpers must select an SDK that understands already accepted standing
+permissions. The Source adapter resolves the selected public helper's SDK digest
+to its existing private installed sibling; only the dropped owner verifies/imports
+those bytes. The serving Source descriptor and SDK stay selected independently.
+Always close an already entered `Endpoint.open()` scope through its existing
+exit/ExitStack callback; entering it a second time starts a competing guard.
+
+Membership preparation has a bounded 180-second parent invocation, including
+authenticated base observations and original-pause recovery. Authenticate every
+owner before opening any new pause. The guard revalidates that exact process
+against systemd and /proc; a changed process refuses. Only after preparation does
+the caller freeze the shared stopped-service/native-effect horizon, still at
+most 60 seconds and clipped to the parent deadline. No running guard, invitation
+or native writer gains time from another phase or retry.
+
 KVM owner calls rebase the closed monotonic deadline flags in the receiving
 kernel, bounded by the original remaining duration and wall expiry. Host and
 guest uptime are not interchangeable clocks. This changes neither authorization

@@ -73,6 +73,27 @@ def configuration(value):
     return value
 
 
+def grant_matches_recorded(recorded, grant):
+    """One added maintenance guard cannot change the frozen service effect.
+
+    Hash reconstruction proves every other declaration byte stayed identical;
+    removals, replacements, transport/receiver changes and multiple edits refuse.
+    """
+    if recorded == sha(canonical(grant)):
+        return True
+    guards = grant['routes'].get('maintenance', [])
+    for index in range(len(guards)):
+        routing = dict(grant['routes'], maintenance=guards[:index]+guards[index+1:])
+        if recorded == sha(canonical(dict(grant, routes=routing))):
+            return True
+    return False
+
+
+def runtime_call_matches(call, grant, value):
+    return (isinstance(call, dict) and set(call) == {'grant', 'request'}
+            and call['request'] == value and grant_matches_recorded(call['grant'], grant))
+
+
 class ServiceRoutes(Routes):
     @staticmethod
     def render(request, listener, home_backend):
@@ -208,7 +229,7 @@ class Deployments:
                 raise ValueError('service_operation_capacity')
             previous_op = self.journal.latest_for_idempotency_key(key(c)+':'+value['request_id'])
             call = {'grant': sha(canonical(g)), 'request': value}
-            if previous_op and previous_op['intent']['runtime_call'] != call:
+            if previous_op and not runtime_call_matches(previous_op['intent']['runtime_call'], g, value):
                 raise ValueError('service_request_conflict')
             op = previous_op or self.journal.plan(operation='home-service-deploy/v1', target=key(c),
                     idempotency_key=key(c)+':'+value['request_id'],
@@ -272,7 +293,7 @@ class Deployments:
         g = self.grant(app, home, owner, value['service'])
         c = g['receiver']
         op = self.journal.latest_for_idempotency_key(key(c)+':'+value['request_id'])
-        if (not op or op['intent']['runtime_call'] != {'grant': sha(canonical(g)), 'request': value}
+        if (not op or not runtime_call_matches(op['intent']['runtime_call'], g, value)
                 or op['state'] not in {'runtime-applied', 'completed'}):
             raise ValueError('service_operation_not_ready')
         current = app.publication(home)
@@ -319,7 +340,8 @@ class Deployments:
                 return False
             self.grant(app, home, owner, c['service'])
             op = self.journal.latest_for_target(key(c))
-            if not op or op['state'] != 'completed' or op['intent']['runtime_call']['grant'] != sha(canonical(g)):
+            if (not op or op['state'] != 'completed'
+                    or not grant_matches_recorded(op['intent']['runtime_call']['grant'], g)):
                 return False
             result = op['result']
             entry = app.selected(home, result['resource'], 'current', subject)

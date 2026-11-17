@@ -350,13 +350,16 @@ def app_fixture(tmp_path, conf, raw, artifact):
     return app, broker
 
 
+@pytest.mark.parametrize("guard_rotation", [False, True])
 def test_actual_owner_auth_registry_finalize_and_http_audience(
-    setup, tmp_path, monkeypatch
+    setup, tmp_path, monkeypatch, guard_rotation
 ):
     import urllib.request
     import urllib.error
 
     c, _, conf, raw, _, artifact, value = setup
+    if guard_rotation:
+        conf['grants'][0]['routes']['maintenance'] = [guard_fixture('original')]
     app, broker = app_fixture(tmp_path, conf, raw, artifact)
     worker = ManagerFixture(c)
     monkeypatch.setattr(
@@ -378,6 +381,13 @@ def test_actual_owner_auth_registry_finalize_and_http_audience(
     assert worker.restarts == 0
     result = app.owner("one", "own-test-token", "service-deploy", value)
     assert result["state"] == "publication-required" and worker.restarts == 1
+    if guard_rotation:
+        journal = app.service_deployments.journal
+        original = journal.latest_for_idempotency_key(key(c)+':'+value['request_id'])
+        app.service_deployments.config['grants'][0]['routes']['maintenance'].append(guard_fixture('added'))
+        assert app.owner("one", "own-test-token", "service-deploy", value)['state'] == 'publication-required'
+        retained = journal.latest_for_idempotency_key(key(c)+':'+value['request_id'])
+        assert retained['operation_id'] == original['operation_id'] and retained['intent'] == original['intent']
     assert (
         app.owner("one", "own-test-token", "service-deploy", value)["state"]
         == "publication-required"
@@ -739,3 +749,31 @@ def test_same_healthy_code_can_be_reattested_without_restarting(setup):
     assert worker.run(envelope(c, revised, raw))['state'] == 'ready'
     assert worker.restarts == 1 and state.read_bytes() == b'keep this state'
     assert worker.read('current.json')['pins']['request_id'] == 'new-fixed-transport'
+
+
+def guard_fixture(name):
+    return dict(name=name, upstream='127.0.0.1:8800',
+        command=['/usr/bin/python3', '-c', '{program}'], python='/usr/bin/python3',
+        script='/qualified/scripts/interaction_web_maintenance.py', script_sha256='a'*64,
+        config='/qualified/dashboard.toml', owner_uid=1000, health_url='http://127.0.0.1:8800/health')
+
+
+def test_added_guard_compatibility_does_not_accept_any_other_grant_change(setup):
+    from clusterctl.homes.service_deploy import grant_matches_recorded
+    _, grant, _, _, _, _, _ = setup
+    grant['routes']['maintenance'] = [guard_fixture('original')]
+    recorded = sha(canonical(grant))
+    expanded = deepcopy(grant)
+    expanded['routes']['maintenance'].append(guard_fixture('added'))
+    assert grant_matches_recorded(recorded, expanded)
+    for field, value in [('upstream', '127.0.0.1:5999'), ('prefix', '/another/')]:
+        changed = deepcopy(expanded); changed[field] = value
+        assert not grant_matches_recorded(recorded, changed)
+    changed = deepcopy(expanded); changed['receiver']['uid'] += 1
+    assert not grant_matches_recorded(recorded, changed)
+    changed = deepcopy(grant); changed['routes']['maintenance'] = []
+    assert not grant_matches_recorded(recorded, changed)
+    changed = deepcopy(grant); changed['routes']['maintenance'][0]['script_sha256'] = 'b'*64
+    assert not grant_matches_recorded(recorded, changed)
+    changed = deepcopy(expanded); changed['routes']['maintenance'].append(guard_fixture('second-added'))
+    assert not grant_matches_recorded(recorded, changed)

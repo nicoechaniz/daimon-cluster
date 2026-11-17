@@ -331,5 +331,11 @@ Update only the affected protected declaration and its receiving capability,
 using actual current health/source/owner metadata. An existing live target is not
 permission to start, enroll, update or otherwise activate a held companion.
 Repeat the original deployment request through the ordinary owner command after
-that technical correction; a healthy existing runtime must retain its PID and
-invocation rather than restart during route recovery.
+that technical correction. The central deployment writer reconstructs the old
+grant hash by removing exactly one newly added maintenance target from the
+current protected declaration; every other grant byte and the exact request
+must match. This proves a strictly additive guard correction without rewriting
+the original immutable intent, creating a new target operation or weakening
+finalization/access checks. Removals, replacements, multiple edits and receiver,
+transport or route changes refuse. A healthy existing runtime retains its PID
+and invocation rather than restarting during this recovery.

@@ -1371,6 +1371,23 @@ def test_vm_public_code_device_names_fit_real_incus_virtiofs_socket_limit(tmp_pa
         assert len(container._code_mount_name(prefix, 'a' * 64)) == 63
 
 
+def test_vm_waits_for_guest_mount_readback_and_never_reattaches_a_disk(tmp_path):
+    value, run, backend = vm_configured(tmp_path)
+    calls = []
+    def dispatch(plan, argv, **kwargs):
+        assert plan == value and argv[:4] == ['exec', 'dm-eko', '--', 'python3']
+        assert kwargs == {'timeout_seconds': 35}
+        assert json.loads(argv[-1]) == ['/opt/public-code']
+        calls.append(argv)
+        return json.dumps({'ready': len(calls) > 1})
+    backend._dispatch = dispatch
+    mounts = {'code': {'path': '/opt/public-code'}}
+    with pytest.raises(OnboardingError, match='onboarding_vm_mount_unavailable'):
+        backend._wait_guest_mounts(value, mounts)
+    backend._wait_guest_mounts(value, mounts)
+    assert len(calls) == 2 and run.calls == []
+
+
 def test_vm_environment_reuses_pinned_image_and_existing_journaled_steps(tmp_path):
     value, run, backend = vm_configured(tmp_path)
     assert backend.observe(value, 'environment', 'original').state == 'absent'

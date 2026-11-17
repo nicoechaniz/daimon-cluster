@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+from types import SimpleNamespace
 from dataclasses import replace
 
 import pytest
@@ -14,10 +15,13 @@ from tests.test_onboarding_host import configured
 
 def artifact(root):
     root.mkdir()
+    root.chmod(0o755)
     (root / 'telecodex').write_bytes(b'public executable')
+    (root / 'telecodex').chmod(0o644)
     raw = json.dumps({'schema': bundle.SCHEMA, 'files': {
         'telecodex': hashlib.sha256(b'public executable').hexdigest()}}).encode()
     (root / bundle.MARKER).write_bytes(raw)
+    (root / bundle.MARKER).chmod(0o444)
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -36,7 +40,7 @@ def test_cold_context_mount_is_pinned_read_only_and_original_job_stays_compatibl
         backend._environment(plan)  # Refuse before any Incus allocation/query.
 
 
-@pytest.mark.parametrize('fault', ['link', 'extra', 'missing', 'writable', 'digest'])
+@pytest.mark.parametrize('fault', ['link', 'extra', 'missing', 'writable', 'digest', 'private-directory'])
 def test_bundle_refuses_unsafe_or_different_public_tree(tmp_path, fault):
     root = tmp_path / 'app'
     pin = artifact(root)
@@ -49,6 +53,8 @@ def test_bundle_refuses_unsafe_or_different_public_tree(tmp_path, fault):
         (root / 'telecodex').unlink()
     elif fault == 'writable':
         (root / 'telecodex').chmod(0o666)
+    elif fault == 'private-directory':
+        root.chmod(0o700)
     else:
         pin = '0' * 64
     with pytest.raises(OnboardingError):
@@ -58,13 +64,16 @@ def test_bundle_refuses_unsafe_or_different_public_tree(tmp_path, fault):
 def test_own_codex_is_exposed_idempotently_and_foreign_guest_executable_survives(tmp_path):
     root = tmp_path / 'app'
     root.mkdir()
+    root.chmod(0o755)
     (root / 'bin').mkdir()
+    (root / 'bin').chmod(0o755)
     binary = root / 'bin/codex'
     binary.write_bytes(b'qualified binary')
     binary.chmod(0o555)
     raw = json.dumps({'schema': bundle.SCHEMA, 'files': {
         'bin/codex': hashlib.sha256(binary.read_bytes()).hexdigest()}}).encode()
     (root / bundle.MARKER).write_bytes(raw)
+    (root / bundle.MARKER).chmod(0o444)
     pin = hashlib.sha256(raw).hexdigest()
     destination = tmp_path / 'codex'
     destination.write_bytes(b'existing guest executable')
@@ -75,3 +84,23 @@ def test_own_codex_is_exposed_idempotently_and_foreign_guest_executable_survives
     bundle.bootstrap_codex(pin, root=root, destination=destination)
     bundle.bootstrap_codex(pin, root=root, destination=destination)
     assert destination.readlink() == binary
+
+
+def test_missing_guest_dependencies_have_one_finite_standard_package_install(tmp_path, monkeypatch):
+    monkeypatch.setattr(bundle.os, 'geteuid', lambda: 0)
+    release = tmp_path / 'os-release'
+    release.write_text('ID=debian\nVERSION_ID="13"\n')
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        assert kwargs['timeout'] == 90 and kwargs['env']['DEBIAN_FRONTEND'] == 'noninteractive'
+        return SimpleNamespace(returncode=0)
+    bundle.dependencies(ready=lambda: len(calls) == 2, run=run, release=release)
+    assert len(calls) == 2
+    assert calls[-1][-3:] == ['python3-venv', 'rsync', 'nodejs']
+    bundle.dependencies(ready=lambda: True, run=run, release=release)
+    assert len(calls) == 2
+    release.write_text('ID=other\nVERSION_ID="13"\n')
+    with pytest.raises(OnboardingError):
+        bundle.dependencies(ready=lambda: False, run=run, release=release)
+    assert len(calls) == 2

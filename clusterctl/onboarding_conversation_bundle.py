@@ -11,6 +11,9 @@ import os
 from pathlib import Path
 import re
 import stat
+import importlib.util
+import shutil
+import subprocess
 
 from . import being_seed
 from .onboarding import OnboardingError
@@ -60,7 +63,8 @@ def verify(root: Path, fingerprint: str, *, uid: int):
     while pending:
         directory = pending.pop()
         info = directory.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_mode & 0o022):
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_mode & 0o022
+                or info.st_mode & 0o005 != 0o005):
             raise OnboardingError('conversation_bundle_required')
         with os.scandir(directory) as children:
             for child in children:
@@ -73,7 +77,7 @@ def verify(root: Path, fingerprint: str, *, uid: int):
                     pending.append(path)
                     continue
                 if (not stat.S_ISREG(info.st_mode) or info.st_uid != uid
-                        or info.st_mode & 0o022 or info.st_nlink != 1):
+                        or info.st_mode & 0o022 or not info.st_mode & 0o004 or info.st_nlink != 1):
                     raise OnboardingError('conversation_bundle_required')
                 name = path.relative_to(root).as_posix()
                 if name == MARKER:
@@ -96,9 +100,11 @@ def verify(root: Path, fingerprint: str, *, uid: int):
 
 
 def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
-                    destination=Path('/usr/local/bin/codex')):
+                    destination=Path('/usr/local/bin/codex'), prepare_dependencies=False):
     """Expose this selected public executable; never overwrite a guest login/tool."""
     verify(root, fingerprint, uid=os.geteuid())
+    if prepare_dependencies:
+        dependencies()
     source = root / 'bin/codex'
     if not source.is_file() or not os.access(source, os.X_OK):
         raise OnboardingError('conversation_bundle_codex_required')
@@ -110,3 +116,29 @@ def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
         raise OnboardingError('existing_guest_codex_preserved')
     # symlink() is atomic and refuses any concurrent differing installation.
     destination.symlink_to(source)
+
+
+def dependencies(*, ready=None, run=None, release=Path('/etc/os-release')):
+    """Install the missing standard Debian guest prerequisites, without a shell.
+
+    This is called only after the selected public mount and own home are checked
+    by the existing context writer. It installs no account, listener or model.
+    """
+    ready = ready or (lambda: importlib.util.find_spec('ensurepip') is not None
+        and shutil.which('rsync') is not None and Path('/usr/bin/node').is_file())
+    if ready():
+        return
+    facts = dict(line.split('=', 1) for line in release.read_text().splitlines() if '=' in line)
+    if os.geteuid() != 0 or facts.get('ID') != 'debian' or facts.get('VERSION_ID', '').strip('"') != '13':
+        raise OnboardingError('conversation_guest_dependencies_required')
+    execute = run or subprocess.run
+    for arguments in (['update'], ['-y', '--no-install-recommends', 'install',
+                                  'python3-venv', 'rsync', 'nodejs']):
+        result = execute(['/usr/bin/apt-get', '-q', '-o',
+            'APT::Keep-Downloaded-Packages=false', *arguments], capture_output=True,
+            timeout=90, check=False, env={'PATH': os.defpath, 'LANG': 'C.UTF-8',
+                'DEBIAN_FRONTEND': 'noninteractive'})
+        if result.returncode:
+            raise OnboardingError('conversation_guest_dependencies_required')
+    if not ready():
+        raise OnboardingError('conversation_guest_dependencies_required')

@@ -1535,6 +1535,8 @@ class HostBackend:
             # Code first: its typed bootstrap owns just the new empty home.
             for name in ('onboarding-code', *[key for key in mounts if key.startswith('runtime-')], *(['onboarding-app'] if 'onboarding-app' in mounts else []), 'onboarding-input'):
                 if name == "onboarding-input":
+                    self._wait_guest_mounts(plan, {key: value for key, value in mounts.items()
+                        if key != 'onboarding-input'})
                     launcher = ("import sys; sys.path.insert(0, sys.argv[1]); "
                                 "from clusterctl.onboarding_mounts import bootstrap_home; "
                                 + ("bootstrap_home(cold_storage=True)" if plan.get("resources") else "bootstrap_home()"))
@@ -1547,6 +1549,7 @@ class HostBackend:
                     device = mounts[name]
                     self._dispatch(plan, ["config", "device", "add", self.instance(plan), name, "disk",
                         *[key + "=" + value for key, value in device.items() if key != "type"]])
+            self._wait_guest_mounts(plan, mounts)
             # Reconcile torn copies without replacing the frozen receiving SDK
             # or context, and never touch an already activated receiving body.
             from .onboarding_guest import reconcile_context_copy
@@ -1562,10 +1565,30 @@ class HostBackend:
             fingerprint = self.config.conversation_bundle_by_name[plan['name']][1]
             launcher = ('import sys; sys.path.insert(0, sys.argv[1]); '
                 'from clusterctl.onboarding_conversation_bundle import bootstrap_codex; '
-                'bootstrap_codex(sys.argv[2])')
+                'bootstrap_codex(sys.argv[2], prepare_dependencies=True)')
             self._dispatch(plan, ['exec', self.instance(plan), '--', 'python3', '-B', '-I',
                 '-c', launcher, str(code), fingerprint])
         self._guest_command(plan, "execute", stage, guest_code)
+
+    def _wait_guest_mounts(self, plan: dict, mounts: dict) -> None:
+        """VM hotplug acknowledgement precedes the agent's actual disk mount."""
+        if self.config.instance_type != 'virtual-machine' or not mounts:
+            return
+        paths = sorted({device['path'] for device in mounts.values()})
+        program = '''import json,sys,time
+paths=set(json.loads(sys.argv[1]));end=time.monotonic()+30
+while True:
+ observed={line.split()[4] for line in open('/proc/self/mountinfo')}
+ if paths <= observed:
+  print(json.dumps({'ready':True}));break
+ if time.monotonic()>=end:
+  print(json.dumps({'ready':False}));break
+ time.sleep(.05)
+'''
+        raw = self._dispatch(plan, ['exec', self.instance(plan), '--', 'python3',
+            '-B', '-I', '-c', program, json.dumps(paths)], timeout_seconds=35)
+        if json.loads(raw) != {'ready': True}:
+            raise OnboardingError('onboarding_vm_mount_unavailable')
 
     def _ceremony(self, plan: dict):
         decision = self._decision(plan)

@@ -73,6 +73,13 @@ VM code-device labels use short digest prefixes because Incus embeds them in
 virtiofs UNIX socket paths. Full artifact digests and exact source/path/read-only
 checks remain authoritative. Container labels retain their existing bytes;
 never recreate an existing body to repair a refused VM disk hotplug.
+The context writer waits up to 30 seconds for guest mount readback before using
+hotplugged files. The selected public bundle also prepares missing Debian 13
+`python3-venv`, `rsync` and `nodejs` prerequisites through two bounded package
+commands (90 seconds each, downloaded-package retention disabled). Existing
+ready guests skip installation; an incompatible guest fails without package
+mutation. No model, account, SSH listener or other service is started by this
+dependency preparation.
 
 Nicolas's 8 November correction selects one finite operator command after the
 necessary inputs have been supplied. This is a required completion contract,

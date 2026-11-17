@@ -284,6 +284,32 @@ class Routes:
         self._save(self.state/'active.json', active)
         return True
 
+    def _rebind_prepared(self, active, pins, before, after, process, *, apply, authorize):
+        # Only an unchanged, never-published candidate may acquire refreshed
+        # operator guard metadata. A reload intent or changed route stays pinned.
+        if (not apply or active['phase'] != 'prepared'
+                or hashlib.sha256(before).hexdigest() != active['before']
+                or hashlib.sha256(after).hexdigest() != active['after']
+                or self._adapt(process, self.path) != self._live(process)):
+            return None
+        candidate = regular(self.state/'candidate.caddyfile', uid=os.geteuid(), limit=LIMIT)
+        if (hashlib.sha256(candidate).hexdigest() != active['after']
+                or self._adapt(process, self.state/'candidate.caddyfile') != active['adapted']):
+            raise OnboardingError('conversation_route_checkpoint_changed')
+        if not authorize():
+            raise OnboardingError('host_authorization_required')
+        predecessor = self.state/('prepared-'+active['pins']+'.json')
+        if predecessor.exists():
+            if operation(document(predecessor)) != active:
+                raise OnboardingError('conversation_route_checkpoint_changed')
+        else:
+            if len(list(self.state.glob('*.json'))) >= 16:
+                raise OnboardingError('conversation_route_capacity')
+            self._save(predecessor, active)
+        active = dict(active, pins=pins)
+        self._save(self.state/'active.json', active)
+        return active
+
     def reconcile(self, request, listener, home_backend, *, apply, authorize):
         block = self.render(request, listener, home_backend)
         pins = digest(dict(request=request, listener=listener, home_backend=home_backend, routing=self.value))
@@ -291,13 +317,17 @@ class Routes:
             active_path = self.state/'active.json'
             active = operation(document(active_path)) if active_path.exists() else None
             process = self._process()
-            if active and active.get('phase') != 'complete' and active.get('pins') != pins:
-                if not self._finish(active, process):
-                    raise OnboardingError('conversation_route_operation_pending')
-                active = None
-            receipt = self.state/(request['name']+'.json')
             before = self._read()
             after = self.compose(before, request, block, self.value['anchor'])
+            if active and active.get('phase') != 'complete' and active.get('pins') != pins:
+                if self._finish(active, process):
+                    active = None
+                else:
+                    active = self._rebind_prepared(active, pins, before, after, process,
+                                                   apply=apply, authorize=authorize)
+                    if active is None:
+                        raise OnboardingError('conversation_route_operation_pending')
+            receipt = self.state/(request['name']+'.json')
             if receipt.exists():
                 recorded = operation(document(receipt))
                 if recorded['pins'] != pins:

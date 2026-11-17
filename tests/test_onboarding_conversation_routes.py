@@ -173,3 +173,25 @@ def test_existing_voice_backend_requires_covered_actual_maintenance_before_publi
         writer.reconcile(*args,apply=True,authorize=lambda:True)
     assert writer.path.read_bytes()==before and 'reload' not in calls
     assert routes.interaction_upstreams(live)=={'127.0.0.1:8800'}
+
+
+def test_prepared_route_keeps_original_intent_when_maintenance_transport_is_added(tmp_path):
+    from contextlib import contextmanager
+    writer,args,_,calls,before=assembled(tmp_path)
+    @contextmanager
+    def unavailable(process):
+        raise OnboardingError('conversation_route_maintenance_required')
+        yield
+    writer._maintenance=unavailable
+    with pytest.raises(OnboardingError,match='maintenance_required'):
+        writer.reconcile(*args,apply=True,authorize=lambda:True)
+    original=being_seed._read(writer.state/'active.json')
+    assert original['phase']=='prepared' and writer.path.read_bytes()==before
+    writer.value['maintenance']=[{'refreshed':'operator transport'}]
+    @contextmanager
+    def held(process):
+        yield lambda:None
+    writer._maintenance=held
+    assert writer.reconcile(*args,apply=True,authorize=lambda:True)['state']=='complete'
+    assert being_seed._read(writer.state/'active.json')['pins']==original['pins']
+    assert calls.count('reload')==1

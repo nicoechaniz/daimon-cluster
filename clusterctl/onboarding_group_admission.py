@@ -305,12 +305,13 @@ def admit_membership(cohort, *, deadline_ns: int, native_only: bool = False) -> 
             if grant is None:
                 raise OnboardingError('onboarding_group_continuation_reference_required')
             founder = recipe['founder_owner']
-            original = command(dict(operation_id=recipe['operation_id'], step='membership-invite',
-                method='tribe.invite', params={'payload': portal['social']['invitation']}))
+            preceding, preceding_step = recovery.preceding_membership(cohort.journal, row, grant)
+            original = command(dict(operation_id=recipe['operation_id'], step=preceding_step,
+                method='tribe.invite', params={'payload': preceding['invitation']}))
             inspected = cohort.owners[founder].group_relationship(original, inspect_only=True,
                 authority_closure={ref:item for ref,item in recipe['authority_closure'].items()
                     if ref != receivers[founder]['being_ref']}, expected_context_sha256=contexts[founder],
-                membership_precondition=guard_for(portal['social']),
+                membership_precondition=guard_for(preceding),
                 **({'offline': True} if receivers[founder]['recipe']['profile'] == 'source' else {}))
             if (set(inspected) != set(grant['inspection'])
                     or any(inspected[key] != value for key,value in grant['inspection'].items()

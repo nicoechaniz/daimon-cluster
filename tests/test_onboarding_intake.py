@@ -52,6 +52,23 @@ def test_worker_discovers_prepared_seed_and_resumes_same_plan_after_portal_conse
     assert not any(path.name.startswith('dm-') for path in tmp_path.iterdir())
 
 
+def test_explicit_companion_intake_preserves_v2_plan_review_and_grant_on_retry(tmp_path, packet):
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA, PLAN_SCHEMA, digest
+    config = configured(tmp_path, packet)
+    value = being_seed._read(config.intake_policy)
+    being_seed._write(config.intake_policy, {**value, 'plan_schema': CONVERSATION_PLAN_SCHEMA})
+    plans = config.approved_plans()
+    assert len(plans) == 1 and plans[0]['schema'] == CONVERSATION_PLAN_SCHEMA
+    before = (config.grants / 'fixture.json').read_bytes()
+    assert config.approved_plans() == plans
+    assert (config.grants / 'fixture.json').read_bytes() == before
+    review = onboarding_consent.Reviews(config.progress, worker_uid=os.geteuid()).read('fixture', owner='ani')
+    assert review['plan'] == plans[0]
+    assert HostBackend(config).authorize(plans[0], digest(plans[0]))
+    legacy = {**plans[0], 'schema': PLAN_SCHEMA}
+    assert not onboarding_intake.allows(config, legacy)
+
+
 def test_service_consumes_queued_owner_selection_without_a_codex_turn(tmp_path, packet):
     config = configured(tmp_path, packet)
     directory = config.consent_state / 'being-seeds/fixture'

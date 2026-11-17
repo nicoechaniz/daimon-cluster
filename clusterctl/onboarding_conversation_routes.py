@@ -286,7 +286,8 @@ class Routes:
 
     def reconcile(self, request, listener, home_backend, *, apply, authorize):
         block = self.render(request, listener, home_backend)
-        pins = digest(dict(request=request, listener=listener, home_backend=home_backend, routing=self.value))
+        pins = digest(dict(request=request, listener=listener, home_backend=home_backend,
+            routing={k:v for k,v in self.value.items() if k != 'maintenance'}))
         with being_seed._locked(self.state):
             active_path = self.state/'active.json'
             active = operation(document(active_path)) if active_path.exists() else None

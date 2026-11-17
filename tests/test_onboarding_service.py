@@ -269,3 +269,15 @@ def test_native_profile_rejects_execution_and_identity_overrides(tmp_path, monke
         lambda path, uid: b'[Service]\nSlice=fixture.slice\n' + override)
     with pytest.raises(OnboardingError, match='scope_required'):
         onboarding_service.MatrixNativeService(unit)._guest_dropins(str(native))
+
+
+def test_guest_accepts_only_exact_native_state_dependency(monkeypatch):
+    import hashlib
+    from clusterctl import onboarding_service as service
+    path = Path('/etc/systemd/system/daimon-onboarding-codex.service.d/companion-state.conf')
+    raw = b'[Unit]\nRequires=daimon-companion-state.service\nAfter=daimon-companion-state.service\n'
+    monkeypatch.setattr(service.onboarding_release, 'regular', lambda p, **kw: raw)
+    assert service.guest_service_dropins(str(path), uid=0) == {str(path): hashlib.sha256(raw).hexdigest()}
+    raw += b'[Service]\nEnvironment=UNSELECTED=1\n'
+    with pytest.raises(OnboardingError, match='scope_required'):
+        service.guest_service_dropins(str(path), uid=0)

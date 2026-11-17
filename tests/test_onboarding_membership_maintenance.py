@@ -23,6 +23,37 @@ class MatrixFixture(maintenance.MembershipManager, Manager):
         self.unit = root / self.unit_name
 
 
+@pytest.mark.parametrize('change', [{}, {'control_group': '/still-owned'}, {'pid': '123'},
+    {'exit_status': '9'}, {'job': '7'}, {'definition': 'changed'}])
+def test_native_failed_term_requires_terminal_empty_group_and_preserves_failure(monkeypatch, change):
+    manager = object.__new__(maintenance.MembershipManager)
+    baseline = {'definition': 'same'}
+    stopped = dict(definition='same', state='failed', substate='failed', result='exit-code',
+        exit_code='1', exit_status='1', pid='0', job='0', control_group='')
+    stopped.update(change)
+    monkeypatch.setattr(manager, 'inspect', lambda: copy.deepcopy(stopped))
+    monkeypatch.setattr(manager, '_remaining', lambda: .001)
+    if change:
+        with pytest.raises(OnboardingError):
+            manager.wait(baseline, active=False)
+    else:
+        assert manager.wait(baseline, active=False) == stopped
+        with pytest.raises(OnboardingError, match='restore_uncertain'):
+            manager.wait(baseline, active=True)
+
+
+@pytest.mark.parametrize('result', ['success', 'start-limit-hit'])
+def test_owned_matrix_restoration_clears_only_observed_service_start_limiter(monkeypatch, result):
+    manager = object.__new__(maintenance.MembershipManager)
+    manager.unit_name = maintenance.SOURCE_UNIT
+    monkeypatch.setattr(manager, 'inspect', lambda: {'result': result})
+    calls = []
+    monkeypatch.setattr(manager, '_run', lambda *args: calls.append(args))
+    manager.start()
+    assert calls == ([('reset-failed', manager.unit_name)] if result == 'start-limit-hit' else []) + [
+        ('--no-block', 'start', manager.unit_name)]
+
+
 @pytest.mark.parametrize('source', [False, True])
 @pytest.mark.parametrize('active', [False, True])
 @pytest.mark.parametrize('loss', [None, 'stop', 'start'])
@@ -227,6 +258,10 @@ def test_manager_calls_share_original_deadline_and_do_not_dispatch_after_expiry(
         calls.append(kwargs['timeout'])
         return SimpleNamespace(returncode=0, stdout='observed')
     monkeypatch.setattr(receiving_worker.subprocess, 'run', run)
+    def inspected():
+        manager._remaining()
+        return {'result': 'success'}
+    monkeypatch.setattr(manager, 'inspect', inspected)
     manager.deadline_ns = time.monotonic_ns() - 1
     with pytest.raises(OnboardingError, match='deadline_expired'):
         manager.start()
@@ -353,3 +388,16 @@ def test_normal_matrix_term_is_distinct_from_worker_exit_and_forced_kill(tmp_pat
     finally:
         pause.restore()
     assert manager.starts == manager.stops == 2
+
+
+def test_recovery_retains_canonical_prefixed_operation_journal_identity(tmp_path, capsys):
+    import time
+    import uuid
+    operation='operation:'+str(uuid.uuid4())
+    manager=MatrixFixture(tmp_path)
+    assert maintenance.main(['--journal',str(tmp_path/'journal'),
+        '--operation-id',operation,'--binding-sha256','a'*64,'--recover-only',
+        '--observation-deadline-ns',str(time.monotonic_ns()+10_000_000_000)],
+        manager_factory=lambda **kw:manager)==0
+    assert manager.stops==manager.starts==0
+    assert 'cluster-membership-maintenance-recovery/v1' in capsys.readouterr().out

@@ -218,6 +218,8 @@ class Worker:
                 self.homes(result)
             return result
         except (OnboardingError, being_seed.SeedError, OSError, ValueError, TypeError, KeyError) as error:
+            if isinstance(error, OnboardingError) and str(error) == 'onboarding_group_bounded_progress_pending':
+                return {'state': 'waiting', 'reason': str(error)}
             # Do not print name/content/exception from an invalid private record.
             return {"state": "attention-required", "reason": "verification_failed",
                     "diagnostic": refusal_diagnostic(error, stage='host-preparation')}
@@ -255,6 +257,10 @@ class Worker:
                         value = {**value, 'diagnostic': detail}
                 return 3, value
             if value['state'] == 'waiting':
+                if value.get('reason') == 'onboarding_group_bounded_progress_pending':
+                    # Same operator/job and original foreground deadline. Each
+                    # native window remains bounded; this starts no peer/model.
+                    continue
                 return 2, value
         return 2, {'state': 'attention-required', 'reason': 'foreground_deadline_expired'}
 
@@ -422,7 +428,8 @@ def main(argv: list[str] | None = None) -> int:
         homes = None
         def backend():
             return HostBackend(selections.current(), input_cache=inputs,
-                home_access=homes.conversation_access if homes else None)
+                home_access=homes.conversation_access if homes else None,
+                home_pairing=getattr(homes, 'conversation_pairing', None))
         from .onboarding_progress import Progress
 
         progress = Progress(config.progress, worker_uid=os.geteuid()) if config.progress else None

@@ -1,5 +1,6 @@
 """Committed-identity hook and exact reload recovery; no guest/model starts."""
 import os
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,31 @@ from clusterctl.onboarding_homes import configure
 from clusterctl.onboarding_progress import Progress
 from tests.test_onboarding import FixtureBackend, plan
 from tests.test_onboarding_conversation import request
+
+
+def test_gateway_helper_uses_exact_current_sdk_tree_and_refuses_mutation(tmp_path):
+    from clusterctl.onboarding_companion_homes import gateway_imports
+    parent = tmp_path/'sdk'
+    parent.mkdir(mode=0o700)
+    root = parent/'runtime-imports'
+    root.mkdir(mode=0o700)
+    module = root/'selected_sdk.py'
+    module.write_bytes(b'CURRENT_SCHEMA = True\n')
+    module.chmod(0o600)
+    hashes = {'selected_sdk.py': hashlib.sha256(module.read_bytes()).hexdigest()}
+    selection = {'path': str(root), 'sdk_digest': 'a'*64, 'files_sha256': digest(hashes)}
+    being_seed._write(parent/'runtime-imports.json', {
+        'schema':'cluster-onboarding-runtime-imports/v1',
+        'sdk_digest':selection['sdk_digest'], 'files_sha256':selection['files_sha256']})
+    assert gateway_imports(selection) == root
+    module.write_bytes(b'CURRENT_SCHEMA = False\n')
+    with pytest.raises(OnboardingError, match='companion_gateway_imports_changed'):
+        gateway_imports(selection)
+    module.write_bytes(b'CURRENT_SCHEMA = True\n')
+    extra = root/'unselected.py'
+    extra.write_bytes(b'not a selected dependency')
+    with pytest.raises(OnboardingError, match='companion_gateway_imports_changed'):
+        gateway_imports(selection)
 
 
 def assembled(tmp_path):
@@ -277,3 +303,36 @@ def test_foreground_home_preparation_preserves_exact_pair(tmp_path):
     with pytest.raises(OnboardingError,match='companion_home_configuration_required'):
         prepare_companion_homes(config,selected,store,file)
     assert calls==[] and backend.calls==[]
+
+
+def test_new_owner_denial_reloads_only_exact_config_newer_than_process(tmp_path):
+    homes,store,backend,progress,_,_,_,state,file = assembled(tmp_path)
+    ready = committed(store,backend,progress)
+    config = tmp_path/'config'
+    config.write_bytes(b'new exact gateway selection')
+    checksum = hashlib.sha256(config.read_bytes()).hexdigest()
+    original = homes._gateway
+    def gateway(action, request, **options):
+        if action == 'register':
+            return {**original(action,request,**options), 'config_digest':checksum}
+        return {'state':'unavailable'}
+    homes._gateway = gateway
+    homes._unit = lambda:dict(ActiveState='active', MainPID='42',
+        process_start_epoch_ns=1, config_mtime_ns=2)
+    reloads=[]
+    homes._reload=lambda:reloads.append('exact-new-config')
+    assert homes(ready)['state']=='waiting'
+    assert homes(ready)['state']=='waiting'
+    assert reloads==['exact-new-config']
+    assert being_seed._read(homes.state/'eko.json')['phase']=='reload-intent'
+
+
+def test_live_owner_denial_is_not_treated_as_missing_configuration(tmp_path):
+    homes,store,backend,progress,_,_,_,_,_=assembled(tmp_path)
+    ready=committed(store,backend,progress)
+    original=homes._gateway
+    homes._gateway=lambda action,request,**kw: original(action,request,**kw) if action=='register' else {'state':'unavailable'}
+    homes._unit=lambda:dict(ActiveState='active', MainPID='42',
+        process_start_epoch_ns=3, config_mtime_ns=2)
+    homes._reload=lambda:pytest.fail('Live denial cannot trigger restart')
+    assert homes(ready)['state']=='waiting'

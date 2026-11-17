@@ -20,6 +20,7 @@ from pathlib import Path
 from .onboarding import OnboardingError, digest
 
 SCHEMA = 'cluster-admission-continuation/v1'
+RETRY_SCHEMA = 'cluster-membership-continuation-retry/v1'
 REQUEST_SCHEMA = 'cluster-admission-continuation-request/v1'
 PREPARATION_SCHEMA = 'cluster-admission-preparation-continuation/v1'
 PREPARATION_REQUEST_SCHEMA = 'cluster-admission-preparation-continuation-request/v1'
@@ -36,9 +37,48 @@ def _sha(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
 
 
+def _membership_only(row: dict) -> bool:
+    return row['intended_transition'].get('membership_only') == {
+        'schema': 'cluster-native-membership-only/v1'}
+
+
+def _effects(row: dict) -> list[str]:
+    return ['membership'] if _membership_only(row) else EFFECTS.copy()
+
+
+def _membership_frontier(row: dict) -> tuple[dict, dict, dict, dict]:
+    """An expired, never-dispatched invite in the explicit signed-only route."""
+    from .onboarding_group_admission import command
+    try:
+        before, after, observed = row['expected_precondition'], row['intended_transition'], row['runtime_observation']
+        admission, social = after['cohort_admission'], after['portal_admission']['social']
+        original = command(dict(operation_id=social['operation_id'], step='membership-invite',
+            method='tribe.invite', params={'payload': social['invitation']}))
+        phase = observed['membership_admission']
+        if (not _membership_only(row) or row['operation'] != 'receiving-update' or row['state'] != 'planned'
+                or row['target'] != 'receiving:'+admission['tribe_ref']
+                or row['intent_hash'] != digest(row['intent'])
+                or row['intent']['runtime_call']['precondition_digest'] != digest(before)
+                or row['intent']['runtime_call']['transition_digest'] != digest(after)
+                or set(after) != {'cohort_admission', 'portal_admission', 'membership_only'}
+                or after['portal_admission']['schema'] != 'cluster-portal-group-admission/v2'
+                or not before['senders']
+                or set(observed) != {'membership_admission', 'membership_maintenance'}
+                or set(phase) != {'recipe_sha256', 'requests'}
+                or phase['recipe_sha256'] != digest(social)
+                or phase['requests'] != {social['founder_owner']: {
+                    'membership-invite': {'command': original, 'result': None}}}):
+            raise ValueError
+        return admission, social, original, {}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise OnboardingError('onboarding_group_continuation_frontier_required') from None
+
+
 def _frontier(row: dict) -> tuple[dict, dict, dict, dict]:
     """Recognize only the reviewed frontier, not an arbitrary partial admission."""
     from .onboarding_group_admission import command
+    if _membership_only(row):
+        return _membership_frontier(row)
     try:
         before, after, observed = row['expected_precondition'], row['intended_transition'], row['runtime_observation']
         admission, social = after['cohort_admission'], after['portal_admission']['social']
@@ -254,7 +294,7 @@ def authorization(parent: dict, request: dict, *, now_ms: int) -> dict:
             manifest_digest=parent['intent']['runtime_call']['manifest_digest'],
             original_recipe_sha256=digest(social), original_invitation_command_sha256=digest(original),
             expires_at_ms=request['expires_at_ms'], invitation=copy.deepcopy(replacement),
-            inspection=copy.deepcopy(inspection), maintenance=copy.deepcopy(helpers), effects=EFFECTS.copy()+(['preparation'] if preparation else []))
+            inspection=copy.deepcopy(inspection), maintenance=copy.deepcopy(helpers), effects=_effects(parent)+(['preparation'] if preparation else []))
     except OnboardingError:
         raise
     except (KeyError, TypeError, ValueError, AttributeError):
@@ -300,6 +340,8 @@ def resolve(journal, parent: dict, selected: dict) -> dict:
         if row is None:
             raise ValueError
         grant = row['intended_transition']
+        if grant.get('schema') == RETRY_SCHEMA:
+            return resolve_membership_retry(journal, parent, row, selected)
         if (row['operation'] != 'admission-continuation' or row['state'] in {'degraded', 'compensated'}
                 or row['target'] != 'admission-authorization:'+parent['operation_id']
                 or row['intent_hash'] != selected['intent_sha256'] or row['intent_hash'] != digest(row['intent'])
@@ -308,7 +350,7 @@ def resolve(journal, parent: dict, selected: dict) -> dict:
                 or not _sha(row['intent']['runtime_call']['request_sha256'])
                 or grant['schema'] not in {SCHEMA, PREPARATION_SCHEMA} or grant['parent_operation_id'] != parent['operation_id']
                 or grant['parent_intent_sha256'] != parent['intent_hash']
-                or grant['effects'] != EFFECTS+(['preparation'] if grant['schema'] == PREPARATION_SCHEMA else [])
+                or grant['effects'] != _effects(parent)+(['preparation'] if grant['schema'] == PREPARATION_SCHEMA else [])
                 or grant['schema'] == PREPARATION_SCHEMA and (grant['children'] != {}
                     or grant['preparations_sha256'] != digest(parent['intended_transition']['admission_preparations']))
                 or grant['original_vectors_sha256'] != digest(dict(before=parent['expected_precondition'],
@@ -340,6 +382,8 @@ def attach(journal, parent_operation_id: str, selected: dict) -> dict:
     with journal.mutation_lock(parent_operation_id):
         parent = journal.get(parent_operation_id)
         grant = resolve(journal, parent, selected)
+        if grant['schema'] == RETRY_SCHEMA:
+            return attach_membership_retry(journal, parent, selected, grant)
         retained = dict(schema='cluster-admission-continuation-attachment/v1', reference=selected,
             authorization_sha256=digest(grant), frontier_sha256=grant['frontier_sha256'])
         observations = copy.deepcopy(parent['runtime_observation'] or {})
@@ -383,13 +427,14 @@ def require_execution(journal, parent: dict, selected: dict, effect: str) -> dic
                     or current['intent']['runtime_call']['transition_digest'] != digest(current['intended_transition'])):
                 raise ValueError
             grant = resolve(journal, current, selected)
-            if current['state'] == 'planned' and grant['schema'] != PREPARATION_SCHEMA:
+            if current['state'] == 'planned' and grant['schema'] != PREPARATION_SCHEMA and not _membership_only(current):
                 raise ValueError
             expected = dict(schema='cluster-admission-continuation-attachment/v1', reference=selected,
                 authorization_sha256=digest(grant), frontier_sha256=grant['frontier_sha256'])
             approved = journal.get(selected['operation_id'])
             if (effect not in grant['effects']
-                    or (current['runtime_observation'] or {}).get('admission_continuation') != expected
+                    or (current['runtime_observation'] or {}).get(
+                        'membership_retry' if grant['schema'] == RETRY_SCHEMA else 'admission_continuation') != expected
                     or approved['state'] != 'runtime-dispatching'
                     or approved['runtime_observation'] != {'attachment': dict(parent_operation_id=current['operation_id'],
                         authorization_sha256=digest(grant))}):
@@ -417,7 +462,8 @@ def attached(journal, parent: dict, *, effect: str | None = None) -> dict | None
     if current is None or any(current[key] != parent[key] for key in
             ('intent', 'intent_hash', 'expected_precondition', 'intended_transition')):
         raise OnboardingError('onboarding_group_continuation_reference_required')
-    attachment = (current['runtime_observation'] or {}).get('admission_continuation')
+    observations = current['runtime_observation'] or {}
+    attachment = observations.get('membership_retry') or observations.get('admission_continuation')
     if attachment is None:
         return None
     grant = resolve(journal, current, attachment['reference'])
@@ -442,7 +488,172 @@ def membership(journal, parent: dict, admission: dict) -> tuple[dict, str, str, 
     recipe = membership_recipe(social, admission, parent['expected_precondition']['senders'],
         expires_at_ms=grant['expires_at_ms'])
     provenance = dict(continuation_sha256=digest(grant), original_recipe_sha256=digest(original))
-    return recipe, 'membership_continuation', 'c-'+grant['authorization_id'].replace('-', '')+'-', provenance
+    state_key = 'membership_continuation'
+    if grant['schema'] == RETRY_SCHEMA:
+        state_key += '-'+grant['authorization_id'].replace('-', '')
+    return recipe, state_key, 'c-'+grant['authorization_id'].replace('-', '')+'-', provenance
+
+
+def plan_membership_retry(journal, request: dict, *, audit_identity: dict) -> dict:
+    """A fresh absence-qualified attempt after an expired signed-only grant.
+
+    Retain every prior invitation, attachment and request. This authorizes only
+    membership under the same parent/identities, never publication or a model.
+    """
+    from .operation_journal import JournalConflict
+    from .onboarding_group_admission import command
+    from daimon_matrix.relationships import validate_relationship_event_payload
+    with journal.mutation_lock(request['parent_operation_id']):
+        parent = journal.get(request['parent_operation_id'])
+        key = 'membership-retry:'+request['authorization_id']
+        prior_row = journal.latest_for_idempotency_key(key)
+        if prior_row is not None:
+            if prior_row['intent']['runtime_call']['request_sha256'] != digest(request):
+                raise JournalConflict('membership retry has different exact request bytes')
+            resolve(journal, parent, reference(prior_row))
+            return prior_row
+        try:
+            fields = {'authorization_id', 'parent_operation_id', 'parent_intent_sha256',
+                'frontier_sha256', 'previous_authorization_sha256', 'expires_at_ms',
+                'invitation', 'inspection', 'maintenance'}
+            now = time.time_ns()//1_000_000
+            previous = attached(journal, parent)
+            observed = parent['runtime_observation']
+            admission = parent['intended_transition']['cohort_admission']
+            social, phase, prefix, _ = membership(journal, parent, admission)
+            original = command(dict(operation_id=social['operation_id'], step=prefix+'membership-invite',
+                method='tribe.invite', params={'payload': social['invitation']}))
+            pending = observed[phase]
+            depth = 1+(previous or {}).get('retry_depth', 0)
+            if (set(request) != fields or not _membership_only(parent) or parent['state'] != 'planned'
+                    or set(parent['intended_transition']) != {'cohort_admission', 'portal_admission', 'membership_only'}
+                    or previous is None or request['previous_authorization_sha256'] != digest(previous)
+                    or previous['effects'] != ['membership'] or now < previous['expires_at_ms']
+                    or not 1 <= depth <= 8
+                    or str(uuid.UUID(request['authorization_id'])) != request['authorization_id']
+                    or request['parent_intent_sha256'] != parent['intent_hash']
+                    or request['frontier_sha256'] != digest(observed)
+                    or type(request['expires_at_ms']) is not int or not now < request['expires_at_ms'] <= now+86_400_000
+                    or set(pending) != {'recipe_sha256', 'requests', 'continuation_sha256', 'original_recipe_sha256'}
+                    or pending['recipe_sha256'] != digest(social)
+                    or pending['continuation_sha256'] != digest(previous)
+                    or pending['requests'] != {social['founder_owner']: {
+                        prefix+'membership-invite': {'command': original, 'result': None}}}
+                    or any(not key.startswith(('membership_', 'admission_continuation')) for key in observed)):
+                raise ValueError
+            inspection = request['inspection']
+            expected_inspection = dict(schema='cluster-group-invitation-inspection/v1',
+                operation_id=social['operation_id'], command_sha256=digest(original),
+                ledger_sha256=inspection['ledger_sha256'], request_retained=inspection['request_retained'],
+                rpc_state=inspection['rpc_state'], request_sha256=inspection['request_sha256'], response_sha256=None,
+                invitations=[], acceptances=[], membership=dict(tribe_state='active',
+                    active_members=sorted(row['being_ref'] for row in parent['expected_precondition']['senders']),
+                    entrant_state=inspection['membership']['entrant_state']),
+                observed_at_ms=inspection['observed_at_ms'], requests_dispatched=0, receiving_readiness='unobserved')
+            if (inspection != expected_inspection or not _sha(inspection['ledger_sha256'])
+                    or inspection['rpc_state'] not in {'absent', 'not-dispatched'}
+                    or type(inspection['request_retained']) is not bool
+                    or inspection['request_retained'] != (inspection['rpc_state'] == 'absent')
+                    or (not _sha(inspection['request_sha256']) if inspection['request_retained']
+                        else inspection['request_sha256'] is not None)
+                    or inspection['membership']['entrant_state'] not in {None, 'left', 'expelled'}
+                    or type(inspection['observed_at_ms']) is not int
+                    or not previous['expires_at_ms'] <= inspection['observed_at_ms'] <= now):
+                raise ValueError
+            invitation = validate_relationship_event_payload('matrix/tribe-invitation', request['invitation'],
+                author_being_ref=social['invitation']['founder_being_ref'], causal_parents=[])
+            changing = {'issued_at_ms', 'expires_at_ms', 'nonce', 'invitation_id'}
+            if (any(invitation[key] != value for key, value in social['invitation'].items() if key not in changing)
+                    or invitation['nonce'] == social['invitation']['nonce']
+                    or invitation['invitation_id'] == social['invitation']['invitation_id']
+                    or not previous['expires_at_ms'] <= invitation['issued_at_ms'] <= now
+                    or invitation['expires_at_ms'] != request['expires_at_ms']):
+                raise ValueError
+            helpers = request['maintenance']
+            if set(helpers) != set(admission['receivers']):
+                raise ValueError
+            for name, helper in helpers.items():
+                if (set(helper) != {'code', 'code_digest', 'code_uid'}
+                        or not isinstance(helper['code'], str) or not Path(helper['code']).is_absolute()
+                        or '..' in Path(helper['code']).parts or not _sha(helper['code_digest'])
+                        or helper['code_uid'] != admission['receivers'][name]['candidate']['code_uid']):
+                    raise ValueError
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise OnboardingError('onboarding_group_membership_retry_frontier_required') from None
+        prior_attachment = observed.get('membership_retry') or observed['admission_continuation']
+        grant = dict(schema=RETRY_SCHEMA, authorization_id=request['authorization_id'], retry_depth=depth,
+            parent_operation_id=parent['operation_id'], parent_intent_sha256=parent['intent_hash'],
+            original_vectors_sha256=digest(dict(before=parent['expected_precondition'], after=parent['intended_transition'])),
+            frontier_sha256=request['frontier_sha256'], previous_reference=prior_attachment['reference'],
+            previous_authorization_sha256=digest(previous), effects=['membership'],
+            expires_at_ms=request['expires_at_ms'], invitation=copy.deepcopy(invitation),
+            inspection=copy.deepcopy(inspection), maintenance=copy.deepcopy(helpers))
+        target = 'membership-authorization:'+parent['operation_id']+':'+request['authorization_id']
+        return journal.plan(operation='admission-continuation', target=target, idempotency_key=key,
+            intent=dict(operation='admission-continuation', target=target, runtime_call=dict(
+                parent_intent_sha256=parent['intent_hash'], authorization_sha256=digest(grant), request_sha256=digest(request))),
+            expected_precondition=dict(parent_operation_id=parent['operation_id'], parent_intent_sha256=parent['intent_hash'],
+                frontier_sha256=grant['frontier_sha256']), intended_transition=grant, audit_identity=audit_identity)
+
+
+def preceding_membership(journal, parent: dict, grant: dict) -> tuple[dict, str]:
+    """The exact invitation whose native absence authorized this attempt."""
+    social = copy.deepcopy(parent['intended_transition']['portal_admission']['social'])
+    step = 'membership-invite'
+    if grant['schema'] == RETRY_SCHEMA:
+        previous = resolve(journal, parent, grant['previous_reference'])
+        social.update(invitation=previous['invitation'], acceptance_not_after_ms=previous['expires_at_ms'])
+        step = 'c-'+previous['authorization_id'].replace('-', '')+'-'+step
+    return social, step
+
+
+def resolve_membership_retry(journal, parent: dict, row: dict, selected: dict) -> dict:
+    try:
+        grant = row['intended_transition']
+        if (not _membership_only(parent) or row['operation'] != 'admission-continuation'
+                or row['state'] in {'compensated', 'degraded'}
+                or row['target'] != 'membership-authorization:'+parent['operation_id']+':'+grant['authorization_id']
+                or row['intent_hash'] != selected['intent_sha256'] or row['intent_hash'] != digest(row['intent'])
+                or grant['parent_operation_id'] != parent['operation_id']
+                or grant['parent_intent_sha256'] != parent['intent_hash'] or grant['effects'] != ['membership']
+                or grant['original_vectors_sha256'] != digest(dict(before=parent['expected_precondition'], after=parent['intended_transition']))
+                or not 1 <= grant['retry_depth'] <= 8
+                or row['intent']['runtime_call'] != dict(parent_intent_sha256=parent['intent_hash'],
+                    authorization_sha256=digest(grant), request_sha256=row['intent']['runtime_call'].get('request_sha256'))
+                or not _sha(row['intent']['runtime_call']['request_sha256'])):
+            raise ValueError
+        previous = resolve(journal, parent, grant['previous_reference'])
+        if (digest(previous) != grant['previous_authorization_sha256']
+                or grant['retry_depth'] != previous.get('retry_depth', 0)+1):
+            raise ValueError
+        return copy.deepcopy(grant)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise OnboardingError('onboarding_group_continuation_reference_required') from None
+
+
+def attach_membership_retry(journal, parent: dict, selected: dict, grant: dict) -> dict:
+    observed = copy.deepcopy(parent['runtime_observation'])
+    retained = dict(schema='cluster-admission-continuation-attachment/v1', reference=selected,
+        authorization_sha256=digest(grant), frontier_sha256=grant['frontier_sha256'])
+    current = observed.get('membership_retry') or observed['admission_continuation']
+    if current != retained:
+        if (current['reference'] != grant['previous_reference']
+                or current['authorization_sha256'] != grant['previous_authorization_sha256']
+                or digest(observed) != grant['frontier_sha256']
+                or time.time_ns()//1_000_000 >= grant['expires_at_ms']):
+            raise OnboardingError('onboarding_group_continuation_frontier_changed')
+        if 'membership_retry' in observed:
+            observed.setdefault('membership_retry_history', {})[current['authorization_sha256']] = current
+        observed['membership_retry'] = retained
+        journal.advance(parent['operation_id'], parent['state'], runtime_observation=observed,
+            expected_runtime_observation=parent['runtime_observation'])
+    approval = journal.get(selected['operation_id'])
+    effect = {'attachment': dict(parent_operation_id=parent['operation_id'], authorization_sha256=digest(grant))}
+    if approval['runtime_observation'] is None:
+        journal.advance(approval['operation_id'], 'runtime-dispatching', runtime_observation=effect)
+    elif approval['runtime_observation'] != effect:
+        raise OnboardingError('onboarding_group_continuation_reference_required')
+    return grant
 
 
 def effect_deadline(journal, parent: dict, effect: str, deadline_ns: int) -> int:

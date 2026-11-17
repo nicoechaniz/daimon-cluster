@@ -429,8 +429,30 @@ def native_budget(timeout_seconds: float | None, expires_at_ms: int | None):
     return remaining
 
 
-def native_supervisor_code(base: Path, selected: Path) -> Path:
+def native_supervisor_code(base: Path, selected: Path, *, unit: Path | None = None) -> Path:
     """Keep an available frozen supervisor; older bases need the qualified helper."""
+    from . import onboarding_code_successor
+    unit = unit if unit is not None else Path('/etc/systemd/system') / NATIVE_UNIT
+    if unit.exists():
+        # Runtime-only observer repairs preserve the already running immutable
+        # supervisor. Validate its full predecessor before accepting its path.
+        raw = onboarding_release.regular(unit, uid=0)
+        import shlex
+        lines = [line for line in raw.decode().splitlines() if line.startswith('ExecStart=')]
+        command = shlex.split(lines[0].removeprefix('ExecStart=')) if len(lines) == 1 else []
+        if len(command) == 8 and command[:3] == ['/usr/bin/python3', '-B', '-I']:
+            script = Path(command[3])
+            previous = script.parent.parent
+            if (script.name == 'native_codex_supervisor.py'
+                    and previous.parent == Path('/opt/daimon-onboarding-runtime')
+                    and re.fullmatch('[a-f0-9]{64}', previous.name)):
+                onboarding_code_successor.verify(previous, previous.name, base,
+                    base.name, uid=0)
+                if (onboarding_release.regular(script, uid=0) ==
+                        onboarding_release.regular(selected/'clusterctl/native_codex_supervisor.py', uid=0)
+                        and raw == native_service(Path('/home/agent'),
+                            Path('/usr/local/bin/codex'), previous)):
+                    return previous
     for code in dict.fromkeys((base, selected)):
         if (code / 'clusterctl/native_codex_supervisor.py').is_file():
             return code

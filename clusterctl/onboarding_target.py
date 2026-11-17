@@ -426,14 +426,25 @@ class Target:
                 if old == new:
                     continue
                 before, after = old['descriptor'], new['descriptor']
+                comparison = after
+                if before['methods'] != after['methods']:
+                    # The maintained native event-reader upgrade already
+                    # authenticates this exact additive observe profile. Read
+                    # its signed current binding below; grant nothing here.
+                    if (old['profile'] != profiles.operator_capability_profile('observe')
+                            or set(after['methods']) != set(before['methods']) | {'we.event.get'}
+                            or frozenset(after['methods']) != profiles.OPERATOR_CAPABILITY_PROFILES['observe']):
+                        raise ValueError
+                    comparison = {**after, 'methods': before['methods']}
                 if (expected['schema'] != 'dm.runtime.bundle/v8'
                         or set(old) != set(new) or set(before) != set(after)
                         or any(old[key] != new[key] for key in old if key != 'descriptor')
-                        or any(before[key] != after[key] for key in before if key not in changing)
+                        or any(before[key] != comparison[key] for key in before if key not in changing)
                         or before['status'] != 'active'
                         or not before['not_before_ms'] < before['not_after_ms'] <= after['not_before_ms']
                         or not after['not_before_ms'] < after['not_after_ms'] <=
-                            after['not_before_ms'] + profiles.OPERATOR_CAPABILITY_TTL_MS):
+                            after['not_before_ms'] + profiles.OPERATOR_CAPABILITY_TTL_MS
+                            + profiles.OPERATOR_CAPABILITY_NOT_BEFORE_SKEW_MS):
                     raise ValueError
                 renewed.append((after['not_before_ms'], after['not_after_ms']))
             if renewed and len(set(renewed)) != 1:

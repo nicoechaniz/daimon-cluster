@@ -120,20 +120,24 @@ class Approvals:
                       approval_policy_digest=digest(value), decision=decision)
         directory = private_directory(state / 'delegated-owner-approvals', create=True)
         path = directory / (proposal['review_digest'] + '.json')
+        def retained():
+            previous = document(path)
+            # Delegated records are immutable. The policy above is freshly
+            # checked by each caller; reading an existing record needs no writer
+            # lock shared by all independently observed old owners.
+            if (set(previous) != set(record)
+                    or any(previous[key] != item for key, item in record.items()
+                           if key != 'approval_policy_digest')
+                    or not isinstance(previous['approval_policy_digest'], str)
+                    or not re.fullmatch(r'[0-9a-f]{64}', previous['approval_policy_digest'])):
+                raise OnboardingError('existing_onboarding_approval_preserved')
+            return decision
+        if path.exists():
+            return retained()
         with being_seed._locked(directory):
             if path.exists():
-                previous = document(path)
-                # A successor may reconcile another pair's existing identity.
-                # Preserve this pair's original attribution and policy digest
-                # when its exact approved decision and human instruction match.
-                if (set(previous) != set(record)
-                        or any(previous[key] != item for key, item in record.items()
-                               if key != 'approval_policy_digest')
-                        or not isinstance(previous['approval_policy_digest'], str)
-                        or not re.fullmatch(r'[0-9a-f]{64}', previous['approval_policy_digest'])):
-                    raise OnboardingError('existing_onboarding_approval_preserved')
-            else:
-                being_seed._write(path, record)
+                return retained()
+            being_seed._write(path, record)
         return decision
 
 

@@ -83,3 +83,8 @@ context readers before its later writer phase; do not combine a new caller with
 older peer/context helpers. Operational web-maintenance transport updates do not
 change the immutable Home or route intent; current upstream guards still protect
 all affected live calls before any Caddy reload.
+
+KVM owner calls rebase the closed monotonic deadline flags in the receiving
+kernel, bounded by the original remaining duration and wall expiry. Host and
+guest uptime are not interchangeable clocks. This changes neither authorization
+lifetime nor a native serving selection; expired or ambiguous flags refuse.

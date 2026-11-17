@@ -354,6 +354,21 @@ class HostConfig:
         return plans
 
 
+VM_OWNER_CLOCK = r"""import json,os,sys,time
+value=json.loads(sys.argv[1]);argv=value['argv']
+remaining=min(value['remaining_seconds'],value['expires_at_ms']/1000-time.time())
+if remaining<=0:raise SystemExit('receiving_host_deadline_expired')
+deadline=str(time.monotonic_ns()+int(min(remaining,60)*1e9))
+if argv.count('--observation-deadline-ns')==1 and '--deadline-ns' not in argv and '--time-namespace' not in argv:
+ argv[argv.index('--observation-deadline-ns')+1]=deadline
+elif '--observation-deadline-ns' not in argv and argv.count('--deadline-ns')==1 and argv.count('--time-namespace')==1:
+ argv[argv.index('--deadline-ns')+1]=deadline
+ argv[argv.index('--time-namespace')+1]=os.readlink('/proc/self/ns/time')
+else:raise SystemExit('receiving_owner_deadline_binding_required')
+os.execvpe(argv[0],argv,os.environ)
+"""
+
+
 class HostBackend:
     def __init__(self, config: HostConfig, *, run: Callable | None = None, input_cache=None,
                  custody_run: Callable | None = None, home_access: Callable | None = None,
@@ -395,6 +410,19 @@ class HostBackend:
                 env={'HOME': '/home/agent'} if home else None, input_data=input_data,
                 timeout_seconds=60 if timeout_seconds is None else timeout_seconds,
                 deadline_ns=deadline_ns, owner_clock=owner_clock or '--observation-deadline-ns' in argv)
+        if self.config.instance_type == 'virtual-machine' and (
+                owner_clock or '--observation-deadline-ns' in argv):
+            # A cold KVM has a different kernel clock from its Incus host.
+            # Rebase the closed owner-control flags within the original wall
+            # expiry, as the existing native/remote VM transport already does.
+            if deadline_ns is None:
+                raise OnboardingError('receiving_host_deadline_required')
+            remaining = (deadline_ns-time.monotonic_ns())/1_000_000_000
+            if remaining <= 0:
+                raise OnboardingError('receiving_host_deadline_expired')
+            request = dict(argv=argv,remaining_seconds=min(60,remaining),
+                expires_at_ms=time.time_ns()//1_000_000+int(min(60,remaining)*1000))
+            argv = ['/usr/bin/python3','-B','-I','-c',VM_OWNER_CLOCK,json.dumps(request)]
         command = ['exec', self.instance(plan), '--user', str(uid), '--group', str(gid),
                    *(['--env', 'HOME=/home/agent'] if home else []), '--', *argv]
         return self._dispatch(plan, command, input_data=input_data,

@@ -1532,3 +1532,26 @@ def test_existing_guest_prepares_only_missing_qualified_read_only_helper(tmp_pat
     assert backend.runtime_available(value,candidate,prepare=True,deadline_ns=123)
     assert backend.runtime_available(value,candidate,prepare=True,deadline_ns=123)
     assert len(writes)==len(waits)==1
+
+
+def test_kvm_owner_clock_rebases_flags_without_extending_wall_expiry():
+    import subprocess
+    import sys
+    import time
+    from clusterctl.onboarding_host import VM_OWNER_CLOCK
+    probe=[sys.executable,'-c','import sys,json,time;print(json.dumps(dict(argv=sys.argv[1:],now=time.monotonic_ns())))',
+        '--observation-deadline-ns',str(2**62)]
+    request=dict(argv=probe,remaining_seconds=2,expires_at_ms=time.time_ns()//1_000_000+2000)
+    result=subprocess.run([sys.executable,'-I','-c',VM_OWNER_CLOCK,json.dumps(request)],
+        capture_output=True,text=True,timeout=3)
+    assert result.returncode==0
+    value=json.loads(result.stdout)
+    assert 0<int(value['argv'][1])-value['now']<=2_000_000_000
+    request['expires_at_ms']=1
+    result=subprocess.run([sys.executable,'-I','-c',VM_OWNER_CLOCK,json.dumps(request)],
+        capture_output=True,text=True,timeout=3)
+    assert result.returncode!=0 and 'deadline_expired' in result.stderr
+    request.update(expires_at_ms=time.time_ns()//1_000_000+2000,argv=probe+['--observation-deadline-ns','1'])
+    result=subprocess.run([sys.executable,'-I','-c',VM_OWNER_CLOCK,json.dumps(request)],
+        capture_output=True,text=True,timeout=3)
+    assert result.returncode!=0 and 'deadline_binding_required' in result.stderr

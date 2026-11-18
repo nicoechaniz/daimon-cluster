@@ -138,3 +138,16 @@ reachability, message admission or reading. An authorized `/human.tell` continue
 through the selected existing application/communication surface and its receipts.
 The portable `daimon-home human` client makes this one read through its existing
 receiving owner binding. Pairing and revocation are rechecked on every request.
+
+### Retiring an abandoned approved code
+
+A human can approve a replacement browser code without ending an already working
+session. To invalidate one still-unclaimed old code, use the maintained host
+`revoke-browser` operation with the exact gateway configuration digest, owning
+Home reference, request-home context, code and expected paired human. It first
+resolves the current pair through that Home's authenticated owner endpoint, then
+uses `Sessions.revoke_request` under the existing SQLite transaction. The old
+request row is retained with an expired deadline; other codes and sessions stay
+unchanged. The operation is idempotent. A foreign/changed identity or an already
+claimed request refuses instead of silently logging out every device of a human.
+Already claimed sessions use their existing exact-session logout route.

@@ -25,12 +25,16 @@ def test_boot_state_preserves_paths_and_newer_writes_across_remount(tmp_path):
                 return Path(mounts[str(self)]).stat(**kwargs)
             return super().stat(**kwargs)
     real_private = namespace['private']
-    namespace['private'] = lambda p, uid=0: real_private(p, os.getuid() if uid == 0 else uid)
+    namespace['private'] = lambda p, uid=0: real_private(p, os.getuid())
     class GuestOS:
         def __getattr__(self, name):
             return getattr(os, name)
         def geteuid(self):
             return 0
+        def chown(self, path, uid, gid):
+            # Model guest ownership without requiring host root or UID1000.
+            assert (uid, gid) == (1000, 1000)
+            assert Path(path).is_relative_to(tmp_path)
     namespace.update(Path=GuestPath, HOME=GuestPath(home), BASE=GuestPath(base),
                      os=GuestOS(), native=lambda root, home: True)
     def run(argv):

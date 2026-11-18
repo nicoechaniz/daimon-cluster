@@ -189,7 +189,8 @@ def test_revoking_one_unclaimed_browser_request_preserves_new_code_and_sessions(
                           proof=new_proof, current_actor=lambda *args: actor)
     assert status['status'] == 'approved'
     assert store.resolve(other, home='other', origin='https://other.example') is not None
-    with store.connect() as db:
+    from contextlib import closing
+    with closing(store.connect()) as db:
         assert db.execute('SELECT count(*) FROM requests').fetchone()[0] == 2
 
 

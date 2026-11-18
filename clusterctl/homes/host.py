@@ -373,16 +373,58 @@ def register_companion(config_path, request, public, *, human_name, vpn_url, pre
         config_digest=sha(regular(config_path)),receiving_state='unobserved')
 
 
+def revoke_browser_request(config_path, reference, *, code, request_home,
+                           expected_human, previous_digest):
+    """Use the current owner's authenticated pairing and the session writer."""
+    import urllib.request
+    from .policy import Actor
+    from .service import private_text
+    original = regular(config_path)
+    if sha(original) != previous_digest:
+        raise ValueError('concurrent_home_configuration')
+    config = validate_config(json.loads(original))
+    home = config['homes'][reference]
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    url = 'http://127.0.0.1:' + str(config['owner_port']) + '/owner/' + reference + '/human-endpoint'
+    request = urllib.request.Request(url, data=b'{}', headers={
+        'Authorization': 'Bearer ' + private_text(home['owner_token_file']),
+        'Content-Type': 'application/json'})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    with opener.open(request, timeout=10) as response:
+        raw = response.read(65537)
+        if response.status != 200 or response.geturl() != url or len(raw) > 65536:
+            raise ValueError('home_pairing_unavailable')
+        pair = json.loads(raw)
+    if (pair['home_ref'] != reference or pair['owner_being_ref'] != home['owner_being_ref']
+            or pair['human']['ref'] != expected_human or pair['human']['kind'] != 'human'
+            or regular(config_path) != original):
+        raise ValueError('home_pairing_unavailable')
+    subject = Actor(**pair['human'])
+    return Sessions(Path(config['state'])).revoke_request(home=request_home, code=code, subject=subject)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("register", "withdraw", "accept-owner-authority", "register-identity", "register-companion"))
+    parser.add_argument("operation", choices=("register", "withdraw", "accept-owner-authority", "register-identity", "register-companion", "revoke-browser"))
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--reference", required=True)
     parser.add_argument("--row", type=Path)
     parser.add_argument("--authority", type=Path)
     parser.add_argument("--previous-digest", required=True)
+    parser.add_argument("--browser-code")
+    parser.add_argument("--request-home")
+    parser.add_argument("--expected-human")
     args = parser.parse_args()
     try:
+        if args.operation == "revoke-browser":
+            if not all((args.browser_code, args.request_home, args.expected_human)):
+                raise ValueError("exact_browser_request_required")
+            print(json.dumps(revoke_browser_request(args.config, args.reference,
+                code=args.browser_code, request_home=args.request_home,
+                expected_human=args.expected_human, previous_digest=args.previous_digest)))
+            return
         if args.operation == 'register-companion':
             if args.row is None or args.authority is None:
                 raise ValueError('home_web_identity_required')

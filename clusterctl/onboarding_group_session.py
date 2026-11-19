@@ -225,6 +225,7 @@ class RelationshipSession:
                 raise OnboardingError('current_onboarding_target_required')
             self.hosted = load_owner_runtime(self.root, owner._reader, authorities=authorities,
                 qualified_startup=owner.qualified_startup)
+            self.group = group
             return self
         except BaseException:
             self.stack.close()
@@ -240,7 +241,8 @@ class RelationshipSession:
         check_retained_ledger(self.root, self.journal, packet['command'])
         return relationship_request(self.root, self.journal, packet['command'], offline=self.hosted,
             deadline_ns=self.deadline_ns, membership_precondition=packet.get('membership_precondition'),
-            inspect_only=inspect_only,effect_not_after_ms=packet.get('effect_not_after_ms'))
+            inspect_only=inspect_only,effect_not_after_ms=packet.get('effect_not_after_ms'),
+            verification_group=self.group, authority_closure=packet['authority_closure'])
 
     def __exit__(self, *_):
         self.stack.close()

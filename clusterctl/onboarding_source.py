@@ -148,7 +148,8 @@ class Source:
             hosted = load_owner_runtime(self.root, self._reader, authorities=authorities,
                                         qualified_startup=self.qualified_startup)
             return relationship_request(self.root, journal, value, offline=hosted, deadline_ns=deadline_ns,
-                membership_precondition=membership_precondition,effect_not_after_ms=effect_not_after_ms)
+                membership_precondition=membership_precondition,effect_not_after_ms=effect_not_after_ms,
+                verification_group=self.outputs / 'tribe', authority_closure=authority_closure or {})
 
     def private_resource(self, value: dict, *, deadline_ns: int) -> dict:
         """Private machine pipe; never a native publication or public receipt."""

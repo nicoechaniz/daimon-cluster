@@ -1011,9 +1011,15 @@ def merge_authorities(current: dict, supplied: dict) -> dict:
     result = dict(current)
     for ref, authority in supplied.items():
         previous = result.get(ref)
-        if previous is not None and (getattr(previous, 'active', previous) != authority.active
-                or hasattr(previous, 'historical') and previous != authority):
-            raise OnboardingError('approved_onboarding_group_history_conflict')
+        if previous is not None:
+            if getattr(previous, 'active', previous) != getattr(authority, 'active', authority):
+                raise OnboardingError('approved_onboarding_group_history_conflict')
+            if hasattr(previous, 'historical'):
+                if hasattr(authority, 'historical') and previous != authority:
+                    raise OnboardingError('approved_onboarding_group_history_conflict')
+                # A signed application can pin only the same current Root.
+                # It must not replace already retained verification history.
+                continue
         result[ref] = authority
     return result
 
@@ -1693,10 +1699,57 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
         return result
 
 
+def retain_relationship_verification(hosted, group_root: Path, selected: dict, closure: dict) -> None:
+    """Keep accepted public signers available after the owning writer closes.
+
+    This retains verification material, not membership or a messaging client.
+    Existing members retain it before ingestion; an entrant can retain its own
+    membership context immediately after its authenticated acceptance succeeds.
+    """
+    if selected['method'] == 'relationship.snapshot':
+        return
+    from .onboarding_peer import approved_membership_authorities, retain_membership_authorities
+
+    params = selected['params']
+    body = params.get('event') if selected['method'] == 'relationship.event.ingest' else params
+    payload = body.get('payload') if isinstance(body, dict) else None
+    if not isinstance(payload, dict):
+        return  # Preserve the native method's ordinary malformed-input result.
+    reference = payload.get('tribe_ref')
+    if not isinstance(reference, str):
+        return
+    relationships = hosted.service.relationships
+    own = hosted.service.ledger.authority.manifest.being_ref
+    with relationships.store.authorization_view(at_ms=hosted.service.clock(),
+            card_verifier=relationships.card_verifier, busy_timeout_ms=0) as view:
+        tribe = view.tribes.get(reference)
+        if (tribe is None or tribe['state'] != 'active'
+                or tribe['memberships'].get(own, {}).get('state') != 'active'):
+            return
+        members = sorted(ref for ref, row in tribe['memberships'].items() if row['state'] == 'active')
+    path = group_root / 'membership-authorities.json'
+    before = being_seed._read(path, limit=being_seed.MAX_SELECTION) if path.exists() else None
+    if before is not None:
+        bundle = being_seed._read(hosted.state_root / 'runtime.json', limit=being_seed.MAX_SELECTION)
+        approved_membership_authorities(group_root, bundle)
+        document = before['document']
+        if (document['tribe_ref'] == reference and document['members'] == members
+                and all(document['authority_closure'].get(ref) == row for ref, row in closure.items())):
+            return
+    context = dict(parent_operation_id=selected['operation_id'], tribe_ref=reference,
+        members=members, authority_closure=closure)
+    operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'membership-verification:' + digest(context)))
+    retain_membership_authorities(hosted, group_root, operation_id=operation_id,
+        tribe_ref=reference, authority_closure=closure,
+        expected_selection_sha256=None if before is None else digest(before))
+
+
 def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
                          offline=None, deadline_ns: int | None = None,
                          membership_precondition: dict | None = None,
-                         inspect_only: bool = False, effect_not_after_ms: int | None = None) -> dict:
+                         inspect_only: bool = False, effect_not_after_ms: int | None = None,
+                         verification_group: Path | None = None,
+                         authority_closure: dict | None = None) -> dict:
     """Record or retry one native request; never return local capability material.
 
     A relationship snapshot is the native reducer's observation at its retained
@@ -1709,6 +1762,9 @@ def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
     from daimon_matrix.operator_capabilities import operator_capability_profile
 
     selected = command(value)
+    if ((verification_group is None) != (authority_closure is None)
+            or verification_group is not None and offline is None):
+        raise OnboardingError('onboarding_group_relationship_writer_required')
     if effect_not_after_ms is not None and (offline is None or type(effect_not_after_ms) is not int
             or not 0 < effect_not_after_ms < 2**53):
         raise OnboardingError('onboarding_group_relationship_command_required')
@@ -1919,6 +1975,8 @@ def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
         elif retained['response'] is None:
             check_deadline()
             authoring_precondition(request, request_hash)
+            if verification_group is not None and authority_closure is not None:
+                retain_relationship_verification(offline, verification_group, selected, authority_closure)
             if offline is not None and clock() - request['issued_at_ms'] > MAX_CLOCK_SKEW_MS:
                 # Current capability validity is still required. Actual exclusive
                 # writer ownership makes native RPC absence a stable fact.
@@ -1950,6 +2008,9 @@ def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
             # A failed local result write remains recoverable through native RPC.
             being_seed._write(path, retained, limit=being_seed.MAX_SELECTION)
         check_deadline()
+        if verified['ok'] and verification_group is not None and authority_closure is not None:
+            retain_relationship_verification(offline, verification_group, selected, authority_closure)
+            check_deadline()
         return dict(schema='cluster-group-relationship-result/v1',
             status='recorded' if verified['ok'] else 'rejected',
             request_id=request['request_id'], request_sha256=request_hash,

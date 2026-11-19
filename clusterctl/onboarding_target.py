@@ -157,7 +157,8 @@ class Target:
                                         qualified_startup=self.qualified_startup)
             return relationship_request(root, self.root / 'group-admission', value,
                 offline=hosted, deadline_ns=deadline_ns, membership_precondition=membership_precondition,
-                effect_not_after_ms=effect_not_after_ms)
+                effect_not_after_ms=effect_not_after_ms,
+                verification_group=self.root / 'tribe', authority_closure=authority_closure)
 
     def private_resource(self, value: dict, *, deadline_ns: int) -> dict:
         """Private owner transport under the unchanged original guest binding."""

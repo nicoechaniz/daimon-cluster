@@ -1670,3 +1670,41 @@ a cold receiver can still be loading. Observe its actual child/listeners and the
 qualify the current reader. Preserve any exhausted-start-limit refusal; after the
 completed publication is verified, clear that unit's failed state and start the
 same supported unit. Never substitute a global Stop or replay message input.
+
+
+## Membership verification survives owner restart
+
+The offline relationship writer retains its approved public verification closure
+in the existing signed `membership-authorities.json` context before accepting
+foreign membership events for an active member. After acceptance it refreshes
+the current-member snapshot; a new entrant first retains that context when its
+own membership becomes active. This runs inside the existing native writer in
+both one-shot and finite-session paths. Reads and invitation inspection remain
+read-only. It does not install a messaging application, enable outbound release,
+change native identity or create another admission ceremony.
+
+This ordering prevents a restart from encountering an already accepted foreign
+event whose public signer was only available in the temporary admission process.
+Exact native request/result recovery is preserved if a response or the final
+context write is interrupted. Context uses the native owner's clock, and a
+signed application's current Root pin cannot truncate retained Root history.
+
+For a predecessor already in `authorize / verification_failed`, diagnose the
+underlying closed verification category under its real runtime writer lock. If
+the demonstrated cause is a missing admitted public signer, reuse the existing
+`group-publication` / `membership-authorities` action with the retained approved
+public closure and exact previous-selection CAS. Keep signed stores and sends;
+never clear the offending event, reenroll, weaken verification or replay speech.
+Use the actual qualified runtime/profile for the selected body, not an unrelated
+historical helper. Private request files must belong to that executing owner
+with mode 0600; the existing CLI also supports stdin.
+
+After scoped Matrix restart, restore the actually installed current readers
+through existing owner observation and conditional controls. Compare their
+actual signed audience, membership proofs and authority requirements; preserve
+each owner's signed lineage provenance and use its own current roster CAS. An
+admitted being without a messaging application remains explicitly unavailable.
+Confirm authenticated reader readiness and recovery of the same Alerts incident
+at a higher revision. Notification delivery and automatic heartbeat attention
+remain separate effects. See Cluster #232 for the demonstrated incident and the
+remaining entrant messaging/current-reader completion.

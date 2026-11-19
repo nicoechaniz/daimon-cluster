@@ -446,6 +446,37 @@ def test_actual_owner_auth_registry_finalize_and_http_audience(
         with redirect.value as response:
             assert response.code == 302
             assert response.headers["Location"] == "/access/sso/start?return=%2Fworkshop%2F%3Ftab%3Dcases"
+        # Phone/webview navigations may omit fetch metadata. Only the exact
+        # registered root gains this fallback; APIs and socket clients do not.
+        cases = [
+            ({'X-Forwarded-Uri': '/workshop/'}, 302),
+            ({'X-Forwarded-Uri': '/workshop/?tab=cases', 'Accept': 'text/html,*/*'}, 302),
+            ({'X-Forwarded-Uri': '/workshop/api/state'}, 401),
+            ({'X-Forwarded-Uri': '/workshop/editor'}, 401),
+            ({'X-Forwarded-Uri': '/workshopish/'}, 401),
+            ({'X-Forwarded-Uri': 'https://other.example/workshop/'}, 401),
+            ({'X-Forwarded-Uri': '//other.example/workshop/'}, 401),
+            ({'X-Forwarded-Uri': '/workshop/', 'Accept': 'application/json'}, 401),
+            ({'X-Forwarded-Uri': '/workshop/', 'Accept': 'text/html, application/json; charset=utf-8'}, 401),
+            ({'X-Forwarded-Uri': '/workshop/', 'Upgrade': 'websocket'}, 401),
+            ({'X-Forwarded-Uri': '/workshop/', 'Sec-Fetch-Dest': 'empty'}, 401),
+            ({'X-Forwarded-Uri': '/workshop/', 'X-Forwarded-Method': 'POST'}, 401),
+            ({'X-Forwarded-Uri': '/workshop/', 'X-Forwarded-Method': 'HEAD'}, 401),
+            ({'X-Forwarded-Uri': '/workshop/editor?tab=cases', 'Sec-Fetch-Dest': 'document'}, 302),
+        ]
+        for forwarded_headers, expected in cases:
+            req = urllib.request.Request(url + '/service-access/s-' + key(c),
+                headers={'Host': 'one.example', **forwarded_headers})
+            with pytest.raises(urllib.error.HTTPError) as result:
+                urllib.request.build_opener(NoRedirect).open(req, timeout=3)
+            with result.value as response:
+                assert response.code == expected, forwarded_headers
+                if expected == 302:
+                    from urllib.parse import quote
+                    assert response.headers['Location'] == '/access/sso/start?return=' + quote(
+                        forwarded_headers['X-Forwarded-Uri'], safe='')
+                else:
+                    assert response.headers.get('Location') is None
         assert app.service_deployments.login_return("one", "s-" + key(c), "//other.example/") == "/workshop/"
         assert app.service_deployments.login_return("one", "s-" + key(c), "/owner/") == "/workshop/"
         assert status("human-two") == 403

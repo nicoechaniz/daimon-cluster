@@ -1826,3 +1826,10 @@ snapshot must establish the new application, visibility, selector and preserved
 stores before the existing root route selects/starts the service. The serving SDK
 and signed runtime remain unchanged. Requests without that field preserve their
 original inferred entrypoint, including historical receive-only operations.
+
+Loaded Source observation and its pre-control observation also use the compact
+receiving status view on both base and selected group sockets. Historical/full
+status remains only for legacy callers or an authenticated `invalid_params`
+unsupported-view response. A fast base compact status does not alone prove group
+reader availability; retain the actual qualified group proof and original control
+outcome. Do not restart a healthy base process to repair an observer timeout.

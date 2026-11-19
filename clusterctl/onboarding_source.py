@@ -25,6 +25,16 @@ from .onboarding import OnboardingError, digest, private_directory
 from .onboarding_views import serve_views
 
 
+def _observed_status(client, *, compact: bool) -> dict:
+    """Current receiving needs no historical projection; legacy refusals are explicit."""
+    if not compact:
+        return client.runtime_status()[1]
+    response = client.invoke('runtime.status', {'view': 'receiving'})[1]
+    if response.get('ok') is False and response.get('error', {}).get('code') == 'invalid_params':
+        return client.runtime_status()[1]
+    return response
+
+
 class Source:
     def __init__(self, settings: dict, *, code: Path | None = None, code_uid: int = 0,
                  code_digest: str | None = None, qualified_startup: dict | None = None,
@@ -389,7 +399,7 @@ class Source:
                     **({} if deadline_ns is None else {'deadline_ns': deadline_ns}), **options)
 
             native = client(self.root / 'matrix.sock', self.root / 'client.json', self.root / 'client.key')
-            base = native.runtime_status()[1]
+            base = _observed_status(native, compact=require_loaded)
             if base.get('ok') is not True:
                 raise OnboardingError('onboarding_runtime_not_ready')
             bundle = document(self.root / 'runtime.json')
@@ -402,7 +412,7 @@ class Source:
                     directory = self.root / role['client_directory']
                     hosted = client(Path(group['socket']), directory / role['client_config_filename'],
                                     directory / role['client_key_filename'])
-                    response = hosted.runtime_status()[1]
+                    response = _observed_status(hosted, compact=require_loaded)
                     if response.get('ok') is not True or response['server'] != base['server']:
                         raise OnboardingError('onboarding_daemon_origin_conflict')
                     application_status = response['result']

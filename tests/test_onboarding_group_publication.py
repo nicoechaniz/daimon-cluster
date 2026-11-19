@@ -1231,10 +1231,19 @@ def test_native_additive_publication_recovers_its_sdk_predecessor_without_anothe
         step='prospective-disclosure', action='visibility-disclosure', params=dict(
             approved_destination=destination, issued_at_ms=issued, prospective=True)),
         authority_closure=approved)['disclosure']
-    prepared_binding = owner.group_publication(dict(operation_id=identifier,
+    second_destination = copy.deepcopy(destination)
+    if portable:
+        second_destination['publication']['surface_ref'] = 'https://second.invalid/conversation'
+    else:
+        second_destination['topic_id'] = 7
+    second_disclosure = {**prepared_disclosure, 'destination': second_destination}
+    prepared_bindings = owner.group_publication(dict(operation_id=identifier,
         step='prospective-binding', action='visibility-accept', params=dict(
-            approved_destination=destination, disclosures=[prepared_disclosure], prospective=True)),
-        authority_closure=approved)['bindings'][0]['binding']
+            approved_destination=None, approved_destinations=[destination, second_destination],
+            disclosures=[prepared_disclosure, second_disclosure], prospective=True)),
+        authority_closure=approved)['bindings']
+    assert len(prepared_bindings) == 2
+    prepared_binding = prepared_bindings[0]['binding']
     altered = copy.deepcopy(prepared_disclosure)
     altered['scope']['channels'][0]['participants'] = []
     with pytest.raises(OnboardingError, match='visibility_preparation_rejected'):

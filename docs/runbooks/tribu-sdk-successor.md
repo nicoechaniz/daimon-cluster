@@ -1678,6 +1678,25 @@ them against the completed application. Additive `application` commands can reus
 the existing `receive_import` references from that same operation; private keys
 stay inside the owner transport and import store.
 
+`context-preview` computes prospective pins without retaining an owner operation.
+Before private resource transfer, complete the first publication preparation
+through the existing guarded owner writer with that expected context hash.
+This retains the operation's context; the transfer then binds to that exact
+record. A preview hash alone cannot authorize an import, and a missing retained
+context must not be repaired by creating another key or resetting a store.
+Relay fan-out from one owner shares its nonblocking private journal lock;
+serialize that source's exports instead of launching concurrent exports against
+the same journal. Independent owners can still prepare concurrently.
+
+For several Conversation destinations, one prospective `visibility-accept` call
+can carry `approved_destinations` in disclosure order, with
+`approved_destination: null`. The lists must have identical lengths and every
+destination/scope is revalidated before signing. Use this existing bounded batch
+instead of one cold owner invocation per surface: serial eight-surface calls
+exhausted an actual maintenance window. Existing single-destination commands
+remain unchanged. Preserve any earlier partial receipts when consolidating the
+remaining preparation; this batch installs no policy or message.
+
 The normal native application/visibility publisher must still validate the
 prepared document against the fully published current application and complete
 acceptance set before selection. A changed membership or authority must refuse;

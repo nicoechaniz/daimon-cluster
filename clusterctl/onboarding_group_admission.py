@@ -875,6 +875,14 @@ def publication_command(value: dict) -> dict:
                     value['action'] in {'visibility-disclosure', 'visibility-accept'}
                     and set(value['params']) == PUBLICATIONS[value['action']] | {'prospective'}
                     and type(value['params']['prospective']) is bool) and not (
+                    value['action'] == 'visibility-accept'
+                    and set(value['params']) == PUBLICATIONS[value['action']] | {'prospective', 'approved_destinations'}
+                    and value['params']['prospective'] is True
+                    and value['params']['approved_destination'] is None
+                    and isinstance(value['params']['approved_destinations'], list)
+                    and isinstance(value['params']['disclosures'], list)
+                    and len(value['params']['approved_destinations']) == len(value['params']['disclosures'])
+                    and all(isinstance(item, dict) for item in value['params']['approved_destinations'])) and not (
                     value['action'] in {'snapshot', 'receive-snapshot'}
                     and PUBLICATIONS[value['action']] <= set(value['params'])
                     and set(value['params']) - PUBLICATIONS[value['action']] <= {'expected_stores', 'expected_preservation'})):
@@ -1539,11 +1547,13 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
         if params.get('prospective'):
             from daimon_matrix.messaging_config import create_binding
             bindings = []
-            for disclosure in params['disclosures']:
+            destinations = params.get('approved_destinations',
+                [params['approved_destination']] * len(params['disclosures']))
+            for disclosure, destination in zip(params['disclosures'], destinations, strict=True):
                 try:
                     local = disclosure['scope']['channels'][0]['local_being_ref']
                     expected = prepare_current_group_visibility(hosted, directory,
-                        approved_destination=params['approved_destination'],
+                        approved_destination=destination,
                         issued_at_ms=disclosure['issued_at_ms'], local_being_ref=local)
                     if disclosure != expected:
                         raise ValueError

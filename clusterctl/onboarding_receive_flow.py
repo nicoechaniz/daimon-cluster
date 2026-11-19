@@ -44,7 +44,7 @@ def ensure_controller(*, plan, preparation, backend, config_path, journal, row, 
     Publication/key/snapshot receipts stay immutable. The native child verifies
     unchanged identity and signed application, then retains its forward load.
     """
-    from .onboarding_code_successor import plan_update
+    from .onboarding_code_successor import plan_update, sdk_parameters
     from .onboarding_receiving_update import prepare_guest_bootstrap, GuestBootstrapController
     from .onboarding_host import HostConfig
     preparation = controller_configuration(preparation)
@@ -74,6 +74,8 @@ def ensure_controller(*, plan, preparation, backend, config_path, journal, row, 
     child = journal.latest_for_target('companion-receive-controller:' + parent)
     if child is None:
         candidate = Path(preparation['code']), preparation['code_digest']
+        if sdk_parameters(candidate[0], uid=0).get('matrix_wheel_sha256') != phase['baseline']['matrix_sdk']:
+            raise OnboardingError('companion_receive_controller_sdk_changed')
         if not backend.runtime_available(plan, candidate, prepare=True, deadline_ns=deadline_ns):
             raise OnboardingError('qualified_onboarding_candidate_mount_required')
         frozen, request = prepare_guest_bootstrap(backend, plan,
@@ -106,6 +108,21 @@ def ensure_controller(*, plan, preparation, backend, config_path, journal, row, 
             expected_runtime_observation=fresh['runtime_observation'])
     elif any(retained.get(k) != v for k, v in link.items()):
         raise OnboardingError('companion_receive_original_changed')
+    if retained is not None and retained.get('software_recovery') is not None:
+        recovery = retained['software_recovery']
+        published = (child['runtime_observation'] or {}).get('guest_bootstraps', {}).get(name, {}).get('owner_published')
+        selection = retained.get('selection', {})
+        if (not isinstance(published, dict)
+                or recovery.get('schema') != 'cluster-companion-controller-software-recovery/v1'
+                or recovery.get('publication_sha256') != digest(published)
+                or recovery.get('proof_sha256') != retained.get('loaded_receipt_sha256')
+                or selection.get('runtime_bundle_sha256') != published.get('runtime_sha256')
+                or selection.get('matrix_sdk') != phase['baseline']['matrix_sdk']
+                or selection.get('application_sha256') != snapshot['group']['application_sha256']
+                or selection.get('publication_sha256') != snapshot['group']['publication_sha256']
+                or selection.get('visibility_installation_sha256') is not None):
+            raise OnboardingError('companion_receive_original_changed')
+        return copy.deepcopy(retained)
     if child['state'] == 'completed':
         result = child['result']
     else:
@@ -139,6 +156,68 @@ def ensure_controller(*, plan, preparation, backend, config_path, journal, row, 
         observed['receive_controller'] = complete
         journal.advance(parent, fresh['state'], runtime_observation=observed,
             expected_runtime_observation=fresh['runtime_observation'])
+    return complete
+
+
+def adopt_controller_software_recovery(*, plan, owner, code, code_digest,
+                                      manifest_path, manifest_digest, journal, row,
+                                      validate, deadline_ns):
+    """Record a qualified compatible load after an already-published controller.
+
+    Never dispatch the old child again or reissue its authority. The failed
+    software load stays degraded; fresh authenticated native proof establishes
+    the same runtime/app under the explicitly selected compatible software.
+    """
+    from .onboarding_receiving_update import preflight, observe_current_reader
+    phase = row['runtime_observation']['receive_application']
+    snapshot = phase['snapshot']['result']
+    retained = row['runtime_observation']['receive_controller']
+    child = journal.get(retained['child_operation_id'])
+    published = child['runtime_observation']['guest_bootstraps'][plan['name']]['owner_published']
+    frozen = child['expected_precondition']['guest_bootstraps'][plan['name']]['owner']
+    if (child['expected_precondition']['companion_receive'] != retained['binding']
+            or retained['binding']['snapshot_sha256'] != digest(snapshot)
+            or owner.plan != plan or owner.candidate != (code, code_digest)
+            or not phase.get('restoration')):
+        raise OnboardingError('companion_receive_original_changed')
+    validate()
+    checked = preflight(code, code_digest, manifest_path, manifest_digest,
+        being_ref=frozen['being_ref'], embodiment_id=frozen['origin']['embodiment_id'])
+    if checked['matrix_wheel_sha256'] != phase['baseline']['matrix_sdk']:
+        raise OnboardingError('companion_receive_controller_sdk_changed')
+    expected = dict(receiving_code=code_digest, matrix_sdk=checked['matrix_wheel_sha256'],
+        runtime_bundle_sha256=published['runtime_sha256'],
+        application_sha256=snapshot['group']['application_sha256'],
+        publication_sha256=snapshot['group']['publication_sha256'], visibility_installation_sha256=None)
+    previous = owner.deadline_ns
+    try:
+        owner.deadline_ns = deadline_ns
+        proof = observe_current_reader(owner, expected_selection=expected, require_admitted=True,
+            expires_at_ms=time.time_ns()//1_000_000+max(1,min(60000,(deadline_ns-time.monotonic_ns())//1_000_000)),
+            receive_only=True)
+    finally:
+        owner.deadline_ns = previous
+    if ((proof['reader']['being_ref'], proof['reader']['embodiment_id']) !=
+            (frozen['being_ref'], frozen['origin']['embodiment_id'])):
+        raise OnboardingError('companion_receive_source_changed')
+    validate()
+    recovery = dict(schema='cluster-companion-controller-software-recovery/v1',
+        publication_sha256=digest(published), manifest_digest=manifest_digest,
+        proof_sha256=digest(proof), source_code_digest=code_digest)
+    complete = dict(retained, loaded_receipt_sha256=digest(proof), selection=expected,
+        software_recovery=recovery)
+    fresh = journal.get(row['operation_id'])
+    if fresh['runtime_observation'].get('receive_controller') != retained:
+        raise OnboardingError('companion_receive_original_changed')
+    observed = copy.deepcopy(fresh['runtime_observation'])
+    observed['receive_controller'] = complete
+    journal.advance(fresh['operation_id'], fresh['state'], runtime_observation=observed,
+        expected_runtime_observation=fresh['runtime_observation'])
+    if child['state'] != 'degraded':
+        journal.advance(child['operation_id'], 'degraded', result=dict(
+            failed_software_load_retained=True, authority_publication_retained=True,
+            compatible_software_recovery_sha256=digest(complete)),
+            expected_runtime_observation=child['runtime_observation'])
     return complete
 
 

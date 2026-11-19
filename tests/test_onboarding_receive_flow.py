@@ -2,6 +2,7 @@
 import copy
 from contextlib import contextmanager
 from types import SimpleNamespace
+from pathlib import Path
 import time
 import uuid
 
@@ -697,7 +698,8 @@ def test_current_reader_collection_observes_independent_owners_in_one_validity_w
 
 
 @pytest.mark.parametrize('lost', [False, True])
-def test_controller_child_preserves_published_phase_and_original_identity(fixture, monkeypatch, tmp_path, lost):
+@pytest.mark.parametrize('sdk_changed',[False,True])
+def test_controller_child_preserves_published_phase_and_original_identity(fixture, monkeypatch, tmp_path, lost, sdk_changed):
     from clusterctl import onboarding_receiving_update as receiving
     from clusterctl import onboarding_host
     f = fixture
@@ -709,6 +711,9 @@ def test_controller_child_preserves_published_phase_and_original_identity(fixtur
     f.journal.advance(before['operation_id'], before['state'], runtime_observation=observed,
         expected_runtime_observation=before['runtime_observation'])
     original_phase = copy.deepcopy(phase)
+    from clusterctl import onboarding_code_successor
+    monkeypatch.setattr(onboarding_code_successor,'sdk_parameters',lambda *a,**kw:
+        {'matrix_wheel_sha256':'0'*64 if sdk_changed else phase['baseline']['matrix_sdk']})
     host_path = tmp_path/'host.json'
     from clusterctl import being_seed
     being_seed._write(host_path, {'schema':'protected fixture'})
@@ -724,7 +729,7 @@ def test_controller_child_preserves_published_phase_and_original_identity(fixtur
         return True
     backend.runtime_available = mounted
     result = dict(schema='cluster-guest-bootstrap-loaded/v1',code_digest='c'*64,
-        loaded_runtime=dict(runtime_bundle_sha256='e'*64,qualified_startup={'matrix_wheel_sha256':'f'*64}),
+        loaded_runtime=dict(runtime_bundle_sha256='e'*64,qualified_startup={'matrix_wheel_sha256':phase['baseline']['matrix_sdk']}),
         loaded_application=dict(application_sha256=snapshot['group']['application_sha256'],
             publication_sha256=snapshot['group']['publication_sha256'],
             visibility=dict(installation_sha256=None,release_enabled=False)))
@@ -751,6 +756,12 @@ def test_controller_child_preserves_published_phase_and_original_identity(fixtur
         return flow.ensure_controller(plan=f.plan,preparation=preparation,backend=backend,config_path=host_path,
             journal=f.journal,row=f.journal.get(f.row['operation_id']),validate=lambda:None,
             deadline_ns=time.monotonic_ns()+10_000_000_000)
+    if sdk_changed:
+        with pytest.raises(OnboardingError,match='controller_sdk_changed'):
+            execute()
+        assert not calls
+        assert f.journal.get(f.row['operation_id'])['runtime_observation']['receive_application'] == original_phase
+        return
     if lost:
         with pytest.raises(OSError,match='lost after native load'):
             execute()
@@ -763,3 +774,72 @@ def test_controller_child_preserves_published_phase_and_original_identity(fixtur
     assert forward['selection']['runtime_bundle_sha256'] == 'e'*64
     assert forward['selection']['visibility_installation_sha256'] is None
     assert f.journal.get(forward['child_operation_id'])['state'] == 'completed'
+
+
+@pytest.mark.parametrize('gap',[None,'sdk','runtime','body'])
+def test_compatible_controller_load_is_adopted_without_repeating_failed_publication(fixture,monkeypatch,tmp_path,gap):
+    from clusterctl import being_seed,onboarding_receiving_update as receiving,onboarding_host
+    from clusterctl.onboarding_code_successor import plan_update
+    f=fixture
+    snapshot=run(f)
+    parent=f.journal.get(f.row['operation_id'])
+    observed=copy.deepcopy(parent['runtime_observation'])
+    phase=observed['receive_application']
+    phase['restoration']={'actual':'restored'}
+    host=tmp_path/'host.json'
+    being_seed._write(host,{})
+    prep=dict(code='/qualified/failed',code_digest='c'*64,manifest_path='/qualified/failed.json',
+        manifest_digest='d'*64,expires_at_ms=1,host_config=str(host))
+    binding=dict(schema='cluster-companion-receive-controller/v1',parent=parent['operation_id'],
+        parent_intent_sha256=digest(parent['intent']),receive_binding=phase['binding'],
+        snapshot_sha256=digest(snapshot),preparation_sha256=digest(prep))
+    child=plan_update(f.journal,manifest_digest='d'*64,
+        target='companion-receive-controller:'+parent['operation_id'],
+        expected_precondition=dict(companion_receive=binding,guest_bootstraps={'new':{
+            'owner':{'being_ref':'new','origin':{'embodiment_id':'body-new'}}}}),
+        intended_transition={},audit_identity={'actor':'fixture'})
+    published={'runtime_sha256':'7'*64}
+    f.journal.advance(child['operation_id'],'runtime-dispatching',runtime_observation={
+        'guest_bootstraps':{'new':{'owner_published':published}}})
+    observed['receive_controller']=dict(binding=binding,child_operation_id=child['operation_id'])
+    f.journal.advance(parent['operation_id'],parent['state'],runtime_observation=observed,
+        expected_runtime_observation=parent['runtime_observation'])
+    before=f.journal.get(parent['operation_id'])
+    owner=f.owners['new']
+    owner.plan=f.plan
+    owner.candidate=(Path('/qualified/recovery'),'a'*64)
+    monkeypatch.setattr(receiving,'preflight',lambda *a,**kw:{
+        'matrix_wheel_sha256':'0'*64 if gap=='sdk' else phase['baseline']['matrix_sdk']})
+    calls=[]
+    def proof(*args,**kwargs):
+        calls.append('fresh proof')
+        assert kwargs['expected_selection']['runtime_bundle_sha256']==published['runtime_sha256']
+        assert kwargs['require_admitted'] and kwargs['receive_only']
+        if gap=='runtime':
+            raise OnboardingError('receiving_cohort_selection_changed')
+        return {'reader':{'being_ref':'foreign' if gap=='body' else 'new','embodiment_id':'body-new'}}
+    monkeypatch.setattr(receiving,'observe_current_reader',proof)
+    def adopt():
+        return flow.adopt_controller_software_recovery(plan=f.plan,owner=owner,
+            code=owner.candidate[0],code_digest=owner.candidate[1],manifest_path=tmp_path/'manifest.json',
+            manifest_digest='b'*64,journal=f.journal,row=before,validate=lambda:None,
+            deadline_ns=time.monotonic_ns()+10_000_000_000)
+    if gap:
+        with pytest.raises(OnboardingError):
+            adopt()
+        assert f.journal.get(parent['operation_id'])==before
+        assert f.journal.get(child['operation_id'])['state']=='runtime-dispatching'
+        return
+    result=adopt()
+    assert calls==['fresh proof'] and result['selection']['receiving_code']=='a'*64
+    assert f.journal.get(child['operation_id'])['state']=='degraded'
+    current=f.journal.get(parent['operation_id'])
+    assert current['runtime_observation']['receive_application']==before['runtime_observation']['receive_application']
+    config=object()
+    monkeypatch.setattr(onboarding_host.HostConfig,'load',lambda p:config)
+    class NeverExecute:
+        def __init__(self,*a,**kw):pytest.fail('repeated failed native publication')
+    monkeypatch.setattr(receiving,'GuestBootstrapController',NeverExecute)
+    assert flow.ensure_controller(plan=f.plan,preparation=prep,backend=SimpleNamespace(config=config),
+        config_path=host,journal=f.journal,row=current,validate=lambda:None,
+        deadline_ns=time.monotonic_ns()+10_000_000_000)==result

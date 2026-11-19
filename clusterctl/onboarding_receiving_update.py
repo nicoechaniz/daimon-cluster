@@ -3259,7 +3259,8 @@ def prepare_guest_admission(backend, plan: dict, journal, request: dict, *, conf
         'tribe_ref', 'owner', 'predecessor', 'root', 'manifest_path', 'manifest_uid',
         'manifest_digest', 'expires_at_ms', 'authority_closure', 'owner_context_sha256', 'steps'}
     try:
-        if (not isinstance(request, dict) or set(request) != fields
+        if (not isinstance(request, dict) or set(request) not in (fields, fields | {'entrypoint_mode'})
+                or 'entrypoint_mode' in request and request['entrypoint_mode'] != 'published-group'
                 or request['schema'] != 'cluster-guest-admission-preparation/v1'
                 or str(uuid.UUID(request['operation_id'])) != request['operation_id']
                 or any(not isinstance(request[key], str) or not 1 <= len(request[key]) <= 240
@@ -3321,6 +3322,19 @@ def prepare_guest_admission(backend, plan: dict, journal, request: dict, *, conf
             cohort_operation_id=request['cohort_operation_id'], cohort_intent_sha256=request['cohort_intent_sha256'],
             tribe_ref=request['tribe_ref'], owner=request['owner'], snapshot_request=snapshot), **request['owner'])
         prepared['admission_link'] = link
+        if request.get('entrypoint_mode') == 'published-group':
+            # Explicit first visibility publication has no installed predecessor
+            # policy to infer full mode from. Its existing admission snapshot
+            # must prove the new signed policy before root selects/starts it.
+            from .onboarding_service import command
+            base = Path('/opt/daimon-onboarding') / plan['release_digest']
+            selected = Path('/opt/daimon-onboarding-runtime') / prepared['runtime_digest']
+            prepared['entrypoint_mode'] = 'published-group'
+            prepared['argv'] = command(base, receive_only=False,
+                visibility=Path(frozen['group']['selected']['visibility']),
+                runtime_code=selected, runtime_digest=prepared['runtime_digest'])
+            if hasattr(backend, 'native_body') and (native := backend.native_body(plan)) is not None:
+                prepared['argv'][0] = str(native.python)
         host = being_seed._read(config)
         if backend.config != HostConfig.load(config, expected_value=host):
             raise OnboardingError('receiving_guest_bootstrap_binding_conflict')
@@ -3478,7 +3492,12 @@ class GuestBootstrapController:
         from .onboarding_service import command
         base = Path('/opt/daimon-onboarding') / frozen['plan']['release_digest']
         selected = Path('/opt/daimon-onboarding-runtime') / candidate['runtime_digest']
-        receive_only = frozen['owner']['group']['installation_sha256'] is None
+        mode = candidate.get('entrypoint_mode')
+        if mode is not None and (mode != 'published-group'
+                or frozen['owner'].get('mode') != 'preserve'
+                or candidate.get('admission_link', {}).get('snapshot_request', {}).get('action') != 'snapshot'):
+            raise OnboardingError('receiving_guest_bootstrap_binding_conflict')
+        receive_only = frozen['owner']['group']['installation_sha256'] is None and mode != 'published-group'
         expected_argv = command(base, receive_only=receive_only,
             visibility=None if receive_only else Path(frozen['owner']['group']['selected']['visibility']),
             runtime_code=selected, runtime_digest=candidate['runtime_digest'])

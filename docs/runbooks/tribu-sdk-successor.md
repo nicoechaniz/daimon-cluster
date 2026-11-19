@@ -1814,3 +1814,15 @@ key in its private visibility directory. It retains the key across retries and
 never replaces an existing key or repairs a missing key in an already installed
 policy. This is a local publication receipt key, not a being identity, account
 credential or new grant. Existing Telegram preparation remains unchanged.
+
+A receive-only entrant's first full group publication must also select a full
+service entrypoint. The membership maintenance guard deliberately holds the unit
+selection lock and preserves its definition; do not call `select_entrypoint`
+from a second process inside that guard. Reuse `prepare_guest_admission` and
+`GuestBootstrapController` for this transition, with the explicit retained request
+field `entrypoint_mode: published-group`. It prepares the existing full-mode
+command while the prior installation is absent. Its linked full publication
+snapshot must establish the new application, visibility, selector and preserved
+stores before the existing root route selects/starts the service. The serving SDK
+and signed runtime remain unchanged. Requests without that field preserve their
+original inferred entrypoint, including historical receive-only operations.

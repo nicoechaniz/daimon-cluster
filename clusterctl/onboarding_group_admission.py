@@ -1530,8 +1530,10 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
             {**params, 'secret_sources':resolve_sources(operation, params['secret_sources'])})
     if action == 'visibility-disclosure':
         disclosure_params = {key:item for key,item in params.items() if key != 'prospective'}
-        prepare = prepare_current_group_visibility if params.get('prospective') else operator_messaging.group_visibility_disclosure
-        disclosure = prepare(hosted, directory, **disclosure_params)
+        if params.get('prospective'):
+            disclosure = prepare_current_group_visibility(hosted, directory, **disclosure_params)
+        else:
+            disclosure = operator_messaging.group_visibility_disclosure(hosted, directory, **disclosure_params)
         return dict(disclosure=disclosure, disclosure_sha256=config_digest(disclosure))
     if action == 'visibility-accept':
         if params.get('prospective'):

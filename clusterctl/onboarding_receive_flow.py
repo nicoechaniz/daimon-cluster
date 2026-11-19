@@ -73,8 +73,11 @@ def ensure_controller(*, plan, preparation, backend, config_path, journal, row, 
     check()
     child = journal.latest_for_target('companion-receive-controller:' + parent)
     if child is None:
+        candidate = Path(preparation['code']), preparation['code_digest']
+        if not backend.runtime_available(plan, candidate, prepare=True, deadline_ns=deadline_ns):
+            raise OnboardingError('qualified_onboarding_candidate_mount_required')
         frozen, request = prepare_guest_bootstrap(backend, plan,
-            candidate=(Path(preparation['code']), preparation['code_digest']),
+            candidate=candidate,
             manifest_path=Path(preparation['manifest_path']), manifest_digest=preparation['manifest_digest'],
             expires_at_ms=preparation['expires_at_ms'], installed_only=True,
             timeout_seconds=60, deadline_ns=deadline_ns)

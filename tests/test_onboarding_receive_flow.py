@@ -718,6 +718,11 @@ def test_controller_child_preserves_published_phase_and_original_identity(fixtur
     preparation = dict(code='/qualified/code',code_digest='c'*64,manifest_path='/qualified/manifest.json',
         manifest_digest='d'*64,expires_at_ms=time.time_ns()//1_000_000+60000,host_config=str(host_path))
     calls = []
+    def mounted(plan, candidate, **kwargs):
+        assert plan == f.plan and kwargs['prepare'] is True
+        calls.append('mount')
+        return True
+    backend.runtime_available = mounted
     result = dict(schema='cluster-guest-bootstrap-loaded/v1',code_digest='c'*64,
         loaded_runtime=dict(runtime_bundle_sha256='e'*64,qualified_startup={'matrix_wheel_sha256':'f'*64}),
         loaded_application=dict(application_sha256=snapshot['group']['application_sha256'],
@@ -751,7 +756,7 @@ def test_controller_child_preserves_published_phase_and_original_identity(fixtur
             execute()
     forward = execute()
     assert execute() == forward
-    assert calls == ['prepare','native effect']
+    assert calls == ['mount','prepare','native effect']
     parent = f.journal.get(f.row['operation_id'])
     assert parent['runtime_observation']['receive_application'] == original_phase
     assert parent['result'] == before['result'] and parent['intent'] == before['intent']

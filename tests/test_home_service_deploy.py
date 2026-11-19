@@ -1,6 +1,7 @@
 """Own HTTP deployment: real file/registry/HTTP boundaries, simulated system manager."""
 
 from copy import deepcopy
+from contextlib import closing
 import io
 import os
 from pathlib import Path
@@ -415,7 +416,7 @@ def test_actual_owner_auth_registry_finalize_and_http_audience(
     def decision(actor='owner-one', service_key=None):
         return app.owner('one', 'own-test-token', 'check-service-access',
                          {'actor_ref': actor, 'service_key': service_key or 's-' + key(c)})
-    with app.sessions.connect() as db:
+    with closing(app.sessions.connect()) as db:
         sessions_before = db.execute('SELECT count(*) FROM sessions').fetchone()[0]
     assert decision()['allowed'] is True
     assert decision('human-one')['allowed'] is True
@@ -439,7 +440,7 @@ def test_actual_owner_auth_registry_finalize_and_http_audience(
     entry.clear();entry.update(before_entry)
     app.owner('one', 'own-test-token', 'sync', {})
     assert decision()['allowed'] is True
-    with app.sessions.connect() as db:
+    with closing(app.sessions.connect()) as db:
         assert db.execute('SELECT count(*) FROM sessions').fetchone()[0] == sessions_before
     with serving(handler(app)) as url:
 

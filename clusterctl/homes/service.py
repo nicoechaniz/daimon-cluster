@@ -960,7 +960,7 @@ def handler(app, *, owner=False):
                             for value in self.headers.get('Accept', '').split(','))
                         if (destination and forwarded_method == 'GET'
                                 and not wants_json
-                                and self.headers.get('Upgrade', '').lower() != 'websocket'
+                                and self.headers.get('Upgrade', '').strip().lower() != 'websocket'
                                 and (self.headers.get('Sec-Fetch-Dest') == 'document' or root_navigation)):
                             self.respond(302, b'', headers=(('Location', '/access/sso/start?return=' + quote(destination, safe='')),))
                             return

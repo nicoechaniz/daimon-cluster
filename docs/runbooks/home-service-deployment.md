@@ -15,6 +15,10 @@ operator capability; absolute or foreign-host forwarded URIs do not qualify.
 Explicit JSON requests, WebSocket upgrades and ordinary API/subpath requests
 remain401. Signed-in access still requires the current service/resource audience.
 Source tests are not evidence of receiving adoption or a working human phone.
+The anonymous Apps page also offers the existing shared-login entrance, returning
+to `/apps/` after sign-in. It does not reveal private card metadata or add another
+login system; signed-in visitors and the dedicated-VPN presentation keep their
+ordinary page behavior.
 
 ## Owner command
 

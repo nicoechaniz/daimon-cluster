@@ -459,6 +459,7 @@ def test_actual_owner_auth_registry_finalize_and_http_audience(
             ({'X-Forwarded-Uri': '/workshop/', 'Accept': 'application/json'}, 401),
             ({'X-Forwarded-Uri': '/workshop/', 'Accept': 'text/html, application/json; charset=utf-8'}, 401),
             ({'X-Forwarded-Uri': '/workshop/', 'Upgrade': 'websocket'}, 401),
+            ({'X-Forwarded-Uri': '/workshop/', 'Upgrade': 'WebSocket '}, 401),
             ({'X-Forwarded-Uri': '/workshop/', 'Sec-Fetch-Dest': 'empty'}, 401),
             ({'X-Forwarded-Uri': '/workshop/', 'X-Forwarded-Method': 'POST'}, 401),
             ({'X-Forwarded-Uri': '/workshop/', 'X-Forwarded-Method': 'HEAD'}, 401),

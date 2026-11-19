@@ -250,6 +250,292 @@ def _reader_active(reader: dict, now: int) -> bool:
     return reader['expires_at_ms'] > now
 
 
+def reader_checkpoint_completed(row) -> bool:
+    return (isinstance(row, dict) and row.get('schema') == 'cluster-current-reader-completion/v1'
+        and isinstance(row.get('binding'), dict) and isinstance(row.get('commands'), dict)
+        and isinstance(row.get('completed'), dict)
+        and row['completed'].get('binding_sha256') == digest(row['binding'])
+        and row['completed'].get('receiving_readiness') == 'qualified-local-projection'
+        and type(row['completed'].get('observed_at_ms')) is int
+        and row['completed']['observed_at_ms'] >= 0
+        and isinstance(row['binding'].get('selections'), dict)
+        and isinstance(row['completed'].get('gate_heads'), dict)
+        and set(row['completed']['gate_heads']) == set(row['binding']['selections'])
+        and all(isinstance(head, str) and re.fullmatch('[0-9a-f]{64}', head) is not None
+            for head in row['completed']['gate_heads'].values()))
+
+
+def preflight_reader_checkpoint(checkpoint: Path, operation_id: str) -> None:
+    """Refuse unresolved predecessors before any new software lifecycle work."""
+    with being_seed._locked(checkpoint.parent):
+        if not checkpoint.exists():
+            return
+        row = being_seed._read(checkpoint, limit=being_seed.MAX_SELECTION)
+        if (row.get("schema") != "cluster-current-reader-completion/v1"
+                or not isinstance(row.get("binding"), dict) or not isinstance(row.get("commands"), dict)
+                or row["binding"].get("operation_id") != operation_id and not reader_checkpoint_completed(row)):
+            raise OnboardingError("receiving_reader_checkpoint_unresolved")
+        previous = checkpoint.with_name(checkpoint.stem + ".previous" + checkpoint.suffix)
+        if previous.exists() and not reader_checkpoint_completed(being_seed._read(previous, limit=being_seed.MAX_SELECTION)):
+            raise OnboardingError("receiving_reader_checkpoint_unresolved")
+
+
+def refresh_current_readers(owners: Mapping, *, selections: dict, operation_id: str,
+                            release_digest: str, deadline_ns: int, checkpoint: Path,
+                            nonadmitted: frozenset[str] = frozenset()) -> dict:
+    """Finish ordinary maintenance using existing owner controls and journals.
+
+    Call with the existing cohort's owner adapters and approved loaded selections.
+    This performs no lifecycle, publication, enrollment or model work. Healthy
+    vectors are read-only; partial controls retain the same operation and exact
+    owner-private request files. The bounded public checkpoint retains exact
+    commands before dispatch; only native owner journals establish effects.
+    """
+    if (not 1 <= len(owners) <= 256 or set(owners) != set(selections)
+            or len({id(owner) for owner in owners.values()}) != len(owners)
+            or not nonadmitted <= set(owners)
+            or str(uuid.UUID(operation_id)) != operation_id
+            or re.fullmatch('[0-9a-f]{64}', release_digest) is None
+            or type(deadline_ns) is not int
+            or not 0 < deadline_ns - time.monotonic_ns() <= 480_000_000_000):
+        raise OnboardingError('receiving_current_reader_binding_required')
+
+    def accept():
+        if time.monotonic_ns() >= deadline_ns:
+            raise OnboardingError('receiving_owner_deadline_expired')
+
+    def observe_all():
+        def observe(name, owner):
+            accept()
+            options = dict(expected_selection=selections[name],
+                expires_at_ms=time.time_ns() // 1_000_000 + 59_000,
+                require_admitted=name not in nonadmitted,
+                receive_only=selections[name]['visibility_installation_sha256'] is None)
+            remote = getattr(owner, 'current_reader', None)
+            return remote(**options) if callable(remote) else observe_current_reader(owner, **options)
+        # Independent owner observations overlap; validation and all native
+        # controls remain serialized. The same outer/owner deadlines still win.
+        with ThreadPoolExecutor(max_workers=min(4,len(owners))) as pool:
+            pending = {name:pool.submit(observe,name,owner) for name,owner in owners.items()}
+            proofs = {name:future.result() for name,future in pending.items()}
+        vector = conversation_cohort(proofs)
+        now = time.time_ns() // 1_000_000
+        if any(_reader_proof_expiry(proof) <= now for proof in proofs.values()):
+            raise OnboardingError('receiving_cohort_observation_expired')
+        return proofs, vector
+
+    def selected(proof, readers):
+        gate = proof['gate']
+        prior = gate.get('readers')
+        if (gate.get('phase') != 'select' or not isinstance(prior,list)
+                or any(not isinstance(row,dict) for row in prior)):
+            return False
+        # Native reader_ready authorizes identity/validity/wire/authority, not
+        # a peer's historical process or package observation. Fresh owner proofs
+        # above still qualify every loaded receiver. Preserve another owner's
+        # live gate when ONLY these diagnostic hashes changed; identity,
+        # credential validity and complete advertised contracts stay identical.
+        def effective(rows):
+            return [{key:value for key,value in row.items()
+                if key not in {'loaded_view_sha256','receiving_selection_sha256'}} for row in rows]
+        return effective(prior) == effective(readers)
+
+    # Existing adapters own process pins, transport timeouts and native request
+    # retention. Keep their prior deadline after this finite call.
+    with being_seed._locked(checkpoint.parent), ExitStack() as stack:
+        for owner in owners.values():
+            prior = getattr(owner, 'deadline_ns', None)
+            owner.deadline_ns = min(prior, deadline_ns) if prior is not None else deadline_ns
+            stack.callback(setattr, owner, 'deadline_ns', prior)
+        proofs, vector = observe_all()
+        readers = vector['readers']
+        binding = dict(operation_id=operation_id, release_digest=release_digest,
+            selections=selections, nonadmitted=sorted(nonadmitted), vector=vector)
+        instances = {name:proof['gate']['process_instance_id'] for name,proof in proofs.items()}
+        def initial():
+            return dict(schema='cluster-current-reader-completion/v1',binding=binding,
+                gate_instances=instances,commands={},
+                control_slot=digest(dict(vector=vector,instances=instances,generation=0)))
+        def compatible_restart(saved):
+            old = saved.get('binding',{})
+            if ({key:value for key,value in old.items() if key != 'vector'}
+                    != {key:value for key,value in binding.items() if key != 'vector'}):
+                return False
+            old_instances = saved.get('gate_instances',{}) or {
+                key.split(':')[0]:command['process_instance_id']
+                for key,command in saved['commands'].items()}
+            replaced = {name for name,instance in old_instances.items()
+                if name in instances and instances[name] != instance}
+            if not replaced:
+                return False
+            before = old.get('vector',{})
+            if ({key:value for key,value in before.items() if key != 'readers'}
+                    != {key:value for key,value in vector.items() if key != 'readers'}):
+                return False
+            old_readers = {(row['being_ref'],row['embodiment_id']):row for row in before.get('readers',[])}
+            if len(old_readers) != len(proofs):
+                return False
+            for name,proof in proofs.items():
+                reader = proof['reader']
+                prior = old_readers.get((reader['being_ref'],reader['embodiment_id']))
+                if prior is None or ({key:value for key,value in prior.items() if key != 'loaded_view_sha256'}
+                        != {key:value for key,value in reader.items() if key != 'loaded_view_sha256'}):
+                    return False
+                if prior != reader and name not in replaced:
+                    return False
+            return True
+        if checkpoint.exists():
+            saved = being_seed._read(checkpoint, limit=being_seed.MAX_SELECTION)
+            if (saved.get('schema') != 'cluster-current-reader-completion/v1'
+                    or not isinstance(saved.get('commands'), dict)):
+                raise OnboardingError('receiving_control_binding_conflict')
+            legacy_generation = saved.get('reader_operation_id') not in {None,operation_id}
+            expired_selection = saved.get('binding') == binding and any(
+                command.get('phase') == 'select'
+                and type(command.get('effect_not_after_ms')) is int
+                and command['effect_not_after_ms'] <= time.time_ns() // 1_000_000
+                for command in saved['commands'].values())
+            # Older bounded-history code used the retained list length as
+            # the slot generation. After retirement that could reuse a private
+            # request filename. Preserve its commands and derive a new slot.
+            retired_count = saved.get('retired_generations',{}).get('count',0)
+            slot_generation = len(saved.get('superseded_generations',[]))+retired_count
+            legacy_slot = (saved.get('control_slot') is not None
+                and saved['control_slot'] != digest(dict(vector=vector,
+                    instances=instances,generation=slot_generation)))
+            if compatible_restart(saved) or ((legacy_generation or expired_selection or legacy_slot)
+                    and saved.get('binding') == binding):
+                history = saved.get('superseded_generations',[])
+                if not isinstance(history,list) or len(history) > 4:
+                    raise OnboardingError('receiving_control_binding_conflict')
+                retired = saved.get('retired_generations',dict(count=0,chain_sha256='0'*64))
+                if len(history) == 4:
+                    oldest = history[0]
+                    # Retire only controls that cannot acquire another effect:
+                    # their process/CAS is obsolete or their select has expired.
+                    for key,command in oldest['commands'].items():
+                        gate = proofs[key.split(':')[0]]['gate']
+                        expired = (command.get('phase') == 'select'
+                            and type(command.get('effect_not_after_ms')) is int
+                            and command['effect_not_after_ms'] <= time.time_ns() // 1_000_000)
+                        if (not expired and gate['process_instance_id'] == command['process_instance_id']
+                                and gate['head'] == command['expected_head']):
+                            raise OnboardingError('receiving_reader_checkpoint_unresolved')
+                    retired = dict(count=retired['count']+1,
+                        chain_sha256=digest(dict(previous=retired['chain_sha256'],generation=oldest)))
+                    history = history[1:]
+                # A replacement may change only its loaded view. An expired
+                # select cannot acquire a new effect; fresh native observations
+                # settle current readiness without changing its old deadline.
+                # Keep exact old controls, including uncertainty, in both cases.
+                history = [*history,{key:value for key,value in saved.items()
+                    if key != 'superseded_generations'}]
+                saved = {
+                    **initial(),'superseded_generations':history,'retired_generations':retired,
+                    'control_slot':digest(dict(vector=vector,instances=instances,
+                        generation=len(history)+retired['count']))}
+                being_seed._write(checkpoint,saved,limit=being_seed.MAX_SELECTION)
+            elif saved.get('binding') != binding:
+                if (not reader_checkpoint_completed(saved)
+                        or saved['binding'].get('operation_id') == operation_id):
+                    raise OnboardingError('receiving_control_binding_conflict')
+                previous = checkpoint.with_name(checkpoint.stem + '.previous' + checkpoint.suffix)
+                if previous.exists() and not reader_checkpoint_completed(being_seed._read(previous, limit=being_seed.MAX_SELECTION)):
+                    raise OnboardingError('receiving_control_binding_conflict')
+                # One completed predecessor, never a directory per release.
+                # If interrupted between writes, the same predecessor can be
+                # retained again without any native effect or new request ID.
+                being_seed._write(previous, saved, limit=being_seed.MAX_SELECTION)
+                saved = initial()
+                being_seed._write(checkpoint, saved, limit=being_seed.MAX_SELECTION)
+        else:
+            saved = initial()
+        changed: list[dict] = []
+        def completed(final):
+            saved['completed'] = dict(binding_sha256=digest(binding),
+                receiving_readiness='qualified-local-projection', observed_at_ms=time.time_ns() // 1_000_000,
+                gate_heads={name: proof['gate']['head'] for name, proof in final.items()})
+            being_seed._write(checkpoint, saved, limit=being_seed.MAX_SELECTION)
+            return dict(schema='cluster-current-reader-completion/v1', operation_id=operation_id,
+                release_digest=release_digest, receiving_readiness='qualified-local-projection',
+                membership_basis_sha256=vector['membership_basis_sha256'],
+                readers=readers, changed=changed, proofs=final,
+                preserved_compatible=sorted(name for name,proof in final.items()
+                    if proof['gate']['readers'] != readers),
+                communication_acceptance='unobserved')
+        if all(selected(proof, readers) for proof in proofs.values()):
+            return completed(proofs)
+        for phase in ('revoke', 'select'):
+            if phase == 'select':
+                # Revocation can take time. Renew observations, never the
+                # signed credentials or an already prepared control's deadline.
+                proofs, current = observe_all()
+                if current != vector:
+                    raise OnboardingError('receiving_cohort_selection_changed')
+            for name in tuple(proofs):
+                accept()
+                proof = proofs[name]
+                if selected(proof, readers):
+                    continue
+                owner, gate = owners[name], proof['gate']
+                owned_operations = {operation_id}
+                for generation in saved.get('superseded_generations',[]):
+                    owned_operations.update(command['operation_id'] for command in generation['commands'].values())
+                owner_operation = (gate['operation_id'] if gate.get('phase') == 'revoke'
+                    and gate.get('operation_id') in owned_operations else operation_id)
+                if (phase == 'revoke' and gate.get('phase') == 'revoke'
+                        and gate.get('operation_id') == owner_operation
+                        and gate.get('release_digest') == release_digest):
+                    continue
+                command = dict(schema='dm.runtime.reader-selection/v2', channel_id='tribe',
+                    phase=phase, operation_id=owner_operation, release_digest=release_digest,
+                    process_instance_id=gate['process_instance_id'], expected_head=gate['head'],
+                    expected_roster_sha256=vector['local_roster_sha256'][name],
+                    readers=[] if phase == 'revoke' else readers)
+                key = name + ':' + phase
+                if key in saved['commands']:
+                    command = saved['commands'][key]
+                else:
+                    if phase == 'select':
+                        # A read's freshness window is not the authority for
+                        # this already-authorized maintenance operation. Native
+                        # selection rechecks physical/CAS/credential/roster
+                        # fences; keep its effect inside the ORIGINAL operation
+                        # deadline and actual signed finite credential validity.
+                        remaining_ms = max(0,(deadline_ns-time.monotonic_ns())//1_000_000)
+                        effect_end = time.time_ns()//1_000_000 + remaining_ms
+                        finite = [row['validity']['not_after_ms'] for row in readers
+                            if row.get('validity',{}).get('mode') == 'finite']
+                        command['effect_not_after_ms'] = min([effect_end,*finite])
+                    saved['commands'][key] = command
+                    being_seed._write(checkpoint, saved, limit=being_seed.MAX_SELECTION)
+                def control_path(slot):
+                    suffix = '' if slot is None else '-' + slot
+                    return owner.root / 'receiving-control' / (command['operation_id'] + '-' + phase + suffix + '.json')
+                slots = saved.get('local_request_slots',{})
+                path = control_path(slots.get(key,saved.get('control_slot')))
+                # A binding conflict is the closed owner's PRE-SEND refusal:
+                # this filename belongs to another exact retained request.
+                # Allocate at most one distinct local slot for these unchanged
+                # command bytes. Unknown dispatch/ACK outcomes never enter here.
+                try:
+                    result = owner.prepare_apply_control(command, path)
+                except OnboardingError as error:
+                    if str(error) != 'receiving_control_binding_conflict' or key in slots:
+                        raise
+                    slot = digest(dict(binding=binding,command=command,purpose='known-unattempted-local-slot'))
+                    saved['local_request_slots'] = {**slots,key:slot}
+                    being_seed._write(checkpoint,saved,limit=being_seed.MAX_SELECTION)
+                    result = owner.prepare_apply_control(command,control_path(slot))
+                proofs[name] = {**proof, 'gate': result['gate']}
+                changed.append(dict(name=name, phase=phase))
+        final, current = observe_all()
+        if current != vector or any(not selected(proof, readers) for proof in final.values()):
+            raise OnboardingError('receiving_cohort_selection_changed')
+        return completed(final)
+
+
+
 def _reader_proof_expiry(record: dict) -> int:
     # Retained V1 operations predate the separated proof horizon. Their exact
     # finite reader expiry remains authoritative; do not reinterpret history.

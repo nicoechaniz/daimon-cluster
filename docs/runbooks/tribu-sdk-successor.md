@@ -1782,3 +1782,28 @@ unsupported-view refusal. Permission/availability errors do not authorize fallba
 Retained owner reads preserve exact compact request bytes and fresh native output;
 existing ordinary-read requests keep their distinct binding/prefix. This avoids
 projecting full retained history during routine health/maintenance deadlines.
+
+### Complete readers after group publication
+
+A coordinator that already holds the required owner adapters and the approved
+loaded selections uses `onboarding_receiving_update.refresh_current_readers`
+after application, visibility or selector changes. The receive-only admission
+continuation accepts code/SDK changes only; do not reuse it for changed group
+publication pins. Pass the existing maintenance operation UUID, release digest,
+absolute deadline (at most480seconds), and one private progress checkpoint.
+Mark the original non-admitted Source owner through `nonadmitted`; admitted
+guests keep their native admission requirement.
+
+The helper reuses authenticated observations, native conditional revoke/select
+and final complete-cohort observation. It retains exact control bytes before
+dispatch, preserves lost acknowledgments and original effect deadlines, and
+performs no lifecycle, enrollment, publication or model work. Matching reader
+vectors need no native writes. Use `preflight_reader_checkpoint` before new
+lifecycle work: unresolved predecessors are preserved. The checkpoint and one
+completed `.previous.json` use the existing2MiB record cap; obsolete process or
+expired-control generations retain bounded history and a retirement digest.
+Native owner journals remain the effect authority. Reader completion establishes
+`qualified-local-projection`; actual useful communication remains separate.
+
+This composition reuses the maintained upstream reader completion implementation
+and its focused tests; it does not introduce another maintenance transport.

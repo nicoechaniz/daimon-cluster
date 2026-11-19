@@ -1807,3 +1807,10 @@ Native owner journals remain the effect authority. Reader completion establishes
 
 This composition reuses the maintained upstream reader completion implementation
 and its focused tests; it does not introduce another maintenance transport.
+
+For an explicitly selected first portable visibility installation, the existing
+`visibility-publish` owner command creates the missing32byte local receipt-proof
+key in its private visibility directory. It retains the key across retries and
+never replaces an existing key or repairs a missing key in an already installed
+policy. This is a local publication receipt key, not a being identity, account
+credential or new grant. Existing Telegram preparation remains unchanged.

@@ -95,16 +95,60 @@ def test_initial_portable_visibility_adopts_existing_closed_catalogs(group_sourc
     visibility = group / 'visibility'
     visibility.mkdir(mode=0o700)
     key = visibility / 'proof.key'
-    key.write_bytes(os.urandom(32))
-    key.chmod(0o600)
+    assert not key.exists()
     configuration = dict(destination=destination, secrets=dict(proof_key_file='proof.key'),
         publication_backend=dict(kind='owner-unix/v1', socket_path='/tmp/portable-fixture.sock'))
     request = dict(disclosure=disclosure, bindings=[binding], expected_installation_sha256=None,
                    initial_configuration=configuration)
     result = submit('visibility', 'visibility-publish', request)
+    original_key = key.read_bytes()
+    assert len(original_key) == 32 and key.stat().st_mode & 0o777 == 0o600
     assert submit('visibility', 'visibility-publish', request) == result
+    assert key.read_bytes() == original_key
     assert result['status'] == 'recorded'
     assert pending() == originals
+
+
+@pytest.mark.parametrize('existing', ['short-key', 'symlink', 'installed-missing-key'])
+def test_initial_portable_receipt_key_never_replaces_existing_state(tmp_path, existing):
+    from clusterctl.onboarding_group_admission import _prepare_initial_visibility_key
+    from daimon_matrix.messaging_config import MessagingConfigError
+    root = tmp_path / 'visibility'
+    root.mkdir(mode=0o700)
+    key, installation = root / 'proof.key', root / 'installation.json'
+    outside = tmp_path / 'outside'
+    outside.write_bytes(b'x' * 32)
+    outside.chmod(0o600)
+    if existing == 'short-key':
+        key.write_bytes(b'original')
+        key.chmod(0o600)
+    elif existing == 'symlink':
+        key.symlink_to(outside)
+    else:
+        installation.write_text('{}')
+        installation.chmod(0o600)
+    params = dict(expected_installation_sha256=None, initial_configuration=dict(
+        secrets=dict(proof_key_file='proof.key'), publication_backend={}))
+    with pytest.raises(MessagingConfigError):
+        _prepare_initial_visibility_key(installation, params)
+    assert outside.read_bytes() == b'x' * 32
+    if existing == 'short-key':
+        assert key.read_bytes() == b'original'
+    elif existing == 'symlink':
+        assert key.is_symlink()
+    else:
+        assert not key.exists() and installation.read_text() == '{}'
+
+
+def test_initial_portable_receipt_key_rejects_parent_escape(tmp_path):
+    from clusterctl.onboarding_group_admission import _prepare_initial_visibility_key
+    root = tmp_path / 'visibility'
+    root.mkdir(mode=0o700)
+    with pytest.raises(OnboardingError, match='visibility_preparation_rejected'):
+        _prepare_initial_visibility_key(root / 'installation.json', dict(
+            expected_installation_sha256=None, initial_configuration=dict(
+                secrets=dict(proof_key_file='../outside'), publication_backend={})))
+    assert list(root.iterdir()) == [] and not (tmp_path / 'outside').exists()
 
 
 @pytest.fixture

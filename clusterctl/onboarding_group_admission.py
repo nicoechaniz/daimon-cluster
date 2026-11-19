@@ -1265,6 +1265,40 @@ def prepare_current_group_visibility(hosted, directory: Path, *,
         risk=risks['all-inter-daimon-communications'])
 
 
+def _prepare_initial_visibility_key(installation: Path, params: dict) -> None:
+    """Create one local receipt key for an explicitly selected first portable policy.
+
+    Runs under the existing native owner writer. Existing installations/keys are
+    never replaced; a lost publication reply reuses the same private bytes.
+    """
+    from daimon_matrix.messaging_config import protected_read
+    from daimon_matrix.native_egress import _SAFE_LEAF
+
+    initial = params.get('initial_configuration')
+    if params['expected_installation_sha256'] is not None or initial is None:
+        return
+    if not isinstance(initial, dict) or 'publication_backend' not in initial:
+        return  # Existing Telegram preparation retains its own key/token contract.
+    references = initial.get('secrets')
+    if (not isinstance(references, dict) or set(references) != {'proof_key_file'}
+            or not isinstance(references['proof_key_file'], str)
+            or _SAFE_LEAF.fullmatch(references['proof_key_file']) is None):
+        raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    key = private_directory(installation.parent) / references['proof_key_file']
+    if not installation.exists() and not installation.is_symlink():
+        try:
+            fd = os.open(key, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(os.urandom(32))
+                stream.flush()
+                os.fsync(stream.fileno())
+            _sync(key.parent)
+    protected_read(key, size=32)
+
+
 def _publish_application(hosted, directory: Path, params: dict) -> dict:
     from daimon_matrix import operator_messaging
     from daimon_matrix.messaging_config import (
@@ -1567,6 +1601,7 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
                 approved_destination=params['approved_destination'])) for disclosure in params['disclosures']])
     if action == 'visibility-publish':
         installation = private_directory(group_root / 'visibility', create=True) / 'installation.json'
+        _prepare_initial_visibility_key(installation, params)
         result = operator_messaging.publish_group_visibility(hosted, directory, installation, **params)
         # The peer app has its own signed catalog key, separate from the base
         # native runtime. Prepare its stores before first ordinary group load.

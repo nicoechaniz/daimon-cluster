@@ -2052,3 +2052,8 @@ results and observed guard restoration. Unchanged failures, uncertain restoratio
 or expiry of the whole operator stop. This reuses the membership continuation
 rule and exact original journal; no background retry, new resource allowance or
 longer native pause is introduced.
+
+Current-reader proofs are collected concurrently for independent owners, with at
+most eight in-flight reads and the same shared <=60-second validity/deadline.
+All exact identity, current selection, complete cohort and expiry checks remain
+mandatory; slow serial CLI startup must not consume other owners’ validity.

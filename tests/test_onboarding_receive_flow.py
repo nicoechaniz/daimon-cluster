@@ -672,4 +672,24 @@ def test_current_collection_keeps_source_and_guest_identity_contracts_distinct(f
         flow._collect(plan=f.plan, selected=f.selected, row=f.journal.get(f.row['operation_id']),
             admission=f.admission, owners=f.owners, validate=lambda:None,
             deadline_ns=time.monotonic_ns()+10_000_000_000, prepare=False)
-    assert calls == [True, False]
+    assert sorted(calls) == [False, True]
+
+
+def test_current_reader_collection_observes_independent_owners_in_one_validity_window(fixture, monkeypatch):
+    import threading
+    from clusterctl import onboarding_receiving_update as receiving
+    f = fixture
+    run(f)
+    barrier = threading.Barrier(2)
+    audience = [dict(being_ref=name, embodiment_id='body-'+name) for name in f.owners]
+    def identity(owner, **kwargs):
+        barrier.wait(timeout=2)
+        return dict(reader=dict(being_ref=owner.name, embodiment_id='body-'+owner.name),
+            identity_expires_at_ms=time.time_ns()//1_000_000+60000, roster=dict(audience=audience))
+    monkeypatch.setattr(receiving, 'observe_current_reader', identity)
+    monkeypatch.setattr(receiving, 'conversation_cohort', lambda proofs: {'cohort':'unchanged checks'})
+    monkeypatch.setattr(receiving, '_reader_active', lambda reader, now: True)
+    proofs, cohort = flow._collect(plan=f.plan, selected=f.selected,
+        row=f.journal.get(f.row['operation_id']), admission=f.admission, owners=f.owners,
+        validate=lambda:None, deadline_ns=time.monotonic_ns()+10_000_000_000, prepare=False)
+    assert set(proofs) == set(f.owners) and cohort == {'cohort':'unchanged checks'}

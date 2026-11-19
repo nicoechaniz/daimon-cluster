@@ -7,6 +7,7 @@ It never enrolls a member or claims all-current reader selection from a file.
 from __future__ import annotations
 
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 import json
 from pathlib import Path
@@ -354,14 +355,22 @@ def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, p
                     binding=entry['binding'], deadline_ns=deadline_ns, validate=validate)
         proofs = {}
         expires = time.time_ns()//1_000_000+max(1, min(60_000, (deadline_ns-time.monotonic_ns())//1_000_000))
-        for key, owner in sorted(owners.items()):
+        def read(item):
+            key, owner = item
             validate()
-            proofs[key] = observe_current_reader(owner, expected_selection=expected[key],
-                require_admitted=not isinstance(owner, SourceGroupClient), expires_at_ms=expires, receive_only=expected[key]['visibility_installation_sha256'] is None)
+            proof = observe_current_reader(owner, expected_selection=expected[key],
+                require_admitted=not isinstance(owner, SourceGroupClient), expires_at_ms=expires,
+                receive_only=expected[key]['visibility_installation_sha256'] is None)
             approved = admission['receivers'][key]
-            reader = proofs[key]['reader']
+            reader = proof['reader']
             if (reader['being_ref'], reader['embodiment_id']) != (approved['being_ref'], approved['embodiment_id']):
                 raise OnboardingError('companion_receive_source_changed')
+            return key, proof
+        # Independent owners share a finite proof-validity window. Serial CLI
+        # startup/verification must not consume another owner's entire horizon.
+        # Every result still passes the same identity, cohort and expiry checks.
+        with ThreadPoolExecutor(max_workers=min(8, len(owners))) as pool:
+            proofs = dict(pool.map(read, sorted(owners.items())))
         cohort = conversation_cohort(proofs)
         now = time.time_ns()//1_000_000
         if (time.monotonic_ns() >= deadline_ns

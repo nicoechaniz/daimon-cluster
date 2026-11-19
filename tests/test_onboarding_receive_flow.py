@@ -300,12 +300,12 @@ def test_original_scope_recovery_precedes_fresh_base_status(fixture,monkeypatch)
     assert f.events.index(('new','recover')) < f.events.index(('new','pause'))
 
 
-@pytest.mark.parametrize('stage',['matrix','acceptance'])
+@pytest.mark.parametrize('stage',['matrix','acceptance',None])
 def test_existing_worker_advances_receive_after_completed_membership_without_reenrollment(fixture,monkeypatch,stage):
     from clusterctl import onboarding_group_coordinator as module
     f=fixture
     coordinator=object.__new__(module.GroupCoordinator)
-    coordinator.store=SimpleNamespace(_load=lambda n:dict(plan=f.plan,stage=stage))
+    coordinator.store=SimpleNamespace(_load=lambda n:dict(plan=f.plan,stage=stage,state='complete' if stage is None else 'pending'))
     coordinator.settings={'receive_preparations':{digest(f.plan):f.selected}}
     row=copy.deepcopy(f.row)
     row['intended_transition']['membership_only']={'schema':'cluster-native-membership-only/v1'}
@@ -324,13 +324,14 @@ def test_existing_worker_advances_receive_after_completed_membership_without_ree
     assert events==(['membership','receive'] if stage=='matrix' else ['receive'])
 
 
-def test_coordinator_retains_actual_restoration_and_completed_retry_acquires_no_owners(fixture,monkeypatch,tmp_path):
+@pytest.mark.parametrize('stage',['acceptance',None])
+def test_coordinator_retains_actual_restoration_and_completed_retry_acquires_no_owners(fixture,monkeypatch,tmp_path,stage):
     from clusterctl import onboarding_group_coordinator as module
     f=fixture
     coordinator=object.__new__(module.GroupCoordinator)
     pin=digest(f.plan)
     coordinator.path=tmp_path/'configuration.json'
-    coordinator.store=SimpleNamespace(_load=lambda n:dict(plan=f.plan,stage='acceptance'))
+    coordinator.store=SimpleNamespace(_load=lambda n:dict(plan=f.plan,stage=stage,state='complete' if stage is None else 'pending'))
     coordinator.settings=dict(receive_preparations={pin:f.selected},admissions={pin:f.row['operation_id']},
         owners={name:{'binding':name} for name in f.owners},tribe_ref='tribe')
     coordinator.backend=SimpleNamespace(authorize=lambda *a:True,_consented=lambda *a,**kw:True,

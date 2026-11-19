@@ -2025,3 +2025,10 @@ founder-writer absence proof, binds its predecessor and unchanged original inten
 and retains every earlier frame. At most eight linked attempts and a selected
 expiry of at most 24 hours are allowed. This grants no application publication,
 model execution, account change or automatic authorization renewal.
+
+A terminal companion job retains `state=complete, stage=null`. The existing
+finite worker pass still advances an explicitly configured receive preparation
+for that original plan; it never changes or repeats completed admission. On a
+dedicated single-companion configuration, a bounded `--once` worker invocation
+continues this post-admission phase. The ordinary completed `--until` entry-only
+fast path remains read-only.

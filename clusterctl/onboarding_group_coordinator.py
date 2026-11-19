@@ -1479,10 +1479,11 @@ class GroupCoordinator:
                 raise OnboardingError('receiving_host_deadline_expired')
             return min(value, 60)
         record = self.store._load(name)
-        if record['stage'] not in {'matrix', 'acceptance'}:
+        terminal = record.get('state') == 'complete' and record['stage'] is None
+        if record['stage'] not in {'matrix', 'acceptance'} and not terminal:
             return None
         plan = record['plan']
-        if record['stage'] == 'acceptance':
+        if record['stage'] == 'acceptance' or terminal:
             if digest(plan) in self.settings.get('receive_preparations', {}):
                 return self.advance_receive_only(name, timeout_seconds=(deadline-time.monotonic_ns())/1_000_000_000, select_current=True)
             return None
@@ -1780,7 +1781,8 @@ class GroupCoordinator:
             def validate():
                 record = self.store._load(name)
                 fresh = configuration(self.path)
-                if (record['plan'] != plan or record['stage'] not in {'matrix', 'acceptance'}
+                terminal = record.get('state') == 'complete' and record['stage'] is None
+                if (record['plan'] != plan or (record['stage'] not in {'matrix', 'acceptance'} and not terminal)
                         or not self.backend.authorize(plan, pin)
                         or not self.backend._consented(plan, stage='matrix')
                         or self.backend._decision(plan) is None or not self.backend._ceremony(plan).authorize(plan)):

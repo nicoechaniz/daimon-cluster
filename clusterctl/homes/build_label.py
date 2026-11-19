@@ -56,7 +56,7 @@ def stamp(body, revision, *, overlay=False, content_revision=None):
             + "</code></span>"
         )
     badge = (
-        '<p class="app-build' + (" app-build--overlay" if overlay else "") + '" '
+        '<p hidden class="app-build' + (" app-build--overlay" if overlay else "") + '" '
         'data-app-build="'
         + revision
         + '" title="Versión de interfaz '

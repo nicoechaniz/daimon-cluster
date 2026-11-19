@@ -116,6 +116,14 @@ def reconcile(backend, plan, request, *, apply):
     if selected is None or plan['name'] not in selected:
         return None  # Existing unselected jobs retain their original contract.
     listener = configuration(selected)[plan['name']]
+    return reconcile_listener(backend, plan, listener, request, device_name='conversation-web', apply=apply)
+
+
+def reconcile_listener(backend, plan, listener, request, *, device_name, apply):
+    """Use the existing Incus writer for one explicitly owned body listener."""
+    if device_name not in {'conversation-web', 'matrix-message'}:
+        raise OnboardingError('conversation_proxy_configuration_required')
+    listener = configuration({plan['name']: listener})[plan['name']]
     device = desired(listener, request['port'])
     instance = backend.instance(plan)
     def run(argv):
@@ -133,8 +141,8 @@ def reconcile(backend, plan, request, *, apply):
             if request.get('listen_host') != vm['address']:
                 raise OnboardingError('conversation_proxy_vm_network_required')
             verify_vm_network(backend, plan, observed, listener, run)
-        local = observed.get('devices', {}).get('conversation-web')
-        effective = observed.get('expanded_devices', {}).get('conversation-web', local)
+        local = observed.get('devices', {}).get(device_name)
+        effective = observed.get('expanded_devices', {}).get(device_name, local)
         if local is not None and local != device or effective is not None and effective != device:
             raise OnboardingError('existing_conversation_proxy_preserved')
         if effective == device:
@@ -144,7 +152,7 @@ def reconcile(backend, plan, request, *, apply):
         if not backend.authorize(plan, digest(plan)):
             raise OnboardingError('host_authorization_required')
         from .homes.host import ensure_proxy
-        ensure_proxy(run, instance, 'conversation-web', device)
+        ensure_proxy(run, instance, device_name, device)
         return Observation('complete')
     except OnboardingError:
         raise

@@ -24,7 +24,7 @@ SCHEMA = 'cluster-companion-receive-preparation/v1'
 def configuration(value: dict, names) -> dict:
     try:
         fields = {'schema', 'helpers', 'key', 'policy', 'listen', 'intake_endpoint', 'stores', 'authority_order'}
-        if (not isinstance(value, dict) or set(value) != fields or value['schema'] != SCHEMA
+        if (not isinstance(value, dict) or set(value) - {'ingress'} != fields or value['schema'] != SCHEMA
                 or len(json.dumps(value).encode()) > 65536
                 or not isinstance(value['policy'], dict)
                 or set(value['policy']) != {'classification', 'max_ttl_ms'}
@@ -49,6 +49,14 @@ def configuration(value: dict, names) -> dict:
                     or any(not isinstance(ref, str) for ref in value['authority_order'])
                     or len(value['authority_order']) != len(set(value['authority_order'])))):
             raise ValueError
+        if 'ingress' in value:
+            from .onboarding_conversation_proxy import configuration as listener_configuration
+            ingress = listener_configuration({'receiver': value['ingress']})['receiver']
+            public = urlsplit(value['key']['endpoint'])
+            target = ingress.get('vm', {}).get('address', '127.0.0.1')
+            if (public.hostname != ingress['listen_host'] or public.port != ingress['listen_port']
+                    or value['listen']['host'] != target):
+                raise ValueError
     except (KeyError, TypeError, ValueError, AttributeError, OnboardingError):
         raise OnboardingError('companion_receive_preparation_required') from None
     return copy.deepcopy(value)
@@ -140,6 +148,26 @@ def publish(*, plan: dict, selected: dict, journal, row: dict, admission: dict,
                 raise OnboardingError('companion_receive_source_changed')
             retain('baseline', dict(receiving_code=startup['code_digest'], matrix_sdk=startup['matrix_wheel_sha256'],
                 runtime_bundle_sha256=loaded['runtime_bundle_sha256']))
+        if 'ingress' in selected:
+            # One stable Incus device, under this original job's authorization.
+            # Lost add replies reconcile the same exact device; existing web,
+            # Home and administrative routes are never replaced.
+            from .onboarding_conversation_proxy import reconcile_listener
+            budget()
+            owner = owners[name]
+            intent = dict(device='matrix-message', listener=selected['ingress'],
+                guest_port=selected['listen']['port'])
+            if 'ingress_intent' not in phase():
+                retain('ingress_intent', intent)
+            elif phase()['ingress_intent'] != intent:
+                raise OnboardingError('companion_receive_original_changed')
+            result = reconcile_listener(owner.backend, owner.plan, selected['ingress'],
+                dict(port=selected['listen']['port'], listen_host=selected['listen']['host']),
+                device_name='matrix-message', apply=True)
+            if result.state != 'complete':
+                raise OnboardingError('companion_receive_ingress_unconfirmed')
+            if 'ingress' not in phase():
+                retain('ingress', dict(intent, state='complete'))
         for key in sorted(set(owners)-{name}):
             if 'route-'+key in phase():
                 continue

@@ -564,3 +564,56 @@ def test_unobserved_control_reply_keeps_exact_native_recovery(native_readers,mon
     monkeypatch.setattr(owner,'prepare_apply_control',native)
     assert f.select()==dict(tribe_reader_selection_verified=True)
     assert f.effects==['new-revoke','old-revoke','new-select','old-select']
+
+
+def test_owned_ingress_recovers_lost_add_before_native_pause_or_key_creation(fixture,monkeypatch):
+    from clusterctl import onboarding_conversation_proxy as proxy
+    f=fixture
+    f.selected['ingress']=dict(listen_host='10.20.30.40',listen_port=18768)
+    f.selected['key']['endpoint']='http://10.20.30.40:18768/dm-messaging/v1/message'
+    owner=f.owners['new']
+    owner.backend=object()
+    owner.plan=f.plan
+    calls=[]
+    def reconcile(backend,plan,listener,request,**options):
+        assert backend is owner.backend and plan==f.plan
+        assert listener==f.selected['ingress']
+        assert request==dict(port=1234,listen_host='127.0.0.1')
+        assert options==dict(device_name='matrix-message',apply=True)
+        calls.append('same-owned-ingress')
+        if len(calls)==1:
+            raise TimeoutError('lost original device reply')
+        return SimpleNamespace(state='complete')
+    monkeypatch.setattr(proxy,'reconcile_listener',reconcile)
+    with pytest.raises(TimeoutError):
+        run(f)
+    assert ('new','pause') not in f.events and not f.effects
+    phase=f.journal.get(f.row['operation_id'])['runtime_observation']['receive_application']
+    assert phase['ingress_intent']==dict(device='matrix-message',listener=f.selected['ingress'],guest_port=1234)
+    assert 'ingress' not in phase
+    assert run(f)['outbound_release'] is False
+    assert len(calls)==2 and all(count==1 for count in f.effects.values())
+    assert run(f)['outbound_release'] is False and len(calls)==2
+    retained=f.journal.get(f.row['operation_id'])['runtime_observation']['receive_application']['ingress']
+    assert retained==dict(device='matrix-message',listener=f.selected['ingress'],guest_port=1234,state='complete')
+
+
+@pytest.mark.parametrize('mismatch',['public-host','public-port','guest-host'])
+def test_ingress_configuration_binds_transport_and_actual_guest_listener(fixture,mismatch):
+    f=fixture
+    f.selected['ingress']=dict(listen_host='10.20.30.40',listen_port=18768,
+        vm=dict(nic='eth0',network='incusbr0',address='10.100.0.10'))
+    f.selected['key']['endpoint']='http://10.20.30.40:18768/dm-messaging/v1/message'
+    f.selected['listen']['host']='10.100.0.10'
+    f.selected['intake_endpoint']='http://10.100.0.10:1234/dm-messaging/v1/message'
+    assert flow.configuration(f.selected,f.owners)==f.selected
+    if mismatch=='public-host':
+        f.selected['key']['endpoint']='http://10.20.30.41:18768/dm-messaging/v1/message'
+    elif mismatch=='public-port':
+        f.selected['key']['endpoint']='http://10.20.30.40:18769/dm-messaging/v1/message'
+    else:
+        f.selected['listen']['host']='10.100.0.11'
+        f.selected['intake_endpoint']='http://10.100.0.11:1234/dm-messaging/v1/message'
+    with pytest.raises(OnboardingError,match='companion_receive_preparation_required'):
+        run(f)
+    assert not f.events

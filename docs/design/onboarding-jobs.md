@@ -1847,6 +1847,23 @@ route; the intake endpoint must match the actual own numeric listener. Group
 stores are the maintained records/envelopes/opaque-evidence/opaque-message set;
 bilateral store names are not a group application configuration.
 
+An optional `ingress` reuses the existing Incus listener configuration and writer
+for one owned `matrix-message` proxy. Its host address/port must equal the public
+key endpoint; the intake listener must equal the actual selected VM address (or
+container loopback target). VM NIC, static address, live interface and gateway
+checks are the same as for the existing Conversation proxy. Record the exact
+ingress intent before adding it, then reconcile that same device after a lost
+reply. A different existing device is preserved; Conversation, Home and
+administrative routes are never replaced. Legacy preparations without this
+field retain their original hashes and behavior.
+
+The original receive phase owns this listener, before its first native pause or
+key creation. One device per body bounds its resource use; the existing body
+retirement removes it with that body. A failed publication retains the intended
+device/result for forward recovery, without changing uncertain application or
+message effects. Stopping the selected Matrix service stops processing; neither
+an ingress receipt nor a healthy web page establishes messaging readiness.
+
 After the original membership-only result is complete, the existing worker
 advances this receive phase under the same original plan/journal/grants. A separate
 `receive_application` observation retains public commands/results and import

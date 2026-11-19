@@ -1215,13 +1215,24 @@ def prepare_current_group_visibility(hosted, directory: Path, *,
         if not isinstance(current, RootAuthority) or (ref in pinned and pinned[ref] != current):
             raise OnboardingError('onboarding_group_visibility_preparation_rejected')
     destination = copy.deepcopy(approved_destination)
-    if (set(destination) != {'bot_id','chat_id','topic_id','representation'}
+    portable = 'publication' in destination
+    if portable:
+        from daimon_matrix.mandatory_echo import validate_policy
+        if set(destination) != {'publication', 'representation'}:
+            raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+        # Reuse the native policy validator, exactly as the final native
+        # disclosure does. This validates public metadata; it grants nothing.
+        validate_policy(dict(schema='daimon-visibility-policy/v3', generation=1,
+            origin='owner-disclosure-validation', acceptance_digest='0'*64,
+            proof_key_id='validation-only', **destination))
+    elif (set(destination) != {'bot_id','chat_id','topic_id','representation'}
             or type(destination['bot_id']) is not int or not 0 < destination['bot_id'] < 2**52
             or type(destination['chat_id']) is not int or not 0 < abs(destination['chat_id']) < 2**52
             or destination['topic_id'] is not None and (type(destination['topic_id']) is not int
                 or not 0 < destination['topic_id'] < 2**52)
-            or destination['representation'] not in REPRESENTATIONS
-            or type(issued_at_ms) is not int or not 0 <= issued_at_ms <= hosted.service.clock()
+            or destination['representation'] not in REPRESENTATIONS):
+        raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    if (type(issued_at_ms) is not int or not 0 <= issued_at_ms <= hosted.service.clock()
             or issued_at_ms >= 2**52):
         raise OnboardingError('onboarding_group_visibility_preparation_rejected')
     local = owner if local_being_ref is None else local_being_ref
@@ -1233,9 +1244,14 @@ def prepare_current_group_visibility(hosted, directory: Path, *,
         tribe_ref=application['tribe']['policy']['tribe_ref'],
         membership_ref=members[local]['membership_ref'], participants=participants)],
         projected_content='complete-plaintext-content-and-metadata')
-    return dict(schema='dm.messaging.visibility-disclosure/v1', issued_at_ms=issued_at_ms,
+    if portable:
+        from daimon_matrix.native_egress import PORTABLE_VISIBILITY_SCOPE_RISKS
+        risks = PORTABLE_VISIBILITY_SCOPE_RISKS
+    else:
+        risks = VISIBILITY_SCOPE_RISKS
+    return dict(schema='dm.messaging.visibility-disclosure/v2' if portable else 'dm.messaging.visibility-disclosure/v1', issued_at_ms=issued_at_ms,
         destination=destination, scope=scope, scope_sha256=digest(scope), participants=participants,
-        risk=VISIBILITY_SCOPE_RISKS['all-inter-daimon-communications'])
+        risk=risks['all-inter-daimon-communications'])
 
 
 def _publish_application(hosted, directory: Path, params: dict) -> dict:

@@ -54,6 +54,7 @@ def initial_publication(group_source, profile):
 
 def test_initial_portable_visibility_adopts_existing_closed_catalogs(group_source):
     """First publication must open already initialized receive-only catalogs."""
+    from contextlib import closing
     import sqlite3
     from daimon_matrix import native_egress
     if not hasattr(native_egress, 'PORTABLE_VISIBILITY_SCOPE_RISKS'):
@@ -70,7 +71,7 @@ def test_initial_portable_visibility_adopts_existing_closed_catalogs(group_sourc
     def pending():
         rows = {}
         for path in (group / 'application').glob('*.sqlite'):
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db:
                 if db.execute("SELECT 1 FROM sqlite_master WHERE name='echo_v2_obligations'").fetchone():
                     for identifier, raw in db.execute('SELECT operation_id,record FROM echo_v2_obligations'):
                         value = json.loads(raw)
@@ -1183,7 +1184,11 @@ def test_pending_initial_publication_preserves_a_later_native_client_renewal(gro
     assert being_seed._read(path)['result'] is None
 
 
-def test_native_additive_publication_recovers_its_sdk_predecessor_without_another_client(group_source, tmp_path, monkeypatch):
+@pytest.mark.parametrize('portable', [False, True])
+def test_native_additive_publication_recovers_its_sdk_predecessor_without_another_client(group_source, tmp_path, monkeypatch, portable):
+    from daimon_matrix import native_egress
+    if portable and not hasattr(native_egress, 'PORTABLE_VISIBILITY_SCOPE_RISKS'):
+        pytest.skip('Portable disclosure requires the explicitly selected successor SDK')
     from daimon_matrix import operator_messaging
     from daimon_matrix.messaging_config import read_publication
     from daimon_matrix.relationships import MEMBERSHIP_ACCEPTANCE_SCHEMA
@@ -1217,6 +1222,11 @@ def test_native_additive_publication_recovers_its_sdk_predecessor_without_anothe
         load_owner_runtime, prepare_current_group_visibility, public_authorities,
     )
     destination = dict(bot_id=1, chat_id=-123, topic_id=None, representation='compact-text/v1')
+    if portable:
+        from daimon_matrix.canonical import b64url
+        destination = dict(publication=dict(kind='conversation-journal/v1',
+            surface_ref='https://fixture.invalid/conversation', audience=['human:fixture'],
+            receipt_key=b64url(b'p'*32)), representation='compact-text/v1')
     issued = time.time_ns() // 1_000_000
     original_publication = (group/'application/publication.json').read_bytes()
     with owner.writer():

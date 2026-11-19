@@ -1659,6 +1659,15 @@ owner configuration. Each owner can attest that exact document with its existing
 publication policy or a human-delivery receipt. Keep one exact protected intent
 and the original bindings for the bounded operation.
 
+Portable Conversation destinations use the same preparation path. The helper
+reuses the selected SDK's native v3 policy validator and portable v2 disclosure
+contract, including its exact risk statement. Resolve the public descriptor from
+the actual paired Conversation publisher; do not substitute Telegram metadata.
+Prepared signatures must match the final native disclosure byte for byte after
+the application update. The successor qualification covers both destination
+types, additive publication with a lost acknowledgment, and first portable
+publication over initialized receive-only catalogs without replacing history.
+
 The normal native application/visibility publisher must still validate the
 prepared document against the fully published current application and complete
 acceptance set before selection. A changed membership or authority must refuse;

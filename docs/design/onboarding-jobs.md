@@ -2093,7 +2093,7 @@ Completed children are read back rather than repeated. Outbound remains closed.
 
 Controller-only provisioning must preserve the actually serving Matrix SDK from
 its authenticated baseline. A maintenance helper is an observer, not the body
-software selection: a helper's older SDK must never silently replace the serving
+software selection: a different helper SDK must never silently replace the serving
 SDK. A mismatch refuses before mounting, stopping or issuing authority; prepare
 its compatible code using the existing successor builder and serving SDK.
 

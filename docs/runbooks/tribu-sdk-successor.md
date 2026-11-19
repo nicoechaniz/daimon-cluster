@@ -1697,6 +1697,14 @@ exhausted an actual maintenance window. Existing single-destination commands
 remain unchanged. Preserve any earlier partial receipts when consolidating the
 remaining preparation; this batch installs no policy or message.
 
+After scoped Matrix maintenance, a completed reader barrier can require renewal
+even when software pins are unchanged. The current-reader route recognizes the
+authenticated native process-instance change, preserves the completed barrier
+as its predecessor and derives fresh control IDs from the new instances. It
+keeps identity, selected software and membership checks, and refuses to supersede
+an unfinished barrier or a different operator's revocation. Do not replay old
+process-bound controls or repeat admission to recover an ordinary restart.
+
 The normal native application/visibility publisher must still validate the
 prepared document against the fully published current application and complete
 acceptance set before selection. A changed membership or authority must refuse;

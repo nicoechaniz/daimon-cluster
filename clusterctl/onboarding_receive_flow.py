@@ -679,12 +679,26 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
             list(pool.map(prepare_owner, owners.items()))
         proofs, cohort = collect()
         state = phase().get('reader_selection')
-        if state is not None and state.get('selection_updates_sha256', digest({})) != revision:
+        processes = {name:p['gate']['process_instance_id'] for name,p in proofs.items()}
+        previous_processes = ({} if state is None else {
+            name:(state.get('controls', {}).get('select-'+name, {}).get('result') or {}).get(
+                'gate', state['initial_gates'][name]).get('process_instance_id')
+            for name in owners})
+        process_changed = state is not None and previous_processes != processes
+        software_changed = state is not None and state.get('selection_updates_sha256', digest({})) != revision
+        if state is not None and (software_changed or process_changed):
             if not all(state.get('controls', {}).get('select-'+name, {}).get('result')
                        for name in owners):
                 raise OnboardingError('companion_receive_reader_control_changed')
+            if process_changed and not software_changed and (
+                    state['membership_basis_sha256'] != cohort['membership_basis_sha256']
+                    or any({k:v for k,v in state['expected'][name].items() if k != 'process'}
+                        != {k:v for k,v in proofs[name]['expected'].items() if k != 'process'}
+                        for name in owners)):
+                raise OnboardingError('companion_receive_reader_control_changed')
             # Completed effects retain one full predecessor. A software update
-            # gets fresh native controls, never replays old process-bound ones.
+            # or authenticated restart gets fresh process-bound controls. Never
+            # replace an unfinished barrier or replay its old native controls.
             previous_selection, state = copy.deepcopy(state), None
         if state is None:
             if all(p['gate'].get('phase') == 'select' and p['gate'].get('readers') == cohort['readers']
@@ -693,6 +707,7 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
                 return dict(tribe_reader_selection_verified=True)
             state = dict(schema='cluster-companion-current-readers/v1',
                 selection_updates_sha256=revision,
+                reader_processes_sha256=digest(processes),
                 selection_updates=copy.deepcopy(selection_updates or {}),
                 readers=cohort['readers'], membership_basis_sha256=cohort['membership_basis_sha256'],
                 expected={name:p['expected'] for name,p in proofs.items()},
@@ -704,6 +719,8 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
         identity = 'companion-readers:'+parent+':'+binding
         if selection_updates:
             identity += ':'+revision
+        if state.get('reader_processes_sha256') is not None:
+            identity += ':'+state['reader_processes_sha256']
         control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
         release = digest(dict(original=parent, binding=binding, readers=state['readers'],
             membership_basis_sha256=state['membership_basis_sha256']))

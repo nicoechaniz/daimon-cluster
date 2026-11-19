@@ -557,6 +557,42 @@ def test_code_update_selects_new_vector_without_replaying_original_native_contro
     assert len(f.effects) == 8
 
 
+def test_authenticated_restart_refreshes_completed_native_barrier_without_software_change(native_readers):
+    from daimon_matrix.native_egress import MandatoryEgressController
+    f = native_readers
+    f.select()
+    original = copy.deepcopy(f.f.journal.get(f.f.row['operation_id'])['runtime_observation'][
+        'receive_application']['reader_selection'])
+    original_operation = f.gate('new')['operation_id']
+    restarted = MandatoryEgressController(policy={}, proof_key=b'k'*32, transport=None)
+    restarted.register_reader_channel('tribe', 'a'*64, controlled=True)
+    f.controllers['new'] = restarted
+    assert f.select() == dict(tribe_reader_selection_verified=True)
+    assert f.gate('new')['operation_id'] != original_operation
+    assert f.gate('old')['operation_id'] == f.gate('new')['operation_id']
+    assert len(f.effects) == 8
+    phase = f.f.journal.get(f.f.row['operation_id'])['runtime_observation']['receive_application']
+    assert phase['reader_selection_previous'] == original
+    assert f.select() == dict(tribe_reader_selection_verified=True)
+    assert len(f.effects) == 8
+
+
+def test_restart_never_supersedes_an_unfinished_native_barrier(native_readers):
+    from daimon_matrix.native_egress import MandatoryEgressController
+    f = native_readers
+    f.lost.append('new-revoke-after')
+    with pytest.raises(OSError):
+        f.select()
+    original = copy.deepcopy(f.f.journal.get(f.f.row['operation_id']))
+    restarted = MandatoryEgressController(policy={}, proof_key=b'k'*32, transport=None)
+    restarted.register_reader_channel('tribe', 'a'*64, controlled=True)
+    f.controllers['old'] = restarted
+    with pytest.raises(OnboardingError, match='reader_control_changed'):
+        f.select()
+    assert f.f.journal.get(f.f.row['operation_id']) == original
+    assert f.effects == ['new-revoke']
+
+
 @pytest.mark.parametrize('expire_after_first_select', [False, True])
 def test_current_selection_reuses_only_unexpired_complete_proofs(native_readers, monkeypatch,
                                                                 expire_after_first_select):

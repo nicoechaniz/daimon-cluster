@@ -7,6 +7,19 @@ No Matrix SDK, identity, native harness, existing goal or login change is needed
 
 ## Owner command
 
+Native applications can inspect a current actor's access through the existing
+authenticated owner operation `check-service-access`, payload exactly
+`{actor_ref,service_key}`. Its `dm.home-service-access/v1` result contains those
+same fields and an `allowed` boolean. The key belongs to the owner's registered
+home/service; arbitrary actors do not acquire its owner credential. The operation
+reuses `ServiceRoutes.access`: current signed actor, capability, completed
+selection, exact App version and current audience. It issues no identity,
+browser/reader session, grant or content lease. Unavailable authority fails closed.
+An application's trusted native adapter must bind the queried being to its actual
+accepted input and current pair/room authority. Do not replace the human browser
+identity endpoint, inherit another actor's grant or copy an owner's custody into
+remote bodies. Current human browser admission remains unchanged.
+
 Install the qualified Cluster modules in the existing owner tool environment and
 provide a small `daimon-home-service` entry invoking
 `python -m clusterctl.homes.service_publish`. Retain the existing Home publisher

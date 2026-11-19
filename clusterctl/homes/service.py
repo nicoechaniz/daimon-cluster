@@ -419,6 +419,20 @@ class Application:
                 return self.service_deployments.deploy(self, home, owner, payload, authorize=still_authorized)
             with self.locks[home]:
                 return self.service_deployments.finalize(self, home, owner, payload, authorize=still_authorized)
+        if operation == 'check-service-access':
+            # A trusted owner may inspect the existing service decision for a
+            # current actor. This issues no reader/browser session or grant.
+            if (not isinstance(payload, dict) or set(payload) != {'actor_ref', 'service_key'}
+                    or not isinstance(payload['actor_ref'], str) or not 1 <= len(payload['actor_ref']) <= 256
+                    or not isinstance(payload['service_key'], str)
+                    or not re.fullmatch('s-[a-f0-9]{24}', payload['service_key'])):
+                raise ValueError('invalid_service_access_scope')
+            if self.service_deployments is None:
+                raise ValueError('service_deployment_unconfigured')
+            actor = self.authority.actor(payload['actor_ref'])
+            allowed = bool(actor and actor.enabled and self.service_deployments.access(
+                self, home, actor, payload['service_key']))
+            return {'schema': 'dm.home-service-access/v1', **payload, 'allowed': allowed}
         if operation == 'check-review-access':
             # Owner-local read-only decision for a trusted application's
             # verified participant. No reader session, content lease or model

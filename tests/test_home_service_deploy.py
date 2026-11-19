@@ -357,6 +357,7 @@ def test_actual_owner_auth_registry_finalize_and_http_audience(
     import urllib.error
 
     c, _, conf, raw, _, artifact, value = setup
+    value['audience'] = {'visibility': 'individual', 'recipients': ['owner-one', 'human-one'], 'tribes': []}
     app, broker = app_fixture(tmp_path, conf, raw, artifact)
     worker = ManagerFixture(c)
     monkeypatch.setattr(
@@ -411,6 +412,35 @@ def test_actual_owner_auth_registry_finalize_and_http_audience(
         == "complete"
     )
     assert app.owner("one", "own-test-token", "service-deploy", value)["retained"]
+    def decision(actor='owner-one', service_key=None):
+        return app.owner('one', 'own-test-token', 'check-service-access',
+                         {'actor_ref': actor, 'service_key': service_key or 's-' + key(c)})
+    with app.sessions.connect() as db:
+        sessions_before = db.execute('SELECT count(*) FROM sessions').fetchone()[0]
+    assert decision()['allowed'] is True
+    assert decision('human-one')['allowed'] is True
+    for actor in ('human-two', 'owner-two', 'unknown-actor'):
+        assert decision(actor)['allowed'] is False
+    assert decision(service_key='s-'+'0'*24)['allowed'] is False
+    with pytest.raises(ValueError, match='owner_denied'):
+        app.owner('one', 'wrong', 'check-service-access', {'actor_ref': 'owner-one', 'service_key': 's-'+key(c)})
+    from dataclasses import replace
+    previous_actor = app.authority.people['human-one']
+    app.authority.people['human-one'] = replace(previous_actor, enabled=False)
+    assert decision('human-one')['allowed'] is False
+    # The being's own grant remains independent of a human's revocation.
+    assert decision()['allowed'] is True
+    app.authority.people['human-one'] = previous_actor
+    before_entry = deepcopy(entry)
+    entry['summary'] = 'Another App version is selected'
+    entry['version_ref'] = version_digest(entry)
+    app.owner('one', 'own-test-token', 'sync', {})
+    assert decision()['allowed'] is False
+    entry.clear();entry.update(before_entry)
+    app.owner('one', 'own-test-token', 'sync', {})
+    assert decision()['allowed'] is True
+    with app.sessions.connect() as db:
+        assert db.execute('SELECT count(*) FROM sessions').fetchone()[0] == sessions_before
     with serving(handler(app)) as url:
 
         def status(actor=None, **headers):
@@ -463,6 +493,7 @@ def test_actual_owner_auth_registry_finalize_and_http_audience(
         )
         app.service_deployments.config["grants"].clear()
         assert status("human-one") == 403
+        assert decision()['allowed'] is False
 
 
 def test_route_scope_and_concurrent_replacement_preserved(setup):

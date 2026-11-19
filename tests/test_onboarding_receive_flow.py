@@ -477,10 +477,10 @@ def native_readers(fixture, monkeypatch, tmp_path):
                 process=dict(pid=os.getpid()),server=dict(embodiment_id='body-'+name),
                 request_sha256=accepted['request_sha256'],command_sha256=digest(command))
         owner.prepare_apply_control=apply
-    def select(validate=lambda:None, selection_updates=None):
+    def select(validate=lambda:None, selection_updates=None, maintenance_updates=None):
         return flow.select_readers(plan=f.plan,selected=f.selected,row=f.journal.get(f.row['operation_id']),
             journal=f.journal,admission=f.admission,owners=f.owners,validate=validate,
-            deadline_ns=time.monotonic_ns()+10_000_000_000, selection_updates=selection_updates)
+            deadline_ns=time.monotonic_ns()+10_000_000_000, selection_updates=selection_updates, maintenance_updates=maintenance_updates)
     return SimpleNamespace(f=f,controllers=controllers,requests=requests,effects=effects,lost=lost,
         readers=readers,gate=gate,select=select)
 
@@ -963,3 +963,36 @@ def test_compatible_controller_load_is_adopted_without_repeating_failed_publicat
     assert flow.ensure_controller(plan=f.plan,preparation=prep,backend=SimpleNamespace(config=config),
         config_path=host,journal=f.journal,row=current,validate=lambda:None,
         deadline_ns=time.monotonic_ns()+10_000_000_000)==result
+
+
+def test_reader_helper_correction_retains_pending_native_control(native_readers, monkeypatch):
+    f = native_readers
+    f.lost.append('old-select-before')
+    with pytest.raises(OSError):
+        f.select()
+    before = copy.deepcopy(f.requests)
+    original_preparation = copy.deepcopy(f.f.selected)
+    replacement = {**f.f.selected['helpers']['owners']['old'],
+        'code': '/qualified/compact-observer', 'code_digest': 'f' * 64}
+    seen = []
+    endpoint = flow.Endpoint
+    def prepare(owner, selected, **options):
+        seen.append(copy.deepcopy(selected))
+        return endpoint(owner, selected, **options)
+    monkeypatch.setattr(flow, 'Endpoint', prepare)
+    assert f.select(maintenance_updates={'old': replacement}) == {'tribe_reader_selection_verified': True}
+    assert replacement in seen and f.f.selected == original_preparation
+    assert all(f.requests[key] == command for key, command in before.items())
+    phase = f.f.journal.get(f.f.row['operation_id'])['runtime_observation']['receive_application']
+    assert phase['reader_maintenance'] == {'old': replacement}
+    seen.clear()
+    assert f.select() == {'tribe_reader_selection_verified': True}
+    assert replacement in seen
+
+
+def test_reader_helper_correction_cannot_change_owner_journal(native_readers):
+    f = native_readers
+    replacement = {**f.f.selected['helpers']['owners']['old'], 'journal': '/another/owner-journal'}
+    with pytest.raises(OnboardingError, match='maintenance_configuration_required'):
+        f.select(maintenance_updates={'old': replacement})
+    assert f.effects == []

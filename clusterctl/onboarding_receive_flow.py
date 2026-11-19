@@ -616,7 +616,7 @@ def observe(**options):
 
 
 def select_readers(*, plan, selected, row, journal, admission, owners, validate, deadline_ns,
-                   selection_updates=None):
+                   selection_updates=None, maintenance_updates=None):
     """Compose existing native revoke/select controls under the original job.
 
     All readers are observed before the barrier and must have unexpired proofs
@@ -630,6 +630,15 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
     selected = configuration(selected, owners)
     parent = row['operation_id']
     binding = digest(dict(original_intent=row['intent'], preparation=selected))
+    initial_phase = (row['runtime_observation'] or {}).get('receive_application', {})
+    updates = initial_phase.get('reader_maintenance', {}) if maintenance_updates is None else maintenance_updates
+    if not isinstance(updates, dict):
+        raise OnboardingError('membership_maintenance_configuration_required')
+    if updates:
+        updates = helper_configuration(dict(schema='cluster-membership-maintenance/v1', owners=updates), owners)['owners']
+        if any(value['journal'] != selected['helpers']['owners'][name]['journal']
+                for name, value in updates.items()):
+            raise OnboardingError('membership_maintenance_configuration_required')
     if selection_updates is None:
         selection_updates = (row['runtime_observation'] or {}).get('receive_application', {}).get(
             'reader_selection', {}).get('selection_updates', {})
@@ -668,10 +677,18 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
     previous = {key:(owner.deadline_ns, owner.maintenance) for key,owner in owners.items()}
     try:
         check()
+        if updates and initial_phase.get('reader_maintenance') != updates:
+            latest = current()
+            observed = copy.deepcopy(latest['runtime_observation'])
+            if initial_phase.get('reader_maintenance'):
+                observed['receive_application']['reader_maintenance_previous'] = initial_phase['reader_maintenance']
+            observed['receive_application']['reader_maintenance'] = updates
+            journal.advance(parent, latest['state'], runtime_observation=observed,
+                expected_runtime_observation=latest['runtime_observation'])
         def prepare_owner(item):
             key, owner = item
             owner.deadline_ns = deadline_ns
-            Endpoint(owner, selected['helpers']['owners'][key], parent=parent,
+            Endpoint(owner, updates.get(key, selected['helpers']['owners'][key]), parent=parent,
                 binding=binding, deadline_ns=deadline_ns, validate=check)
         # Independent helper preparation must not serialize eight
         # host/guest traversals before the finite proof/control window.

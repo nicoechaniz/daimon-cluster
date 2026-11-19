@@ -1833,3 +1833,12 @@ status remains only for legacy callers or an authenticated `invalid_params`
 unsupported-view response. A fast base compact status does not alone prove group
 reader availability; retain the actual qualified group proof and original control
 outcome. Do not restart a healthy base process to repair an observer timeout.
+
+When original-job reader restoration needs a corrected maintenance observer, pass
+`maintenance_updates` to `advance_receive_only(..., select_current=True)`: an
+owner-name map of qualified `code`, `code_digest`, and its unchanged `journal`.
+The existing Endpoint verifies/prepares that compatible helper. The original
+admission preparation, serving selection and exact pending native controls stay
+unchanged. The original job retains the selected helper map for continuation,
+with one previous map; the installed body is not relabeled or upgraded. This is
+maintenance code repair, not a fresh admission, control request or deadline.

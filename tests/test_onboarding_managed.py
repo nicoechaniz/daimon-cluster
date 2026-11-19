@@ -1106,4 +1106,12 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     if closed_group:
         assert latest['closed_group']['application_sha256'] == 'c'*64
         assert latest['closed_group']['outbound_release'] is False
+        # A retained pre-migration operation keeps its original effects on
+        # readback; new software must not insert an offline step into it.
+        latest.pop('prepare_closed_catalogs')
+        latest['effects'].pop('catalogs')
+        being_seed._write(managed.state / 'newcomer/native-code-update.json', latest)
+        old_calls = list(calls)
+        assert managed.update_native_code(plan, (tmp_path, 'b'*64), **next_options) == next_result
+        assert calls == old_calls + ['bootstrap-inspect']
     assert job == {'plan': plan, 'original': 'retained'}

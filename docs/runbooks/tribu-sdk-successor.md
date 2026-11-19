@@ -1581,7 +1581,8 @@ the selected SDK's existing native catalog migrator under the exclusive runtime
 writer, preserving runtime identity, keys, signed publication and message rows.
 Missing groups or installed outbound visibility refuse before runtime load.
 The original update retains the migration receipt; a lost acknowledgment retries
-the same idempotent step. This is not serving startup or permission to reopen
+the same idempotent step. Older retained updates keep their original step set;
+new operations record catalog preparation before any effect. This is not serving startup or permission to reopen
 outbound messaging. An additive migration remains after software failure:
 recover forward with compatible code, without restoring old data over later effects.
 Do not rerun enrollment, controller issuance or group publication to update code.

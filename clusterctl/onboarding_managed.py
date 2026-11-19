@@ -135,7 +135,6 @@ class ManagedRuntime:
                 plan_digest=digest(plan), candidate_digest=candidate[1], argv=argv)
             if receive_only_group:
                 pins['receive_only_group'] = True
-                pins['prepare_closed_catalogs'] = True
             def save():
                 if len(json.dumps(state).encode()) > 65536:
                     raise OnboardingError('native_code_update_record_limit')
@@ -182,6 +181,8 @@ class ManagedRuntime:
                 state = dict(pins=pins, runtime_sha256=before['runtime_sha256'],
                     request=dict(schema='cluster-guest-service-bootstrap/v1', operation_id=operation_id,
                         plan_digest=digest(plan), predecessor=previous, argv=argv), effects={})
+                if receive_only_group:
+                    state['prepare_closed_catalogs'] = True
                 if before.get('group') is not None:
                     state['closed_group'] = _code_update_group(before)
                 if previous_completed is not None:
@@ -190,7 +191,7 @@ class ManagedRuntime:
                     being_seed._write(directory / 'native-code-update.previous.json', previous_completed)
                     state['previous_completed_sha256'] = digest(previous_completed)
                 save()
-            actions = ('validate', 'quiesce', *(['catalogs'] if receive_only_group else []), 'select', 'start')
+            actions = ('validate', 'quiesce', *(['catalogs'] if state.get('prepare_closed_catalogs') else []), 'select', 'start')
             for action in actions:
                 if action in state['effects']:
                     continue

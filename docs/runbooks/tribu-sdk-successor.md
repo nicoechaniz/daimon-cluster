@@ -1668,6 +1668,16 @@ the application update. The successor qualification covers both destination
 types, additive publication with a lost acknowledgment, and first portable
 publication over initialized receive-only catalogs without replacing history.
 
+The existing owner `visibility-disclosure` and `visibility-accept` commands
+accept an optional boolean `prospective`. Set it to true for this preparation
+phase. Acceptance recomputes the complete disclosure from current signed
+membership, verified Roots and the selected destination before using the native
+binding signer; altered scope or participants refuse. These retained bindings
+are not an installed visibility policy. Final native publication still validates
+them against the completed application. Additive `application` commands can reuse
+the existing `receive_import` references from that same operation; private keys
+stay inside the owner transport and import store.
+
 The normal native application/visibility publisher must still validate the
 prepared document against the fully published current application and complete
 acceptance set before selection. A changed membership or authority must refuse;

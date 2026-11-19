@@ -872,6 +872,9 @@ def publication_command(value: dict) -> dict:
                 or not isinstance(value['action'], str) or value['action'] not in PUBLICATIONS
                 or not isinstance(value['params'], dict)
                 or set(value['params']) != PUBLICATIONS[value['action']] and not (
+                    value['action'] in {'visibility-disclosure', 'visibility-accept'}
+                    and set(value['params']) == PUBLICATIONS[value['action']] | {'prospective'}
+                    and type(value['params']['prospective']) is bool) and not (
                     value['action'] in {'snapshot', 'receive-snapshot'}
                     and PUBLICATIONS[value['action']] <= set(value['params'])
                     and set(value['params']) - PUBLICATIONS[value['action']] <= {'expected_stores', 'expected_preservation'})):
@@ -1522,11 +1525,31 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
         return _publish_receive_application(hosted, group_root, operation, value, closure,
             deadline_ns=deadline_ns)
     if action == 'application':
-        return _publish_application(hosted, directory, params)
+        from .onboarding_receive_keys import resolve_sources
+        return _publish_application(hosted, directory,
+            {**params, 'secret_sources':resolve_sources(operation, params['secret_sources'])})
     if action == 'visibility-disclosure':
-        disclosure = operator_messaging.group_visibility_disclosure(hosted, directory, **params)
+        disclosure_params = {key:item for key,item in params.items() if key != 'prospective'}
+        prepare = prepare_current_group_visibility if params.get('prospective') else operator_messaging.group_visibility_disclosure
+        disclosure = prepare(hosted, directory, **disclosure_params)
         return dict(disclosure=disclosure, disclosure_sha256=config_digest(disclosure))
     if action == 'visibility-accept':
+        if params.get('prospective'):
+            from daimon_matrix.messaging_config import create_binding
+            bindings = []
+            for disclosure in params['disclosures']:
+                try:
+                    local = disclosure['scope']['channels'][0]['local_being_ref']
+                    expected = prepare_current_group_visibility(hosted, directory,
+                        approved_destination=params['approved_destination'],
+                        issued_at_ms=disclosure['issued_at_ms'], local_being_ref=local)
+                    if disclosure != expected:
+                        raise ValueError
+                except (KeyError, IndexError, TypeError, ValueError):
+                    raise OnboardingError('onboarding_group_visibility_preparation_rejected') from None
+                bindings.append(dict(disclosure_sha256=config_digest(disclosure),
+                    binding=create_binding(hosted, disclosure)))
+            return dict(bindings=bindings)
         return dict(bindings=[dict(disclosure_sha256=config_digest(disclosure),
             binding=operator_messaging.accept_group_visibility(hosted, directory, disclosure,
                 approved_destination=params['approved_destination'])) for disclosure in params['disclosures']])

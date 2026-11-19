@@ -1218,9 +1218,7 @@ def test_native_additive_publication_recovers_its_sdk_predecessor_without_anothe
     assert owner.group_relationship(dict(operation_id=identifier, step='accepted',
         method='relationship.event.ingest', params=dict(event=acceptance)),
         offline=True, authority_closure=approved)['status'] == 'recorded'
-    from clusterctl.onboarding_group_admission import (
-        load_owner_runtime, prepare_current_group_visibility, public_authorities,
-    )
+    from clusterctl.onboarding_group_admission import load_owner_runtime, public_authorities
     destination = dict(bot_id=1, chat_id=-123, topic_id=None, representation='compact-text/v1')
     if portable:
         from daimon_matrix.canonical import b64url
@@ -1229,12 +1227,21 @@ def test_native_additive_publication_recovers_its_sdk_predecessor_without_anothe
             receipt_key=b64url(b'p'*32)), representation='compact-text/v1')
     issued = time.time_ns() // 1_000_000
     original_publication = (group/'application/publication.json').read_bytes()
-    with owner.writer():
-        preparing = load_owner_runtime(owner.root, owner._reader, authorities=public_authorities(founder.document_bundle(), approved))
-        prepared_disclosure = prepare_current_group_visibility(preparing, group/'application',
-            approved_destination=destination, issued_at_ms=issued)
-        from daimon_matrix.messaging_config import create_binding
-        prepared_binding = create_binding(preparing, prepared_disclosure)
+    prepared_disclosure = owner.group_publication(dict(operation_id=identifier,
+        step='prospective-disclosure', action='visibility-disclosure', params=dict(
+            approved_destination=destination, issued_at_ms=issued, prospective=True)),
+        authority_closure=approved)['disclosure']
+    prepared_binding = owner.group_publication(dict(operation_id=identifier,
+        step='prospective-binding', action='visibility-accept', params=dict(
+            approved_destination=destination, disclosures=[prepared_disclosure], prospective=True)),
+        authority_closure=approved)['bindings'][0]['binding']
+    altered = copy.deepcopy(prepared_disclosure)
+    altered['scope']['channels'][0]['participants'] = []
+    with pytest.raises(OnboardingError, match='visibility_preparation_rejected'):
+        owner.group_publication(dict(operation_id=identifier,
+            step='altered-prospective-binding', action='visibility-accept', params=dict(
+                approved_destination=destination, disclosures=[altered], prospective=True)),
+            authority_closure=approved)
     assert set(prepared_disclosure['participants']) == {
         peer_bundle['manifest']['being_ref'], founder.document_bundle()['manifest']['being_ref']}
     assert (group/'application/publication.json').read_bytes() == original_publication
@@ -1244,10 +1251,22 @@ def test_native_additive_publication_recovers_its_sdk_predecessor_without_anothe
     route = dict(provider_ref='peer', route_ref='peer', key_ref='peer',
         endpoint='http://127.0.0.1:48676/dm-messaging/v1/message',
         secret_file=key.name, secret_sha256=hashlib.sha256(key.read_bytes()).hexdigest())
+    # Seed an already completed owner-private import. The native application
+    # must consume its retained reference without a key in the public command.
+    imported = journal / identifier / 'receive-imports'
+    imported.mkdir(mode=0o700)
+    slot = digest(route)
+    imported_key = imported / (slot+'.key')
+    imported_key.write_bytes(key.read_bytes())
+    imported_key.chmod(0o600)
+    context = being_seed._read(journal / identifier / 'owner/context.json')
+    being_seed._write(imported / (slot+'.json'), dict(
+        schema='cluster-receive-resource-import/v1', owner_context_sha256=digest(context),
+        route=route))
     peer = peer_bundle['manifest']['being_ref']
     addition = dict(operation_id=identifier, step='add-member', action='application', params=dict(
         expected_application_sha256=original['application_sha256'], specification=None,
-        admitted_being_refs=[peer], secret_sources={key.name: str(key)},
+        admitted_being_refs=[peer], secret_sources={key.name: {'receive_import':slot}},
         additions=dict(authorities=[approved[peer]['authority']], relationship_events=[invited, acceptance],
             roster=[dict(being_ref=peer, embodiment_id=peer_bundle['local_origin']['embodiment_id'],
                 body_ref=peer_bundle['local_origin']['body_ref'], route=route)])))

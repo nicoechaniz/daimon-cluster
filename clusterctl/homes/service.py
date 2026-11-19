@@ -948,10 +948,20 @@ def handler(app, *, owner=False):
                     service_key = path.removeprefix('/service-access/')
                     forwarded_method = self.headers.get('X-Forwarded-Method', 'GET')
                     if subject is None and app.service_deployments:
+                        forwarded_uri = self.headers.get('X-Forwarded-Uri', '')
                         destination = app.service_deployments.login_return(
-                            home, service_key, self.headers.get('X-Forwarded-Uri', ''))
+                            home, service_key, forwarded_uri)
+                        registered_root = app.service_deployments.login_return(home, service_key, '')
+                        forwarded = urlsplit(forwarded_uri)
+                        root_navigation = (not self.headers.get('Sec-Fetch-Dest')
+                            and registered_root and not forwarded.scheme and not forwarded.netloc
+                            and forwarded.path == urlsplit(registered_root).path)
+                        wants_json = any(value.split(';', 1)[0].strip().lower() == 'application/json'
+                            for value in self.headers.get('Accept', '').split(','))
                         if (destination and forwarded_method == 'GET'
-                                and self.headers.get('Sec-Fetch-Dest') == 'document'):
+                                and not wants_json
+                                and self.headers.get('Upgrade', '').strip().lower() != 'websocket'
+                                and (self.headers.get('Sec-Fetch-Dest') == 'document' or root_navigation)):
                             self.respond(302, b'', headers=(('Location', '/access/sso/start?return=' + quote(destination, safe='')),))
                             return
                         self.respond(401, {'message': 'Entrá con tu cuenta para abrir esta aplicación.'})

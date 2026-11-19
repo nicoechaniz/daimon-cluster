@@ -884,7 +884,7 @@ class SourceGroupClient:
         return _base_observation(self._call(['--owner-base-status'], maintenance=True))
 
     def status(self) -> dict:
-        return self._observation(self._call(['--owner-status']))
+        return self._observation(self._call(['--owner-status'], maintenance=True))
 
     def qualified_identity(self, *, expires_at_ms: int, require_admitted: bool = False,
                            native_tooling: dict | None = None) -> dict:
@@ -895,7 +895,7 @@ class SourceGroupClient:
         arguments = ['--qualified-identity', '--identity-expires-at-ms', str(expires_at_ms)]
         if native_tooling is not None:
             arguments += ['--native-tooling-json', json.dumps(native_tooling, separators=(',', ':'))]
-        value = self._observation(self._call(arguments))
+        value = self._observation(self._call(arguments, maintenance=True))
         verified = value.get('verified_identity')
         if (not isinstance(verified, dict) or type(verified.get('expires_at_ms')) is not int
                 or verified['expires_at_ms'] <= time.time_ns() // 1_000_000

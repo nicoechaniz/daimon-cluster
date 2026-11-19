@@ -330,7 +330,7 @@ def require_current_reader_coverage(proofs: dict, receivers: dict) -> dict:
 
 def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, prepare=True):
     """Observe a complete current vector without changing any native gate."""
-    from .onboarding_receiving_update import observe_current_reader, conversation_cohort, _reader_active
+    from .onboarding_receiving_update import observe_current_reader, conversation_cohort, _reader_active, SourceGroupClient
     selected = configuration(selected, owners)
     entry = (row['runtime_observation'] or {}).get('receive_application', {})
     if (entry.get('binding') != digest(dict(original_intent=row['intent'], preparation=selected))
@@ -357,7 +357,7 @@ def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, p
         for key, owner in sorted(owners.items()):
             validate()
             proofs[key] = observe_current_reader(owner, expected_selection=expected[key],
-                expires_at_ms=expires, receive_only=expected[key]['visibility_installation_sha256'] is None)
+                require_admitted=not isinstance(owner, SourceGroupClient), expires_at_ms=expires, receive_only=expected[key]['visibility_installation_sha256'] is None)
             approved = admission['receivers'][key]
             reader = proofs[key]['reader']
             if (reader['being_ref'], reader['embodiment_id']) != (approved['being_ref'], approved['embodiment_id']):

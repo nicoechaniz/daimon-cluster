@@ -188,6 +188,9 @@ def test_source_command_drops_privileges_without_inspecting_private_sdk(tmp_path
     assert calls[-1][calls[-1].index('--code-digest')+1]=='c'*64
     assert owner._call(['--group-request','-'],command={},maintenance=True)=={'observed':True}
     assert calls[-1][calls[-1].index('--code-digest')+1]=='d'*64
+    monkeypatch.setattr(owner, '_observation', lambda value: value)
+    assert owner.status() == {'observed': True}
+    assert calls[-1][calls[-1].index('--code-digest')+1]=='d'*64
     assert owner.code_digest=='c'*64 and owner.code==tmp_path/'code'
 
 

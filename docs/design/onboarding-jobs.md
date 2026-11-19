@@ -2039,3 +2039,9 @@ every pinned source byte, cache ownership/type/header and the complete bounded
 tree. Unknown files or changed sources refuse before deletion. Startup never
 executes or accepts either kind of cache; this remains an explicit preparation
 operation under the SDK exclusive lock, using its actual interpreter.
+
+During an explicitly prepared maintenance scope, Source status/identity reads
+use that qualified helper and its matching closed imports. The admitted original
+code descriptor stays immutable; a legacy observer must not parse a successor
+application through its historical schema. Without a selected helper, the
+ordinary original observer remains unchanged.

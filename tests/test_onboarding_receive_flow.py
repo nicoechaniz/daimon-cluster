@@ -618,3 +618,28 @@ def test_ingress_configuration_binds_transport_and_actual_guest_listener(fixture
     with pytest.raises(OnboardingError,match='companion_receive_preparation_required'):
         run(f)
     assert not f.events
+
+
+def test_current_collection_keeps_source_and_guest_identity_contracts_distinct(fixture, monkeypatch):
+    from clusterctl import onboarding_receiving_update as receiving
+    f = fixture
+    run(f)
+    source = object.__new__(receiving.SourceGroupClient)
+    source.deadline_ns, source.maintenance = None, None
+    f.owners['old'] = source
+    calls = []
+    class Collected(Exception):
+        pass
+    def identity(owner, *, require_admitted, **kwargs):
+        calls.append(require_admitted)
+        if owner is source:
+            assert require_admitted is False
+            raise Collected
+        assert require_admitted is True
+        return dict(reader=dict(being_ref='new', embodiment_id='body-new'))
+    monkeypatch.setattr(receiving, 'observe_current_reader', identity)
+    with pytest.raises(Collected):
+        flow._collect(plan=f.plan, selected=f.selected, row=f.journal.get(f.row['operation_id']),
+            admission=f.admission, owners=f.owners, validate=lambda:None,
+            deadline_ns=time.monotonic_ns()+10_000_000_000, prepare=False)
+    assert calls == [True, False]

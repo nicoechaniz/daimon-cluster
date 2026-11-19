@@ -442,6 +442,7 @@ def native_readers(fixture, monkeypatch, tmp_path):
     def collect(**options):
         options['validate']()
         return {name:dict(reader=copy.deepcopy(next(r for r in readers if r['being_ref']==name)),
+            identity_expires_at_ms=time.time_ns()//1_000_000+60_000,
             gate=gate(name),roster=dict(roster_sha256=digest(name)),
             expected=dict(process=dict(pid=os.getpid()),server=dict(embodiment_id='body-'+name),selection={}))
             for name in f.owners}, dict(readers=copy.deepcopy(readers),membership_basis_sha256='d'*64)
@@ -513,6 +514,32 @@ def test_current_native_barrier_keeps_partial_work_across_foreground_window(nati
     assert f.effects==['new-revoke']
     assert f.select()==dict(tribe_reader_selection_verified=True)
     assert f.effects==['new-revoke','old-revoke','new-select','old-select']
+
+
+@pytest.mark.parametrize('expire_after_first_select', [False, True])
+def test_current_selection_reuses_only_unexpired_complete_proofs(native_readers, monkeypatch,
+                                                                expire_after_first_select):
+    f = native_readers
+    original = flow._collect
+    rounds = []
+    def collect(**options):
+        result = original(**options)
+        rounds.append(result[0])
+        return result
+    monkeypatch.setattr(flow, '_collect', collect)
+    apply = f.f.owners['new'].prepare_apply_control
+    def select(command, path):
+        result = apply(command, path)
+        if expire_after_first_select and command['phase'] == 'select':
+            for proof in rounds[-1].values():
+                proof['identity_expires_at_ms'] = 0
+        return result
+    f.f.owners['new'].prepare_apply_control = select
+    assert f.select() == dict(tribe_reader_selection_verified=True)
+    # Initial vector and final full read are mandatory. An expired vector adds
+    # one complete refresh before the next native positive control.
+    assert len(rounds) == (3 if expire_after_first_select else 2)
+    assert f.effects == ['new-revoke', 'old-revoke', 'new-select', 'old-select']
 
 
 def test_changed_current_vector_cannot_enable_partial_cohort(native_readers):

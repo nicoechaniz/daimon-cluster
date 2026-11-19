@@ -609,7 +609,9 @@ def observe(**options):
 def select_readers(*, plan, selected, row, journal, admission, owners, validate, deadline_ns):
     """Compose existing native revoke/select controls under the original job.
 
-    All readers are observed before the barrier and before each positive effect.
+    All readers are observed before the barrier and must have unexpired proofs
+    before each positive effect. Reuse the same finite vector while valid;
+    each native control still checks its exact local gate and roster.
     Commands and owner-private request files are immutable; a later foreground
     invocation continues them without resetting membership, dates or reader data.
     The caller holds the original journal lock. No application/visibility changes.
@@ -699,10 +701,16 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
                         raise OnboardingError('companion_receive_reader_control_changed')
                     continue
                 if mode == 'select':
-                    # Positive controls need a fresh all-required round. Cached
-                    # completed controls and revocations need no duplicate cold
-                    # observer round; native local CAS still checks their gates.
-                    proofs, cohort = collect()
+                    # A proof already has a native <=60-second validity. Repeating
+                    # eight cold CLI reads for every gate can exhaust the whole
+                    # operator window while the barrier is closed. Refresh only
+                    # when that existing proof window ends; local gate/roster CAS
+                    # and the final complete observation remain mandatory.
+                    from .onboarding_receiving_update import _reader_active
+                    now = time.time_ns() // 1_000_000
+                    if any(p['identity_expires_at_ms'] <= now
+                            or not _reader_active(p['reader'], now) for p in proofs.values()):
+                        proofs, cohort = collect()
                     unchanged(proofs, cohort)
                     gate = proofs[name]['gate']
                     for other,p in proofs.items():

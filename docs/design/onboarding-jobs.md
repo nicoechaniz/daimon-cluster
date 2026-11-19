@@ -2057,6 +2057,13 @@ Current-reader proofs are collected concurrently for independent owners, with at
 most eight in-flight reads and the same shared <=60-second validity/deadline.
 All exact identity, current selection, complete cohort and expiry checks remain
 mandatory; slow serial CLI startup must not consume other owners’ validity.
+During current-reader selection, reuse that complete authenticated vector only
+inside its existing validity window, updating each gate from its actual native
+control receipt. Refresh the complete vector when any proof expires. Every
+positive control retains local process/gate/roster CAS and a final complete
+authenticated observation is required before reporting selection success. Do not
+perform another eight-owner cold observation for each still-valid local control;
+that repetition exhausted the finite command while the barrier was closed.
 
 A controller/bootstrap update preserves a selected receive-only application when
 its authenticated group snapshot has no visibility installation. Both preparation

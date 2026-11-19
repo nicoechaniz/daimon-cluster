@@ -2032,3 +2032,10 @@ for that original plan; it never changes or repeats completed admission. On a
 dedicated single-companion configuration, a bounded `--once` worker invocation
 continues this post-admission phase. The ordinary completed `--until` entry-only
 fast path remains read-only.
+
+Explicit SDK import-cache retirement recognizes ordinary interpreter caches and
+pytest assertion-rewrite caches for the current interpreter. It first verifies
+every pinned source byte, cache ownership/type/header and the complete bounded
+tree. Unknown files or changed sources refuse before deletion. Startup never
+executes or accepts either kind of cache; this remains an explicit preparation
+operation under the SDK exclusive lock, using its actual interpreter.

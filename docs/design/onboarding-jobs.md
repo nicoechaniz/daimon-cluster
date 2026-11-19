@@ -2045,3 +2045,10 @@ use that qualified helper and its matching closed imports. The admitted original
 code descriptor stays immutable; a legacy observer must not parse a successor
 application through its historical schema. Without a selected helper, the
 ordinary original observer remains unchanged.
+
+A receive continuation that reaches its native guard deadline resumes automatically
+within the same finite operator deadline only after new confirmed native/import
+results and observed guard restoration. Unchanged failures, uncertain restoration
+or expiry of the whole operator stop. This reuses the membership continuation
+rule and exact original journal; no background retry, new resource allowance or
+longer native pause is introduced.

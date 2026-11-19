@@ -1808,8 +1808,29 @@ class GroupCoordinator:
                         or phase.get('binding') != digest(dict(original_intent=row['intent'],preparation=selected))):
                     raise OnboardingError('companion_receive_original_changed')
                 return finish(snapshot)
-            result = publish(plan=plan, selected=selected, journal=journal, row=row, admission=admission,
-                owners=self._owners(admission), validate=validate, deadline_ns=deadline)
+            def confirmed_receive_steps():
+                phase = (journal.get(original_id)['runtime_observation'] or {}).get('receive_application', {})
+                return sum(isinstance(value, dict) and (
+                    value.get('result') is not None or key.startswith('import-') and
+                    value.get('schema') == 'cluster-receive-resource-transfer-result/v1')
+                    for key, value in phase.items())
+            while True:
+                before_steps = confirmed_receive_steps()
+                try:
+                    result = publish(plan=plan, selected=selected, journal=journal,
+                        row=journal.get(original_id), admission=admission,
+                        owners=self._owners(admission), validate=validate, deadline_ns=deadline)
+                    break
+                except OnboardingError as error:
+                    # Reuse the membership continuation rule: a bounded native
+                    # guard has closed/restored and confirmed new work. Resume
+                    # its exact journal inside this same operator deadline.
+                    if (str(error) not in {'receiving_owner_deadline_expired', 'receiving_host_deadline_expired'}
+                            or getattr(error, '__notes__', [])
+                            or confirmed_receive_steps() <= before_steps
+                            or time.monotonic_ns() >= deadline):
+                        raise
+                    validate()
             # publish returns only after the original guard's actual restoration.
             # Keep that receiving fact separate from membership's terminal result.
             validate()

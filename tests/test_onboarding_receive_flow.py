@@ -325,7 +325,8 @@ def test_existing_worker_advances_receive_after_completed_membership_without_ree
 
 
 @pytest.mark.parametrize('stage',['acceptance',None])
-def test_coordinator_retains_actual_restoration_and_completed_retry_acquires_no_owners(fixture,monkeypatch,tmp_path,stage):
+@pytest.mark.parametrize('defer',[False,True,'uncertain','unchanged'])
+def test_coordinator_retains_actual_restoration_and_completed_retry_acquires_no_owners(fixture,monkeypatch,tmp_path,stage,defer):
     from clusterctl import onboarding_group_coordinator as module
     f=fixture
     coordinator=object.__new__(module.GroupCoordinator)
@@ -340,7 +341,36 @@ def test_coordinator_retains_actual_restoration_and_completed_retry_acquires_no_
     monkeypatch.setattr(coordinator,'_owners',lambda a:f.owners)
     monkeypatch.setattr(module,'configuration',lambda p:coordinator.settings)
     monkeypatch.setattr(module,'finish_membership_only',lambda j,r,result:result)
+    if defer in (True, 'uncertain'):
+        relay = flow.relay
+        lost = []
+        def bounded(source, target, outgoing, incoming, **kwargs):
+            if source is f.owners['old'] and not lost:
+                assert f.events[-1] != ('new','restore')
+                lost.append(True)
+                error = OnboardingError('receiving_owner_deadline_expired')
+                if defer == 'uncertain':
+                    error.add_note('Scoped Matrix restoration is unobserved')
+                raise error
+            return relay(source, target, outgoing, incoming, **kwargs)
+        monkeypatch.setattr(flow, 'relay', bounded)
+    if defer == 'unchanged':
+        calls = []
+        def unavailable(*args, **kwargs):
+            calls.append(True)
+            raise OnboardingError('receiving_owner_deadline_expired')
+        monkeypatch.setattr(flow, 'Endpoint', unavailable)
+    if defer in ('uncertain', 'unchanged'):
+        with pytest.raises(OnboardingError, match='receiving_owner_deadline_expired') as error:
+            coordinator.advance_receive_only('new')
+        if defer == 'uncertain':
+            assert error.value.__notes__ and len(lost) == 1
+        else:
+            assert calls == [True] and not f.effects
+        return
     result=coordinator.advance_receive_only('new')
+    assert f.events.count(('new','restore')) == (3 if defer else 1)
+    assert all(count == 1 for count in f.effects.values())
     assert f.events[-1]==('new','restore')
     current=f.journal.get(f.row['operation_id'])
     assert current['result']=={'original-membership':'complete'}

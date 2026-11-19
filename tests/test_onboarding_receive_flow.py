@@ -215,7 +215,8 @@ def test_observation_requires_fresh_all_required_readers_and_preserves_old_visib
     if gap=='unobserved-sibling-body':
         roster['audience']=roster['audience']+[dict(being_ref='old',embodiment_id='historical-body-old')]
     calls=[]
-    def proof(owner,*,expected_selection,expires_at_ms,receive_only):
+    def proof(owner,*,expected_selection,expires_at_ms,receive_only,require_admitted):
+        assert require_admitted is True
         name=owner.name
         assert receive_only == (name=='new')
         assert expected_selection['application_sha256']==('9' if name=='new' else '4')*64
@@ -250,7 +251,7 @@ def test_observation_requires_fresh_all_required_readers_and_preserves_old_visib
         assert result.state==('complete' if gap in (None,'unobserved-sibling-body') else 'waiting')
         if gap in (None,'unobserved-sibling-body'):
             assert result.facts=={'tribe_reader_selection_verified':True}
-    assert calls==['new','old']
+    assert sorted(calls)==['new','old']
     assert f.journal.get(f.row['operation_id'])==before
     assert all(o.deadline_ns is None and o.maintenance is None for o in f.owners.values())
 
@@ -693,3 +694,67 @@ def test_current_reader_collection_observes_independent_owners_in_one_validity_w
         row=f.journal.get(f.row['operation_id']), admission=f.admission, owners=f.owners,
         validate=lambda:None, deadline_ns=time.monotonic_ns()+10_000_000_000, prepare=False)
     assert set(proofs) == set(f.owners) and cohort == {'cohort':'unchanged checks'}
+
+
+@pytest.mark.parametrize('lost', [False, True])
+def test_controller_child_preserves_published_phase_and_original_identity(fixture, monkeypatch, tmp_path, lost):
+    from clusterctl import onboarding_receiving_update as receiving
+    from clusterctl import onboarding_host
+    f = fixture
+    snapshot = run(f)
+    before = f.journal.get(f.row['operation_id'])
+    observed = copy.deepcopy(before['runtime_observation'])
+    phase = observed['receive_application']
+    phase['restoration'] = {'verified':'original guard restored'}
+    f.journal.advance(before['operation_id'], before['state'], runtime_observation=observed,
+        expected_runtime_observation=before['runtime_observation'])
+    original_phase = copy.deepcopy(phase)
+    host_path = tmp_path/'host.json'
+    from clusterctl import being_seed
+    being_seed._write(host_path, {'schema':'protected fixture'})
+    config = object()
+    monkeypatch.setattr(onboarding_host.HostConfig, 'load', lambda path: config)
+    backend = SimpleNamespace(config=config)
+    preparation = dict(code='/qualified/code',code_digest='c'*64,manifest_path='/qualified/manifest.json',
+        manifest_digest='d'*64,expires_at_ms=time.time_ns()//1_000_000+60000,host_config=str(host_path))
+    calls = []
+    result = dict(schema='cluster-guest-bootstrap-loaded/v1',code_digest='c'*64,
+        loaded_runtime=dict(runtime_bundle_sha256='e'*64,qualified_startup={'matrix_wheel_sha256':'f'*64}),
+        loaded_application=dict(application_sha256=snapshot['group']['application_sha256'],
+            publication_sha256=snapshot['group']['publication_sha256'],
+            visibility=dict(installation_sha256=None,release_enabled=False)))
+    def prepare(*args, **kwargs):
+        calls.append('prepare')
+        return dict(plan=f.plan,owner=dict(group={**snapshot['group'],'installation_sha256':None}),root={}), {'original':'native request'}
+    monkeypatch.setattr(receiving, 'prepare_guest_bootstrap', prepare)
+    pending_loss = [True] if lost else []
+    class Native:
+        def __init__(self, journal, child, backend, name):
+            self.journal, self.child = journal, child
+            assert name == 'new'
+        def execute(self, **kwargs):
+            child = self.journal.get(self.child)
+            if not (child['runtime_observation'] or {}).get('native_loaded'):
+                calls.append('native effect')
+                self.journal.advance(self.child,'runtime-dispatching',runtime_observation={'native_loaded':result})
+            if pending_loss:
+                pending_loss.pop()
+                raise OSError('lost after native load')
+            return result
+    monkeypatch.setattr(receiving,'GuestBootstrapController',Native)
+    def execute():
+        return flow.ensure_controller(plan=f.plan,preparation=preparation,backend=backend,config_path=host_path,
+            journal=f.journal,row=f.journal.get(f.row['operation_id']),validate=lambda:None,
+            deadline_ns=time.monotonic_ns()+10_000_000_000)
+    if lost:
+        with pytest.raises(OSError,match='lost after native load'):
+            execute()
+    forward = execute()
+    assert execute() == forward
+    assert calls == ['prepare','native effect']
+    parent = f.journal.get(f.row['operation_id'])
+    assert parent['runtime_observation']['receive_application'] == original_phase
+    assert parent['result'] == before['result'] and parent['intent'] == before['intent']
+    assert forward['selection']['runtime_bundle_sha256'] == 'e'*64
+    assert forward['selection']['visibility_installation_sha256'] is None
+    assert f.journal.get(forward['child_operation_id'])['state'] == 'completed'

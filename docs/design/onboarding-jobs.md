@@ -2057,3 +2057,19 @@ Current-reader proofs are collected concurrently for independent owners, with at
 most eight in-flight reads and the same shared <=60-second validity/deadline.
 All exact identity, current selection, complete cohort and expiry checks remain
 mandatory; slow serial CLI startup must not consume other owners’ validity.
+
+A controller/bootstrap update preserves a selected receive-only application when
+its authenticated group snapshot has no visibility installation. Both preparation
+and the retained controller validate the existing `--receive-only` service command;
+provisioning the reader controller never fabricates a visibility adapter or enables
+outbound release. The signed application and original admission remain unchanged.
+
+The original-job coordinator accepts an explicit `receive_controller_preparations`
+entry keyed by the same plan digest. It pins `host_config`, `code`, `code_digest`,
+`manifest_path`, `manifest_digest` and a finite `expires_at_ms`. This joins the
+existing guest native bootstrap, not another enrollment or scheduler. A separate
+native child retains its exact before/after and interrupted-call receipts. The
+parent retains only the child link and verified current selection; its original
+publication, receive key and snapshot remain unchanged. Current-reader collection
+consumes that forward selection and still requires fresh authenticated proofs.
+Completed children are read back rather than repeated. Outbound remains closed.

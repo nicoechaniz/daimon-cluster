@@ -370,9 +370,17 @@ def test_journal_and_jobs_are_owned_during_both_typed_routes(fixture, action):
 
 
 @pytest.mark.parametrize("native", [False, True])
-def test_preparation_reuses_maintained_command_and_refuses_sdk_mismatch_before_root(fixture, monkeypatch, native):
+@pytest.mark.parametrize("receive_only", [False, True])
+def test_preparation_reuses_maintained_command_and_refuses_sdk_mismatch_before_root(fixture, monkeypatch, native, receive_only):
     controller, backend, calls, _ = fixture
     row, frozen, candidate = controller._row()
+    if receive_only:
+        frozen['owner']['group']['installation_sha256'] = None
+        frozen['owner']['group_sha256'] = digest(frozen['owner']['group'])
+        candidate['argv'] = command(Path('/opt/daimon-onboarding') / frozen['plan']['release_digest'],
+            receive_only=True, runtime_code=Path('/opt/daimon-onboarding-runtime') / candidate['runtime_digest'],
+            runtime_digest=candidate['runtime_digest'])
+        row['expected_precondition']['guest_bootstraps']['eko'] = copy.deepcopy(frozen)
     manifest = dict(provenance={'matrix_revision': candidate['prepared']['matrix_revision']},
         artifacts={'matrix_sdk': candidate['prepared']['matrix_wheel_sha256']},
         required_receivers=[{'artifacts': {'receiving_code': candidate['runtime_digest']}}])

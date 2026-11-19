@@ -621,7 +621,7 @@ class GuestGroupClient:
                            native_tooling: dict | None = None) -> dict:
         options: dict = {'native_tooling': native_tooling} if native_tooling is not None else {}
         value = self._call('receiving-identity', identity_expires_at_ms=expires_at_ms,
-            **options)
+            maintenance=True, **options)
         if (value.get('responder_association') != 'same-connection'
                 or value.get('plan_digest') != digest(self.plan)
                 or not isinstance(value.get('admission_parent'), dict)
@@ -2935,7 +2935,9 @@ def prepare_guest_bootstrap(backend, plan: dict, *, candidate: tuple[Path, str],
         raise OnboardingError('receiving_guest_bootstrap_identity_required')
     base = backend._receiving_base(plan)
     selected, _, _ = backend._runtime_paths(plan, base, candidate=candidate)
-    argv = command(base, receive_only=False, visibility=Path(owner['group']['selected']['visibility']),
+    receive_only = owner['group']['installation_sha256'] is None
+    argv = command(base, receive_only=receive_only,
+        visibility=None if receive_only else Path(owner['group']['selected']['visibility']),
         runtime_code=selected, runtime_digest=candidate[1])
     # The native placement already pins its qualified bootstrap interpreter.
     # A unit update must not silently switch it to the host's unrelated Python.
@@ -3189,8 +3191,9 @@ class GuestBootstrapController:
         from .onboarding_service import command
         base = Path('/opt/daimon-onboarding') / frozen['plan']['release_digest']
         selected = Path('/opt/daimon-onboarding-runtime') / candidate['runtime_digest']
-        expected_argv = command(base, receive_only=False,
-            visibility=Path(frozen['owner']['group']['selected']['visibility']),
+        receive_only = frozen['owner']['group']['installation_sha256'] is None
+        expected_argv = command(base, receive_only=receive_only,
+            visibility=None if receive_only else Path(frozen['owner']['group']['selected']['visibility']),
             runtime_code=selected, runtime_digest=candidate['runtime_digest'])
         if hasattr(self.backend, 'native_body') and (native := self.backend.native_body(frozen['plan'])) is not None:
             expected_argv[0] = str(native.python)

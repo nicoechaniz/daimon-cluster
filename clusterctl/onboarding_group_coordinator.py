@@ -325,7 +325,7 @@ def configuration(path: Path) -> dict:
     """
     value = being_seed._read(path, limit=being_seed.MAX_SELECTION)
     try:
-        if (set(value) - {'continuations', 'membership_requests', 'membership_preparations', 'membership_maintenance', 'receive_preparations'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
+        if (set(value) - {'continuations', 'membership_requests', 'membership_preparations', 'membership_maintenance', 'receive_preparations', 'receive_controller_preparations'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
                 or value['schema'] != SCHEMA or not _path(value['journal'])
                 or not isinstance(value['tribe_ref'], str) or not value['tribe_ref']
                 or not isinstance(value['owners'], dict) or len(value['owners']) > 256
@@ -408,6 +408,14 @@ def configuration(path: Path) -> dict:
             if not isinstance(pin, str) or re.fullmatch('[0-9a-f]{64}', pin) is None:
                 raise ValueError
             receive_configuration(selected, value['owners'])
+        from .onboarding_receive_flow import controller_configuration
+        controllers = value.get('receive_controller_preparations', {})
+        if not isinstance(controllers, dict) or len(controllers) > 16:
+            raise ValueError
+        for pin, selected in controllers.items():
+            if pin not in receives:
+                raise ValueError
+            controller_configuration(selected)
     except (KeyError, TypeError, ValueError, AttributeError, OnboardingError):
         raise OnboardingError('onboarding_group_coordinator_configuration_required') from None
     return value
@@ -1793,6 +1801,17 @@ class GroupCoordinator:
                         or any(fresh['owners'].get(k) != self.settings['owners'][k] for k in admission['receivers'])):
                     raise OnboardingError('companion_receive_original_changed')
             def finish(result):
+                controller = self.settings.get('receive_controller_preparations', {}).get(pin)
+                if controller is not None:
+                    from .onboarding_receive_flow import ensure_controller
+                    def current_controller():
+                        validate()
+                        fresh = configuration(self.path)
+                        if fresh.get('receive_controller_preparations', {}).get(pin) != controller:
+                            raise OnboardingError('companion_receive_original_changed')
+                    ensure_controller(plan=plan, preparation=controller, backend=self.backend,
+                        config_path=Path(controller['host_config']),
+                        journal=journal, row=journal.get(original_id), validate=current_controller, deadline_ns=deadline)
                 if select_current:
                     select_readers(plan=plan, selected=selected, row=journal.get(original_id), journal=journal,
                         admission=admission, owners=self._owners(admission), validate=validate, deadline_ns=deadline)

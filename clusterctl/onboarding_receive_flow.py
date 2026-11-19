@@ -22,6 +22,123 @@ from .onboarding_receive_keys import parameters, relay
 SCHEMA = 'cluster-companion-receive-preparation/v1'
 
 
+def controller_configuration(value: dict) -> dict:
+    """An explicit existing native update, separate from immutable publication."""
+    import re
+    try:
+        if (set(value) != {'code', 'code_digest', 'manifest_path', 'manifest_digest', 'expires_at_ms', 'host_config'}
+                or any(not isinstance(value[k], str) or not Path(value[k]).is_absolute()
+                    or '..' in Path(value[k]).parts for k in ('code', 'manifest_path', 'host_config'))
+                or any(re.fullmatch('[0-9a-f]{64}', value[k]) is None
+                    for k in ('code_digest', 'manifest_digest'))
+                or type(value['expires_at_ms']) is not int or not 0 < value['expires_at_ms'] < 2**53):
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise OnboardingError('companion_receive_controller_preparation_required') from None
+    return copy.deepcopy(value)
+
+
+def ensure_controller(*, plan, preparation, backend, config_path, journal, row, validate, deadline_ns):
+    """Join the supported native controller bootstrap to this original job.
+
+    Publication/key/snapshot receipts stay immutable. The native child verifies
+    unchanged identity and signed application, then retains its forward load.
+    """
+    from .onboarding_code_successor import plan_update
+    from .onboarding_receiving_update import prepare_guest_bootstrap, GuestBootstrapController
+    from .onboarding_host import HostConfig
+    preparation = controller_configuration(preparation)
+    if backend.config != HostConfig.load(config_path):
+        raise OnboardingError('companion_receive_original_changed')
+    phase = (row['runtime_observation'] or {}).get('receive_application', {})
+    snapshot = phase.get('snapshot', {}).get('result')
+    if not isinstance(snapshot, dict) or not phase.get('restoration'):
+        raise OnboardingError('companion_receive_restoration_required')
+    name, parent = plan['name'], row['operation_id']
+    binding = dict(schema='cluster-companion-receive-controller/v1', parent=parent,
+        parent_intent_sha256=digest(row['intent']), receive_binding=phase['binding'],
+        snapshot_sha256=digest(snapshot), preparation_sha256=digest(preparation))
+
+    def check():
+        validate()
+        fresh = journal.get(parent)
+        current = (fresh['runtime_observation'] or {}).get('receive_application', {})
+        if (fresh['intent'] != row['intent'] or current.get('binding') != phase['binding']
+                or current.get('snapshot', {}).get('result') != snapshot
+                or current.get('restoration') != phase['restoration']):
+            raise OnboardingError('companion_receive_original_changed')
+        if time.monotonic_ns() >= deadline_ns:
+            raise OnboardingError('receiving_host_deadline_expired')
+
+    check()
+    child = journal.latest_for_target('companion-receive-controller:' + parent)
+    if child is None:
+        frozen, request = prepare_guest_bootstrap(backend, plan,
+            candidate=(Path(preparation['code']), preparation['code_digest']),
+            manifest_path=Path(preparation['manifest_path']), manifest_digest=preparation['manifest_digest'],
+            expires_at_ms=preparation['expires_at_ms'], installed_only=True,
+            timeout_seconds=60, deadline_ns=deadline_ns)
+        group = frozen['owner']['group']
+        if (group['application_sha256'] != snapshot['group']['application_sha256']
+                or group['publication_sha256'] != snapshot['group']['publication_sha256']
+                or group['installation_sha256'] is not None):
+            raise OnboardingError('companion_receive_source_changed')
+        host = being_seed._read(config_path)
+        check()
+        child = plan_update(journal, manifest_digest=preparation['manifest_digest'],
+            target='companion-receive-controller:' + parent,
+            expected_precondition=dict(host_config=str(config_path), host_configuration=host,
+                host_config_sha256=digest(host), guest_bootstraps={name:frozen}, companion_receive=binding),
+            intended_transition=dict(guest_bootstraps={name:request}),
+            audit_identity={'actor':'authorized-original-companion-receiving'})
+    if child['expected_precondition'].get('companion_receive') != binding:
+        raise OnboardingError('companion_receive_original_changed')
+    fresh = journal.get(parent)
+    retained = (fresh['runtime_observation'] or {}).get('receive_controller')
+    link = dict(binding=binding, child_operation_id=child['operation_id'])
+    if retained is None:
+        observed = copy.deepcopy(fresh['runtime_observation'] or {})
+        observed['receive_controller'] = link
+        journal.advance(parent, fresh['state'], runtime_observation=observed,
+            expected_runtime_observation=fresh['runtime_observation'])
+    elif any(retained.get(k) != v for k, v in link.items()):
+        raise OnboardingError('companion_receive_original_changed')
+    if child['state'] == 'completed':
+        result = child['result']
+    else:
+        result = GuestBootstrapController(journal, child['operation_id'], backend, name).execute(
+            timeout_seconds=60, deadline_ns=deadline_ns)
+        check()
+    check()
+    loaded, app = result['loaded_runtime'], result['loaded_application']
+    if (result['schema'] != 'cluster-guest-bootstrap-loaded/v1'
+            or app['application_sha256'] != snapshot['group']['application_sha256']
+            or app['publication_sha256'] != snapshot['group']['publication_sha256']
+            or app['visibility']['installation_sha256'] is not None
+            or app['visibility'].get('release_enabled') is not False):
+        raise OnboardingError('companion_receive_source_changed')
+    if child['state'] != 'completed':
+        child = journal.get(child['operation_id'])
+        journal.advance(child['operation_id'], 'completed', result=result,
+            expected_runtime_observation=child['runtime_observation'])
+    selection = dict(receiving_code=result['code_digest'],
+        matrix_sdk=loaded['qualified_startup']['matrix_wheel_sha256'],
+        runtime_bundle_sha256=loaded['runtime_bundle_sha256'],
+        application_sha256=app['application_sha256'], publication_sha256=app['publication_sha256'],
+        visibility_installation_sha256=None)
+    complete = dict(link, loaded_receipt_sha256=digest(result), selection=selection)
+    fresh = journal.get(parent)
+    observed = copy.deepcopy(fresh['runtime_observation'])
+    previous = observed['receive_controller']
+    if previous != link and previous != complete:
+        raise OnboardingError('companion_receive_original_changed')
+    if previous != complete:
+        observed['receive_controller'] = complete
+        journal.advance(parent, fresh['state'], runtime_observation=observed,
+            expected_runtime_observation=fresh['runtime_observation'])
+    return complete
+
+
 def configuration(value: dict, names) -> dict:
     try:
         fields = {'schema', 'helpers', 'key', 'policy', 'listen', 'intake_endpoint', 'stores', 'authority_order'}
@@ -343,6 +460,16 @@ def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, p
     expected[name] = dict(entry['baseline'],
         application_sha256=snapshot['group']['application_sha256'],
         publication_sha256=snapshot['group']['publication_sha256'], visibility_installation_sha256=None)
+    forward = (row['runtime_observation'] or {}).get('receive_controller')
+    if forward is not None:
+        if (forward.get('binding', {}).get('parent') != row['operation_id']
+                or forward['binding'].get('snapshot_sha256') != digest(snapshot)
+                or forward.get('selection', {}).get('application_sha256') != expected[name]['application_sha256']
+                or forward['selection'].get('publication_sha256') != expected[name]['publication_sha256']
+                or forward['selection'].get('visibility_installation_sha256') is not None
+                or not isinstance(forward.get('loaded_receipt_sha256'), str)):
+            raise OnboardingError('companion_receive_original_changed')
+        expected[name] = copy.deepcopy(forward['selection'])
     if set(expected) != set(owners) or set(owners) != set(admission['receivers']):
         raise OnboardingError('companion_receive_source_changed')
     previous = {key:(owner.deadline_ns, owner.maintenance) for key,owner in owners.items()}

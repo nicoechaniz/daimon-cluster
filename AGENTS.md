@@ -1,5 +1,7 @@
 # Repository operating rules
 
+Test-owned SQLite connections need `contextlib.closing` or an explicit `finally` close: connection context managers end transactions, not handles, and leak warnings may surface in a later unrelated test.
+
 ## Next-companion hold and single-command onboarding — 2026-11-08
 
 Nicolas reserved the next companion for a jointly observed timed onboarding

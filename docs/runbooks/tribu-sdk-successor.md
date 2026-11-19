@@ -1575,6 +1575,15 @@ remains at most 60 seconds and cannot extend that original envelope. Its authent
 observation freezes the existing group
 coordinates and signed application/publication hashes. The same closed group
 must remain after startup; a published outbound adapter cannot use this path.
+For a closed group, the same retained native-code update explicitly prepares
+catalogs after confirmed quiescence and before selecting the successor. It uses
+the selected SDK's existing native catalog migrator under the exclusive runtime
+writer, preserving runtime identity, keys, signed publication and message rows.
+Missing groups or installed outbound visibility refuse before runtime load.
+The original update retains the migration receipt; a lost acknowledgment retries
+the same idempotent step. This is not serving startup or permission to reopen
+outbound messaging. An additive migration remains after software failure:
+recover forward with compatible code, without restoring old data over later effects.
 Do not rerun enrollment, controller issuance or group publication to update code.
 The owner retains one current and one previous completed record, at most64KiB
 each; a new operation can replace only a completed receipt. An unfinished or

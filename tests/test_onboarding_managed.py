@@ -1013,6 +1013,13 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
                 offset[0] += 55_000_000_000
             assert 'current_native' not in _
             return dict(ready=True)
+        if action == 'closed-catalogs-prepare':
+            assert closed_group
+            state = being_seed._read(managed.state / 'newcomer/native-code-update.json')
+            assert state['dispatching'] == 'catalogs'
+            assert 'quiesce' in state['effects'] and 'select' not in state['effects']
+            calls.append(action)
+            return dict(schema='cluster-closed-catalogs-prepared/v1', runtime_sha256='original-bundle', version=2)
         assert action == 'admitted-running'
         assert _.get('current_native', False) is closed_group
         assert _.get('require_loaded', False) is closed_group
@@ -1066,6 +1073,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
     assert result['receiving_readiness'] == 'unobserved'
     assert calls.count('bootstrap-quiesce') == 1
     assert calls.count('bootstrap-select') == 1
+    assert calls.count('closed-catalogs-prepare') == int(closed_group)
     assert len(effects[options['operation_id']]) == 4
     if closed_group:
         current['runtime_status']['loaded_runtime']['qualified_startup']['code_digest'] = 'stale-code'

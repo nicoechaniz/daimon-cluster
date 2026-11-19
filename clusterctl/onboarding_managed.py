@@ -135,6 +135,7 @@ class ManagedRuntime:
                 plan_digest=digest(plan), candidate_digest=candidate[1], argv=argv)
             if receive_only_group:
                 pins['receive_only_group'] = True
+                pins['prepare_closed_catalogs'] = True
             def save():
                 if len(json.dumps(state).encode()) > 65536:
                     raise OnboardingError('native_code_update_record_limit')
@@ -158,7 +159,9 @@ class ManagedRuntime:
                     if (prior_pins.get('operation_id') == operation_id
                             or state.get('dispatching') is not None
                             or len(json.dumps(state).encode()) > 65536
-                            or set(state.get('effects', {})) != {'validate', 'quiesce', 'select', 'start'}
+                            or set(state.get('effects', {})) not in (
+                                {'validate', 'quiesce', 'select', 'start'},
+                                {'validate', 'quiesce', 'catalogs', 'select', 'start'})
                             or prior_result.get('operation_id') != prior_pins.get('operation_id')
                             or prior_result.get('candidate_digest') != prior_pins.get('candidate_digest')
                             or prior_result.get('schema') != 'cluster-native-code-updated/v1'):
@@ -187,15 +190,24 @@ class ManagedRuntime:
                     being_seed._write(directory / 'native-code-update.previous.json', previous_completed)
                     state['previous_completed_sha256'] = digest(previous_completed)
                 save()
-            for action in ('validate', 'quiesce', 'select', 'start'):
+            actions = ('validate', 'quiesce', *(['catalogs'] if receive_only_group else []), 'select', 'start')
+            for action in actions:
                 if action in state['effects']:
                     continue
                 # Retain the exact request before dispatch. Root's bootstrap
                 # reconciles this same operation; never mint a replacement ID.
                 state['dispatching'] = action
                 save()
-                state['effects'][action] = self.backend._guest_service_call(plan, 'bootstrap-' + action,
-                    candidate=candidate, timeout_seconds=remaining(), request=state['request'])
+                if action == 'catalogs':
+                    prepared = self.backend._target_call(plan, 'closed-catalogs-prepare',
+                        candidate=candidate, observation_timeout_seconds=remaining())
+                    if (prepared.get('schema') != 'cluster-closed-catalogs-prepared/v1'
+                            or prepared.get('runtime_sha256') != state['runtime_sha256']):
+                        raise OnboardingError('native_code_update_catalogs_unobserved')
+                    state['effects'][action] = prepared
+                else:
+                    state['effects'][action] = self.backend._guest_service_call(plan, 'bootstrap-' + action,
+                        candidate=candidate, timeout_seconds=remaining(), request=state['request'])
                 state.pop('dispatching', None)
                 save()
             current = observe()

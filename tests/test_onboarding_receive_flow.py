@@ -516,6 +516,19 @@ def test_current_native_barrier_keeps_partial_work_across_foreground_window(nati
     assert f.effects==['new-revoke','old-revoke','new-select','old-select']
 
 
+def test_reader_preparation_runs_independent_owners_together_before_controls(native_readers, monkeypatch):
+    import threading
+    f = native_readers
+    endpoint = flow.Endpoint
+    barrier = threading.Barrier(len(f.f.owners))
+    def prepare(*args, **kwargs):
+        assert not f.effects
+        barrier.wait(timeout=2)
+        return endpoint(*args, **kwargs)
+    monkeypatch.setattr(flow, 'Endpoint', prepare)
+    assert f.select() == dict(tribe_reader_selection_verified=True)
+
+
 @pytest.mark.parametrize('lost_ack', [False, True])
 def test_code_update_selects_new_vector_without_replaying_original_native_controls(native_readers, monkeypatch, lost_ack):
     f = native_readers

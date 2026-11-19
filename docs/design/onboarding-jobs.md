@@ -2055,6 +2055,8 @@ longer native pause is introduced.
 
 Current-reader proofs are collected concurrently for independent owners, with at
 most eight in-flight reads and the same shared <=60-second validity/deadline.
+Independent helper preparation also runs with at most eight owners together,
+before proofs and controls; native gate effects retain their existing order.
 All exact identity, current selection, complete cohort and expiry checks remain
 mandatory; slow serial CLI startup must not consume other owners’ validity.
 During current-reader selection, reuse that complete authenticated vector only

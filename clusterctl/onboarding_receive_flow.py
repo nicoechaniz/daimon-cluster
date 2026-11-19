@@ -668,10 +668,15 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
     previous = {key:(owner.deadline_ns, owner.maintenance) for key,owner in owners.items()}
     try:
         check()
-        for key, owner in owners.items():
+        def prepare_owner(item):
+            key, owner = item
             owner.deadline_ns = deadline_ns
             Endpoint(owner, selected['helpers']['owners'][key], parent=parent,
                 binding=binding, deadline_ns=deadline_ns, validate=check)
+        # Independent helper preparation must not serialize eight
+        # host/guest traversals before the finite proof/control window.
+        with ThreadPoolExecutor(max_workers=min(8, len(owners))) as pool:
+            list(pool.map(prepare_owner, owners.items()))
         proofs, cohort = collect()
         state = phase().get('reader_selection')
         if state is not None and state.get('selection_updates_sha256', digest({})) != revision:

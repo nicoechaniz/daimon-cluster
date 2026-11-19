@@ -528,7 +528,8 @@ def require_current_reader_coverage(proofs: dict, receivers: dict) -> dict:
         dict(being_ref=being, embodiment_id=body) for being,body in sorted(audience-observed)])
 
 
-def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, prepare=True):
+def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, prepare=True,
+             selection_updates=None):
     """Observe a complete current vector without changing any native gate."""
     from .onboarding_receiving_update import observe_current_reader, conversation_cohort, _reader_active, SourceGroupClient
     selected = configuration(selected, owners)
@@ -537,6 +538,8 @@ def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, p
             or not isinstance(entry.get('snapshot', {}).get('result'), dict)):
         raise OnboardingError('onboarding_group_admission_pending')
     snapshot = entry['snapshot']['result']
+    if selection_updates is None:
+        selection_updates = entry.get('reader_selection', {}).get('selection_updates', {})
     name = plan['name']
     expected = copy.deepcopy(entry['reader_baselines'])
     expected[name] = dict(entry['baseline'],
@@ -554,6 +557,12 @@ def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, p
         expected[name] = copy.deepcopy(forward['selection'])
     if set(expected) != set(owners) or set(owners) != set(admission['receivers']):
         raise OnboardingError('companion_receive_source_changed')
+    for key, value in (selection_updates or {}).items():
+        if (key not in expected or not isinstance(value, dict) or set(value) != set(expected[key])
+                or any(value[field] != expected[key][field] for field in expected[key]
+                    if field not in {'receiving_code', 'matrix_sdk'})):
+            raise OnboardingError('companion_receive_source_changed')
+        expected[key] = copy.deepcopy(value)
     previous = {key:(owner.deadline_ns, owner.maintenance) for key,owner in owners.items()}
     try:
         for key, owner in owners.items():
@@ -606,7 +615,8 @@ def observe(**options):
     return Observation('complete', dict(tribe_reader_selection_verified=True))
 
 
-def select_readers(*, plan, selected, row, journal, admission, owners, validate, deadline_ns):
+def select_readers(*, plan, selected, row, journal, admission, owners, validate, deadline_ns,
+                   selection_updates=None):
     """Compose existing native revoke/select controls under the original job.
 
     All readers are observed before the barrier and must have unexpired proofs
@@ -620,6 +630,11 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
     selected = configuration(selected, owners)
     parent = row['operation_id']
     binding = digest(dict(original_intent=row['intent'], preparation=selected))
+    if selection_updates is None:
+        selection_updates = (row['runtime_observation'] or {}).get('receive_application', {}).get(
+            'reader_selection', {}).get('selection_updates', {})
+    revision = digest(selection_updates or {})
+    previous_selection = None
     def current():
         return journal.get(parent)
     def phase():
@@ -637,11 +652,14 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
     def collect():
         check()
         return _collect(plan=plan, selected=selected, row=current(), admission=admission,
-            owners=owners, validate=check, deadline_ns=deadline_ns, prepare=False)
+            owners=owners, validate=check, deadline_ns=deadline_ns, prepare=False,
+            selection_updates=selection_updates)
     def save(value):
         check()
         latest = current()
         observed = copy.deepcopy(latest['runtime_observation'])
+        if previous_selection is not None:
+            observed['receive_application']['reader_selection_previous'] = previous_selection
         observed['receive_application']['reader_selection'] = value
         if len(json.dumps(observed['receive_application']).encode()) > being_seed.MAX_SELECTION-1024:
             raise OnboardingError('companion_receive_capacity')
@@ -656,12 +674,21 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
                 binding=binding, deadline_ns=deadline_ns, validate=check)
         proofs, cohort = collect()
         state = phase().get('reader_selection')
+        if state is not None and state.get('selection_updates_sha256', digest({})) != revision:
+            if not all(state.get('controls', {}).get('select-'+name, {}).get('result')
+                       for name in owners):
+                raise OnboardingError('companion_receive_reader_control_changed')
+            # Completed effects retain one full predecessor. A software update
+            # gets fresh native controls, never replays old process-bound ones.
+            previous_selection, state = copy.deepcopy(state), None
         if state is None:
             if all(p['gate'].get('phase') == 'select' and p['gate'].get('readers') == cohort['readers']
                     for p in proofs.values()):
                 # Already selected elsewhere: observe that fact, never replace its owner.
                 return dict(tribe_reader_selection_verified=True)
             state = dict(schema='cluster-companion-current-readers/v1',
+                selection_updates_sha256=revision,
+                selection_updates=copy.deepcopy(selection_updates or {}),
                 readers=cohort['readers'], membership_basis_sha256=cohort['membership_basis_sha256'],
                 expected={name:p['expected'] for name,p in proofs.items()},
                 initial_gates={name:p['gate'] for name,p in proofs.items()}, controls={})
@@ -669,7 +696,10 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
             if any(p['gate'].get('phase') == 'revoke' for p in proofs.values()):
                 raise OnboardingError('companion_receive_reader_control_changed')
             save(state)
-        control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'companion-readers:'+parent+':'+binding))
+        identity = 'companion-readers:'+parent+':'+binding
+        if selection_updates:
+            identity += ':'+revision
+        control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
         release = digest(dict(original=parent, binding=binding, readers=state['readers'],
             membership_basis_sha256=state['membership_basis_sha256']))
         def unchanged(proofs, cohort):

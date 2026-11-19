@@ -477,10 +477,10 @@ def native_readers(fixture, monkeypatch, tmp_path):
                 process=dict(pid=os.getpid()),server=dict(embodiment_id='body-'+name),
                 request_sha256=accepted['request_sha256'],command_sha256=digest(command))
         owner.prepare_apply_control=apply
-    def select(validate=lambda:None):
+    def select(validate=lambda:None, selection_updates=None):
         return flow.select_readers(plan=f.plan,selected=f.selected,row=f.journal.get(f.row['operation_id']),
             journal=f.journal,admission=f.admission,owners=f.owners,validate=validate,
-            deadline_ns=time.monotonic_ns()+10_000_000_000)
+            deadline_ns=time.monotonic_ns()+10_000_000_000, selection_updates=selection_updates)
     return SimpleNamespace(f=f,controllers=controllers,requests=requests,effects=effects,lost=lost,
         readers=readers,gate=gate,select=select)
 
@@ -514,6 +514,34 @@ def test_current_native_barrier_keeps_partial_work_across_foreground_window(nati
     assert f.effects==['new-revoke']
     assert f.select()==dict(tribe_reader_selection_verified=True)
     assert f.effects==['new-revoke','old-revoke','new-select','old-select']
+
+
+@pytest.mark.parametrize('lost_ack', [False, True])
+def test_code_update_selects_new_vector_without_replaying_original_native_controls(native_readers, monkeypatch, lost_ack):
+    f = native_readers
+    f.select()
+    original = copy.deepcopy(f.f.journal.get(f.f.row['operation_id'])['runtime_observation'][
+        'receive_application']['reader_selection'])
+    f.readers[0]['receiving_selection_sha256'] = 'e'*64
+    updates = {'new': {'receiving_code': 'qualified-successor'}}
+    if lost_ack:
+        f.lost.append('new-select-after')
+        with pytest.raises(OSError):
+            f.select(selection_updates=updates)
+    assert f.select(selection_updates=updates) == dict(tribe_reader_selection_verified=True)
+    phase = f.f.journal.get(f.f.row['operation_id'])['runtime_observation']['receive_application']
+    assert phase['reader_selection_previous'] == original
+    assert phase['reader_selection']['selection_updates_sha256'] == digest(updates)
+    assert f.effects == ['new-revoke', 'old-revoke', 'new-select', 'old-select']*2
+    assert f.select(selection_updates=updates) == dict(tribe_reader_selection_verified=True)
+    assert len(f.effects) == 8
+    collect = flow._collect
+    def current(**options):
+        assert options['selection_updates'] == updates
+        return collect(**options)
+    monkeypatch.setattr(flow, '_collect', current)
+    assert f.select() == dict(tribe_reader_selection_verified=True)
+    assert len(f.effects) == 8
 
 
 @pytest.mark.parametrize('expire_after_first_select', [False, True])
@@ -702,6 +730,22 @@ def test_current_collection_keeps_source_and_guest_identity_contracts_distinct(f
             admission=f.admission, owners=f.owners, validate=lambda:None,
             deadline_ns=time.monotonic_ns()+10_000_000_000, prepare=False)
     assert sorted(calls) == [False, True]
+
+
+@pytest.mark.parametrize('field', ['runtime_bundle_sha256', 'application_sha256', 'visibility_installation_sha256'])
+def test_code_selection_update_cannot_change_identity_application_or_outbound(fixture, field):
+    f = fixture
+    snapshot = run(f)
+    row = f.journal.get(f.row['operation_id'])
+    phase = row['runtime_observation']['receive_application']
+    selected = dict(phase['baseline'], application_sha256=snapshot['group']['application_sha256'],
+        publication_sha256=snapshot['group']['publication_sha256'], visibility_installation_sha256=None)
+    selected[field] = 'f'*64
+    with pytest.raises(OnboardingError, match='companion_receive_source_changed'):
+        flow._collect(plan=f.plan, selected=f.selected, row=row,
+            admission=f.admission, owners=f.owners, validate=lambda:None,
+            deadline_ns=time.monotonic_ns()+10_000_000_000, prepare=False,
+            selection_updates={'new': selected})
 
 
 def test_current_reader_collection_observes_independent_owners_in_one_validity_window(fixture, monkeypatch):

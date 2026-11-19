@@ -1758,7 +1758,7 @@ class GroupCoordinator:
                 raise
             return finish_membership_only(journal, journal.get(original_id), result)
 
-    def advance_receive_only(self, name: str, *, timeout_seconds: float = 60, select_current: bool = False) -> dict | None:
+    def advance_receive_only(self, name: str, *, timeout_seconds: float = 60, select_current: bool = False, selection_updates: dict | None = None) -> dict | None:
         """First receive publication after the original native membership is complete.
 
         This is explicitly configured per original plan. It never replaces the
@@ -1814,7 +1814,8 @@ class GroupCoordinator:
                         journal=journal, row=journal.get(original_id), validate=current_controller, deadline_ns=deadline)
                 if select_current:
                     select_readers(plan=plan, selected=selected, row=journal.get(original_id), journal=journal,
-                        admission=admission, owners=self._owners(admission), validate=validate, deadline_ns=deadline)
+                        admission=admission, owners=self._owners(admission), validate=validate, deadline_ns=deadline,
+                        selection_updates=selection_updates)
                 return copy.deepcopy(result)
             validate()
             phase = (row['runtime_observation'] or {}).get('receive_application', {})

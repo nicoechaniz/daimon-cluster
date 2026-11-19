@@ -2064,6 +2064,14 @@ positive control retains local process/gate/roster CAS and a final complete
 authenticated observation is required before reporting selection success. Do not
 perform another eight-owner cold observation for each still-valid local control;
 that repetition exhausted the finite command while the barrier was closed.
+After a qualified native software update, `advance_receive_only` accepts exact
+`selection_updates` for receiving code/SDK only. Identity, runtime bundle,
+application/publication and outbound absence must remain unchanged. Fresh native
+proofs validate the selected update before any reader control. A completed prior
+barrier gets new process-bound controls, with one full predecessor retained;
+unfinished controls cannot be superseded. The retained current selection is used
+by later ordinary observations and continuations, avoiding obsolete SDK pins or
+replaying controls for the old process. No enrollment or controller reissue occurs.
 
 A controller/bootstrap update preserves a selected receive-only application when
 its authenticated group snapshot has no visibility installation. Both preparation

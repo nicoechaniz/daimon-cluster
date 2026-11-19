@@ -1,7 +1,8 @@
 """Reconcile the selected Conversation listener through the existing Incus writer.
 
-This is part of the existing Conversation stage, not another launcher. It owns
-only the conversation-web device; a different existing device is preserved.
+The Conversation stage owns conversation-web; an explicitly prepared receive
+phase owns matrix-message. Both reuse the same Incus listener writer and preserve
+all other devices.
 """
 from __future__ import annotations
 

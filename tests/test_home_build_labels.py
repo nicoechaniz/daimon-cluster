@@ -27,6 +27,7 @@ def test_ui_hash_follows_served_bytes_not_absolute_release_path(tmp_path):
     assert digest([b / "app.js"]) != before
     body = stamp(b"<html><head></head><body><h1>Apps</h1></body></html>", before)
     assert body.count(b"data-app-build=") == 1 and before.encode() in body
+    assert b'<p hidden class="app-build"' in body
     assert stamp(body, before) == body and b"/app-build.css?v=" in body
     with pytest.raises(ValueError):
         stamp(body, "<script>")
@@ -34,6 +35,8 @@ def test_ui_hash_follows_served_bytes_not_absolute_release_path(tmp_path):
     selected = stamp(fresh, before, content_revision="a" * 64)
     changed = stamp(fresh, before, content_revision="b" * 64)
     assert selected != changed
+    assert b'<p hidden class="app-build"' in selected
+    assert b'<p hidden class="app-build app-build--overlay"' in stamp(fresh, before, overlay=True)
     assert (b'data-app-build="' + before.encode()) in selected
     assert b'data-app-content-revision="' + b"a" * 64 in selected
     with pytest.raises(ValueError):

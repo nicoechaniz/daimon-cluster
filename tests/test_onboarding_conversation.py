@@ -486,3 +486,122 @@ def test_absent_observation_enters_bootstrap_instead_of_claiming_already_ready(t
     bootstrap.observe=lambda:dict(state='absent',safe_to_execute=True)
     bootstrap._apply_locked=lambda state:dict(state='ready',bootstrap='actually-created')
     assert bootstrap.apply()==dict(state='ready',bootstrap='actually-created')
+
+
+def test_host_intent_freezes_pairing_in_original_job_and_explicit_choice_wins(tmp_path):
+    from dataclasses import replace
+    from clusterctl import being_seed
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA, OnboardingError, digest
+    from tests.test_onboarding_host import configured
+    config, plan, _, backend = configured(tmp_path)
+    plan['schema'] = CONVERSATION_PLAN_SCHEMA
+    value = request()
+    settings = {k: value[k] for k in ('human_ref', 'origin', 'label', 'human_id',
+        'chat_id', 'topic_id', 'port', 'runtime', 'execution')}
+    config = replace(config, conversation_settings_by_name={plan['name']: settings})
+    path = config.jobs / plan['name'] / 'conversation-intent.json'
+    with unittest.TestCase().assertRaisesRegex(OnboardingError, 'host_authorization_required'):
+        conversation.prepare_host_request(config, plan, authorize=lambda: False)
+    assert not path.exists()
+    conversation.prepare_host_request(config, plan, authorize=lambda: True)
+    original = path.read_bytes()
+    observed = conversation.host_request(config, plan)
+    assert observed == conversation.prepare_intent(plan['name'], digest(plan), settings)
+    assert 'being_ref' not in observed and not (path.parent / 'job.json').exists()
+    assert len(original) < 65536 and path.stat().st_mode & 0o777 == 0o600
+    changed = dict(settings, human_ref='human:local:different')
+    changed_config = replace(config, conversation_settings_by_name={plan['name']: changed})
+    conversation.prepare_host_request(changed_config, plan, authorize=lambda: True)
+    assert path.read_bytes() == original
+    assert conversation.host_request(replace(config, conversation_settings_by_name=None), plan) == observed
+    other = dict(plan, owner='different')
+    with unittest.TestCase().assertRaisesRegex(OnboardingError, 'conversation_selection_changed'):
+        conversation.host_request(config, other)
+    explicit = tmp_path / 'explicit-conversation.json'
+    being_seed._write(explicit, conversation.prepare_intent(plan['name'], digest(plan), changed))
+    choice = replace(config, conversation_by_name={plan['name']: (explicit, digest(json.loads(explicit.read_text())))})
+    with unittest.TestCase().assertRaisesRegex(OnboardingError, 'conversation_selection_changed'):
+        conversation.prepare_host_request(choice, plan, authorize=lambda: True)
+    assert path.read_bytes() == original
+    # Host receiving uses the same frozen intent, bound only after native admission.
+    backend.config = config
+    backend._ceremony = lambda p: type('Admission', (), {'admission_coordinates': lambda *a: {'being_ref': value['being_ref']}})()
+    assert backend._conversation_request(plan) == conversation.resolve_request(observed, value['being_ref'])
+
+
+def test_host_intent_never_retrofits_existing_job_or_replaces_explicit_request(tmp_path):
+    from dataclasses import replace
+    from clusterctl import being_seed
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA, digest
+    from tests.test_onboarding_host import configured
+    config, plan, _, _ = configured(tmp_path)
+    plan['schema'] = CONVERSATION_PLAN_SCHEMA
+    value = request()
+    settings = {k: value[k] for k in ('human_ref', 'origin', 'label', 'human_id',
+        'chat_id', 'topic_id', 'port', 'runtime', 'execution')}
+    config = replace(config, conversation_settings_by_name={plan['name']: settings})
+    from clusterctl.onboarding import private_directory
+    directory = private_directory(config.jobs / plan['name'], create=True)
+    being_seed._write(directory / 'job.json', {'retained': True})
+    conversation.prepare_host_request(config, plan, authorize=lambda: True)
+    assert not (directory / 'conversation-intent.json').exists()
+    explicit = tmp_path / 'explicit-conversation.json'
+    intent = conversation.prepare_intent(plan['name'], digest(plan), dict(settings, label='Explicit'))
+    being_seed._write(explicit, intent)
+    config = replace(config, conversation_by_name={plan['name']: (explicit, digest(intent))})
+    conversation.prepare_host_request(config, plan, authorize=lambda: True)
+    assert conversation.host_request(config, plan) == intent
+    assert not (directory / 'conversation-intent.json').exists()
+
+
+def test_host_settings_load_without_an_external_intent_and_keep_proxy_binding(tmp_path):
+    from clusterctl import being_seed
+    from clusterctl.onboarding_host import HostConfig
+    from tests.test_onboarding_code_successor import fixture
+    base, checksum, _, _ = fixture(tmp_path)
+    selected = request()
+    settings = {k: selected[k] for k in ('human_ref', 'origin', 'label', 'human_id',
+        'chat_id', 'topic_id', 'port', 'runtime', 'execution')}
+    value = dict(schema='cluster-onboarding-host/v1', code=str(base), release_digest=checksum,
+        native_image='3'*64, browser_image='4'*64, pool='daimon-cluster', profile='daimon-agent',
+        concurrency=1, conversation_settings_by_name={'fixture': settings},
+        conversation_proxy_by_name={'fixture': {'listen_host': '10.20.30.40', 'listen_port': 18741}})
+    for key in ('jobs', 'grants', 'inputs', 'views', 'progress'):
+        directory = tmp_path / key
+        directory.mkdir(mode=0o700)
+        value[key] = str(directory)
+    path = tmp_path / 'host.json'
+    being_seed._write(path, value)
+    loaded = HostConfig.load(path)
+    assert loaded.conversation_by_name is None
+    assert loaded.conversation_settings_by_name == {'fixture': settings}
+    assert loaded.conversation_proxy_by_name == value['conversation_proxy_by_name']
+    assert not list(Path(value['jobs']).iterdir())
+    value['conversation_settings_by_name']['fixture']['human_id'] = 0
+    being_seed._write(path, value)
+    with unittest.TestCase().assertRaises(conversation.ConversationError):
+        HostConfig.load(path)
+
+
+def test_host_intent_readback_recovers_lost_publish_ack_without_new_references(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from clusterctl import onboarding_service
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA
+    from tests.test_onboarding_host import configured
+    config, plan, _, _ = configured(tmp_path)
+    plan['schema'] = CONVERSATION_PLAN_SCHEMA
+    value = request()
+    settings = {k: value[k] for k in ('human_ref', 'origin', 'label', 'human_id',
+        'chat_id', 'topic_id', 'port', 'runtime', 'execution')}
+    config = replace(config, conversation_settings_by_name={plan['name']: settings})
+    original = onboarding_service.publish
+    def lost_ack(path, raw):
+        original(path, raw)
+        raise OSError('lost local acknowledgement')
+    monkeypatch.setattr(onboarding_service, 'publish', lost_ack)
+    with unittest.TestCase().assertRaises(OSError):
+        conversation.prepare_host_request(config, plan, authorize=lambda: True)
+    first = conversation.host_request(config, plan)
+    conversation.prepare_host_request(config, plan, authorize=lambda: True)
+    assert conversation.host_request(config, plan) == first
+    assert len(list((config.jobs / plan['name']).iterdir())) == 1

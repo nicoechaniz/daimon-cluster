@@ -47,6 +47,18 @@ available; preserve active work, original actor storage and the next-companion h
 
 ## Single-command companion contract
 
+For a new v2 job, `conversation_settings_by_name` can hold the existing
+`prepare_intent` pair/runtime settings directly in the protected host configuration.
+The finite `--until NAME` command derives the Home/application references and
+plan binding before submission; no separately generated request file or digest
+is required. Existing `conversation_by_name` file selections still take precedence.
+Proxy and per-name App-bundle selectors accept either form. The command freezes
+one `conversation-intent.json` (at most64KiB) in the original job directory, under
+its existing lock and retention. Retries read that original after a lost local
+acknowledgment or later setting changes; a conflicting explicit file refuses.
+Existing jobs without this record are never retrofitted with a new pairing.
+This preparation creates no identity, account, Home registration or service.
+
 Cold Conversation guests can select `conversation_bundle_by_name` in the host
 configuration: each name maps to a root-owned public App tree and the SHA256 of
 its `conversation-bundle.json` manifest. The existing context stage mounts that

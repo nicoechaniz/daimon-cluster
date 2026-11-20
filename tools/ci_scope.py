@@ -7,6 +7,7 @@ contracts. Workflow-only changes exercise the workflow and selector themselves.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -463,6 +464,46 @@ HOME_WORKER_TESTS = ('tests/test_home_worker_successor.py', 'tests/test_onboardi
     'tests/test_home_gateway.py', 'tests/test_home_access.py')
 
 
+COMPANION_COMMAND_FILES = {'clusterctl/onboarding_worker.py',
+    'tests/test_onboarding.py', 'tests/test_onboarding_companion_homes.py',
+    'tests/test_onboarding_conversation.py', 'tests/test_onboarding_worker_install.py'}
+COMPANION_COMMAND_TESTS = tuple(sorted(set(CONTEXT_COPY_TESTS) | set(RUNTIME_HEALTH_TESTS)
+    | set(ONBOARDING_CONTRACTS) | {'tests/test_onboarding_companion_homes.py',
+    'tests/test_onboarding_conversation.py', 'tests/test_onboarding_conversation_bundle.py',
+    'tests/test_onboarding_homes.py', 'tests/test_onboarding_group_coordinator.py',
+    'tests/test_onboarding_group_finisher.py', 'tests/test_home_access.py',
+    'tests/test_home_gateway.py'}))
+
+
+def companion_entry_only(root: Path, base: str) -> bool:
+    """Keep worker execution/supervision unchanged for CLI-only preparation.
+
+    Compare syntax rather than pinning a particular patch or source generation.
+    Missing history or any other changed definition keeps existing wider CI.
+    """
+    if not re.fullmatch(r'[0-9a-f]{40}', base):
+        return False
+    name = 'clusterctl/onboarding_worker.py'
+    try:
+        previous = subprocess.run(['git', 'show', base+':'+name], cwd=root,
+            capture_output=True, timeout=10, check=False)
+        if previous.returncode:
+            return False
+        before = ast.parse(previous.stdout)
+        after = ast.parse((root/name).read_bytes())
+        for tree in (before, after):
+            entries = [node for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == 'main']
+            if len(entries) != 1:
+                return False
+            # Imports, arguments, decorators and every other definition remain
+            # part of the comparison. Only the existing CLI body may differ.
+            entries[0].body = [ast.Pass()]
+        return ast.dump(before, include_attributes=False) == ast.dump(after, include_attributes=False)
+    except (OSError, SyntaxError, ValueError, subprocess.TimeoutExpired):
+        return False
+
+
 def remote_incus_source_only(root: Path, base: str) -> bool:
     """Exact host-carrier/publication projection; future deltas retain full CI.
 
@@ -795,6 +836,13 @@ def owner_diagnostics_only(root: Path, base: str) -> bool:
 
 
 def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list[str]]:
+    if ('clusterctl/onboarding_worker.py' in changed
+            and set(changed) <= COMPANION_COMMAND_FILES | CI_FILES | RUNBOOK_DOCS
+            and all((root/path).is_file() for path in COMPANION_COMMAND_TESTS)
+            and companion_entry_only(root, base)):
+        # Existing CLI/job/Home/owner contracts still run. SDK, native admission,
+        # worker execution and physical recovery have not changed here.
+        return 'peer', list(COMPANION_COMMAND_TESTS)
     coordinator_files = {'clusterctl/onboarding_group_coordinator.py',
                          'tests/test_onboarding_group_coordinator.py',
                          'tests/test_onboarding_group_finisher.py'}

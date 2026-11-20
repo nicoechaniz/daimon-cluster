@@ -6,6 +6,46 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_companion_entry_scope_requires_unchanged_execution_and_real_history(tmp_path):
+    import subprocess
+    from tools.ci_scope import COMPANION_COMMAND_TESTS
+    source = tmp_path/'clusterctl/onboarding_worker.py'
+    source.parent.mkdir()
+    (tmp_path/'tests').mkdir()
+    for name in COMPANION_COMMAND_TESTS:
+        (tmp_path/name).symlink_to(ROOT/name)
+    original = 'import os\n\ndef supervise():\n    return 1\n\ndef main(argv=None):\n    return 0\n'
+    source.write_text(original)
+    def git(*args):
+        return subprocess.check_output(['git', *args], cwd=tmp_path, text=True).strip()
+    git('init', '-q')
+    git('add', 'clusterctl/onboarding_worker.py')
+    git('-c', 'user.name=CI fixture', '-c', 'user.email=ci@example.invalid',
+        'commit', '-qm', 'Original CLI and worker')
+    base = git('rev-parse', 'HEAD')
+    changed = ['clusterctl/onboarding_worker.py', 'tests/test_onboarding_companion_homes.py',
+        'docs/design/onboarding-jobs.md', 'tools/ci_scope.py', 'tests/test_ci_scope.py']
+    source.write_text(original.replace('return 0', 'return 2'))
+    profile, tests = select(changed, tmp_path, base=base)
+    assert profile == 'peer' and set(COMPANION_COMMAND_TESTS) == set(tests)
+    assert {'tests/test_onboarding.py', 'tests/test_onboarding_companion_homes.py',
+        'tests/test_onboarding_conversation.py', 'tests/test_onboarding_worker_install.py',
+        'tests/test_onboarding_host_ownership.py', 'tests/test_production_fences.py'} <= set(tests)
+    for altered in (original.replace('return 1', 'return 2'),
+            original.replace('import os', 'import subprocess'),
+            original.replace('argv=None', 'argv=False')):
+        source.write_text(altered)
+        assert select(changed, tmp_path, base=base)[0] == 'onboarding'
+    source.write_text(original.replace('return 0', 'return 2'))
+    for shared in ('clusterctl/admission.py', 'clusterctl/production_fences.py',
+            'requirements.txt', 'unknown.py'):
+        assert select([*changed, shared], tmp_path, base=base) == ('full', ['tests'])
+    assert select(changed, tmp_path)[0] == 'onboarding'
+    assert select(changed, tmp_path, base='0'*40)[0] == 'onboarding'
+    (tmp_path/'tests/test_onboarding_worker_install.py').unlink()
+    assert select(changed, tmp_path, base=base)[0] == 'onboarding'
+
+
 def test_vm_runtime_transport_reuses_native_receiving_coverage(tmp_path):
     from tools.ci_scope import NATIVE_RECEIVING_TESTS
     changed = ['clusterctl/onboarding_host.py', 'clusterctl/vm_body.py',

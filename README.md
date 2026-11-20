@@ -86,6 +86,12 @@ python -m pytest -q \
 by both this command and CI. Docker E2E tests are opt-in and must run only
 against local disposable state.
 
+CI compares the finite companion command against its actual Git base. A change
+confined to the existing CLI body's preparation keeps the job, owner, Home,
+input and worker-installation tests without rebuilding unchanged native SDK
+consumers. Changes to worker execution, supervision, imports, authority or SDK
+inputs retain the existing broader coverage; missing history does too.
+
 ## Daimon Field coordination
 
 Cross-repository decisions and repository-specific implications are indexed in

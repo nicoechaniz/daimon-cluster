@@ -51,14 +51,39 @@ Cold Conversation guests can select `conversation_bundle_by_name` in the host
 configuration: each name maps to a root-owned public App tree and the SHA256 of
 its `conversation-bundle.json` manifest. The existing context stage mounts that
 verified tree read-only at `/opt/daimon-app`; it also exposes its pinned
-`bin/codex` through the standard guest executable path, preserving any differing
+native CLI through the standard guest executable path, preserving any differing
 existing executable. This is public software delivery, never a copy of a being's
 home, account, conversation database or memory. The selected Conversation request
 still pins its native/Python executables and every imported component separately.
-The bundle is bounded to 10,000 files/768 MiB, refuses links, writable public code,
+The bundle is bounded to 10,000 files/1 GiB, refuses links, writable public code,
 unlisted files and digest changes before allocation, and stays retained while a
 live or rollback configuration references it. Remove only unselected task-owned
 transfer copies after exact readback; never retire a mounted generation.
+
+Prepare a shared release with the existing artifact builder, selecting the
+qualified complete native package rather than a lone executable:
+
+```sh
+python -m tools.build_onboarding_code \
+  --conversation-app-bundle APP --conversation-app-digest MANIFEST_SHA256 \
+  --conversation-native-package NATIVE_PACKAGE --output NEW_PUBLIC_RELEASE
+```
+
+This preserves App bytes and places the complete native package under `native/`.
+The manifest's optional `codex_package: "native"` selects that package; legacy
+manifests keep their original root package. Only declared native components are
+copied, never account/home files. The package metadata receives a content-derived
+`+local` build version, using the native installer's existing local-package
+pinning so a cold guest does not follow an incompatible public production engine.
+Executable/resource bytes remain exact; this metadata change is not a rebuild.
+Preparation has a 180-second copy deadline and returns the new manifest digest
+for the existing `conversation_bundle_by_name` selection. The 1 GiB bound covers
+the measured 833 MB App/native composition; it is not unbounded package growth.
+Prepare once per shared release, not per being. Qualify cold daemon installation
+and required native capabilities in an empty, network-isolated test home before
+selecting a release. Do not change a living guest's frozen selection to exercise
+this cold path. Retain the selected/rollback release; remove only task-owned,
+unselected test copies after their daemon has stopped.
 
 Operator intake policy may explicitly select `plan_schema` as
 `cluster-onboarding-plan/v2` for web companions. An omitted selection preserves

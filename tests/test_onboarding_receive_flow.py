@@ -855,6 +855,7 @@ def test_controller_child_preserves_published_phase_and_original_identity(fixtur
             visibility=dict(installation_sha256=None,release_enabled=False)))
     def prepare(*args, **kwargs):
         calls.append('prepare')
+        assert not kwargs.get('installed_only', False), 'cold pinned SDK preparation must not require a manual install'
         return dict(plan=f.plan,owner=dict(group={**snapshot['group'],'installation_sha256':None}),root={}), {'original':'native request'}
     monkeypatch.setattr(receiving, 'prepare_guest_bootstrap', prepare)
     pending_loss = [True] if lost else []

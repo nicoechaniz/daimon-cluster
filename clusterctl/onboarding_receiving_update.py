@@ -24,7 +24,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from . import being_seed, onboarding_release, onboarding_sdk
+from . import being_seed, onboarding_code_successor, onboarding_release, onboarding_sdk
 from .onboarding import JobStore, OnboardingError, digest, private_directory
 from .onboarding_group_session import OwnerConversation
 from .owner_process import ConnectedProcessObserver
@@ -860,6 +860,16 @@ class GuestGroupClient:
         self._relationship_process: OwnerConversation | None = None
         self.maintenance: tuple[Path, str] | None = None
 
+    def prepare_helper(self) -> None:
+        """Prepare selected public imports before any service guard is opened."""
+        selected = self.maintenance or self.candidate
+        if selected in getattr(self, '_prepared_helpers', set()):
+            return
+        result = self._call('sdk-prepare', maintenance=True)
+        if result.get('ready') is not True:
+            raise OnboardingError('qualified_guest_bootstrap_candidate_required')
+        self._prepared_helpers = getattr(self, '_prepared_helpers', set()) | {selected}
+
     def _call(self, action: str, *, maintenance: bool = False, **arguments) -> dict:
         timeout = self.timeout_seconds
         if self.deadline_ns is not None:
@@ -1063,6 +1073,60 @@ class SourceGroupClient:
         self._relationship_stack: ExitStack | None = None
         self._relationship_process: OwnerConversation | None = None
         self.maintenance: tuple[Path, str] | None = None
+
+    def prepare_helper(self) -> None:
+        """Install only the helper's public SDK as its actual receiving owner.
+
+        Keep the body selection and private interpreter inaccessible to the
+        coordinator. Reuse the existing SDK directory, installer and import
+        writer; an arbitrary alternate home is not a preparation target.
+        """
+        selected = self.maintenance or (self.code, self.code_digest)
+        if selected in getattr(self, '_prepared_helpers', set()):
+            return
+        code, pin = selected
+        if not onboarding_code_successor.sdk_parameters(code, uid=self.code_uid):
+            # Historical helpers use their existing installed context. They
+            # cannot select an arbitrary SDK through a new preparation path.
+            return
+        venv, imports = self._helper_context(code)
+        if len(venv.parents) < 6:
+            raise OnboardingError('qualified_runtime_imports_required')
+        home = venv.parents[5]
+        if (venv != home / '.local/share/daimon-matrix/sdk' / venv.parent.name / 'venv'
+                or imports != venv.parent / 'runtime-imports'):
+            raise OnboardingError('qualified_runtime_imports_required')
+        deadline = min(time.monotonic_ns()+60_000_000_000,
+            self.deadline_ns if self.deadline_ns is not None else 2**63-1)
+        remaining = (deadline-time.monotonic_ns())/1_000_000_000
+        if remaining <= 0:
+            raise OnboardingError('receiving_owner_deadline_expired')
+        launcher = '''import json,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from clusterctl import onboarding_code_successor as successor,onboarding_sdk as sdk
+code,home=Path(sys.argv[1]),Path(sys.argv[3])
+options=dict(code_uid=int(sys.argv[4]),**successor.sdk_parameters(code,uid=int(sys.argv[4])))
+with sdk.probe_budget(int(sys.argv[5])):
+ venv=sdk.install(home,code,sys.argv[2],**options)
+ imports=sdk.runtime_imports(venv,code,**options)
+print(json.dumps(dict(venv=str(venv),imports=str(imports))))
+'''
+        try:
+            result = _run_owner(['/usr/bin/python3', '-B', '-I', '-S', '-c', launcher,
+                str(code), pin, str(home), str(self.code_uid), str(deadline)],
+                text=True, capture_output=True, timeout=remaining,
+                user=self.owner_uid, group=self.owner_gid, extra_groups=(),
+                env={'PATH':os.defpath,'LANG':'C.UTF-8','PYTHONDONTWRITEBYTECODE':'1'})
+            observed = (json.loads(result.stdout)
+                if not result.returncode and len(result.stdout.encode()) <= 4096 else None)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            raise OnboardingError('qualified_source_helper_preparation_required') from None
+        if (result.returncode or len(result.stdout.encode()) > 4096
+                or time.monotonic_ns() >= deadline
+                or observed != dict(venv=str(venv),imports=str(imports))):
+            raise OnboardingError('qualified_source_helper_preparation_required')
+        self._prepared_helpers = getattr(self, '_prepared_helpers', set()) | {selected}
 
     def _helper_context(self, code: Path) -> tuple[Path, Path]:
         """Select the helper's installed SDK sibling; never inspect it as root.

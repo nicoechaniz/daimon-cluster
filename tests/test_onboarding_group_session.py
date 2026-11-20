@@ -229,6 +229,76 @@ def test_invitation_inspection_requires_explicit_owner_scope(monkeypatch):
             owner.group_relationship({'operation_id': 'same'}, authority_closure={}, inspect_only=True)
 
 
+@pytest.mark.parametrize('failed', [False, True])
+def test_guest_helper_preparation_is_public_only_bounded_and_not_repeated(failed):
+    from clusterctl.onboarding_receiving_update import GuestGroupClient
+    calls=[]
+    def target(plan,action,**options):
+        assert action=='sdk-prepare' and plan=={'name':'existing'}
+        calls.append(options)
+        return {'ready':not failed}
+    original=(Path('/original/body'),'a'*64)
+    helper=(Path('/qualified/helper'),'b'*64)
+    owner=GuestGroupClient(SimpleNamespace(_target_call=target),{'name':'existing'},original,root=Path('/private/runtime'))
+    owner.maintenance=helper
+    owner.deadline_ns=time.monotonic_ns()+3_000_000_000
+    if failed:
+        with pytest.raises(OnboardingError,match='candidate_required'):
+            owner.prepare_helper()
+        assert not getattr(owner,'_prepared_helpers',set())
+    else:
+        owner.prepare_helper()
+        owner.prepare_helper()
+    assert len(calls)==1 and calls[0]['candidate']==helper
+    assert 0<calls[0]['observation_timeout_seconds']<=3
+    assert owner.candidate==original
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_source_helper_preparation_drops_to_owner_and_keeps_serving_sdk(tmp_path,monkeypatch,failed):
+    from clusterctl import onboarding_receiving_update as receiving
+    owner=object.__new__(receiving.SourceGroupClient)
+    owner.code,owner.code_digest,owner.code_uid=Path('/qualified/body'),'a'*64,0
+    owner.owner_uid,owner.owner_gid,owner.deadline_ns=1001,1001,time.monotonic_ns()+3_000_000_000
+    home=tmp_path/'existing-sdk-home'
+    root=home/'.local/share/daimon-matrix/sdk'/('b'*64)
+    owner.venv,owner.imports=root/'venv',root/'runtime-imports'
+    original=(owner.venv,owner.imports)
+    owner.maintenance=(Path('/qualified/helper'),'c'*64)
+    monkeypatch.setattr(receiving.onboarding_code_successor,'sdk_parameters',lambda *a,**kw:{'qualified':'retained pin'})
+    target=home/'.local/share/daimon-matrix/sdk'/('d'*64)
+    monkeypatch.setattr(owner,'_helper_context',lambda code:(target/'venv',target/'runtime-imports'))
+    calls=[]
+    def run(argv,**options):
+        calls.append(argv)
+        assert argv[:5]==['/usr/bin/python3','-B','-I','-S','-c']
+        assert options['user']==options['group']==1001 and options['extra_groups']==()
+        assert 0<options['timeout']<=3
+        assert argv[6:10]==['/qualified/helper','c'*64,str(home),'0']
+        assert set(options['env'])=={'PATH','LANG','PYTHONDONTWRITEBYTECODE'}
+        return SimpleNamespace(returncode=1 if failed else 0,
+            stdout=json.dumps({'venv':str(target/'venv'),'imports':str(target/'runtime-imports')}))
+    monkeypatch.setattr(receiving,'_run_owner',run)
+    if failed:
+        with pytest.raises(OnboardingError,match='helper_preparation_required'):
+            owner.prepare_helper()
+        assert not getattr(owner,'_prepared_helpers',set())
+    else:
+        owner.prepare_helper()
+        owner.prepare_helper()
+    assert len(calls)==1 and (owner.venv,owner.imports)==original
+
+
+def test_legacy_source_helper_keeps_its_existing_context(monkeypatch):
+    from clusterctl import onboarding_receiving_update as receiving
+    owner=object.__new__(receiving.SourceGroupClient)
+    owner.code,owner.code_digest,owner.code_uid=Path('/legacy/code'),'a'*64,0
+    owner.maintenance=None
+    monkeypatch.setattr(receiving.onboarding_code_successor,'sdk_parameters',lambda *a,**kw:{})
+    monkeypatch.setattr(receiving,'_run_owner',lambda *a,**kw:pytest.fail('legacy helper acquired a new SDK'))
+    owner.prepare_helper()
+
+
 def test_supplemental_guest_dispatch_requires_and_preserves_fixed_owner_deadline():
     from clusterctl.onboarding_receiving_update import GuestGroupClient
     calls = []

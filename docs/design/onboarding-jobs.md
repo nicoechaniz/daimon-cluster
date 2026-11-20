@@ -2126,6 +2126,23 @@ software selection: a different helper SDK must never silently replace the servi
 SDK. A mismatch refuses before mounting, stopping or issuing authority; prepare
 its compatible code using the existing successor builder and serving SDK.
 
+The selected helper's SDK/import preparation is part of the existing endpoint
+preparation, before recovery, authenticated observations or a service guard.
+Guests use their existing `sdk-prepare` action. Source helpers use the same
+offline SDK installer/import writer after dropping to the actual owner, in the
+SDK home already bound by that owner's descriptor. The coordinator neither
+opens the private interpreter nor selects it as body software. Historical
+helpers without a qualified SDK marker retain their existing context. Repeated
+use of the same prepared helper within one owning invocation does not reinstall
+it. The existing per-owner 60-second/parent deadline and SDK storage lifecycle
+remain in effect; preparation failure opens no new service guard.
+
+Controller bootstrap likewise prepares its exact baseline-compatible SDK through
+`prepare_guest_bootstrap` before freezing the running predecessor. It does not
+require a separate manual SDK installation or change the serving SDK to match a
+maintenance helper. Published native child receipts still control retries and
+forward recovery; preparing software does not reissue controller authority.
+
 If controller authority was published but the selected software could not load,
 retain that failed attempt. Use the existing qualified entrypoint CAS for the
 compatible software, then `adopt_controller_software_recovery` verifies a fresh

@@ -81,7 +81,7 @@ def ensure_controller(*, plan, preparation, backend, config_path, journal, row, 
         frozen, request = prepare_guest_bootstrap(backend, plan,
             candidate=candidate,
             manifest_path=Path(preparation['manifest_path']), manifest_digest=preparation['manifest_digest'],
-            expires_at_ms=preparation['expires_at_ms'], installed_only=True,
+            expires_at_ms=preparation['expires_at_ms'],
             timeout_seconds=60, deadline_ns=deadline_ns)
         group = frozen['owner']['group']
         if (group['application_sha256'] != snapshot['group']['application_sha256']

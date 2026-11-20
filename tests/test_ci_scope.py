@@ -1416,6 +1416,7 @@ def test_vm_os_transport_keeps_native_maintenance_and_refuses_unrelated_deltas(t
     profile, tests=select(changed,ROOT)
     assert profile=='peer'
     assert set(ci_scope.NATIVE_RECEIVING_TESTS)|{'tests/test_vm_body.py'} <= set(tests)
+    assert len(tests) == len(set(tests)), 'Native/VM shared consumers run once'
     assert select(changed,tmp_path)==('full',['tests'])
     assert select([*changed,'tools/build_receiving_maintenance.py','tools/check_rc_types.py'],ROOT)[0]=='peer'
     # The unified native/VM transport profile now carries host consumers too.

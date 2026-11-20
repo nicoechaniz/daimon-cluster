@@ -960,10 +960,10 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
                           'tools/build_receiving_maintenance.py', 'tools/check_rc_types.py'}
     if ({'clusterctl/native_body.py', 'clusterctl/vm_body.py', 'tests/test_vm_body.py'} <= set(changed)
             and set(changed) <= vm_placement_files | CI_FILES | RUNBOOK_DOCS
-            and all((root / name).is_file() for name in (*NATIVE_RECEIVING_TESTS, 'tests/test_vm_body.py'))):
+            and all((root / name).is_file() for name in NATIVE_RECEIVING_TESTS)):
         # New local agent transport reuses native OS maintenance; no changes to
         # provisioning, SDK authority, admission, network or model execution.
-        return 'peer', [*NATIVE_RECEIVING_TESTS, 'tests/test_vm_body.py']
+        return 'peer', list(NATIVE_RECEIVING_TESTS)
     native_profile_files = {'clusterctl/native_body.py', 'tests/test_native_body.py',
         'clusterctl/onboarding_service.py',
         'clusterctl/onboarding_host.py', 'clusterctl/onboarding_receiving_update.py',

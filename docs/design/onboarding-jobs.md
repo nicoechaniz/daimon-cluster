@@ -58,6 +58,12 @@ its existing lock and retention. Retries read that original after a lost local
 acknowledgment or later setting changes; a conflicting explicit file refuses.
 Existing jobs without this record are never retrofitted with a new pairing.
 This preparation creates no identity, account, Home registration or service.
+If a new v2 job has neither an explicit Conversation selection nor prepared
+pair/runtime settings, the finite command refuses with
+`conversation_selection_required` before submitting the job or allocating a body.
+Supply the existing protected `conversation_settings_by_name` input and rerun
+the same command. Existing jobs retain their frozen selection and recovery path;
+this preflight never rewrites an existing pairing or repeats acceptance.
 
 Cold Conversation guests can select `conversation_bundle_by_name` in the host
 configuration: each name maps to a root-owned public App tree and the SHA256 of

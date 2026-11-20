@@ -110,7 +110,7 @@ def test_missing_guest_dependencies_have_one_finite_standard_package_install(tmp
         return SimpleNamespace(returncode=0)
     bundle.dependencies(ready=lambda: len(calls) == 2, run=run, release=release)
     assert len(calls) == 2
-    assert calls[-1][-3:] == ['python3-venv', 'rsync', 'nodejs']
+    assert calls[-1][-4:] == ['python3-venv', 'rsync', 'nodejs', 'git']
     bundle.dependencies(ready=lambda: True, run=run, release=release)
     assert len(calls) == 2
     release.write_text('ID=other\nVERSION_ID="13"\n')

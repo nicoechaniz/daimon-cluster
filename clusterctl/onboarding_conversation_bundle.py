@@ -142,7 +142,8 @@ def dependencies(*, ready=None, run=None, release=Path('/etc/os-release')):
     by the existing context writer. It installs no account, listener or model.
     """
     ready = ready or (lambda: importlib.util.find_spec('ensurepip') is not None
-        and shutil.which('rsync') is not None and Path('/usr/bin/node').is_file())
+        and shutil.which('rsync') is not None and shutil.which('git') is not None
+        and Path('/usr/bin/node').is_file())
     if ready():
         return
     facts = dict(line.split('=', 1) for line in release.read_text().splitlines() if '=' in line)
@@ -150,7 +151,7 @@ def dependencies(*, ready=None, run=None, release=Path('/etc/os-release')):
         raise OnboardingError('conversation_guest_dependencies_required')
     execute = run or subprocess.run
     for arguments in (['update'], ['-y', '--no-install-recommends', 'install',
-                                  'python3-venv', 'rsync', 'nodejs']):
+                                  'python3-venv', 'rsync', 'nodejs', 'git']):
         result = execute(['/usr/bin/apt-get', '-q', '-o',
             'APT::Keep-Downloaded-Packages=false', *arguments], capture_output=True,
             timeout=90, check=False, env={'PATH': os.defpath, 'LANG': 'C.UTF-8',

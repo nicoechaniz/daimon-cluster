@@ -856,10 +856,10 @@ def main(argv=None) -> int:
         return 0
     except Exception as error:
         if args.diagnostics:
-            code = str(error)
-            if re.fullmatch(r'[a-z][a-z0-9_]*(?::[a-z][a-z0-9_]*)*', code) is None or len(code) > 160:
-                code = 'source_operation_refused'
-            print(json.dumps(dict(error=code, exception_type=type(error).__name__)), file=sys.stderr)
+            error_code = str(error)
+            if re.fullmatch(r'[a-z][a-z0-9_]*(?::[a-z][a-z0-9_]*)*', error_code) is None or len(error_code) > 160:
+                error_code = 'source_operation_refused'
+            print(json.dumps(dict(error=error_code, exception_type=type(error).__name__)), file=sys.stderr)
         # No paths, custody, token values or raw native errors in service logs.
         print(json.dumps({'error': 'native_onboarding_source_refused'}))
         return 1

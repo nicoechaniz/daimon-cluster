@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -613,6 +614,7 @@ class Source:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
+    parser.add_argument('--diagnostics', action='store_true', help='emit bounded nonsecret failure category')
     parser.add_argument('--ready-fd', type=int)
     parser.add_argument('--body-observer-fd', type=int)
     parser.add_argument('--code-digest')
@@ -852,7 +854,12 @@ def main(argv=None) -> int:
             signal.signal(signum, lambda *_: stop.set())
         source.serve(stop, ready_descriptor=args.ready_fd)
         return 0
-    except Exception:
+    except Exception as error:
+        if args.diagnostics:
+            code = str(error)
+            if re.fullmatch(r'[a-z][a-z0-9_]*(?::[a-z][a-z0-9_]*)*', code) is None or len(code) > 160:
+                code = 'source_operation_refused'
+            print(json.dumps(dict(error=code, exception_type=type(error).__name__)), file=sys.stderr)
         # No paths, custody, token values or raw native errors in service logs.
         print(json.dumps({'error': 'native_onboarding_source_refused'}))
         return 1

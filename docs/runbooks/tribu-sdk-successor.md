@@ -1842,3 +1842,8 @@ admission preparation, serving selection and exact pending native controls stay
 unchanged. The original job retains the selected helper map for continuation,
 with one previous map; the installed body is not relabeled or upgraded. This is
 maintenance code repair, not a fresh admission, control request or deadline.
+
+For a qualified Source operator refusal, `onboarding_source --diagnostics`
+adds only a bounded error category/type on stderr. Ordinary responses and service
+logs retain their generic refusal; private paths and free-form messages stay
+redacted. Inspect the underlying category before retrying a publication phase.

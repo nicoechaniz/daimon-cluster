@@ -1,5 +1,6 @@
 """Actual signed native Source survives an additive peer ceremony and restart."""
 import hashlib
+import json
 import os
 import threading
 
@@ -267,3 +268,26 @@ def test_loaded_source_status_requests_compact_view_and_only_legacy_fallback(cod
     assert calls[0] == ('runtime.status', {'view': 'receiving'})
     assert len(calls) == (2 if code == 'invalid_params' else 1)
     assert result['ok'] == (code in {None, 'invalid_params'})
+
+
+@pytest.mark.parametrize('diagnostics', [False, True])
+@pytest.mark.parametrize('private_message', [False, True])
+def test_source_operator_diagnostic_is_opt_in_and_redacts_private_errors(monkeypatch, capsys, diagnostics, private_message):
+    from clusterctl import onboarding_source
+    if private_message:
+        class PrivateError(RuntimeError):
+            def __init__(self, _code):
+                super().__init__('private=/not-a-real-secret key=not-a-real-value')
+        monkeypatch.setattr(onboarding_source, 'OnboardingError', PrivateError)
+    args = ['--config', '/unused/operator-config.json', '--code-owner', '-1']
+    if diagnostics:
+        args.append('--diagnostics')
+    assert onboarding_source.main(args) == 1
+    output = capsys.readouterr()
+    assert json.loads(output.out) == {'error': 'native_onboarding_source_refused'}
+    if diagnostics:
+        result = json.loads(output.err)
+        assert result['error'] == ('source_operation_refused' if private_message else 'qualified_source_code_owner_required')
+        assert 'not-a-real' not in output.err
+    else:
+        assert output.err == ''

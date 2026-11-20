@@ -6,6 +6,24 @@ from tools.ci_scope import ONBOARDING_CONTRACTS, select
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_vm_runtime_transport_reuses_native_receiving_coverage(tmp_path):
+    from tools.ci_scope import NATIVE_RECEIVING_TESTS
+    changed = ['clusterctl/onboarding_host.py', 'clusterctl/vm_body.py',
+               'tests/test_vm_body.py', 'docs/design/onboarding-jobs.md',
+               'tools/ci_scope.py', 'tests/test_ci_scope.py']
+    profile, tests = select(changed, ROOT)
+    assert profile == 'peer'
+    assert set(NATIVE_RECEIVING_TESTS) <= set(tests)
+    assert {'tests/test_vm_body.py', 'tests/test_native_body.py',
+            'tests/test_onboarding_host_ownership.py', 'tests/test_receiving_cohort_control.py',
+            'tests/test_onboarding_worker_install.py'} <= set(tests)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for shared in ('clusterctl/admission.py', 'clusterctl/onboarding_sdk.py',
+                   'clusterctl/production_fences.py', 'requirements.txt', 'unknown.py'):
+        assert select([*changed, shared], ROOT) == ('full', ['tests'])
+    assert select(['clusterctl/vm_body.py'], ROOT) == ('full', ['tests'])
+
+
 def test_component_assessment_keeps_inventory_and_source_consumers_together(tmp_path):
     changed=['tools/children_application_inventory.py','tools/children_known_exploitation.py','tools/children_daily.py',
              'docs/operations/children-application-inventory.md','docs/operations/children-known-exploitation.md',
@@ -1400,7 +1418,12 @@ def test_vm_os_transport_keeps_native_maintenance_and_refuses_unrelated_deltas(t
     assert set(ci_scope.NATIVE_RECEIVING_TESTS)|{'tests/test_vm_body.py'} <= set(tests)
     assert select(changed,tmp_path)==('full',['tests'])
     assert select([*changed,'tools/build_receiving_maintenance.py','tools/check_rc_types.py'],ROOT)[0]=='peer'
-    for extra in ('clusterctl/onboarding_host.py','clusterctl/onboarding_custody.py','requirements.txt'):
+    # The unified native/VM transport profile now carries host consumers too.
+    host_profile, host_tests = select([*changed, 'clusterctl/onboarding_host.py'], ROOT)
+    assert host_profile == 'peer'
+    assert {'tests/test_onboarding_host.py', 'tests/test_onboarding_host_ownership.py',
+            'tests/test_onboarding_worker_install.py'} <= set(host_tests)
+    for extra in ('clusterctl/onboarding_custody.py','requirements.txt'):
         assert select([*changed,extra],ROOT)==('full',['tests'])
 
 

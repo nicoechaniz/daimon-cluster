@@ -1844,6 +1844,6 @@ with one previous map; the installed body is not relabeled or upgraded. This is
 maintenance code repair, not a fresh admission, control request or deadline.
 
 For a qualified Source operator refusal, `onboarding_source --diagnostics`
-adds only a bounded error category/type on stderr. Ordinary responses and service
+adds a bounded error category/type and module/line/function frames on stderr. Ordinary responses and service
 logs retain their generic refusal; private paths and free-form messages stay
 redacted. Inspect the underlying category before retrying a publication phase.

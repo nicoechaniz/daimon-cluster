@@ -289,5 +289,6 @@ def test_source_operator_diagnostic_is_opt_in_and_redacts_private_errors(monkeyp
         result = json.loads(output.err)
         assert result['error'] == ('source_operation_refused' if private_message else 'qualified_source_code_owner_required')
         assert 'not-a-real' not in output.err
+        assert result['frames'] and all(set(frame) == {'module', 'line', 'function'} for frame in result['frames'])
     else:
         assert output.err == ''

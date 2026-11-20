@@ -15,6 +15,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
@@ -859,7 +860,9 @@ def main(argv=None) -> int:
             error_code = str(error)
             if re.fullmatch(r'[a-z][a-z0-9_]*(?::[a-z][a-z0-9_]*)*', error_code) is None or len(error_code) > 160:
                 error_code = 'source_operation_refused'
-            print(json.dumps(dict(error=error_code, exception_type=type(error).__name__)), file=sys.stderr)
+            frames = [dict(module=Path(frame.filename).name, line=frame.lineno, function=frame.name)
+                for frame in traceback.extract_tb(error.__traceback__)[-8:]]
+            print(json.dumps(dict(error=error_code, exception_type=type(error).__name__, frames=frames)), file=sys.stderr)
         # No paths, custody, token values or raw native errors in service logs.
         print(json.dumps({'error': 'native_onboarding_source_refused'}))
         return 1

@@ -1637,3 +1637,21 @@ def test_public_advisory_phase_has_closed_scope():
         'tests/test_children_daily.py','tests/test_children_application_inventory.py',
         'tests/test_children_browser.py','tests/test_ci_scope.py','tests/test_ci_workflow.py'])
     assert select(changed+['clusterctl/admission.py'],ROOT)==('full',['tests'])
+
+
+def test_controller_metadata_composes_existing_receiving_checks_without_body_recreation(tmp_path):
+    from tools.ci_scope import MAINTENANCE_TESTS, UPDATE_PREFLIGHT_TESTS
+    changed=['clusterctl/onboarding_group_coordinator.py','clusterctl/onboarding_receive_flow.py',
+        'clusterctl/onboarding_receive_specification.py','tests/test_onboarding_group_coordinator.py',
+        'tests/test_onboarding_receive_flow.py','tests/test_onboarding_receive_specification.py',
+        'docs/design/onboarding-jobs.md','tools/ci_scope.py','tests/test_ci_scope.py']
+    profile,tests=select(changed,ROOT)
+    assert profile=='peer'
+    assert set(MAINTENANCE_TESTS)|set(UPDATE_PREFLIGHT_TESTS)<=set(tests)
+    assert 'tests/test_onboarding_group_coordinator.py' in tests
+    assert 'tests/test_onboarding_group_finisher.py' in tests
+    assert select(changed,tmp_path)==('full',['tests'])
+    for extra in ('clusterctl/onboarding_sdk.py','clusterctl/onboarding_custody.py',
+            'clusterctl/onboarding_service.py','clusterctl/onboarding_receiving_update.py',
+            'requirements-weave.txt','unknown.py'):
+        assert select([*changed,extra],ROOT)[0]!='peer'

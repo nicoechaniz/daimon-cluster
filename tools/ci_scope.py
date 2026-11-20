@@ -1000,6 +1000,18 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         # real composed controllers and retained maintenance/CI boundaries;
         # reuse their existing qualification instead of rerunning body setup.
         return 'peer', orchestration_tests
+    controller_preparation_files = {'clusterctl/onboarding_receive_flow.py',
+        'tests/test_onboarding_receive_flow.py', 'clusterctl/onboarding_receive_specification.py',
+        'tests/test_onboarding_receive_specification.py'}
+    if ({'clusterctl/onboarding_receive_flow.py', 'tests/test_onboarding_receive_flow.py'} <= set(changed)
+            and set(changed) <= controller_preparation_files | coordinator_files | CI_FILES | RUNBOOK_DOCS):
+        # Compose the existing metadata/caller and maintenance checks. Native
+        # owner, SDK, custody, service, archive and provider implementations are
+        # unchanged; editing any of them still selects their broader profile.
+        tests = list(dict.fromkeys((*MAINTENANCE_TESTS, *coordinator_tests,
+            *UPDATE_PREFLIGHT_TESTS)))
+        if all((root / path.split('::', 1)[0]).is_file() for path in tests):
+            return 'peer', tests
     if (({'clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py'} <= set(changed)
             or {'clusterctl/onboarding_receiving_update.py', 'tests/test_receiving_cohort_control.py'} <= set(changed)
             or {'clusterctl/onboarding_receiving_update.py', 'tests/test_current_reader_refresh.py'} <= set(changed))

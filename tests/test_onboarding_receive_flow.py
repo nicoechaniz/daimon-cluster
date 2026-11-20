@@ -997,3 +997,62 @@ def test_reader_helper_correction_cannot_change_owner_journal(native_readers):
     with pytest.raises(OnboardingError, match='maintenance_configuration_required'):
         f.select(maintenance_updates={'old': replacement})
     assert f.effects == []
+
+
+@pytest.mark.parametrize('lost_ack', [False, True])
+def test_automatic_controller_preparation_is_frozen_once_without_native_effects(
+        fixture, monkeypatch, tmp_path, lost_ack):
+    import json
+    from clusterctl import onboarding_receive_specification as specification
+    f=fixture
+    run(f)
+    before=f.journal.get(f.row['operation_id'])
+    restored=copy.deepcopy(before['runtime_observation'])
+    restored['receive_application']['restoration']={'verified':'original guard restored'}
+    f.journal.advance(before['operation_id'],before['state'],runtime_observation=restored,
+        expected_runtime_observation=before['runtime_observation'])
+    f.events.clear()
+    original_effects=copy.deepcopy(f.effects)
+    source=tmp_path/'approved-manifest.json'
+    template_manifest={'qualified':'controller-contract'}
+    source.write_text(json.dumps(template_manifest))
+    template=dict(code='/public/controller',code_digest='9'*64,manifest_path=str(source),
+        manifest_digest=digest(template_manifest),host_config=str(tmp_path/'host.json'))
+    calls=[]
+    def compile(**values):
+        calls.append(values)
+        return {'schema':'qualified-derived-manifest','target':values['target']}
+    monkeypatch.setattr(specification,'compile_controller_manifest',compile)
+    advance=f.journal.advance
+    failed=[lost_ack]
+    def lose_after_commit(*args,**kwargs):
+        result=advance(*args,**kwargs)
+        if failed[0] and 'receive_controller_preparation' in result['runtime_observation']:
+            failed[0]=False
+            raise OSError('lost committed host receipt')
+        return result
+    monkeypatch.setattr(f.journal,'advance',lose_after_commit)
+    def prepare(selected=template):
+        return flow.prepare_controller(plan=f.plan,template=selected,directory=tmp_path/'job',
+            journal=f.journal,row=f.journal.get(f.row['operation_id']),admission=f.admission,
+            validate=lambda:None,deadline_ns=time.monotonic_ns()+10_000_000_000)
+    if lost_ack:
+        with pytest.raises(OSError):
+            prepare()
+    result=prepare()
+    saved=(tmp_path/'job/receive-controller-manifest.json').read_bytes()
+    assert prepare(dict(template,code='/public/future-default'))==result
+    assert (tmp_path/'job/receive-controller-manifest.json').read_bytes()==saved
+    assert len(calls)==1 and f.events==[] and f.effects==original_effects
+    assert result['manifest_digest']==digest(json.loads(saved))
+    assert result['expires_at_ms']<=time.time_ns()//1_000_000+10000
+    assert f.journal.get(f.row['operation_id'])['result']=={'original-membership':'complete'}
+    # Later snapshot changes cannot inherit this original controller preparation.
+    latest=f.journal.get(f.row['operation_id'])
+    observed=copy.deepcopy(latest['runtime_observation'])
+    observed['receive_application']['snapshot']['result']['group']['publication_sha256']='f'*64
+    advance(f.row['operation_id'],latest['state'],runtime_observation=observed,
+            expected_runtime_observation=latest['runtime_observation'])
+    with pytest.raises(OnboardingError,match='companion_receive_original_changed'):
+        prepare()
+    assert len(calls)==1 and f.events==[]

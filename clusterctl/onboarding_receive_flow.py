@@ -10,6 +10,7 @@ import copy
 from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 import json
+import os
 from pathlib import Path
 import time
 from urllib.parse import urlsplit
@@ -37,6 +38,72 @@ def controller_configuration(value: dict) -> dict:
         raise OnboardingError('companion_receive_controller_preparation_required') from None
     return copy.deepcopy(value)
 
+
+
+def controller_template(value: dict) -> dict:
+    """The same protected selection as explicit descriptors, without per-job expiry."""
+    try:
+        if set(value) != {'code', 'code_digest', 'manifest_path', 'manifest_digest', 'host_config'}:
+            raise ValueError
+        checked = controller_configuration(dict(value, expires_at_ms=1))
+        checked.pop('expires_at_ms')
+        return checked
+    except (TypeError, ValueError):
+        raise OnboardingError('companion_receive_controller_preparation_required') from None
+
+
+def prepare_controller(*, plan, template, directory, journal, row, admission, validate, deadline_ns):
+    """Freeze generated metadata once inside the original receive operation."""
+    from .onboarding_receiving_update import _manifest
+    from .onboarding_receive_specification import compile_controller_manifest
+    from .onboarding import private_directory
+    from .onboarding_service import publish as publish_file
+    template = controller_template(template)
+    validate()
+    current = journal.get(row['operation_id'])
+    phase = (current['runtime_observation'] or {}).get('receive_application', {})
+    snapshot = phase.get('snapshot', {}).get('result')
+    if not isinstance(snapshot, dict) or not phase.get('restoration'):
+        raise OnboardingError('companion_receive_restoration_required')
+    binding = digest(dict(plan=plan, receive_binding=phase['binding'],
+        baseline=phase['baseline'], snapshot=snapshot))
+    previous = (current['runtime_observation'] or {}).get('receive_controller_preparation')
+    if previous is not None:
+        if previous.get('binding') != binding:
+            raise OnboardingError('companion_receive_original_changed')
+        result = controller_configuration(previous['preparation'])
+        _manifest(Path(result['manifest_path']), result['manifest_digest'], uid=os.geteuid())
+        return result
+    remaining = deadline_ns-time.monotonic_ns()
+    if remaining <= 0:
+        raise OnboardingError('receiving_host_deadline_expired')
+    selected = _manifest(Path(template['manifest_path']), template['manifest_digest'], uid=os.geteuid())
+    manifest = compile_controller_manifest(template=selected,
+        target={k:admission['receivers'][plan['name']][k] for k in ('being_ref','embodiment_id')},
+        authority_closure=current['intended_transition']['portal_admission']['social']['authority_closure'],
+        baseline=phase['baseline'], snapshot=snapshot, code_digest=template['code_digest'])
+    # One bounded file shares the original job's retention and cleanup path.
+    directory = private_directory(directory, create=True)
+    path = directory/'receive-controller-manifest.json'
+    validate()
+    raw = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
+    if len(raw) > 2*1024**2:
+        raise OnboardingError('companion_receive_controller_preparation_required')
+    publish_file(path, raw)
+    remaining = deadline_ns-time.monotonic_ns()
+    if remaining <= 0:
+        raise OnboardingError('receiving_host_deadline_expired')
+    result = dict(template, manifest_path=str(path), manifest_digest=digest(manifest),
+        expires_at_ms=time.time_ns()//1_000_000+max(1,remaining//1_000_000))
+    result = controller_configuration(result)
+    fresh = journal.get(row['operation_id'])
+    observed = copy.deepcopy(fresh['runtime_observation'] or {})
+    if observed.get('receive_controller_preparation') is not None:
+        raise OnboardingError('companion_receive_original_changed')
+    observed['receive_controller_preparation'] = dict(binding=binding, preparation=result)
+    journal.advance(row['operation_id'], fresh['state'], runtime_observation=observed,
+        expected_runtime_observation=fresh['runtime_observation'])
+    return result
 
 def ensure_controller(*, plan, preparation, backend, config_path, journal, row, validate, deadline_ns):
     """Join the supported native controller bootstrap to this original job.

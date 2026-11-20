@@ -912,3 +912,22 @@ def test_web_job_does_not_enter_pending_legacy_outbound_transaction(fixture, mon
     with pytest.raises(OnboardingError, match='explicit_membership_only_operation_required'):
         coordinator.advance('newcomer')
     assert f.calls == [] and f.body['registered'] is False
+
+
+@pytest.mark.parametrize('fault',[None,'expiry','relative'])
+def test_common_controller_template_needs_no_copied_per_job_expiry(tmp_path,fault):
+    selected=dict(schema=SCHEMA,tribe_ref='dm:tribe:v1:fixture',journal=str(tmp_path/'journal'),
+        owners={},admissions={},receive_controller_template=dict(code='/public/controller',
+            code_digest='1'*64,manifest_path='/private/qualified-contract.json',
+            manifest_digest='2'*64,host_config='/private/host.json'))
+    if fault=='expiry':
+        selected['receive_controller_template']['expires_at_ms']=123
+    elif fault=='relative':
+        selected['receive_controller_template']['manifest_path']='relative.json'
+    path=tmp_path/'group.json'
+    being_seed._write(path,selected)
+    if fault is None:
+        assert configuration(path)==selected
+    else:
+        with pytest.raises(OnboardingError,match='coordinator_configuration_required'):
+            configuration(path)

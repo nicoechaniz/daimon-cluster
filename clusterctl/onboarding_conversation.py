@@ -262,6 +262,65 @@ def resolve_request(value, being_ref):
     return value
 
 
+def host_request(config, plan):
+    """Read the original job's intent or the existing explicit selection."""
+    from .onboarding_custody import document
+    from .onboarding import OnboardingError, digest
+    explicit = (getattr(config, 'conversation_by_name', None) or {}).get(plan['name'])
+    path = config.jobs / plan['name'] / 'conversation-intent.json'
+    retained = None
+    if path.exists() or path.is_symlink():
+        if path.lstat().st_size > 65536:
+            raise OnboardingError('conversation_selection_required')
+        retained = document(path)
+        selection(retained, unresolved=True)
+        if retained['name'] != plan['name'] or retained['plan_digest'] != digest(plan):
+            raise OnboardingError('conversation_selection_changed')
+    if explicit is None:
+        return retained
+    value = document(explicit[0])
+    selection(value, unresolved=value.get('schema') == INTENT_SCHEMA)
+    if (digest(value) != explicit[1] or value['name'] != plan['name']
+            or value['plan_digest'] != digest(plan)
+            or retained is not None and value != retained):
+        raise OnboardingError('conversation_selection_changed')
+    return value
+
+
+def prepare_host_request(config, plan, *, authorize):
+    """Derive resource IDs once before a new authorized v2 job is submitted.
+
+    Pair/runtime settings stay in the existing protected host configuration.
+    The one bounded intent shares the original job's retention and lock. No
+    identity, Home registration, service, account or grant is created here.
+    """
+    import copy
+    from . import being_seed
+    from .onboarding import CONVERSATION_PLAN_SCHEMA, OnboardingError, digest, private_directory
+    from .onboarding_service import publish
+    if plan.get('schema') != CONVERSATION_PLAN_SCHEMA:
+        return
+    settings = (getattr(config, 'conversation_settings_by_name', None) or {}).get(plan['name'])
+    if settings is None:
+        return
+    if not authorize():
+        raise OnboardingError('host_authorization_required')
+    private_directory(config.jobs, create=True)
+    with being_seed._locked(config.jobs):
+        if host_request(config, plan) is not None:
+            return
+        directory = config.jobs / plan['name']
+        # A later default must never supply new pairing to a retained job.
+        if (directory / 'job.json').exists():
+            return
+        value = prepare_intent(plan['name'], digest(plan), copy.deepcopy(settings))
+        raw = json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+        if len(raw) > 65536:
+            raise OnboardingError('conversation_selection_required')
+        private_directory(directory, create=True)
+        publish(directory / 'conversation-intent.json', raw)
+
+
 def trusted(path, *, resolve=False):
     path = Path(path)
     if resolve:

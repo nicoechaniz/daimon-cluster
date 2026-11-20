@@ -52,6 +52,140 @@ def initial_publication(group_source, profile):
     return owner, group, journal, request, base
 
 
+@pytest.mark.parametrize('boundary', ['view', 'catalog'])
+def test_incompatible_catalog_helper_refuses_before_additive_application(group_source, monkeypatch, boundary):
+    from types import SimpleNamespace
+    from daimon_matrix import chat_host, operator_messaging
+    from daimon_matrix.messaging_config import read_publication
+    from daimon_matrix.native_egress import NativeEgressError
+    from clusterctl.onboarding_group_admission import _publish_application
+
+    source, *_ = group_source
+    base = source._load(signed=False)
+    directory = source.outputs / 'tribe/application'
+    previous, _ = read_publication(base, directory)
+    visibility = directory.parent / 'visibility'
+    visibility.mkdir(mode=0o700)
+    # The seam represents the selected native visibility. Qualification must
+    # refuse before application mutation if either loading or reading retained
+    # receipt catalogs fails under this helper's SDK.
+    (visibility / 'installation.json').write_text('{}')
+    original = {p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()}
+    def reject():
+        raise NativeEgressError('egress_historical_obligation_inconsistent')
+    def view(*args, **kwargs):
+        assert args == (base, directory, visibility / 'installation.json')
+        assert kwargs == {'catalog_mode': 'validate'}
+        if boundary == 'view':
+            reject()
+        return SimpleNamespace(egress=SimpleNamespace(validate_registered_catalogs=reject))
+    monkeypatch.setattr(chat_host, 'application_view', view)
+    monkeypatch.setattr(operator_messaging, 'admit_group_application',
+        lambda *args, **kwargs: pytest.fail('incompatible helper reached native application writer'))
+    with pytest.raises(NativeEgressError, match='historical_obligation'):
+        _publish_application(base, directory, dict(expected_application_sha256=digest(previous)))
+    assert {p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()} == original
+
+
+def test_initial_portable_visibility_adopts_existing_closed_catalogs(group_source):
+    """First publication must open already initialized receive-only catalogs."""
+    from contextlib import closing
+    import sqlite3
+    from daimon_matrix import native_egress
+    if not hasattr(native_egress, 'PORTABLE_VISIBILITY_SCOPE_RISKS'):
+        pytest.skip('Selected legacy SDK lacks portable Conversation visibility; successor qualification runs this journey')
+    from daimon_matrix.canonical import b64url
+    from daimon_matrix.messaging_config import load_application
+    from daimon_matrix.native_egress import VISIBILITY_SCHEMA_VERSION
+
+    owner, group, _journal, initial, base = initial_publication(group_source, 'target')
+    owner.group_publication(initial, authority_closure={})
+    closed = load_application(base, group / 'application')
+    closed.egress.migrate_registered_catalogs(version=VISIBILITY_SCHEMA_VERSION)
+
+    def pending():
+        rows = {}
+        for path in (group / 'application').glob('*.sqlite'):
+            with closing(sqlite3.connect(path)) as db:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='echo_v2_obligations'").fetchone():
+                    for identifier, raw in db.execute('SELECT operation_id,record FROM echo_v2_obligations'):
+                        value = json.loads(raw)
+                        value.pop('authentication')
+                        rows[(path.name, identifier)] = value
+        return rows
+
+    originals = pending()
+    assert list((group / 'application').glob('*.sqlite'))
+    destination = dict(publication=dict(kind='conversation-journal/v1',
+        surface_ref='https://fixture.invalid/conversation', audience=['human:fixture'],
+        receipt_key=b64url(b'p' * 32)), representation='plain-json/v2')
+    identifier = initial['operation_id']
+    def submit(step, action, params):
+        return owner.group_publication(dict(operation_id=identifier, step=step, action=action, params=params),
+                                       authority_closure={})
+    disclosure = submit('disclosure', 'visibility-disclosure', dict(approved_destination=destination,
+        issued_at_ms=time.time_ns() // 1_000_000))['disclosure']
+    binding = submit('accept', 'visibility-accept', dict(approved_destination=destination,
+        disclosures=[disclosure]))['bindings'][0]['binding']
+    visibility = group / 'visibility'
+    visibility.mkdir(mode=0o700)
+    key = visibility / 'proof.key'
+    assert not key.exists()
+    configuration = dict(destination=destination, secrets=dict(proof_key_file='proof.key'),
+        publication_backend=dict(kind='owner-unix/v1', socket_path='/tmp/portable-fixture.sock'))
+    request = dict(disclosure=disclosure, bindings=[binding], expected_installation_sha256=None,
+                   initial_configuration=configuration)
+    result = submit('visibility', 'visibility-publish', request)
+    original_key = key.read_bytes()
+    assert len(original_key) == 32 and key.stat().st_mode & 0o777 == 0o600
+    assert submit('visibility', 'visibility-publish', request) == result
+    assert key.read_bytes() == original_key
+    assert result['status'] == 'recorded'
+    assert pending() == originals
+
+
+@pytest.mark.parametrize('existing', ['short-key', 'symlink', 'installed-missing-key'])
+def test_initial_portable_receipt_key_never_replaces_existing_state(tmp_path, existing):
+    from clusterctl.onboarding_group_admission import _prepare_initial_visibility_key
+    from daimon_matrix.messaging_config import MessagingConfigError
+    root = tmp_path / 'visibility'
+    root.mkdir(mode=0o700)
+    key, installation = root / 'proof.key', root / 'installation.json'
+    outside = tmp_path / 'outside'
+    outside.write_bytes(b'x' * 32)
+    outside.chmod(0o600)
+    if existing == 'short-key':
+        key.write_bytes(b'original')
+        key.chmod(0o600)
+    elif existing == 'symlink':
+        key.symlink_to(outside)
+    else:
+        installation.write_text('{}')
+        installation.chmod(0o600)
+    params = dict(expected_installation_sha256=None, initial_configuration=dict(
+        secrets=dict(proof_key_file='proof.key'), publication_backend={}))
+    with pytest.raises(MessagingConfigError):
+        _prepare_initial_visibility_key(installation, params)
+    assert outside.read_bytes() == b'x' * 32
+    if existing == 'short-key':
+        assert key.read_bytes() == b'original'
+    elif existing == 'symlink':
+        assert key.is_symlink()
+    else:
+        assert not key.exists() and installation.read_text() == '{}'
+
+
+def test_initial_portable_receipt_key_rejects_parent_escape(tmp_path):
+    from clusterctl.onboarding_group_admission import _prepare_initial_visibility_key
+    root = tmp_path / 'visibility'
+    root.mkdir(mode=0o700)
+    with pytest.raises(OnboardingError, match='visibility_preparation_rejected'):
+        _prepare_initial_visibility_key(root / 'installation.json', dict(
+            expected_installation_sha256=None, initial_configuration=dict(
+                secrets=dict(proof_key_file='../outside'), publication_backend={})))
+    assert list(root.iterdir()) == [] and not (tmp_path / 'outside').exists()
+
+
 @pytest.fixture
 def schema_owner(tmp_path):
     from tests.test_onboarding_target import receiving
@@ -1129,7 +1263,11 @@ def test_pending_initial_publication_preserves_a_later_native_client_renewal(gro
     assert being_seed._read(path)['result'] is None
 
 
-def test_native_additive_publication_recovers_its_sdk_predecessor_without_another_client(group_source, tmp_path, monkeypatch):
+@pytest.mark.parametrize('portable', [False, True])
+def test_native_additive_publication_recovers_its_sdk_predecessor_without_another_client(group_source, tmp_path, monkeypatch, portable):
+    from daimon_matrix import native_egress
+    if portable and not hasattr(native_egress, 'PORTABLE_VISIBILITY_SCOPE_RISKS'):
+        pytest.skip('Portable disclosure requires the explicitly selected successor SDK')
     from daimon_matrix import operator_messaging
     from daimon_matrix.messaging_config import read_publication
     from daimon_matrix.relationships import MEMBERSHIP_ACCEPTANCE_SCHEMA
@@ -1159,18 +1297,39 @@ def test_native_additive_publication_recovers_its_sdk_predecessor_without_anothe
     assert owner.group_relationship(dict(operation_id=identifier, step='accepted',
         method='relationship.event.ingest', params=dict(event=acceptance)),
         offline=True, authority_closure=approved)['status'] == 'recorded'
-    from clusterctl.onboarding_group_admission import (
-        load_owner_runtime, prepare_current_group_visibility, public_authorities,
-    )
+    from clusterctl.onboarding_group_admission import load_owner_runtime, public_authorities
     destination = dict(bot_id=1, chat_id=-123, topic_id=None, representation='compact-text/v1')
+    if portable:
+        from daimon_matrix.canonical import b64url
+        destination = dict(publication=dict(kind='conversation-journal/v1',
+            surface_ref='https://fixture.invalid/conversation', audience=['human:fixture'],
+            receipt_key=b64url(b'p'*32)), representation='compact-text/v1')
     issued = time.time_ns() // 1_000_000
     original_publication = (group/'application/publication.json').read_bytes()
-    with owner.writer():
-        preparing = load_owner_runtime(owner.root, owner._reader, authorities=public_authorities(founder.document_bundle(), approved))
-        prepared_disclosure = prepare_current_group_visibility(preparing, group/'application',
-            approved_destination=destination, issued_at_ms=issued)
-        from daimon_matrix.messaging_config import create_binding
-        prepared_binding = create_binding(preparing, prepared_disclosure)
+    prepared_disclosure = owner.group_publication(dict(operation_id=identifier,
+        step='prospective-disclosure', action='visibility-disclosure', params=dict(
+            approved_destination=destination, issued_at_ms=issued, prospective=True)),
+        authority_closure=approved)['disclosure']
+    second_destination = copy.deepcopy(destination)
+    if portable:
+        second_destination['publication']['surface_ref'] = 'https://second.invalid/conversation'
+    else:
+        second_destination['topic_id'] = 7
+    second_disclosure = {**prepared_disclosure, 'destination': second_destination}
+    prepared_bindings = owner.group_publication(dict(operation_id=identifier,
+        step='prospective-binding', action='visibility-accept', params=dict(
+            approved_destination=None, approved_destinations=[destination, second_destination],
+            disclosures=[prepared_disclosure, second_disclosure], prospective=True)),
+        authority_closure=approved)['bindings']
+    assert len(prepared_bindings) == 2
+    prepared_binding = prepared_bindings[0]['binding']
+    altered = copy.deepcopy(prepared_disclosure)
+    altered['scope']['channels'][0]['participants'] = []
+    with pytest.raises(OnboardingError, match='visibility_preparation_rejected'):
+        owner.group_publication(dict(operation_id=identifier,
+            step='altered-prospective-binding', action='visibility-accept', params=dict(
+                approved_destination=destination, disclosures=[altered], prospective=True)),
+            authority_closure=approved)
     assert set(prepared_disclosure['participants']) == {
         peer_bundle['manifest']['being_ref'], founder.document_bundle()['manifest']['being_ref']}
     assert (group/'application/publication.json').read_bytes() == original_publication
@@ -1180,10 +1339,22 @@ def test_native_additive_publication_recovers_its_sdk_predecessor_without_anothe
     route = dict(provider_ref='peer', route_ref='peer', key_ref='peer',
         endpoint='http://127.0.0.1:48676/dm-messaging/v1/message',
         secret_file=key.name, secret_sha256=hashlib.sha256(key.read_bytes()).hexdigest())
+    # Seed an already completed owner-private import. The native application
+    # must consume its retained reference without a key in the public command.
+    imported = journal / identifier / 'receive-imports'
+    imported.mkdir(mode=0o700)
+    slot = digest(route)
+    imported_key = imported / (slot+'.key')
+    imported_key.write_bytes(key.read_bytes())
+    imported_key.chmod(0o600)
+    context = being_seed._read(journal / identifier / 'owner/context.json')
+    being_seed._write(imported / (slot+'.json'), dict(
+        schema='cluster-receive-resource-import/v1', owner_context_sha256=digest(context),
+        route=route))
     peer = peer_bundle['manifest']['being_ref']
     addition = dict(operation_id=identifier, step='add-member', action='application', params=dict(
         expected_application_sha256=original['application_sha256'], specification=None,
-        admitted_being_refs=[peer], secret_sources={key.name: str(key)},
+        admitted_being_refs=[peer], secret_sources={key.name: {'receive_import':slot}},
         additions=dict(authorities=[approved[peer]['authority']], relationship_events=[invited, acceptance],
             roster=[dict(being_ref=peer, embodiment_id=peer_bundle['local_origin']['embodiment_id'],
                 body_ref=peer_bundle['local_origin']['body_ref'], route=route)])))

@@ -1,5 +1,6 @@
 """Actual signed native Source survives an additive peer ceremony and restart."""
 import hashlib
+import json
 import os
 import threading
 
@@ -249,3 +250,45 @@ def test_lost_source_ack_after_publication_keeps_native_daemon_restartable(journ
     source.tool.replace_document = replace
     source.finish(fingerprint, response)
     assert_original(source, original)
+
+
+@pytest.mark.parametrize('code', [None, 'invalid_params', 'permission_denied', 'unavailable'])
+def test_loaded_source_status_requests_compact_view_and_only_legacy_fallback(code):
+    from clusterctl.onboarding_source import _observed_status
+    calls = []
+    class Client:
+        def invoke(self, method, params):
+            calls.append((method, params))
+            return None, dict(ok=code is None, result={'inspection': 'current-receiving'},
+                error=None if code is None else {'code': code})
+        def runtime_status(self):
+            calls.append(('legacy-full', {}))
+            return None, {'ok': True, 'result': {'legacy': True}}
+    result = _observed_status(Client(), compact=True)
+    assert calls[0] == ('runtime.status', {'view': 'receiving'})
+    assert len(calls) == (2 if code == 'invalid_params' else 1)
+    assert result['ok'] == (code in {None, 'invalid_params'})
+
+
+@pytest.mark.parametrize('diagnostics', [False, True])
+@pytest.mark.parametrize('private_message', [False, True])
+def test_source_operator_diagnostic_is_opt_in_and_redacts_private_errors(monkeypatch, capsys, diagnostics, private_message):
+    from clusterctl import onboarding_source
+    if private_message:
+        class PrivateError(RuntimeError):
+            def __init__(self, _code):
+                super().__init__('private=/not-a-real-secret key=not-a-real-value')
+        monkeypatch.setattr(onboarding_source, 'OnboardingError', PrivateError)
+    args = ['--config', '/unused/operator-config.json', '--code-owner', '-1']
+    if diagnostics:
+        args.append('--diagnostics')
+    assert onboarding_source.main(args) == 1
+    output = capsys.readouterr()
+    assert json.loads(output.out) == {'error': 'native_onboarding_source_refused'}
+    if diagnostics:
+        result = json.loads(output.err)
+        assert result['error'] == ('source_operation_refused' if private_message else 'qualified_source_code_owner_required')
+        assert 'not-a-real' not in output.err
+        assert result['frames'] and all(set(frame) == {'module', 'line', 'function'} for frame in result['frames'])
+    else:
+        assert output.err == ''

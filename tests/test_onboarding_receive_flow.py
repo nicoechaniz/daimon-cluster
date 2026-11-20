@@ -2,6 +2,7 @@
 import copy
 from contextlib import contextmanager
 from types import SimpleNamespace
+from pathlib import Path
 import time
 import uuid
 
@@ -215,7 +216,8 @@ def test_observation_requires_fresh_all_required_readers_and_preserves_old_visib
     if gap=='unobserved-sibling-body':
         roster['audience']=roster['audience']+[dict(being_ref='old',embodiment_id='historical-body-old')]
     calls=[]
-    def proof(owner,*,expected_selection,expires_at_ms,receive_only):
+    def proof(owner,*,expected_selection,expires_at_ms,receive_only,require_admitted):
+        assert require_admitted is True
         name=owner.name
         assert receive_only == (name=='new')
         assert expected_selection['application_sha256']==('9' if name=='new' else '4')*64
@@ -250,7 +252,7 @@ def test_observation_requires_fresh_all_required_readers_and_preserves_old_visib
         assert result.state==('complete' if gap in (None,'unobserved-sibling-body') else 'waiting')
         if gap in (None,'unobserved-sibling-body'):
             assert result.facts=={'tribe_reader_selection_verified':True}
-    assert calls==['new','old']
+    assert sorted(calls)==['new','old']
     assert f.journal.get(f.row['operation_id'])==before
     assert all(o.deadline_ns is None and o.maintenance is None for o in f.owners.values())
 
@@ -300,12 +302,12 @@ def test_original_scope_recovery_precedes_fresh_base_status(fixture,monkeypatch)
     assert f.events.index(('new','recover')) < f.events.index(('new','pause'))
 
 
-@pytest.mark.parametrize('stage',['matrix','acceptance'])
+@pytest.mark.parametrize('stage',['matrix','acceptance',None])
 def test_existing_worker_advances_receive_after_completed_membership_without_reenrollment(fixture,monkeypatch,stage):
     from clusterctl import onboarding_group_coordinator as module
     f=fixture
     coordinator=object.__new__(module.GroupCoordinator)
-    coordinator.store=SimpleNamespace(_load=lambda n:dict(plan=f.plan,stage=stage))
+    coordinator.store=SimpleNamespace(_load=lambda n:dict(plan=f.plan,stage=stage,state='complete' if stage is None else 'pending'))
     coordinator.settings={'receive_preparations':{digest(f.plan):f.selected}}
     row=copy.deepcopy(f.row)
     row['intended_transition']['membership_only']={'schema':'cluster-native-membership-only/v1'}
@@ -324,13 +326,15 @@ def test_existing_worker_advances_receive_after_completed_membership_without_ree
     assert events==(['membership','receive'] if stage=='matrix' else ['receive'])
 
 
-def test_coordinator_retains_actual_restoration_and_completed_retry_acquires_no_owners(fixture,monkeypatch,tmp_path):
+@pytest.mark.parametrize('stage',['acceptance',None])
+@pytest.mark.parametrize('defer',[False,True,'uncertain','unchanged'])
+def test_coordinator_retains_actual_restoration_and_completed_retry_acquires_no_owners(fixture,monkeypatch,tmp_path,stage,defer):
     from clusterctl import onboarding_group_coordinator as module
     f=fixture
     coordinator=object.__new__(module.GroupCoordinator)
     pin=digest(f.plan)
     coordinator.path=tmp_path/'configuration.json'
-    coordinator.store=SimpleNamespace(_load=lambda n:dict(plan=f.plan,stage='acceptance'))
+    coordinator.store=SimpleNamespace(_load=lambda n:dict(plan=f.plan,stage=stage,state='complete' if stage is None else 'pending'))
     coordinator.settings=dict(receive_preparations={pin:f.selected},admissions={pin:f.row['operation_id']},
         owners={name:{'binding':name} for name in f.owners},tribe_ref='tribe')
     coordinator.backend=SimpleNamespace(authorize=lambda *a:True,_consented=lambda *a,**kw:True,
@@ -339,7 +343,36 @@ def test_coordinator_retains_actual_restoration_and_completed_retry_acquires_no_
     monkeypatch.setattr(coordinator,'_owners',lambda a:f.owners)
     monkeypatch.setattr(module,'configuration',lambda p:coordinator.settings)
     monkeypatch.setattr(module,'finish_membership_only',lambda j,r,result:result)
+    if defer in (True, 'uncertain'):
+        relay = flow.relay
+        lost = []
+        def bounded(source, target, outgoing, incoming, **kwargs):
+            if source is f.owners['old'] and not lost:
+                assert f.events[-1] != ('new','restore')
+                lost.append(True)
+                error = OnboardingError('receiving_owner_deadline_expired')
+                if defer == 'uncertain':
+                    error.add_note('Scoped Matrix restoration is unobserved')
+                raise error
+            return relay(source, target, outgoing, incoming, **kwargs)
+        monkeypatch.setattr(flow, 'relay', bounded)
+    if defer == 'unchanged':
+        calls = []
+        def unavailable(*args, **kwargs):
+            calls.append(True)
+            raise OnboardingError('receiving_owner_deadline_expired')
+        monkeypatch.setattr(flow, 'Endpoint', unavailable)
+    if defer in ('uncertain', 'unchanged'):
+        with pytest.raises(OnboardingError, match='receiving_owner_deadline_expired') as error:
+            coordinator.advance_receive_only('new')
+        if defer == 'uncertain':
+            assert error.value.__notes__ and len(lost) == 1
+        else:
+            assert calls == [True] and not f.effects
+        return
     result=coordinator.advance_receive_only('new')
+    assert f.events.count(('new','restore')) == (3 if defer else 1)
+    assert all(count == 1 for count in f.effects.values())
     assert f.events[-1]==('new','restore')
     current=f.journal.get(f.row['operation_id'])
     assert current['result']=={'original-membership':'complete'}
@@ -409,6 +442,7 @@ def native_readers(fixture, monkeypatch, tmp_path):
     def collect(**options):
         options['validate']()
         return {name:dict(reader=copy.deepcopy(next(r for r in readers if r['being_ref']==name)),
+            identity_expires_at_ms=time.time_ns()//1_000_000+60_000,
             gate=gate(name),roster=dict(roster_sha256=digest(name)),
             expected=dict(process=dict(pid=os.getpid()),server=dict(embodiment_id='body-'+name),selection={}))
             for name in f.owners}, dict(readers=copy.deepcopy(readers),membership_basis_sha256='d'*64)
@@ -443,10 +477,10 @@ def native_readers(fixture, monkeypatch, tmp_path):
                 process=dict(pid=os.getpid()),server=dict(embodiment_id='body-'+name),
                 request_sha256=accepted['request_sha256'],command_sha256=digest(command))
         owner.prepare_apply_control=apply
-    def select(validate=lambda:None):
+    def select(validate=lambda:None, selection_updates=None, maintenance_updates=None):
         return flow.select_readers(plan=f.plan,selected=f.selected,row=f.journal.get(f.row['operation_id']),
             journal=f.journal,admission=f.admission,owners=f.owners,validate=validate,
-            deadline_ns=time.monotonic_ns()+10_000_000_000)
+            deadline_ns=time.monotonic_ns()+10_000_000_000, selection_updates=selection_updates, maintenance_updates=maintenance_updates)
     return SimpleNamespace(f=f,controllers=controllers,requests=requests,effects=effects,lost=lost,
         readers=readers,gate=gate,select=select)
 
@@ -480,6 +514,109 @@ def test_current_native_barrier_keeps_partial_work_across_foreground_window(nati
     assert f.effects==['new-revoke']
     assert f.select()==dict(tribe_reader_selection_verified=True)
     assert f.effects==['new-revoke','old-revoke','new-select','old-select']
+
+
+def test_reader_preparation_runs_independent_owners_together_before_controls(native_readers, monkeypatch):
+    import threading
+    f = native_readers
+    endpoint = flow.Endpoint
+    barrier = threading.Barrier(len(f.f.owners))
+    def prepare(*args, **kwargs):
+        assert not f.effects
+        barrier.wait(timeout=2)
+        return endpoint(*args, **kwargs)
+    monkeypatch.setattr(flow, 'Endpoint', prepare)
+    assert f.select() == dict(tribe_reader_selection_verified=True)
+
+
+@pytest.mark.parametrize('lost_ack', [False, True])
+def test_code_update_selects_new_vector_without_replaying_original_native_controls(native_readers, monkeypatch, lost_ack):
+    f = native_readers
+    f.select()
+    original = copy.deepcopy(f.f.journal.get(f.f.row['operation_id'])['runtime_observation'][
+        'receive_application']['reader_selection'])
+    f.readers[0]['receiving_selection_sha256'] = 'e'*64
+    updates = {'new': {'receiving_code': 'qualified-successor'}}
+    if lost_ack:
+        f.lost.append('new-select-after')
+        with pytest.raises(OSError):
+            f.select(selection_updates=updates)
+    assert f.select(selection_updates=updates) == dict(tribe_reader_selection_verified=True)
+    phase = f.f.journal.get(f.f.row['operation_id'])['runtime_observation']['receive_application']
+    assert phase['reader_selection_previous'] == original
+    assert phase['reader_selection']['selection_updates_sha256'] == digest(updates)
+    assert f.effects == ['new-revoke', 'old-revoke', 'new-select', 'old-select']*2
+    assert f.select(selection_updates=updates) == dict(tribe_reader_selection_verified=True)
+    assert len(f.effects) == 8
+    collect = flow._collect
+    def current(**options):
+        assert options['selection_updates'] == updates
+        return collect(**options)
+    monkeypatch.setattr(flow, '_collect', current)
+    assert f.select() == dict(tribe_reader_selection_verified=True)
+    assert len(f.effects) == 8
+
+
+def test_authenticated_restart_refreshes_completed_native_barrier_without_software_change(native_readers):
+    from daimon_matrix.native_egress import MandatoryEgressController
+    f = native_readers
+    f.select()
+    original = copy.deepcopy(f.f.journal.get(f.f.row['operation_id'])['runtime_observation'][
+        'receive_application']['reader_selection'])
+    original_operation = f.gate('new')['operation_id']
+    restarted = MandatoryEgressController(policy={}, proof_key=b'k'*32, transport=None)
+    restarted.register_reader_channel('tribe', 'a'*64, controlled=True)
+    f.controllers['new'] = restarted
+    assert f.select() == dict(tribe_reader_selection_verified=True)
+    assert f.gate('new')['operation_id'] != original_operation
+    assert f.gate('old')['operation_id'] == f.gate('new')['operation_id']
+    assert len(f.effects) == 8
+    phase = f.f.journal.get(f.f.row['operation_id'])['runtime_observation']['receive_application']
+    assert phase['reader_selection_previous'] == original
+    assert f.select() == dict(tribe_reader_selection_verified=True)
+    assert len(f.effects) == 8
+
+
+def test_restart_never_supersedes_an_unfinished_native_barrier(native_readers):
+    from daimon_matrix.native_egress import MandatoryEgressController
+    f = native_readers
+    f.lost.append('new-revoke-after')
+    with pytest.raises(OSError):
+        f.select()
+    original = copy.deepcopy(f.f.journal.get(f.f.row['operation_id']))
+    restarted = MandatoryEgressController(policy={}, proof_key=b'k'*32, transport=None)
+    restarted.register_reader_channel('tribe', 'a'*64, controlled=True)
+    f.controllers['old'] = restarted
+    with pytest.raises(OnboardingError, match='reader_control_changed'):
+        f.select()
+    assert f.f.journal.get(f.f.row['operation_id']) == original
+    assert f.effects == ['new-revoke']
+
+
+@pytest.mark.parametrize('expire_after_first_select', [False, True])
+def test_current_selection_reuses_only_unexpired_complete_proofs(native_readers, monkeypatch,
+                                                                expire_after_first_select):
+    f = native_readers
+    original = flow._collect
+    rounds = []
+    def collect(**options):
+        result = original(**options)
+        rounds.append(result[0])
+        return result
+    monkeypatch.setattr(flow, '_collect', collect)
+    apply = f.f.owners['new'].prepare_apply_control
+    def select(command, path):
+        result = apply(command, path)
+        if expire_after_first_select and command['phase'] == 'select':
+            for proof in rounds[-1].values():
+                proof['identity_expires_at_ms'] = 0
+        return result
+    f.f.owners['new'].prepare_apply_control = select
+    assert f.select() == dict(tribe_reader_selection_verified=True)
+    # Initial vector and final full read are mandatory. An expired vector adds
+    # one complete refresh before the next native positive control.
+    assert len(rounds) == (3 if expire_after_first_select else 2)
+    assert f.effects == ['new-revoke', 'old-revoke', 'new-select', 'old-select']
 
 
 def test_changed_current_vector_cannot_enable_partial_cohort(native_readers):
@@ -564,3 +701,358 @@ def test_unobserved_control_reply_keeps_exact_native_recovery(native_readers,mon
     monkeypatch.setattr(owner,'prepare_apply_control',native)
     assert f.select()==dict(tribe_reader_selection_verified=True)
     assert f.effects==['new-revoke','old-revoke','new-select','old-select']
+
+
+def test_owned_ingress_recovers_lost_add_before_native_pause_or_key_creation(fixture,monkeypatch):
+    from clusterctl import onboarding_conversation_proxy as proxy
+    f=fixture
+    f.selected['ingress']=dict(listen_host='10.20.30.40',listen_port=18768)
+    f.selected['key']['endpoint']='http://10.20.30.40:18768/dm-messaging/v1/message'
+    owner=f.owners['new']
+    owner.backend=object()
+    owner.plan=f.plan
+    calls=[]
+    def reconcile(backend,plan,listener,request,**options):
+        assert backend is owner.backend and plan==f.plan
+        assert listener==f.selected['ingress']
+        assert request==dict(port=1234,listen_host='127.0.0.1')
+        assert options==dict(device_name='matrix-message',apply=True)
+        calls.append('same-owned-ingress')
+        if len(calls)==1:
+            raise TimeoutError('lost original device reply')
+        return SimpleNamespace(state='complete')
+    monkeypatch.setattr(proxy,'reconcile_listener',reconcile)
+    with pytest.raises(TimeoutError):
+        run(f)
+    assert ('new','pause') not in f.events and not f.effects
+    phase=f.journal.get(f.row['operation_id'])['runtime_observation']['receive_application']
+    assert phase['ingress_intent']==dict(device='matrix-message',listener=f.selected['ingress'],guest_port=1234)
+    assert 'ingress' not in phase
+    assert run(f)['outbound_release'] is False
+    assert len(calls)==2 and all(count==1 for count in f.effects.values())
+    assert run(f)['outbound_release'] is False and len(calls)==2
+    retained=f.journal.get(f.row['operation_id'])['runtime_observation']['receive_application']['ingress']
+    assert retained==dict(device='matrix-message',listener=f.selected['ingress'],guest_port=1234,state='complete')
+
+
+@pytest.mark.parametrize('mismatch',['public-host','public-port','guest-host'])
+def test_ingress_configuration_binds_transport_and_actual_guest_listener(fixture,mismatch):
+    f=fixture
+    f.selected['ingress']=dict(listen_host='10.20.30.40',listen_port=18768,
+        vm=dict(nic='eth0',network='incusbr0',address='10.100.0.10'))
+    f.selected['key']['endpoint']='http://10.20.30.40:18768/dm-messaging/v1/message'
+    f.selected['listen']['host']='10.100.0.10'
+    f.selected['intake_endpoint']='http://10.100.0.10:1234/dm-messaging/v1/message'
+    assert flow.configuration(f.selected,f.owners)==f.selected
+    if mismatch=='public-host':
+        f.selected['key']['endpoint']='http://10.20.30.41:18768/dm-messaging/v1/message'
+    elif mismatch=='public-port':
+        f.selected['key']['endpoint']='http://10.20.30.40:18769/dm-messaging/v1/message'
+    else:
+        f.selected['listen']['host']='10.100.0.11'
+        f.selected['intake_endpoint']='http://10.100.0.11:1234/dm-messaging/v1/message'
+    with pytest.raises(OnboardingError,match='companion_receive_preparation_required'):
+        run(f)
+    assert not f.events
+
+
+def test_current_collection_keeps_source_and_guest_identity_contracts_distinct(fixture, monkeypatch):
+    from clusterctl import onboarding_receiving_update as receiving
+    f = fixture
+    run(f)
+    source = object.__new__(receiving.SourceGroupClient)
+    source.deadline_ns, source.maintenance = None, None
+    f.owners['old'] = source
+    calls = []
+    class Collected(Exception):
+        pass
+    def identity(owner, *, require_admitted, **kwargs):
+        calls.append(require_admitted)
+        if owner is source:
+            assert require_admitted is False
+            raise Collected
+        assert require_admitted is True
+        return dict(reader=dict(being_ref='new', embodiment_id='body-new'))
+    monkeypatch.setattr(receiving, 'observe_current_reader', identity)
+    with pytest.raises(Collected):
+        flow._collect(plan=f.plan, selected=f.selected, row=f.journal.get(f.row['operation_id']),
+            admission=f.admission, owners=f.owners, validate=lambda:None,
+            deadline_ns=time.monotonic_ns()+10_000_000_000, prepare=False)
+    assert sorted(calls) == [False, True]
+
+
+@pytest.mark.parametrize('field', ['runtime_bundle_sha256', 'application_sha256', 'visibility_installation_sha256'])
+def test_code_selection_update_cannot_change_identity_application_or_outbound(fixture, field):
+    f = fixture
+    snapshot = run(f)
+    row = f.journal.get(f.row['operation_id'])
+    phase = row['runtime_observation']['receive_application']
+    selected = dict(phase['baseline'], application_sha256=snapshot['group']['application_sha256'],
+        publication_sha256=snapshot['group']['publication_sha256'], visibility_installation_sha256=None)
+    selected[field] = 'f'*64
+    with pytest.raises(OnboardingError, match='companion_receive_source_changed'):
+        flow._collect(plan=f.plan, selected=f.selected, row=row,
+            admission=f.admission, owners=f.owners, validate=lambda:None,
+            deadline_ns=time.monotonic_ns()+10_000_000_000, prepare=False,
+            selection_updates={'new': selected})
+
+
+def test_current_reader_collection_observes_independent_owners_in_one_validity_window(fixture, monkeypatch):
+    import threading
+    from clusterctl import onboarding_receiving_update as receiving
+    f = fixture
+    run(f)
+    barrier = threading.Barrier(2)
+    audience = [dict(being_ref=name, embodiment_id='body-'+name) for name in f.owners]
+    def identity(owner, **kwargs):
+        barrier.wait(timeout=2)
+        return dict(reader=dict(being_ref=owner.name, embodiment_id='body-'+owner.name),
+            identity_expires_at_ms=time.time_ns()//1_000_000+60000, roster=dict(audience=audience))
+    monkeypatch.setattr(receiving, 'observe_current_reader', identity)
+    monkeypatch.setattr(receiving, 'conversation_cohort', lambda proofs: {'cohort':'unchanged checks'})
+    monkeypatch.setattr(receiving, '_reader_active', lambda reader, now: True)
+    proofs, cohort = flow._collect(plan=f.plan, selected=f.selected,
+        row=f.journal.get(f.row['operation_id']), admission=f.admission, owners=f.owners,
+        validate=lambda:None, deadline_ns=time.monotonic_ns()+10_000_000_000, prepare=False)
+    assert set(proofs) == set(f.owners) and cohort == {'cohort':'unchanged checks'}
+
+
+@pytest.mark.parametrize('lost', [False, True])
+@pytest.mark.parametrize('sdk_changed',[False,True])
+def test_controller_child_preserves_published_phase_and_original_identity(fixture, monkeypatch, tmp_path, lost, sdk_changed):
+    from clusterctl import onboarding_receiving_update as receiving
+    from clusterctl import onboarding_host
+    f = fixture
+    snapshot = run(f)
+    before = f.journal.get(f.row['operation_id'])
+    observed = copy.deepcopy(before['runtime_observation'])
+    phase = observed['receive_application']
+    phase['restoration'] = {'verified':'original guard restored'}
+    f.journal.advance(before['operation_id'], before['state'], runtime_observation=observed,
+        expected_runtime_observation=before['runtime_observation'])
+    original_phase = copy.deepcopy(phase)
+    from clusterctl import onboarding_code_successor
+    monkeypatch.setattr(onboarding_code_successor,'sdk_parameters',lambda *a,**kw:
+        {'matrix_wheel_sha256':'0'*64 if sdk_changed else phase['baseline']['matrix_sdk']})
+    host_path = tmp_path/'host.json'
+    from clusterctl import being_seed
+    being_seed._write(host_path, {'schema':'protected fixture'})
+    config = object()
+    monkeypatch.setattr(onboarding_host.HostConfig, 'load', lambda path: config)
+    backend = SimpleNamespace(config=config)
+    preparation = dict(code='/qualified/code',code_digest='c'*64,manifest_path='/qualified/manifest.json',
+        manifest_digest='d'*64,expires_at_ms=time.time_ns()//1_000_000+60000,host_config=str(host_path))
+    calls = []
+    def mounted(plan, candidate, **kwargs):
+        assert plan == f.plan and kwargs['prepare'] is True
+        calls.append('mount')
+        return True
+    backend.runtime_available = mounted
+    result = dict(schema='cluster-guest-bootstrap-loaded/v1',code_digest='c'*64,
+        loaded_runtime=dict(runtime_bundle_sha256='e'*64,qualified_startup={'matrix_wheel_sha256':phase['baseline']['matrix_sdk']}),
+        loaded_application=dict(application_sha256=snapshot['group']['application_sha256'],
+            publication_sha256=snapshot['group']['publication_sha256'],
+            visibility=dict(installation_sha256=None,release_enabled=False)))
+    def prepare(*args, **kwargs):
+        calls.append('prepare')
+        assert not kwargs.get('installed_only', False), 'cold pinned SDK preparation must not require a manual install'
+        return dict(plan=f.plan,owner=dict(group={**snapshot['group'],'installation_sha256':None}),root={}), {'original':'native request'}
+    monkeypatch.setattr(receiving, 'prepare_guest_bootstrap', prepare)
+    pending_loss = [True] if lost else []
+    class Native:
+        def __init__(self, journal, child, backend, name):
+            self.journal, self.child = journal, child
+            assert name == 'new'
+        def execute(self, **kwargs):
+            child = self.journal.get(self.child)
+            if not (child['runtime_observation'] or {}).get('native_loaded'):
+                calls.append('native effect')
+                self.journal.advance(self.child,'runtime-dispatching',runtime_observation={'native_loaded':result})
+            if pending_loss:
+                pending_loss.pop()
+                raise OSError('lost after native load')
+            return result
+    monkeypatch.setattr(receiving,'GuestBootstrapController',Native)
+    def execute():
+        return flow.ensure_controller(plan=f.plan,preparation=preparation,backend=backend,config_path=host_path,
+            journal=f.journal,row=f.journal.get(f.row['operation_id']),validate=lambda:None,
+            deadline_ns=time.monotonic_ns()+10_000_000_000)
+    if sdk_changed:
+        with pytest.raises(OnboardingError,match='controller_sdk_changed'):
+            execute()
+        assert not calls
+        assert f.journal.get(f.row['operation_id'])['runtime_observation']['receive_application'] == original_phase
+        return
+    if lost:
+        with pytest.raises(OSError,match='lost after native load'):
+            execute()
+    forward = execute()
+    assert execute() == forward
+    assert calls == ['mount','prepare','native effect']
+    parent = f.journal.get(f.row['operation_id'])
+    assert parent['runtime_observation']['receive_application'] == original_phase
+    assert parent['result'] == before['result'] and parent['intent'] == before['intent']
+    assert forward['selection']['runtime_bundle_sha256'] == 'e'*64
+    assert forward['selection']['visibility_installation_sha256'] is None
+    assert f.journal.get(forward['child_operation_id'])['state'] == 'completed'
+
+
+@pytest.mark.parametrize('gap',[None,'sdk','runtime','body'])
+def test_compatible_controller_load_is_adopted_without_repeating_failed_publication(fixture,monkeypatch,tmp_path,gap):
+    from clusterctl import being_seed,onboarding_receiving_update as receiving,onboarding_host
+    from clusterctl.onboarding_code_successor import plan_update
+    f=fixture
+    snapshot=run(f)
+    parent=f.journal.get(f.row['operation_id'])
+    observed=copy.deepcopy(parent['runtime_observation'])
+    phase=observed['receive_application']
+    phase['restoration']={'actual':'restored'}
+    host=tmp_path/'host.json'
+    being_seed._write(host,{})
+    prep=dict(code='/qualified/failed',code_digest='c'*64,manifest_path='/qualified/failed.json',
+        manifest_digest='d'*64,expires_at_ms=1,host_config=str(host))
+    binding=dict(schema='cluster-companion-receive-controller/v1',parent=parent['operation_id'],
+        parent_intent_sha256=digest(parent['intent']),receive_binding=phase['binding'],
+        snapshot_sha256=digest(snapshot),preparation_sha256=digest(prep))
+    child=plan_update(f.journal,manifest_digest='d'*64,
+        target='companion-receive-controller:'+parent['operation_id'],
+        expected_precondition=dict(companion_receive=binding,guest_bootstraps={'new':{
+            'owner':{'being_ref':'new','origin':{'embodiment_id':'body-new'}}}}),
+        intended_transition={},audit_identity={'actor':'fixture'})
+    published={'runtime_sha256':'7'*64}
+    f.journal.advance(child['operation_id'],'runtime-dispatching',runtime_observation={
+        'guest_bootstraps':{'new':{'owner_published':published}}})
+    observed['receive_controller']=dict(binding=binding,child_operation_id=child['operation_id'])
+    f.journal.advance(parent['operation_id'],parent['state'],runtime_observation=observed,
+        expected_runtime_observation=parent['runtime_observation'])
+    before=f.journal.get(parent['operation_id'])
+    owner=f.owners['new']
+    owner.plan=f.plan
+    owner.candidate=(Path('/qualified/recovery'),'a'*64)
+    monkeypatch.setattr(receiving,'preflight',lambda *a,**kw:{
+        'matrix_wheel_sha256':'0'*64 if gap=='sdk' else phase['baseline']['matrix_sdk']})
+    calls=[]
+    def proof(*args,**kwargs):
+        calls.append('fresh proof')
+        assert kwargs['expected_selection']['runtime_bundle_sha256']==published['runtime_sha256']
+        assert kwargs['require_admitted'] and kwargs['receive_only']
+        if gap=='runtime':
+            raise OnboardingError('receiving_cohort_selection_changed')
+        return {'reader':{'being_ref':'foreign' if gap=='body' else 'new','embodiment_id':'body-new'}}
+    monkeypatch.setattr(receiving,'observe_current_reader',proof)
+    def adopt():
+        return flow.adopt_controller_software_recovery(plan=f.plan,owner=owner,
+            code=owner.candidate[0],code_digest=owner.candidate[1],manifest_path=tmp_path/'manifest.json',
+            manifest_digest='b'*64,journal=f.journal,row=before,validate=lambda:None,
+            deadline_ns=time.monotonic_ns()+10_000_000_000)
+    if gap:
+        with pytest.raises(OnboardingError):
+            adopt()
+        assert f.journal.get(parent['operation_id'])==before
+        assert f.journal.get(child['operation_id'])['state']=='runtime-dispatching'
+        return
+    result=adopt()
+    assert calls==['fresh proof'] and result['selection']['receiving_code']=='a'*64
+    assert f.journal.get(child['operation_id'])['state']=='degraded'
+    current=f.journal.get(parent['operation_id'])
+    assert current['runtime_observation']['receive_application']==before['runtime_observation']['receive_application']
+    config=object()
+    monkeypatch.setattr(onboarding_host.HostConfig,'load',lambda p:config)
+    class NeverExecute:
+        def __init__(self,*a,**kw):pytest.fail('repeated failed native publication')
+    monkeypatch.setattr(receiving,'GuestBootstrapController',NeverExecute)
+    assert flow.ensure_controller(plan=f.plan,preparation=prep,backend=SimpleNamespace(config=config),
+        config_path=host,journal=f.journal,row=current,validate=lambda:None,
+        deadline_ns=time.monotonic_ns()+10_000_000_000)==result
+
+
+def test_reader_helper_correction_retains_pending_native_control(native_readers, monkeypatch):
+    f = native_readers
+    f.lost.append('old-select-before')
+    with pytest.raises(OSError):
+        f.select()
+    before = copy.deepcopy(f.requests)
+    original_preparation = copy.deepcopy(f.f.selected)
+    replacement = {**f.f.selected['helpers']['owners']['old'],
+        'code': '/qualified/compact-observer', 'code_digest': 'f' * 64}
+    seen = []
+    endpoint = flow.Endpoint
+    def prepare(owner, selected, **options):
+        seen.append(copy.deepcopy(selected))
+        return endpoint(owner, selected, **options)
+    monkeypatch.setattr(flow, 'Endpoint', prepare)
+    assert f.select(maintenance_updates={'old': replacement}) == {'tribe_reader_selection_verified': True}
+    assert replacement in seen and f.f.selected == original_preparation
+    assert all(f.requests[key] == command for key, command in before.items())
+    phase = f.f.journal.get(f.f.row['operation_id'])['runtime_observation']['receive_application']
+    assert phase['reader_maintenance'] == {'old': replacement}
+    seen.clear()
+    assert f.select() == {'tribe_reader_selection_verified': True}
+    assert replacement in seen
+
+
+def test_reader_helper_correction_cannot_change_owner_journal(native_readers):
+    f = native_readers
+    replacement = {**f.f.selected['helpers']['owners']['old'], 'journal': '/another/owner-journal'}
+    with pytest.raises(OnboardingError, match='maintenance_configuration_required'):
+        f.select(maintenance_updates={'old': replacement})
+    assert f.effects == []
+
+
+@pytest.mark.parametrize('lost_ack', [False, True])
+def test_automatic_controller_preparation_is_frozen_once_without_native_effects(
+        fixture, monkeypatch, tmp_path, lost_ack):
+    import json
+    from clusterctl import onboarding_receive_specification as specification
+    f=fixture
+    run(f)
+    before=f.journal.get(f.row['operation_id'])
+    restored=copy.deepcopy(before['runtime_observation'])
+    restored['receive_application']['restoration']={'verified':'original guard restored'}
+    f.journal.advance(before['operation_id'],before['state'],runtime_observation=restored,
+        expected_runtime_observation=before['runtime_observation'])
+    f.events.clear()
+    original_effects=copy.deepcopy(f.effects)
+    source=tmp_path/'approved-manifest.json'
+    template_manifest={'qualified':'controller-contract'}
+    source.write_text(json.dumps(template_manifest))
+    template=dict(code='/public/controller',code_digest='9'*64,manifest_path=str(source),
+        manifest_digest=digest(template_manifest),host_config=str(tmp_path/'host.json'))
+    calls=[]
+    def compile(**values):
+        calls.append(values)
+        return {'schema':'qualified-derived-manifest','target':values['target']}
+    monkeypatch.setattr(specification,'compile_controller_manifest',compile)
+    advance=f.journal.advance
+    failed=[lost_ack]
+    def lose_after_commit(*args,**kwargs):
+        result=advance(*args,**kwargs)
+        if failed[0] and 'receive_controller_preparation' in result['runtime_observation']:
+            failed[0]=False
+            raise OSError('lost committed host receipt')
+        return result
+    monkeypatch.setattr(f.journal,'advance',lose_after_commit)
+    def prepare(selected=template):
+        return flow.prepare_controller(plan=f.plan,template=selected,directory=tmp_path/'job',
+            journal=f.journal,row=f.journal.get(f.row['operation_id']),admission=f.admission,
+            validate=lambda:None,deadline_ns=time.monotonic_ns()+10_000_000_000)
+    if lost_ack:
+        with pytest.raises(OSError):
+            prepare()
+    result=prepare()
+    saved=(tmp_path/'job/receive-controller-manifest.json').read_bytes()
+    assert prepare(dict(template,code='/public/future-default'))==result
+    assert (tmp_path/'job/receive-controller-manifest.json').read_bytes()==saved
+    assert len(calls)==1 and f.events==[] and f.effects==original_effects
+    assert result['manifest_digest']==digest(json.loads(saved))
+    assert result['expires_at_ms']<=time.time_ns()//1_000_000+10000
+    assert f.journal.get(f.row['operation_id'])['result']=={'original-membership':'complete'}
+    # Later snapshot changes cannot inherit this original controller preparation.
+    latest=f.journal.get(f.row['operation_id'])
+    observed=copy.deepcopy(latest['runtime_observation'])
+    observed['receive_application']['snapshot']['result']['group']['publication_sha256']='f'*64
+    advance(f.row['operation_id'],latest['state'],runtime_observation=observed,
+            expected_runtime_observation=latest['runtime_observation'])
+    with pytest.raises(OnboardingError,match='companion_receive_original_changed'):
+        prepare()
+    assert len(calls)==1 and f.events==[]

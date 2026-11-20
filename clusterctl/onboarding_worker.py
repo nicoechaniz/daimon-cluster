@@ -378,8 +378,22 @@ def main(argv: list[str] | None = None) -> int:
             if not isinstance(selected, dict) or selected.get('name') != args.until:
                 raise OnboardingError('host_authorization_required')
             store = JobStore(config.jobs)
+            from .onboarding_conversation import host_request, prepare_host_request
+            from .onboarding_conversation_bundle import prepare_selection
+            owner = HostBackend(config)
+            prepare_host_request(config, selected,
+                authorize=lambda: owner.authorize(selected, digest(selected)))
             prepare_companion_homes(config, selected, store, args.home_placements)
-            original = store.submit(selected, HostBackend(config))
+            # A new v2 job cannot acquire its pairing later: its original
+            # intent is frozen before submission, never retrofitted. Refuse
+            # missing inputs here instead of allocating an unusable body.
+            if (selected.get('schema') == CONVERSATION_PLAN_SCHEMA
+                    and not (store.directory(args.until)/'job.json').exists()
+                    and host_request(config, selected) is None):
+                raise OnboardingError('conversation_selection_required')
+            prepare_selection(config, selected, store,
+                authorize=lambda: owner.authorize(selected, digest(selected)))
+            original = store.submit(selected, owner)
             control = ForegroundRun(store, args.until, original['plan_digest'])
             record = control.prepare(args.timeout_seconds, extend=args.extend_seconds)
             lease = control.claim()

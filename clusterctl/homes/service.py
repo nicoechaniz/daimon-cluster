@@ -1404,6 +1404,16 @@ def handler(app, *, owner=False):
                         raise
                     self.respond(200,result)
                     return
+                if urlsplit(self.path).path == '/access/human-endpoint':
+                    # Only this read is public-facing. Resolve the current Home
+                    # from its exact origin; never accept an owner/home selector.
+                    home, _, _, vpn, _, _ = self.context(resolve_identity=False)
+                    authorization = self.headers.get('Authorization', '')
+                    if vpn or not authorization.startswith('Bearer '):
+                        raise ValueError('home_owner_denied')
+                    self.respond(200, app.owner(home, authorization[7:],
+                                               'human-endpoint', json.loads(data)))
+                    return
                 if app.sso:
                     from .login import routes
                     if routes(self, app, 'POST', data): return

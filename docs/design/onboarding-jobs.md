@@ -2149,6 +2149,16 @@ replace its snapshot or reissue a completed controller. The parent deadline
 bounds preparation; existing SDK, custody, service and native checks still apply.
 The manifest is at most2MiB and follows the original job's retention/removal.
 
+The optional shared `owner_helpers` selection reuses the existing
+`cluster-membership-maintenance/v1` contract. It selects public owner helper
+software separately from each body's serving code and SDK. Before a new
+membership request is collected, the coordinator freezes the applicable helpers
+in that plan's existing `membership_maintenance` slot. Explicit per-plan recipes
+and previously collected requests are preserved; changing shared helpers cannot
+replace them. Ordinary owner reads use the shared helper selection, while
+operation-owned maintenance scopes retain their exact guarded recipe. Selection
+does not itself load a body, pause a service, renew authority or replay a request.
+
 Controller-only provisioning must preserve the actually serving Matrix SDK from
 its authenticated baseline. A maintenance helper is an observer, not the body
 software selection: a different helper SDK must never silently replace the serving

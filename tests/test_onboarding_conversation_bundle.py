@@ -285,3 +285,69 @@ def test_common_app_cannot_prepare_without_actual_plan_authorization(tmp_path):
     with pytest.raises(OnboardingError,match='host_authorization_required'):
         bundle.prepare_selection(config,plan,JobStore(config.jobs),authorize=lambda: False)
     assert not (config.jobs/plan['name']).exists() and run.calls == []
+
+
+def listener_app(root):
+    root.mkdir(mode=0o755)
+    root.chmod(0o755)
+    native_package(root/'native')
+    (root/'bin').mkdir(mode=0o755)
+    (root/'bin/telecodex').write_bytes(b'old listener')
+    (root/'bin/telecodex').chmod(0o555)
+    for directory in root.rglob('*'):
+        if directory.is_dir():
+            directory.chmod(0o755)
+    manifest = dict(schema=bundle.SCHEMA, codex_package='native', files={
+        p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in root.rglob('*') if p.is_file()})
+    raw = (json.dumps(manifest, sort_keys=True)+'\n').encode()
+    (root/bundle.MARKER).write_bytes(raw)
+    (root/bundle.MARKER).chmod(0o444)
+    return hashlib.sha256(raw).hexdigest()
+
+
+def test_listener_successor_cli_keeps_native_package_and_existing_app_exact(tmp_path, monkeypatch, capsys):
+    from tools.build_onboarding_code import main
+    app, out, listener = tmp_path/'app', tmp_path/'next', tmp_path/'listener'
+    pin = listener_app(app)
+    before = {p.relative_to(app):p.read_bytes() for p in app.rglob('*') if p.is_file()}
+    listener.write_bytes(b'qualified corrected listener')
+    listener.chmod(0o555)
+    checksum = hashlib.sha256(listener.read_bytes()).hexdigest()
+    monkeypatch.setattr('sys.argv', ['builder', '--conversation-app-bundle', str(app),
+        '--conversation-app-digest', pin, '--conversation-listener', str(listener),
+        '--conversation-listener-digest', checksum, '--output', str(out)])
+    with patch.object(bundle.subprocess, 'run', side_effect=AssertionError('no native/model/service calls')):
+        assert main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['listener_sha256'] == checksum
+    assert bundle.verify(out, result['conversation_bundle_sha256'], uid=os.geteuid())['files'] == 7
+    assert (out/'bin/telecodex').read_bytes() == listener.read_bytes()
+    for name, raw in before.items():
+        assert (app/name).read_bytes() == raw
+        if name.as_posix() not in ('bin/telecodex', bundle.MARKER):
+            assert (out/name).read_bytes() == raw
+    assert json.loads((out/bundle.MARKER).read_bytes())['codex_package'] == 'native'
+
+
+@pytest.mark.parametrize('fault', ['pin', 'not-executable', 'link', 'capacity'])
+def test_listener_successor_refuses_bad_selection_before_output(tmp_path, monkeypatch, fault):
+    app, out, listener = tmp_path/'app', tmp_path/'next', tmp_path/'listener'
+    pin = listener_app(app)
+    listener.write_bytes(b'qualified corrected listener')
+    listener.chmod(0o555)
+    checksum = hashlib.sha256(listener.read_bytes()).hexdigest()
+    if fault == 'pin':
+        checksum = '0'*64
+    elif fault == 'not-executable':
+        listener.chmod(0o444)
+    elif fault == 'link':
+        target = tmp_path/'actual-listener'
+        listener.rename(target)
+        listener.symlink_to(target)
+    else:
+        old = bundle.verify(app, pin, uid=os.geteuid())['bytes']
+        monkeypatch.setattr(bundle, 'MAX_BYTES', old)
+    with pytest.raises((OnboardingError, bundle.being_seed.SeedError)):
+        bundle.compose_listener(app, pin, listener, checksum, out)
+    assert not out.exists()

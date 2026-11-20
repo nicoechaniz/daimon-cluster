@@ -769,6 +769,7 @@ class GroupCoordinator:
     def _owner_client(self, name: str):
         from .onboarding_receiving_update import GuestGroupClient, SourceGroupClient
         row = self.settings['owners'][name]
+        owner: SourceGroupClient | GuestGroupClient
         if row['profile'] == 'source':
             options: dict = {key: Path(row[key]) if key in SOURCE_PATHS else row[key] for key in SOURCE_FIELDS}
             owner = SourceGroupClient(**options)

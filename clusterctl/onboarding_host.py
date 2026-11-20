@@ -411,7 +411,12 @@ class HostBackend:
         """Resolve verified code placement without changing the service profile."""
         body = self.native_body(plan)
         physical = getattr(self.run, 'body_for', None)
-        return physical(plan) if body is None and physical is not None else body
+        if body is None and physical is not None:
+            return physical(plan)
+        if body is None and self.config.instance_type == 'virtual-machine':
+            from .vm_body import admitted_local_runtime_body
+            return admitted_local_runtime_body(self, plan)
+        return body
 
     def body_python(self, plan: dict) -> Path:
         native = self.native_body(plan)

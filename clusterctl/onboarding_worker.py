@@ -379,7 +379,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise OnboardingError('host_authorization_required')
             store = JobStore(config.jobs)
             prepare_companion_homes(config, selected, store, args.home_placements)
-            original = store.submit(selected, HostBackend(config))
+            from .onboarding_conversation_bundle import prepare_selection
+            owner = HostBackend(config)
+            prepare_selection(config, selected, store,
+                authorize=lambda: owner.authorize(selected, digest(selected)))
+            original = store.submit(selected, owner)
             control = ForegroundRun(store, args.until, original['plan_digest'])
             record = control.prepare(args.timeout_seconds, extend=args.extend_seconds)
             lease = control.claim()

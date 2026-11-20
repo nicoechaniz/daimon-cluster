@@ -297,12 +297,19 @@ def test_import_capacity_preserves_exact_recovery_and_refuses_new_route(resource
 
 
 @pytest.mark.parametrize('profile', ['source', 'guest'])
-@pytest.mark.parametrize('kind', ['prepared', 'application'])
+@pytest.mark.parametrize('kind', ['prepared', 'application', 'published-route'])
 def test_existing_owner_private_pipe_exports_only_actual_own_resource_key(group_source, profile, kind):
     import time
     from clusterctl.onboarding import digest
     owner, group, journal, pub, _base = initial_publication(group_source, profile)
     _source, _target, _peer, peer_bundle, _old = group_source
+    if kind == 'published-route':
+        # The authenticated VPN/proxy endpoint can differ from the local HTTP
+        # listener. A new remote companion must receive that advertised address
+        # with the same original transport key, rather than its own loopback.
+        spec = pub['params']['specification']
+        assert len(spec['roster']) == 1
+        spec['roster'][0]['route']['endpoint'] = 'http://10.23.0.7:48675/dm-messaging/v1/message'
     if kind == 'prepared':
         cmd = command()
         cmd['operation_id'] = pub['operation_id']
@@ -312,7 +319,8 @@ def test_existing_owner_private_pipe_exports_only_actual_own_resource_key(group_
     else:
         result = owner.group_publication(pub, authority_closure=closure(peer_bundle))
         # The export itself verifies the actual signed application before reading.
-        route = pub['params']['specification']['intake']
+        route = pub['params']['specification'][
+            'roster'][0]['route'] if kind == 'published-route' else pub['params']['specification']['intake']
         source = dict(kind='application', application_sha256=result['application_sha256'],
             publication_sha256=result['publication_sha256'])
         preview = owner.group_publication(dict(operation_id=pub['operation_id'],

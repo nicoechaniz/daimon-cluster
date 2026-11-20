@@ -189,9 +189,23 @@ def main() -> int:
     parser.add_argument('--current-digest')
     parser.add_argument("--sdk", type=Path)
     parser.add_argument("--telegram-artifact", type=Path)
+    parser.add_argument('--conversation-app-bundle', type=Path)
+    parser.add_argument('--conversation-app-digest')
+    parser.add_argument('--conversation-native-package', type=Path)
     args = parser.parse_args()
     try:
-        if args.runtime_base is not None:
+        if args.conversation_app_bundle is not None:
+            if (args.conversation_app_digest is None or args.conversation_native_package is None
+                    or any(value is not None for value in (args.runtime_base, args.base_digest,
+                        args.native_supervisor_current, args.current_digest, args.hmk_checkout,
+                        args.commons, args.profile, args.sdk, args.telegram_artifact))):
+                raise OnboardingError('conversation_bundle_selection_required')
+            from clusterctl.onboarding_conversation_bundle import compose_native
+            result = compose_native(args.conversation_app_bundle, args.conversation_app_digest,
+                                    args.conversation_native_package, args.output)
+        elif args.conversation_app_digest is not None or args.conversation_native_package is not None:
+            raise OnboardingError('conversation_bundle_selection_required')
+        elif args.runtime_base is not None:
             if (args.base_digest is None or any(value is not None for value in (
                     args.hmk_checkout, args.commons, args.profile, args.sdk, args.telegram_artifact))):
                 raise OnboardingError('qualified_onboarding_runtime_required')

@@ -325,7 +325,7 @@ def configuration(path: Path) -> dict:
     """
     value = being_seed._read(path, limit=being_seed.MAX_SELECTION)
     try:
-        if (set(value) - {'continuations', 'membership_requests', 'membership_preparations', 'membership_maintenance', 'receive_preparations'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
+        if (set(value) - {'continuations', 'membership_requests', 'membership_preparations', 'membership_maintenance', 'receive_preparations', 'receive_controller_preparations'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
                 or value['schema'] != SCHEMA or not _path(value['journal'])
                 or not isinstance(value['tribe_ref'], str) or not value['tribe_ref']
                 or not isinstance(value['owners'], dict) or len(value['owners']) > 256
@@ -408,6 +408,14 @@ def configuration(path: Path) -> dict:
             if not isinstance(pin, str) or re.fullmatch('[0-9a-f]{64}', pin) is None:
                 raise ValueError
             receive_configuration(selected, value['owners'])
+        from .onboarding_receive_flow import controller_configuration
+        controllers = value.get('receive_controller_preparations', {})
+        if not isinstance(controllers, dict) or len(controllers) > 16:
+            raise ValueError
+        for pin, selected in controllers.items():
+            if pin not in receives:
+                raise ValueError
+            controller_configuration(selected)
     except (KeyError, TypeError, ValueError, AttributeError, OnboardingError):
         raise OnboardingError('onboarding_group_coordinator_configuration_required') from None
     return value
@@ -1479,10 +1487,11 @@ class GroupCoordinator:
                 raise OnboardingError('receiving_host_deadline_expired')
             return min(value, 60)
         record = self.store._load(name)
-        if record['stage'] not in {'matrix', 'acceptance'}:
+        terminal = record.get('state') == 'complete' and record['stage'] is None
+        if record['stage'] not in {'matrix', 'acceptance'} and not terminal:
             return None
         plan = record['plan']
-        if record['stage'] == 'acceptance':
+        if record['stage'] == 'acceptance' or terminal:
             if digest(plan) in self.settings.get('receive_preparations', {}):
                 return self.advance_receive_only(name, timeout_seconds=(deadline-time.monotonic_ns())/1_000_000_000, select_current=True)
             return None
@@ -1749,7 +1758,7 @@ class GroupCoordinator:
                 raise
             return finish_membership_only(journal, journal.get(original_id), result)
 
-    def advance_receive_only(self, name: str, *, timeout_seconds: float = 60, select_current: bool = False) -> dict | None:
+    def advance_receive_only(self, name: str, *, timeout_seconds: float = 60, select_current: bool = False, selection_updates: dict | None = None, maintenance_updates: dict | None = None) -> dict | None:
         """First receive publication after the original native membership is complete.
 
         This is explicitly configured per original plan. It never replaces the
@@ -1780,7 +1789,8 @@ class GroupCoordinator:
             def validate():
                 record = self.store._load(name)
                 fresh = configuration(self.path)
-                if (record['plan'] != plan or record['stage'] not in {'matrix', 'acceptance'}
+                terminal = record.get('state') == 'complete' and record['stage'] is None
+                if (record['plan'] != plan or (record['stage'] not in {'matrix', 'acceptance'} and not terminal)
                         or not self.backend.authorize(plan, pin)
                         or not self.backend._consented(plan, stage='matrix')
                         or self.backend._decision(plan) is None or not self.backend._ceremony(plan).authorize(plan)):
@@ -1791,9 +1801,22 @@ class GroupCoordinator:
                         or any(fresh['owners'].get(k) != self.settings['owners'][k] for k in admission['receivers'])):
                     raise OnboardingError('companion_receive_original_changed')
             def finish(result):
+                controller = self.settings.get('receive_controller_preparations', {}).get(pin)
+                if controller is not None:
+                    from .onboarding_receive_flow import ensure_controller
+                    def current_controller():
+                        validate()
+                        fresh = configuration(self.path)
+                        if fresh.get('receive_controller_preparations', {}).get(pin) != controller:
+                            raise OnboardingError('companion_receive_original_changed')
+                    ensure_controller(plan=plan, preparation=controller, backend=self.backend,
+                        config_path=Path(controller['host_config']),
+                        journal=journal, row=journal.get(original_id), validate=current_controller, deadline_ns=deadline)
                 if select_current:
                     select_readers(plan=plan, selected=selected, row=journal.get(original_id), journal=journal,
-                        admission=admission, owners=self._owners(admission), validate=validate, deadline_ns=deadline)
+                        admission=admission, owners=self._owners(admission), validate=validate, deadline_ns=deadline,
+                        selection_updates=selection_updates,
+                        **({} if maintenance_updates is None else {'maintenance_updates': maintenance_updates}))
                 return copy.deepcopy(result)
             validate()
             phase = (row['runtime_observation'] or {}).get('receive_application', {})
@@ -1806,8 +1829,29 @@ class GroupCoordinator:
                         or phase.get('binding') != digest(dict(original_intent=row['intent'],preparation=selected))):
                     raise OnboardingError('companion_receive_original_changed')
                 return finish(snapshot)
-            result = publish(plan=plan, selected=selected, journal=journal, row=row, admission=admission,
-                owners=self._owners(admission), validate=validate, deadline_ns=deadline)
+            def confirmed_receive_steps():
+                phase = (journal.get(original_id)['runtime_observation'] or {}).get('receive_application', {})
+                return sum(isinstance(value, dict) and (
+                    value.get('result') is not None or key.startswith('import-') and
+                    value.get('schema') == 'cluster-receive-resource-transfer-result/v1')
+                    for key, value in phase.items())
+            while True:
+                before_steps = confirmed_receive_steps()
+                try:
+                    result = publish(plan=plan, selected=selected, journal=journal,
+                        row=journal.get(original_id), admission=admission,
+                        owners=self._owners(admission), validate=validate, deadline_ns=deadline)
+                    break
+                except OnboardingError as error:
+                    # Reuse the membership continuation rule: a bounded native
+                    # guard has closed/restored and confirmed new work. Resume
+                    # its exact journal inside this same operator deadline.
+                    if (str(error) not in {'receiving_owner_deadline_expired', 'receiving_host_deadline_expired'}
+                            or getattr(error, '__notes__', [])
+                            or confirmed_receive_steps() <= before_steps
+                            or time.monotonic_ns() >= deadline):
+                        raise
+                    validate()
             # publish returns only after the original guard's actual restoration.
             # Keep that receiving fact separate from membership's terminal result.
             validate()

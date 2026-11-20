@@ -197,6 +197,16 @@ command-preparation diagnostic. Repair that selected configuration and continue
 the same operation; do not provision manually or replace the intended identity.
 Completed jobs retain the read-only entry path without Home reinstallation.
 
+For new finite v2 jobs, the host may select one `conversation_bundle_default`
+with the existing `{root, sha256}` public bundle contract. The ordinary command
+verifies and freezes that package in the original job directory before submission
+or body allocation; an explicit per-name package wins. The same job reuses its
+frozen package after a later default changes. Existing jobs without that record
+retain their original explicit/no-package behavior. This is one bounded4KiB record
+under the job's existing retention, not another service, approval or deployment.
+Keep defaults operator-owned and content-pinned; do not copy a private account,
+state directory or another companion's configuration into the public package.
+
 The bounded record keeps its original start/deadline and aggregate extensions,
 not an unbounded attempt history. Extending wall time changes no native goal,
 token budget, pause or external effect receipt. If an operation was uncertain,

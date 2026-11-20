@@ -104,6 +104,7 @@ class HostConfig:
     conversation_proxy_by_name: dict[str, dict] | None = None
     instance_type: str = 'container'
     conversation_bundle_by_name: dict[str, tuple[Path, str]] | None = None
+    conversation_bundle_default: tuple[Path, str] | None = None
 
     @classmethod
     def load(cls, path: Path, *, expected_value: dict | None = None) -> HostConfig:
@@ -114,7 +115,7 @@ class HostConfig:
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
         telegram_keys = {"telegram_code", "telegram_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name", "conversation_proxy_by_name", "conversation_bundle_by_name", "instance_type"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name", "conversation_proxy_by_name", "conversation_bundle_by_name", "conversation_bundle_default", "instance_type"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -329,11 +330,15 @@ class HostConfig:
             conversation_bundle_by_name = bundle_configuration(value['conversation_bundle_by_name'])
             if conversation_by_name is None or set(conversation_bundle_by_name) - set(conversation_by_name):
                 raise OnboardingError('conversation_bundle_selection_required')
+        conversation_bundle_default = None
+        if 'conversation_bundle_default' in value:
+            from .onboarding_conversation_bundle import configuration as bundle_configuration
+            conversation_bundle_default = bundle_configuration({'default': value['conversation_bundle_default']})['default']
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
                    consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission, cold_pool, conversation_by_name, conversation_proxy_by_name,
-                   value.get("instance_type", "container"), conversation_bundle_by_name)
+                   value.get("instance_type", "container"), conversation_bundle_by_name, conversation_bundle_default)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -1448,10 +1453,10 @@ class HostBackend:
         return decision(self.config, proposal)
 
     def _conversation_bundle_mount(self, plan: dict) -> dict:
-        selected = (self.config.conversation_bundle_by_name or {}).get(plan['name'])
+        from .onboarding_conversation_bundle import verify, selected_bundle
+        selected = selected_bundle(self.config, plan)
         if selected is None:
             return {}
-        from .onboarding_conversation_bundle import verify
         root, fingerprint = selected
         verify(root, fingerprint, uid=os.geteuid())
         return {'onboarding-app': dict(type='disk', source=str(root),

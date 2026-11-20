@@ -43,6 +43,62 @@ def configuration(value):
     return result
 
 
+
+def selected_bundle(config, plan: dict) -> tuple[Path, str] | None:
+    """Use the original job's frozen public App, never a changed default."""
+    explicit = (getattr(config, 'conversation_bundle_by_name', None) or {}).get(plan['name'])
+    path = config.jobs / plan['name'] / 'conversation-bundle.json'
+    if not path.exists() and not path.is_symlink():
+        return explicit
+    from .onboarding import digest
+    value = being_seed._read(path, limit=4096)
+    if (set(value) != {'schema', 'plan_digest', 'selection'}
+            or value['schema'] != 'cluster-companion-app-selection/v1'
+            or value['plan_digest'] != digest(plan)):
+        raise OnboardingError('companion_app_selection_changed')
+    selected = configuration({'selected': value['selection']})['selected']
+    if explicit is not None and selected != explicit:
+        raise OnboardingError('companion_app_selection_changed')
+    return selected
+
+
+def prepare_selection(config, plan: dict, store, *, authorize) -> None:
+    """Freeze an authorized cold job's common App before its first allocation.
+
+    One <=4KiB record shares the original job's lifetime and deletion path.
+    No new selection is applied to an already existing job, even if a later
+    operator default becomes available. Explicit per-name choices still win.
+    """
+    from .onboarding import CONVERSATION_PLAN_SCHEMA, digest, private_directory
+    from .onboarding_service import publish
+    if plan.get('schema') != CONVERSATION_PLAN_SCHEMA:
+        return
+    explicit = (getattr(config, 'conversation_bundle_by_name', None) or {}).get(plan['name'])
+    selected = explicit or getattr(config, 'conversation_bundle_default', None)
+    path = store.directory(plan['name']) / 'conversation-bundle.json'
+    if not selected and not path.exists() and not path.is_symlink():
+        return
+    if not authorize():
+        raise OnboardingError('host_authorization_required')
+    private_directory(store.root, create=True)
+    with being_seed._locked(store.root):
+        if path.exists() or path.is_symlink():
+            retained = selected_bundle(config, plan)
+            assert retained is not None
+            verify(*retained, uid=os.geteuid())
+            return
+        if (path.parent / 'job.json').exists():
+            return
+        assert selected is not None
+        verify(*selected, uid=os.geteuid())
+        value = dict(schema='cluster-companion-app-selection/v1', plan_digest=digest(plan),
+            selection=dict(root=str(selected[0]), sha256=selected[1]))
+        raw = json.dumps(value, sort_keys=True).encode()
+        if len(raw) > 4096:
+            raise OnboardingError('conversation_bundle_selection_required')
+        private_directory(path.parent, create=True)
+        publish(path, raw)
+
 def verify(root: Path, fingerprint: str, *, uid: int):
     being_seed._path(root)
     raw = regular(root / MARKER, uid=uid, limit=2 * 1024**2)

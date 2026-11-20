@@ -354,6 +354,7 @@ MAINTENANCE_TESTS = ('tests/test_onboarding_receive_flow.py', 'tests/test_onboar
     'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 
 NATIVE_RECEIVING_FILES = {'clusterctl/native_body.py', 'tests/test_native_body.py',
+    'clusterctl/vm_body.py', 'tests/test_vm_body.py',
     'tests/test_receiving_cohort_control.py',
     'clusterctl/onboarding_host.py', 'tests/test_onboarding_host.py',
     'clusterctl/onboarding_owner_client.py', 'tests/test_onboarding_owner_client.py',
@@ -363,7 +364,7 @@ NATIVE_RECEIVING_FILES = {'clusterctl/native_body.py', 'tests/test_native_body.p
 NATIVE_RECEIVING_TESTS = tuple(dict.fromkeys((*MAINTENANCE_TESTS,
     'tests/test_onboarding.py', 'tests/test_onboarding_managed.py',
     'tests/test_onboarding_code_successor.py', 'tests/test_onboarding_release.py',
-    'tests/test_operational_assets.py')))
+    'tests/test_vm_body.py', 'tests/test_operational_assets.py')))
 
 
 LOADED_STARTUP_FILES = {'RESUME.md', 'clusterctl/onboarding_sdk.py', 'clusterctl/onboarding_target.py',
@@ -959,10 +960,10 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
                           'tools/build_receiving_maintenance.py', 'tools/check_rc_types.py'}
     if ({'clusterctl/native_body.py', 'clusterctl/vm_body.py', 'tests/test_vm_body.py'} <= set(changed)
             and set(changed) <= vm_placement_files | CI_FILES | RUNBOOK_DOCS
-            and all((root / name).is_file() for name in (*NATIVE_RECEIVING_TESTS, 'tests/test_vm_body.py'))):
+            and all((root / name).is_file() for name in NATIVE_RECEIVING_TESTS)):
         # New local agent transport reuses native OS maintenance; no changes to
         # provisioning, SDK authority, admission, network or model execution.
-        return 'peer', [*NATIVE_RECEIVING_TESTS, 'tests/test_vm_body.py']
+        return 'peer', list(NATIVE_RECEIVING_TESTS)
     native_profile_files = {'clusterctl/native_body.py', 'tests/test_native_body.py',
         'clusterctl/onboarding_service.py',
         'clusterctl/onboarding_host.py', 'clusterctl/onboarding_receiving_update.py',
@@ -981,12 +982,15 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
                  or native_profile_host_only(root, base))):
         return 'peer', native_profile_tests
     host = {'clusterctl/onboarding_host.py', 'tests/test_onboarding_host.py'}
-    if ({'clusterctl/native_body.py', 'tests/test_native_body.py'} <= set(changed)
+    transport_pairs = ({'clusterctl/native_body.py', 'tests/test_native_body.py'},
+                       {'clusterctl/vm_body.py', 'tests/test_vm_body.py'})
+    if (any(pair <= set(changed) for pair in transport_pairs)
             and set(changed) <= NATIVE_RECEIVING_FILES | CI_FILES | RUNBOOK_DOCS
             and all((root / name).is_file() for name in NATIVE_RECEIVING_TESTS)):
-        # Native placement changes the carrier, code availability and clock
-        # domain. Keep actual owner/bootstrap/host/worker contracts; no archive
-        # recovery or unrelated account/physical-recovery jobs are affected.
+        # Native and VM placement share the carrier, verified code copying and
+        # clock contracts. Keep all owner/bootstrap/host/worker consumers. A VM
+        # iteration must not need a fresh source hash or a native_body edit to
+        # avoid unrelated applications/archive/physical-recovery qualification.
         return 'peer', list(NATIVE_RECEIVING_TESTS)
     maintenance_orchestration = {'clusterctl/receiving_maintenance.py',
         'tests/test_receiving_maintenance.py', 'tests/test_guest_bootstrap_controller.py'}

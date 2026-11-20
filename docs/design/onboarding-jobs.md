@@ -2209,3 +2209,14 @@ It records the forward selection and marks the failed load degraded. The normal
 original-job continuation consumes this receipt and never reissues the controller
 or repeats the failed software selection. Current-reader collection still reads
 fresh native proofs; the receipt alone is not continuing availability.
+
+### Routine native/VM transport qualification
+
+Native and VM public-code transport changes use the existing receiving CI
+profile, with their matching regression tests. It includes native/VM identity,
+code verification, owner/bootstrap, cohort, host, worker and maintenance consumers.
+A change to SDK/admission/fence/dependency or an unknown source stays on its
+broader profile. Routine VM helper updates do not require a new before/after
+source-hash exception or unrelated Home/archive/application qualification. Reuse
+prior actual receiving evidence and qualify the changed behavior; do not cancel
+an already running useful qualification merely to adopt this selector.

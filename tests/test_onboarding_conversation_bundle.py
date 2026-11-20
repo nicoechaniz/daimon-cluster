@@ -330,7 +330,7 @@ def test_listener_successor_cli_keeps_native_package_and_existing_app_exact(tmp_
     assert json.loads((out/bundle.MARKER).read_bytes())['codex_package'] == 'native'
 
 
-@pytest.mark.parametrize('fault', ['pin', 'not-executable', 'link', 'capacity'])
+@pytest.mark.parametrize('fault', ['pin', 'not-executable', 'link', 'capacity', 'inside-source'])
 def test_listener_successor_refuses_bad_selection_before_output(tmp_path, monkeypatch, fault):
     app, out, listener = tmp_path/'app', tmp_path/'next', tmp_path/'listener'
     pin = listener_app(app)
@@ -345,9 +345,11 @@ def test_listener_successor_refuses_bad_selection_before_output(tmp_path, monkey
         target = tmp_path/'actual-listener'
         listener.rename(target)
         listener.symlink_to(target)
-    else:
+    elif fault == 'capacity':
         old = bundle.verify(app, pin, uid=os.geteuid())['bytes']
         monkeypatch.setattr(bundle, 'MAX_BYTES', old)
+    else:
+        out = app/'must-not-mutate-source'
     with pytest.raises((OnboardingError, bundle.being_seed.SeedError)):
         bundle.compose_listener(app, pin, listener, checksum, out)
     assert not out.exists()

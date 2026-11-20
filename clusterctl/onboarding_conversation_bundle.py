@@ -335,8 +335,10 @@ def compose_listener(app: Path, fingerprint: str, listener: Path,
     """
     observed = verify(app, fingerprint, uid=os.geteuid())
     source = json.loads(regular(app / MARKER, uid=os.geteuid(), limit=2 * 1024**2))
+    being_seed._path(output)
     if ('bin/telecodex' not in source['files'] or output.exists()
-            or output.is_symlink() or not re.fullmatch('[0-9a-f]{64}', listener_digest)):
+            or app.resolve() in output.resolve().parents
+            or not re.fullmatch('[0-9a-f]{64}', listener_digest)):
         raise OnboardingError('conversation_listener_selection_required')
     being_seed._path(listener)
     info = listener.lstat()
@@ -345,7 +347,6 @@ def compose_listener(app: Path, fingerprint: str, listener: Path,
         raise OnboardingError('conversation_listener_changed')
     if observed['bytes'] - (app / 'bin/telecodex').stat().st_size + len(raw) > MAX_BYTES:
         raise OnboardingError('conversation_bundle_capacity')
-    being_seed._path(output)
     deadline = time.monotonic() + 180
     output.mkdir(mode=0o755)
     output.chmod(0o755)

@@ -447,10 +447,15 @@ HOME_TESTS = ('tests/test_home_fleet.py', 'tests/test_home_fleet_reader.py', 'te
 
 
 HOME_PROVISION_FILES = HOME_FILES | {'clusterctl/onboarding_homes.py', 'clusterctl/onboarding_worker.py',
-    'tools/install_onboarding_worker.py', 'tests/test_onboarding_homes.py'}
+    'tools/install_onboarding_worker.py', 'tests/test_onboarding_homes.py',
+    'clusterctl/onboarding_companion_homes.py', 'tests/test_onboarding_companion_homes.py',
+    'docs/design/onboarding-jobs.md'}
 HOME_PROVISION_TESTS = HOME_TESTS + ('tests/test_onboarding_homes.py', 'tests/test_onboarding.py',
     'tests/test_onboarding_progress.py', 'tests/test_onboarding_worker_install.py',
-    'tests/test_onboarding_host_ownership.py', 'tests/test_operational_assets.py')
+    'tests/test_onboarding_host_ownership.py', 'tests/test_operational_assets.py',
+    'tests/test_onboarding_companion_homes.py', 'tests/test_onboarding_conversation.py',
+    'tests/test_onboarding_conversation_routes.py', 'tests/test_onboarding_consent.py',
+    'tests/test_onboarding_release.py', 'tests/test_production_fences.py')
 
 HOME_WORKER_FILES = {'clusterctl/onboarding_host.py', 'tests/test_onboarding_host.py',
     'tools/build_home_worker_successor.py', 'tests/test_home_worker_successor.py',
@@ -1409,7 +1414,8 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
             and all((root/path).is_file() for path in HOME_WORKER_TESTS)):
         return 'homes', list(HOME_WORKER_TESTS)
     if (set(changed) & {'clusterctl/onboarding_homes.py', 'clusterctl/onboarding_worker.py',
-                        'tools/install_onboarding_worker.py', 'tests/test_onboarding_homes.py'}
+                        'tools/install_onboarding_worker.py', 'tests/test_onboarding_homes.py',
+                        'clusterctl/onboarding_companion_homes.py', 'tests/test_onboarding_companion_homes.py'}
             and set(changed) <= HOME_PROVISION_FILES | CI_FILES
             and all((root/path).is_file() for path in HOME_PROVISION_TESTS)):
         return 'homes', list(HOME_PROVISION_TESTS)

@@ -65,6 +65,32 @@ Supply the existing protected `conversation_settings_by_name` input and rerun
 the same command. Existing jobs retain their frozen selection and recovery path;
 this preflight never rewrites an existing pairing or repeats acceptance.
 
+### Central Home native client
+
+A routed companion Home configuration can select `native_client` alongside
+`gateway`, `routes` and `pairs`. Its four fields are the absolute public
+`provider_file`, its exact `provider_sha256`, the existing public Skills
+`repository`, and the pinned `skills_commit`. Select Home2.5.2 or later: its
+reader-only `status` validates installation locally without reading a credential
+or making a network call. Existing configurations and completed Home jobs keep
+their retained behavior; adding this selection does not rerun completed bodies.
+
+The same finite command installs the selected Home skill and a closed
+`dm.home-human-client/v1` binding through the existing Incus provider. It creates
+only the own-user private client directory beneath the existing protected
+`.config`, preserving the parent's permissions and ownership. It delivers only
+that Home's existing owner credential, then invokes `daimon-home human` as the
+guest owner. Completion requires the actual own Home/being projection, paired
+human and Conversation route. A foreign or unavailable projection leaves the
+original job incomplete with its retained failure; it does not create another
+pair, credential, guest server, artifact store, proxy or service. This technical
+read proves neither model uptake nor human/device acceptance.
+
+The existing bounded Home state retains one additional declaration of at most
+4KiB per selected pair and the verification result in the existing job. Source
+transfers use the existing temporary bundle lifecycle. No extra operator helper
+launch or separate per-companion setup step is required.
+
 ### Operator example
 
 This example incorporates Oliva's authenticated review of PR530 and her installed
@@ -1327,8 +1353,17 @@ and native public origin are derived after committed identity. The old
 
 The new hook runs only after the same worker-owned progress has committed the v2
 identity stage and rechecks the actual original job/grant under its job lock.
-It registers Home under the gateway configuration's actual owner UID, then reads
-the existing owner's paired-human endpoint. An already-loaded pair requires no
+It registers Home under the gateway configuration's actual owner UID and adds
+its same-origin `interaction` route to the existing private application receiving
+map selected by the running gateway's `--miniapp-receivers` argument. The same
+writer preserves all other homes/capabilities and refuses a conflicting existing
+route before issuing keys. Reconciliation reuses the committed identity, owner
+keys and route; it does not repeat onboarding or create a second registry. The
+standalone `register-companion` CLI accepts `--receivers` for this composition.
+
+The hook then reads the existing owner's paired-human endpoint. Completion
+requires both the exact human/being pair and its loaded, configured `interaction`
+URL; pairing alone is insufficient. An already-loaded pair and route require no
 reload. A newly registered but unloaded Home may reload only the existing
 `daimon-home-access.service`, after verifying its actual process explicitly uses
 the selected configuration. Reload intent is durable before dispatch; an

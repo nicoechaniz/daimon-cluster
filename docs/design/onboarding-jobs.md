@@ -859,9 +859,15 @@ Listener restarts retain a separate cgroup and the same receiving Codex home.
 --config /private/host.json --activate` installs a dedicated boot-enabled worker
 from the selected immutable host release. It validates the existing private
 configuration and that installation's exact SDK before publishing its unit.
-An existing changed unit is preserved and refused. Omitting `--activate`
-installs without starting. The worker uses the same engine and policy as web,
-agent API and CLI; no active Codex conversation is needed.
+For an existing worker, pass `--replace-unit-sha256 EXACT_PREDECESSOR` to
+conditionally select the coherent release and retain the previous unit. Preserve
+its configuration, Home placements and runtime-health registry arguments. Inspect
+current work before replacement; completed jobs are not onboarding requests to
+repeat. Omitting `--activate` installs without starting. With activation, verify
+the loaded worker's release directory and unchanged protected configuration/job
+hashes. The worker uses the same engine and policy as web, agent API and CLI;
+no active Codex conversation is needed. Host-worker adoption does not change a
+body's serving SDK or prove a fresh companion's complete receiving journey.
 
 
 ### Runtime successors for an already receiving body

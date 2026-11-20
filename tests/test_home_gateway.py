@@ -1051,3 +1051,52 @@ def test_preapproved_entry_link_keeps_pair_origin_and_current_authority(tmp_path
         with pytest.raises(urllib.error.HTTPError):claim('one.example','https://one.example')
         now[0]+=604801
         with pytest.raises(urllib.error.HTTPError):claim('one.example','https://one.example')
+
+
+def test_public_native_human_read_is_own_home_only_and_creates_no_sessions(tmp_path):
+    authority = Authority()
+    homes = {name: dict(owner_being_ref='owner-'+name, owner_revision='v1',
+        owner_token_file=key(tmp_path, name, 'credential-'+name),
+        public_url='https://'+name+'.example', vpn_url='https://vpn-'+name+'.example')
+        for name in ('one', 'two')}
+    app = Application({'homes': homes}, authority, Sessions(tmp_path/'state'),
+        backends={name: object() for name in homes},
+        miniapp_receivers={'one': {'interaction': 'https://one.example/interaction/'}})
+    def session_count():
+        with closing(app.sessions.connect()) as db:
+            return db.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]
+    before = session_count()
+    with serving(handler(app)) as base:
+        def request(token='credential-one', host='one.example', payload=None,
+                    path='/access/human-endpoint', **headers):
+            headers = {'Host': host, **headers}
+            if token is not None:
+                headers['Authorization'] = 'Bearer '+token
+            data = json.dumps({} if payload is None else payload).encode()
+            req = urllib.request.Request(base+path, data=data, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=3) as response:
+                    return response.status, json.load(response), dict(response.headers)
+            except urllib.error.HTTPError as error:
+                with error:
+                    return error.code, json.load(error), dict(error.headers)
+        status, result, headers = request()
+        assert status == 200 and result['human']['ref'] == 'human-one'
+        assert result['owner_being_ref'] == 'owner-one' and result['home_ref'] == 'one'
+        assert result['applications'][0]['url'] == 'https://one.example/interaction/'
+        assert result['delivery'] == 'not-requested' and result['human_presence'] == 'not-observed'
+        assert headers['Cache-Control'] == 'no-store' and 'Set-Cookie' not in headers
+        for options in [dict(token=None), dict(token='credential-two'),
+                        dict(host='two.example'), dict(payload={'home':'two'}),
+                        dict(Origin='https://foreign.example'),
+                        dict(token=None, Cookie='__Host-home=credential-one'),
+                        dict(**{'X-Daimon-Vpn':'1'}),
+                        dict(path='/owner/one/approve-browser')]:
+            assert request(**options)[0] >= 400
+        # Same authority on every read: pairing changes are fresh and an owner
+        # revision change invalidates the retained credential.
+        authority.paired_human = lambda _: 'human-two'
+        assert request()[1]['human']['ref'] == 'human-two'
+        authority.people['owner-one'] = Actor('owner-one', 'being', 'v2', 'owner-one')
+        assert request()[0] == 403
+    assert session_count() == before

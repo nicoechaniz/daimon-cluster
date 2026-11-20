@@ -291,6 +291,31 @@ def test_new_foreground_refuses_missing_home_before_job_or_substrate(tmp_path,mo
     assert not config.jobs.exists() and backend.calls==[]
 
 
+def test_new_foreground_refuses_missing_conversation_before_job_or_substrate(tmp_path, monkeypatch, capsys):
+    import json
+    from clusterctl import onboarding_host, onboarding_worker
+    backend = FixtureBackend()
+    value = plan(browser=False)
+    value['schema'] = CONVERSATION_PLAN_SCHEMA
+    grants = tmp_path/'grants'
+    grants.mkdir(mode=0o700)
+    being_seed._write(grants/(value['name']+'.json'), {'plan': value})
+    config = SimpleNamespace(jobs=tmp_path/'jobs', grants=grants, progress=tmp_path/'progress')
+    monkeypatch.setattr(onboarding_host, 'CurrentHostConfig',
+        lambda _: SimpleNamespace(current=lambda: config))
+    monkeypatch.setattr(onboarding_host, 'HostBackend', lambda _: backend)
+    # Home preparation is already satisfied. Missing pair/runtime input must
+    # still refuse before freezing a job or asking the substrate to allocate.
+    monkeypatch.setattr(onboarding_worker, 'prepare_companion_homes', lambda *args: None)
+    monkeypatch.setattr(onboarding_worker, 'supervise',
+        lambda *args, **kwargs: pytest.fail('Missing Conversation must not launch a worker'))
+    assert onboarding_worker.main(['--config', str(tmp_path/'owner.json'),
+        '--until', value['name']]) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output['diagnostic']['code'] == 'conversation_selection_required'
+    assert not config.jobs.exists() and backend.calls == []
+
+
 def test_foreground_home_preparation_preserves_exact_pair(tmp_path):
     from clusterctl.onboarding_worker import prepare_companion_homes
     homes,store,backend,progress,selected,_,calls,_,file=assembled(tmp_path)

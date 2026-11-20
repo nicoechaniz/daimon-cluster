@@ -1868,8 +1868,12 @@ After the original membership-only result is complete, the existing worker
 advances this receive phase under the same original plan/journal/grants. A separate
 `receive_application` observation retains public commands/results and import
 receipts; terminal membership state/result never changes. Existing members provide
-signed intake metadata via `receive-route-preview` and their private resource pipe;
-their application, visibility and service are unchanged. Public helper preparation
+signed advertised own-route metadata via `receive-route-preview` and their private resource pipe;
+the signed own roster route may differ from the local intake/listen address
+(for example, an existing VPN proxy in front of a loopback listener). Preview
+and private export use that same advertised route with its original transport
+key; they never distribute the local listener as a remote peer address. Existing
+application, visibility and service are unchanged. Public helper preparation
 uses the already granted deployment route. Only the entrant Matrix service enters
 the original-job receive maintenance scope.
 

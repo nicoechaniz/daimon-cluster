@@ -459,6 +459,25 @@ def native_supervisor_code(base: Path, selected: Path, *, unit: Path | None = No
     raise OnboardingError('qualified_native_supervisor_required')
 
 
+def prepare_user_manager(*, budget, run=subprocess.run) -> None:
+    """The fixed guest account must own finite resource-limited tasks offline.
+
+    Linger keeps the existing user manager available without an interactive
+    login. It starts no model, conversation, timer or arbitrary workload.
+    """
+    for command in (
+        ['loginctl', 'enable-linger', 'agent'],
+        ['systemctl', 'start', 'user@1000.service'],
+        ['runuser', '-u', 'agent', '--', 'env',
+         'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus',
+         'systemctl', '--user', 'show', '--property=Version', '--value'],
+    ):
+        result = run(command, capture_output=True, text=True, timeout=budget(30), check=False)
+        budget(30)
+        if result.returncode or (command[0] == 'runuser' and not result.stdout.strip()):
+            raise OnboardingError('native_user_manager_unavailable')
+
+
 def install_native(home: Path, codex: Path, code: Path, *, budget,
                    unit_directory: Path = Path('/etc/systemd/system'), run=subprocess.run) -> None:
     budget(180)
@@ -468,6 +487,7 @@ def install_native(home: Path, codex: Path, code: Path, *, budget,
         budget(180)
         if result.returncode:
             raise OnboardingError('native_codex_daemon_start_failed')
+    prepare_user_manager(budget=budget, run=run)
 
 
 def native_observation(home: Path, codex: Path, code: Path, *,

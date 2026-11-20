@@ -1719,3 +1719,20 @@ def test_controller_metadata_composes_existing_receiving_checks_without_body_rec
             'clusterctl/onboarding_service.py','clusterctl/onboarding_receiving_update.py',
             'requirements-weave.txt','unknown.py'):
         assert select([*changed,extra],ROOT)[0]!='peer'
+
+
+def test_companion_home_provisioning_uses_existing_home_profile_with_own_contracts(tmp_path):
+    from tools.ci_scope import HOME_PROVISION_TESTS, HOME_TESTS
+    changed = ['clusterctl/homes/provision.py', 'clusterctl/onboarding_homes.py',
+        'clusterctl/onboarding_companion_homes.py', 'tests/test_onboarding_homes.py',
+        'tests/test_onboarding_companion_homes.py', 'docs/design/onboarding-jobs.md',
+        'tools/ci_scope.py', 'tests/test_ci_scope.py']
+    assert select(changed, ROOT) == ('homes', list(HOME_PROVISION_TESTS))
+    assert set(HOME_TESTS) | {'tests/test_onboarding.py',
+        'tests/test_onboarding_conversation_routes.py', 'tests/test_onboarding_consent.py',
+        'tests/test_onboarding_worker_install.py', 'tests/test_production_fences.py'} <= set(HOME_PROVISION_TESTS)
+    assert select(changed, tmp_path) == ('full', ['tests'])
+    for shared in ('clusterctl/admission.py', 'clusterctl/onboarding_target.py',
+            'clusterctl/onboarding_sdk.py', 'clusterctl/onboarding_custody.py',
+            'requirements.txt', 'clusterctl/homes/unknown.py'):
+        assert select([*changed, shared], ROOT) == ('full', ['tests'])

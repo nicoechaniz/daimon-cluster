@@ -2136,6 +2136,19 @@ publication, receive key and snapshot remain unchanged. Current-reader collectio
 consumes that forward selection and still requires fresh authenticated proofs.
 Completed children are read back rather than repeated. Outbound remains closed.
 
+For new jobs, the same coordinator also accepts one protected
+`receive_controller_template`: the five existing code/manifest/host selectors,
+without a copied per-companion expiry. Explicit per-plan preparations still win.
+After original receive restoration, it derives the current signed authority
+headers and exact six-pin receiving selection from that job's retained baseline
+and snapshot. It verifies the selected contract and SDK, publishes one bounded
+manifest in the original job directory and freezes its descriptor in the existing
+journal. The ordinary native bootstrap consumes it unchanged. Later template
+changes, lost host acknowledgments or a resume cannot renew the frozen expiry,
+replace its snapshot or reissue a completed controller. The parent deadline
+bounds preparation; existing SDK, custody, service and native checks still apply.
+The manifest is at most2MiB and follows the original job's retention/removal.
+
 Controller-only provisioning must preserve the actually serving Matrix SDK from
 its authenticated baseline. A maintenance helper is an observer, not the body
 software selection: a different helper SDK must never silently replace the serving

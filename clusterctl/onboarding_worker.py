@@ -378,9 +378,12 @@ def main(argv: list[str] | None = None) -> int:
             if not isinstance(selected, dict) or selected.get('name') != args.until:
                 raise OnboardingError('host_authorization_required')
             store = JobStore(config.jobs)
-            prepare_companion_homes(config, selected, store, args.home_placements)
+            from .onboarding_conversation import prepare_host_request
             from .onboarding_conversation_bundle import prepare_selection
             owner = HostBackend(config)
+            prepare_host_request(config, selected,
+                authorize=lambda: owner.authorize(selected, digest(selected)))
+            prepare_companion_homes(config, selected, store, args.home_placements)
             prepare_selection(config, selected, store,
                 authorize=lambda: owner.authorize(selected, digest(selected)))
             original = store.submit(selected, owner)

@@ -65,6 +65,45 @@ Supply the existing protected `conversation_settings_by_name` input and rerun
 the same command. Existing jobs retain their frozen selection and recovery path;
 this preflight never rewrites an existing pairing or repeats acceptance.
 
+### Operator example
+
+This example incorporates Oliva's authenticated review of PR530 and her installed
+`infrastructure-capabilities`1.0.12 guide. The human supplies the actual companion
+and human pairing, the selected account and any necessary personal sign-in through
+its protected flow. Reuse already approved placement, limits and service choices;
+the recorded human instruction is authority, not a request for another peer's
+approval.
+
+The operator resolves the current resource/holder and available capacity, prepares
+the v2 grant/plan and protected pair/runtime settings, and reuses the selected Home
+placement, App bundle, controller and helpers. Use inline
+`conversation_settings_by_name` or the existing explicit `conversation_by_name`
+selection. Shared public software is prepared once per release; private account
+state never belongs in that bundle.
+
+Run from the selected qualified operator environment:
+
+```sh
+python -m clusterctl.onboarding_worker \
+  --config "<OWNER_CONFIG>" \
+  --home-placements "<HOME_PLACEMENTS>" \
+  --until "<COMPANION_NAME>" \
+  --timeout-seconds 600
+```
+
+These are substitution markers, not a runnable admission. Inspect the structured
+state as well as the exit code: `running` or `extension-recorded` can return zero
+while the original supervisor remains active. A completed host workflow includes
+its usable entry, resolved pairing and elapsed/terminal outcome; first human
+login and device acceptance remain separate. After uncertainty, inspect the same
+original job and receipts rather than changing its name or replaying effects.
+
+Do not add per-companion request-file/digest generation, repeat shared-bundle
+builds or manually launch the already integrated helpers. Later helper updates on
+an admitted VM reuse its placement and supported public-code copy route; adding
+a virtiofs disk for each generation can exhaust live hotplug slots. Preserve the
+living body and necessary personal authentication instead of recreating it.
+
 Cold Conversation guests can select `conversation_bundle_by_name` in the host
 configuration: each name maps to a root-owned public App tree and the SHA256 of
 its `conversation-bundle.json` manifest. The existing context stage mounts that

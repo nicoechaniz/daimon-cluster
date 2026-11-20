@@ -7,6 +7,7 @@ maintained installer; no command from a source archive is executed.
 from __future__ import annotations
 
 import json
+import copy
 import hashlib
 import inspect
 import math
@@ -105,6 +106,7 @@ class HostConfig:
     instance_type: str = 'container'
     conversation_bundle_by_name: dict[str, tuple[Path, str]] | None = None
     conversation_bundle_default: tuple[Path, str] | None = None
+    conversation_settings_by_name: dict[str, dict] | None = None
 
     @classmethod
     def load(cls, path: Path, *, expected_value: dict | None = None) -> HostConfig:
@@ -115,7 +117,7 @@ class HostConfig:
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
         telegram_keys = {"telegram_code", "telegram_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name", "conversation_proxy_by_name", "conversation_bundle_by_name", "conversation_bundle_default", "instance_type"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name", "conversation_proxy_by_name", "conversation_bundle_by_name", "conversation_bundle_default", "conversation_settings_by_name", "instance_type"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -310,25 +312,38 @@ class HostConfig:
                 if request['name'] != name or digest(request) != row['request_digest']:
                     raise OnboardingError('conversation_selection_changed')
                 conversation_by_name[name] = (Path(row['request']), row['request_digest'])
+        conversation_settings_by_name = None
+        if 'conversation_settings_by_name' in value:
+            from .onboarding_conversation import prepare_intent
+            selected = value['conversation_settings_by_name']
+            if (not isinstance(selected, dict) or not 1 <= len(selected) <= 64
+                    or any(not isinstance(name, str) or not being_seed.NAME.fullmatch(name)
+                           for name in selected)):
+                raise OnboardingError('conversation_selection_required')
+            for name, settings in selected.items():
+                prepare_intent(name, '0'*64, settings)
+            conversation_settings_by_name = copy.deepcopy(selected)
+        conversation_names = set(conversation_by_name or {}) | set(conversation_settings_by_name or {})
         conversation_proxy_by_name = None
         if 'conversation_proxy_by_name' in value:
             from .onboarding_conversation_proxy import configuration as proxy_configuration
             conversation_proxy_by_name = proxy_configuration(value['conversation_proxy_by_name'])
-            if conversation_by_name is None or set(conversation_proxy_by_name) - set(conversation_by_name):
+            if set(conversation_proxy_by_name) - conversation_names:
                 raise OnboardingError('conversation_proxy_configuration_required')
             for name, listener in conversation_proxy_by_name.items():
                 vm = listener.get('vm')
                 if (vm is not None) != (value.get('instance_type', 'container') == 'virtual-machine'):
                     raise OnboardingError('conversation_proxy_placement_unsupported')
                 if vm is not None:
-                    request = document(conversation_by_name[name][0])
+                    request = (document(conversation_by_name[name][0]) if conversation_by_name and name in conversation_by_name
+                        else prepare_intent(name, '0'*64, (conversation_settings_by_name or {})[name]))
                     if request.get('listen_host') != vm['address']:
                         raise OnboardingError('conversation_proxy_vm_network_required')
         conversation_bundle_by_name = None
         if 'conversation_bundle_by_name' in value:
             from .onboarding_conversation_bundle import configuration as bundle_configuration
             conversation_bundle_by_name = bundle_configuration(value['conversation_bundle_by_name'])
-            if conversation_by_name is None or set(conversation_bundle_by_name) - set(conversation_by_name):
+            if set(conversation_bundle_by_name) - conversation_names:
                 raise OnboardingError('conversation_bundle_selection_required')
         conversation_bundle_default = None
         if 'conversation_bundle_default' in value:
@@ -338,7 +353,7 @@ class HostConfig:
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
                    consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission, cold_pool, conversation_by_name, conversation_proxy_by_name,
-                   value.get("instance_type", "container"), conversation_bundle_by_name, conversation_bundle_default)
+                   value.get("instance_type", "container"), conversation_bundle_by_name, conversation_bundle_default, conversation_settings_by_name)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -748,14 +763,10 @@ class HostBackend:
                if self.config.instance_type == 'virtual-machine' else {})})
 
     def _conversation_request(self, plan: dict) -> dict | None:
-        from .onboarding_conversation import resolve_request
-        selected = (self.config.conversation_by_name or {}).get(plan['name'])
-        if selected is None:
+        from .onboarding_conversation import host_request, resolve_request
+        value = host_request(self.config, plan)
+        if value is None:
             return None
-        value = document(selected[0])
-        if (digest(value) != selected[1] or value.get('name') != plan['name']
-                or value.get('plan_digest') != digest(plan)):
-            raise OnboardingError('conversation_selection_changed')
         identity = self._ceremony(plan).admission_coordinates(plan)
         return resolve_request(value, identity['being_ref'])
 

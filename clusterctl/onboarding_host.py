@@ -30,14 +30,16 @@ def sha(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
-RUNTIME_SELECTION_KEYS = frozenset({'runtime_code', 'runtime_digest', 'runtime_by_name'})
+RUNTIME_SELECTION_KEYS = frozenset({'runtime_code', 'runtime_digest', 'runtime_by_name',
+                                    'conversation_bundle_default'})
 
 
 class CurrentHostConfig:
     """Refresh verified runtime selectors without moving a warm worker's roots.
 
     Exact changed configuration is fully validated once. Runtime selection may
-    advance; jobs/grants/account/admission/Telegram directories, home placements
+    advance, including the immutable App default for future jobs;
+    jobs/grants/account/admission/Telegram directories, home placements
     and other process configuration require their separate explicit lifecycle.
     """
     def __init__(self, path: Path):

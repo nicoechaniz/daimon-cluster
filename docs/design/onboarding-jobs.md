@@ -2299,3 +2299,8 @@ SSH, sudo, goals, Matrix identity or provider accounts. Existing-body recovery c
 reuse `onboarding_telegram.prepare_user_manager` under the owning scoped operation;
 it does not reinstall or restart an already running native daemon. Public scope
 operator installation/selection remains separate from native manager readiness.
+
+The warm worker also refreshes a fully validated `conversation_bundle_default`
+for future jobs. That default is a runtime input, not a reason to restart the
+worker. Existing jobs retain their frozen bundle, per-name selections still win,
+and other host roots/accounts/policy continue to require their existing lifecycle.

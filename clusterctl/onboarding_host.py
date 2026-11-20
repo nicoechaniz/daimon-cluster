@@ -30,8 +30,8 @@ def sha(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
-RUNTIME_SELECTION_KEYS = frozenset({'runtime_code', 'runtime_digest', 'runtime_by_name',
-                                    'conversation_bundle_default'})
+RUNTIME_SELECTION_KEYS = frozenset({'runtime_code', 'runtime_digest', 'runtime_by_name'})
+WARM_SELECTION_KEYS = RUNTIME_SELECTION_KEYS | {'conversation_bundle_default'}
 
 
 class CurrentHostConfig:
@@ -48,7 +48,7 @@ class CurrentHostConfig:
         self._config = HostConfig.load(path, expected_value=self._value)
         if being_seed._read(path) != self._value:
             raise OnboardingError('onboarding_worker_configuration_changed')
-        self._fixed = {key: value for key, value in self._value.items() if key not in RUNTIME_SELECTION_KEYS}
+        self._fixed = {key: value for key, value in self._value.items() if key not in WARM_SELECTION_KEYS}
         self._lock = threading.Lock()
 
     def current(self) -> HostConfig:
@@ -59,7 +59,7 @@ class CurrentHostConfig:
         value = being_seed._read(self.path)
         if value == self._value:
             return self._config
-        if {key: item for key, item in value.items() if key not in RUNTIME_SELECTION_KEYS} != self._fixed:
+        if {key: item for key, item in value.items() if key not in WARM_SELECTION_KEYS} != self._fixed:
             raise OnboardingError('onboarding_worker_configuration_restart_required')
         candidate = HostConfig.load(self.path, expected_value=value)
         if being_seed._read(self.path) != value:

@@ -326,6 +326,53 @@ def compose_native(app: Path, fingerprint: str, native: Path, output: Path) -> d
                 native_version=metadata['version'], **observed)
 
 
+def compose_listener(app: Path, fingerprint: str, listener: Path,
+                     listener_digest: str, output: Path) -> dict:
+    """Prepare a listener-only successor without changing a native package.
+
+    Existing mounts/jobs are untouched. The new public tree keeps the exact
+    qualified Core, Python, web and dependency bytes and package metadata.
+    """
+    observed = verify(app, fingerprint, uid=os.geteuid())
+    source = json.loads(regular(app / MARKER, uid=os.geteuid(), limit=2 * 1024**2))
+    being_seed._path(output)
+    if ('bin/telecodex' not in source['files'] or output.exists()
+            or app.resolve() in output.resolve().parents
+            or not re.fullmatch('[0-9a-f]{64}', listener_digest)):
+        raise OnboardingError('conversation_listener_selection_required')
+    being_seed._path(listener)
+    info = listener.lstat()
+    raw = regular(listener, uid=info.st_uid, limit=128 * 1024**2)
+    if not info.st_mode & 0o100 or hashlib.sha256(raw).hexdigest() != listener_digest:
+        raise OnboardingError('conversation_listener_changed')
+    if observed['bytes'] - (app / 'bin/telecodex').stat().st_size + len(raw) > MAX_BYTES:
+        raise OnboardingError('conversation_bundle_capacity')
+    deadline = time.monotonic() + 180
+    output.mkdir(mode=0o755)
+    output.chmod(0o755)
+    for name in source['files']:
+        if time.monotonic() >= deadline:
+            raise OnboardingError('conversation_bundle_build_deadline')
+        target = output / name
+        target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        if name == 'bin/telecodex':
+            target.write_bytes(raw)
+            target.chmod(0o555)
+        else:
+            shutil.copyfile(app / name, target, follow_symlinks=False)
+            target.chmod(0o555 if (app / name).stat().st_mode & 0o100 else 0o444)
+    for path in output.rglob('*'):
+        if path.is_dir():
+            path.chmod(0o755)
+    source['files']['bin/telecodex'] = listener_digest
+    manifest = (json.dumps(source, sort_keys=True) + '\n').encode()
+    (output / MARKER).write_bytes(manifest)
+    (output / MARKER).chmod(0o444)
+    pin = hashlib.sha256(manifest).hexdigest()
+    return dict(conversation_bundle_sha256=pin, listener_sha256=listener_digest,
+                **verify(output, pin, uid=os.geteuid()))
+
+
 def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
                     destination=Path('/usr/local/bin/codex'), prepare_dependencies=False,
                     state_plan=None):

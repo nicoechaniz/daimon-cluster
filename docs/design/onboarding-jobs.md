@@ -142,6 +142,25 @@ selecting a release. Do not change a living guest's frozen selection to exercise
 this cold path. Retain the selected/rollback release; remove only task-owned,
 unselected test copies after their daemon has stopped.
 
+For a qualified listener-only update, the same builder can preserve every other
+component, including the native package's exact metadata and version:
+
+```sh
+python -m tools.build_onboarding_code \
+  --conversation-app-bundle APP --conversation-app-digest MANIFEST_SHA256 \
+  --conversation-listener LISTENER --conversation-listener-digest LISTENER_SHA256 \
+  --output NEW_PUBLIC_RELEASE
+```
+
+The listener must be an explicitly pinned regular executable, at most128MiB.
+The complete successor retains the existing1GiB/10,000-file/180-second bounds;
+only `bin/telecodex` and the public manifest change. Reuse qualification for the
+byte-identical Core/Python/web/dependencies and qualify the changed listener.
+Select this immutable release only for future jobs, together with its matching
+runtime executable pin. Preserve existing mounted releases, explicit per-name
+choices and frozen job records; do not repeat living-body admission or a cold
+Core installation merely to update a future default.
+
 Operator intake policy may explicitly select `plan_schema` as
 `cluster-onboarding-plan/v2` for web companions. An omitted selection preserves
 the legacy v1 flow. Intake, owner review, custody and the frozen grant must all

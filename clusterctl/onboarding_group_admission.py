@@ -1326,6 +1326,17 @@ def _publish_application(hosted, directory: Path, params: dict) -> dict:
         _sync(directory.parent)
     else:
         previous, metadata = read_publication(hosted, directory)
+        if config_digest(previous) == expected:
+            # Validate retained catalogs with the selected helper before the
+            # first additive write. Metadata/signature compatibility alone
+            # does not prove that this SDK understands existing receipt rows.
+            # A committed successor retry must instead reconcile forward:
+            # its predecessor visibility can legitimately describe the old app.
+            installation = directory.parent / 'visibility' / 'installation.json'
+            if installation.exists():
+                from daimon_matrix.chat_host import application_view
+                application_view(hosted, directory, installation,
+                    catalog_mode='validate').egress.validate_registered_catalogs()
         if config_digest(previous) != expected:
             # The SDK retains its authenticated predecessor with the selected
             # successor. Derive the same additions from it on an exact retry.

@@ -1401,6 +1401,22 @@ readiness EOF must not mask that exception as a generic not-ready result.
 
 ## Current admitted maintenance observation (#270)
 
+Catalog-mutating maintenance helpers must use an SDK compatible with the
+receiver's actual retained receipt formats. Metadata/signature qualification
+alone does not establish that compatibility. Reuse the receiver's selected SDK
+for application/visibility publication rather than an older observer helper;
+this does not change the body's serving code or SDK. Prepare the helper's
+qualified read-only mount before interrupting its Matrix service.
+
+Before a first additive application write, the owner publication path validates
+the current installed visibility and retained catalogs with that helper. A
+refusal leaves the application unchanged. If the application successor already
+committed, reconcile the same native intent forward: predecessor visibility can
+still describe the old application and is not a reason to repeat or roll back
+the accepted write. Keep the native receipt, exact original operation and
+pending/uncertain messages. Finish authenticated reader selection afterward;
+service startup alone is not reader readiness or communication acceptance.
+
 The qualified helper's explicit `admitted-running --require-loaded
 --current-native` path composes the existing authenticated base status, group
 qualified identity, current admission and kernel child/parent observations. It

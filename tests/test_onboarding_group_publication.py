@@ -52,6 +52,41 @@ def initial_publication(group_source, profile):
     return owner, group, journal, request, base
 
 
+@pytest.mark.parametrize('boundary', ['view', 'catalog'])
+def test_incompatible_catalog_helper_refuses_before_additive_application(group_source, monkeypatch, boundary):
+    from types import SimpleNamespace
+    from daimon_matrix import chat_host, operator_messaging
+    from daimon_matrix.messaging_config import read_publication
+    from daimon_matrix.native_egress import NativeEgressError
+    from clusterctl.onboarding_group_admission import _publish_application
+
+    source, *_ = group_source
+    base = source._load(signed=False)
+    directory = source.outputs / 'tribe/application'
+    previous, _ = read_publication(base, directory)
+    visibility = directory.parent / 'visibility'
+    visibility.mkdir(mode=0o700)
+    # The seam represents the selected native visibility. Qualification must
+    # refuse before application mutation if either loading or reading retained
+    # receipt catalogs fails under this helper's SDK.
+    (visibility / 'installation.json').write_text('{}')
+    original = {p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()}
+    def reject():
+        raise NativeEgressError('egress_historical_obligation_inconsistent')
+    def view(*args, **kwargs):
+        assert args == (base, directory, visibility / 'installation.json')
+        assert kwargs == {'catalog_mode': 'validate'}
+        if boundary == 'view':
+            reject()
+        return SimpleNamespace(egress=SimpleNamespace(validate_registered_catalogs=reject))
+    monkeypatch.setattr(chat_host, 'application_view', view)
+    monkeypatch.setattr(operator_messaging, 'admit_group_application',
+        lambda *args, **kwargs: pytest.fail('incompatible helper reached native application writer'))
+    with pytest.raises(NativeEgressError, match='historical_obligation'):
+        _publish_application(base, directory, dict(expected_application_sha256=digest(previous)))
+    assert {p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()} == original
+
+
 def test_initial_portable_visibility_adopts_existing_closed_catalogs(group_source):
     """First publication must open already initialized receive-only catalogs."""
     from contextlib import closing

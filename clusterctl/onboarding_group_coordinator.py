@@ -325,7 +325,7 @@ def configuration(path: Path) -> dict:
     """
     value = being_seed._read(path, limit=being_seed.MAX_SELECTION)
     try:
-        if (set(value) - {'continuations', 'membership_requests', 'membership_preparations', 'membership_maintenance', 'receive_preparations', 'receive_controller_preparations', 'receive_controller_template'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
+        if (set(value) - {'continuations', 'membership_requests', 'membership_preparations', 'membership_maintenance', 'receive_preparations', 'receive_controller_preparations', 'receive_controller_template', 'owner_helpers'} != {'schema', 'tribe_ref', 'journal', 'owners', 'admissions'}
                 or value['schema'] != SCHEMA or not _path(value['journal'])
                 or not isinstance(value['tribe_ref'], str) or not value['tribe_ref']
                 or not isinstance(value['owners'], dict) or len(value['owners']) > 256
@@ -396,6 +396,8 @@ def configuration(path: Path) -> dict:
         if not isinstance(maintenance, dict) or len(maintenance) > 16:
             raise ValueError
         from .onboarding_membership_scope import configuration as maintenance_configuration
+        if 'owner_helpers' in value:
+            maintenance_configuration(value['owner_helpers'], value['owners'])
         for pin, selected in maintenance.items():
             if (not isinstance(pin, str) or re.fullmatch('[0-9a-f]{64}', pin) is None):
                 raise ValueError
@@ -470,6 +472,20 @@ class GroupCoordinator:
             if not authorize():
                 raise OnboardingError('host_authorization_required')
             identity = self.backend._ceremony(plan).admission_coordinates(plan)
+            defaults = self.settings.get('owner_helpers')
+            if defaults is not None and pin not in self.settings.get('membership_maintenance', {}):
+                selected = copy.deepcopy(self.settings)
+                helpers = {key: row for key, row in defaults['owners'].items()
+                    if key in template['participants']}
+                if helpers:
+                    selected.setdefault('membership_maintenance', {})[pin] = dict(
+                        schema=defaults['schema'], owners=helpers)
+                    # Original-job software selection, before any collection or
+                    # service guard. Existing requests and explicit recipes win.
+                    if not authorize():
+                        raise OnboardingError('host_authorization_required')
+                    being_seed._write(self.path, selected, limit=being_seed.MAX_SELECTION)
+                    self.settings = selected
             owners = {owner: self._owner_client(owner) for owner in template['participants']}
             # Explicit maintenance helpers also serve prospective context reads.
             # Their serving selection/public authority remains the retained one.
@@ -753,11 +769,17 @@ class GroupCoordinator:
     def _owner_client(self, name: str):
         from .onboarding_receiving_update import GuestGroupClient, SourceGroupClient
         row = self.settings['owners'][name]
+        owner: SourceGroupClient | GuestGroupClient
         if row['profile'] == 'source':
             options: dict = {key: Path(row[key]) if key in SOURCE_PATHS else row[key] for key in SOURCE_FIELDS}
-            return SourceGroupClient(**options)
-        return GuestGroupClient(self._guest_backend(name), row['plan'],
-            (Path(row['candidate']['code']), row['candidate']['digest']), root=Path(row['root']))
+            owner = SourceGroupClient(**options)
+        else:
+            owner = GuestGroupClient(self._guest_backend(name), row['plan'],
+                (Path(row['candidate']['code']), row['candidate']['digest']), root=Path(row['root']))
+        helper = self.settings.get('owner_helpers', {}).get('owners', {}).get(name)
+        if helper is not None:
+            owner.maintenance = Path(helper['code']), helper['code_digest']
+        return owner
 
     def _owners(self, admission: dict) -> dict:
         owners = {}

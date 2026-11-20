@@ -166,7 +166,7 @@ def test_unverified_companion_identity_never_changes_selected_source(tmp_path):
 
 
 def write(path, raw):
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_bytes(raw)
     path.chmod(0o600)
     return str(path)

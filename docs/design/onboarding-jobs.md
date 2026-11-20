@@ -98,6 +98,13 @@ VM code-device labels use short digest prefixes because Incus embeds them in
 virtiofs UNIX socket paths. Full artifact digests and exact source/path/read-only
 checks remain authoritative. Container labels retain their existing bytes;
 never recreate an existing body to repair a refused VM disk hotplug.
+After the original job verifies its VM environment, helper generations reuse
+the existing typed `VMBody` public-code copy route instead of adding one disk
+per generation. The job retains one protected, at most4KiB
+`helper-vm-placement.json`, binding its original plan, host, instance UUID and
+guest OS. Repeated reads reuse it; the typed transport still verifies the current
+instance and guest identity. No service/provisioning profile, SDK selection,
+existing disk or historical source artifact is changed or retired by this route.
 The context writer waits up to 30 seconds for guest mount readback before using
 hotplugged files. The selected public bundle also prepares missing Debian 13
 `python3-venv`, `rsync` and `nodejs` prerequisites through two bounded package

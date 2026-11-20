@@ -181,6 +181,56 @@ class VMBody(IncusBody):
     instance_type = 'virtual-machine'
 
 
+def admitted_local_runtime_body(backend, plan: dict) -> VMBody | None:
+    """Reuse typed code copying after the original VM environment is verified.
+
+    This only selects public code transport. Provisioning, lifecycle and body
+    service profiles stay unchanged; no PCI disk is added per helper version.
+    """
+    from .onboarding import private_directory
+    directory = backend.config.jobs / plan['name']
+    job = directory / 'job.json'
+    if not job.exists():
+        return None
+    record = being_seed._read(job)
+    if record.get('plan') != plan or record.get('plan_digest') != digest(plan):
+        raise OnboardingError('vm_receiving_placement_changed')
+    environment = record.get('steps', {}).get('environment', {})
+    if (environment.get('state') != 'complete'
+            or environment.get('facts', {}).get('virtual_machine_verified') is not True):
+        return None
+    if not backend.authorize(plan, digest(plan)):
+        raise OnboardingError('host_authorization_required')
+    lock = private_directory(directory / '.runtime-body', create=True)
+    locator = directory / 'helper-vm-placement.json'
+    with being_seed._locked(lock):
+        if not locator.exists():
+            row = json.loads(backend._dispatch(plan,
+                ['query', '/1.0/instances/'+backend.instance(plan)+'?project=default'], timeout_seconds=8))
+            if (row.get('type') != 'virtual-machine'
+                    or row.get('config', {}).get('user.dm.onboarding-plan') != digest(plan)):
+                raise OnboardingError('vm_receiving_instance_changed')
+            machine = backend.execute_body(plan, ['/bin/cat', '/etc/machine-id'],
+                uid=0, gid=0, timeout_seconds=8).strip()
+            if re.fullmatch('[0-9a-f]{32}', machine) is None:
+                raise OnboardingError('vm_receiving_instance_unconfirmed')
+            value = dict(schema=VMBody.placement_schema, plan_digest=digest(plan), project='default',
+                instance=backend.instance(plan), instance_uuid=row['config'].get('volatile.uuid'),
+                host_machine_id_sha256=hashlib.sha256(Path('/etc/machine-id').read_bytes().strip()).hexdigest(),
+                machine_id_sha256=hashlib.sha256(machine.encode()).hexdigest(),
+                bootstrap_python='/usr/bin/python3', home='/home/agent')
+            # Validate the closed descriptor before publishing its one job-local file.
+            try:
+                if str(uuid.UUID(value['instance_uuid'])) != value['instance_uuid']:
+                    raise ValueError
+            except (ValueError, TypeError, AttributeError):
+                raise OnboardingError('vm_receiving_instance_unconfirmed') from None
+            being_seed._write(locator, value, limit=4096)
+        body = VMBody.load(locator, plan)
+        assert isinstance(body, VMBody)
+        return body
+
+
 class ContainerBody(IncusBody):
     """A container with its own pinned instance UUID and guest machine ID."""
     placement_schema = 'cluster-incus-container-body-placement/v1'

@@ -352,8 +352,9 @@ def test_home_pointer_preserves_newer_context_and_custom_or_symlink_files(tmp_pa
     assert protected.read_bytes() == original
 
 
+@pytest.mark.parametrize("human_reader", [False, True])
 def test_typed_delivery_registers_shared_authority_and_retries_without_rebinding(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, human_reader
 ):
     from contextlib import nullcontext
     from copy import deepcopy
@@ -399,6 +400,13 @@ def test_typed_delivery_registers_shared_authority_and_retries_without_rebinding
             },
         }
     }
+    if human_reader:
+        declaration['binding'] = dict(schema='dm.home-human-client/v1',
+            public_url=row['public_url'], being_ref=row['owner_being_ref'],
+            access=dict(home_ref='one', owner_url=row['public_url'],
+                owner_token_file='/home/agent/.config/daimon-home/owner.key'))
+    projection = dict(schema='dm.human-endpoint/v1', home_ref='one',
+        owner_being_ref=row['owner_being_ref'], route_state='configured')
     devices, files, executions, host_restarts = {}, {}, [], []
 
     class Authority:
@@ -421,6 +429,8 @@ def test_typed_delivery_registers_shared_authority_and_retries_without_rebinding
                 devices[argv[4]]["type"] = argv[5]
             else:
                 executions.append(argv)
+                if argv[-1] == 'human':
+                    return json.dumps(projection)
             return ""
 
     def host_run(argv, **kwargs):
@@ -456,6 +466,25 @@ def test_typed_delivery_registers_shared_authority_and_retries_without_rebinding
     with pytest.raises(OnboardingError, match="matching_home_receiving"):
         provider.deliver({"delivery": details}, broken, "accepted-instance")
     assert not files and not devices
+    if human_reader:
+        for field in ('owner_url',):
+            broken = deepcopy(declaration)
+            broken['binding']['access'][field] = 'https://foreign.example'
+            with pytest.raises(OnboardingError, match='matching_home_receiving'):
+                provider.deliver({'delivery': details}, broken, 'accepted-instance')
+        broken = deepcopy(declaration)
+        broken['binding']['being_ref'] = 'foreign-being'
+        with pytest.raises(OnboardingError, match='matching_home_receiving'):
+            provider.deliver({'delivery': details}, broken, 'accepted-instance')
+        assert not files and not executions
+        assert provider.deliver({'delivery': details}, declaration, 'accepted-instance') == projection
+        assert list(files) == ['accepted-instance/home/agent/.config/daimon-home/owner.key']
+        assert not devices and not host_restarts
+        assert len(executions) == 1 and executions[0][-1] == 'human'
+        projection['owner_being_ref'] = 'foreign-being'
+        with pytest.raises(OnboardingError, match='human_client_receiving_unconfirmed'):
+            provider.deliver({'delivery': details}, declaration, 'accepted-instance')
+        return
     provider.deliver({"delivery": details}, declaration, "accepted-instance")
     assert json.loads(file.read_bytes())["homes"]["one"] == row
     assert (
@@ -517,3 +546,36 @@ def test_provider_refuses_absent_or_different_admitted_being_before_guest_writes
     admission['state'] = 'complete'
     with pytest.raises(OnboardingError, match='home_admission_owner_conflict'):
         provider.reconcile(placement)
+
+
+def test_human_reader_provisioning_has_no_store_or_artifact_pointer(tmp_path):
+    from clusterctl.homes.provision import prepare_human_client_home
+    home = tmp_path/'reader'
+    home.mkdir(mode=0o700)
+    config = home/'.config'
+    config.mkdir(mode=0o755)
+    config.chmod(0o755)
+    prepare_human_client_home(home, os.getuid(), os.getgid())
+    assert config.stat().st_mode & 0o777 == 0o755
+    assert (config/'daimon-home').stat().st_mode & 0o777 == 0o700
+    context = home/'.codex'
+    context.mkdir(mode=0o700)
+    pointer = context/'AGENTS.md'
+    pointer.write_bytes(b'Original identity retained')
+    declaration = dict(schema='dm.home.receiving/v1', skills_commit='a'*40, previous={},
+        binding=dict(schema='dm.home-human-client/v1', name='Own reader',
+            public_url='https://own.example', being_ref='dm:being:v1:own',
+            access=dict(owner_url='https://own.example', home_ref='own',
+                        owner_token_file=str(config/'daimon-home/owner.key'))))
+    def installer(repository, commit, receiving, state):
+        package = receiving/'.agents/skills/daimon-home/scripts'
+        package.mkdir(parents=True, exist_ok=True)
+        (package/'home.py').write_text('import json,sys;print(json.dumps(json.load(open(sys.argv[2]))))')
+        return commit
+    first = provision(home, declaration, repository=tmp_path, install=installer)
+    assert provision(home, declaration, repository=tmp_path, install=installer) == first
+    assert pointer.read_bytes() == b'Original identity retained'
+    assert not (home/'.local/share/daimon-home').exists()
+    assert not (config/'daimon-home/owner.key').exists()  # offline status needs no key
+    assert (home/'.local/bin/daimon-home').is_file()
+    assert set(first['files']) == {'binding', 'wrapper'}

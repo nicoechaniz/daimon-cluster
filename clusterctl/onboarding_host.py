@@ -31,13 +31,15 @@ def sha(value: object) -> bool:
 
 
 RUNTIME_SELECTION_KEYS = frozenset({'runtime_code', 'runtime_digest', 'runtime_by_name'})
+WARM_SELECTION_KEYS = RUNTIME_SELECTION_KEYS | {'conversation_bundle_default'}
 
 
 class CurrentHostConfig:
     """Refresh verified runtime selectors without moving a warm worker's roots.
 
     Exact changed configuration is fully validated once. Runtime selection may
-    advance; jobs/grants/account/admission/Telegram directories, home placements
+    advance, including the immutable App default for future jobs;
+    jobs/grants/account/admission/Telegram directories, home placements
     and other process configuration require their separate explicit lifecycle.
     """
     def __init__(self, path: Path):
@@ -46,7 +48,7 @@ class CurrentHostConfig:
         self._config = HostConfig.load(path, expected_value=self._value)
         if being_seed._read(path) != self._value:
             raise OnboardingError('onboarding_worker_configuration_changed')
-        self._fixed = {key: value for key, value in self._value.items() if key not in RUNTIME_SELECTION_KEYS}
+        self._fixed = {key: value for key, value in self._value.items() if key not in WARM_SELECTION_KEYS}
         self._lock = threading.Lock()
 
     def current(self) -> HostConfig:
@@ -57,7 +59,7 @@ class CurrentHostConfig:
         value = being_seed._read(self.path)
         if value == self._value:
             return self._config
-        if {key: item for key, item in value.items() if key not in RUNTIME_SELECTION_KEYS} != self._fixed:
+        if {key: item for key, item in value.items() if key not in WARM_SELECTION_KEYS} != self._fixed:
             raise OnboardingError('onboarding_worker_configuration_restart_required')
         candidate = HostConfig.load(self.path, expected_value=value)
         if being_seed._read(self.path) != value:

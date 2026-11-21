@@ -365,9 +365,14 @@ receiver/route declarations byte-identical. Each delegation is closed JSON:
   "target_home": "EXISTING_CENTRAL_HOME",
   "service": "holodeck",
   "resource": "EXACT_32_HEX_CENTRAL_APP_RESOURCE",
-  "version": "EXACT_64_HEX_CENTRAL_APP_VERSION"
+  "version": "EXACT_64_HEX_CENTRAL_APP_VERSION",
+  "packages": ["EXACT_64_HEX_QUALIFIED_ARCHIVE_SHA256"]
 }
 ```
+
+The package list contains at most eight distinct qualified archive digests; an
+empty list grants no selection. The owner operator records qualification before
+adding a digest. A published but unqualified candidate cannot select itself.
 
 Resolve identities through current authority and the original owner's authorized
 operator writer. A declaration grants no other service or target, shell, state

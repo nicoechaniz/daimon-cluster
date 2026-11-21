@@ -76,9 +76,13 @@ def configuration(value):
         raise ValueError('service_delegation_capacity')
     seen = set()
     for d in delegations:
-        exact(d, 'home owner revision target_home service resource version', 'invalid_service_delegation')
-        if any(not isinstance(v, str) or not v or len(v) > 256 for v in d.values()):
+        exact(d, 'home owner revision target_home service resource version packages', 'invalid_service_delegation')
+        if any(not isinstance(v, str) or not v or len(v) > 256 for k, v in d.items() if k != 'packages'):
             raise ValueError('invalid_service_delegation')
+        if (not isinstance(d['packages'], list) or len(d['packages']) > 8
+                or any(not isinstance(v, str) or not re.fullmatch(r'[a-f0-9]{64}', v) for v in d['packages'])
+                or len(set(d['packages'])) != len(d['packages'])):
+            raise ValueError('invalid_service_delegation_packages')
         if (not re.fullmatch(r'[a-f0-9]{32}', d['resource'])
                 or not re.fullmatch(r'[a-f0-9]{64}', d['version'])
                 or d['home'] == d['target_home']
@@ -178,13 +182,15 @@ class Deployments:
             raise ValueError('service_capability_denied')
         return matches[0]
 
-    def context(self, app, home, owner, value):
+    def context(self, app, home, owner, value, *, qualification=True):
         """Resolve an explicit operator delegation without cloning its receiver."""
         matches = [d for d in self.config.get('delegations', [])
                    if d['home'] == home and d['owner'] == owner.ref and d['service'] == value['service']]
         if not matches:
             return home, self.grant(app, home, owner, value['service']), None
         d = matches[0]
+        if qualification and value['package']['sha256'] not in d['packages']:
+            raise ValueError('service_qualified_package_required')
         actor = app.authority.actor(owner.ref)
         if (not actor or not actor.enabled or actor.revision != owner.revision
                 or actor.revision != d['revision'] or app.homes[home]['owner_being_ref'] != owner.ref):
@@ -352,17 +358,19 @@ class Deployments:
             raise ValueError('service_state_or_identity_mismatch')
         return raw
 
-    def inspect(self, app, home, owner, value):
+    def inspect(self, app, home, owner, value, *, authorize=lambda: True):
         """Observe the fixed receiver, never dispatch or claim a rollback file."""
         request(value)
-        target, g, _ = self.context(app, home, owner, value)
+        target, g, _ = self.context(app, home, owner, value, qualification=False)
         with app.locks[target]:
             op = self.journal.latest_for_target(key(g['receiver']))
             if not op:
                 return {'state': 'unobserved'}
             retained = op['intent']['runtime_call']['request']
             observed = self.execute(g, retained)
-            self.context(app, home, owner, value)
+            self.context(app, home, owner, value, qualification=False)
+            if not authorize():
+                raise ValueError('service_owner_revoked')
             return {'state': observed['state'], 'operation_state': op['state'],
                     'digest': retained['package']['sha256'],
                     'previous_requested': retained['previous'],

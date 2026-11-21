@@ -418,7 +418,7 @@ class Application:
             if operation == 'service-deploy':
                 return self.service_deployments.deploy(self, home, owner, payload, authorize=still_authorized)
             if operation == 'service-inspect':
-                return self.service_deployments.inspect(self, home, owner, payload)
+                return self.service_deployments.inspect(self, home, owner, payload, authorize=still_authorized)
             return self.service_deployments.finalize(self, home, owner, payload, authorize=still_authorized)
         if operation == 'check-review-access':
             # Owner-local read-only decision for a trusted application's

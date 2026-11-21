@@ -68,6 +68,7 @@ def delegated(base_setup, tmp_path, monkeypatch):
         service="workshop",
         resource=entry["artifact_ref"],
         version=entry["version_ref"],
+        packages=[value["package"]["sha256"]],
     )
     app.service_deployments.config = configuration(dict(conf, delegations=[d]))
     worker = ManagerFixture(c)
@@ -121,6 +122,7 @@ def test_own_package_updates_only_central_app_and_receipt(delegated):
         "central-app",
         "foreign-package",
         "target-owner",
+        "unqualified",
     ],
 )
 def test_authority_and_app_fail_before_dispatch(delegated, fault):
@@ -140,6 +142,8 @@ def test_authority_and_app_fail_before_dispatch(delegated, fault):
         central.state_value["entries"][0]["version_ref"] = "f" * 64
     elif fault == "foreign-package":
         packages.state_value["entries"] = []
+    elif fault == "unqualified":
+        value["package"]["sha256"] = "f" * 64
     elif fault == "target-owner":
         app.homes["one"]["owner_being_ref"] = "owner-two"
     with pytest.raises(ValueError):
@@ -171,6 +175,7 @@ def test_configuration_does_not_clone_receiver_or_implicitly_delegate(base_setup
         service="workshop",
         resource="b" * 32,
         version="c" * 64,
+        packages=[],
     )
     for invalid in [
         dict(d, target_home="absent"),

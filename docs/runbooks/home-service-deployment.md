@@ -339,3 +339,69 @@ the original immutable intent, creating a new target operation or weakening
 finalization/access checks. Removals, replacements, multiple edits and receiver,
 transport or route changes refuse. A healthy existing runtime retains its PID
 and invocation rather than restarting during this recovery.
+
+The finite route executor's task bound must cover every selected maintenance
+guard plus its transport processes and the Caddy control CLI. Qualify the
+actual bound: eight guarded receivers required 96 tasks on the Holodeck
+receiver; 32 caused a kernel-confirmed fork rejection before the reload reached
+the Caddy admin API. Preserve the original reload intent. Operator recovery
+requires exact candidate/preimage pins, observed unchanged live configuration
+and reacquired guards before finishing that selected reload; a lost reply alone
+is never evidence that another reload is safe.
+
+## Delegated maintenance of one shared engine
+
+A service owner may explicitly authorize a different existing Home owner to
+maintain its engine. This is a protected operator declaration, not publication
+ownership, ordinary native co-creation or a second receiver grant. Add optional
+`delegations` to the existing capabilities configuration; leave `grants` and the
+receiver/route declarations byte-identical. Each delegation is closed JSON:
+
+```json
+{
+  "home": "EXISTING_DELEGATE_HOME",
+  "owner": "EXISTING_DELEGATE_BEING",
+  "revision": "CURRENT_AUTHORITY_ACTOR_REVISION",
+  "target_home": "EXISTING_CENTRAL_HOME",
+  "service": "holodeck",
+  "resource": "EXACT_32_HEX_CENTRAL_APP_RESOURCE",
+  "version": "EXACT_64_HEX_CENTRAL_APP_VERSION"
+}
+```
+
+Resolve identities through current authority and the original owner's authorized
+operator writer. A declaration grants no other service or target, shell, state
+migration, audience change or account access. The delegate authenticates with its
+own existing publisher credential. Package publication and exact version lookup
+use only that delegate's Home. Its deployment request uses the ordinary v1
+schema, the existing service ID, exact current archive predecessor and the
+central App's unchanged audience/title/summary. Missing or changed central App
+version, disabled/revised delegate, different owner or foreign package refuses.
+Registry resource ownership is not transferred.
+
+The same finite `daimon-home-service --request request.json` command applies the
+fixed central receiver and route, then finalizes against the already committed
+central App. It never calls the delegate's link/sync writer or creates another
+Apps card. The request journal binds both the unchanged receiver grant and exact
+delegation, and records the actual delegate as actor. A changed declaration or
+operator cannot take over an uncertain request. Retry only its exact original;
+revocation preserves applied/pending work for owner recovery. Revoking maintenance
+authority does not revoke ordinary readers' access to the central service.
+
+`daimon-home-service --request request.json --inspect` authenticates the same
+scope and observes the latest retained operation through the fixed executor,
+without applying code. It reports its health observation, operation state and
+`previous_requested`; this predecessor is NOT a verified rollback file. Explicit
+`rollback_verified: false` prevents interpreting journal metadata as recovery
+qualification. The existing receiving operator must inspect current/previous
+protected runtime records and retained packages before a rollback selection.
+
+Receiving adoption is separate from source tests: select these modules in the
+existing gateway composition (preserving current Matrix imports), install the
+matching owner command in the delegate, and apply only the authorized explicit
+declaration. Verify own authenticated inspect and unrelated-owner denial before
+any separately selected candidate deployment. A source PR or fixture does not
+establish installed delegation, served code, human use or healthy physical audio.
+Do not change the running engine to qualify the grant. Current/previous code,
+external state, service/App identity, reader audience and native routes remain
+under their existing owner contracts.

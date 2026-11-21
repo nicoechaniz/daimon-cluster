@@ -18,7 +18,8 @@ from .service_runtime import receiver, key
 
 @closed
 def configuration(value):
-    exact(value, 'schema state grants', 'invalid_service_deploy_configuration')
+    exact(value, 'schema state grants' + (' delegations' if isinstance(value, dict) and 'delegations' in value else ''),
+          'invalid_service_deploy_configuration')
     if value['schema'] != 'dm.home-service-capabilities/v1':
         raise ValueError('invalid_service_deploy_configuration')
     path(value['state'])
@@ -70,6 +71,22 @@ def configuration(value):
         units.add(unit)
         listeners.add(listener)
         route_states.add(g['routes']['state'])
+    delegations = value.get('delegations', [])
+    if not isinstance(delegations, list) or len(delegations) > 32:
+        raise ValueError('service_delegation_capacity')
+    seen = set()
+    for d in delegations:
+        exact(d, 'home owner revision target_home service resource version', 'invalid_service_delegation')
+        if any(not isinstance(v, str) or not v or len(v) > 256 for v in d.values()):
+            raise ValueError('invalid_service_delegation')
+        if (not re.fullmatch(r'[a-f0-9]{32}', d['resource'])
+                or not re.fullmatch(r'[a-f0-9]{64}', d['version'])
+                or d['home'] == d['target_home']
+                or (d['target_home'], d['service']) not in identities
+                or (d['home'], d['service']) in seen
+                or (d['home'], d['service']) in identities):
+            raise ValueError('invalid_service_delegation')
+        seen.add((d['home'], d['service']))
     return value
 
 
@@ -161,6 +178,46 @@ class Deployments:
             raise ValueError('service_capability_denied')
         return matches[0]
 
+    def context(self, app, home, owner, value):
+        """Resolve an explicit operator delegation without cloning its receiver."""
+        matches = [d for d in self.config.get('delegations', [])
+                   if d['home'] == home and d['owner'] == owner.ref and d['service'] == value['service']]
+        if not matches:
+            return home, self.grant(app, home, owner, value['service']), None
+        d = matches[0]
+        actor = app.authority.actor(owner.ref)
+        if (not actor or not actor.enabled or actor.revision != owner.revision
+                or actor.revision != d['revision'] or app.homes[home]['owner_being_ref'] != owner.ref):
+            raise ValueError('service_delegate_revoked')
+        target = d['target_home']
+        central = app.authority.actor(app.homes[target]['owner_being_ref'])
+        if not central:
+            raise ValueError('service_capability_denied')
+        g = self.grant(app, target, central, value['service'])
+        entry = next((e for e in app.publication(target)['entries'] if e['artifact_ref'] == d['resource']), None)
+        from .registry import immutable_record
+        if (not entry or entry.get('version_ref') != d['version']
+                or immutable_record(entry) != app.registry.version(home=target, resource=d['resource'], version=d['version'])
+                or entry.get('kind') != 'link' or entry.get('url') != app.homes[target]['public_url'] + g['prefix']
+                or entry.get('application') != {'schema': 'dm.application/v1', 'mode': 'shared'}
+                or any(entry.get(k) != v for k, v in value['audience'].items())
+                or any(entry.get(k) != value['app'][k] for k in ('title', 'summary'))):
+            raise ValueError('service_delegated_app_preserved')
+        return target, g, d
+
+    @staticmethod
+    def call(grant, value, delegation):
+        call = {'grant': sha(canonical(grant)), 'request': value}
+        if delegation is not None:
+            call['delegation'] = sha(canonical(delegation))
+        return call
+
+    def matches(self, call, grant, value, delegation):
+        expected = self.call(grant, value, delegation)
+        return (isinstance(call, dict) and set(call) == set(expected)
+                and call.get('delegation') == expected.get('delegation')
+                and runtime_call_matches({k: v for k, v in call.items() if k != 'delegation'}, grant, value))
+
     def execute(self, grant, value, raw=None):
         envelope = dict(schema='dm.home-service-executor/v1', action='apply' if raw is not None else 'observe',
                         capability=sha(canonical(grant['receiver'])), request_id=value['request_id'],
@@ -216,31 +273,38 @@ class Deployments:
     def deploy(self, app, home, owner, value, *, authorize=lambda: True):
         request(value)
         self._audience(app, value)
-        g = self.grant(app, home, owner, value['service'])
+        package_home = home
+        home, g, delegated = self.context(app, package_home, owner, value)
+        owner_authorized = authorize
+        def authorize():
+            if not owner_authorized():
+                return False
+            self.context(app, package_home, owner, value)
+            return True
         c = g['receiver']
         # A local manifest alone is not a committed package or an ownership proof.
         package = value['package']
-        selected = app.registry.version(home=home, resource=package['resource'], version=package['version'])
+        selected = app.registry.version(home=package_home, resource=package['resource'], version=package['version'])
         if (not selected or selected.get('kind') != 'artifact' or package['file'] not in selected.get('files', [])
-                or not any(e['artifact_ref'] == package['resource'] for e in app.publication(home)['entries'])):
+                or not any(e['artifact_ref'] == package['resource'] for e in app.publication(package_home)['entries'])):
             raise ValueError('service_own_committed_package_required')
         with app.locks[home]:
             if len(self.journal.list_all(limit=129)) >= 128 and not self.journal.latest_for_idempotency_key(key(c)+':'+value['request_id']):
                 raise ValueError('service_operation_capacity')
             previous_op = self.journal.latest_for_idempotency_key(key(c)+':'+value['request_id'])
-            if previous_op and not runtime_call_matches(previous_op['intent']['runtime_call'], g, value):
+            if previous_op and not self.matches(previous_op['intent']['runtime_call'], g, value, delegated):
                 raise ValueError('service_request_conflict')
             op = previous_op or self.journal.plan(operation='home-service-deploy/v1', target=key(c),
                     idempotency_key=key(c)+':'+value['request_id'],
-                    intent={'runtime_call': {'grant': sha(canonical(g)), 'request': value}},
+                    intent={'runtime_call': self.call(g, value, delegated)},
                     expected_precondition={'digest': value['previous']},
                     intended_transition={'digest': package['sha256']},
-                    audit_identity={'home': home, 'owner': owner.ref})
+                    audit_identity={'home': package_home, 'owner': owner.ref})
             with self.journal.mutation_lock(op['operation_id']):
                 if op['state'] == 'completed':
                     return {**op['result'], 'retained': True}
                 if op['state'] == 'planned':
-                    raw = self.package(app, home, value, c)
+                    raw = self.package(app, package_home, value, c)
                     if not authorize():
                         raise ValueError('service_owner_revoked')
                     self.journal.advance(op['operation_id'], 'runtime-dispatching')
@@ -250,7 +314,7 @@ class Deployments:
                     if observed['state'] == 'absent':
                         # Receiving journal/lock proves no dispatch intent.
                         # Same exact request is idempotent at that writer, too.
-                        raw = self.package(app, home, value, c)
+                        raw = self.package(app, package_home, value, c)
                         if not authorize():
                             raise ValueError('service_owner_revoked')
                         observed = self.execute(g, value, raw)
@@ -262,12 +326,15 @@ class Deployments:
                             'digest': package['sha256'], 'error': code}
                 self.journal.advance(op['operation_id'], 'runtime-applied', runtime_observation=observed)
                 self._audience(app, value)
-                self.grant(app, home, owner, value['service'])
+                self.context(app, package_home, owner, value)
                 if not authorize():
                     raise ValueError('service_owner_revoked')
                 routed = self.route(app, home, g)
                 if routed.get('state') != 'complete':
                     return {'state': 'route-unconfirmed', 'request_id': value['request_id'], 'digest': package['sha256']}
+                if delegated is not None:
+                    return {'state': 'finalization-required', 'request_id': value['request_id'],
+                            'resource': delegated['resource'], 'version': delegated['version']}
                 # Publication is finalized by the same owner's ordinary link/sync.
                 return {'state': 'publication-required', 'request_id': value['request_id'],
                         'digest': package['sha256'], 'url': app.homes[home]['public_url'] + g['prefix']}
@@ -285,14 +352,37 @@ class Deployments:
             raise ValueError('service_state_or_identity_mismatch')
         return raw
 
+    def inspect(self, app, home, owner, value):
+        """Observe the fixed receiver, never dispatch or claim a rollback file."""
+        request(value)
+        target, g, _ = self.context(app, home, owner, value)
+        with app.locks[target]:
+            op = self.journal.latest_for_target(key(g['receiver']))
+            if not op:
+                return {'state': 'unobserved'}
+            retained = op['intent']['runtime_call']['request']
+            observed = self.execute(g, retained)
+            self.context(app, home, owner, value)
+            return {'state': observed['state'], 'operation_state': op['state'],
+                    'digest': retained['package']['sha256'],
+                    'previous_requested': retained['previous'],
+                    'rollback_verified': False,
+                    'url': app.homes[target]['public_url'] + g['prefix']}
+
     def finalize(self, app, home, owner, payload, *, authorize=lambda: True):
         exact(payload, 'request resource version', 'invalid_service_finalize')
         value = request(payload['request'])
         self._audience(app, value)
-        g = self.grant(app, home, owner, value['service'])
+        operator_home = home
+        home, g, delegated = self.context(app, operator_home, owner, value)
+        with app.locks[home]:
+            return self._finalize(app, home, owner, payload, value, g, delegated,
+                                  operator_home=operator_home, authorize=authorize)
+
+    def _finalize(self, app, home, owner, payload, value, g, delegated, *, operator_home, authorize):
         c = g['receiver']
         op = self.journal.latest_for_idempotency_key(key(c)+':'+value['request_id'])
-        if (not op or not runtime_call_matches(op['intent']['runtime_call'], g, value)
+        if (not op or not self.matches(op['intent']['runtime_call'], g, value, delegated)
                 or op['state'] not in {'runtime-applied', 'completed'}):
             raise ValueError('service_operation_not_ready')
         current = app.publication(home)
@@ -309,7 +399,7 @@ class Deployments:
             raise ValueError('service_runtime_unconfirmed')
         if not authorize():
             raise ValueError('service_owner_revoked')
-        self.grant(app, home, owner, value['service'])
+        self.context(app, operator_home, owner, value)
         result = {'state': 'complete', 'request_id': value['request_id'], 'digest': value['package']['sha256'],
                   'url': entry['url'], 'resource': entry['artifact_ref'], 'version': entry['version_ref']}
         self.journal.advance(op['operation_id'], 'completed', logical_observation={'resource': payload['resource'],

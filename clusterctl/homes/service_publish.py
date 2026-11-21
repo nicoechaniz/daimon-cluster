@@ -20,7 +20,7 @@ from ..onboarding_release import regular
 from .service_package import request
 
 
-def publish(publisher, binding, value, *, seconds=300):
+def publish(publisher, binding, value, *, seconds=300, inspect=False):
     request(value)
     deadline = time.monotonic() + seconds
 
@@ -47,9 +47,15 @@ def publish(publisher, binding, value, *, seconds=300):
     original = publisher.owner_request
     publisher.owner_request = owner_call
     try:
+        if inspect:
+            return owner_call(binding, 'service-inspect', value)
         result = owner_call(binding, 'service-deploy', value)
         if result['state'] == 'complete':
             return result  # Exact retained completion, not a new publication.
+        if result['state'] == 'finalization-required':
+            # Delegation preserves the central App. Never create a delegate's fork.
+            return owner_call(binding, 'service-finalize', {'request': value,
+                              'resource': result['resource'], 'version': result['version']})
         if result['state'] != 'publication-required':
             return result  # No polling, resubmission or speculative activation.
         audience = value['audience']
@@ -77,6 +83,7 @@ def main():
     parser.add_argument('--publisher', type=Path, required=True, help='Existing installed Home publisher home.py')
     parser.add_argument('--binding', type=Path, required=True)
     parser.add_argument('--request', type=Path, required=True)
+    parser.add_argument('--inspect', action='store_true', help='Observe the fixed receiver without applying a package')
     args = parser.parse_args()
     def expired(*_):
         raise TimeoutError('service_publication_deadline')
@@ -90,9 +97,9 @@ def main():
         publisher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(publisher)
         value = json.loads(regular(args.request, uid=os.geteuid(), limit=65536))
-        result = publish(publisher, publisher.read_binding(args.binding), value)
+        result = publish(publisher, publisher.read_binding(args.binding), value, inspect=args.inspect)
         print(json.dumps(result))
-        if result['state'] != 'complete':
+        if result['state'] != ('ready' if args.inspect else 'complete'):
             raise SystemExit(2)
     except (ValueError, KeyError, OSError, TimeoutError):
         # Do not print credential-bearing HTTP exceptions or provider output.

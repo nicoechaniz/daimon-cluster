@@ -7,6 +7,7 @@ maintained installer; no command from a source archive is executed.
 from __future__ import annotations
 
 import json
+import copy
 import hashlib
 import inspect
 import math
@@ -30,13 +31,15 @@ def sha(value: object) -> bool:
 
 
 RUNTIME_SELECTION_KEYS = frozenset({'runtime_code', 'runtime_digest', 'runtime_by_name'})
+WARM_SELECTION_KEYS = RUNTIME_SELECTION_KEYS | {'conversation_bundle_default'}
 
 
 class CurrentHostConfig:
     """Refresh verified runtime selectors without moving a warm worker's roots.
 
     Exact changed configuration is fully validated once. Runtime selection may
-    advance; jobs/grants/account/admission/Telegram directories, home placements
+    advance, including the immutable App default for future jobs;
+    jobs/grants/account/admission/Telegram directories, home placements
     and other process configuration require their separate explicit lifecycle.
     """
     def __init__(self, path: Path):
@@ -45,7 +48,7 @@ class CurrentHostConfig:
         self._config = HostConfig.load(path, expected_value=self._value)
         if being_seed._read(path) != self._value:
             raise OnboardingError('onboarding_worker_configuration_changed')
-        self._fixed = {key: value for key, value in self._value.items() if key not in RUNTIME_SELECTION_KEYS}
+        self._fixed = {key: value for key, value in self._value.items() if key not in WARM_SELECTION_KEYS}
         self._lock = threading.Lock()
 
     def current(self) -> HostConfig:
@@ -56,7 +59,7 @@ class CurrentHostConfig:
         value = being_seed._read(self.path)
         if value == self._value:
             return self._config
-        if {key: item for key, item in value.items() if key not in RUNTIME_SELECTION_KEYS} != self._fixed:
+        if {key: item for key, item in value.items() if key not in WARM_SELECTION_KEYS} != self._fixed:
             raise OnboardingError('onboarding_worker_configuration_restart_required')
         candidate = HostConfig.load(self.path, expected_value=value)
         if being_seed._read(self.path) != value:
@@ -103,6 +106,9 @@ class HostConfig:
     conversation_by_name: dict[str, tuple[Path, str]] | None = None
     conversation_proxy_by_name: dict[str, dict] | None = None
     instance_type: str = 'container'
+    conversation_bundle_by_name: dict[str, tuple[Path, str]] | None = None
+    conversation_bundle_default: tuple[Path, str] | None = None
+    conversation_settings_by_name: dict[str, dict] | None = None
 
     @classmethod
     def load(cls, path: Path, *, expected_value: dict | None = None) -> HostConfig:
@@ -113,7 +119,7 @@ class HostConfig:
         custody_keys = {"custody", "custody_grants"}
         runtime_keys = {"runtime_code", "runtime_digest"}
         telegram_keys = {"telegram_code", "telegram_digest"}
-        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name", "conversation_proxy_by_name", "instance_type"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
+        if (set(value) - consent_keys - custody_keys - runtime_keys - telegram_keys - {"qualification", "admission", "accounts", "intake_policy", "custody_policy", "ssh_ingress", "owner_approval_policy", "peer", "runtime_by_name", "browser_artifact", "native_by_name", "group_admission", "cold_pool", "conversation_by_name", "conversation_proxy_by_name", "conversation_bundle_by_name", "conversation_bundle_default", "conversation_settings_by_name", "instance_type"} != {"schema", "jobs", "grants", "progress", "native_image", "browser_image",
                            "release_digest", "pool", "profile", "concurrency", "inputs", "code", "views"}
                 or value.get("schema") != "cluster-onboarding-host/v1"
                 or any(not sha(value[key]) for key in ("native_image", "browser_image", "release_digest"))
@@ -125,7 +131,7 @@ class HostConfig:
             raise OnboardingError("invalid_onboarding_host_configuration")
         cold_pool = value.get('cold_pool')
         if cold_pool is not None and (not isinstance(cold_pool, str)
-                or not being_seed.NAME.fullmatch(cold_pool) or cold_pool == value['pool']):
+                or not being_seed.NAME.fullmatch(cold_pool)):
             raise OnboardingError('invalid_onboarding_host_configuration')
         directories = {}
         for key in ("jobs", "grants", "inputs", "views"):
@@ -308,25 +314,48 @@ class HostConfig:
                 if request['name'] != name or digest(request) != row['request_digest']:
                     raise OnboardingError('conversation_selection_changed')
                 conversation_by_name[name] = (Path(row['request']), row['request_digest'])
+        conversation_settings_by_name = None
+        if 'conversation_settings_by_name' in value:
+            from .onboarding_conversation import prepare_intent
+            selected = value['conversation_settings_by_name']
+            if (not isinstance(selected, dict) or not 1 <= len(selected) <= 64
+                    or any(not isinstance(name, str) or not being_seed.NAME.fullmatch(name)
+                           for name in selected)):
+                raise OnboardingError('conversation_selection_required')
+            for name, settings in selected.items():
+                prepare_intent(name, '0'*64, settings)
+            conversation_settings_by_name = copy.deepcopy(selected)
+        conversation_names = set(conversation_by_name or {}) | set(conversation_settings_by_name or {})
         conversation_proxy_by_name = None
         if 'conversation_proxy_by_name' in value:
             from .onboarding_conversation_proxy import configuration as proxy_configuration
             conversation_proxy_by_name = proxy_configuration(value['conversation_proxy_by_name'])
-            if conversation_by_name is None or set(conversation_proxy_by_name) - set(conversation_by_name):
+            if set(conversation_proxy_by_name) - conversation_names:
                 raise OnboardingError('conversation_proxy_configuration_required')
             for name, listener in conversation_proxy_by_name.items():
                 vm = listener.get('vm')
                 if (vm is not None) != (value.get('instance_type', 'container') == 'virtual-machine'):
                     raise OnboardingError('conversation_proxy_placement_unsupported')
                 if vm is not None:
-                    request = document(conversation_by_name[name][0])
+                    request = (document(conversation_by_name[name][0]) if conversation_by_name and name in conversation_by_name
+                        else prepare_intent(name, '0'*64, (conversation_settings_by_name or {})[name]))
                     if request.get('listen_host') != vm['address']:
                         raise OnboardingError('conversation_proxy_vm_network_required')
+        conversation_bundle_by_name = None
+        if 'conversation_bundle_by_name' in value:
+            from .onboarding_conversation_bundle import configuration as bundle_configuration
+            conversation_bundle_by_name = bundle_configuration(value['conversation_bundle_by_name'])
+            if set(conversation_bundle_by_name) - conversation_names:
+                raise OnboardingError('conversation_bundle_selection_required')
+        conversation_bundle_default = None
+        if 'conversation_bundle_default' in value:
+            from .onboarding_conversation_bundle import configuration as bundle_configuration
+            conversation_bundle_default = bundle_configuration({'default': value['conversation_bundle_default']})['default']
         return cls(directories["jobs"], directories["grants"], value["native_image"],
                    value["browser_image"], value["release_digest"], value["pool"],
                    value["profile"], value["concurrency"], progress, directories["inputs"], code, directories["views"],
                    consent_state, consent_uid, value.get("qualification", False), custody, custody_grants, admission, accounts, intake_policy, custody_policy, ssh_ingress, owner_approval_policy, runtime_code, runtime_digest, peer, runtime_by_name, telegram_code, telegram_digest, browser_artifact, native_by_name, group_admission, cold_pool, conversation_by_name, conversation_proxy_by_name,
-                   value.get("instance_type", "container"))
+                   value.get("instance_type", "container"), conversation_bundle_by_name, conversation_bundle_default, conversation_settings_by_name)
 
     def approved_plans(self) -> list[dict]:
         if self.intake_policy is not None:
@@ -347,13 +376,30 @@ class HostConfig:
         return plans
 
 
+VM_OWNER_CLOCK = r"""import json,os,sys,time
+value=json.loads(sys.argv[1]);argv=value['argv']
+remaining=min(value['remaining_seconds'],value['expires_at_ms']/1000-time.time())
+if remaining<=0:raise SystemExit('receiving_host_deadline_expired')
+deadline=str(time.monotonic_ns()+int(min(remaining,60)*1e9))
+if argv.count('--observation-deadline-ns')==1 and '--deadline-ns' not in argv and '--time-namespace' not in argv:
+ argv[argv.index('--observation-deadline-ns')+1]=deadline
+elif '--observation-deadline-ns' not in argv and argv.count('--deadline-ns')==1 and argv.count('--time-namespace')==1:
+ argv[argv.index('--deadline-ns')+1]=deadline
+ argv[argv.index('--time-namespace')+1]=os.readlink('/proc/self/ns/time')
+else:raise SystemExit('receiving_owner_deadline_binding_required')
+os.execvpe(argv[0],argv,os.environ)
+"""
+
+
 class HostBackend:
     def __init__(self, config: HostConfig, *, run: Callable | None = None, input_cache=None,
-                 custody_run: Callable | None = None, home_access: Callable | None = None):
+                 custody_run: Callable | None = None, home_access: Callable | None = None,
+                 home_pairing: Callable | None = None):
         self.config = config
         self.run = run or self._run
         self.custody_run = custody_run
         self.home_access = home_access
+        self.home_pairing = home_pairing
         self.input_cache = input_cache if input_cache is not None else onboarding_input.VerificationCache()
 
     def native_body(self, plan: dict):
@@ -367,11 +413,33 @@ class HostBackend:
         """Resolve verified code placement without changing the service profile."""
         body = self.native_body(plan)
         physical = getattr(self.run, 'body_for', None)
-        return physical(plan) if body is None and physical is not None else body
+        if body is None and physical is not None:
+            return physical(plan)
+        if body is None and self.config.instance_type == 'virtual-machine':
+            from .vm_body import admitted_local_runtime_body
+            return admitted_local_runtime_body(self, plan)
+        return body
 
     def body_python(self, plan: dict) -> Path:
         native = self.native_body(plan)
         return native.python if native is not None else Path('/usr/bin/python3')
+
+    def owner_clock_argv(self, argv: list[str], *, deadline_ns: int | None,
+                         owner_clock: bool = False) -> list[str]:
+        if self.config.instance_type == 'virtual-machine' and (
+                owner_clock or '--observation-deadline-ns' in argv):
+            # A cold KVM has a different kernel clock from its Incus host.
+            # Rebase the closed owner-control flags within the original wall
+            # expiry, as the existing native/remote VM transport already does.
+            if deadline_ns is None:
+                raise OnboardingError('receiving_host_deadline_required')
+            remaining = (deadline_ns-time.monotonic_ns())/1_000_000_000
+            if remaining <= 0:
+                raise OnboardingError('receiving_host_deadline_expired')
+            request = dict(argv=argv,remaining_seconds=min(60,remaining),
+                expires_at_ms=time.time_ns()//1_000_000+int(min(60,remaining)*1000))
+            argv = ['/usr/bin/python3','-B','-I','-c',VM_OWNER_CLOCK,json.dumps(request)]
+        return argv
 
     def execute_body(self, plan: dict, argv: list[str], *, uid: int = 1000, gid: int = 1000,
                      home: bool = False, input_data: str | None = None,
@@ -386,6 +454,7 @@ class HostBackend:
                 env={'HOME': '/home/agent'} if home else None, input_data=input_data,
                 timeout_seconds=60 if timeout_seconds is None else timeout_seconds,
                 deadline_ns=deadline_ns, owner_clock=owner_clock or '--observation-deadline-ns' in argv)
+        argv = self.owner_clock_argv(argv, deadline_ns=deadline_ns, owner_clock=owner_clock)
         command = ['exec', self.instance(plan), '--user', str(uid), '--group', str(gid),
                    *(['--env', 'HOME=/home/agent'] if home else []), '--', *argv]
         return self._dispatch(plan, command, input_data=input_data,
@@ -403,6 +472,15 @@ class HostBackend:
             if prepare:
                 return native.prepare_code(candidate[0], candidate[1], deadline_ns=deadline_ns) == code
             return native.code_available(code, candidate[1], deadline_ns=deadline_ns)
+        if prepare and not self._mounted(plan, mounts, deadline_ns=deadline_ns):
+            if not self.authorize(plan, digest(plan)):
+                raise OnboardingError('host_authorization_required')
+            for name, mount in mounts.items():
+                if not self._mounted(plan, {name:mount}, deadline_ns=deadline_ns):
+                    self._dispatch(plan, ['config','device','add',self.instance(plan),name,'disk',
+                        *[key+'='+value for key,value in mount.items() if key!='type']],
+                        deadline_ns=deadline_ns)
+            self._wait_guest_mounts(plan,mounts)
         return self._mounted(plan, mounts, deadline_ns=deadline_ns)
     def advance_group_admission(self, name: str) -> dict | None:
         if self.config.group_admission is None:
@@ -600,6 +678,7 @@ class HostBackend:
         if self.config.instance_type not in ('container', 'virtual-machine'):
             raise OnboardingError('invalid_onboarding_host_configuration')
         resources = plan.get('resources', {'root_gib': 8, 'home_gib': 22})
+        self._conversation_bundle_mount(plan)
         if self.config.instance_type == 'virtual-machine':
             # A pinned local VM image reuses Incus creation. Verify its actual
             # metadata before any environment mutation, including volume creation.
@@ -691,14 +770,10 @@ class HostBackend:
                if self.config.instance_type == 'virtual-machine' else {})})
 
     def _conversation_request(self, plan: dict) -> dict | None:
-        from .onboarding_conversation import resolve_request
-        selected = (self.config.conversation_by_name or {}).get(plan['name'])
-        if selected is None:
+        from .onboarding_conversation import host_request, resolve_request
+        value = host_request(self.config, plan)
+        if value is None:
             return None
-        value = document(selected[0])
-        if (digest(value) != selected[1] or value.get('name') != plan['name']
-                or value.get('plan_digest') != digest(plan)):
-            raise OnboardingError('conversation_selection_changed')
         identity = self._ceremony(plan).admission_coordinates(plan)
         return resolve_request(value, identity['being_ref'])
 
@@ -746,10 +821,15 @@ class HostBackend:
             engine = self._telegram_command(plan, 'native-observe').get('native_state')
         if engine != 'active':
             return Observation('waiting', reason='backend_unavailable')
+        supplied = request
+        input_flag = '--request-stdin'
+        if self.home_pairing is not None:
+            supplied = dict(request=request, pairing=self.home_pairing(plan, request))
+            input_flag = '--paired-request-stdin'
         result = json.loads(self.execute_body(plan, [str(self.body_python(plan)),
-            str(code / 'clusterctl/onboarding_conversation.py'), '--request-stdin',
+            str(code / 'clusterctl/onboarding_conversation.py'), input_flag,
             '--timeout-seconds', '55', *(['--apply'] if apply else [])],
-            uid=0, gid=0, input_data=json.dumps(request), timeout_seconds=60))
+            uid=0, gid=0, input_data=json.dumps(supplied), timeout_seconds=60))
         if (result.get('schema') == 'cluster-conversation-observation/v1'
                 and result.get('state') == 'absent' and result.get('safe_to_execute') is True):
             return Observation('absent', safe_to_execute=True)
@@ -758,7 +838,7 @@ class HostBackend:
                 or any(result.get(key) is not True for key in
                     ('native_control', 'web_health', 'anonymous_private_api_denied'))):
             return Observation('waiting', reason='verification_failed')
-        return Observation('complete', {'conversation_ready': True})
+        return Observation('complete', {'verified': True, 'conversation_ready': True})
 
     def _identity(self, plan: dict, *, apply: bool) -> Observation:
         """Install this body's signed identity without starting social services.
@@ -801,7 +881,7 @@ class HostBackend:
         # These coordinates are native signature-verified, not names supplied
         # by a plan or a portal. No runtime/membership/visibility claim follows.
         ceremony.admission_coordinates(plan)
-        return Observation('complete', {'identity_verified': True})
+        return Observation('complete', {'verified': True, 'identity_verified': True})
 
     def _companion_matrix(self, plan: dict, *, apply: bool) -> Observation:
         """Compose existing native admission and signed membership separately.
@@ -835,7 +915,7 @@ class HostBackend:
         membership = GroupCoordinator(self).observe_membership(plan)
         if membership.state != 'complete':
             return membership
-        return Observation('complete', dict(identity_verified=True,
+        return Observation('complete', dict(verified=True, identity_verified=True,
             native_running_verified=True, tribe_membership_verified=True))
 
     def _companion_acceptance(self, plan: dict, *, apply: bool) -> Observation:
@@ -1228,10 +1308,11 @@ class HostBackend:
         _, code, mounts = self._guest_paths(plan)
         if not self._mounted(plan, mounts):
             raise OnboardingError('qualified_guest_environment_required')
+        import_code = self._runtime_paths(plan, code)[0] if plan['schema'] == CONVERSATION_PLAN_SCHEMA else code
         launcher = ('import sys; sys.path.insert(0,sys.argv.pop(1)); '
                     'from clusterctl.onboarding_ssh import main; raise SystemExit(main())')
         value = json.loads(self._dispatch(plan, ['exec', self.instance(plan), '--',
-            'python3', '-B', '-I', '-c', launcher, str(code), action, '--code', str(code),
+            'python3', '-B', '-I', '-c', launcher, str(import_code), action, '--code', str(code),
             '--plan', '/home/agent/.onboarding-input/plan.json', '--public-key', key]))
         if (not isinstance(value, dict) or type(value.get('installed')) is not bool
                 or value.get('plan_digest') != digest(plan) or value.get('port') != 2222):
@@ -1307,7 +1388,7 @@ class HostBackend:
         code = Path('/opt/daimon-onboarding-telegram') / fingerprint
         mount = dict(type='disk', source=str(self.config.telegram_code), path=str(code), readonly='true', shift='true')
         return code, ['--runtime-code', str(code), '--runtime-digest', fingerprint], {
-            'telegram-' + fingerprint[:54]: mount}
+            self._code_mount_name('telegram', fingerprint): mount}
 
     def _attach_telegram(self, plan: dict, *, deadline_ns: int | None = None) -> None:
         budget: dict = {} if deadline_ns is None else {'deadline_ns': deadline_ns}
@@ -1389,6 +1470,16 @@ class HostBackend:
         from .onboarding_approvals import decision
         return decision(self.config, proposal)
 
+    def _conversation_bundle_mount(self, plan: dict) -> dict:
+        from .onboarding_conversation_bundle import verify, selected_bundle
+        selected = selected_bundle(self.config, plan)
+        if selected is None:
+            return {}
+        root, fingerprint = selected
+        verify(root, fingerprint, uid=os.geteuid())
+        return {'onboarding-app': dict(type='disk', source=str(root),
+            path='/opt/daimon-app', readonly='true', shift='true')}
+
     def _guest_paths(self, plan: dict) -> tuple[Path, Path, dict]:
         if self.config.code is None or self.config.inputs is None or self.config.views is None:
             raise OnboardingError("receiving_code_configuration_required")
@@ -1404,6 +1495,7 @@ class HostBackend:
         if manifest.get('seed_mode') == 'new':
             _, _, runtime_mounts = self._runtime_paths(plan, guest_code)
             mounts.update(runtime_mounts)
+        mounts.update(self._conversation_bundle_mount(plan))
         return source, guest_code, mounts
 
     def _receiving_base(self, plan: dict) -> Path:
@@ -1423,6 +1515,17 @@ class HostBackend:
         selected = (self.config.runtime_by_name or {}).get(plan['name'])
         return selected if selected is not None else (self.config.runtime_code, self.config.runtime_digest)
 
+    def _code_mount_name(self, prefix: str, fingerprint: str) -> str:
+        # Incus uses this name in the VM virtiofs UNIX socket path. The legacy
+        # 63-byte container device name exceeds sockaddr_un even for dm-emma.
+        # Full source/path/digest checks still establish authority; this short
+        # name is only presentation and a conflicting device remains refused.
+        # QEMU also prefixes the device name with "incus_" as its virtiofs
+        # mount tag. Cold boot enforces that tag's 31-byte limit, even when
+        # adding the same device to a running VM succeeded.
+        length = 25-len(prefix)-1 if self.config.instance_type == 'virtual-machine' else 62-len(prefix)
+        return prefix + '-' + fingerprint[:length]
+
     def _runtime_paths(self, plan: dict, base: Path, *,
                        candidate: tuple[Path, str] | None = None) -> tuple[Path, list[str], dict]:
         """Context stays frozen; each body may retain its qualified generation."""
@@ -1438,7 +1541,7 @@ class HostBackend:
             return code, ['--runtime-code', str(code), '--runtime-digest', runtime_digest], {}
         mount = dict(type='disk', source=str(runtime_code), path=str(code), readonly='true', shift='true')
         return code, ['--runtime-code', str(code), '--runtime-digest', runtime_digest], {
-            'runtime-' + runtime_digest[:55]: mount}
+            self._code_mount_name('runtime', runtime_digest): mount}
 
     def _mounted(self, plan: dict, mounts: dict, *, deadline_ns: int | None = None) -> bool:
         if self.native_body(plan) is not None:
@@ -1506,8 +1609,10 @@ class HostBackend:
             instances, _ = self._inventory()
             row = next(row for row in instances if row.get("name") == self.instance(plan))
             # Code first: its typed bootstrap owns just the new empty home.
-            for name in ('onboarding-code', *[key for key in mounts if key.startswith('runtime-')], 'onboarding-input'):
+            for name in ('onboarding-code', *[key for key in mounts if key.startswith('runtime-')], *(['onboarding-app'] if 'onboarding-app' in mounts else []), 'onboarding-input'):
                 if name == "onboarding-input":
+                    self._wait_guest_mounts(plan, {key: value for key, value in mounts.items()
+                        if key != 'onboarding-input'})
                     launcher = ("import sys; sys.path.insert(0, sys.argv[1]); "
                                 "from clusterctl.onboarding_mounts import bootstrap_home; "
                                 + ("bootstrap_home(cold_storage=True)" if plan.get("resources") else "bootstrap_home()"))
@@ -1520,6 +1625,7 @@ class HostBackend:
                     device = mounts[name]
                     self._dispatch(plan, ["config", "device", "add", self.instance(plan), name, "disk",
                         *[key + "=" + value for key, value in device.items() if key != "type"]])
+            self._wait_guest_mounts(plan, mounts)
             # Reconcile torn copies without replacing the frozen receiving SDK
             # or context, and never touch an already activated receiving body.
             from .onboarding_guest import reconcile_context_copy
@@ -1530,7 +1636,37 @@ class HostBackend:
                 '--group', '1000', '--', 'python3', '-B', '-I', '-c', program, json.dumps(plan)]))
             if set(result) != {'recovered'} or type(result['recovered']) is not int or result['recovered'] < 0:
                 raise OnboardingError('invalid_onboarding_observation')
+        if stage == 'context' and self.config.conversation_bundle_by_name and plan['name'] in self.config.conversation_bundle_by_name:
+            code = self._runtime_paths(plan, guest_code)[0]
+            fingerprint = self.config.conversation_bundle_by_name[plan['name']][1]
+            launcher = ('import sys; sys.path.insert(0, sys.argv[1]); '
+                'from clusterctl.onboarding_conversation_bundle import bootstrap_codex; '
+                'bootstrap_codex(sys.argv[2], prepare_dependencies=True, '
+                'state_plan=(sys.argv[3],sys.argv[4]) if sys.argv[5]=="vm" else None)')
+            self._dispatch(plan, ['exec', self.instance(plan), '--', 'python3', '-B', '-I',
+                '-c', launcher, str(code), fingerprint, digest(plan), plan['name'],
+                'vm' if self.config.instance_type == 'virtual-machine' else 'container'])
         self._guest_command(plan, "execute", stage, guest_code)
+
+    def _wait_guest_mounts(self, plan: dict, mounts: dict) -> None:
+        """VM hotplug acknowledgement precedes the agent's actual disk mount."""
+        if self.config.instance_type != 'virtual-machine' or not mounts:
+            return
+        paths = sorted({device['path'] for device in mounts.values()})
+        program = '''import json,sys,time
+paths=set(json.loads(sys.argv[1]));end=time.monotonic()+30
+while True:
+ observed={line.split()[4] for line in open('/proc/self/mountinfo')}
+ if paths <= observed:
+  print(json.dumps({'ready':True}));break
+ if time.monotonic()>=end:
+  print(json.dumps({'ready':False}));break
+ time.sleep(.05)
+'''
+        raw = self._dispatch(plan, ['exec', self.instance(plan), '--', 'python3',
+            '-B', '-I', '-c', program, json.dumps(paths)], timeout_seconds=35)
+        if json.loads(raw) != {'ready': True}:
+            raise OnboardingError('onboarding_vm_mount_unavailable')
 
     def _ceremony(self, plan: dict):
         decision = self._decision(plan)
@@ -1601,6 +1737,7 @@ class HostBackend:
         if native is not None:
             return native.relationship_conversation(command, packet,
                 deadline_ns=deadline, validate=authorized)
+        command = self.owner_clock_argv(command, deadline_ns=deadline)
         return OwnerConversation(['incus', 'exec', self.instance(plan), '--user', '1000', '--group', '1000',
             '--env', 'HOME=/home/agent', '--', *command], packet, deadline_ns=deadline,
             validate=authorized, env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'})
@@ -1710,7 +1847,7 @@ class HostBackend:
         elif control_file is not None or control_command is not None or control_value is not None:
             raise OnboardingError('invalid_receiving_control_request')
         if observation_timeout_seconds is not None:
-            if (action not in {'observe', 'sdk-observe', 'sdk-prepare', 'visibility-migrate', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
+            if (action not in {'observe', 'sdk-observe', 'sdk-prepare', 'visibility-migrate', 'closed-catalogs-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
                     or not math.isfinite(observation_timeout_seconds)
                     or not 0 < observation_timeout_seconds <= (300 if action in {'visibility-migrate', 'sdk-prepare'} else 60)):
                 raise OnboardingError('receiving_host_deadline_required')
@@ -1735,7 +1872,7 @@ class HostBackend:
         runtime_code, runtime_args, mounts = (self._runtime_paths(plan, guest_code) if candidate is None
             else self._runtime_paths(plan, guest_code, candidate=candidate))
         if candidate is not None:
-            if (action not in {'sdk-observe', 'sdk-prepare', 'visibility-migrate', 'observe', 'running', 'admitted-running',
+            if (action not in {'sdk-observe', 'sdk-prepare', 'visibility-migrate', 'closed-catalogs-prepare', 'observe', 'running', 'admitted-running',
                     'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'receiving-bootstrap-freeze',
                     'receiving-bootstrap-stage', 'receiving-bootstrap-publish', 'receiving-identity', 'group-relationship', 'group-publication', 'group-resource', 'group-session',
                     'admission-prepare', 'admission-check', 'admission-enroll'}

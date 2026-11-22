@@ -1,5 +1,6 @@
 """Committed-identity hook and exact reload recovery; no guest/model starts."""
 import os
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,31 @@ from clusterctl.onboarding_homes import configure
 from clusterctl.onboarding_progress import Progress
 from tests.test_onboarding import FixtureBackend, plan
 from tests.test_onboarding_conversation import request
+
+
+def test_gateway_helper_uses_exact_current_sdk_tree_and_refuses_mutation(tmp_path):
+    from clusterctl.onboarding_companion_homes import gateway_imports
+    parent = tmp_path/'sdk'
+    parent.mkdir(mode=0o700)
+    root = parent/'runtime-imports'
+    root.mkdir(mode=0o700)
+    module = root/'selected_sdk.py'
+    module.write_bytes(b'CURRENT_SCHEMA = True\n')
+    module.chmod(0o600)
+    hashes = {'selected_sdk.py': hashlib.sha256(module.read_bytes()).hexdigest()}
+    selection = {'path': str(root), 'sdk_digest': 'a'*64, 'files_sha256': digest(hashes)}
+    being_seed._write(parent/'runtime-imports.json', {
+        'schema':'cluster-onboarding-runtime-imports/v1',
+        'sdk_digest':selection['sdk_digest'], 'files_sha256':selection['files_sha256']})
+    assert gateway_imports(selection) == root
+    module.write_bytes(b'CURRENT_SCHEMA = False\n')
+    with pytest.raises(OnboardingError, match='companion_gateway_imports_changed'):
+        gateway_imports(selection)
+    module.write_bytes(b'CURRENT_SCHEMA = True\n')
+    extra = root/'unselected.py'
+    extra.write_bytes(b'not a selected dependency')
+    with pytest.raises(OnboardingError, match='companion_gateway_imports_changed'):
+        gateway_imports(selection)
 
 
 def assembled(tmp_path):
@@ -202,6 +228,141 @@ def test_busy_route_maintenance_does_not_block_independent_native_job_progress(t
     assert being_seed._read(homes.state/'eko.json')['phase']=='configured'
 
 
+def test_finite_full_conversation_resumes_same_body_and_home_after_wait(tmp_path):
+    """Real job/Home journals span every stage; substrate effects are fixtures."""
+    import time
+    from dataclasses import replace
+    from clusterctl.onboarding import CONVERSATION_STAGES, Observation
+    from clusterctl.onboarding_worker import Worker
+    homes,store,backend,progress,plan,_,calls,state,_=assembled(tmp_path)
+    state['ready']=True
+    original=backend.observe
+    waiting={'enabled':True}
+    def observe(selected,stage,operation):
+        if stage=='conversation' and waiting['enabled']:
+            return Observation('waiting',reason='connection_data_required')
+        result=original(selected,stage,operation)
+        if result.state=='complete' and stage in {'access','acceptance'}:
+            facts=dict(result.facts,provider_configured=True)
+            if stage=='acceptance':
+                assert being_seed._read(homes.state/'eko.json')['phase']=='complete'
+                facts.update(conversation_verified=True,shared_login_verified=True,
+                    native_running_verified=True,tribe_membership_verified=True)
+            return replace(result,facts=facts)
+        return result
+    backend.observe=observe
+    entry={'url':'https://fixture.example.org/interaction/?view=conversation&client=standalone'}
+    backend.companion_entry=lambda _plan:entry
+    worker=Worker(store,lambda:backend,publish=progress.publish,homes=homes)
+    status,result=worker.until(plan['name'],deadline=time.monotonic()+3)
+    assert status==2 and result['stage']=='conversation'
+    before=store._load(plan['name'])
+    environment=before['steps']['environment'].copy()
+    waiting['enabled']=False
+    status,result=worker.until(plan['name'],deadline=time.monotonic()+3)
+    assert status==0 and result['entry']==entry
+    assert result['completed_steps']==list(CONVERSATION_STAGES)
+    assert store._load(plan['name'])['steps']['environment']==environment
+    assert [stage for _,stage,_ in backend.calls]==list(CONVERSATION_STAGES)
+    assert calls.count('register')==1
+    journal=(store.directory(plan['name'])/'job.json').read_bytes()
+    effects=list(backend.calls)
+    assert worker.until(plan['name'],deadline=time.monotonic()+3)[0]==0
+    assert (store.directory(plan['name'])/'job.json').read_bytes()==journal
+    assert backend.calls==effects
+
+
+def test_new_foreground_refuses_missing_home_before_job_or_substrate(tmp_path,monkeypatch,capsys):
+    from clusterctl import onboarding_host,onboarding_worker
+    from tests.test_onboarding import FixtureBackend
+    backend=FixtureBackend()
+    value=plan(browser=False)
+    value['schema']=CONVERSATION_PLAN_SCHEMA
+    grants=tmp_path/'grants'
+    grants.mkdir(mode=0o700)
+    being_seed._write(grants/(value['name']+'.json'),{'plan':value})
+    config=SimpleNamespace(jobs=tmp_path/'jobs',grants=grants,progress=tmp_path/'progress')
+    monkeypatch.setattr(onboarding_host,'CurrentHostConfig',lambda _:SimpleNamespace(current=lambda:config))
+    monkeypatch.setattr(onboarding_host,'HostBackend',lambda _:backend)
+    assert onboarding_worker.main(['--config',str(tmp_path/'owner.json'),'--until',value['name']])==1
+    import json
+    output=json.loads(capsys.readouterr().out)
+    assert output['diagnostic']['code']=='companion_home_configuration_required'
+    assert not config.jobs.exists() and backend.calls==[]
+
+
+def test_new_foreground_refuses_missing_conversation_before_job_or_substrate(tmp_path, monkeypatch, capsys):
+    import json
+    from clusterctl import onboarding_host, onboarding_worker
+    backend = FixtureBackend()
+    value = plan(browser=False)
+    value['schema'] = CONVERSATION_PLAN_SCHEMA
+    grants = tmp_path/'grants'
+    grants.mkdir(mode=0o700)
+    being_seed._write(grants/(value['name']+'.json'), {'plan': value})
+    config = SimpleNamespace(jobs=tmp_path/'jobs', grants=grants, progress=tmp_path/'progress')
+    monkeypatch.setattr(onboarding_host, 'CurrentHostConfig',
+        lambda _: SimpleNamespace(current=lambda: config))
+    monkeypatch.setattr(onboarding_host, 'HostBackend', lambda _: backend)
+    # Home preparation is already satisfied. Missing pair/runtime input must
+    # still refuse before freezing a job or asking the substrate to allocate.
+    monkeypatch.setattr(onboarding_worker, 'prepare_companion_homes', lambda *args: None)
+    monkeypatch.setattr(onboarding_worker, 'supervise',
+        lambda *args, **kwargs: pytest.fail('Missing Conversation must not launch a worker'))
+    assert onboarding_worker.main(['--config', str(tmp_path/'owner.json'),
+        '--until', value['name']]) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output['diagnostic']['code'] == 'conversation_selection_required'
+    assert not config.jobs.exists() and backend.calls == []
+
+
+def test_foreground_home_preparation_preserves_exact_pair(tmp_path):
+    from clusterctl.onboarding_worker import prepare_companion_homes
+    homes,store,backend,progress,selected,_,calls,_,file=assembled(tmp_path)
+    config=SimpleNamespace(progress=progress.root)
+    prepare_companion_homes(config,selected,store,file)
+    assert calls==[] and backend.calls==[]
+    changed=being_seed._read(file)
+    changed['pairs'][selected['name']]['owner']='different-owner'
+    being_seed._write(file,changed)
+    with pytest.raises(OnboardingError,match='companion_home_configuration_required'):
+        prepare_companion_homes(config,selected,store,file)
+    assert calls==[] and backend.calls==[]
+
+
+def test_new_owner_denial_reloads_only_exact_config_newer_than_process(tmp_path):
+    homes,store,backend,progress,_,_,_,state,file = assembled(tmp_path)
+    ready = committed(store,backend,progress)
+    config = tmp_path/'config'
+    config.write_bytes(b'new exact gateway selection')
+    checksum = hashlib.sha256(config.read_bytes()).hexdigest()
+    original = homes._gateway
+    def gateway(action, request, **options):
+        if action == 'register':
+            return {**original(action,request,**options), 'config_digest':checksum}
+        return {'state':'unavailable'}
+    homes._gateway = gateway
+    homes._unit = lambda:dict(ActiveState='active', MainPID='42',
+        process_start_epoch_ns=1, config_mtime_ns=2)
+    reloads=[]
+    homes._reload=lambda:reloads.append('exact-new-config')
+    assert homes(ready)['state']=='waiting'
+    assert homes(ready)['state']=='waiting'
+    assert reloads==['exact-new-config']
+    assert being_seed._read(homes.state/'eko.json')['phase']=='reload-intent'
+
+
+def test_live_owner_denial_is_not_treated_as_missing_configuration(tmp_path):
+    homes,store,backend,progress,_,_,_,_,_=assembled(tmp_path)
+    ready=committed(store,backend,progress)
+    original=homes._gateway
+    homes._gateway=lambda action,request,**kw: original(action,request,**kw) if action=='register' else {'state':'unavailable'}
+    homes._unit=lambda:dict(ActiveState='active', MainPID='42',
+        process_start_epoch_ns=3, config_mtime_ns=2)
+    homes._reload=lambda:pytest.fail('Live denial cannot trigger restart')
+    assert homes(ready)['state']=='waiting'
+
+
 def test_gateway_probe_requires_loaded_conversation_route(tmp_path):
     """A matching pair alone must not finish delivery; exercise the real probe."""
     import json
@@ -215,8 +376,8 @@ def test_gateway_probe_requires_loaded_conversation_route(tmp_path):
 
     config = configuration(tmp_path)
     home = config['homes']['one']
-    observed = dict(human={'ref':'human-one'}, owner_being_ref=home['owner_being_ref'],
-                    applications=[])
+    observed = dict(schema='dm.human-endpoint/v1', home_ref='one',
+                    human={'ref':'human-one'}, owner_being_ref=home['owner_being_ref'], applications=[])
 
     class Owner(BaseHTTPRequestHandler):
         def do_POST(self):
@@ -250,6 +411,9 @@ def test_gateway_probe_requires_loaded_conversation_route(tmp_path):
             return json.loads(result.stdout)
 
         assert probe() == {'state':'not-loaded'}
+        payload['action'] = 'pairing'
+        assert probe() == {k: observed[k] for k in ('schema', 'home_ref', 'owner_being_ref', 'human')}
+        payload['action'] = 'probe'
         observed['applications'] = [dict(capability='interaction',
             url=home['public_url']+'/other/', state='configured')]
         assert probe() == {'state':'not-loaded'}
@@ -270,15 +434,23 @@ def test_home_route_uses_actual_gateway_receivers(tmp_path, monkeypatch, selecto
     from clusterctl.onboarding_companion_homes import CompanionHomes
 
     config = tmp_path/'gateway.json'
+    config.write_text('{}')
     receivers = tmp_path/'receivers.json'
     args = ['--config', str(config)]
     if selector != 'missing':
         args += ['--miniapp-receivers', 'relative.json' if selector == 'relative' else str(receivers)]
     if selector == 'duplicate':
         args += ['--miniapp-receivers', str(tmp_path/'other.json')]
-    # A real process cmdline, with no service changes or receiver impersonation.
-    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)', *args])
+    # Wait for the child to enter Python before inspecting its command line.
+    import select
+    child = subprocess.Popen(
+        [sys.executable, '-c', 'import time; print("ready", flush=True); time.sleep(30)', *args],
+        stdout=subprocess.PIPE, text=True,
+    )
     try:
+        assert child.stdout is not None
+        readable, _, _ = select.select([child.stdout], [], [], 3)
+        assert readable and child.stdout.readline() == 'ready\n'
         homes = object.__new__(CompanionHomes)
         homes.value = {'gateway': {'config': str(config)}}
         monkeypatch.setattr(subprocess, 'run', lambda *a, **kw: SimpleNamespace(
@@ -292,3 +464,52 @@ def test_home_route_uses_actual_gateway_receivers(tmp_path, monkeypatch, selecto
     finally:
         child.terminate()
         child.wait(timeout=3)
+        if child.stdout is not None:
+            child.stdout.close()
+
+
+@pytest.mark.parametrize("own_human", [True, False])
+def test_selected_native_client_is_inside_home_completion_and_reuses_receipt(tmp_path, monkeypatch, own_human):
+    import json
+    from pathlib import Path
+    from tests.test_home_host import configuration, write
+    from clusterctl.onboarding_homes import IncusProvider
+    homes,store,backend,progress,selected,_,_,state,file = assembled(tmp_path)
+    ready = committed(store,backend,progress)
+    state['ready'] = True
+    request = backend._conversation_request(selected)
+    config_path = tmp_path/'gateway/config.json'
+    config = configuration(config_path.parent)
+    config['homes'][request['home_ref']] = dict(config['homes'].pop('one'),
+        owner_being_ref=request['being_ref'], public_url=request['origin'], name=request['label'])
+    write(config_path,json.dumps(config).encode())
+    value = being_seed._read(file)
+    value['gateway']['config'] = str(config_path)
+    value['native_client'] = dict(provider_file=str(tmp_path/'public-provider.py'),
+        provider_sha256='a'*64,repository=str(tmp_path/'public-source'),skills_commit='b'*40)
+    being_seed._write(file,value)
+    homes = configure(file,progress=progress.root,store=store,backend=lambda:backend,worker_uid=os.getuid())
+    homes._gateway = lambda action,req,**kw: (
+        dict(status='home-configured',home_ref=req['home_ref'],actor=req['being_ref'],human_ref=req['human_ref'])
+        if action=='register' else {'state':'ready','pair_matched':True})
+    calls = []
+    def receive(self, placement):
+        calls.append(placement)
+        assert placement['delivery']['owner_being_ref'] == request['being_ref']
+        declaration = being_seed._read(Path(placement['declaration_file']))
+        assert 'store' not in declaration['binding']
+        return {'state':'complete','human_endpoint':dict(human={'ref':request['human_ref'] if own_human else 'another-human'},
+            applications=[{'capability':'interaction','url':request['origin']+'/interaction/'}])}
+    monkeypatch.setattr(IncusProvider,'_reconcile',receive)
+    if not own_human:
+        with pytest.raises(OnboardingError, match='native_client_receiving_unconfirmed'):
+            homes(ready)
+        retained = being_seed._read(homes.state/(selected['name']+'.json'))
+        assert retained['phase'] != 'complete' and 'native_client' not in retained
+        return
+    assert homes(ready) == {'state':'complete'}
+    assert homes(ready) == {'state':'complete'}
+    assert len(calls) == 1
+    receipt = being_seed._read(homes.state/(selected['name']+'.json'))
+    assert receipt['native_client']['client_verified'] is True
+    assert receipt['native_client']['model_uptake'] is False

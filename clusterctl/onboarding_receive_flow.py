@@ -7,8 +7,10 @@ It never enrolls a member or claims all-current reader selection from a file.
 from __future__ import annotations
 
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 import json
+import os
 from pathlib import Path
 import time
 from urllib.parse import urlsplit
@@ -21,10 +23,275 @@ from .onboarding_receive_keys import parameters, relay
 SCHEMA = 'cluster-companion-receive-preparation/v1'
 
 
+def controller_configuration(value: dict) -> dict:
+    """An explicit existing native update, separate from immutable publication."""
+    import re
+    try:
+        if (set(value) != {'code', 'code_digest', 'manifest_path', 'manifest_digest', 'expires_at_ms', 'host_config'}
+                or any(not isinstance(value[k], str) or not Path(value[k]).is_absolute()
+                    or '..' in Path(value[k]).parts for k in ('code', 'manifest_path', 'host_config'))
+                or any(re.fullmatch('[0-9a-f]{64}', value[k]) is None
+                    for k in ('code_digest', 'manifest_digest'))
+                or type(value['expires_at_ms']) is not int or not 0 < value['expires_at_ms'] < 2**53):
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise OnboardingError('companion_receive_controller_preparation_required') from None
+    return copy.deepcopy(value)
+
+
+
+def controller_template(value: dict) -> dict:
+    """The same protected selection as explicit descriptors, without per-job expiry."""
+    try:
+        if set(value) != {'code', 'code_digest', 'manifest_path', 'manifest_digest', 'host_config'}:
+            raise ValueError
+        checked = controller_configuration(dict(value, expires_at_ms=1))
+        checked.pop('expires_at_ms')
+        return checked
+    except (TypeError, ValueError):
+        raise OnboardingError('companion_receive_controller_preparation_required') from None
+
+
+def prepare_controller(*, plan, template, directory, journal, row, admission, validate, deadline_ns):
+    """Freeze generated metadata once inside the original receive operation."""
+    from .onboarding_receiving_update import _manifest
+    from .onboarding_receive_specification import compile_controller_manifest
+    from .onboarding import private_directory
+    from .onboarding_service import publish as publish_file
+    template = controller_template(template)
+    validate()
+    current = journal.get(row['operation_id'])
+    phase = (current['runtime_observation'] or {}).get('receive_application', {})
+    snapshot = phase.get('snapshot', {}).get('result')
+    if not isinstance(snapshot, dict) or not phase.get('restoration'):
+        raise OnboardingError('companion_receive_restoration_required')
+    binding = digest(dict(plan=plan, receive_binding=phase['binding'],
+        baseline=phase['baseline'], snapshot=snapshot))
+    previous = (current['runtime_observation'] or {}).get('receive_controller_preparation')
+    if previous is not None:
+        if previous.get('binding') != binding:
+            raise OnboardingError('companion_receive_original_changed')
+        result = controller_configuration(previous['preparation'])
+        _manifest(Path(result['manifest_path']), result['manifest_digest'], uid=os.geteuid())
+        return result
+    remaining = deadline_ns-time.monotonic_ns()
+    if remaining <= 0:
+        raise OnboardingError('receiving_host_deadline_expired')
+    selected = _manifest(Path(template['manifest_path']), template['manifest_digest'], uid=os.geteuid())
+    manifest = compile_controller_manifest(template=selected,
+        target={k:admission['receivers'][plan['name']][k] for k in ('being_ref','embodiment_id')},
+        authority_closure=current['intended_transition']['portal_admission']['social']['authority_closure'],
+        baseline=phase['baseline'], snapshot=snapshot, code_digest=template['code_digest'])
+    # One bounded file shares the original job's retention and cleanup path.
+    directory = private_directory(directory, create=True)
+    path = directory/'receive-controller-manifest.json'
+    validate()
+    raw = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
+    if len(raw) > 2*1024**2:
+        raise OnboardingError('companion_receive_controller_preparation_required')
+    publish_file(path, raw)
+    remaining = deadline_ns-time.monotonic_ns()
+    if remaining <= 0:
+        raise OnboardingError('receiving_host_deadline_expired')
+    result = dict(template, manifest_path=str(path), manifest_digest=digest(manifest),
+        expires_at_ms=time.time_ns()//1_000_000+max(1,remaining//1_000_000))
+    result = controller_configuration(result)
+    fresh = journal.get(row['operation_id'])
+    observed = copy.deepcopy(fresh['runtime_observation'] or {})
+    if observed.get('receive_controller_preparation') is not None:
+        raise OnboardingError('companion_receive_original_changed')
+    observed['receive_controller_preparation'] = dict(binding=binding, preparation=result)
+    journal.advance(row['operation_id'], fresh['state'], runtime_observation=observed,
+        expected_runtime_observation=fresh['runtime_observation'])
+    return result
+
+def ensure_controller(*, plan, preparation, backend, config_path, journal, row, validate, deadline_ns):
+    """Join the supported native controller bootstrap to this original job.
+
+    Publication/key/snapshot receipts stay immutable. The native child verifies
+    unchanged identity and signed application, then retains its forward load.
+    """
+    from .onboarding_code_successor import plan_update, sdk_parameters
+    from .onboarding_receiving_update import prepare_guest_bootstrap, GuestBootstrapController
+    from .onboarding_host import HostConfig
+    preparation = controller_configuration(preparation)
+    if backend.config != HostConfig.load(config_path):
+        raise OnboardingError('companion_receive_original_changed')
+    phase = (row['runtime_observation'] or {}).get('receive_application', {})
+    snapshot = phase.get('snapshot', {}).get('result')
+    if not isinstance(snapshot, dict) or not phase.get('restoration'):
+        raise OnboardingError('companion_receive_restoration_required')
+    name, parent = plan['name'], row['operation_id']
+    binding = dict(schema='cluster-companion-receive-controller/v1', parent=parent,
+        parent_intent_sha256=digest(row['intent']), receive_binding=phase['binding'],
+        snapshot_sha256=digest(snapshot), preparation_sha256=digest(preparation))
+
+    def check():
+        validate()
+        fresh = journal.get(parent)
+        current = (fresh['runtime_observation'] or {}).get('receive_application', {})
+        if (fresh['intent'] != row['intent'] or current.get('binding') != phase['binding']
+                or current.get('snapshot', {}).get('result') != snapshot
+                or current.get('restoration') != phase['restoration']):
+            raise OnboardingError('companion_receive_original_changed')
+        if time.monotonic_ns() >= deadline_ns:
+            raise OnboardingError('receiving_host_deadline_expired')
+
+    check()
+    child = journal.latest_for_target('companion-receive-controller:' + parent)
+    if child is None:
+        candidate = Path(preparation['code']), preparation['code_digest']
+        if sdk_parameters(candidate[0], uid=0).get('matrix_wheel_sha256') != phase['baseline']['matrix_sdk']:
+            raise OnboardingError('companion_receive_controller_sdk_changed')
+        if not backend.runtime_available(plan, candidate, prepare=True, deadline_ns=deadline_ns):
+            raise OnboardingError('qualified_onboarding_candidate_mount_required')
+        frozen, request = prepare_guest_bootstrap(backend, plan,
+            candidate=candidate,
+            manifest_path=Path(preparation['manifest_path']), manifest_digest=preparation['manifest_digest'],
+            expires_at_ms=preparation['expires_at_ms'],
+            timeout_seconds=60, deadline_ns=deadline_ns)
+        group = frozen['owner']['group']
+        if (group['application_sha256'] != snapshot['group']['application_sha256']
+                or group['publication_sha256'] != snapshot['group']['publication_sha256']
+                or group['installation_sha256'] is not None):
+            raise OnboardingError('companion_receive_source_changed')
+        host = being_seed._read(config_path)
+        check()
+        child = plan_update(journal, manifest_digest=preparation['manifest_digest'],
+            target='companion-receive-controller:' + parent,
+            expected_precondition=dict(host_config=str(config_path), host_configuration=host,
+                host_config_sha256=digest(host), guest_bootstraps={name:frozen}, companion_receive=binding),
+            intended_transition=dict(guest_bootstraps={name:request}),
+            audit_identity={'actor':'authorized-original-companion-receiving'})
+    if child['expected_precondition'].get('companion_receive') != binding:
+        raise OnboardingError('companion_receive_original_changed')
+    fresh = journal.get(parent)
+    retained = (fresh['runtime_observation'] or {}).get('receive_controller')
+    link = dict(binding=binding, child_operation_id=child['operation_id'])
+    if retained is None:
+        observed = copy.deepcopy(fresh['runtime_observation'] or {})
+        observed['receive_controller'] = link
+        journal.advance(parent, fresh['state'], runtime_observation=observed,
+            expected_runtime_observation=fresh['runtime_observation'])
+    elif any(retained.get(k) != v for k, v in link.items()):
+        raise OnboardingError('companion_receive_original_changed')
+    if retained is not None and retained.get('software_recovery') is not None:
+        recovery = retained['software_recovery']
+        published = (child['runtime_observation'] or {}).get('guest_bootstraps', {}).get(name, {}).get('owner_published')
+        selection = retained.get('selection', {})
+        if (not isinstance(published, dict)
+                or recovery.get('schema') != 'cluster-companion-controller-software-recovery/v1'
+                or recovery.get('publication_sha256') != digest(published)
+                or recovery.get('proof_sha256') != retained.get('loaded_receipt_sha256')
+                or selection.get('runtime_bundle_sha256') != published.get('runtime_sha256')
+                or selection.get('matrix_sdk') != phase['baseline']['matrix_sdk']
+                or selection.get('application_sha256') != snapshot['group']['application_sha256']
+                or selection.get('publication_sha256') != snapshot['group']['publication_sha256']
+                or selection.get('visibility_installation_sha256') is not None):
+            raise OnboardingError('companion_receive_original_changed')
+        return copy.deepcopy(retained)
+    if child['state'] == 'completed':
+        result = child['result']
+    else:
+        result = GuestBootstrapController(journal, child['operation_id'], backend, name).execute(
+            timeout_seconds=60, deadline_ns=deadline_ns)
+        check()
+    check()
+    loaded, app = result['loaded_runtime'], result['loaded_application']
+    if (result['schema'] != 'cluster-guest-bootstrap-loaded/v1'
+            or app['application_sha256'] != snapshot['group']['application_sha256']
+            or app['publication_sha256'] != snapshot['group']['publication_sha256']
+            or app['visibility']['installation_sha256'] is not None
+            or app['visibility'].get('release_enabled') is not False):
+        raise OnboardingError('companion_receive_source_changed')
+    if child['state'] != 'completed':
+        child = journal.get(child['operation_id'])
+        journal.advance(child['operation_id'], 'completed', result=result,
+            expected_runtime_observation=child['runtime_observation'])
+    selection = dict(receiving_code=result['code_digest'],
+        matrix_sdk=loaded['qualified_startup']['matrix_wheel_sha256'],
+        runtime_bundle_sha256=loaded['runtime_bundle_sha256'],
+        application_sha256=app['application_sha256'], publication_sha256=app['publication_sha256'],
+        visibility_installation_sha256=None)
+    complete = dict(link, loaded_receipt_sha256=digest(result), selection=selection)
+    fresh = journal.get(parent)
+    observed = copy.deepcopy(fresh['runtime_observation'])
+    previous = observed['receive_controller']
+    if previous != link and previous != complete:
+        raise OnboardingError('companion_receive_original_changed')
+    if previous != complete:
+        observed['receive_controller'] = complete
+        journal.advance(parent, fresh['state'], runtime_observation=observed,
+            expected_runtime_observation=fresh['runtime_observation'])
+    return complete
+
+
+def adopt_controller_software_recovery(*, plan, owner, code, code_digest,
+                                      manifest_path, manifest_digest, journal, row,
+                                      validate, deadline_ns):
+    """Record a qualified compatible load after an already-published controller.
+
+    Never dispatch the old child again or reissue its authority. The failed
+    software load stays degraded; fresh authenticated native proof establishes
+    the same runtime/app under the explicitly selected compatible software.
+    """
+    from .onboarding_receiving_update import preflight, observe_current_reader
+    phase = row['runtime_observation']['receive_application']
+    snapshot = phase['snapshot']['result']
+    retained = row['runtime_observation']['receive_controller']
+    child = journal.get(retained['child_operation_id'])
+    published = child['runtime_observation']['guest_bootstraps'][plan['name']]['owner_published']
+    frozen = child['expected_precondition']['guest_bootstraps'][plan['name']]['owner']
+    if (child['expected_precondition']['companion_receive'] != retained['binding']
+            or retained['binding']['snapshot_sha256'] != digest(snapshot)
+            or owner.plan != plan or owner.candidate != (code, code_digest)
+            or not phase.get('restoration')):
+        raise OnboardingError('companion_receive_original_changed')
+    validate()
+    checked = preflight(code, code_digest, manifest_path, manifest_digest,
+        being_ref=frozen['being_ref'], embodiment_id=frozen['origin']['embodiment_id'])
+    if checked['matrix_wheel_sha256'] != phase['baseline']['matrix_sdk']:
+        raise OnboardingError('companion_receive_controller_sdk_changed')
+    expected = dict(receiving_code=code_digest, matrix_sdk=checked['matrix_wheel_sha256'],
+        runtime_bundle_sha256=published['runtime_sha256'],
+        application_sha256=snapshot['group']['application_sha256'],
+        publication_sha256=snapshot['group']['publication_sha256'], visibility_installation_sha256=None)
+    previous = owner.deadline_ns
+    try:
+        owner.deadline_ns = deadline_ns
+        proof = observe_current_reader(owner, expected_selection=expected, require_admitted=True,
+            expires_at_ms=time.time_ns()//1_000_000+max(1,min(60000,(deadline_ns-time.monotonic_ns())//1_000_000)),
+            receive_only=True)
+    finally:
+        owner.deadline_ns = previous
+    if ((proof['reader']['being_ref'], proof['reader']['embodiment_id']) !=
+            (frozen['being_ref'], frozen['origin']['embodiment_id'])):
+        raise OnboardingError('companion_receive_source_changed')
+    validate()
+    recovery = dict(schema='cluster-companion-controller-software-recovery/v1',
+        publication_sha256=digest(published), manifest_digest=manifest_digest,
+        proof_sha256=digest(proof), source_code_digest=code_digest)
+    complete = dict(retained, loaded_receipt_sha256=digest(proof), selection=expected,
+        software_recovery=recovery)
+    fresh = journal.get(row['operation_id'])
+    if fresh['runtime_observation'].get('receive_controller') != retained:
+        raise OnboardingError('companion_receive_original_changed')
+    observed = copy.deepcopy(fresh['runtime_observation'])
+    observed['receive_controller'] = complete
+    journal.advance(fresh['operation_id'], fresh['state'], runtime_observation=observed,
+        expected_runtime_observation=fresh['runtime_observation'])
+    if child['state'] != 'degraded':
+        journal.advance(child['operation_id'], 'degraded', result=dict(
+            failed_software_load_retained=True, authority_publication_retained=True,
+            compatible_software_recovery_sha256=digest(complete)),
+            expected_runtime_observation=child['runtime_observation'])
+    return complete
+
+
 def configuration(value: dict, names) -> dict:
     try:
         fields = {'schema', 'helpers', 'key', 'policy', 'listen', 'intake_endpoint', 'stores', 'authority_order'}
-        if (not isinstance(value, dict) or set(value) != fields or value['schema'] != SCHEMA
+        if (not isinstance(value, dict) or set(value) - {'ingress'} != fields or value['schema'] != SCHEMA
                 or len(json.dumps(value).encode()) > 65536
                 or not isinstance(value['policy'], dict)
                 or set(value['policy']) != {'classification', 'max_ttl_ms'}
@@ -49,6 +316,14 @@ def configuration(value: dict, names) -> dict:
                     or any(not isinstance(ref, str) for ref in value['authority_order'])
                     or len(value['authority_order']) != len(set(value['authority_order'])))):
             raise ValueError
+        if 'ingress' in value:
+            from .onboarding_conversation_proxy import configuration as listener_configuration
+            ingress = listener_configuration({'receiver': value['ingress']})['receiver']
+            public = urlsplit(value['key']['endpoint'])
+            target = ingress.get('vm', {}).get('address', '127.0.0.1')
+            if (public.hostname != ingress['listen_host'] or public.port != ingress['listen_port']
+                    or value['listen']['host'] != target):
+                raise ValueError
     except (KeyError, TypeError, ValueError, AttributeError, OnboardingError):
         raise OnboardingError('companion_receive_preparation_required') from None
     return copy.deepcopy(value)
@@ -140,6 +415,26 @@ def publish(*, plan: dict, selected: dict, journal, row: dict, admission: dict,
                 raise OnboardingError('companion_receive_source_changed')
             retain('baseline', dict(receiving_code=startup['code_digest'], matrix_sdk=startup['matrix_wheel_sha256'],
                 runtime_bundle_sha256=loaded['runtime_bundle_sha256']))
+        if 'ingress' in selected:
+            # One stable Incus device, under this original job's authorization.
+            # Lost add replies reconcile the same exact device; existing web,
+            # Home and administrative routes are never replaced.
+            from .onboarding_conversation_proxy import reconcile_listener
+            budget()
+            owner = owners[name]
+            intent = dict(device='matrix-message', listener=selected['ingress'],
+                guest_port=selected['listen']['port'])
+            if 'ingress_intent' not in phase():
+                retain('ingress_intent', intent)
+            elif phase()['ingress_intent'] != intent:
+                raise OnboardingError('companion_receive_original_changed')
+            result = reconcile_listener(owner.backend, owner.plan, selected['ingress'],
+                dict(port=selected['listen']['port'], listen_host=selected['listen']['host']),
+                device_name='matrix-message', apply=True)
+            if result.state != 'complete':
+                raise OnboardingError('companion_receive_ingress_unconfirmed')
+            if 'ingress' not in phase():
+                retain('ingress', dict(intent, state='complete'))
         for key in sorted(set(owners)-{name}):
             if 'route-'+key in phase():
                 continue
@@ -300,22 +595,41 @@ def require_current_reader_coverage(proofs: dict, receivers: dict) -> dict:
         dict(being_ref=being, embodiment_id=body) for being,body in sorted(audience-observed)])
 
 
-def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, prepare=True):
+def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, prepare=True,
+             selection_updates=None):
     """Observe a complete current vector without changing any native gate."""
-    from .onboarding_receiving_update import observe_current_reader, conversation_cohort, _reader_active
+    from .onboarding_receiving_update import observe_current_reader, conversation_cohort, _reader_active, SourceGroupClient
     selected = configuration(selected, owners)
     entry = (row['runtime_observation'] or {}).get('receive_application', {})
     if (entry.get('binding') != digest(dict(original_intent=row['intent'], preparation=selected))
             or not isinstance(entry.get('snapshot', {}).get('result'), dict)):
         raise OnboardingError('onboarding_group_admission_pending')
     snapshot = entry['snapshot']['result']
+    if selection_updates is None:
+        selection_updates = entry.get('reader_selection', {}).get('selection_updates', {})
     name = plan['name']
     expected = copy.deepcopy(entry['reader_baselines'])
     expected[name] = dict(entry['baseline'],
         application_sha256=snapshot['group']['application_sha256'],
         publication_sha256=snapshot['group']['publication_sha256'], visibility_installation_sha256=None)
+    forward = (row['runtime_observation'] or {}).get('receive_controller')
+    if forward is not None:
+        if (forward.get('binding', {}).get('parent') != row['operation_id']
+                or forward['binding'].get('snapshot_sha256') != digest(snapshot)
+                or forward.get('selection', {}).get('application_sha256') != expected[name]['application_sha256']
+                or forward['selection'].get('publication_sha256') != expected[name]['publication_sha256']
+                or forward['selection'].get('visibility_installation_sha256') is not None
+                or not isinstance(forward.get('loaded_receipt_sha256'), str)):
+            raise OnboardingError('companion_receive_original_changed')
+        expected[name] = copy.deepcopy(forward['selection'])
     if set(expected) != set(owners) or set(owners) != set(admission['receivers']):
         raise OnboardingError('companion_receive_source_changed')
+    for key, value in (selection_updates or {}).items():
+        if (key not in expected or not isinstance(value, dict) or set(value) != set(expected[key])
+                or any(value[field] != expected[key][field] for field in expected[key]
+                    if field not in {'receiving_code', 'matrix_sdk'})):
+            raise OnboardingError('companion_receive_source_changed')
+        expected[key] = copy.deepcopy(value)
     previous = {key:(owner.deadline_ns, owner.maintenance) for key,owner in owners.items()}
     try:
         for key, owner in owners.items():
@@ -326,14 +640,22 @@ def _collect(*, plan, selected, row, admission, owners, validate, deadline_ns, p
                     binding=entry['binding'], deadline_ns=deadline_ns, validate=validate)
         proofs = {}
         expires = time.time_ns()//1_000_000+max(1, min(60_000, (deadline_ns-time.monotonic_ns())//1_000_000))
-        for key, owner in sorted(owners.items()):
+        def read(item):
+            key, owner = item
             validate()
-            proofs[key] = observe_current_reader(owner, expected_selection=expected[key],
-                expires_at_ms=expires, receive_only=expected[key]['visibility_installation_sha256'] is None)
+            proof = observe_current_reader(owner, expected_selection=expected[key],
+                require_admitted=not isinstance(owner, SourceGroupClient), expires_at_ms=expires,
+                receive_only=expected[key]['visibility_installation_sha256'] is None)
             approved = admission['receivers'][key]
-            reader = proofs[key]['reader']
+            reader = proof['reader']
             if (reader['being_ref'], reader['embodiment_id']) != (approved['being_ref'], approved['embodiment_id']):
                 raise OnboardingError('companion_receive_source_changed')
+            return key, proof
+        # Independent owners share a finite proof-validity window. Serial CLI
+        # startup/verification must not consume another owner's entire horizon.
+        # Every result still passes the same identity, cohort and expiry checks.
+        with ThreadPoolExecutor(max_workers=min(8, len(owners))) as pool:
+            proofs = dict(pool.map(read, sorted(owners.items())))
         cohort = conversation_cohort(proofs)
         now = time.time_ns()//1_000_000
         if (time.monotonic_ns() >= deadline_ns
@@ -360,10 +682,13 @@ def observe(**options):
     return Observation('complete', dict(tribe_reader_selection_verified=True))
 
 
-def select_readers(*, plan, selected, row, journal, admission, owners, validate, deadline_ns):
+def select_readers(*, plan, selected, row, journal, admission, owners, validate, deadline_ns,
+                   selection_updates=None, maintenance_updates=None):
     """Compose existing native revoke/select controls under the original job.
 
-    All readers are observed before the barrier and before each positive effect.
+    All readers are observed before the barrier and must have unexpired proofs
+    before each positive effect. Reuse the same finite vector while valid;
+    each native control still checks its exact local gate and roster.
     Commands and owner-private request files are immutable; a later foreground
     invocation continues them without resetting membership, dates or reader data.
     The caller holds the original journal lock. No application/visibility changes.
@@ -372,6 +697,20 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
     selected = configuration(selected, owners)
     parent = row['operation_id']
     binding = digest(dict(original_intent=row['intent'], preparation=selected))
+    initial_phase = (row['runtime_observation'] or {}).get('receive_application', {})
+    updates = initial_phase.get('reader_maintenance', {}) if maintenance_updates is None else maintenance_updates
+    if not isinstance(updates, dict):
+        raise OnboardingError('membership_maintenance_configuration_required')
+    if updates:
+        updates = helper_configuration(dict(schema='cluster-membership-maintenance/v1', owners=updates), owners)['owners']
+        if any(value['journal'] != selected['helpers']['owners'][name]['journal']
+                for name, value in updates.items()):
+            raise OnboardingError('membership_maintenance_configuration_required')
+    if selection_updates is None:
+        selection_updates = (row['runtime_observation'] or {}).get('receive_application', {}).get(
+            'reader_selection', {}).get('selection_updates', {})
+    revision = digest(selection_updates or {})
+    previous_selection = None
     def current():
         return journal.get(parent)
     def phase():
@@ -389,11 +728,14 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
     def collect():
         check()
         return _collect(plan=plan, selected=selected, row=current(), admission=admission,
-            owners=owners, validate=check, deadline_ns=deadline_ns, prepare=False)
+            owners=owners, validate=check, deadline_ns=deadline_ns, prepare=False,
+            selection_updates=selection_updates)
     def save(value):
         check()
         latest = current()
         observed = copy.deepcopy(latest['runtime_observation'])
+        if previous_selection is not None:
+            observed['receive_application']['reader_selection_previous'] = previous_selection
         observed['receive_application']['reader_selection'] = value
         if len(json.dumps(observed['receive_application']).encode()) > being_seed.MAX_SELECTION-1024:
             raise OnboardingError('companion_receive_capacity')
@@ -402,18 +744,55 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
     previous = {key:(owner.deadline_ns, owner.maintenance) for key,owner in owners.items()}
     try:
         check()
-        for key, owner in owners.items():
+        if updates and initial_phase.get('reader_maintenance') != updates:
+            latest = current()
+            observed = copy.deepcopy(latest['runtime_observation'])
+            if initial_phase.get('reader_maintenance'):
+                observed['receive_application']['reader_maintenance_previous'] = initial_phase['reader_maintenance']
+            observed['receive_application']['reader_maintenance'] = updates
+            journal.advance(parent, latest['state'], runtime_observation=observed,
+                expected_runtime_observation=latest['runtime_observation'])
+        def prepare_owner(item):
+            key, owner = item
             owner.deadline_ns = deadline_ns
-            Endpoint(owner, selected['helpers']['owners'][key], parent=parent,
+            Endpoint(owner, updates.get(key, selected['helpers']['owners'][key]), parent=parent,
                 binding=binding, deadline_ns=deadline_ns, validate=check)
+        # Independent helper preparation must not serialize eight
+        # host/guest traversals before the finite proof/control window.
+        with ThreadPoolExecutor(max_workers=min(8, len(owners))) as pool:
+            list(pool.map(prepare_owner, owners.items()))
         proofs, cohort = collect()
         state = phase().get('reader_selection')
+        processes = {name:p['gate']['process_instance_id'] for name,p in proofs.items()}
+        previous_processes = ({} if state is None else {
+            name:(state.get('controls', {}).get('select-'+name, {}).get('result') or {}).get(
+                'gate', state['initial_gates'][name]).get('process_instance_id')
+            for name in owners})
+        process_changed = state is not None and previous_processes != processes
+        software_changed = state is not None and state.get('selection_updates_sha256', digest({})) != revision
+        if state is not None and (software_changed or process_changed):
+            if not all(state.get('controls', {}).get('select-'+name, {}).get('result')
+                       for name in owners):
+                raise OnboardingError('companion_receive_reader_control_changed')
+            if process_changed and not software_changed and (
+                    state['membership_basis_sha256'] != cohort['membership_basis_sha256']
+                    or any({k:v for k,v in state['expected'][name].items() if k != 'process'}
+                        != {k:v for k,v in proofs[name]['expected'].items() if k != 'process'}
+                        for name in owners)):
+                raise OnboardingError('companion_receive_reader_control_changed')
+            # Completed effects retain one full predecessor. A software update
+            # or authenticated restart gets fresh process-bound controls. Never
+            # replace an unfinished barrier or replay its old native controls.
+            previous_selection, state = copy.deepcopy(state), None
         if state is None:
             if all(p['gate'].get('phase') == 'select' and p['gate'].get('readers') == cohort['readers']
                     for p in proofs.values()):
                 # Already selected elsewhere: observe that fact, never replace its owner.
                 return dict(tribe_reader_selection_verified=True)
             state = dict(schema='cluster-companion-current-readers/v1',
+                selection_updates_sha256=revision,
+                reader_processes_sha256=digest(processes),
+                selection_updates=copy.deepcopy(selection_updates or {}),
                 readers=cohort['readers'], membership_basis_sha256=cohort['membership_basis_sha256'],
                 expected={name:p['expected'] for name,p in proofs.items()},
                 initial_gates={name:p['gate'] for name,p in proofs.items()}, controls={})
@@ -421,7 +800,12 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
             if any(p['gate'].get('phase') == 'revoke' for p in proofs.values()):
                 raise OnboardingError('companion_receive_reader_control_changed')
             save(state)
-        control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'companion-readers:'+parent+':'+binding))
+        identity = 'companion-readers:'+parent+':'+binding
+        if selection_updates:
+            identity += ':'+revision
+        if state.get('reader_processes_sha256') is not None:
+            identity += ':'+state['reader_processes_sha256']
+        control_id = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
         release = digest(dict(original=parent, binding=binding, readers=state['readers'],
             membership_basis_sha256=state['membership_basis_sha256']))
         def unchanged(proofs, cohort):
@@ -453,10 +837,16 @@ def select_readers(*, plan, selected, row, journal, admission, owners, validate,
                         raise OnboardingError('companion_receive_reader_control_changed')
                     continue
                 if mode == 'select':
-                    # Positive controls need a fresh all-required round. Cached
-                    # completed controls and revocations need no duplicate cold
-                    # observer round; native local CAS still checks their gates.
-                    proofs, cohort = collect()
+                    # A proof already has a native <=60-second validity. Repeating
+                    # eight cold CLI reads for every gate can exhaust the whole
+                    # operator window while the barrier is closed. Refresh only
+                    # when that existing proof window ends; local gate/roster CAS
+                    # and the final complete observation remain mandatory.
+                    from .onboarding_receiving_update import _reader_active
+                    now = time.time_ns() // 1_000_000
+                    if any(p['identity_expires_at_ms'] <= now
+                            or not _reader_active(p['reader'], now) for p in proofs.values()):
+                        proofs, cohort = collect()
                     unchanged(proofs, cohort)
                     gate = proofs[name]['gate']
                     for other,p in proofs.items():

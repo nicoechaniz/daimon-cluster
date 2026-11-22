@@ -328,3 +328,41 @@ def test_remote_host_cannot_mix_two_physical_parents(tmp_path):
     with pytest.raises(OnboardingError, match='host_binding_required'):
         vm_body.RemoteIncusRunner({'oliva': (path, digest(row)), 'other': (locator, digest(second))},
             {'oliva': plan, 'other': other}, publish=lambda *a: None)
+
+
+def test_original_verified_vm_reuses_code_transport_without_changing_service_profile(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from clusterctl.onboarding import private_directory
+    from tests.test_onboarding_host import configured
+    config, plan, _, backend = configured(tmp_path)
+    backend.config = replace(config, instance_type='virtual-machine')
+    backend.authorize = lambda *a: True
+    directory = private_directory(config.jobs / plan['name'], create=True)
+    record = dict(plan=plan, plan_digest=digest(plan), steps={'environment': {'state': 'complete',
+        'facts': {'virtual_machine_verified': True}}})
+    being_seed._write(directory/'job.json', record)
+    calls = []
+    def dispatch(selected, argv, **options):
+        calls.append(argv)
+        assert selected == plan and argv == ['query', '/1.0/instances/dm-eko?project=default']
+        return json.dumps({'type': 'virtual-machine', 'config': {'user.dm.onboarding-plan': digest(plan),
+            'volatile.uuid': '18f437a2-bc2d-408a-8aaf-7693ebc797e4'}})
+    def execute(selected, argv, **options):
+        calls.append(argv)
+        assert selected == plan and argv == ['/bin/cat', '/etc/machine-id']
+        return 'a'*32+'\n'
+    backend._dispatch, backend.execute_body = dispatch, execute
+    body = backend._runtime_body(plan)
+    assert isinstance(body, vm_body.VMBody)
+    assert backend.native_body(plan) is None  # Service/provisioning profile stays unchanged.
+    assert body.value['machine_id_sha256'] == hashlib.sha256(('a'*32).encode()).hexdigest()
+    path = directory/'helper-vm-placement.json'
+    first = path.read_bytes()
+    assert len(first) <= 4096 and path.stat().st_mode & 0o777 == 0o600
+    assert backend._runtime_body(plan).value == body.value
+    assert len(calls) == 2 and path.read_bytes() == first
+    assert being_seed._read(directory/'job.json') == record
+    # No environment receipt: retain the cold path without capturing another VM.
+    record['steps']['environment']['state'] = 'running'
+    being_seed._write(directory/'job.json', record)
+    assert backend._runtime_body(plan) is None and len(calls) == 2

@@ -1064,6 +1064,13 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
                     'capability_bootstrap_sha256': digest(request['capability_bootstrap'])}
                    if 'capability_bootstrap' in request else {}),
                 group=request['group'], catalog_schema_version=2)
+        if action == 'closed-catalogs-prepare':
+            assert closed_group and not published_group
+            state = being_seed._read(managed.state / 'newcomer/native-code-update.json')
+            assert state['dispatching'] == 'catalogs'
+            assert 'quiesce' in state['effects'] and 'select' not in state['effects']
+            calls.append(action)
+            return dict(schema='cluster-closed-catalogs-prepared/v1', runtime_sha256='original-bundle', version=2)
         assert action == 'admitted-running'
         assert not local_observer, 'local observation reopened the cold target CLI'
         assert _.get('current_native', False) is closed_group
@@ -1211,6 +1218,7 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         assert result['local_reader'] == dict(channel_id='tribe',phase='select',recovery='recovered')
     assert calls.count('bootstrap-quiesce') == 1
     assert calls.count('bootstrap-select') == 1
+    assert calls.count('closed-catalogs-prepare') == int(closed_group and not published_group)
     assert len(effects[options['operation_id']]) == 4
     if automatic_restart:
         retained = being_seed._read(managed.state / 'newcomer/native-code-update.json')
@@ -1312,6 +1320,15 @@ def test_plain_native_code_update_reuses_unit_writer_and_retains_lost_ack(tmp_pa
         assert latest['closed_group']['application_sha256'] == 'c'*64
         assert latest['closed_group']['outbound_release'] is published_group
         assert calls.count('visibility-migrate') == (2 + (lost_start_ack == 'migration') if published_group else 0)
+        if not published_group:
+            # A retained pre-migration operation keeps its original effects on
+            # readback; new software must not insert an offline step into it.
+            latest.pop('prepare_closed_catalogs')
+            latest['effects'].pop('catalogs')
+            being_seed._write(managed.state / 'newcomer/native-code-update.json', latest)
+            old_calls = list(calls)
+            assert managed.update_native_code(plan, (tmp_path, 'b'*64), **next_options) == next_result
+            assert calls == old_calls + ['bootstrap-inspect']
     assert job == {'plan': plan, 'original': 'retained'}
 
 

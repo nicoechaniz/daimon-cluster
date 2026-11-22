@@ -429,12 +429,53 @@ def native_budget(timeout_seconds: float | None, expires_at_ms: int | None):
     return remaining
 
 
-def native_supervisor_code(base: Path, selected: Path) -> Path:
+def native_supervisor_code(base: Path, selected: Path, *, unit: Path | None = None) -> Path:
     """Keep an available frozen supervisor; older bases need the qualified helper."""
+    from . import onboarding_code_successor
+    unit = unit if unit is not None else Path('/etc/systemd/system') / NATIVE_UNIT
+    if unit.exists():
+        # Runtime-only observer repairs preserve the already running immutable
+        # supervisor. Validate its full predecessor before accepting its path.
+        raw = onboarding_release.regular(unit, uid=0)
+        import shlex
+        lines = [line for line in raw.decode().splitlines() if line.startswith('ExecStart=')]
+        command = shlex.split(lines[0].removeprefix('ExecStart=')) if len(lines) == 1 else []
+        if len(command) == 8 and command[:3] == ['/usr/bin/python3', '-B', '-I']:
+            script = Path(command[3])
+            previous = script.parent.parent
+            if (script.name == 'native_codex_supervisor.py'
+                    and previous.parent == Path('/opt/daimon-onboarding-runtime')
+                    and re.fullmatch('[a-f0-9]{64}', previous.name)):
+                onboarding_code_successor.verify(previous, previous.name, base,
+                    base.name, uid=0)
+                if (onboarding_release.regular(script, uid=0) ==
+                        onboarding_release.regular(selected/'clusterctl/native_codex_supervisor.py', uid=0)
+                        and raw == native_service(Path('/home/agent'),
+                            Path('/usr/local/bin/codex'), previous)):
+                    return previous
     for code in dict.fromkeys((base, selected)):
         if (code / 'clusterctl/native_codex_supervisor.py').is_file():
             return code
     raise OnboardingError('qualified_native_supervisor_required')
+
+
+def prepare_user_manager(*, budget, run=subprocess.run) -> None:
+    """The fixed guest account must own finite resource-limited tasks offline.
+
+    Linger keeps the existing user manager available without an interactive
+    login. It starts no model, conversation, timer or arbitrary workload.
+    """
+    for command in (
+        ['loginctl', 'enable-linger', 'agent'],
+        ['systemctl', 'start', 'user@1000.service'],
+        ['runuser', '-u', 'agent', '--', 'env',
+         'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus',
+         'systemctl', '--user', 'show', '--property=Version', '--value'],
+    ):
+        result = run(command, capture_output=True, text=True, timeout=budget(30), check=False)
+        budget(30)
+        if result.returncode or (command[0] == 'runuser' and not result.stdout.strip()):
+            raise OnboardingError('native_user_manager_unavailable')
 
 
 def install_native(home: Path, codex: Path, code: Path, *, budget,
@@ -446,6 +487,7 @@ def install_native(home: Path, codex: Path, code: Path, *, budget,
         budget(180)
         if result.returncode:
             raise OnboardingError('native_codex_daemon_start_failed')
+    prepare_user_manager(budget=budget, run=run)
 
 
 def native_observation(home: Path, codex: Path, code: Path, *,

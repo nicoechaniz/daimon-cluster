@@ -58,6 +58,40 @@ def test_actual_selection_refreshes_warm_worker_and_retains_exact_journal(tmp_pa
     assert not list(tmp_path.glob('.receiving-selection-*'))
 
 
+def test_validated_future_app_default_refreshes_warm_worker_without_moving_roots(tmp_path):
+    from tests.test_onboarding_conversation_bundle import artifact
+    path, original, _, _, _ = fixture(tmp_path)
+    warm = CurrentHostConfig(path)
+    before = warm.current()
+    app = tmp_path/'new-default-app'
+    pin = artifact(app)
+    being_seed._write(path, {**original, 'conversation_bundle_default':
+                            {'root': str(app), 'sha256': pin}})
+    # The normal cold reader validates the actual immutable bundle first.
+    cold = HostConfig.load(path)
+    selected = warm.current()
+    assert selected.conversation_bundle_default == cold.conversation_bundle_default
+    assert selected.jobs == before.jobs and selected.code == before.code
+    assert selected.grants == before.grants and selected.accounts == before.accounts
+
+
+def test_runtime_projection_update_keeps_an_existing_future_app_default(tmp_path):
+    from tests.test_onboarding_conversation_bundle import artifact
+    path, original, runtime, journal, _ = fixture(tmp_path)
+    app = tmp_path/'existing-default-app'
+    pin = artifact(app)
+    original['conversation_bundle_default'] = {'root': str(app), 'sha256': pin}
+    being_seed._write(path, original)
+    warm = CurrentHostConfig(path)
+    row = plan_update(journal, manifest_digest='b'*64, target='receiving:with-app',
+        expected_precondition=dict(host_config=str(path), host_configuration=original,
+                                   host_config_sha256=digest(original)),
+        intended_transition=dict(host_runtime=runtime), audit_identity={'actor': 'fixture'})
+    updates.apply_host_selection(journal, row['operation_id'], path)
+    assert warm.current().conversation_bundle_default == (app, pin)
+    assert being_seed._read(path)['conversation_bundle_default'] == original['conversation_bundle_default']
+
+
 def test_atomic_replace_before_ack_is_reconciled_without_replacement(tmp_path, monkeypatch):
     path, original, runtime, journal, identifier = fixture(tmp_path)
     replace = os.replace

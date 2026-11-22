@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULES = ("__init__.py", "being_seed.py", "onboarding_transfer.py", "onboarding.py", "onboarding_input.py",
            "onboarding_release.py", "onboarding_code_successor.py", "onboarding_custody.py", "onboarding_custody_native.py", "onboarding_holder_backup.py", "onboarding_owner_client.py", "onboarding_peer.py", "onboarding_group_admission.py", "onboarding_group_session.py", "onboarding_group_recovery.py", "onboarding_guest.py", "onboarding_mounts.py", "onboarding_sdk.py",
            "onboarding_target.py", "onboarding_membership_preparation.py", "onboarding_receive_specification.py", "onboarding_receive_keys.py", "onboarding_existing.py", "onboarding_credential.py", "owner_process.py", "onboarding_admission.py",
-           "onboarding_runtime.py", "onboarding_views.py", "onboarding_service.py", "onboarding_conversation.py", "onboarding_ssh.py", "onboarding_provider.py", "onboarding_telegram.py", "native_codex_supervisor.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
+           "onboarding_runtime.py", "onboarding_views.py", "onboarding_service.py", "onboarding_conversation.py", "onboarding_conversation_bundle.py", "onboarding_vm_state.py", "onboarding_vm_admission.py", "onboarding_ssh.py", "onboarding_provider.py", "onboarding_telegram.py", "native_codex_supervisor.py", "admission.py", "admission_supervisor.py", "fences.py", "production_fences.py")
 
 
 def read_code(source: Path) -> bytes:
@@ -189,9 +189,34 @@ def main() -> int:
     parser.add_argument('--current-digest')
     parser.add_argument("--sdk", type=Path)
     parser.add_argument("--telegram-artifact", type=Path)
+    parser.add_argument('--conversation-app-bundle', type=Path)
+    parser.add_argument('--conversation-app-digest')
+    parser.add_argument('--conversation-native-package', type=Path)
+    parser.add_argument('--conversation-listener', type=Path)
+    parser.add_argument('--conversation-listener-digest')
     args = parser.parse_args()
     try:
-        if args.runtime_base is not None:
+        if args.conversation_app_bundle is not None:
+            if (args.conversation_app_digest is None
+                    or (args.conversation_native_package is None) == (args.conversation_listener is None)
+                    or (args.conversation_listener is None) != (args.conversation_listener_digest is None)
+                    or any(value is not None for value in (args.runtime_base, args.base_digest,
+                        args.native_supervisor_current, args.current_digest, args.hmk_checkout,
+                        args.commons, args.profile, args.sdk, args.telegram_artifact))):
+                raise OnboardingError('conversation_bundle_selection_required')
+            if args.conversation_listener is not None:
+                from clusterctl.onboarding_conversation_bundle import compose_listener
+                result = compose_listener(args.conversation_app_bundle, args.conversation_app_digest,
+                    args.conversation_listener, args.conversation_listener_digest, args.output)
+            else:
+                from clusterctl.onboarding_conversation_bundle import compose_native
+                result = compose_native(args.conversation_app_bundle, args.conversation_app_digest,
+                                        args.conversation_native_package, args.output)
+        elif any(value is not None for value in (args.conversation_app_digest,
+                args.conversation_native_package, args.conversation_listener,
+                args.conversation_listener_digest)):
+            raise OnboardingError('conversation_bundle_selection_required')
+        elif args.runtime_base is not None:
             if (args.base_digest is None or any(value is not None for value in (
                     args.hmk_checkout, args.commons, args.profile, args.sdk, args.telegram_artifact))):
                 raise OnboardingError('qualified_onboarding_runtime_required')

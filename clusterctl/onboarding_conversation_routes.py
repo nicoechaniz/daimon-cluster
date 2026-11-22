@@ -164,6 +164,10 @@ def operation(value):
 
 
 class Routes:
+    # Specialized maintained service writers reuse the same finite CAS/reload
+    # journal; only their closed route renderer and insertion matcher differ.
+    render = staticmethod(render)
+    compose = staticmethod(compose)
     def __init__(self, value):
         self.value = configuration(value)
         self.path = Path(value['config'])
@@ -207,7 +211,22 @@ class Routes:
 
     def _adapt(self, process, path):
         raw = self._command(process, 'adapt', '--config', str(path), '--adapter', 'caddyfile')
-        return digest(json.loads(raw))
+        value = json.loads(raw)
+        # Caddy automatically hides the input Caddyfile in file_server handlers.
+        # The prepared copy will be loaded at self.path; compare that effective
+        # configuration without treating the staging filename as a route change.
+        def selected_filename(node):
+            if isinstance(node, dict):
+                if node.get('handler') == 'file_server' and isinstance(node.get('hide'), list):
+                    node['hide'] = [str(self.path) if item == str(path) else item
+                                    for item in node['hide']]
+                for child in node.values():
+                    selected_filename(child)
+            elif isinstance(node, list):
+                for child in node:
+                    selected_filename(child)
+        selected_filename(value)
+        return digest(value)
 
     def _live_configuration(self, process):
         # The default loopback admin listener must belong to this exact loaded
@@ -265,22 +284,61 @@ class Routes:
         self._save(self.state/'active.json', active)
         return True
 
+    def _rebind_prepared(self, active, pins, before, after, process, *, apply, authorize):
+        # Only an unchanged, never-published candidate may acquire refreshed
+        # operator guard metadata. A reload intent or changed route stays pinned.
+        if (not apply or active['phase'] != 'prepared'
+                or hashlib.sha256(before).hexdigest() != active['before']
+                or hashlib.sha256(after).hexdigest() != active['after']
+                or self._adapt(process, self.path) != self._live(process)):
+            return None
+        candidate = regular(self.state/'candidate.caddyfile', uid=os.geteuid(), limit=LIMIT)
+        if (hashlib.sha256(candidate).hexdigest() != active['after']
+                or self._adapt(process, self.state/'candidate.caddyfile') != active['adapted']):
+            raise OnboardingError('conversation_route_checkpoint_changed')
+        if not authorize():
+            raise OnboardingError('host_authorization_required')
+        predecessor = self.state/('prepared-'+active['pins']+'.json')
+        if predecessor.exists():
+            if operation(document(predecessor)) != active:
+                raise OnboardingError('conversation_route_checkpoint_changed')
+        else:
+            if len(list(self.state.glob('*.json'))) >= 16:
+                raise OnboardingError('conversation_route_capacity')
+            self._save(predecessor, active)
+        active = dict(active, pins=pins)
+        self._save(self.state/'active.json', active)
+        return active
+
     def reconcile(self, request, listener, home_backend, *, apply, authorize):
-        block = render(request, listener, home_backend)
-        pins = digest(dict(request=request, listener=listener, home_backend=home_backend, routing=self.value))
+        block = self.render(request, listener, home_backend)
+        pins = digest(dict(request=request, listener=listener, home_backend=home_backend,
+            routing={k:v for k,v in self.value.items() if k != 'maintenance'}))
         with being_seed._locked(self.state):
             active_path = self.state/'active.json'
             active = operation(document(active_path)) if active_path.exists() else None
             process = self._process()
-            if active and active.get('phase') != 'complete' and active.get('pins') != pins:
-                if not self._finish(active, process):
-                    raise OnboardingError('conversation_route_operation_pending')
-                active = None
-            receipt = self.state/(request['name']+'.json')
-            if receipt.exists() and operation(document(receipt)).get('pins') != pins:
-                raise OnboardingError('existing_conversation_route_preserved')
             before = self._read()
-            after = compose(before, request, block, self.value['anchor'])
+            after = self.compose(before, request, block, self.value['anchor'])
+            if active and active.get('phase') != 'complete' and active.get('pins') != pins:
+                if self._finish(active, process):
+                    active = None
+                else:
+                    active = self._rebind_prepared(active, pins, before, after, process,
+                                                   apply=apply, authorize=authorize)
+                    if active is None:
+                        raise OnboardingError('conversation_route_operation_pending')
+            receipt = self.state/(request['name']+'.json')
+            if receipt.exists():
+                recorded = operation(document(receipt))
+                if recorded['pins'] != pins:
+                    # Operator transport/guard metadata can rotate while the
+                    # exact selected route stays loaded. Observe that no-op;
+                    # preserve the original receipt and never reload it again.
+                    if (recorded['phase'] == 'complete' and before == after
+                            and self._adapt(process, self.path) == self._live(process)):
+                        return {'state':'complete', 'route_loaded':True}
+                    raise OnboardingError('existing_conversation_route_preserved')
             if active and active.get('pins') == pins and active.get('phase') != 'complete':
                 if self._finish(active, process):
                     return {'state':'complete', 'route_loaded':True}

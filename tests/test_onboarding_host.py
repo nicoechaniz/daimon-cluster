@@ -151,7 +151,8 @@ def test_conversation_stage_binds_own_plan_and_does_not_fabricate_login(tmp_path
     backend.execute_body = execute
     observed = backend.observe(value, 'conversation', 'retained-operation')
     assert observed.state == 'complete'
-    assert observed.facts == {'conversation_ready': True}
+    observed.validate()
+    assert observed.facts == {'verified': True, 'conversation_ready': True}
     assert '--apply' not in calls[0][0]
     assert calls[0][1]['uid'] == 0
     assert json.loads(calls[0][1]['input_data']) == selected
@@ -227,7 +228,28 @@ def test_identity_stage_retains_native_transaction_without_social_start(tmp_path
     backend._mounted = lambda p, mounts: True
     backend._sdk_successor = lambda p: False
     observed = backend.observe(value, 'identity', 'same-retained-operation')
-    assert observed.facts == {'identity_verified': True}
+    observed.validate()
+    assert observed.facts == {'verified': True, 'identity_verified': True}
+
+
+def test_v2_ssh_imports_qualified_helper_but_keeps_original_context_pin(tmp_path):
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA, Observation
+    config, selected, _, backend = configured(tmp_path)
+    selected['schema'] = CONVERSATION_PLAN_SCHEMA
+    base, current = Path('/qualified/base'), Path('/qualified/current')
+    backend._environment = lambda p: Observation('complete', {'verified': True})
+    backend._guest_paths = lambda p: (tmp_path, base, {})
+    backend._runtime_paths = lambda p, b: (current, [], {})
+    backend._mounted = lambda p, mounts: True
+    calls = []
+    def dispatch(p, argv):
+        calls.append(argv)
+        return json.dumps({'installed':False, 'plan_digest':digest(p), 'port':2222})
+    backend._dispatch = dispatch
+    assert not backend._ssh_command(selected, 'observe', 'selected public fixture')['installed']
+    argv = calls[0]
+    assert argv[argv.index('--code')-2] == str(current)
+    assert argv[argv.index('--code')+1] == str(base)
 
 
 def test_companion_native_admission_does_not_wait_for_outbound_visibility(tmp_path, monkeypatch):
@@ -265,7 +287,8 @@ def test_companion_native_admission_does_not_wait_for_outbound_visibility(tmp_pa
     assert backend.observe(value, 'matrix', 'original').reason == 'group_admission_pending'
     state['membership'] = True
     observed = backend.observe(value, 'matrix', 'original')
-    assert observed.facts == {'identity_verified': True, 'native_running_verified': True,
+    observed.validate()
+    assert observed.facts == {'verified': True, 'identity_verified': True, 'native_running_verified': True,
                               'tribe_membership_verified': True}
     assert effects == ['native-start']
 
@@ -1378,6 +1401,38 @@ def vm_configured(tmp_path):
     return value, run, HostBackend(replace(config, instance_type='virtual-machine'), run=run)
 
 
+def test_vm_public_code_device_names_fit_real_incus_virtiofs_socket_limit(tmp_path):
+    config, _, _, container = configured(tmp_path)
+    vm = HostBackend(replace(config, instance_type='virtual-machine'))
+    for prefix in ('runtime', 'telegram'):
+        name = vm._code_mount_name(prefix, 'a' * 64)
+        # Longest valid companion name, using the actual Incus socket layout
+        # observed in the first fresh Emma invocation's refused hotplug.
+        path = '/var/lib/incus/devices/dm-' + 'x' * 31 + '/virtio-fs.' + name + '.sock'
+        assert len(path.encode()) < 108
+        assert len(('incus_'+name).encode()) <= 31
+        assert name.startswith(prefix + '-')
+        assert vm._code_mount_name(prefix, 'b' * 64) != name
+        assert len(container._code_mount_name(prefix, 'a' * 64)) == 63
+
+
+def test_vm_waits_for_guest_mount_readback_and_never_reattaches_a_disk(tmp_path):
+    value, run, backend = vm_configured(tmp_path)
+    calls = []
+    def dispatch(plan, argv, **kwargs):
+        assert plan == value and argv[:4] == ['exec', 'dm-eko', '--', 'python3']
+        assert kwargs == {'timeout_seconds': 35}
+        assert json.loads(argv[-1]) == ['/opt/public-code']
+        calls.append(argv)
+        return json.dumps({'ready': len(calls) > 1})
+    backend._dispatch = dispatch
+    mounts = {'code': {'path': '/opt/public-code'}}
+    with pytest.raises(OnboardingError, match='onboarding_vm_mount_unavailable'):
+        backend._wait_guest_mounts(value, mounts)
+    backend._wait_guest_mounts(value, mounts)
+    assert len(calls) == 2 and run.calls == []
+
+
 def test_vm_environment_reuses_pinned_image_and_existing_journaled_steps(tmp_path):
     value, run, backend = vm_configured(tmp_path)
     assert backend.observe(value, 'environment', 'original').state == 'absent'
@@ -1478,3 +1533,47 @@ def test_vm_static_nic_is_selected_at_original_init_and_foreign_address_is_prese
     with pytest.raises(OnboardingError,match='onboarding_environment_conflict'):
         backend.execute(value,'environment','original')
     assert run.calls==before
+
+
+def test_existing_guest_prepares_only_missing_qualified_read_only_helper(tmp_path, monkeypatch):
+    backend,value,_run,candidate,_calls=candidate_call_fixture(tmp_path,monkeypatch)
+    installed=set()
+    writes=[]
+    monkeypatch.setattr(backend,'_mounted',lambda plan,mounts,**kw:set(mounts)<=installed)
+    def dispatch(plan, argv, **options):
+        assert plan==value and options['deadline_ns']==123
+        assert argv[:3]==['config','device','add'] and argv[5]=='disk'
+        assert 'readonly=true' in argv
+        writes.append(argv)
+        installed.add(argv[4])
+        return ''
+    monkeypatch.setattr(backend,'_dispatch',dispatch)
+    waits=[]
+    monkeypatch.setattr(backend,'_wait_guest_mounts',lambda *a:waits.append(a))
+    assert not backend.runtime_available(value,candidate)
+    assert backend.runtime_available(value,candidate,prepare=True,deadline_ns=123)
+    assert backend.runtime_available(value,candidate,prepare=True,deadline_ns=123)
+    assert len(writes)==len(waits)==1
+
+
+def test_kvm_owner_clock_rebases_flags_without_extending_wall_expiry():
+    import subprocess
+    import sys
+    import time
+    from clusterctl.onboarding_host import VM_OWNER_CLOCK
+    probe=[sys.executable,'-c','import sys,json,time;print(json.dumps(dict(argv=sys.argv[1:],now=time.monotonic_ns())))',
+        '--observation-deadline-ns',str(2**62)]
+    request=dict(argv=probe,remaining_seconds=2,expires_at_ms=time.time_ns()//1_000_000+2000)
+    result=subprocess.run([sys.executable,'-I','-c',VM_OWNER_CLOCK,json.dumps(request)],
+        capture_output=True,text=True,timeout=3)
+    assert result.returncode==0
+    value=json.loads(result.stdout)
+    assert 0<int(value['argv'][1])-value['now']<=2_000_000_000
+    request['expires_at_ms']=1
+    result=subprocess.run([sys.executable,'-I','-c',VM_OWNER_CLOCK,json.dumps(request)],
+        capture_output=True,text=True,timeout=3)
+    assert result.returncode!=0 and 'deadline_expired' in result.stderr
+    request.update(expires_at_ms=time.time_ns()//1_000_000+2000,argv=probe+['--observation-deadline-ns','1'])
+    result=subprocess.run([sys.executable,'-I','-c',VM_OWNER_CLOCK,json.dumps(request)],
+        capture_output=True,text=True,timeout=3)
+    assert result.returncode!=0 and 'deadline_binding_required' in result.stderr

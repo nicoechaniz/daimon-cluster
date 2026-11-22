@@ -262,6 +262,65 @@ def resolve_request(value, being_ref):
     return value
 
 
+def host_request(config, plan):
+    """Read the original job's intent or the existing explicit selection."""
+    from .onboarding_custody import document
+    from .onboarding import OnboardingError, digest
+    explicit = (getattr(config, 'conversation_by_name', None) or {}).get(plan['name'])
+    path = config.jobs / plan['name'] / 'conversation-intent.json'
+    retained = None
+    if path.exists() or path.is_symlink():
+        if path.lstat().st_size > 65536:
+            raise OnboardingError('conversation_selection_required')
+        retained = document(path)
+        selection(retained, unresolved=True)
+        if retained['name'] != plan['name'] or retained['plan_digest'] != digest(plan):
+            raise OnboardingError('conversation_selection_changed')
+    if explicit is None:
+        return retained
+    value = document(explicit[0])
+    selection(value, unresolved=value.get('schema') == INTENT_SCHEMA)
+    if (digest(value) != explicit[1] or value['name'] != plan['name']
+            or value['plan_digest'] != digest(plan)
+            or retained is not None and value != retained):
+        raise OnboardingError('conversation_selection_changed')
+    return value
+
+
+def prepare_host_request(config, plan, *, authorize):
+    """Derive resource IDs once before a new authorized v2 job is submitted.
+
+    Pair/runtime settings stay in the existing protected host configuration.
+    The one bounded intent shares the original job's retention and lock. No
+    identity, Home registration, service, account or grant is created here.
+    """
+    import copy
+    from . import being_seed
+    from .onboarding import CONVERSATION_PLAN_SCHEMA, OnboardingError, digest, private_directory
+    from .onboarding_service import publish
+    if plan.get('schema') != CONVERSATION_PLAN_SCHEMA:
+        return
+    settings = (getattr(config, 'conversation_settings_by_name', None) or {}).get(plan['name'])
+    if settings is None:
+        return
+    if not authorize():
+        raise OnboardingError('host_authorization_required')
+    private_directory(config.jobs, create=True)
+    with being_seed._locked(config.jobs):
+        if host_request(config, plan) is not None:
+            return
+        directory = config.jobs / plan['name']
+        # A later default must never supply new pairing to a retained job.
+        if (directory / 'job.json').exists():
+            return
+        value = prepare_intent(plan['name'], digest(plan), copy.deepcopy(settings))
+        raw = json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+        if len(raw) > 65536:
+            raise OnboardingError('conversation_selection_required')
+        private_directory(directory, create=True)
+        publish(directory / 'conversation-intent.json', raw)
+
+
 def trusted(path, *, resolve=False):
     path = Path(path)
     if resolve:
@@ -437,9 +496,19 @@ def contains(actual, required):
     )
 
 
+def verify_pairing(value, pairing):
+    if (not isinstance(pairing, dict) or pairing.get('schema') != 'dm.human-endpoint/v1'
+            or pairing.get('home_ref') != value['home_ref']
+            or pairing.get('owner_being_ref') != value['being_ref']
+            or not isinstance(pairing.get('human'), dict)
+            or pairing['human'].get('ref') != value['human_ref']):
+        fail('conversation_actual_home_pairing_required')
+
+
 class Bootstrap:
-    def __init__(self, value, *, seconds=120):
+    def __init__(self, value, *, seconds=120, pairing=None):
         self.value = selection(value)
+        self.pairing = pairing
         if (
             type(seconds) not in (int, float)
             or not math.isfinite(seconds)
@@ -525,16 +594,12 @@ class Bootstrap:
         if initialized != {"initialized": True}:
             fail("conversation_native_engine_unconfirmed")
         self.phase = "pairing"
-        pairing = json.loads(
+        # A centrally hosted Home is read through its owner adapter by the
+        # trusted host. Legacy guest-local Homes keep their existing own CLI.
+        pairing = self.pairing if self.pairing is not None else json.loads(
             self.command([str(HOME / ".local/bin/daimon-home"), "human"], agent=True)
         )
-        if (
-            pairing.get("schema") != "dm.human-endpoint/v1"
-            or pairing.get("home_ref") != self.value["home_ref"]
-            or pairing.get("owner_being_ref") != self.value["being_ref"]
-            or pairing.get("human", {}).get("ref") != self.value["human_ref"]
-        ):
-            fail("conversation_actual_home_pairing_required")
+        verify_pairing(self.value, pairing)
         self.phase = "node"
         if self.value["runtime"]["node_required"]:
             version = (
@@ -737,7 +802,11 @@ class Bootstrap:
 
     def apply(self):
         try:
-            return {**self.observe(), "bootstrap": "already-ready"}
+            observed = self.observe()
+            if observed.get("state") == "ready":
+                return {**observed, "bootstrap": "already-ready"}
+            if observed.get("state") != "absent" or observed.get("safe_to_execute") is not True:
+                fail("conversation_selected_service_unconfirmed")
         except (ConversationError, OSError, ValueError, subprocess.SubprocessError):
             # A live, matching receiver needs no bootstrap journal, config write,
             # daemon reload or lifecycle request. Missing/failed readiness alone
@@ -898,12 +967,13 @@ def bounded_command(argv, *, seconds, input_data=None, env=None, **options):
                 stream.close()
 
 
-def atomic(path, raw, *, mode, absent=False):
-    if len(raw) > 65536:
+def atomic(path, raw, *, mode, absent=False, max_bytes=65536):
+    if len(raw) > max_bytes:
         fail("conversation_operation_capacity")
     temporary = path.with_name(".conversation-" + uuid.uuid4().hex)
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     try:
+        os.fchmod(fd, mode)  # Honor explicit public/private modes independently of operator umask.
         with os.fdopen(fd, "wb") as stream:
             stream.write(raw)
             stream.flush()
@@ -1007,6 +1077,8 @@ def main(argv=None):
     source.add_argument("--request", type=Path)
     source.add_argument("--request-stdin", action="store_true",
                         help="Read the bounded selection from the host-owned execution pipe")
+    source.add_argument("--paired-request-stdin", action="store_true",
+                        help="Host-owned pipe: selection and fresh shared Home pairing")
     parser.add_argument("--timeout-seconds", type=float, default=120)
     parser.add_argument(
         "--apply",
@@ -1019,16 +1091,21 @@ def main(argv=None):
     try:
         if os.geteuid() != 0:
             fail("conversation_guest_operator_required")
-        if args.request_stdin:
+        pairing = None
+        if args.request_stdin or args.paired_request_stdin:
             raw = sys.stdin.buffer.read(65537)
             if len(raw) > 65536:
                 fail("conversation_input_capacity")
             value = json.loads(raw)
+            if args.paired_request_stdin:
+                if not isinstance(value, dict) or set(value) != {"request", "pairing"}:
+                    fail("conversation_actual_home_pairing_required")
+                pairing, value = value["pairing"], value["request"]
         else:
             if args.request.stat().st_mode & 0o077:
                 fail("conversation_private_selection_required")
             value = json.loads(read(args.request, uid=0))
-        bootstrap = Bootstrap(value, seconds=args.timeout_seconds)
+        bootstrap = Bootstrap(value, seconds=args.timeout_seconds, pairing=pairing)
         result = bootstrap.apply() if args.apply else bootstrap.observe()
         print(json.dumps(result))
         return 0

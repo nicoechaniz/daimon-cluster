@@ -7,6 +7,7 @@ contracts. Workflow-only changes exercise the workflow and selector themselves.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -354,6 +355,7 @@ MAINTENANCE_TESTS = ('tests/test_onboarding_receive_flow.py', 'tests/test_onboar
     'tests/test_ci_scope.py', 'tests/test_ci_workflow.py')
 
 NATIVE_RECEIVING_FILES = {'clusterctl/native_body.py', 'tests/test_native_body.py',
+    'clusterctl/vm_body.py', 'tests/test_vm_body.py',
     'tests/test_receiving_cohort_control.py',
     'clusterctl/onboarding_host.py', 'tests/test_onboarding_host.py',
     'clusterctl/onboarding_owner_client.py', 'tests/test_onboarding_owner_client.py',
@@ -363,7 +365,7 @@ NATIVE_RECEIVING_FILES = {'clusterctl/native_body.py', 'tests/test_native_body.p
 NATIVE_RECEIVING_TESTS = tuple(dict.fromkeys((*MAINTENANCE_TESTS,
     'tests/test_onboarding.py', 'tests/test_onboarding_managed.py',
     'tests/test_onboarding_code_successor.py', 'tests/test_onboarding_release.py',
-    'tests/test_operational_assets.py')))
+    'tests/test_vm_body.py', 'tests/test_operational_assets.py')))
 
 
 LOADED_STARTUP_FILES = {'RESUME.md', 'clusterctl/onboarding_sdk.py', 'clusterctl/onboarding_target.py',
@@ -447,10 +449,15 @@ HOME_TESTS = ('tests/test_home_usage.py', 'tests/test_home_fleet.py', 'tests/tes
 
 
 HOME_PROVISION_FILES = HOME_FILES | {'clusterctl/onboarding_homes.py', 'clusterctl/onboarding_worker.py',
-    'tools/install_onboarding_worker.py', 'tests/test_onboarding_homes.py'}
+    'tools/install_onboarding_worker.py', 'tests/test_onboarding_homes.py',
+    'clusterctl/onboarding_companion_homes.py', 'tests/test_onboarding_companion_homes.py',
+    'docs/design/onboarding-jobs.md'}
 HOME_PROVISION_TESTS = HOME_TESTS + ('tests/test_onboarding_homes.py', 'tests/test_onboarding.py',
     'tests/test_onboarding_progress.py', 'tests/test_onboarding_worker_install.py',
-    'tests/test_onboarding_host_ownership.py', 'tests/test_operational_assets.py')
+    'tests/test_onboarding_host_ownership.py', 'tests/test_operational_assets.py',
+    'tests/test_onboarding_companion_homes.py', 'tests/test_onboarding_conversation.py',
+    'tests/test_onboarding_conversation_routes.py', 'tests/test_onboarding_consent.py',
+    'tests/test_onboarding_release.py', 'tests/test_production_fences.py')
 
 HOME_WORKER_FILES = {'clusterctl/onboarding_host.py', 'tests/test_onboarding_host.py',
     'tools/build_home_worker_successor.py', 'tests/test_home_worker_successor.py',
@@ -462,6 +469,46 @@ HOME_WORKER_TESTS = ('tests/test_home_worker_successor.py', 'tests/test_onboardi
     'tests/test_onboarding_homes.py', 'tests/test_onboarding_worker_install.py',
     'tests/test_operational_assets.py', 'tests/test_ci_scope.py', 'tests/test_ci_workflow.py',
     'tests/test_home_gateway.py', 'tests/test_home_access.py')
+
+
+COMPANION_COMMAND_FILES = {'clusterctl/onboarding_worker.py',
+    'tests/test_onboarding.py', 'tests/test_onboarding_companion_homes.py',
+    'tests/test_onboarding_conversation.py', 'tests/test_onboarding_worker_install.py'}
+COMPANION_COMMAND_TESTS = tuple(sorted(set(CONTEXT_COPY_TESTS) | set(RUNTIME_HEALTH_TESTS)
+    | set(ONBOARDING_CONTRACTS) | {'tests/test_onboarding_companion_homes.py',
+    'tests/test_onboarding_conversation.py', 'tests/test_onboarding_conversation_bundle.py',
+    'tests/test_onboarding_homes.py', 'tests/test_onboarding_group_coordinator.py',
+    'tests/test_onboarding_group_finisher.py', 'tests/test_home_access.py',
+    'tests/test_home_gateway.py'}))
+
+
+def companion_entry_only(root: Path, base: str) -> bool:
+    """Keep worker execution/supervision unchanged for CLI-only preparation.
+
+    Compare syntax rather than pinning a particular patch or source generation.
+    Missing history or any other changed definition keeps existing wider CI.
+    """
+    if not re.fullmatch(r'[0-9a-f]{40}', base):
+        return False
+    name = 'clusterctl/onboarding_worker.py'
+    try:
+        previous = subprocess.run(['git', 'show', base+':'+name], cwd=root,
+            capture_output=True, timeout=10, check=False)
+        if previous.returncode:
+            return False
+        before = ast.parse(previous.stdout)
+        after = ast.parse((root/name).read_bytes())
+        for tree in (before, after):
+            entries = [node for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == 'main']
+            if len(entries) != 1:
+                return False
+            # Imports, arguments, decorators and every other definition remain
+            # part of the comparison. Only the existing CLI body may differ.
+            entries[0].body = [ast.Pass()]
+        return ast.dump(before, include_attributes=False) == ast.dump(after, include_attributes=False)
+    except (OSError, SyntaxError, ValueError, subprocess.TimeoutExpired):
+        return False
 
 
 def remote_incus_source_only(root: Path, base: str) -> bool:
@@ -808,6 +855,14 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         # process/CLI contracts; changes to any owner/transport/SDK retain full CI.
         return 'peer', visibility_rollout_tests
 
+    if ('clusterctl/onboarding_worker.py' in changed
+            and set(changed) <= COMPANION_COMMAND_FILES | CI_FILES | RUNBOOK_DOCS
+            and all((root/path).is_file() for path in COMPANION_COMMAND_TESTS)
+            and companion_entry_only(root, base)):
+        # Existing CLI/job/Home/owner contracts still run. SDK, native admission,
+        # worker execution and physical recovery have not changed here.
+        return 'peer', list(COMPANION_COMMAND_TESTS)
+
     coordinator_files = {'clusterctl/onboarding_group_coordinator.py',
                          'tests/test_onboarding_group_coordinator.py',
                          'tests/test_onboarding_group_finisher.py'}
@@ -973,10 +1028,10 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
                           'tools/build_receiving_maintenance.py', 'tools/check_rc_types.py'}
     if ({'clusterctl/native_body.py', 'clusterctl/vm_body.py', 'tests/test_vm_body.py'} <= set(changed)
             and set(changed) <= vm_placement_files | CI_FILES | RUNBOOK_DOCS
-            and all((root / name).is_file() for name in (*NATIVE_RECEIVING_TESTS, 'tests/test_vm_body.py'))):
+            and all((root / name).is_file() for name in NATIVE_RECEIVING_TESTS)):
         # New local agent transport reuses native OS maintenance; no changes to
         # provisioning, SDK authority, admission, network or model execution.
-        return 'peer', [*NATIVE_RECEIVING_TESTS, 'tests/test_vm_body.py']
+        return 'peer', list(NATIVE_RECEIVING_TESTS)
     native_profile_files = {'clusterctl/native_body.py', 'tests/test_native_body.py',
         'clusterctl/onboarding_service.py',
         'clusterctl/onboarding_host.py', 'clusterctl/onboarding_receiving_update.py',
@@ -995,12 +1050,15 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
                  or native_profile_host_only(root, base))):
         return 'peer', native_profile_tests
     host = {'clusterctl/onboarding_host.py', 'tests/test_onboarding_host.py'}
-    if ({'clusterctl/native_body.py', 'tests/test_native_body.py'} <= set(changed)
+    transport_pairs = ({'clusterctl/native_body.py', 'tests/test_native_body.py'},
+                       {'clusterctl/vm_body.py', 'tests/test_vm_body.py'})
+    if (any(pair <= set(changed) for pair in transport_pairs)
             and set(changed) <= NATIVE_RECEIVING_FILES | CI_FILES | RUNBOOK_DOCS
             and all((root / name).is_file() for name in NATIVE_RECEIVING_TESTS)):
-        # Native placement changes the carrier, code availability and clock
-        # domain. Keep actual owner/bootstrap/host/worker contracts; no archive
-        # recovery or unrelated account/physical-recovery jobs are affected.
+        # Native and VM placement share the carrier, verified code copying and
+        # clock contracts. Keep all owner/bootstrap/host/worker consumers. A VM
+        # iteration must not need a fresh source hash or a native_body edit to
+        # avoid unrelated applications/archive/physical-recovery qualification.
         return 'peer', list(NATIVE_RECEIVING_TESTS)
     maintenance_orchestration = {'clusterctl/receiving_maintenance.py',
         'tests/test_receiving_maintenance.py', 'tests/test_guest_bootstrap_controller.py'}
@@ -1014,6 +1072,18 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
         # real composed controllers and retained maintenance/CI boundaries;
         # reuse their existing qualification instead of rerunning body setup.
         return 'peer', orchestration_tests
+    controller_preparation_files = {'clusterctl/onboarding_receive_flow.py',
+        'tests/test_onboarding_receive_flow.py', 'clusterctl/onboarding_receive_specification.py',
+        'tests/test_onboarding_receive_specification.py'}
+    if ({'clusterctl/onboarding_receive_flow.py', 'tests/test_onboarding_receive_flow.py'} <= set(changed)
+            and set(changed) <= controller_preparation_files | coordinator_files | CI_FILES | RUNBOOK_DOCS):
+        # Compose the existing metadata/caller and maintenance checks. Native
+        # owner, SDK, custody, service, archive and provider implementations are
+        # unchanged; editing any of them still selects their broader profile.
+        tests = list(dict.fromkeys((*MAINTENANCE_TESTS, *coordinator_tests,
+            *UPDATE_PREFLIGHT_TESTS)))
+        if all((root / path.split('::', 1)[0]).is_file() for path in tests):
+            return 'peer', tests
     if (({'clusterctl/receiving_maintenance.py', 'tests/test_receiving_maintenance.py'} <= set(changed)
             or {'clusterctl/onboarding_receiving_update.py', 'tests/test_receiving_cohort_control.py'} <= set(changed)
             or {'clusterctl/onboarding_receiving_update.py', 'tests/test_current_reader_refresh.py'} <= set(changed))
@@ -1369,7 +1439,8 @@ def select(changed: list[str], root: Path, *, base: str = '') -> tuple[str, list
             and all((root/path).is_file() for path in HOME_WORKER_TESTS)):
         return 'homes', list(HOME_WORKER_TESTS)
     if (set(changed) & {'clusterctl/onboarding_homes.py', 'clusterctl/onboarding_worker.py',
-                        'tools/install_onboarding_worker.py', 'tests/test_onboarding_homes.py'}
+                        'tools/install_onboarding_worker.py', 'tests/test_onboarding_homes.py',
+                        'clusterctl/onboarding_companion_homes.py', 'tests/test_onboarding_companion_homes.py'}
             and set(changed) <= HOME_PROVISION_FILES | CI_FILES
             and all((root/path).is_file() for path in HOME_PROVISION_TESTS)):
         return 'homes', list(HOME_PROVISION_TESTS)

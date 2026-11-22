@@ -240,7 +240,8 @@ class Target:
                                         qualified_startup=self.qualified_startup)
             return relationship_request(root, self.root / 'group-admission', value,
                 offline=hosted, deadline_ns=deadline_ns, membership_precondition=membership_precondition,
-                effect_not_after_ms=effect_not_after_ms)
+                effect_not_after_ms=effect_not_after_ms,
+                verification_group=self.root / 'tribe', authority_closure=authority_closure)
 
     def private_resource(self, value: dict, *, deadline_ns: int) -> dict:
         """Private owner transport under the unchanged original guest binding."""
@@ -563,7 +564,8 @@ class Target:
                 before, after = old['descriptor'], new['descriptor']
                 expanded = (old['profile'] == profiles.operator_capability_profile('observe')
                     and 'we.event.get' not in before['methods']
-                    and after['methods'] == sorted([*before['methods'], 'we.event.get']))
+                    and after['methods'] == sorted([*before['methods'], 'we.event.get'])
+                    and frozenset(after['methods']) == profiles.OPERATOR_CAPABILITY_PROFILES['observe'])
                 changing = {'capability_id', 'not_before_ms', 'not_after_ms'}
                 if expanded:
                     changing.add('methods')
@@ -577,7 +579,8 @@ class Target:
                         or window_changed and (
                             not before['not_before_ms'] < before['not_after_ms'] <= after['not_before_ms']
                             or not after['not_before_ms'] < after['not_after_ms'] <=
-                                after['not_before_ms'] + profiles.OPERATOR_CAPABILITY_TTL_MS)):
+                                after['not_before_ms'] + profiles.OPERATOR_CAPABILITY_TTL_MS
+                                + profiles.OPERATOR_CAPABILITY_NOT_BEFORE_SKEW_MS)):
                     raise ValueError
                 changed_profiles.append(new)
                 if window_changed:
@@ -714,6 +717,38 @@ class Target:
                 return self.observe()
             finally:
                 os.close(descriptor)
+
+    def prepare_closed_catalogs(self, *, deadline_ns: int) -> dict:
+        """Migrate existing closed catalogs under the native exclusive writer.
+
+        This is an explicit software-update step, never serving startup. Reuse
+        the SDK migrator; preserve keys, signed selection and all message rows.
+        """
+        from daimon_matrix import native_egress
+        from .onboarding_group_admission import load_owner_runtime
+        from .onboarding_peer import approved_group_authorities, group_application, observed_group
+        from .onboarding_runtime import receive_only_application_view
+        def check():
+            if time.monotonic_ns() >= deadline_ns:
+                raise OnboardingError('onboarding_observation_deadline_expired')
+        check()
+        with being_seed._locked(self.root), self._runtime_writer():
+            bundle = self.document_bundle()
+            selected = observed_group(self, bundle)
+            if selected is None or Path(selected['visibility']).exists():
+                raise OnboardingError('native_code_update_closed_group_required')
+            authorities = approved_group_authorities(self.package / 'runtime', self.root / 'tribe', bundle)
+            hosted = load_owner_runtime(self.package / 'runtime', self._reader, authorities=authorities)
+            group = group_application(self, hosted)
+            if group is None or Path(group['visibility']).exists():
+                raise OnboardingError('native_code_update_closed_group_required')
+            check()
+            hosted.egress.migrate_registered_catalogs(version=native_egress.VISIBILITY_SCHEMA_VERSION)
+            hosted.egress.validate_registered_catalogs()
+            receive_only_application_view(hosted, Path(group['directory']))
+            check()
+            return dict(schema='cluster-closed-catalogs-prepared/v1',
+                runtime_sha256=digest(bundle), version=native_egress.VISIBILITY_SCHEMA_VERSION)
 
     def serve(self, *, receive_only: bool = False, visibility_installation: Path | None = None,
               ready_descriptor: int | None = None) -> int:
@@ -1037,7 +1072,7 @@ class Target:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("sdk-observe", "sdk-prepare", "visibility-migrate", "prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept", "group-relationship", "group-publication", "group-resource", "group-session", "receiving-control-prepare", "receiving-control-apply", "receiving-control-prepare-apply", "receiving-identity", "receiving-bootstrap-freeze", "receiving-bootstrap-stage", "receiving-bootstrap-publish"))
+    parser.add_argument("action", choices=("sdk-observe", "sdk-prepare", "visibility-migrate", "closed-catalogs-prepare", "prepare", "activate", "observe", "credential-prepare", "credential-apply", "serve", "running", "admission-prepare", "admitted-serve", "admission-check", "admission-enroll", "admitted-running", "peer-identity", "peer-accept", "group-relationship", "group-publication", "group-resource", "group-session", "receiving-control-prepare", "receiving-control-apply", "receiving-control-prepare-apply", "receiving-identity", "receiving-bootstrap-freeze", "receiving-bootstrap-stage", "receiving-bootstrap-publish"))
     parser.add_argument("--diagnostics", action="store_true", help="write bounded nonsecret refusal detail to stderr")
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
@@ -1142,7 +1177,7 @@ def main(argv: list[str] | None = None) -> int:
                     or not 0 < args.authorization_expires_at_ms < 2**53)
                 or admitting and ((timeout is None) != (args.authorization_expires_at_ms is None))):
             raise OnboardingError('invalid_receiving_observation_timeout')
-        if timeout is not None and (args.action not in {'observe', 'sdk-observe', 'sdk-prepare', 'visibility-migrate', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
+        if timeout is not None and (args.action not in {'observe', 'sdk-observe', 'sdk-prepare', 'visibility-migrate', 'closed-catalogs-prepare', 'running', 'admitted-running', 'receiving-identity', 'receiving-control-prepare', 'receiving-control-apply', 'receiving-control-prepare-apply', 'group-relationship', 'group-publication', 'group-resource', 'group-session', 'admission-prepare', 'admission-check', 'admission-enroll'}
                 or not math.isfinite(timeout) or not 0 < timeout <= (300 if args.action in {'visibility-migrate', 'sdk-prepare'} else 60)):
             raise OnboardingError('invalid_receiving_observation_timeout')
         if bootstrapping:
@@ -1250,6 +1285,11 @@ def main(argv: list[str] | None = None) -> int:
             code_digest=args.runtime_digest or plan['release_digest'], qualified_startup=startup)
         if observation_deadline_ns is not None and time.monotonic_ns() >= observation_deadline_ns:
             raise OnboardingError('onboarding_observation_deadline_expired')
+        if args.action == 'closed-catalogs-prepare':
+            if observation_deadline_ns is None:
+                raise OnboardingError('invalid_receiving_observation_timeout')
+            print(json.dumps(target.prepare_closed_catalogs(deadline_ns=observation_deadline_ns)))
+            return 0
         if bootstrapping:
             from .onboarding_receiving_update import GuestOwnerBootstrap, freeze_guest_bootstrap
             if observation_deadline_ns is None:

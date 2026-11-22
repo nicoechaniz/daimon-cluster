@@ -242,7 +242,7 @@ class Backend:
 
 
 class Application:
-    def __init__(self, config, authority, sessions, *, backends=None, passkey_rp_id=None, client_example=False, style_provider=None, auth_origin=None, google_client=None, homemaker_source=None, homemaker_state=None, homemaker_home=None, homemaker_returns=(), miniapp_routes=None, miniapp_receivers=None, cluster_dashboard=None):
+    def __init__(self, config, authority, sessions, *, backends=None, passkey_rp_id=None, client_example=False, style_provider=None, auth_origin=None, google_client=None, homemaker_source=None, homemaker_state=None, homemaker_home=None, homemaker_returns=(), miniapp_routes=None, miniapp_receivers=None, cluster_dashboard=None, service_deployments=None):
         self.styles = StyleConsumer(style_provider, authority, config["homes"]) if style_provider else None
         from .launcher import validate_launch_routes
         self.miniapp_routes=validate_launch_routes(miniapp_routes)
@@ -257,6 +257,14 @@ class Application:
             authority,
             sessions,
         )
+        self.service_deployments = None
+        if service_deployments is not None:
+            from .service_deploy import Deployments
+            self.service_deployments = Deployments(service_deployments)
+            for grant in self.service_deployments.config['grants']:
+                receiving = grant['receiver']
+                if self.homes.get(receiving['home'], {}).get('owner_being_ref') != receiving['owner']:
+                    raise ValueError('service_capability_owner_mismatch')
         from .fleet import Fleet
         self.cluster_dashboard = Fleet(cluster_dashboard) if cluster_dashboard else None
         if self.cluster_dashboard and self.cluster_dashboard.config['home'] not in self.homes:
@@ -399,6 +407,18 @@ class Application:
                 known_tribe=lambda ref: ref in self.authority.tribes(),
             )
             return {"status": "valid"}
+        if operation in ('service-deploy', 'service-finalize'):
+            if self.service_deployments is None:
+                raise ValueError('service_deployment_unconfigured')
+            def still_authorized():
+                current = self.authority.actor(owner.ref)
+                return bool(current and current.enabled and current.revision == owner.revision
+                            and self.sessions.owner(token, home=home, subject=current,
+                                binding_revision=receiving.get('owner_revision')))
+            if operation == 'service-deploy':
+                return self.service_deployments.deploy(self, home, owner, payload, authorize=still_authorized)
+            with self.locks[home]:
+                return self.service_deployments.finalize(self, home, owner, payload, authorize=still_authorized)
         if operation == 'check-review-access':
             # Owner-local read-only decision for a trusted application's
             # verified participant. No reader session, content lease or model
@@ -680,6 +700,9 @@ def review_source(app, home, reference, version, subject, vpn, *, origin, parent
 def preview(app, home, reference, version, subject, vpn, *, origin, parent_token, display_mode="details", selection=None):
     if display_mode not in ("details", "work"):
         raise ValueError("invalid_display_mode")
+    from .build_label import digest, stamp
+    assets = Path(__file__).parent / 'assets'
+    build = digest([Path(__file__)] + [assets / n for n in ('work-view.js','work-live-review.js','work-annotations.js','work-annotations.css','home.css')])
     selected, content_origin, prefix, source = artifact_context(
         app, home, reference, version, subject, vpn, origin=origin, parent_token=parent_token, selection=selection)
     current = next(
@@ -721,7 +744,7 @@ def preview(app, home, reference, version, subject, vpn, *, origin, parent_token
             download_root = "/works/" + reference + "/" + selected["version_ref"] + "/"
             display = display.replace('<iframe ', '<iframe data-live-review="' + ('current' if version == 'current' else 'pinned') + '" ', 1)
             display = display.replace('<iframe ', '<iframe data-download-root="' + esc(download_root, quote=True) + '" data-download-files="' + esc(json.dumps(media_files), quote=True) + '" ', 1)
-        return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected["title"])} · {esc(app.homes[home]["name"])}</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script><script src="/work-live-review.js" defer></script><script src="/work-view.js" defer></script><script src="/work-annotations.js" defer></script></head><body class="work-view">{display}</body></html>'''.encode()
+        return stamp(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected["title"])} · {esc(app.homes[home]["name"])}</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script><script src="/work-live-review.js" defer></script><script src="/work-view.js" defer></script><script src="/work-annotations.js" defer></script></head><body class="work-view">{display}</body></html>'''.encode(), build, overlay=display_mode == 'work', content_revision=selected['version_ref'])
     versions = ['<li><a href="/view/' + reference + '">Current version</a></li>']
     for previous in reversed(current.get("versions", [])):
         if app.policy.allows(previous, home=home, subject=subject, dedicated_vpn=vpn):
@@ -744,7 +767,7 @@ def preview(app, home, reference, version, subject, vpn, *, origin, parent_token
         for filename in selected["files"]
     )
     auth, script = auth_controls(subject, vpn, bool(app.passkeys), '/view/' + reference, bool(app.sso))
-    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected["title"])} · {esc(app.homes[home]["name"])}</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script>{script}</head><body><main><nav><a href="/">← Home</a>{auth}</nav><p id="passkey-status" role="status" aria-live="polite"></p><header><small>{esc(selected["visibility"])} · {"Current version" if version == "current" else "Earlier version"}</small><h1>{esc(selected["title"])}</h1><p>{esc(selected["summary"])}</p><a href="{esc(source, quote=True)}">Open selected work ↗</a></header>{display}<details><summary>Selected files</summary><ul>{files}</ul></details><details><summary>Versions available to you</summary><ul>{"".join(versions)}</ul></details></main></body></html>'''.encode()
+    return stamp(f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(selected["title"])} · {esc(app.homes[home]["name"])}</title><link rel="stylesheet" href="/home.css"><script src="/home-style.js" defer></script>{script}</head><body><main><nav><a href="/">← Home</a>{auth}</nav><p id="passkey-status" role="status" aria-live="polite"></p><header><small>{esc(selected["visibility"])} · {"Current version" if version == "current" else "Earlier version"}</small><h1>{esc(selected["title"])}</h1><p>{esc(selected["summary"])}</p><a href="{esc(source, quote=True)}">Open selected work ↗</a></header>{display}<details><summary>Selected files</summary><ul>{files}</ul></details><details><summary>Versions available to you</summary><ul>{"".join(versions)}</ul></details></main></body></html>'''.encode(), build, overlay=display_mode == 'work', content_revision=selected['version_ref'])
 
 
 def key_page(app, subject=None, *, registered=False):
@@ -917,13 +940,33 @@ def handler(app, *, owner=False):
                     return
                 path = urlsplit(self.path).path
                 public_asset = path in (
-                    '/home.css', '/work-live-review.js', '/work-view.js', '/work-annotations.js', '/work-annotations.css',
+                    '/home.css', '/app-build.css', '/work-live-review.js', '/work-view.js', '/work-annotations.js', '/work-annotations.css',
                     '/home-style.js', '/artifact-style.js', '/home-miniapp-login.js',
                     '/cluster/', '/cluster/app.js', '/cluster/app.css',
                     '/access-client.js', '/fonts/space-grotesk-latin.woff2',
                 ) or (path == '/passkeys.js' and app.passkeys is not None)
                 home, origin, subject, vpn, cookies, parent_token = self.context(
                     resolve_identity=not public_asset)
+                if path.startswith('/service-access/'):
+                    service_key = path.removeprefix('/service-access/')
+                    forwarded_method = self.headers.get('X-Forwarded-Method', 'GET')
+                    if subject is None and app.service_deployments:
+                        destination = app.service_deployments.login_return(
+                            home, service_key, self.headers.get('X-Forwarded-Uri', ''))
+                        if (destination and forwarded_method == 'GET'
+                                and self.headers.get('Sec-Fetch-Dest') == 'document'):
+                            self.respond(302, b'', headers=(('Location', '/access/sso/start?return=' + quote(destination, safe='')),))
+                            return
+                        self.respond(401, {'message': 'Entrá con tu cuenta para abrir esta aplicación.'})
+                        return
+                    if (not app.service_deployments or vpn
+                            or forwarded_method not in ('GET', 'HEAD', 'OPTIONS')
+                            and self.headers.get('Origin') != origin
+                            or not app.service_deployments.access(app, home, subject, service_key)):
+                        self.respond(403, {'status': 'denied'})
+                        return
+                    self.respond(204, b'')
+                    return
                 if path.startswith('/cluster/'):
                     from .fleet import routes as fleet_routes
                     fleet_routes(self, app, path, home, subject, vpn)
@@ -1108,6 +1151,13 @@ def handler(app, *, owner=False):
                     self.respond(200, key_page(app, subject,
                         registered=parse_qs(urlsplit(self.path).query).get('registered') == ['1']),
                         'text/html; charset=utf-8')
+                elif path == '/app-build.css':
+                    body = (Path(__file__).parent / 'assets' / 'app-build.css').read_bytes()
+                    import hashlib
+                    revision = hashlib.sha256(body).hexdigest()[:16]
+                    immutable = parse_qs(urlsplit(self.path).query) == {'v':[revision]}
+                    self.respond(200, body, 'text/css; charset=utf-8', cache_control=(
+                        'public, max-age=31536000, immutable' if immutable else 'public, max-age=0, must-revalidate'))
                 elif path == "/home.css":
                     self.respond(
                         200,
@@ -1374,6 +1424,16 @@ def handler(app, *, owner=False):
                         raise
                     self.respond(200,result)
                     return
+                if urlsplit(self.path).path == '/access/human-endpoint':
+                    # Only this read is public-facing. Resolve the current Home
+                    # from its exact origin; never accept an owner/home selector.
+                    home, _, _, vpn, _, _ = self.context(resolve_identity=False)
+                    authorization = self.headers.get('Authorization', '')
+                    if vpn or not authorization.startswith('Bearer '):
+                        raise ValueError('home_owner_denied')
+                    self.respond(200, app.owner(home, authorization[7:],
+                                               'human-endpoint', json.loads(data)))
+                    return
                 if app.sso:
                     from .login import routes
                     if routes(self, app, 'POST', data): return
@@ -1520,6 +1580,7 @@ def main():
     parser.add_argument('--miniapp-routes', help='Operator-selected public same-origin destination map JSON')
     parser.add_argument('--miniapp-receivers', help='Verified same-origin per-pair application routes JSON')
     parser.add_argument('--cluster-dashboard', help='Protected owner-selected read-only Cluster dashboard configuration')
+    parser.add_argument('--service-deployments', help='Protected explicit per-owner service capabilities; disabled when absent')
     args = parser.parse_args()
     from daimon_matrix.messaging_config import protected_read
 
@@ -1539,7 +1600,8 @@ def main():
                       homemaker_home=args.homemaker_home, homemaker_returns=args.homemaker_return,
                       miniapp_routes=json.loads(protected_read(Path(args.miniapp_routes))) if args.miniapp_routes else None,
                       miniapp_receivers=json.loads(protected_read(Path(args.miniapp_receivers))) if args.miniapp_receivers else None,
-                      cluster_dashboard=json.loads(protected_read(Path(args.cluster_dashboard))) if args.cluster_dashboard else None)
+                      cluster_dashboard=json.loads(protected_read(Path(args.cluster_dashboard))) if args.cluster_dashboard else None,
+                      service_deployments=json.loads(protected_read(Path(args.service_deployments))) if args.service_deployments else None)
     if args.http_transport == 'cheroot':
         from .wsgi import run
         run(app, config)

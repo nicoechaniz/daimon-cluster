@@ -1,5 +1,7 @@
 """Root account selection is distinct from native login and receiving acceptance."""
 from types import SimpleNamespace
+import json
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +11,25 @@ from clusterctl.onboarding_accounts import ManagedAccount
 from clusterctl.onboarding_actions import Actions
 from clusterctl.onboarding_provider import SCHEMA
 from tests.test_onboarding import plan
+
+
+def test_v2_provider_imports_qualified_helper_without_changing_frozen_code(tmp_path):
+    from clusterctl.onboarding import CONVERSATION_PLAN_SCHEMA
+    selected = plan()
+    selected['schema'] = CONVERSATION_PLAN_SCHEMA
+    base, current = Path('/qualified/base'), Path('/qualified/current')
+    calls = []
+    def dispatch(p, argv):
+        calls.append(argv)
+        return json.dumps({'schema':SCHEMA, 'plan_digest':digest(p), 'authorized':False})
+    host = SimpleNamespace(config=SimpleNamespace(), instance=lambda p: 'dm-'+p['name'],
+        _guest_paths=lambda p: (tmp_path, base, {}),
+        _runtime_paths=lambda p, b: (current, [], {}), _dispatch=dispatch)
+    result = ManagedAccount(host).command(selected, 'observe')
+    assert not result['authorized']
+    argv = calls[0]
+    assert argv[argv.index('--code')-2] == str(current)
+    assert argv[argv.index('--code')+1] == str(base)
 
 
 def manager(tmp_path, monkeypatch, value):
@@ -74,7 +95,8 @@ def test_conversation_login_does_not_prime_provider_or_claim_inference(tmp_path,
     observed = account.observe(plan(), probe=False)
     assert calls == ['observe', 'observe']
     assert observed.state == 'complete'
-    assert observed.facts == {'ssh_ready': True, 'provider_configured': True}
+    observed.validate()
+    assert observed.facts == {'verified': True, 'ssh_ready': True, 'provider_configured': True}
     # The legacy mode still requires its real retained provider receipt.
     assert account.observe(plan()).state == 'absent'
     value['account_id'] = 'foreign-fixture'

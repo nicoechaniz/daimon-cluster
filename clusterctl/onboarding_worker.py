@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import being_seed
-from .onboarding import Backend, JobStore, OnboardingError, refusal_diagnostic, CONVERSATION_JOB_SCHEMA
+from .onboarding import Backend, JobStore, OnboardingError, refusal_diagnostic, CONVERSATION_JOB_SCHEMA, CONVERSATION_PLAN_SCHEMA, digest
 
 
 def completed_result(store: JobStore, backend: Backend, name: str, value: dict) -> tuple[int, dict]:
@@ -42,6 +42,32 @@ def completed_result(store: JobStore, backend: Backend, name: str, value: dict) 
         # unavailable. The operator failed, not its preserved historical work.
         return 3, dict(state='attention-required', reason='verification_failed', job=value,
             diagnostic=refusal_diagnostic(error, stage='completed-entry'))
+
+
+def prepare_companion_homes(config, plan: dict, store: JobStore, placements: Path | None):
+    """Validate the actual Home composition before a new v2 job allocates a body.
+
+    Completed jobs keep their read-only entry fast path. This reuses the same
+    Home hook as the child worker, without opening custody or creating identity.
+    """
+    if plan.get('schema') != CONVERSATION_PLAN_SCHEMA:
+        return
+    retained = store.directory(plan['name'])/'job.json'
+    if retained.exists():
+        record = store._load(plan['name'])
+        if record['state'] == 'complete' and record['plan_digest'] == digest(plan):
+            return
+    if placements is None or config.progress is None:
+        raise OnboardingError('companion_home_configuration_required')
+    from .onboarding_homes import configure
+    from .onboarding_host import HostBackend
+    homes = configure(placements, progress=config.progress, store=store,
+        backend=lambda: HostBackend(config), worker_uid=os.geteuid())
+    selected = getattr(homes, 'value', {})
+    pair = selected.get('pairs', {}).get(plan['name'])
+    if (not isinstance(pair, dict) or pair.get('owner') != plan['owner']
+            or pair.get('plan_digest') != digest(plan)):
+        raise OnboardingError('companion_home_configuration_required')
 
 
 class ForegroundRun:
@@ -192,6 +218,8 @@ class Worker:
                 self.homes(result)
             return result
         except (OnboardingError, being_seed.SeedError, OSError, ValueError, TypeError, KeyError) as error:
+            if isinstance(error, OnboardingError) and str(error) == 'onboarding_group_bounded_progress_pending':
+                return {'state': 'waiting', 'reason': str(error)}
             # Do not print name/content/exception from an invalid private record.
             return {"state": "attention-required", "reason": "verification_failed",
                     "diagnostic": refusal_diagnostic(error, stage='host-preparation')}
@@ -229,6 +257,10 @@ class Worker:
                         value = {**value, 'diagnostic': detail}
                 return 3, value
             if value['state'] == 'waiting':
+                if value.get('reason') == 'onboarding_group_bounded_progress_pending':
+                    # Same operator/job and original foreground deadline. Each
+                    # native window remains bounded; this starts no peer/model.
+                    continue
                 return 2, value
         return 2, {'state': 'attention-required', 'reason': 'foreground_deadline_expired'}
 
@@ -346,7 +378,22 @@ def main(argv: list[str] | None = None) -> int:
             if not isinstance(selected, dict) or selected.get('name') != args.until:
                 raise OnboardingError('host_authorization_required')
             store = JobStore(config.jobs)
-            original = store.submit(selected, HostBackend(config))
+            from .onboarding_conversation import host_request, prepare_host_request
+            from .onboarding_conversation_bundle import prepare_selection
+            owner = HostBackend(config)
+            prepare_host_request(config, selected,
+                authorize=lambda: owner.authorize(selected, digest(selected)))
+            prepare_companion_homes(config, selected, store, args.home_placements)
+            # A new v2 job cannot acquire its pairing later: its original
+            # intent is frozen before submission, never retrofitted. Refuse
+            # missing inputs here instead of allocating an unusable body.
+            if (selected.get('schema') == CONVERSATION_PLAN_SCHEMA
+                    and not (store.directory(args.until)/'job.json').exists()
+                    and host_request(config, selected) is None):
+                raise OnboardingError('conversation_selection_required')
+            prepare_selection(config, selected, store,
+                authorize=lambda: owner.authorize(selected, digest(selected)))
+            original = store.submit(selected, owner)
             control = ForegroundRun(store, args.until, original['plan_digest'])
             record = control.prepare(args.timeout_seconds, extend=args.extend_seconds)
             lease = control.claim()
@@ -395,7 +442,8 @@ def main(argv: list[str] | None = None) -> int:
         homes = None
         def backend():
             return HostBackend(selections.current(), input_cache=inputs,
-                home_access=homes.conversation_access if homes else None)
+                home_access=homes.conversation_access if homes else None,
+                home_pairing=getattr(homes, 'conversation_pairing', None))
         from .onboarding_progress import Progress
 
         progress = Progress(config.progress, worker_uid=os.geteuid()) if config.progress else None
@@ -453,9 +501,10 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGINT, lambda *_: stop.set())
         worker.run(stop)
         return 0
-    except Exception:
+    except Exception as error:
         print(json.dumps(dict(schema='cluster-onboarding-foreground/v1', state='attention-required',
-            reason='onboarding_worker_configuration_refused', effect='inspect-original-job-and-operation')
+            reason='onboarding_worker_configuration_refused', effect='inspect-original-job-and-operation',
+            diagnostic=refusal_diagnostic(error, stage='command-preparation'))
             if args.until else {"error": "onboarding_worker_configuration_refused"}))
         return 1
 

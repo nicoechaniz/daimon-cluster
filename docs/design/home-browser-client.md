@@ -3,6 +3,13 @@
 Owning roadmap: [#214](https://github.com/nicoechaniz/daimon-cluster/issues/214).
 First slice: [#215](https://github.com/nicoechaniz/daimon-cluster/issues/215).
 
+Own backend publication has an opt-in, source-only
+[service deployment candidate](../runbooks/home-service-deployment.md).
+It reuses this browser identity and the existing owner publisher, with explicit
+operator service capabilities; ordinary Home publication grants no deployment
+privilege. Receiving selection and authenticated service acceptance remain with
+the Homes operator.
+
 ## Supported same-origin client
 
 Load `/access-client.js` on a registered, trusted top-level home page. It exposes
@@ -131,3 +138,21 @@ reachability, message admission or reading. An authorized `/human.tell` continue
 through the selected existing application/communication surface and its receipts.
 The portable `daimon-home human` client makes this one read through its existing
 receiving owner binding. Pairing and revocation are rechecked on every request.
+
+
+### Native remote paired-human read
+
+A companion with a centrally hosted Home can POST an empty object to its own
+HTTPS `/access/human-endpoint` using its existing Home owner bearer credential.
+The public gateway exposes only this read, with the same current actor revision,
+owner binding, pairing and registered application routes as the loopback owner
+API. Host/Origin still select the exact Home; no home or human selector is input.
+Browser cookies, another Home's credential and VPN presentation do not authorize
+this endpoint. It creates no session, publication, grant, message or model call.
+Responses are private/no-store. The general `/owner/...` API stays loopback-only.
+
+The existing `daimon-home human` client supports a purpose-limited remote binding;
+this is not a second Home store or a guest publisher. Install the compatible
+gateway before selecting that client. Keep owner credentials in their receiving
+private custody and deliver only the selected being's own credential. Other
+bodies' established loopback clients remain unchanged.

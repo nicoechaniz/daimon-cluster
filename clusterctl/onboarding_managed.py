@@ -54,7 +54,7 @@ class ManagedRuntime:
         fields = {'schema', 'host_port', 'guest_port', 'authority_key_id', 'authority_public_key',
                   'registrar_key_id', 'registrar_key', 'registry', 'state', 'visibility_installation'}
         admission_only = value.get('schema') == 'cluster-onboarding-managed-runtime/v2'
-        if (set(value) - {'messaging_application'} != fields | ({'mode'} if admission_only else set())
+        if (set(value) - {'messaging_application', 'vm_relay'} != fields | ({'mode'} if admission_only else set())
                 or value.get('schema') not in {'cluster-onboarding-managed-runtime/v1', 'cluster-onboarding-managed-runtime/v2'}
                 or any(type(value[key]) is not int or not 1 <= value[key] <= 65535
                        for key in ('host_port', 'guest_port'))
@@ -70,6 +70,12 @@ class ManagedRuntime:
                 or getattr(config, 'group_admission', None) is not None
                 or getattr(config, 'peer', None) is not None):
             raise OnboardingError('invalid_onboarding_managed_configuration')
+        if 'vm_relay' in value:
+            from .onboarding_vm_admission import request
+            if (not admission_only or config.instance_type != 'virtual-machine'
+                    or not isinstance(value['vm_relay'], str)):
+                raise OnboardingError('invalid_onboarding_managed_configuration')
+            request(value['vm_relay'], value['guest_port'], '0'*64, apply=False)
         ed25519_fingerprint(value['authority_public_key'])
         for key in ('registrar_key', 'registry', 'state'):
             if not isinstance(value[key], str) or not Path(value[key]).is_absolute():
@@ -278,8 +284,11 @@ class ManagedRuntime:
                     if (prior_pins.get('operation_id') == operation_id
                             or state.get('dispatching') is not None and not (reconciled and restored_resolution)
                             or len(json.dumps(state).encode()) > 65536
-                            or not (reconciled and restored_resolution) and set(state.get('effects', {})) != ({'validate', 'quiesce', 'migrate', 'select', 'start'}
-                                if prior_pins.get('published_group') else {'validate', 'quiesce', 'select', 'start'})
+                            or not (reconciled and restored_resolution) and set(state.get('effects', {})) not in (
+                                ({'validate', 'quiesce', 'migrate', 'select', 'start'},)
+                                if prior_pins.get('published_group') else (
+                                    {'validate', 'quiesce', 'select', 'start'},
+                                    {'validate', 'quiesce', 'catalogs', 'select', 'start'}))
                             or not (reconciled or (
                                 prior_result.get('operation_id') == prior_pins.get('operation_id')
                                 and prior_result.get('candidate_digest') == prior_pins.get('candidate_digest')
@@ -332,6 +341,8 @@ class ManagedRuntime:
                     state['capability_bootstrap'] = capability_bootstrap
                 if previous['service'].get('entrypoint_selector') is not None:
                     state['request']['runtime_update'] = True
+                if receive_only_group:
+                    state['prepare_closed_catalogs'] = True
                 if before.get('group') is not None:
                     state['closed_group'] = frozen_group
                 if previous_completed is not None:
@@ -340,8 +351,10 @@ class ManagedRuntime:
                     being_seed._write(directory / 'native-code-update.previous.json', previous_completed)
                     state['previous_completed_sha256'] = digest(previous_completed)
                 save()
-            actions = ('validate', 'quiesce', 'migrate', 'select', 'start') if published_group else (
-                'validate', 'quiesce', 'select', 'start')
+            actions = ('validate', 'quiesce',
+                       *(['migrate'] if published_group else
+                         ['catalogs'] if state.get('prepare_closed_catalogs') else []),
+                       'select', 'start')
             for action in actions:
                 if action in state['effects']:
                     continue
@@ -375,6 +388,13 @@ class ManagedRuntime:
                     state['effects'][action] = migrated
                     if 'capability_bootstrap' in state:
                         state['effective_runtime_sha256'] = expected_runtime
+                elif action == 'catalogs':
+                    prepared = self.backend._target_call(plan, 'closed-catalogs-prepare',
+                        candidate=candidate, observation_timeout_seconds=remaining())
+                    if (prepared.get('schema') != 'cluster-closed-catalogs-prepared/v1'
+                            or prepared.get('runtime_sha256') != state['runtime_sha256']):
+                        raise OnboardingError('native_code_update_catalogs_unobserved')
+                    state['effects'][action] = prepared
                 else:
                     state['effects'][action] = self.backend._guest_service_call(plan, 'bootstrap-' + action,
                         candidate=candidate, timeout_seconds=remaining(), request=state['request'])
@@ -492,6 +512,10 @@ class ManagedRuntime:
                     connect='tcp:127.0.0.1:' + str(self.settings['host_port']))
 
     def _check_proxy(self, plan: dict, *, deadline_ns: int | None = None) -> bool:
+        if 'vm_relay' in self.settings:
+            from .onboarding_vm_admission import reconcile
+            return reconcile(self.backend, plan, self.settings['vm_relay'],
+                self.settings['guest_port'], apply=False, deadline_ns=deadline_ns)
         if deadline_ns is None:
             rows, _ = self.backend._inventory()
         else:
@@ -625,9 +649,15 @@ class ManagedRuntime:
         remaining()
         if not self._check_proxy(plan, **bounds):
             remaining()
-            proxy = self._proxy()
-            self.backend._dispatch(plan, ['config', 'device', 'add', self.backend.instance(plan),
-                'onboarding-admission', 'proxy', *[key + '=' + value for key, value in proxy.items() if key != 'type']], **bounds)
+            if 'vm_relay' in self.settings:
+                from .onboarding_vm_admission import reconcile
+                if not reconcile(self.backend, plan, self.settings['vm_relay'],
+                        self.settings['guest_port'], apply=True, deadline_ns=deadline_ns):
+                    raise OnboardingError('vm_admission_relay_unconfirmed')
+            else:
+                proxy = self._proxy()
+                self.backend._dispatch(plan, ['config', 'device', 'add', self.backend.instance(plan),
+                    'onboarding-admission', 'proxy', *[key + '=' + value for key, value in proxy.items() if key != 'type']], **bounds)
         configuration = self._profile(plan)
         root = self.state / digest(plan)
         if configuration is None:

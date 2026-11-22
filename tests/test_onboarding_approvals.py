@@ -153,3 +153,16 @@ def test_operator_configuration_resumes_same_prepared_job_and_issues_separate_cu
     assert being_seed._read(config.custody_grants / 'fixture.json')['roles'] == ROLES
     assert not list(config.custody.rglob('*'))
     assert not list(config.consent_state.rglob('consent-*.json'))
+
+
+def test_parallel_existing_owner_checks_do_not_take_the_approval_writer(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    config,proposal,_value=setup(tmp_path)
+    expected=decision(config,proposal)
+    directory=config.grants/'delegated-owner-approvals'
+    record=next(directory.glob('*.json'))
+    original=record.read_bytes()
+    with being_seed._locked(directory), ThreadPoolExecutor(max_workers=8) as pool:
+        results=list(pool.map(lambda _:decision(config,proposal),range(24)))
+    assert results==[expected]*24
+    assert record.read_bytes()==original

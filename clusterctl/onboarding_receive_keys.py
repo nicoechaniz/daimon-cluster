@@ -283,7 +283,8 @@ def _export_resource(runtime, group, operation, bundle, context, route, source):
         from daimon_matrix.messaging_config import config_digest
         app, publication = _signed_application(bundle, group)
         if (config_digest(app) != source['application_sha256']
-                or config_digest(publication) != source['publication_sha256'] or app.get('intake') != route):
+                or config_digest(publication) != source['publication_sha256']
+                or _published_own_route(bundle, app) != route):
             raise OnboardingError('receive_resource_source_required')
         raw = _private_key(group/'application'/route['secret_file'], route['secret_sha256'])
         source_hash = config_digest(publication)
@@ -387,8 +388,24 @@ def _signed_application(bundle, group):
     return app, publication
 
 
+def _published_own_route(bundle: dict, application: dict) -> dict:
+    """A peer uses the signed advertised route, not the local listener address."""
+    own = bundle['local_origin']
+    matches = [row for row in application['roster']
+        if row['being_ref'] == bundle['manifest']['being_ref']
+        and row['embodiment_id'] == own['embodiment_id'] and row['body_ref'] == own['body_ref']]
+    if len(matches) != 1:
+        raise OnboardingError('receive_resource_source_required')
+    route = matches[0]['route']
+    intake = application['intake']
+    if any(route[key] != intake[key] for key in (FIELDS - {'endpoint'}) | {'secret_sha256'}):
+        raise OnboardingError('receive_resource_source_required')
+    parameters({key: route[key] for key in FIELDS})
+    return route
+
+
 def route_preview(runtime: Path, group: Path, operation_id: str, *, deadline_ns: int | None) -> dict:
-    """Current signed own intake metadata only; no private key or native writer."""
+    """Current signed advertised own route; no private key or native writer."""
     import copy
     import time
     from daimon_matrix.messaging_config import config_digest
@@ -396,7 +413,7 @@ def route_preview(runtime: Path, group: Path, operation_id: str, *, deadline_ns:
         raise OnboardingError('receive_resource_deadline_required')
     bundle = being_seed._read(runtime/'runtime.json', limit=being_seed.MAX_SELECTION)
     app, publication = _signed_application(bundle, group)
-    route = app['intake']
+    route = _published_own_route(bundle, app)
     parameters({key:route[key] for key in FIELDS})
     if (time.monotonic_ns() >= deadline_ns
             or being_seed._read(runtime/'runtime.json', limit=being_seed.MAX_SELECTION) != bundle):

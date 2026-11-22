@@ -40,7 +40,6 @@ def configuration(targets):
     ):
         raise OnboardingError("conversation_route_maintenance_required")
     names = set()
-    upstreams = set()
     for row in targets:
         if (
             not isinstance(row, dict)
@@ -63,7 +62,6 @@ def configuration(targets):
             or row["owner_uid"] < 0
             or not isinstance(row["upstream"], str)
             or not 1 <= len(row["upstream"]) <= 256
-            or row["upstream"] in upstreams
             or not isinstance(row["command"], list)
             or not 1 <= len(row["command"]) <= 64
             or any(
@@ -89,7 +87,7 @@ def configuration(targets):
         ):
             raise OnboardingError("conversation_route_maintenance_required")
         names.add(row["name"])
-        upstreams.add(row["upstream"])
+        # A Host-routed proxy can front distinct readers; hold every named target.
     return targets
 
 

@@ -10,10 +10,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
@@ -177,7 +179,8 @@ class Source:
             hosted = load_owner_runtime(self.root, self._reader, authorities=authorities,
                                         qualified_startup=self.qualified_startup)
             return relationship_request(self.root, journal, value, offline=hosted, deadline_ns=deadline_ns,
-                membership_precondition=membership_precondition,effect_not_after_ms=effect_not_after_ms)
+                membership_precondition=membership_precondition,effect_not_after_ms=effect_not_after_ms,
+                verification_group=self.outputs / 'tribe', authority_closure=authority_closure or {})
 
     def private_resource(self, value: dict, *, deadline_ns: int) -> dict:
         """Private machine pipe; never a native publication or public receipt."""
@@ -632,6 +635,7 @@ class Source:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
+    parser.add_argument('--diagnostics', action='store_true', help='emit bounded nonsecret failure category')
     parser.add_argument('--ready-fd', type=int)
     parser.add_argument('--body-observer-fd', type=int)
     parser.add_argument('--code-digest')
@@ -887,7 +891,14 @@ def main(argv=None) -> int:
             signal.signal(signum, lambda *_: stop.set())
         source.serve(stop, ready_descriptor=args.ready_fd)
         return 0
-    except Exception:
+    except Exception as error:
+        if args.diagnostics:
+            error_code = str(error)
+            if re.fullmatch(r'[a-z][a-z0-9_]*(?::[a-z][a-z0-9_]*)*', error_code) is None or len(error_code) > 160:
+                error_code = 'source_operation_refused'
+            frames = [dict(module=Path(frame.filename).name, line=frame.lineno, function=frame.name)
+                for frame in traceback.extract_tb(error.__traceback__)[-8:]]
+            print(json.dumps(dict(error=error_code, exception_type=type(error).__name__, frames=frames)), file=sys.stderr)
         # No paths, custody, token values or raw native errors in service logs.
         print(json.dumps({'error': 'native_onboarding_source_refused'}))
         return 1

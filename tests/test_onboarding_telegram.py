@@ -386,7 +386,7 @@ def test_guest_native_install_keeps_one_budget_through_verification_and_each_eff
         if expire == 'after-reload':
             # A wall-clock authorization expiry is independent of monotonic time.
             clock['wall'] = 102_000_000_000
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout='257' if argv[0] == 'runuser' else '')
     def install():
         telegram.install_native(Path('/home/agent'), Path('/usr/bin/codex'), Path('/opt/qualified'),
             unit_directory=tmp_path, budget=budget, run=run)
@@ -397,7 +397,10 @@ def test_guest_native_install_keeps_one_budget_through_verification_and_each_eff
         assert len(published) == (0 if expire == 'before-publish' else 1)
     else:
         install()
-        assert commands == [['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', telegram.NATIVE_UNIT]]
+        assert commands[:2] == [['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', telegram.NATIVE_UNIT]]
+        assert commands[2:4] == [['loginctl', 'enable-linger', 'agent'],
+                                 ['systemctl', 'start', 'user@1000.service']]
+        assert commands[-1][-4:] == ['--user', 'show', '--property=Version', '--value']
 
 
 @pytest.mark.parametrize('timeout, expiry', [(None, 1), (1, None), (0, 101000), (61, 101000), (float('nan'), 101000)])
@@ -405,6 +408,28 @@ def test_guest_native_budget_refuses_incomplete_or_invalid_bounds(timeout, expir
     from clusterctl.onboarding_telegram import native_budget
     with pytest.raises(OnboardingError, match='native_codex_preparation_expired'):
         native_budget(timeout, expiry)
+
+
+@pytest.mark.parametrize('failed_step', [0, 1, 2])
+def test_native_user_manager_refusal_does_not_claim_resource_readiness(failed_step):
+    from types import SimpleNamespace
+    from clusterctl.onboarding_telegram import prepare_user_manager
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=int(len(calls)-1 == failed_step), stdout='257')
+    with pytest.raises(OnboardingError, match='native_user_manager_unavailable'):
+        prepare_user_manager(budget=lambda maximum: 1, run=run)
+    assert len(calls) == failed_step+1
+    assert not any('restart' in argv or 'stop' in argv for argv in calls)
+
+
+def test_native_user_manager_requires_actual_own_manager_reply():
+    from types import SimpleNamespace
+    from clusterctl.onboarding_telegram import prepare_user_manager
+    with pytest.raises(OnboardingError, match='native_user_manager_unavailable'):
+        prepare_user_manager(budget=lambda maximum: 1,
+            run=lambda *a, **k: SimpleNamespace(returncode=0, stdout=''))
 
 
 @pytest.mark.parametrize('action', ['native-install', 'native-observe', 'probe', 'prepare', 'install'])

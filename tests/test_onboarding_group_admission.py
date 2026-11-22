@@ -39,6 +39,128 @@ def invitation(source, peer_bundle):
     return dict(operation_id=str(uuid.uuid4()), step='invite', method='tribe.invite', params=dict(payload=payload))
 
 
+@pytest.mark.parametrize('finite_session, existing_members', [(False, 1), (True, 1), (True, 7)])
+def test_new_signer_survives_owner_restart_without_separate_publication(
+        group_source, tmp_path, finite_session, existing_members):
+    from contextlib import ExitStack
+    from daimon_matrix.relationship_store import RelationshipStoreError
+    from daimon_matrix.relationships import MEMBERSHIP_ACCEPTANCE_SCHEMA
+    from clusterctl.onboarding_group_session import RelationshipSession
+
+    source, original, _peer, peer_bundle, _old = group_source
+    existing_closure = closure(peer_bundle)
+    declaration = next(event for event in source._load(signed=False).service.relationships.store.events()
+        if event['kind'] == 'matrix/tribe-declaration')
+
+    def new_target(name):
+        location = tmp_path / name
+        location.mkdir(mode=0o700)
+        ceremony, plan, target = group_fixtures.receiving(location)
+        target.activate(ceremony.authorize_target(plan, target.prepare()))
+        target.apply_credential(ceremony.authorize_credential(plan, target.credential_request()))
+        return target
+
+    def acceptance(invited, bundle, operation):
+        return dict(operation_id=operation, step='accept', method='tribe.membership.accept',
+            params=dict(payload=dict(schema=MEMBERSHIP_ACCEPTANCE_SCHEMA,
+                tribe_ref=invited['payload']['tribe_ref'], founder_epoch=0,
+                invitation_ref=dict(event_id=invited['event_id'], event_hash=invited['content_hash']),
+                invitee_being_ref=bundle['manifest']['being_ref'], membership_sequence=0,
+                previous_membership_terminal_ref=None, accepted_at_ms=time.time_ns()//1_000_000)))
+
+    # Build genuine signed native membership, not an integer stand-in for a
+    # seven-body history. This setup creates no messaging app or live process.
+    for index in range(existing_members - 1):
+        prior = (Target(tmp_path/'candidate/guest', original.plan,
+            document(tmp_path/'candidate/custody'/digest(original.plan)/'genesis.json'))
+            if index == 0 else new_target('prior-' + str(index)))
+        prior_bundle = prior.document_bundle()
+        existing_closure.update(closure(prior_bundle))
+        invite = invitation(source, prior_bundle)
+        invited = source.group_relationship(invite, offline=True,
+            authority_closure=existing_closure)['result']['event']
+        approved = {**closure(original.document_bundle()), **existing_closure}
+        approved.pop(prior_bundle['manifest']['being_ref'])
+        for step, event in (('declaration', declaration), ('invitation', invited)):
+            prior.group_relationship(dict(operation_id=invite['operation_id'], step=step,
+                method='relationship.event.ingest', params=dict(event=event)), authority_closure=approved)
+        accepted = prior.group_relationship(acceptance(invited, prior_bundle, invite['operation_id']),
+            authority_closure=approved)['result']['event']
+        source.group_relationship(dict(operation_id=invite['operation_id'], step='accepted',
+            method='relationship.event.ingest', params=dict(event=accepted)),
+            offline=True, authority_closure=existing_closure)
+    context = source.outputs / 'tribe/membership-authorities.json'
+    old_context = context.read_bytes() if context.exists() else None
+    entrant = new_target('new-signer')
+    bundle = entrant.document_bundle()
+    ref = bundle['manifest']['being_ref']
+    with pytest.raises(KeyError):
+        source._load(signed=False).service.relationships.authority_resolver(ref)
+    old_selection = (source.outputs / 'tribe/selection.json').read_bytes()
+    identities = [(root, (root/'runtime.json').read_bytes(), (root/'custody.json').read_bytes())
+        for root in (source.root, entrant.package/'runtime')]
+    selected = invitation(source, bundle)
+    operation = selected['operation_id']
+    closures = dict(founder={**existing_closure, **closure(bundle)},
+        entrant={**closure(original.document_bundle()), **existing_closure})
+    with ExitStack() as stack:
+        sessions = {}
+
+        def call(name, command):
+            owner = source if name == 'founder' else entrant
+            packet = dict(command=command, offline=True, authority_closure=closures[name])
+            if finite_session:
+                if name not in sessions:
+                    sessions[name] = stack.enter_context(RelationshipSession(owner, packet,
+                        deadline_ns=time.monotonic_ns()+60_000_000_000, target=name=='entrant'))
+                return sessions[name].call(packet)
+            return owner.group_relationship(command, authority_closure=closures[name],
+                **({'offline': True} if name == 'founder' else {}))
+
+        invited = call('founder', selected)['result']['event']
+        for step, event in (('declaration', declaration), ('invitation', invited)):
+            call('entrant', dict(operation_id=operation, step=step, method='relationship.event.ingest',
+                params=dict(event=event)))
+        accept = acceptance(invited, bundle, operation)
+        accepted = call('entrant', accept)['result']['event']
+        intake = dict(operation_id=operation, step='accepted', method='relationship.event.ingest',
+            params=dict(event=accepted))
+        result = call('founder', intake)
+        context = source.outputs / 'tribe/membership-authorities.json'
+        before_retry = context.read_bytes()
+        assert call('founder', intake) == result
+        assert context.read_bytes() == before_retry
+    # A fresh ordinary load must verify the accepted foreign event using only
+    # retained owner context, without passing the admission closure again.
+    def current_view():
+        loaded = source._load(signed=False)
+        relationships = loaded.service.relationships
+        with relationships.store.authorization_view(at_ms=loaded.service.clock(),
+                card_verifier=relationships.card_verifier) as view:
+            return view.tribes[invited['payload']['tribe_ref']]
+    view = current_view()
+    assert view['memberships'][ref]['state'] == 'active'
+    assert sum(member['state'] == 'active' for member in view['memberships'].values()) == existing_members + 1
+    held = context.with_suffix('.test-held')
+    context.rename(held)
+    try:
+        if old_context is not None:
+            being_seed._write(context, json.loads(old_context), limit=being_seed.MAX_SELECTION)
+        with pytest.raises(RelationshipStoreError, match='relationship_event_rejected'):
+            current_view()
+    finally:
+        if context.exists():
+            context.unlink()
+        held.rename(context)
+    assert current_view()['memberships'][ref]['state'] == 'active'
+    assert (source.outputs / 'tribe/selection.json').read_bytes() == old_selection
+    assert not (entrant.root / 'tribe/selection.json').exists()
+    assert not (entrant.root / 'tribe/visibility/installation.json').exists()
+    for root, runtime, custody in identities:
+        assert (root/'runtime.json').read_bytes() == runtime
+        assert (root/'custody.json').read_bytes() == custody
+
+
 def test_finite_owner_sessions_keep_native_writer_and_exact_requests(group_source, tmp_path, monkeypatch):
     from daimon_matrix.daemon import acquire_lock
     from clusterctl import onboarding_group_admission as social
@@ -56,12 +178,15 @@ def test_finite_owner_sessions_keep_native_writer_and_exact_requests(group_sourc
     deadline = time.monotonic_ns()+60_000_000_000
     with RelationshipSession(source, packet, deadline_ns=deadline) as session:
         before_rpc = session.hosted.service.ledger.rpc_requests()
+        context = source.outputs / 'tribe/membership-authorities.json'
+        assert not context.exists()
         absent = session.call(packet, inspect_only=True)
         assert absent['schema'] == 'cluster-group-invitation-inspection/v1'
         assert absent['rpc_state'] == 'not-dispatched' and not absent['request_retained']
         assert absent['request_sha256'] is absent['response_sha256'] is None
         assert absent['invitations'] == absent['acceptances'] == [] and absent['requests_dispatched'] == 0
         assert session.hosted.service.ledger.rpc_requests() == before_rpc
+        assert not context.exists()
         assert not (source.outputs/'group-admission'/selected['operation_id']/'invite.json').exists()
         invited = session.call(packet)
         assert invited['status'] == 'recorded' and session.call(packet) == invited
@@ -761,7 +886,12 @@ def test_source_and_offline_newcomer_record_real_membership_without_running_grou
     authority_command = dict(operation_id=request['operation_id'], step='membership-authorities',
         action='membership-authorities', params=dict(tribe_ref=request['params']['payload']['tribe_ref'],
             expected_selection_sha256=None))
-    source_context = source.group_publication(authority_command, authority_closure=closure(peer_bundle))
+    source_command = {**authority_command, 'params': {**authority_command['params'],
+        'expected_selection_sha256': digest(being_seed._read(
+            source.outputs / 'tribe/membership-authorities.json', limit=being_seed.MAX_SELECTION))}}
+    authority_command['params']['expected_selection_sha256'] = digest(being_seed._read(
+        target.root / 'tribe/membership-authorities.json', limit=being_seed.MAX_SELECTION))
+    source_context = source.group_publication(source_command, authority_closure=closure(peer_bundle))
     child_context = target.group_publication(authority_command, authority_closure=authorities)
     assert source_context['status'] == child_context['status'] == 'recorded'
     assert source_context['members'] == child_context['members'] == sorted([

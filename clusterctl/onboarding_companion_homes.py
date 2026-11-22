@@ -127,7 +127,8 @@ class CompanionHomes:
         self.state = private_directory(Path(value['state']), create=True)
         self.selection_path = Path(selection_path) if selection_path is not None else None
         entries = list(self.state.iterdir())
-        if len(entries)>64 or any(p.is_symlink() or not p.is_file() for p in entries):
+        file_limit = 64 + (len(value['pairs']) if 'native_client' in value else 0)
+        if len(entries)>file_limit or any(p.is_symlink() or not p.is_file() for p in entries):
             raise OnboardingError('companion_home_state_capacity')
         caps = {p:65536 if p.name.endswith('.technical-browser.json') else 4096 for p in entries}
         if any(p.stat().st_size>caps[p] for p in entries):
@@ -135,9 +136,11 @@ class CompanionHomes:
         for name in value['pairs']:
             for suffix,limit in (('.json',4096),('.access.json',4096),('.technical-browser.json',65536)):
                 caps[self.state/(name+suffix)] = limit
+            if 'native_client' in value:
+                caps[self.state/(name+'.client.json')] = 4096
         # Reserve every selected pair's terminal and temporary files up front.
         # Doubling also covers one atomic staging file per active writer.
-        if len(caps)>64 or 2*sum(caps.values())>4*1024*1024:
+        if len(caps)>file_limit or 2*sum(caps.values())>4*1024*1024:
             raise OnboardingError('companion_home_state_capacity')
 
     def _save(self, path, value):
@@ -246,6 +249,59 @@ class CompanionHomes:
         return Routes(self.value['routes']).reconcile(request, selected[plan['name']],
             gateway['home_backend'], apply=True, authorize=authorized)
 
+    def _native_client(self, backend, plan, request, observed):
+        selected = self.value.get('native_client')
+        if selected is None:
+            return  # Existing completed/legacy Home contracts are unchanged.
+        from .onboarding_homes import IncusProvider
+        from .homes.service import validate_config
+        from .onboarding_release import regular
+        gateway = self.value['gateway']
+        path = Path(gateway['config'])
+        uid = path.stat().st_uid
+        config = validate_config(json.loads(regular(path, uid=uid)), credential_uid=uid)
+        home = config['homes'][request['home_ref']]
+        if home['owner_being_ref'] != request['being_ref'] or home['public_url'] != request['origin']:
+            raise OnboardingError('companion_home_binding_conflict')
+        binding = dict(schema='dm.home-human-client/v1', name=request['label'],
+            public_url=request['origin'], being_ref=request['being_ref'],
+            access=dict(owner_url=request['origin'], home_ref=request['home_ref'],
+                        owner_token_file='/home/agent/.config/daimon-home/owner.key'))
+        declaration = dict(schema='dm.home.receiving/v1', binding=binding,
+                           skills_commit=selected['skills_commit'], previous={})
+        client_file = self.state/(plan['name']+'.client.json')
+        if client_file.exists():
+            if document(client_file) != declaration:
+                raise OnboardingError('existing_native_client_selection_preserved')
+        else:
+            self._save(client_file, declaration)
+        placement = dict(name=plan['name'], owner=plan['owner'], plan_digest=digest(plan),
+            **selected, declaration_file=str(client_file),
+            declaration_sha256=hashlib.sha256(client_file.read_bytes()).hexdigest(),
+            delivery=dict(home=home, home_ref=request['home_ref'],
+                owner_being_ref=request['being_ref'], gateway_config=str(path),
+                gateway_uid=uid, gateway_gid=path.stat().st_gid,
+                gateway_python=gateway['python'], gateway_code=str(Path(__file__).resolve().parents[1]),
+                previous_unit_sha256=None))
+        selection = digest(placement)
+        retained = observed.get('native_client')
+        if retained is not None:
+            if retained.get('selection_digest') != selection:
+                raise OnboardingError('existing_native_client_selection_preserved')
+            return
+        # Caller already holds this exact job lock and fresh authorization.
+        result = IncusProvider(self.store, backend)._reconcile(placement)
+        projection = result.get('human_endpoint', {})
+        if (result.get('state') != 'complete'
+                or projection.get('human', {}).get('ref') != request['human_ref']
+                or not any(a.get('capability') == 'interaction'
+                           and a.get('url') == request['origin']+'/interaction/'
+                           for a in projection.get('applications', []))):
+            raise OnboardingError('native_client_receiving_unconfirmed')
+        observed['native_client'] = dict(selection_digest=selection,
+            human_ref=request['human_ref'], home_ref=request['home_ref'],
+            client_verified=True, model_uptake=False)
+
     def reconcile_committed(self, name):
         pair = self.value['pairs'].get(name)
         if pair is None:
@@ -309,6 +365,7 @@ class CompanionHomes:
                         return {'state':'waiting', 'reason':str(error)}
                     if route.get('state') != 'complete' or route.get('route_loaded') is not True:
                         return {'state':'waiting', 'reason':route.get('reason', 'conversation_route_runtime_unconfirmed')}
+                self._native_client(backend, plan, request, observed)
                 observed.update(phase='complete',own_pair_observed=True)
                 self._save(path,observed)
                 return {'state':'complete'}
@@ -394,7 +451,7 @@ class CompanionHomes:
 
 def configure(value, *, progress, store, backend, worker_uid, selection_path=None):
     routed = value.get('schema') == ROUTED_SCHEMA
-    if (set(value)!={'schema','state','gateway','pairs'} | ({'routes'} if routed else set())
+    if (set(value)-{'native_client'}!={'schema','state','gateway','pairs'} | ({'routes'} if routed else set())
             or value.get('schema') not in {SCHEMA, ROUTED_SCHEMA}
             or not isinstance(value['state'],str) or not Path(value['state']).is_absolute()
             or '..' in Path(value['state']).parts
@@ -405,6 +462,16 @@ def configure(value, *, progress, store, backend, worker_uid, selection_path=Non
         raise OnboardingError('companion_home_configuration_required')
     if 'runtime_imports' in value['gateway']:
         import_selection(value['gateway']['runtime_imports'])
+    if 'native_client' in value:
+        client = value['native_client']
+        if (not isinstance(client, dict)
+                or set(client) != {'provider_file', 'provider_sha256', 'repository', 'skills_commit'}
+                or any(not isinstance(v, str) for v in client.values())
+                or any(not isinstance(client[k], str) or not Path(client[k]).is_absolute()
+                       or '..' in Path(client[k]).parts for k in ('provider_file', 'repository'))
+                or re.fullmatch('[a-f0-9]{64}', client.get('provider_sha256', '')) is None
+                or re.fullmatch('[a-f0-9]{40}', client.get('skills_commit', '')) is None):
+            raise OnboardingError('native_client_source_required')
     if routed:
         from .onboarding_conversation_routes import configuration as route_configuration
         route_configuration(value['routes'])

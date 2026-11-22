@@ -9,6 +9,27 @@ from clusterctl.onboarding_target import Target
 from tests.test_onboarding_custody import fixture
 
 
+@pytest.mark.parametrize('installed', [False, True])
+def test_closed_catalog_preparation_refuses_missing_group_or_signed_outbound_before_load(tmp_path, monkeypatch, installed):
+    import time
+    from clusterctl import onboarding_group_admission, onboarding_peer
+    ceremony, plan, target = receiving(tmp_path)
+    target.activate(ceremony.authorize_target(plan, target.prepare()))
+    target.apply_credential(ceremony.authorize_credential(plan, target.credential_request()))
+    before = files(target.package)
+    visibility = tmp_path / 'visibility.json'
+    if installed:
+        visibility.write_text('existing signed installation is not ours to change')
+    monkeypatch.setattr(onboarding_peer, 'observed_group',
+        lambda *_: dict(visibility=str(visibility)) if installed else None)
+    def forbidden(*_, **__):
+        pytest.fail('closed catalog preparation loaded an ineligible runtime')
+    monkeypatch.setattr(onboarding_group_admission, 'load_owner_runtime', forbidden)
+    with pytest.raises(OnboardingError, match='closed_group_required'):
+        target.prepare_closed_catalogs(deadline_ns=time.monotonic_ns()+10_000_000_000)
+    assert files(target.package) == before
+
+
 @pytest.mark.parametrize('action,extra', [
     ('group-publication', ['--group-request','-','--remaining-execution','/home/agent/.onboarding-matrix/execution.json']),
     ('group-publication', ['--group-request','-','--remaining-execution','/tmp/execution.json',

@@ -284,8 +284,11 @@ class ManagedRuntime:
                     if (prior_pins.get('operation_id') == operation_id
                             or state.get('dispatching') is not None and not (reconciled and restored_resolution)
                             or len(json.dumps(state).encode()) > 65536
-                            or not (reconciled and restored_resolution) and set(state.get('effects', {})) != ({'validate', 'quiesce', 'migrate', 'select', 'start'}
-                                if prior_pins.get('published_group') else {'validate', 'quiesce', 'select', 'start'})
+                            or not (reconciled and restored_resolution) and set(state.get('effects', {})) not in (
+                                ({'validate', 'quiesce', 'migrate', 'select', 'start'},)
+                                if prior_pins.get('published_group') else (
+                                    {'validate', 'quiesce', 'select', 'start'},
+                                    {'validate', 'quiesce', 'catalogs', 'select', 'start'}))
                             or not (reconciled or (
                                 prior_result.get('operation_id') == prior_pins.get('operation_id')
                                 and prior_result.get('candidate_digest') == prior_pins.get('candidate_digest')
@@ -338,6 +341,8 @@ class ManagedRuntime:
                     state['capability_bootstrap'] = capability_bootstrap
                 if previous['service'].get('entrypoint_selector') is not None:
                     state['request']['runtime_update'] = True
+                if receive_only_group:
+                    state['prepare_closed_catalogs'] = True
                 if before.get('group') is not None:
                     state['closed_group'] = frozen_group
                 if previous_completed is not None:
@@ -346,8 +351,10 @@ class ManagedRuntime:
                     being_seed._write(directory / 'native-code-update.previous.json', previous_completed)
                     state['previous_completed_sha256'] = digest(previous_completed)
                 save()
-            actions = ('validate', 'quiesce', 'migrate', 'select', 'start') if published_group else (
-                'validate', 'quiesce', 'select', 'start')
+            actions = ('validate', 'quiesce',
+                       *(['migrate'] if published_group else
+                         ['catalogs'] if state.get('prepare_closed_catalogs') else []),
+                       'select', 'start')
             for action in actions:
                 if action in state['effects']:
                     continue
@@ -381,6 +388,13 @@ class ManagedRuntime:
                     state['effects'][action] = migrated
                     if 'capability_bootstrap' in state:
                         state['effective_runtime_sha256'] = expected_runtime
+                elif action == 'catalogs':
+                    prepared = self.backend._target_call(plan, 'closed-catalogs-prepare',
+                        candidate=candidate, observation_timeout_seconds=remaining())
+                    if (prepared.get('schema') != 'cluster-closed-catalogs-prepared/v1'
+                            or prepared.get('runtime_sha256') != state['runtime_sha256']):
+                        raise OnboardingError('native_code_update_catalogs_unobserved')
+                    state['effects'][action] = prepared
                 else:
                     state['effects'][action] = self.backend._guest_service_call(plan, 'bootstrap-' + action,
                         candidate=candidate, timeout_seconds=remaining(), request=state['request'])

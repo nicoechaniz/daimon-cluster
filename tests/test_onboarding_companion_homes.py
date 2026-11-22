@@ -291,6 +291,31 @@ def test_new_foreground_refuses_missing_home_before_job_or_substrate(tmp_path,mo
     assert not config.jobs.exists() and backend.calls==[]
 
 
+def test_new_foreground_refuses_missing_conversation_before_job_or_substrate(tmp_path, monkeypatch, capsys):
+    import json
+    from clusterctl import onboarding_host, onboarding_worker
+    backend = FixtureBackend()
+    value = plan(browser=False)
+    value['schema'] = CONVERSATION_PLAN_SCHEMA
+    grants = tmp_path/'grants'
+    grants.mkdir(mode=0o700)
+    being_seed._write(grants/(value['name']+'.json'), {'plan': value})
+    config = SimpleNamespace(jobs=tmp_path/'jobs', grants=grants, progress=tmp_path/'progress')
+    monkeypatch.setattr(onboarding_host, 'CurrentHostConfig',
+        lambda _: SimpleNamespace(current=lambda: config))
+    monkeypatch.setattr(onboarding_host, 'HostBackend', lambda _: backend)
+    # Home preparation is already satisfied. Missing pair/runtime input must
+    # still refuse before freezing a job or asking the substrate to allocate.
+    monkeypatch.setattr(onboarding_worker, 'prepare_companion_homes', lambda *args: None)
+    monkeypatch.setattr(onboarding_worker, 'supervise',
+        lambda *args, **kwargs: pytest.fail('Missing Conversation must not launch a worker'))
+    assert onboarding_worker.main(['--config', str(tmp_path/'owner.json'),
+        '--until', value['name']]) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output['diagnostic']['code'] == 'conversation_selection_required'
+    assert not config.jobs.exists() and backend.calls == []
+
+
 def test_foreground_home_preparation_preserves_exact_pair(tmp_path):
     from clusterctl.onboarding_worker import prepare_companion_homes
     homes,store,backend,progress,selected,_,calls,_,file=assembled(tmp_path)
@@ -351,8 +376,8 @@ def test_gateway_probe_requires_loaded_conversation_route(tmp_path):
 
     config = configuration(tmp_path)
     home = config['homes']['one']
-    observed = dict(human={'ref':'human-one'}, owner_being_ref=home['owner_being_ref'],
-                    applications=[])
+    observed = dict(schema='dm.human-endpoint/v1', home_ref='one',
+                    human={'ref':'human-one'}, owner_being_ref=home['owner_being_ref'], applications=[])
 
     class Owner(BaseHTTPRequestHandler):
         def do_POST(self):
@@ -386,6 +411,9 @@ def test_gateway_probe_requires_loaded_conversation_route(tmp_path):
             return json.loads(result.stdout)
 
         assert probe() == {'state':'not-loaded'}
+        payload['action'] = 'pairing'
+        assert probe() == {k: observed[k] for k in ('schema', 'home_ref', 'owner_being_ref', 'human')}
+        payload['action'] = 'probe'
         observed['applications'] = [dict(capability='interaction',
             url=home['public_url']+'/other/', state='configured')]
         assert probe() == {'state':'not-loaded'}
@@ -438,3 +466,50 @@ def test_home_route_uses_actual_gateway_receivers(tmp_path, monkeypatch, selecto
         child.wait(timeout=3)
         if child.stdout is not None:
             child.stdout.close()
+
+
+@pytest.mark.parametrize("own_human", [True, False])
+def test_selected_native_client_is_inside_home_completion_and_reuses_receipt(tmp_path, monkeypatch, own_human):
+    import json
+    from pathlib import Path
+    from tests.test_home_host import configuration, write
+    from clusterctl.onboarding_homes import IncusProvider
+    homes,store,backend,progress,selected,_,_,state,file = assembled(tmp_path)
+    ready = committed(store,backend,progress)
+    state['ready'] = True
+    request = backend._conversation_request(selected)
+    config_path = tmp_path/'gateway/config.json'
+    config = configuration(config_path.parent)
+    config['homes'][request['home_ref']] = dict(config['homes'].pop('one'),
+        owner_being_ref=request['being_ref'], public_url=request['origin'], name=request['label'])
+    write(config_path,json.dumps(config).encode())
+    value = being_seed._read(file)
+    value['gateway']['config'] = str(config_path)
+    value['native_client'] = dict(provider_file=str(tmp_path/'public-provider.py'),
+        provider_sha256='a'*64,repository=str(tmp_path/'public-source'),skills_commit='b'*40)
+    being_seed._write(file,value)
+    homes = configure(file,progress=progress.root,store=store,backend=lambda:backend,worker_uid=os.getuid())
+    homes._gateway = lambda action,req,**kw: (
+        dict(status='home-configured',home_ref=req['home_ref'],actor=req['being_ref'],human_ref=req['human_ref'])
+        if action=='register' else {'state':'ready','pair_matched':True})
+    calls = []
+    def receive(self, placement):
+        calls.append(placement)
+        assert placement['delivery']['owner_being_ref'] == request['being_ref']
+        declaration = being_seed._read(Path(placement['declaration_file']))
+        assert 'store' not in declaration['binding']
+        return {'state':'complete','human_endpoint':dict(human={'ref':request['human_ref'] if own_human else 'another-human'},
+            applications=[{'capability':'interaction','url':request['origin']+'/interaction/'}])}
+    monkeypatch.setattr(IncusProvider,'_reconcile',receive)
+    if not own_human:
+        with pytest.raises(OnboardingError, match='native_client_receiving_unconfirmed'):
+            homes(ready)
+        retained = being_seed._read(homes.state/(selected['name']+'.json'))
+        assert retained['phase'] != 'complete' and 'native_client' not in retained
+        return
+    assert homes(ready) == {'state':'complete'}
+    assert homes(ready) == {'state':'complete'}
+    assert len(calls) == 1
+    receipt = being_seed._read(homes.state/(selected['name']+'.json'))
+    assert receipt['native_client']['client_verified'] is True
+    assert receipt['native_client']['model_uptake'] is False

@@ -120,3 +120,57 @@ def compile_specification(*, runtime: dict, runtime_root: str, authorities: dict
     except (KeyError, TypeError, ValueError, AttributeError):
         raise OnboardingError('receive_specification_signed_membership_required') from None
     return result
+
+
+def compile_controller_manifest(*, template: dict, target: dict, authority_closure: dict,
+                                baseline: dict, snapshot: dict, code_digest: str) -> dict:
+    """Derive public controller pins from the original retained receive result.
+
+    The owner selects the code/contract template. Actual signed authorities and
+    the six current selection pins come from this admitted job, not a copied
+    companion descriptor. This compiles data only; native preflight still checks
+    the qualified candidate before any service or custody operation.
+    """
+    import re
+    from daimon_matrix.operator_messaging import public_authority_history
+    from daimon_matrix.release_compatibility import validate_release
+    from daimon_matrix.operator_rebirth import RebirthError
+    try:
+        if (not isinstance(template, dict) or len(json.dumps(template).encode()) > 2*1024**2
+                or not isinstance(authority_closure, dict) or not 1 <= len(authority_closure) <= 64
+                or set(target) != {'being_ref', 'embodiment_id'}
+                or set(baseline) != {'receiving_code', 'matrix_sdk', 'runtime_bundle_sha256'}
+                or snapshot.get('outbound_release') is not False
+                or not isinstance(code_digest, str) or re.fullmatch('[0-9a-f]{64}', code_digest) is None):
+            raise ValueError
+        # Validate the selected template as supplied before deriving any fields.
+        value = validate_release(template, expected_digest=digest(template))
+        if (set(value['artifacts']) != {'matrix_sdk'}
+                or value['artifacts']['matrix_sdk'] != baseline['matrix_sdk']):
+            raise ValueError
+        rows = []
+        for ref in sorted(authority_closure):
+            entry = authority_closure[ref]
+            authority = public_authority_history(entry['authority'], entry['history']).active
+            if authority.manifest.being_ref != ref:
+                raise ValueError
+            if ref == target['being_ref'] and not any(
+                    body['embodiment_id'] == target['embodiment_id'] and body['status'] == 'active'
+                    for body in authority.manifest.value['embodiments']):
+                raise ValueError
+            rows.append(dict(being_ref=ref, manifest_hash=authority.manifest.digest,
+                             control_head=authority.state.head))
+        if target['being_ref'] not in authority_closure:
+            raise ValueError
+        group = snapshot['group']
+        selection = dict(baseline, application_sha256=group['application_sha256'],
+            publication_sha256=group['publication_sha256'], visibility_installation_sha256=None)
+        if any(not isinstance(v, str) or re.fullmatch('[0-9a-f]{64}', v) is None
+               for k,v in selection.items() if k != 'visibility_installation_sha256'):
+            raise ValueError
+        value['authorities'] = dict(current=copy.deepcopy(rows), candidate=copy.deepcopy(rows))
+        value['required_receivers'] = [dict(target, expected_selection_sha256=digest(selection),
+            artifacts=dict(receiving_code=code_digest))]
+        return validate_release(value, expected_digest=digest(value))
+    except (KeyError, TypeError, ValueError, AttributeError, RebirthError):
+        raise OnboardingError('companion_controller_signed_preparation_required') from None

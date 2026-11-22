@@ -927,3 +927,94 @@ def test_visibility_migration_cli_uses_bounded_whole_operation_budget(tmp_path, 
         '--visibility-migration-json', '{"synthetic":"migration"}'])
     assert result == (0 if accepted else 1)
     assert calls == ([1_000_000_000 + seconds * 1_000_000_000] if accepted else [])
+
+
+@pytest.mark.parametrize('fault',[None,'expiry','relative'])
+def test_common_controller_template_needs_no_copied_per_job_expiry(tmp_path,fault):
+    selected=dict(schema=SCHEMA,tribe_ref='dm:tribe:v1:fixture',journal=str(tmp_path/'journal'),
+        owners={},admissions={},receive_controller_template=dict(code='/public/controller',
+            code_digest='1'*64,manifest_path='/private/qualified-contract.json',
+            manifest_digest='2'*64,host_config='/private/host.json'))
+    if fault=='expiry':
+        selected['receive_controller_template']['expires_at_ms']=123
+    elif fault=='relative':
+        selected['receive_controller_template']['manifest_path']='relative.json'
+    path=tmp_path/'group.json'
+    being_seed._write(path,selected)
+    if fault is None:
+        assert configuration(path)==selected
+    else:
+        with pytest.raises(OnboardingError,match='coordinator_configuration_required'):
+            configuration(path)
+
+
+def test_common_owner_helpers_are_read_only_selection_and_reject_foreign_owner(fixture, monkeypatch):
+    from clusterctl import onboarding_receiving_update as updates
+    f = fixture
+    name = next(iter(f.selected['owners']))
+    helper = dict(code='/qualified/current-helper', code_digest='d'*64, journal='/private/original-journal')
+    selected = copy.deepcopy(f.selected)
+    selected['owner_helpers'] = dict(schema='cluster-membership-maintenance/v1', owners={name: helper})
+    being_seed._write(f.path, selected)
+    coordinator = GroupCoordinator(f.backend)
+    created = []
+    def guest(backend, plan, candidate, *, root):
+        owner = SimpleNamespace(backend=backend, plan=plan, candidate=candidate, root=root, maintenance=None)
+        created.append(owner)
+        return owner
+    monkeypatch.setattr(updates, 'GuestGroupClient', guest)
+    monkeypatch.setattr(GroupCoordinator, '_guest_backend', lambda *a: f.backend)
+    owner = coordinator._owner_client(name)
+    assert owner.maintenance == (Path(helper['code']), helper['code_digest'])
+    original = f.selected['owners'][name]
+    assert owner.candidate == (Path(original['candidate']['code']), original['candidate']['digest'])
+    assert being_seed._read(f.path) == selected and len(created) == 1
+    selected['owner_helpers']['owners']['foreign'] = helper
+    being_seed._write(f.path, selected)
+    with pytest.raises(OnboardingError, match='coordinator_configuration_required'):
+        GroupCoordinator(f.backend)
+
+
+def test_common_helpers_freeze_before_collection_and_later_defaults_cannot_replace_them(fixture, monkeypatch, tmp_path):
+    import time
+    from clusterctl import onboarding_membership_collection as collection
+    f = fixture
+    plan = f.plans['newcomer']
+    pin = digest(plan)
+    names = sorted(f.owners)
+    template = dict(state=str(tmp_path/'public-inputs'), participants=names,
+        founder_owner=next(name for name in names if name != plan['name']), authoring_seconds=60)
+    helper = dict(code='/qualified/original-helper', code_digest='d'*64, journal='/private/original-journal')
+    recipe = dict(schema='cluster-membership-maintenance/v1', owners={name: dict(helper) for name in names})
+    selected = copy.deepcopy(f.selected)
+    selected['owner_helpers'] = recipe
+    selected['membership_preparations'] = {pin: template}
+    being_seed._write(f.path, selected)
+    while f.store._load(plan['name'])['stage'] != 'matrix':
+        f.store.tick(plan['name'], f.stages)
+    f.backend._ceremony = lambda p: SimpleNamespace(authorize=lambda p: True,
+        admission_coordinates=lambda p: {'being_ref': f.owners['newcomer'].being})
+    monkeypatch.setattr(GroupCoordinator, '_owner_client', lambda self, name: f.owners[name])
+    request = tmp_path/'request.json'
+    being_seed._write(request, {})
+    reference = dict(path=str(request), sha256=digest({}))
+    calls = []
+    def collect(**options):
+        calls.append(options)
+        assert being_seed._read(f.path)['membership_maintenance'][pin] == recipe
+        assert all(owner.maintenance == (Path(helper['code']), helper['code_digest']) for owner in options['owners'].values())
+        assert options['authorize']()
+        if len(calls) == 1:
+            raise OSError('lost collection response')
+        return reference
+    monkeypatch.setattr(collection, 'collect', collect)
+    with pytest.raises(OSError, match='lost collection'):
+        GroupCoordinator(f.backend).prepare_membership_request(plan['name'], deadline_ns=time.monotonic_ns()+10**10)
+    changed = being_seed._read(f.path)
+    changed['owner_helpers'] = dict(schema=recipe['schema'], owners={name: dict(helper, code='/qualified/later-helper') for name in names})
+    being_seed._write(f.path, changed)
+    assert GroupCoordinator(f.backend).prepare_membership_request(plan['name'], deadline_ns=time.monotonic_ns()+10**10) == reference
+    assert being_seed._read(f.path)['membership_maintenance'][pin] == recipe
+    # Once the original public request exists, no helper preparation/collection repeats.
+    assert GroupCoordinator(f.backend).prepare_membership_request(plan['name'], deadline_ns=time.monotonic_ns()+10**10) == reference
+    assert len(calls) == 2

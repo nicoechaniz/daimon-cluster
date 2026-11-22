@@ -47,18 +47,145 @@ available; preserve active work, original actor storage and the next-companion h
 
 ## Single-command companion contract
 
+For a new v2 job, `conversation_settings_by_name` can hold the existing
+`prepare_intent` pair/runtime settings directly in the protected host configuration.
+The finite `--until NAME` command derives the Home/application references and
+plan binding before submission; no separately generated request file or digest
+is required. Existing `conversation_by_name` file selections still take precedence.
+Proxy and per-name App-bundle selectors accept either form. The command freezes
+one `conversation-intent.json` (at most64KiB) in the original job directory, under
+its existing lock and retention. Retries read that original after a lost local
+acknowledgment or later setting changes; a conflicting explicit file refuses.
+Existing jobs without this record are never retrofitted with a new pairing.
+This preparation creates no identity, account, Home registration or service.
+If a new v2 job has neither an explicit Conversation selection nor prepared
+pair/runtime settings, the finite command refuses with
+`conversation_selection_required` before submitting the job or allocating a body.
+Supply the existing protected `conversation_settings_by_name` input and rerun
+the same command. Existing jobs retain their frozen selection and recovery path;
+this preflight never rewrites an existing pairing or repeats acceptance.
+
+### Central Home native client
+
+A routed companion Home configuration can select `native_client` alongside
+`gateway`, `routes` and `pairs`. Its four fields are the absolute public
+`provider_file`, its exact `provider_sha256`, the existing public Skills
+`repository`, and the pinned `skills_commit`. Select Home2.5.2 or later: its
+reader-only `status` validates installation locally without reading a credential
+or making a network call. Existing configurations and completed Home jobs keep
+their retained behavior; adding this selection does not rerun completed bodies.
+
+The same finite command installs the selected Home skill and a closed
+`dm.home-human-client/v1` binding through the existing Incus provider. It creates
+only the own-user private client directory beneath the existing protected
+`.config`, preserving the parent's permissions and ownership. It delivers only
+that Home's existing owner credential, then invokes `daimon-home human` as the
+guest owner. Completion requires the actual own Home/being projection, paired
+human and Conversation route. A foreign or unavailable projection leaves the
+original job incomplete with its retained failure; it does not create another
+pair, credential, guest server, artifact store, proxy or service. This technical
+read proves neither model uptake nor human/device acceptance.
+
+The existing bounded Home state retains one additional declaration of at most
+4KiB per selected pair and the verification result in the existing job. Source
+transfers use the existing temporary bundle lifecycle. No extra operator helper
+launch or separate per-companion setup step is required.
+
+### Operator example
+
+This example incorporates Oliva's authenticated review of PR530 and her installed
+`infrastructure-capabilities`1.0.12 guide. The human supplies the actual companion
+and human pairing, the selected account and any necessary personal sign-in through
+its protected flow. Reuse already approved placement, limits and service choices;
+the recorded human instruction is authority, not a request for another peer's
+approval.
+
+The operator resolves the current resource/holder and available capacity, prepares
+the v2 grant/plan and protected pair/runtime settings, and reuses the selected Home
+placement, App bundle, controller and helpers. Use inline
+`conversation_settings_by_name` or the existing explicit `conversation_by_name`
+selection. Shared public software is prepared once per release; private account
+state never belongs in that bundle.
+
+Run from the selected qualified operator environment:
+
+```sh
+python -m clusterctl.onboarding_worker \
+  --config "<OWNER_CONFIG>" \
+  --home-placements "<HOME_PLACEMENTS>" \
+  --until "<COMPANION_NAME>" \
+  --timeout-seconds 600
+```
+
+These are substitution markers, not a runnable admission. Inspect the structured
+state as well as the exit code: `running` or `extension-recorded` can return zero
+while the original supervisor remains active. A completed host workflow includes
+its usable entry, resolved pairing and elapsed/terminal outcome; first human
+login and device acceptance remain separate. After uncertainty, inspect the same
+original job and receipts rather than changing its name or replaying effects.
+
+Do not add per-companion request-file/digest generation, repeat shared-bundle
+builds or manually launch the already integrated helpers. Later helper updates on
+an admitted VM reuse its placement and supported public-code copy route; adding
+a virtiofs disk for each generation can exhaust live hotplug slots. Preserve the
+living body and necessary personal authentication instead of recreating it.
+
 Cold Conversation guests can select `conversation_bundle_by_name` in the host
 configuration: each name maps to a root-owned public App tree and the SHA256 of
 its `conversation-bundle.json` manifest. The existing context stage mounts that
 verified tree read-only at `/opt/daimon-app`; it also exposes its pinned
-`bin/codex` through the standard guest executable path, preserving any differing
+native CLI through the standard guest executable path, preserving any differing
 existing executable. This is public software delivery, never a copy of a being's
 home, account, conversation database or memory. The selected Conversation request
 still pins its native/Python executables and every imported component separately.
-The bundle is bounded to 10,000 files/768 MiB, refuses links, writable public code,
+The bundle is bounded to 10,000 files/1 GiB, refuses links, writable public code,
 unlisted files and digest changes before allocation, and stays retained while a
 live or rollback configuration references it. Remove only unselected task-owned
 transfer copies after exact readback; never retire a mounted generation.
+
+Prepare a shared release with the existing artifact builder, selecting the
+qualified complete native package rather than a lone executable:
+
+```sh
+python -m tools.build_onboarding_code \
+  --conversation-app-bundle APP --conversation-app-digest MANIFEST_SHA256 \
+  --conversation-native-package NATIVE_PACKAGE --output NEW_PUBLIC_RELEASE
+```
+
+This preserves App bytes and places the complete native package under `native/`.
+The manifest's optional `codex_package: "native"` selects that package; legacy
+manifests keep their original root package. Only declared native components are
+copied, never account/home files. The package metadata receives a content-derived
+`+local` build version, using the native installer's existing local-package
+pinning so a cold guest does not follow an incompatible public production engine.
+Executable/resource bytes remain exact; this metadata change is not a rebuild.
+Preparation has a 180-second copy deadline and returns the new manifest digest
+for the existing `conversation_bundle_by_name` selection. The 1 GiB bound covers
+the measured 833 MB App/native composition; it is not unbounded package growth.
+Prepare once per shared release, not per being. Qualify cold daemon installation
+and required native capabilities in an empty, network-isolated test home before
+selecting a release. Do not change a living guest's frozen selection to exercise
+this cold path. Retain the selected/rollback release; remove only task-owned,
+unselected test copies after their daemon has stopped.
+
+For a qualified listener-only update, the same builder can preserve every other
+component, including the native package's exact metadata and version:
+
+```sh
+python -m tools.build_onboarding_code \
+  --conversation-app-bundle APP --conversation-app-digest MANIFEST_SHA256 \
+  --conversation-listener LISTENER --conversation-listener-digest LISTENER_SHA256 \
+  --output NEW_PUBLIC_RELEASE
+```
+
+The listener must be an explicitly pinned regular executable, at most128MiB.
+The complete successor retains the existing1GiB/10,000-file/180-second bounds;
+only `bin/telecodex` and the public manifest change. Reuse qualification for the
+byte-identical Core/Python/web/dependencies and qualify the changed listener.
+Select this immutable release only for future jobs, together with its matching
+runtime executable pin. Preserve existing mounted releases, explicit per-name
+choices and frozen job records; do not repeat living-body admission or a cold
+Core installation merely to update a future default.
 
 Operator intake policy may explicitly select `plan_schema` as
 `cluster-onboarding-plan/v2` for web companions. An omitted selection preserves
@@ -73,6 +200,13 @@ VM code-device labels use short digest prefixes because Incus embeds them in
 virtiofs UNIX socket paths. Full artifact digests and exact source/path/read-only
 checks remain authoritative. Container labels retain their existing bytes;
 never recreate an existing body to repair a refused VM disk hotplug.
+After the original job verifies its VM environment, helper generations reuse
+the existing typed `VMBody` public-code copy route instead of adding one disk
+per generation. The job retains one protected, at most4KiB
+`helper-vm-placement.json`, binding its original plan, host, instance UUID and
+guest OS. Repeated reads reuse it; the typed transport still verifies the current
+instance and guest identity. No service/provisioning profile, SDK selection,
+existing disk or historical source artifact is changed or retired by this route.
 The context writer waits up to 30 seconds for guest mount readback before using
 hotplugged files. The selected public bundle also prepares missing Debian 13
 `python3-venv`, `rsync` and `nodejs` prerequisites through two bounded package
@@ -171,6 +305,16 @@ different placement returns `companion_home_configuration_required` in the
 command-preparation diagnostic. Repair that selected configuration and continue
 the same operation; do not provision manually or replace the intended identity.
 Completed jobs retain the read-only entry path without Home reinstallation.
+
+For new finite v2 jobs, the host may select one `conversation_bundle_default`
+with the existing `{root, sha256}` public bundle contract. The ordinary command
+verifies and freezes that package in the original job directory before submission
+or body allocation; an explicit per-name package wins. The same job reuses its
+frozen package after a later default changes. Existing jobs without that record
+retain their original explicit/no-package behavior. This is one bounded4KiB record
+under the job's existing retention, not another service, approval or deployment.
+Keep defaults operator-owned and content-pinned; do not copy a private account,
+state directory or another companion's configuration into the public package.
 
 The bounded record keeps its original start/deadline and aggregate extensions,
 not an unbounded attempt history. Extending wall time changes no native goal,
@@ -834,9 +978,15 @@ Listener restarts retain a separate cgroup and the same receiving Codex home.
 --config /private/host.json --activate` installs a dedicated boot-enabled worker
 from the selected immutable host release. It validates the existing private
 configuration and that installation's exact SDK before publishing its unit.
-An existing changed unit is preserved and refused. Omitting `--activate`
-installs without starting. The worker uses the same engine and policy as web,
-agent API and CLI; no active Codex conversation is needed.
+For an existing worker, pass `--replace-unit-sha256 EXACT_PREDECESSOR` to
+conditionally select the coherent release and retain the previous unit. Preserve
+its configuration, Home placements and runtime-health registry arguments. Inspect
+current work before replacement; completed jobs are not onboarding requests to
+repeat. Omitting `--activate` installs without starting. With activation, verify
+the loaded worker's release directory and unchanged protected configuration/job
+hashes. The worker uses the same engine and policy as web, agent API and CLI;
+no active Codex conversation is needed. Host-worker adoption does not change a
+body's serving SDK or prove a fresh companion's complete receiving journey.
 
 For an existing installation, preserve its selected `--home-placements` and
 `--runtime-health-registry` arguments when supplying `--replace-unit-sha256`;
@@ -1868,12 +2018,33 @@ route; the intake endpoint must match the actual own numeric listener. Group
 stores are the maintained records/envelopes/opaque-evidence/opaque-message set;
 bilateral store names are not a group application configuration.
 
+An optional `ingress` reuses the existing Incus listener configuration and writer
+for one owned `matrix-message` proxy. Its host address/port must equal the public
+key endpoint; the intake listener must equal the actual selected VM address (or
+container loopback target). VM NIC, static address, live interface and gateway
+checks are the same as for the existing Conversation proxy. Record the exact
+ingress intent before adding it, then reconcile that same device after a lost
+reply. A different existing device is preserved; Conversation, Home and
+administrative routes are never replaced. Legacy preparations without this
+field retain their original hashes and behavior.
+
+The original receive phase owns this listener, before its first native pause or
+key creation. One device per body bounds its resource use; the existing body
+retirement removes it with that body. A failed publication retains the intended
+device/result for forward recovery, without changing uncertain application or
+message effects. Stopping the selected Matrix service stops processing; neither
+an ingress receipt nor a healthy web page establishes messaging readiness.
+
 After the original membership-only result is complete, the existing worker
 advances this receive phase under the same original plan/journal/grants. A separate
 `receive_application` observation retains public commands/results and import
 receipts; terminal membership state/result never changes. Existing members provide
-signed intake metadata via `receive-route-preview` and their private resource pipe;
-their application, visibility and service are unchanged. Public helper preparation
+signed advertised own-route metadata via `receive-route-preview` and their private resource pipe;
+the signed own roster route may differ from the local intake/listen address
+(for example, an existing VPN proxy in front of a loopback listener). Preview
+and private export use that same advertised route with its original transport
+key; they never distribute the local listener as a remote peer address. Existing
+application, visibility and service are unchanged. Public helper preparation
 uses the already granted deployment route. Only the entrant Matrix service enters
 the original-job receive maintenance scope.
 
@@ -2029,3 +2200,154 @@ founder-writer absence proof, binds its predecessor and unchanged original inten
 and retains every earlier frame. At most eight linked attempts and a selected
 expiry of at most 24 hours are allowed. This grants no application publication,
 model execution, account change or automatic authorization renewal.
+
+A terminal companion job retains `state=complete, stage=null`. The existing
+finite worker pass still advances an explicitly configured receive preparation
+for that original plan; it never changes or repeats completed admission. On a
+dedicated single-companion configuration, a bounded `--once` worker invocation
+continues this post-admission phase. The ordinary completed `--until` entry-only
+fast path remains read-only.
+
+Explicit SDK import-cache retirement recognizes ordinary interpreter caches and
+pytest assertion-rewrite caches for the current interpreter. It first verifies
+every pinned source byte, cache ownership/type/header and the complete bounded
+tree. Unknown files or changed sources refuse before deletion. Startup never
+executes or accepts either kind of cache; this remains an explicit preparation
+operation under the SDK exclusive lock, using its actual interpreter.
+
+During an explicitly prepared maintenance scope, Source status/identity reads
+use that qualified helper and its matching closed imports. The admitted original
+code descriptor stays immutable; a legacy observer must not parse a successor
+application through its historical schema. Without a selected helper, the
+ordinary original observer remains unchanged.
+
+A receive continuation that reaches its native guard deadline resumes automatically
+within the same finite operator deadline only after new confirmed native/import
+results and observed guard restoration. Unchanged failures, uncertain restoration
+or expiry of the whole operator stop. This reuses the membership continuation
+rule and exact original journal; no background retry, new resource allowance or
+longer native pause is introduced.
+
+Current-reader proofs are collected concurrently for independent owners, with at
+most eight in-flight reads and the same shared <=60-second validity/deadline.
+Independent helper preparation also runs with at most eight owners together,
+before proofs and controls; native gate effects retain their existing order.
+All exact identity, current selection, complete cohort and expiry checks remain
+mandatory; slow serial CLI startup must not consume other owners’ validity.
+During current-reader selection, reuse that complete authenticated vector only
+inside its existing validity window, updating each gate from its actual native
+control receipt. Refresh the complete vector when any proof expires. Every
+positive control retains local process/gate/roster CAS and a final complete
+authenticated observation is required before reporting selection success. Do not
+perform another eight-owner cold observation for each still-valid local control;
+that repetition exhausted the finite command while the barrier was closed.
+After a qualified native software update, `advance_receive_only` accepts exact
+`selection_updates` for receiving code/SDK only. Identity, runtime bundle,
+application/publication and outbound absence must remain unchanged. Fresh native
+proofs validate the selected update before any reader control. A completed prior
+barrier gets new process-bound controls, with one full predecessor retained;
+unfinished controls cannot be superseded. The retained current selection is used
+by later ordinary observations and continuations, avoiding obsolete SDK pins or
+replaying controls for the old process. No enrollment or controller reissue occurs.
+
+A controller/bootstrap update preserves a selected receive-only application when
+its authenticated group snapshot has no visibility installation. Both preparation
+and the retained controller validate the existing `--receive-only` service command;
+provisioning the reader controller never fabricates a visibility adapter or enables
+outbound release. The signed application and original admission remain unchanged.
+
+The original-job coordinator accepts an explicit `receive_controller_preparations`
+entry keyed by the same plan digest. It pins `host_config`, `code`, `code_digest`,
+`manifest_path`, `manifest_digest` and a finite `expires_at_ms`. This joins the
+existing guest native bootstrap, not another enrollment or scheduler. A separate
+native child retains its exact before/after and interrupted-call receipts. The
+parent retains only the child link and verified current selection; its original
+publication, receive key and snapshot remain unchanged. Current-reader collection
+consumes that forward selection and still requires fresh authenticated proofs.
+Completed children are read back rather than repeated. Outbound remains closed.
+
+For new jobs, the same coordinator also accepts one protected
+`receive_controller_template`: the five existing code/manifest/host selectors,
+without a copied per-companion expiry. Explicit per-plan preparations still win.
+After original receive restoration, it derives the current signed authority
+headers and exact six-pin receiving selection from that job's retained baseline
+and snapshot. It verifies the selected contract and SDK, publishes one bounded
+manifest in the original job directory and freezes its descriptor in the existing
+journal. The ordinary native bootstrap consumes it unchanged. Later template
+changes, lost host acknowledgments or a resume cannot renew the frozen expiry,
+replace its snapshot or reissue a completed controller. The parent deadline
+bounds preparation; existing SDK, custody, service and native checks still apply.
+The manifest is at most2MiB and follows the original job's retention/removal.
+
+The optional shared `owner_helpers` selection reuses the existing
+`cluster-membership-maintenance/v1` contract. It selects public owner helper
+software separately from each body's serving code and SDK. Before a new
+membership request is collected, the coordinator freezes the applicable helpers
+in that plan's existing `membership_maintenance` slot. Explicit per-plan recipes
+and previously collected requests are preserved; changing shared helpers cannot
+replace them. Ordinary owner reads use the shared helper selection, while
+operation-owned maintenance scopes retain their exact guarded recipe. Selection
+does not itself load a body, pause a service, renew authority or replay a request.
+
+Controller-only provisioning must preserve the actually serving Matrix SDK from
+its authenticated baseline. A maintenance helper is an observer, not the body
+software selection: a different helper SDK must never silently replace the serving
+SDK. A mismatch refuses before mounting, stopping or issuing authority; prepare
+its compatible code using the existing successor builder and serving SDK.
+
+The selected helper's SDK/import preparation is part of the existing endpoint
+preparation, before recovery, authenticated observations or a service guard.
+Guests use their existing `sdk-prepare` action. Source helpers use the same
+offline SDK installer/import writer after dropping to the actual owner, in the
+SDK home already bound by that owner's descriptor. The coordinator neither
+opens the private interpreter nor selects it as body software. Historical
+helpers without a qualified SDK marker retain their existing context. Repeated
+use of the same prepared helper within one owning invocation does not reinstall
+it. The existing per-owner 60-second/parent deadline and SDK storage lifecycle
+remain in effect; preparation failure opens no new service guard.
+
+Controller bootstrap likewise prepares its exact baseline-compatible SDK through
+`prepare_guest_bootstrap` before freezing the running predecessor. It does not
+require a separate manual SDK installation or change the serving SDK to match a
+maintenance helper. Published native child receipts still control retries and
+forward recovery; preparing software does not reissue controller authority.
+
+If controller authority was published but the selected software could not load,
+retain that failed attempt. Use the existing qualified entrypoint CAS for the
+compatible software, then `adopt_controller_software_recovery` verifies a fresh
+admitted reader against the *same* published runtime hash and signed application.
+It records the forward selection and marks the failed load degraded. The normal
+original-job continuation consumes this receipt and never reissues the controller
+or repeats the failed software selection. Current-reader collection still reads
+fresh native proofs; the receipt alone is not continuing availability.
+
+### Routine native/VM transport qualification
+
+Native and VM public-code transport changes use the existing receiving CI
+profile, with their matching regression tests. It includes native/VM identity,
+code verification, owner/bootstrap, cohort, host, worker and maintenance consumers.
+A change to SDK/admission/fence/dependency or an unknown source stays on its
+broader profile. Routine VM helper updates do not require a new before/after
+source-hash exception or unrelated Home/archive/application qualification. Reuse
+prior actual receiving evidence and qualify the changed behavior; do not cancel
+an already running useful qualification merely to adopt this selector.
+
+### Own finite tasks after native preparation
+
+The fixed guest account (`agent`, UID1000) needs its existing systemd user manager
+for bounded raw/Code Mode work and `/realm.controls`. Native preparation enables
+that account's linger, starts `user@1000.service`, and verifies a reply through the
+actual own-user bus within the same original deadline. A running native daemon
+alone does not prove this resource path. Failure retains the normal preparation
+failure rather than claiming complete readiness.
+
+This starts no model, timer, conversation or arbitrary work and does not change
+SSH, sudo, goals, Matrix identity or provider accounts. Existing-body recovery can
+reuse `onboarding_telegram.prepare_user_manager` under the owning scoped operation;
+it does not reinstall or restart an already running native daemon. Public scope
+operator installation/selection remains separate from native manager readiness.
+
+The warm worker also refreshes a fully validated `conversation_bundle_default`
+for future jobs. That default is a runtime input, not a reason to restart the
+worker. Existing jobs retain their frozen bundle, per-name selections still win,
+and other host roots/accounts/policy continue to require their existing lifecycle.

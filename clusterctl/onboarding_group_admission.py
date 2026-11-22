@@ -879,6 +879,17 @@ def publication_command(value: dict) -> dict:
                     and value['params']['initial_configuration'] is None
                     and value['params']['expected_installation_sha256'] is not None
                 ) and not (
+                    value['action'] in {'visibility-disclosure', 'visibility-accept'}
+                    and set(value['params']) == PUBLICATIONS[value['action']] | {'prospective'}
+                    and type(value['params']['prospective']) is bool) and not (
+                    value['action'] == 'visibility-accept'
+                    and set(value['params']) == PUBLICATIONS[value['action']] | {'prospective', 'approved_destinations'}
+                    and value['params']['prospective'] is True
+                    and value['params']['approved_destination'] is None
+                    and isinstance(value['params']['approved_destinations'], list)
+                    and isinstance(value['params']['disclosures'], list)
+                    and len(value['params']['approved_destinations']) == len(value['params']['disclosures'])
+                    and all(isinstance(item, dict) for item in value['params']['approved_destinations'])) and not (
                     value['action'] in {'snapshot', 'receive-snapshot'}
                     and PUBLICATIONS[value['action']] <= set(value['params'])
                     and set(value['params']) - PUBLICATIONS[value['action']] <= {'expected_stores', 'expected_preservation'})):
@@ -1018,9 +1029,15 @@ def merge_authorities(current: dict, supplied: dict) -> dict:
     result = dict(current)
     for ref, authority in supplied.items():
         previous = result.get(ref)
-        if previous is not None and (getattr(previous, 'active', previous) != authority.active
-                or hasattr(previous, 'historical') and previous != authority):
-            raise OnboardingError('approved_onboarding_group_history_conflict')
+        if previous is not None:
+            if getattr(previous, 'active', previous) != getattr(authority, 'active', authority):
+                raise OnboardingError('approved_onboarding_group_history_conflict')
+            if hasattr(previous, 'historical'):
+                if hasattr(authority, 'historical') and previous != authority:
+                    raise OnboardingError('approved_onboarding_group_history_conflict')
+                # A signed application can pin only the same current Root.
+                # It must not replace already retained verification history.
+                continue
         result[ref] = authority
     return result
 
@@ -1216,13 +1233,24 @@ def prepare_current_group_visibility(hosted, directory: Path, *,
         if not isinstance(current, RootAuthority) or (ref in pinned and pinned[ref] != current):
             raise OnboardingError('onboarding_group_visibility_preparation_rejected')
     destination = copy.deepcopy(approved_destination)
-    if (set(destination) != {'bot_id','chat_id','topic_id','representation'}
+    portable = 'publication' in destination
+    if portable:
+        from daimon_matrix.mandatory_echo import validate_policy
+        if set(destination) != {'publication', 'representation'}:
+            raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+        # Reuse the native policy validator, exactly as the final native
+        # disclosure does. This validates public metadata; it grants nothing.
+        validate_policy(dict(schema='daimon-visibility-policy/v3', generation=1,
+            origin='owner-disclosure-validation', acceptance_digest='0'*64,
+            proof_key_id='validation-only', **destination))
+    elif (set(destination) != {'bot_id','chat_id','topic_id','representation'}
             or type(destination['bot_id']) is not int or not 0 < destination['bot_id'] < 2**52
             or type(destination['chat_id']) is not int or not 0 < abs(destination['chat_id']) < 2**52
             or destination['topic_id'] is not None and (type(destination['topic_id']) is not int
                 or not 0 < destination['topic_id'] < 2**52)
-            or destination['representation'] not in REPRESENTATIONS
-            or type(issued_at_ms) is not int or not 0 <= issued_at_ms <= hosted.service.clock()
+            or destination['representation'] not in REPRESENTATIONS):
+        raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    if (type(issued_at_ms) is not int or not 0 <= issued_at_ms <= hosted.service.clock()
             or issued_at_ms >= 2**52):
         raise OnboardingError('onboarding_group_visibility_preparation_rejected')
     local = owner if local_being_ref is None else local_being_ref
@@ -1234,9 +1262,48 @@ def prepare_current_group_visibility(hosted, directory: Path, *,
         tribe_ref=application['tribe']['policy']['tribe_ref'],
         membership_ref=members[local]['membership_ref'], participants=participants)],
         projected_content='complete-plaintext-content-and-metadata')
-    return dict(schema='dm.messaging.visibility-disclosure/v1', issued_at_ms=issued_at_ms,
+    if portable:
+        from daimon_matrix.native_egress import PORTABLE_VISIBILITY_SCOPE_RISKS
+        risks = PORTABLE_VISIBILITY_SCOPE_RISKS
+    else:
+        risks = VISIBILITY_SCOPE_RISKS
+    return dict(schema='dm.messaging.visibility-disclosure/v2' if portable else 'dm.messaging.visibility-disclosure/v1', issued_at_ms=issued_at_ms,
         destination=destination, scope=scope, scope_sha256=digest(scope), participants=participants,
-        risk=VISIBILITY_SCOPE_RISKS['all-inter-daimon-communications'])
+        risk=risks['all-inter-daimon-communications'])
+
+
+def _prepare_initial_visibility_key(installation: Path, params: dict) -> None:
+    """Create one local receipt key for an explicitly selected first portable policy.
+
+    Runs under the existing native owner writer. Existing installations/keys are
+    never replaced; a lost publication reply reuses the same private bytes.
+    """
+    from daimon_matrix.messaging_config import protected_read
+    from daimon_matrix.native_egress import _SAFE_LEAF
+
+    initial = params.get('initial_configuration')
+    if params['expected_installation_sha256'] is not None or initial is None:
+        return
+    if not isinstance(initial, dict) or 'publication_backend' not in initial:
+        return  # Existing Telegram preparation retains its own key/token contract.
+    references = initial.get('secrets')
+    if (not isinstance(references, dict) or set(references) != {'proof_key_file'}
+            or not isinstance(references['proof_key_file'], str)
+            or _SAFE_LEAF.fullmatch(references['proof_key_file']) is None):
+        raise OnboardingError('onboarding_group_visibility_preparation_rejected')
+    key = private_directory(installation.parent) / references['proof_key_file']
+    if not installation.exists() and not installation.is_symlink():
+        try:
+            fd = os.open(key, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(os.urandom(32))
+                stream.flush()
+                os.fsync(stream.fileno())
+            _sync(key.parent)
+    protected_read(key, size=32)
 
 
 def _publish_application(hosted, directory: Path, params: dict) -> dict:
@@ -1266,6 +1333,17 @@ def _publish_application(hosted, directory: Path, params: dict) -> dict:
         _sync(directory.parent)
     else:
         previous, metadata = read_publication(hosted, directory)
+        if config_digest(previous) == expected:
+            # Validate retained catalogs with the selected helper before the
+            # first additive write. Metadata/signature compatibility alone
+            # does not prove that this SDK understands existing receipt rows.
+            # A committed successor retry must instead reconcile forward:
+            # its predecessor visibility can legitimately describe the old app.
+            installation = directory.parent / 'visibility' / 'installation.json'
+            if installation.exists():
+                from daimon_matrix.chat_host import application_view
+                application_view(hosted, directory, installation,
+                    catalog_mode='validate').egress.validate_registered_catalogs()
         if config_digest(previous) != expected:
             # The SDK retains its authenticated predecessor with the selected
             # successor. Derive the same additions from it on an exact retry.
@@ -1507,16 +1585,41 @@ def _publication_effect(hosted, group_root: Path, value: dict, closure: dict, *,
         return _publish_receive_application(hosted, group_root, operation, value, closure,
             deadline_ns=deadline_ns)
     if action == 'application':
-        return _publish_application(hosted, directory, params)
+        from .onboarding_receive_keys import resolve_sources
+        return _publish_application(hosted, directory,
+            {**params, 'secret_sources':resolve_sources(operation, params['secret_sources'])})
     if action == 'visibility-disclosure':
-        disclosure = operator_messaging.group_visibility_disclosure(hosted, directory, **params)
+        disclosure_params = {key:item for key,item in params.items() if key != 'prospective'}
+        if params.get('prospective'):
+            disclosure = prepare_current_group_visibility(hosted, directory, **disclosure_params)
+        else:
+            disclosure = operator_messaging.group_visibility_disclosure(hosted, directory, **disclosure_params)
         return dict(disclosure=disclosure, disclosure_sha256=config_digest(disclosure))
     if action == 'visibility-accept':
+        if params.get('prospective'):
+            from daimon_matrix.messaging_config import create_binding
+            bindings = []
+            destinations = params.get('approved_destinations',
+                [params['approved_destination']] * len(params['disclosures']))
+            for disclosure, destination in zip(params['disclosures'], destinations, strict=True):
+                try:
+                    local = disclosure['scope']['channels'][0]['local_being_ref']
+                    expected = prepare_current_group_visibility(hosted, directory,
+                        approved_destination=destination,
+                        issued_at_ms=disclosure['issued_at_ms'], local_being_ref=local)
+                    if disclosure != expected:
+                        raise ValueError
+                except (KeyError, IndexError, TypeError, ValueError):
+                    raise OnboardingError('onboarding_group_visibility_preparation_rejected') from None
+                bindings.append(dict(disclosure_sha256=config_digest(disclosure),
+                    binding=create_binding(hosted, disclosure)))
+            return dict(bindings=bindings)
         return dict(bindings=[dict(disclosure_sha256=config_digest(disclosure),
             binding=operator_messaging.accept_group_visibility(hosted, directory, disclosure,
                 approved_destination=params['approved_destination'])) for disclosure in params['disclosures']])
     if action == 'visibility-publish':
         installation = private_directory(group_root / 'visibility', create=True) / 'installation.json'
+        _prepare_initial_visibility_key(installation, params)
         result = operator_messaging.publish_group_visibility(hosted, directory, installation, **params)
         # The peer app has its own signed catalog key, separate from the base
         # native runtime. Prepare its stores before first ordinary group load.
@@ -1709,10 +1812,57 @@ def publication_request(hosted, group_root: Path, journal: Path, value: dict, *,
         return result
 
 
+def retain_relationship_verification(hosted, group_root: Path, selected: dict, closure: dict) -> None:
+    """Keep accepted public signers available after the owning writer closes.
+
+    This retains verification material, not membership or a messaging client.
+    Existing members retain it before ingestion; an entrant can retain its own
+    membership context immediately after its authenticated acceptance succeeds.
+    """
+    if selected['method'] == 'relationship.snapshot':
+        return
+    from .onboarding_peer import approved_membership_authorities, retain_membership_authorities
+
+    params = selected['params']
+    body = params.get('event') if selected['method'] == 'relationship.event.ingest' else params
+    payload = body.get('payload') if isinstance(body, dict) else None
+    if not isinstance(payload, dict):
+        return  # Preserve the native method's ordinary malformed-input result.
+    reference = payload.get('tribe_ref')
+    if not isinstance(reference, str):
+        return
+    relationships = hosted.service.relationships
+    own = hosted.service.ledger.authority.manifest.being_ref
+    with relationships.store.authorization_view(at_ms=hosted.service.clock(),
+            card_verifier=relationships.card_verifier, busy_timeout_ms=0) as view:
+        tribe = view.tribes.get(reference)
+        if (tribe is None or tribe['state'] != 'active'
+                or tribe['memberships'].get(own, {}).get('state') != 'active'):
+            return
+        members = sorted(ref for ref, row in tribe['memberships'].items() if row['state'] == 'active')
+    path = group_root / 'membership-authorities.json'
+    before = being_seed._read(path, limit=being_seed.MAX_SELECTION) if path.exists() else None
+    if before is not None:
+        bundle = being_seed._read(hosted.state_root / 'runtime.json', limit=being_seed.MAX_SELECTION)
+        approved_membership_authorities(group_root, bundle)
+        document = before['document']
+        if (document['tribe_ref'] == reference and document['members'] == members
+                and all(document['authority_closure'].get(ref) == row for ref, row in closure.items())):
+            return
+    context = dict(parent_operation_id=selected['operation_id'], tribe_ref=reference,
+        members=members, authority_closure=closure)
+    operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'membership-verification:' + digest(context)))
+    retain_membership_authorities(hosted, group_root, operation_id=operation_id,
+        tribe_ref=reference, authority_closure=closure,
+        expected_selection_sha256=None if before is None else digest(before))
+
+
 def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
                          offline=None, deadline_ns: int | None = None,
                          membership_precondition: dict | None = None,
-                         inspect_only: bool = False, effect_not_after_ms: int | None = None) -> dict:
+                         inspect_only: bool = False, effect_not_after_ms: int | None = None,
+                         verification_group: Path | None = None,
+                         authority_closure: dict | None = None) -> dict:
     """Record or retry one native request; never return local capability material.
 
     A relationship snapshot is the native reducer's observation at its retained
@@ -1725,6 +1875,9 @@ def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
     from daimon_matrix.operator_capabilities import operator_capability_profile
 
     selected = command(value)
+    if ((verification_group is None) != (authority_closure is None)
+            or verification_group is not None and offline is None):
+        raise OnboardingError('onboarding_group_relationship_writer_required')
     if effect_not_after_ms is not None and (offline is None or type(effect_not_after_ms) is not int
             or not 0 < effect_not_after_ms < 2**53):
         raise OnboardingError('onboarding_group_relationship_command_required')
@@ -1935,6 +2088,8 @@ def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
         elif retained['response'] is None:
             check_deadline()
             authoring_precondition(request, request_hash)
+            if verification_group is not None and authority_closure is not None:
+                retain_relationship_verification(offline, verification_group, selected, authority_closure)
             if offline is not None and clock() - request['issued_at_ms'] > MAX_CLOCK_SKEW_MS:
                 # Current capability validity is still required. Actual exclusive
                 # writer ownership makes native RPC absence a stable fact.
@@ -1966,6 +2121,9 @@ def relationship_request(runtime_root: Path, journal: Path, value: dict, *,
             # A failed local result write remains recoverable through native RPC.
             being_seed._write(path, retained, limit=being_seed.MAX_SELECTION)
         check_deadline()
+        if verified['ok'] and verification_group is not None and authority_closure is not None:
+            retain_relationship_verification(offline, verification_group, selected, authority_closure)
+            check_deadline()
         return dict(schema='cluster-group-relationship-result/v1',
             status='recorded' if verified['ok'] else 'rejected',
             request_id=request['request_id'], request_sha256=request_hash,

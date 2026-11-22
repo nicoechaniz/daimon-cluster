@@ -25,7 +25,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
-from . import being_seed, onboarding_release, onboarding_sdk
+from . import being_seed, onboarding_code_successor, onboarding_release, onboarding_sdk
 from .onboarding import JobStore, OnboardingError, digest, private_directory
 from .onboarding_group_session import OwnerConversation
 from .owner_process import ConnectedProcessObserver
@@ -860,6 +860,16 @@ class GuestGroupClient:
         self._relationship_process: OwnerConversation | None = None
         self.maintenance: tuple[Path, str] | None = None
 
+    def prepare_helper(self) -> None:
+        """Prepare selected public imports before any service guard is opened."""
+        selected = self.maintenance or self.candidate
+        if selected in getattr(self, '_prepared_helpers', set()):
+            return
+        result = self._call('sdk-prepare', maintenance=True)
+        if result.get('ready') is not True:
+            raise OnboardingError('qualified_guest_bootstrap_candidate_required')
+        self._prepared_helpers = getattr(self, '_prepared_helpers', set()) | {selected}
+
     def _call(self, action: str, *, maintenance: bool = False, **arguments) -> dict:
         timeout = self.timeout_seconds
         if self.deadline_ns is not None:
@@ -908,7 +918,7 @@ class GuestGroupClient:
                            native_tooling: dict | None = None) -> dict:
         options: dict = {'native_tooling': native_tooling} if native_tooling is not None else {}
         value = self._call('receiving-identity', identity_expires_at_ms=expires_at_ms,
-            **options)
+            maintenance=True, **options)
         if (value.get('responder_association') != 'same-connection'
                 or value.get('plan_digest') != digest(self.plan)
                 or not isinstance(value.get('admission_parent'), dict)
@@ -1064,6 +1074,60 @@ class SourceGroupClient:
         self._relationship_process: OwnerConversation | None = None
         self.maintenance: tuple[Path, str] | None = None
 
+    def prepare_helper(self) -> None:
+        """Install only the helper's public SDK as its actual receiving owner.
+
+        Keep the body selection and private interpreter inaccessible to the
+        coordinator. Reuse the existing SDK directory, installer and import
+        writer; an arbitrary alternate home is not a preparation target.
+        """
+        selected = self.maintenance or (self.code, self.code_digest)
+        if selected in getattr(self, '_prepared_helpers', set()):
+            return
+        code, pin = selected
+        if not onboarding_code_successor.sdk_parameters(code, uid=self.code_uid):
+            # Historical helpers use their existing installed context. They
+            # cannot select an arbitrary SDK through a new preparation path.
+            return
+        venv, imports = self._helper_context(code)
+        if len(venv.parents) < 6:
+            raise OnboardingError('qualified_runtime_imports_required')
+        home = venv.parents[5]
+        if (venv != home / '.local/share/daimon-matrix/sdk' / venv.parent.name / 'venv'
+                or imports != venv.parent / 'runtime-imports'):
+            raise OnboardingError('qualified_runtime_imports_required')
+        deadline = min(time.monotonic_ns()+60_000_000_000,
+            self.deadline_ns if self.deadline_ns is not None else 2**63-1)
+        remaining = (deadline-time.monotonic_ns())/1_000_000_000
+        if remaining <= 0:
+            raise OnboardingError('receiving_owner_deadline_expired')
+        launcher = '''import json,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from clusterctl import onboarding_code_successor as successor,onboarding_sdk as sdk
+code,home=Path(sys.argv[1]),Path(sys.argv[3])
+options=dict(code_uid=int(sys.argv[4]),**successor.sdk_parameters(code,uid=int(sys.argv[4])))
+with sdk.probe_budget(int(sys.argv[5])):
+ venv=sdk.install(home,code,sys.argv[2],**options)
+ imports=sdk.runtime_imports(venv,code,**options)
+print(json.dumps(dict(venv=str(venv),imports=str(imports))))
+'''
+        try:
+            result = _run_owner(['/usr/bin/python3', '-B', '-I', '-S', '-c', launcher,
+                str(code), pin, str(home), str(self.code_uid), str(deadline)],
+                text=True, capture_output=True, timeout=remaining,
+                user=self.owner_uid, group=self.owner_gid, extra_groups=(),
+                env={'PATH':os.defpath,'LANG':'C.UTF-8','PYTHONDONTWRITEBYTECODE':'1'})
+            observed = (json.loads(result.stdout)
+                if not result.returncode and len(result.stdout.encode()) <= 4096 else None)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            raise OnboardingError('qualified_source_helper_preparation_required') from None
+        if (result.returncode or len(result.stdout.encode()) > 4096
+                or time.monotonic_ns() >= deadline
+                or observed != dict(venv=str(venv),imports=str(imports))):
+            raise OnboardingError('qualified_source_helper_preparation_required')
+        self._prepared_helpers = getattr(self, '_prepared_helpers', set()) | {selected}
+
     def _helper_context(self, code: Path) -> tuple[Path, Path]:
         """Select the helper's installed SDK sibling; never inspect it as root.
 
@@ -1171,7 +1235,7 @@ class SourceGroupClient:
         return _base_observation(self._call(['--owner-base-status'], maintenance=True))
 
     def status(self) -> dict:
-        return self._observation(self._call(['--owner-status']))
+        return self._observation(self._call(['--owner-status'], maintenance=True))
 
     def qualified_identity(self, *, expires_at_ms: int, require_admitted: bool = False,
                            native_tooling: dict | None = None) -> dict:
@@ -1182,7 +1246,7 @@ class SourceGroupClient:
         arguments = ['--qualified-identity', '--identity-expires-at-ms', str(expires_at_ms)]
         if native_tooling is not None:
             arguments += ['--native-tooling-json', json.dumps(native_tooling, separators=(',', ':'))]
-        value = self._observation(self._call(arguments))
+        value = self._observation(self._call(arguments, maintenance=True))
         verified = value.get('verified_identity')
         if (not isinstance(verified, dict) or type(verified.get('expires_at_ms')) is not int
                 or verified['expires_at_ms'] <= time.time_ns() // 1_000_000
@@ -3318,7 +3382,9 @@ def prepare_guest_bootstrap(backend, plan: dict, *, candidate: tuple[Path, str],
         raise OnboardingError('receiving_guest_bootstrap_identity_required')
     base = backend._receiving_base(plan)
     selected, _, _ = backend._runtime_paths(plan, base, candidate=candidate)
-    argv = command(base, receive_only=False, visibility=Path(owner['group']['selected']['visibility']),
+    receive_only = owner['group']['installation_sha256'] is None
+    argv = command(base, receive_only=receive_only,
+        visibility=None if receive_only else Path(owner['group']['selected']['visibility']),
         runtime_code=selected, runtime_digest=candidate[1])
     # The native placement already pins its qualified bootstrap interpreter.
     # A unit update must not silently switch it to the host's unrelated Python.
@@ -3353,7 +3419,8 @@ def prepare_guest_admission(backend, plan: dict, journal, request: dict, *, conf
         'tribe_ref', 'owner', 'predecessor', 'root', 'manifest_path', 'manifest_uid',
         'manifest_digest', 'expires_at_ms', 'authority_closure', 'owner_context_sha256', 'steps'}
     try:
-        if (not isinstance(request, dict) or set(request) != fields
+        if (not isinstance(request, dict) or set(request) not in (fields, fields | {'entrypoint_mode'})
+                or 'entrypoint_mode' in request and request['entrypoint_mode'] != 'published-group'
                 or request['schema'] != 'cluster-guest-admission-preparation/v1'
                 or str(uuid.UUID(request['operation_id'])) != request['operation_id']
                 or any(not isinstance(request[key], str) or not 1 <= len(request[key]) <= 240
@@ -3415,6 +3482,19 @@ def prepare_guest_admission(backend, plan: dict, journal, request: dict, *, conf
             cohort_operation_id=request['cohort_operation_id'], cohort_intent_sha256=request['cohort_intent_sha256'],
             tribe_ref=request['tribe_ref'], owner=request['owner'], snapshot_request=snapshot), **request['owner'])
         prepared['admission_link'] = link
+        if request.get('entrypoint_mode') == 'published-group':
+            # Explicit first visibility publication has no installed predecessor
+            # policy to infer full mode from. Its existing admission snapshot
+            # must prove the new signed policy before root selects/starts it.
+            from .onboarding_service import command
+            base = Path('/opt/daimon-onboarding') / plan['release_digest']
+            selected = Path('/opt/daimon-onboarding-runtime') / prepared['runtime_digest']
+            prepared['entrypoint_mode'] = 'published-group'
+            prepared['argv'] = command(base, receive_only=False,
+                visibility=Path(frozen['group']['selected']['visibility']),
+                runtime_code=selected, runtime_digest=prepared['runtime_digest'])
+            if hasattr(backend, 'native_body') and (native := backend.native_body(plan)) is not None:
+                prepared['argv'][0] = str(native.python)
         host = being_seed._read(config)
         if backend.config != HostConfig.load(config, expected_value=host):
             raise OnboardingError('receiving_guest_bootstrap_binding_conflict')
@@ -3572,8 +3652,14 @@ class GuestBootstrapController:
         from .onboarding_service import command
         base = Path('/opt/daimon-onboarding') / frozen['plan']['release_digest']
         selected = Path('/opt/daimon-onboarding-runtime') / candidate['runtime_digest']
-        expected_argv = command(base, receive_only=False,
-            visibility=Path(frozen['owner']['group']['selected']['visibility']),
+        mode = candidate.get('entrypoint_mode')
+        if mode is not None and (mode != 'published-group'
+                or frozen['owner'].get('mode') != 'preserve'
+                or candidate.get('admission_link', {}).get('snapshot_request', {}).get('action') != 'snapshot'):
+            raise OnboardingError('receiving_guest_bootstrap_binding_conflict')
+        receive_only = frozen['owner']['group']['installation_sha256'] is None and mode != 'published-group'
+        expected_argv = command(base, receive_only=receive_only,
+            visibility=None if receive_only else Path(frozen['owner']['group']['selected']['visibility']),
             runtime_code=selected, runtime_digest=candidate['runtime_digest'])
         if hasattr(self.backend, 'native_body') and (native := self.backend.native_body(frozen['plan'])) is not None:
             expected_argv[0] = str(native.python)

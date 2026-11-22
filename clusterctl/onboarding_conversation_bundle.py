@@ -5,6 +5,7 @@ memory and mutable App state remain in the receiving body's private home.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -14,6 +15,8 @@ import stat
 import importlib.util
 import shutil
 import subprocess
+import tempfile
+import time
 
 from . import being_seed
 from .onboarding import OnboardingError
@@ -23,7 +26,7 @@ from .onboarding_release import regular
 SCHEMA = 'cluster-conversation-bundle/v1'
 MARKER = 'conversation-bundle.json'
 MAX_FILES = 10000
-MAX_BYTES = 768 * 1024**2
+MAX_BYTES = 1024**3
 
 
 def configuration(value):
@@ -42,17 +45,82 @@ def configuration(value):
     return result
 
 
+
+def selected_bundle(config, plan: dict) -> tuple[Path, str] | None:
+    """Use the original job's frozen public App, never a changed default."""
+    explicit = (getattr(config, 'conversation_bundle_by_name', None) or {}).get(plan['name'])
+    path = config.jobs / plan['name'] / 'conversation-bundle.json'
+    if not path.exists() and not path.is_symlink():
+        return explicit
+    from .onboarding import digest
+    value = being_seed._read(path, limit=4096)
+    if (set(value) != {'schema', 'plan_digest', 'selection'}
+            or value['schema'] != 'cluster-companion-app-selection/v1'
+            or value['plan_digest'] != digest(plan)):
+        raise OnboardingError('companion_app_selection_changed')
+    selected = configuration({'selected': value['selection']})['selected']
+    if explicit is not None and selected != explicit:
+        raise OnboardingError('companion_app_selection_changed')
+    return selected
+
+
+def prepare_selection(config, plan: dict, store, *, authorize) -> None:
+    """Freeze an authorized cold job's common App before its first allocation.
+
+    One <=4KiB record shares the original job's lifetime and deletion path.
+    No new selection is applied to an already existing job, even if a later
+    operator default becomes available. Explicit per-name choices still win.
+    """
+    from .onboarding import CONVERSATION_PLAN_SCHEMA, digest, private_directory
+    from .onboarding_service import publish
+    if plan.get('schema') != CONVERSATION_PLAN_SCHEMA:
+        return
+    explicit = (getattr(config, 'conversation_bundle_by_name', None) or {}).get(plan['name'])
+    selected = explicit or getattr(config, 'conversation_bundle_default', None)
+    path = store.directory(plan['name']) / 'conversation-bundle.json'
+    if not selected and not path.exists() and not path.is_symlink():
+        return
+    if not authorize():
+        raise OnboardingError('host_authorization_required')
+    private_directory(store.root, create=True)
+    with being_seed._locked(store.root):
+        if path.exists() or path.is_symlink():
+            retained = selected_bundle(config, plan)
+            assert retained is not None
+            verify(*retained, uid=os.geteuid())
+            return
+        if (path.parent / 'job.json').exists():
+            return
+        assert selected is not None
+        verify(*selected, uid=os.geteuid())
+        value = dict(schema='cluster-companion-app-selection/v1', plan_digest=digest(plan),
+            selection=dict(root=str(selected[0]), sha256=selected[1]))
+        raw = json.dumps(value, sort_keys=True).encode()
+        if len(raw) > 4096:
+            raise OnboardingError('conversation_bundle_selection_required')
+        private_directory(path.parent, create=True)
+        publish(path, raw)
+
 def verify(root: Path, fingerprint: str, *, uid: int):
+    return _verify(root, fingerprint, uid=uid)[0]
+
+
+def _verify(root: Path, fingerprint: str, *, uid: int, legacy_manifest: Path | None = None):
     being_seed._path(root)
-    raw = regular(root / MARKER, uid=uid, limit=2 * 1024**2)
+    raw = regular(legacy_manifest if legacy_manifest is not None else root / MARKER,
+                  uid=uid, limit=2 * 1024**2)
     if hashlib.sha256(raw).hexdigest() != fingerprint:
         raise OnboardingError('conversation_bundle_changed')
     value = json.loads(raw)
-    if (not isinstance(value, dict) or set(value) != {'schema', 'files'}
+    if (not isinstance(value, dict) or set(value) - {'codex_package'} != {'schema', 'files'}
             or value['schema'] != SCHEMA or not isinstance(value['files'], dict)
+            or 'codex_package' in value and value['codex_package'] != 'native'
             or not 1 <= len(value['files']) <= MAX_FILES):
         raise OnboardingError('conversation_bundle_required')
     expected = value['files']
+    if legacy_manifest is not None and (
+            'codex_package' in value or not all(map(_native_component, expected))):
+        raise OnboardingError('conversation_bundle_codex_package_required')
     for name, checksum in expected.items():
         if (relative(name) != name or name == MARKER or not isinstance(checksum, str)
                 or not re.fullmatch('[0-9a-f]{64}', checksum)):
@@ -81,6 +149,8 @@ def verify(root: Path, fingerprint: str, *, uid: int):
                     raise OnboardingError('conversation_bundle_required')
                 name = path.relative_to(root).as_posix()
                 if name == MARKER:
+                    if legacy_manifest is not None:
+                        raise OnboardingError('conversation_bundle_codex_package_required')
                     continue
                 total += info.st_size
                 if total > MAX_BYTES or name not in expected:
@@ -96,43 +166,316 @@ def verify(root: Path, fingerprint: str, *, uid: int):
                 found.add(name)
     if found != set(expected):
         raise OnboardingError('conversation_bundle_changed')
-    return dict(files=len(found), bytes=total)
+    return dict(files=len(found), bytes=total), value
 
 
-def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
-                    destination=Path('/usr/local/bin/codex'), prepare_dependencies=False,
-                    state_plan=None):
-    """Expose this selected public executable; never overwrite a guest login/tool."""
-    verify(root, fingerprint, uid=os.geteuid())
-    if prepare_dependencies:
-        dependencies()
-    if state_plan is not None:
-        from .onboarding_vm_state import install
-        install(*state_plan)
-    source = root / 'bin/codex'
+def _native_component(name: str) -> bool:
+    return (name == 'codex-package.json' or name.startswith(('codex-resources/', 'codex-path/'))
+            or name in {'bin/codex', 'bin/codex-code-mode-host', 'bin/codex-exec-server'})
+
+
+def compose_native(app: Path, fingerprint: str, native: Path, output: Path) -> dict:
+    """Build one public release for ordinary cold onboarding, never a live update.
+
+    Capture the operator-selected complete native package, preserving all other
+    App bytes. Its content-derived local build version uses the native installer's
+    existing local-package pinning instead of following public production releases.
+    No daemon, identity, credential, account or model is opened here.
+    """
+    from .onboarding import digest
+    verify(app, fingerprint, uid=os.geteuid())
+    if output.exists() or output.is_symlink() or app == native:
+        raise OnboardingError('conversation_bundle_destination_required')
+    being_seed._path(native)
+    info = native.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o022:
+        raise OnboardingError('conversation_native_package_required')
+    uid = info.st_uid
+    # Native managed packages use private 0700 roots; their internal files may
+    # retain the owner's installation umask. Public source roots stay strict.
+    private_source = not info.st_mode & 0o077
+    descriptor = os.open(native / 'codex-package.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != uid or before.st_nlink != 1
+                or before.st_size > 65536 or before.st_mode & 0o022 and not private_source):
+            raise OnboardingError('conversation_native_package_required')
+        metadata_raw = stream.read(65537)
+        after = os.fstat(stream.fileno())
+        if (len(metadata_raw) != before.st_size or len(metadata_raw) > 65536
+                or (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+            raise OnboardingError('conversation_bundle_changed')
+    metadata = json.loads(metadata_raw)
+    if (not isinstance(metadata, dict)
+            or metadata.get('layoutVersion') != 1 or metadata.get('entrypoint') != 'bin/codex'
+            or metadata.get('resourcesDir') != 'codex-resources'
+            or metadata.get('pathDir') != 'codex-path'
+            or metadata.get('execServer', 'bin/codex-exec-server') != 'bin/codex-exec-server'
+            or not isinstance(metadata.get('version'), str)
+            or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?', metadata['version'])):
+        raise OnboardingError('conversation_native_package_required')
+    deadline = time.monotonic() + 180
+
+    def budget():
+        if time.monotonic() >= deadline:
+            raise OnboardingError('conversation_bundle_build_deadline')
+
+    written_bytes = 0
+
+    def transfer(source, target=None, *, owner, expected=None, limit=MAX_BYTES):
+        nonlocal written_bytes
+        budget()
+        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        outgoing = None
+        try:
+            with os.fdopen(descriptor, 'rb') as stream:
+                before = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(before.st_mode) or before.st_uid != owner
+                        or before.st_mode & 0o022 and not (owner == uid and private_source)
+                        or before.st_nlink != 1 or before.st_size > limit):
+                    raise OnboardingError('conversation_native_package_required')
+                if target is not None:
+                    target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+                    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                 0o555 if before.st_mode & 0o100 else 0o444)
+                    outgoing = os.fdopen(fd, 'wb')
+                    os.fchmod(outgoing.fileno(), 0o555 if before.st_mode & 0o100 else 0o444)
+                checksum = hashlib.sha256()
+                size = 0
+                while chunk := stream.read(1024**2):
+                    budget()
+                    size += len(chunk)
+                    if size > before.st_size:
+                        raise OnboardingError('conversation_bundle_changed')
+                    checksum.update(chunk)
+                    if outgoing:
+                        written_bytes += len(chunk)
+                        if written_bytes > MAX_BYTES:
+                            raise OnboardingError('conversation_bundle_capacity')
+                        outgoing.write(chunk)
+                after = os.fstat(stream.fileno())
+                def identity(row):
+                    return row.st_dev, row.st_ino, row.st_size, row.st_mtime_ns, row.st_ctime_ns
+                if (identity(before) != identity(after) or size != before.st_size
+                        or expected is not None and checksum.hexdigest() != expected):
+                    raise OnboardingError('conversation_bundle_changed')
+                return checksum.hexdigest(), size
+        finally:
+            if outgoing:
+                outgoing.close()
+
+    native_files = {'codex-package.json': (hashlib.sha256(metadata_raw).hexdigest(), len(metadata_raw))}
+    native_bytes = len(metadata_raw)
+    entries = 0
+    pending = [native / name for name in ('bin', 'codex-resources', 'codex-path')]
+    while pending:
+        directory = pending.pop()
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != uid
+                or info.st_mode & 0o022 and not private_source):
+            raise OnboardingError('conversation_native_package_required')
+        with os.scandir(directory) as children:
+            for child in children:
+                budget()
+                entries += 1
+                if entries > 2 * MAX_FILES:
+                    raise OnboardingError('conversation_bundle_capacity')
+                path = Path(child.path)
+                if child.is_dir(follow_symlinks=False):
+                    pending.append(path)
+                else:
+                    name = path.relative_to(native).as_posix()
+                    if not child.is_file(follow_symlinks=False) or not _native_component(name):
+                        raise OnboardingError('conversation_native_package_required')
+                    native_files[name] = transfer(path, owner=uid, limit=MAX_BYTES-native_bytes)
+                    native_bytes += native_files[name][1]
+    required = {'bin/codex', 'bin/codex-code-mode-host'}
+    if 'execServer' in metadata:
+        required.add('bin/codex-exec-server')
+    if not required <= native_files.keys() or any(not (native / name).stat().st_mode & 0o100 for name in required):
+        raise OnboardingError('conversation_native_package_required')
+    source_digest = digest({name: value[0] for name, value in native_files.items()})
+    metadata['version'] = metadata['version'].split('+', 1)[0] + '+local.' + source_digest[:16]
+    local_metadata = (json.dumps(metadata, sort_keys=True) + '\n').encode()
+    if len(local_metadata) > 65536:
+        raise OnboardingError('conversation_native_package_required')
+    app_manifest = json.loads(regular(app / MARKER, uid=os.geteuid(), limit=2 * 1024**2))
+    app_files = app_manifest['files']
+    selected = {name: checksum for name, checksum in app_files.items()
+                if not (name.startswith('native/') if app_manifest.get('codex_package') == 'native'
+                        else _native_component(name))}
+    if set(selected) & {'native/' + name for name in native_files}:
+        raise OnboardingError('conversation_native_package_required')
+    if (len(selected) + len(native_files) > MAX_FILES
+            or sum((app / name).stat().st_size for name in selected)
+               + sum(size for _, size in native_files.values()) - len(metadata_raw) + len(local_metadata) > MAX_BYTES):
+        raise OnboardingError('conversation_bundle_capacity')
+    being_seed._path(output)
+    output.mkdir(mode=0o755)
+    output.chmod(0o755)
+    for name, checksum in selected.items():
+        transfer(app / name, output / name, owner=os.geteuid(), expected=checksum)
+    for name, (checksum, _) in native_files.items():
+        if name != 'codex-package.json':
+            transfer(native / name, output / 'native' / name, owner=uid, expected=checksum)
+            selected['native/' + name] = checksum
+    target = output / 'native/codex-package.json'
+    if written_bytes + len(local_metadata) > MAX_BYTES:
+        raise OnboardingError('conversation_bundle_capacity')
+    target.write_bytes(local_metadata)
+    target.chmod(0o444)
+    selected['native/codex-package.json'] = hashlib.sha256(local_metadata).hexdigest()
+    for directory in output.rglob('*'):
+        if directory.is_dir():
+            directory.chmod(0o755)
+    manifest = (json.dumps(dict(schema=SCHEMA, codex_package='native', files=selected), sort_keys=True) + '\n').encode()
+    (output / MARKER).write_bytes(manifest)
+    (output / MARKER).chmod(0o444)
+    pin = hashlib.sha256(manifest).hexdigest()
+    observed = verify(output, pin, uid=os.geteuid())
+    return dict(conversation_bundle_sha256=pin, native_source_sha256=source_digest,
+                native_version=metadata['version'], **observed)
+
+
+def compose_listener(app: Path, fingerprint: str, listener: Path,
+                     listener_digest: str, output: Path) -> dict:
+    """Prepare a listener-only successor without changing a native package.
+
+    Existing mounts/jobs are untouched. The new public tree keeps the exact
+    qualified Core, Python, web and dependency bytes and package metadata.
+    """
+    observed = verify(app, fingerprint, uid=os.geteuid())
+    source = json.loads(regular(app / MARKER, uid=os.geteuid(), limit=2 * 1024**2))
+    being_seed._path(output)
+    if ('bin/telecodex' not in source['files'] or output.exists()
+            or app.resolve() in output.resolve().parents
+            or not re.fullmatch('[0-9a-f]{64}', listener_digest)):
+        raise OnboardingError('conversation_listener_selection_required')
+    being_seed._path(listener)
+    info = listener.lstat()
+    raw = regular(listener, uid=info.st_uid, limit=128 * 1024**2)
+    if not info.st_mode & 0o100 or hashlib.sha256(raw).hexdigest() != listener_digest:
+        raise OnboardingError('conversation_listener_changed')
+    if observed['bytes'] - (app / 'bin/telecodex').stat().st_size + len(raw) > MAX_BYTES:
+        raise OnboardingError('conversation_bundle_capacity')
+    deadline = time.monotonic() + 180
+    output.mkdir(mode=0o755)
+    output.chmod(0o755)
+    for name in source['files']:
+        if time.monotonic() >= deadline:
+            raise OnboardingError('conversation_bundle_build_deadline')
+        target = output / name
+        target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        if name == 'bin/telecodex':
+            target.write_bytes(raw)
+            target.chmod(0o555)
+        else:
+            shutil.copyfile(app / name, target, follow_symlinks=False)
+            target.chmod(0o555 if (app / name).stat().st_mode & 0o100 else 0o444)
+    for path in output.rglob('*'):
+        if path.is_dir():
+            path.chmod(0o755)
+    source['files']['bin/telecodex'] = listener_digest
+    manifest = (json.dumps(source, sort_keys=True) + '\n').encode()
+    (output / MARKER).write_bytes(manifest)
+    (output / MARKER).chmod(0o444)
+    pin = hashlib.sha256(manifest).hexdigest()
+    return dict(conversation_bundle_sha256=pin, listener_sha256=listener_digest,
+                **verify(output, pin, uid=os.geteuid()))
+
+
+def _qualified_codex(root: Path, fingerprint: str, legacy_manifest: Path | None = None) -> Path:
+    _, manifest = _verify(root, fingerprint, uid=os.geteuid(), legacy_manifest=legacy_manifest)
+    package_root = root / manifest.get('codex_package', '.')
+    source = package_root / 'bin/codex'
     # The daemon resolves its sibling package and code-mode host. A lone CLI
     # executable reports its version but cannot start the native server.
     try:
-        package = json.loads(regular(root / 'codex-package.json', uid=os.geteuid()))
+        package = json.loads(regular(package_root / 'codex-package.json', uid=os.geteuid()))
         if (package.get('layoutVersion') != 1 or package.get('entrypoint') != 'bin/codex'
                 or package.get('resourcesDir') != 'codex-resources'
                 or package.get('pathDir') != 'codex-path'
-                or not (root / 'codex-resources').is_dir()
-                or not (root / 'codex-path').is_dir()
-                or not os.access(root / 'bin/codex-code-mode-host', os.X_OK)):
+                or not (package_root / 'codex-resources').is_dir()
+                or not (package_root / 'codex-path').is_dir()
+                or not os.access(package_root / 'bin/codex-code-mode-host', os.X_OK)):
             raise ValueError
     except (OSError, ValueError, TypeError, AttributeError):
         raise OnboardingError('conversation_bundle_codex_package_required') from None
     if not source.is_file() or not os.access(source, os.X_OK):
         raise OnboardingError('conversation_bundle_codex_required')
-    if destination.is_symlink():
-        if destination.readlink() != source:
+    return source
+
+
+def _public_parent(path: Path) -> None:
+    """A verified child must remain behind an administrator-controlled path."""
+    for parent in (path, *path.parents):
+        info = parent.lstat()
+        trusted_sticky = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.geteuid())
+                or (info.st_mode & 0o022 and not trusted_sticky)):
+            raise OnboardingError('conversation_bundle_untrusted_parent')
+
+
+def bootstrap_codex(fingerprint: str, *, root=Path('/opt/daimon-app'),
+                    destination=Path('/usr/local/bin/codex'), prepare_dependencies=False,
+                    state_plan=None, previous_selection: tuple[Path, str] | None = None,
+                    legacy_selection: tuple[Path, Path] | None = None):
+    """Expose a public CLI or conditionally replace its exact managed predecessor."""
+    legacy_root, legacy_manifest = legacy_selection or (None, None)
+    if legacy_selection is not None and (previous_selection is None
+            or root == previous_selection[0] or legacy_root not in (root, previous_selection[0])):
+        raise OnboardingError('conversation_launcher_successor_scope')
+    if previous_selection is not None:
+        if prepare_dependencies or state_plan is not None:
+            raise OnboardingError('conversation_launcher_successor_scope')
+        for path in (root, previous_selection[0], destination.parent):
+            if not path.is_absolute() or '..' in path.parts:
+                raise OnboardingError('conversation_bundle_untrusted_parent')
+            _public_parent(path)
+        if legacy_manifest is not None:
+            if not legacy_manifest.is_absolute() or '..' in legacy_manifest.parts:
+                raise OnboardingError('conversation_bundle_untrusted_parent')
+            _public_parent(legacy_manifest.parent)
+
+    source = _qualified_codex(root, fingerprint, legacy_manifest if root == legacy_root else None)
+    previous = None
+    if previous_selection is not None:
+        previous_root, previous_pin = previous_selection
+        previous = _qualified_codex(previous_root, previous_pin,
+                                    legacy_manifest if previous_root == legacy_root else None)
+    if prepare_dependencies:
+        dependencies()
+    if state_plan is not None:
+        from .onboarding_vm_state import install
+        install(*state_plan)
+
+    # Serialize this selector's writers without a persistent sidecar.
+    fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise OnboardingError('conversation_launcher_selection_busy') from exc
+        if destination.is_symlink():
+            current = destination.readlink()
+            if current == source:
+                return
+            if previous is None or current != previous or destination.lstat().st_uid != os.geteuid():
+                raise OnboardingError('existing_guest_codex_preserved')
+            with tempfile.TemporaryDirectory(prefix='.codex-launcher-', dir=destination.parent) as tmp:
+                candidate = Path(tmp) / 'codex'
+                candidate.symlink_to(source)
+                if not destination.is_symlink() or destination.readlink() != previous:
+                    raise OnboardingError('existing_guest_codex_preserved')
+                os.replace(candidate, destination)
+                os.fsync(fd)
+            return
+        if destination.exists() or previous is not None:
             raise OnboardingError('existing_guest_codex_preserved')
-        return
-    if destination.exists():
-        raise OnboardingError('existing_guest_codex_preserved')
-    # symlink() is atomic and refuses any concurrent differing installation.
-    destination.symlink_to(source)
+        destination.symlink_to(source)
+    finally:
+        os.close(fd)
 
 
 def dependencies(*, ready=None, run=None, release=Path('/etc/os-release')):
@@ -142,7 +485,8 @@ def dependencies(*, ready=None, run=None, release=Path('/etc/os-release')):
     by the existing context writer. It installs no account, listener or model.
     """
     ready = ready or (lambda: importlib.util.find_spec('ensurepip') is not None
-        and shutil.which('rsync') is not None and Path('/usr/bin/node').is_file())
+        and shutil.which('rsync') is not None and shutil.which('git') is not None
+        and Path('/usr/bin/node').is_file())
     if ready():
         return
     facts = dict(line.split('=', 1) for line in release.read_text().splitlines() if '=' in line)
@@ -150,7 +494,7 @@ def dependencies(*, ready=None, run=None, release=Path('/etc/os-release')):
         raise OnboardingError('conversation_guest_dependencies_required')
     execute = run or subprocess.run
     for arguments in (['update'], ['-y', '--no-install-recommends', 'install',
-                                  'python3-venv', 'rsync', 'nodejs']):
+                                  'python3-venv', 'rsync', 'nodejs', 'git']):
         result = execute(['/usr/bin/apt-get', '-q', '-o',
             'APT::Keep-Downloaded-Packages=false', *arguments], capture_output=True,
             timeout=90, check=False, env={'PATH': os.defpath, 'LANG': 'C.UTF-8',
